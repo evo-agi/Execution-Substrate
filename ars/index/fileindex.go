@@ -1,0 +1,106 @@
+package index
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"execution-platform/ars/store"
+)
+
+type FileIndex struct {
+	path    string
+	entries map[string]Entry
+}
+
+func Load(path string) (*FileIndex, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("storage.index_file is required")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open artifact index: %w", err)
+	}
+	defer file.Close()
+
+	var entries map[string]Entry
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entries); err != nil {
+		return nil, fmt.Errorf("decode artifact index: %w", err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("decode artifact index: trailing data after first JSON document")
+	}
+
+	if entries == nil {
+		entries = map[string]Entry{}
+	}
+
+	for artifactDigest, entry := range entries {
+		if err := validateEntry(artifactDigest, entry); err != nil {
+			return nil, err
+		}
+	}
+
+	return &FileIndex{
+		path:    path,
+		entries: entries,
+	}, nil
+}
+
+func (f *FileIndex) Path() string {
+	return f.path
+}
+
+func (f *FileIndex) Count() int {
+	return len(f.entries)
+}
+
+func (f *FileIndex) Lookup(artifactDigest string) (Entry, bool, error) {
+	if err := store.ValidateDigest(artifactDigest); err != nil {
+		return Entry{}, false, err
+	}
+
+	entry, found := f.entries[artifactDigest]
+	return entry, found, nil
+}
+
+func validateEntry(key string, entry Entry) error {
+	if err := store.ValidateDigest(key); err != nil {
+		return fmt.Errorf("validate artifact index key: %w", err)
+	}
+	if strings.TrimSpace(entry.ArtifactDigest) == "" {
+		return fmt.Errorf("artifact index entry %s is missing artifact_digest", key)
+	}
+	if entry.ArtifactDigest != key {
+		return fmt.Errorf("artifact index entry %s has mismatched artifact_digest", key)
+	}
+
+	requiredDigests := map[string]string{
+		"manifest_digest":                             entry.ManifestDigest,
+		"provenance_digest":                           entry.ProvenanceDigest,
+		"payload_digest":                              entry.PayloadDigest,
+		"derivation_metadata_digest":                  entry.DerivationMetadataDigest,
+		"derivation_authorization_attestation_digest": entry.DerivationAuthorizationAttestationDigest,
+		"workload_identity_binding_digest":            entry.WorkloadIdentityBindingDigest,
+	}
+	for field, digest := range requiredDigests {
+		if strings.TrimSpace(digest) == "" {
+			return fmt.Errorf("artifact index entry %s is missing %s", key, field)
+		}
+		if err := store.ValidateDigest(digest); err != nil {
+			return fmt.Errorf("artifact index entry %s has invalid %s: %w", key, field, err)
+		}
+	}
+
+	if strings.TrimSpace(entry.CreatedAt) == "" {
+		return fmt.Errorf("artifact index entry %s is missing created_at", key)
+	}
+
+	return nil
+}
