@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -81,6 +82,80 @@ func (s *FilesystemStore) Read(digest string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func (s *FilesystemStore) Write(digest string, data []byte) (bool, error) {
+	blobPath, err := ResolvePath(s.rootDir, digest)
+	if err != nil {
+		return false, err
+	}
+
+	actual := DigestBytes(data)
+	if actual != digest {
+		return false, BlobDigestMismatchError{
+			Digest: digest,
+			Actual: actual,
+		}
+	}
+
+	existing, err := os.ReadFile(blobPath)
+	if err == nil {
+		existingDigest := DigestBytes(existing)
+		if existingDigest != digest {
+			return false, BlobCorruptError{
+				Digest: digest,
+				Actual: existingDigest,
+			}
+		}
+		if bytes.Equal(existing, data) {
+			return false, nil
+		}
+
+		// A valid blob is already stored at this digest. The content-addressed
+		// contract treats the digest as authoritative, so this is an idempotent
+		// success even if the caller re-sends equivalent content via a different
+		// byte representation path.
+		return false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read existing blob: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+		return false, fmt.Errorf("create blob directory: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(blobPath), ".ars-upload-*")
+	if err != nil {
+		return false, fmt.Errorf("create temp blob: %w", err)
+	}
+
+	tempPath := tempFile.Name()
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
+		return false, fmt.Errorf("write temp blob: %w", err)
+	}
+	if err := tempFile.Chmod(0o600); err != nil {
+		tempFile.Close()
+		return false, fmt.Errorf("chmod temp blob: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return false, fmt.Errorf("close temp blob: %w", err)
+	}
+
+	if err := os.Rename(tempPath, blobPath); err != nil {
+		return false, fmt.Errorf("commit blob: %w", err)
+	}
+
+	cleanupTemp = false
+	return true, nil
 }
 
 func ValidateDigest(digest string) error {

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"execution-platform/ars/store"
 )
@@ -13,6 +16,7 @@ import (
 type FileIndex struct {
 	path    string
 	entries map[string]Entry
+	mu      sync.RWMutex
 }
 
 func Load(path string) (*FileIndex, error) {
@@ -58,6 +62,8 @@ func (f *FileIndex) Path() string {
 }
 
 func (f *FileIndex) Count() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return len(f.entries)
 }
 
@@ -66,8 +72,43 @@ func (f *FileIndex) Lookup(artifactDigest string) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	entry, found := f.entries[artifactDigest]
 	return entry, found, nil
+}
+
+func (f *FileIndex) Register(entry Entry) (bool, error) {
+	if strings.TrimSpace(entry.CreatedAt) == "" {
+		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := validateEntry(entry.ArtifactDigest, entry); err != nil {
+		return false, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	existing, found := f.entries[entry.ArtifactDigest]
+	if found {
+		if sameDigestTuple(existing, entry) {
+			return false, nil
+		}
+		return false, ConflictError{ArtifactDigest: entry.ArtifactDigest}
+	}
+
+	next := make(map[string]Entry, len(f.entries)+1)
+	for artifactDigest, storedEntry := range f.entries {
+		next[artifactDigest] = storedEntry
+	}
+	next[entry.ArtifactDigest] = entry
+
+	if err := persistEntries(f.path, next); err != nil {
+		return false, err
+	}
+
+	f.entries = next
+	return true, nil
 }
 
 func validateEntry(key string, entry Entry) error {
@@ -102,5 +143,59 @@ func validateEntry(key string, entry Entry) error {
 		return fmt.Errorf("artifact index entry %s is missing created_at", key)
 	}
 
+	return nil
+}
+
+func sameDigestTuple(left Entry, right Entry) bool {
+	return left.ArtifactDigest == right.ArtifactDigest &&
+		left.ManifestDigest == right.ManifestDigest &&
+		left.ProvenanceDigest == right.ProvenanceDigest &&
+		left.PayloadDigest == right.PayloadDigest &&
+		left.DerivationMetadataDigest == right.DerivationMetadataDigest &&
+		left.DerivationAuthorizationAttestationDigest == right.DerivationAuthorizationAttestationDigest &&
+		left.WorkloadIdentityBindingDigest == right.WorkloadIdentityBindingDigest
+}
+
+func persistEntries(path string, entries map[string]Entry) error {
+	payload, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal artifact index: %w", err)
+	}
+	payload = append(payload, '\n')
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create artifact index directory: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(path), ".artifact-index-*")
+	if err != nil {
+		return fmt.Errorf("create temp artifact index: %w", err)
+	}
+
+	tempPath := tempFile.Name()
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tempFile.Write(payload); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("write temp artifact index: %w", err)
+	}
+	if err := tempFile.Chmod(0o600); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("chmod temp artifact index: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp artifact index: %w", err)
+	}
+
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("commit artifact index: %w", err)
+	}
+
+	cleanupTemp = false
 	return nil
 }

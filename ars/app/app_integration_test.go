@@ -104,6 +104,336 @@ func TestNewRejectsMissingArtifactIndex(t *testing.T) {
 	}
 }
 
+func TestBlobUploadStoresAndServesUploadedBlob(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, _ := startTestApp(t, fixture, seedEmptyStorageFixture(t))
+
+	content := []byte("uploaded artifact payload")
+	digest := store.DigestBytes(content)
+
+	response := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/"+digest, content, fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+	if response.Header.Get("Content-Digest") != digest {
+		t.Fatalf("unexpected digest header: %q", response.Header.Get("Content-Digest"))
+	}
+	if body := mustReadBody(t, response.Body); len(body) != 0 {
+		t.Fatalf("expected empty body, got %q", string(body))
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/blobs/"+digest+":bytes", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+
+	if readResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
+	}
+	if got := mustReadBody(t, readResponse.Body); !bytes.Equal(got, content) {
+		t.Fatalf("unexpected blob content: %q", string(got))
+	}
+}
+
+func TestBlobUploadRejectsInvalidDigestFormat(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, _ := startTestApp(t, fixture, seedEmptyStorageFixture(t))
+
+	response := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/sha256:not-a-digest", []byte("payload"), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error  string `json:"error"`
+		Digest string `json:"digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "invalid digest" || payload.Digest != "sha256:not-a-digest" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestBlobUploadRejectsDigestMismatch(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, _ := startTestApp(t, fixture, seedEmptyStorageFixture(t))
+
+	requestDigest := store.DigestBytes([]byte("expected"))
+	response := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/"+requestDigest, []byte("actual"), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error  string `json:"error"`
+		Digest string `json:"digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "blob digest does not match request path" || payload.Digest != requestDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestBlobUploadIsIdempotentForSameContent(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, _ := startTestApp(t, fixture, seedEmptyStorageFixture(t))
+
+	content := []byte("stable payload")
+	digest := store.DigestBytes(content)
+
+	first := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/"+digest, content, fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusCreated {
+		t.Fatalf("expected first upload to return 201, got %d", first.StatusCode)
+	}
+
+	second := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/"+digest, content, fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("expected second upload to return 200, got %d", second.StatusCode)
+	}
+	if second.Header.Get("Content-Digest") != digest {
+		t.Fatalf("unexpected digest header: %q", second.Header.Get("Content-Digest"))
+	}
+}
+
+func TestArtifactNotVisibleBeforeRegister(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedUnregisteredStorageFixture(t))
+
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error          string `json:"error"`
+		ArtifactDigest string `json:"artifact_digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "artifact not found" || payload.ArtifactDigest != seeded.ArtifactDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestPartialUploadDoesNotMakeArtifactVisible(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedEmptyStorageFixture(t))
+
+	uploads := []struct {
+		digest string
+		body   []byte
+	}{
+		{digest: seeded.ManifestDigest, body: seeded.ManifestJSON},
+		{digest: seeded.ProvenanceDigest, body: seeded.ProvenanceJSON},
+		{digest: seeded.PayloadDigest, body: seeded.PayloadBytes},
+	}
+	for _, upload := range uploads {
+		response := doRequestWithBody(t, service.Addr(), http.MethodPut, "/v1/blobs/"+upload.digest, upload.body, fixture.clientTLSConfig(t, "service/artifact-governance"))
+		response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201 for upload %s, got %d", upload.digest, response.StatusCode)
+		}
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
+	}
+}
+
+func TestArtifactRegistrationMakesArtifactVisible(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedUnregisteredStorageFixture(t))
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", artifactRegisterRequestFromSeeded(seeded), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Registered     bool   `json:"registered"`
+		Created        bool   `json:"created"`
+		ArtifactDigest string `json:"artifact_digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Registered || !payload.Created || payload.ArtifactDigest != seeded.ArtifactDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
+	}
+}
+
+func TestArtifactRegistrationRejectsMissingReferencedBlobAndKeepsArtifactHidden(t *testing.T) {
+	fixture := newTLSFixture(t)
+	state := seedUnregisteredStorageFixture(t)
+
+	missingPath, err := store.ResolvePath(state.RootDir, state.ManifestDigest)
+	if err != nil {
+		t.Fatalf("resolve manifest path: %v", err)
+	}
+	if err := os.Remove(missingPath); err != nil {
+		t.Fatalf("remove manifest blob: %v", err)
+	}
+
+	service, seeded := startTestApp(t, fixture, state)
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", artifactRegisterRequestFromSeeded(seeded), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error          string `json:"error"`
+		ArtifactDigest string `json:"artifact_digest"`
+		Digest         string `json:"digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "referenced blob not found" || payload.ArtifactDigest != seeded.ArtifactDigest || payload.Digest != seeded.ManifestDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
+	}
+}
+
+func TestArtifactRegistrationRejectsReferencedBlobIntegrityFailureAndKeepsArtifactHidden(t *testing.T) {
+	fixture := newTLSFixture(t)
+	state := seedUnregisteredStorageFixture(t)
+
+	corruptPath, err := store.ResolvePath(state.RootDir, state.ManifestDigest)
+	if err != nil {
+		t.Fatalf("resolve manifest path: %v", err)
+	}
+	if err := os.WriteFile(corruptPath, []byte(`{"corrupted":true}`), 0o600); err != nil {
+		t.Fatalf("write corrupt manifest blob: %v", err)
+	}
+
+	service, seeded := startTestApp(t, fixture, state)
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", artifactRegisterRequestFromSeeded(seeded), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error          string `json:"error"`
+		ArtifactDigest string `json:"artifact_digest"`
+		Digest         string `json:"digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "stored blob digest mismatch" || payload.ArtifactDigest != seeded.ArtifactDigest || payload.Digest != seeded.ManifestDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
+	}
+}
+
+func TestArtifactRegistrationIsIdempotentForSameTuple(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedUnregisteredStorageFixture(t))
+
+	first := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", artifactRegisterRequestFromSeeded(seeded), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusCreated {
+		t.Fatalf("expected first register to return 201, got %d", first.StatusCode)
+	}
+
+	second := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", artifactRegisterRequestFromSeeded(seeded), fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("expected second register to return 200, got %d", second.StatusCode)
+	}
+
+	var payload struct {
+		Registered     bool   `json:"registered"`
+		Created        bool   `json:"created"`
+		ArtifactDigest string `json:"artifact_digest"`
+	}
+	if err := json.NewDecoder(second.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if !payload.Registered || payload.Created || payload.ArtifactDigest != seeded.ArtifactDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestArtifactRegistrationRejectsDifferentTuple(t *testing.T) {
+	fixture := newTLSFixture(t)
+	state := seedStorageFixture(t)
+
+	alternateManifest := []byte(`{"schema_version":"v1","name":"alternate"}`)
+	alternateManifestDigest := store.DigestBytes(alternateManifest)
+	writeBlobAtDigest(t, state.RootDir, alternateManifestDigest, alternateManifest)
+
+	service, seeded := startTestApp(t, fixture, state)
+	request := artifactRegisterRequestFromSeeded(seeded)
+	request.ManifestDigest = alternateManifestDigest
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", request, fixture.clientTLSConfig(t, "service/artifact-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+
+	var payload struct {
+		Error          string `json:"error"`
+		ArtifactDigest string `json:"artifact_digest"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error != "artifact already registered with different digests" || payload.ArtifactDigest != seeded.ArtifactDigest {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	defer readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
+	}
+	if got := strings.TrimSpace(string(mustReadBody(t, readResponse.Body))); got != string(seeded.ManifestJSON) {
+		t.Fatalf("unexpected manifest body: %q", got)
+	}
+}
+
 func TestBlobEndpointsReturnExpectedResponses(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
@@ -789,6 +1119,16 @@ type rawHTTPResponse struct {
 	Body       string
 }
 
+type artifactRegisterRequest struct {
+	ArtifactDigest                           string `json:"artifact_digest"`
+	ManifestDigest                           string `json:"manifest_digest"`
+	ProvenanceDigest                         string `json:"provenance_digest"`
+	PayloadDigest                            string `json:"payload_digest"`
+	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
+	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
+	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+}
+
 type seededStorage struct {
 	RootDir   string
 	IndexPath string
@@ -943,6 +1283,59 @@ func seedStorageFixture(t *testing.T) seededStorage {
 	return state
 }
 
+func seedUnregisteredStorageFixture(t *testing.T) seededStorage {
+	t.Helper()
+
+	state := seedStorageFixture(t)
+	if err := os.WriteFile(state.IndexPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write empty artifact index: %v", err)
+	}
+	return state
+}
+
+func seedEmptyStorageFixture(t *testing.T) seededStorage {
+	t.Helper()
+
+	state := seedStorageFixture(t)
+	if err := os.WriteFile(state.IndexPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write empty artifact index: %v", err)
+	}
+
+	digests := []string{
+		state.BlobDigest,
+		state.JSONDigest,
+		state.ManifestDigest,
+		state.ProvenanceDigest,
+		state.DerivationMetadataDigest,
+		state.DerivationAuthorizationAttestationDigest,
+		state.WorkloadIdentityBindingDigest,
+		state.PayloadDigest,
+	}
+	for _, digest := range digests {
+		blobPath, err := store.ResolvePath(state.RootDir, digest)
+		if err != nil {
+			t.Fatalf("resolve blob path: %v", err)
+		}
+		if err := os.Remove(blobPath); err != nil {
+			t.Fatalf("remove seeded blob: %v", err)
+		}
+	}
+
+	return state
+}
+
+func artifactRegisterRequestFromSeeded(seeded seededStorage) artifactRegisterRequest {
+	return artifactRegisterRequest{
+		ArtifactDigest:                           seeded.ArtifactDigest,
+		ManifestDigest:                           seeded.ManifestDigest,
+		ProvenanceDigest:                         seeded.ProvenanceDigest,
+		PayloadDigest:                            seeded.PayloadDigest,
+		DerivationMetadataDigest:                 seeded.DerivationMetadataDigest,
+		DerivationAuthorizationAttestationDigest: seeded.DerivationAuthorizationAttestationDigest,
+		WorkloadIdentityBindingDigest:            seeded.WorkloadIdentityBindingDigest,
+	}
+}
+
 func writeBlobAtDigest(t *testing.T, rootDir string, digest string, content []byte) {
 	t.Helper()
 
@@ -1018,6 +1411,44 @@ func doRequest(t *testing.T, addr string, method string, path string, tlsConfig 
 	if err != nil {
 		t.Fatalf("build request %s %s: %v", method, path, err)
 	}
+
+	response, err := makeClient(tlsConfig).Do(request)
+	if err != nil {
+		t.Fatalf("request %s %s failed: %v", method, path, err)
+	}
+
+	return response
+}
+
+func doRequestWithBody(t *testing.T, addr string, method string, path string, body []byte, tlsConfig *tls.Config) *http.Response {
+	t.Helper()
+
+	request, err := http.NewRequest(method, "https://"+addr+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request %s %s: %v", method, path, err)
+	}
+
+	response, err := makeClient(tlsConfig).Do(request)
+	if err != nil {
+		t.Fatalf("request %s %s failed: %v", method, path, err)
+	}
+
+	return response
+}
+
+func doJSONRequest(t *testing.T, addr string, method string, path string, body any, tlsConfig *tls.Config) *http.Response {
+	t.Helper()
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	request, err := http.NewRequest(method, "https://"+addr+path, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build request %s %s: %v", method, path, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
 
 	response, err := makeClient(tlsConfig).Do(request)
 	if err != nil {

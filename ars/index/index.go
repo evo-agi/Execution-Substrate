@@ -1,5 +1,7 @@
 package index
 
+import "fmt"
+
 type Kind string
 
 const (
@@ -25,6 +27,7 @@ type Lookup interface {
 	Path() string
 	Count() int
 	Lookup(artifactDigest string) (Entry, bool, error)
+	Register(entry Entry) (bool, error)
 }
 
 func ParseKind(value string) (Kind, bool) {
@@ -55,4 +58,12 @@ func (e Entry) DigestFor(kind Kind) string {
 	default:
 		return ""
 	}
+}
+
+type ConflictError struct {
+	ArtifactDigest string
+}
+
+func (e ConflictError) Error() string {
+	return fmt.Sprintf("artifact %s already registered with different digests", e.ArtifactDigest)
 }

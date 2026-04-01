@@ -11,6 +11,22 @@ type ArtifactErrorResponse struct {
 	Digest         string `json:"digest,omitempty"`
 }
 
+type RegisterArtifactRequest struct {
+	ArtifactDigest                           string `json:"artifact_digest"`
+	ManifestDigest                           string `json:"manifest_digest"`
+	ProvenanceDigest                         string `json:"provenance_digest"`
+	PayloadDigest                            string `json:"payload_digest"`
+	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
+	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
+	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+}
+
+type RegisterArtifactResponse struct {
+	Registered     bool   `json:"registered"`
+	Created        bool   `json:"created"`
+	ArtifactDigest string `json:"artifact_digest"`
+}
+
 type HealthResponse struct {
 	Status               string                     `json:"status"`
 	Ready                bool                       `json:"ready"`

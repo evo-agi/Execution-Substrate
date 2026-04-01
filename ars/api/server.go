@@ -11,12 +11,19 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"execution-platform/ars/index"
 	"execution-platform/ars/store"
 )
 
-const serviceName = "artifact-registry"
+const (
+	serviceName        = "artifact-registry"
+	writerSPIFFEPath   = "service/artifact-governance"
+	registerPath       = "/v1/artifacts:register"
+	blobPathPrefix     = "/v1/blobs/"
+	artifactPathPrefix = "/v1/artifacts/"
+)
 
 type Server struct {
 	blobStore           store.BlobStore
@@ -51,15 +58,18 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 			s.handleHealth(w, r)
-		case strings.HasPrefix(path, "/v1/blobs/"):
-			if handled := s.requireAuthorizedCaller(w, r); handled {
+		case path == registerPath:
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
 				return
 			}
+			if handled := s.requireWriterCaller(w, r); handled {
+				return
+			}
+			s.handleArtifactRegister(w, r)
+		case strings.HasPrefix(path, blobPathPrefix):
 			s.routeBlobRequest(w, r, path)
-		case strings.HasPrefix(path, "/v1/artifacts/"):
-			if handled := s.requireAuthorizedCaller(w, r); handled {
-				return
-			}
+		case strings.HasPrefix(path, artifactPathPrefix):
 			s.routeArtifactRequest(w, r, path)
 		default:
 			http.NotFound(w, r)
@@ -110,25 +120,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routeBlobRequest(w http.ResponseWriter, r *http.Request, path string) {
-	const prefix = "/v1/blobs/"
-	rest := strings.TrimPrefix(path, prefix)
+	rest := strings.TrimPrefix(path, blobPathPrefix)
 
 	switch {
 	case isSingleSegment(rest) && !strings.HasSuffix(rest, ":bytes") && !strings.HasSuffix(rest, ":json"):
-		if r.Method != http.MethodHead {
-			writeMethodNotAllowed(w, http.MethodHead)
-			return
+		switch r.Method {
+		case http.MethodHead:
+			if handled := s.requireAuthorizedCaller(w, r); handled {
+				return
+			}
+			s.handleBlobExists(w, rest)
+		case http.MethodPut:
+			if handled := s.requireWriterCaller(w, r); handled {
+				return
+			}
+			s.handleBlobUpload(w, r, rest)
+		default:
+			writeMethodNotAllowed(w, http.MethodHead, http.MethodPut)
 		}
-		s.handleBlobExists(w, rest)
 	case strings.HasSuffix(rest, ":bytes") && isSingleSegment(strings.TrimSuffix(rest, ":bytes")):
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if handled := s.requireAuthorizedCaller(w, r); handled {
 			return
 		}
 		s.handleBlobBytes(w, strings.TrimSuffix(rest, ":bytes"))
 	case strings.HasSuffix(rest, ":json") && isSingleSegment(strings.TrimSuffix(rest, ":json")):
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if handled := s.requireAuthorizedCaller(w, r); handled {
 			return
 		}
 		s.handleBlobJSON(w, strings.TrimSuffix(rest, ":json"))
@@ -138,8 +162,7 @@ func (s *Server) routeBlobRequest(w http.ResponseWriter, r *http.Request, path s
 }
 
 func (s *Server) routeArtifactRequest(w http.ResponseWriter, r *http.Request, path string) {
-	const prefix = "/v1/artifacts/"
-	rest := strings.TrimPrefix(path, prefix)
+	rest := strings.TrimPrefix(path, artifactPathPrefix)
 	segments := strings.Split(rest, "/")
 	if len(segments) != 2 {
 		http.NotFound(w, r)
@@ -154,6 +177,9 @@ func (s *Server) routeArtifactRequest(w http.ResponseWriter, r *http.Request, pa
 
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if handled := s.requireAuthorizedCaller(w, r); handled {
 		return
 	}
 
@@ -191,6 +217,62 @@ func (s *Server) handleBlobExists(w http.ResponseWriter, rawDigest string) {
 	}
 
 	w.Header().Set("Content-Digest", digest)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleBlobUpload(w http.ResponseWriter, r *http.Request, rawDigest string) {
+	digest, ok := decodeDigestSegment(rawDigest)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
+			Error:  "invalid digest",
+			Digest: rawDigest,
+		})
+		return
+	}
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+			Error:  "internal server error",
+			Digest: digest,
+		})
+		return
+	}
+
+	created, err := s.blobStore.Write(digest, data)
+	if err != nil {
+		var mismatch store.BlobDigestMismatchError
+		var corrupt store.BlobCorruptError
+		switch {
+		case isInvalidDigest(err):
+			writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
+				Error:  "invalid digest",
+				Digest: digest,
+			})
+		case errors.As(err, &mismatch):
+			writeJSON(w, http.StatusConflict, BlobErrorResponse{
+				Error:  "blob digest does not match request path",
+				Digest: mismatch.Digest,
+			})
+		case errors.As(err, &corrupt):
+			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+				Error:  "stored blob digest mismatch",
+				Digest: corrupt.Digest,
+			})
+		default:
+			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+				Error:  "internal server error",
+				Digest: digest,
+			})
+		}
+		return
+	}
+
+	w.Header().Set("Content-Digest", digest)
+	if created {
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -315,6 +397,68 @@ func (s *Server) handleArtifactRead(w http.ResponseWriter, rawArtifactDigest str
 	_, _ = w.Write(data)
 }
 
+func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) {
+	var request RegisterArtifactRequest
+	if err := decodeStrictJSONBody(r.Body, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, ArtifactErrorResponse{
+			Error: "invalid registration request",
+		})
+		return
+	}
+
+	if err := store.ValidateDigest(request.ArtifactDigest); err != nil {
+		writeJSON(w, http.StatusBadRequest, ArtifactErrorResponse{
+			Error:          "invalid artifact digest",
+			ArtifactDigest: request.ArtifactDigest,
+		})
+		return
+	}
+
+	entry := index.Entry{
+		ArtifactDigest:                           request.ArtifactDigest,
+		ManifestDigest:                           request.ManifestDigest,
+		ProvenanceDigest:                         request.ProvenanceDigest,
+		PayloadDigest:                            request.PayloadDigest,
+		DerivationMetadataDigest:                 request.DerivationMetadataDigest,
+		DerivationAuthorizationAttestationDigest: request.DerivationAuthorizationAttestationDigest,
+		WorkloadIdentityBindingDigest:            request.WorkloadIdentityBindingDigest,
+		CreatedAt:                                time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if response, status, ok := s.validateArtifactRegistration(entry); !ok {
+		writeJSON(w, status, response)
+		return
+	}
+
+	created, err := s.artifactIndex.Register(entry)
+	if err != nil {
+		var conflict index.ConflictError
+		switch {
+		case errors.As(err, &conflict):
+			writeJSON(w, http.StatusConflict, ArtifactErrorResponse{
+				Error:          "artifact already registered with different digests",
+				ArtifactDigest: conflict.ArtifactDigest,
+			})
+		default:
+			writeJSON(w, http.StatusInternalServerError, ArtifactErrorResponse{
+				Error:          "internal server error",
+				ArtifactDigest: entry.ArtifactDigest,
+			})
+		}
+		return
+	}
+
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, RegisterArtifactResponse{
+		Registered:     true,
+		Created:        created,
+		ArtifactDigest: entry.ArtifactDigest,
+	})
+}
+
 func (s *Server) writeBlobReadError(w http.ResponseWriter, digest string, err error) {
 	var corrupt store.BlobCorruptError
 	switch {
@@ -352,6 +496,21 @@ func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request)
 		if matchesAuthorizedPathPrefix(path, prefix) {
 			return false
 		}
+	}
+
+	writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+	return true
+}
+
+func (s *Server) requireWriterCaller(w http.ResponseWriter, r *http.Request) bool {
+	path, ok := callerSPIFFEPath(r)
+	if !ok {
+		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return true
+	}
+
+	if matchesAuthorizedPathPrefix(path, writerSPIFFEPath) {
+		return false
 	}
 
 	writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
@@ -449,4 +608,76 @@ func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
 	slices.Sort(allowed)
 	w.Header().Set("Allow", strings.Join(allowed, ", "))
 	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
+func decodeStrictJSONBody(body io.Reader, target any) error {
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("trailing data after first JSON document")
+	}
+	return nil
+}
+
+func (s *Server) validateArtifactRegistration(entry index.Entry) (ArtifactErrorResponse, int, bool) {
+	referencedDigests := []struct {
+		digest     string
+		expectJSON bool
+	}{
+		{digest: entry.ManifestDigest, expectJSON: true},
+		{digest: entry.ProvenanceDigest, expectJSON: true},
+		{digest: entry.PayloadDigest, expectJSON: false},
+		{digest: entry.DerivationMetadataDigest, expectJSON: true},
+		{digest: entry.DerivationAuthorizationAttestationDigest, expectJSON: true},
+		{digest: entry.WorkloadIdentityBindingDigest, expectJSON: true},
+	}
+
+	for _, referenced := range referencedDigests {
+		if err := store.ValidateDigest(referenced.digest); err != nil {
+			return ArtifactErrorResponse{
+				Error:          "invalid referenced digest",
+				ArtifactDigest: entry.ArtifactDigest,
+				Digest:         referenced.digest,
+			}, http.StatusBadRequest, false
+		}
+
+		data, err := s.blobStore.Read(referenced.digest)
+		if err != nil {
+			var corrupt store.BlobCorruptError
+			switch {
+			case errors.Is(err, store.ErrBlobNotFound):
+				return ArtifactErrorResponse{
+					Error:          "referenced blob not found",
+					ArtifactDigest: entry.ArtifactDigest,
+					Digest:         referenced.digest,
+				}, http.StatusConflict, false
+			case errors.As(err, &corrupt):
+				return ArtifactErrorResponse{
+					Error:          "stored blob digest mismatch",
+					ArtifactDigest: entry.ArtifactDigest,
+					Digest:         corrupt.Digest,
+				}, http.StatusConflict, false
+			default:
+				return ArtifactErrorResponse{
+					Error:          "internal server error",
+					ArtifactDigest: entry.ArtifactDigest,
+					Digest:         referenced.digest,
+				}, http.StatusInternalServerError, false
+			}
+		}
+
+		if referenced.expectJSON && !json.Valid(data) {
+			return ArtifactErrorResponse{
+				Error:          "referenced blob is not valid JSON",
+				ArtifactDigest: entry.ArtifactDigest,
+				Digest:         referenced.digest,
+			}, http.StatusConflict, false
+		}
+	}
+
+	return ArtifactErrorResponse{}, 0, true
 }
