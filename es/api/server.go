@@ -17,6 +17,9 @@ type preparationService interface {
 	Health(ctx context.Context) admission.HealthSnapshot
 	Prepare(ctx context.Context, req admission.PrepareRequest) (admission.PrepareResult, *admission.Error)
 	Submit(ctx context.Context, req admission.PrepareRequest) (admission.SubmitResult, *admission.Error)
+	Status(ctx context.Context, runID string) (admission.ExecutionStatusResult, *admission.Error)
+	Logs(ctx context.Context, runID string) ([]byte, *admission.Error)
+	Cancel(ctx context.Context, runID string) (admission.ExecutionCancelResult, *admission.Error)
 }
 
 type Server struct {
@@ -45,6 +48,8 @@ func (s *Server) Handler() http.Handler {
 	// first Nomad/Docker slice. It is intentionally async-only and returns a
 	// bounded submission receipt, not a durable execution lifecycle API.
 	mux.HandleFunc("POST /v1/executions:submit", s.handleSubmit)
+	mux.HandleFunc("GET /v1/executions/", s.handleLifecycleGet)
+	mux.HandleFunc("POST /v1/executions/", s.handleLifecyclePost)
 	return mux
 }
 
@@ -116,18 +121,71 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, result)
 }
 
+func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeExecutionCaller(w, r) {
+		return
+	}
+
+	runID, action, ok := parseLifecycleRequest(r.URL.Path)
+	if !ok || (action != "status" && action != "logs") {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch action {
+	case "status":
+		result, err := s.service.Status(r.Context(), runID)
+		if err != nil {
+			writeJSON(w, err.Status, admission.ErrorResponse{
+				Success: false,
+				Error:   err.Message,
+				Code:    err.Code,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case "logs":
+		payload, err := s.service.Logs(r.Context(), runID)
+		if err != nil {
+			writeJSON(w, err.Status, admission.ErrorResponse{
+				Success: false,
+				Error:   err.Message,
+				Code:    err.Code,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}
+}
+
+func (s *Server) handleLifecyclePost(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeExecutionCaller(w, r) {
+		return
+	}
+
+	runID, action, ok := parseLifecycleRequest(r.URL.Path)
+	if !ok || action != "cancel" {
+		http.NotFound(w, r)
+		return
+	}
+
+	result, err := s.service.Cancel(r.Context(), runID)
+	if err != nil {
+		writeJSON(w, err.Status, admission.ErrorResponse{
+			Success: false,
+			Error:   err.Message,
+			Code:    err.Code,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http.Request) (admission.PrepareRequest, bool) {
-	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
-	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
-		return admission.PrepareRequest{}, false
-	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
-		return admission.PrepareRequest{}, false
-	}
-	if callerPath != "service/deployment" && callerPath != "operator" {
-		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+	if !s.authorizeExecutionCaller(w, r) {
 		return admission.PrepareRequest{}, false
 	}
 
@@ -141,6 +199,50 @@ func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http
 		return admission.PrepareRequest{}, false
 	}
 	return request, true
+}
+
+func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request) bool {
+	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	if !ok {
+		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return false
+	}
+	if issuerCommonName == s.bootstrapIssuerCN {
+		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
+		return false
+	}
+	if callerPath != "service/deployment" && callerPath != "operator" {
+		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+		return false
+	}
+	return true
+}
+
+func parseLifecycleRequest(requestPath string) (runID string, action string, ok bool) {
+	const prefix = "/v1/executions/"
+	if !strings.HasPrefix(requestPath, prefix) {
+		return "", "", false
+	}
+
+	trimmed := strings.TrimPrefix(requestPath, prefix)
+	switch {
+	case strings.HasSuffix(trimmed, "/status"):
+		runID = strings.TrimSuffix(trimmed, "/status")
+		action = "status"
+	case strings.HasSuffix(trimmed, "/logs"):
+		runID = strings.TrimSuffix(trimmed, "/logs")
+		action = "logs"
+	case strings.HasSuffix(trimmed, ":cancel"):
+		runID = strings.TrimSuffix(trimmed, ":cancel")
+		action = "cancel"
+	default:
+		return "", "", false
+	}
+
+	if runID == "" || strings.Contains(runID, "/") {
+		return "", "", false
+	}
+	return runID, action, true
 }
 
 func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {

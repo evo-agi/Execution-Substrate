@@ -49,6 +49,9 @@ const (
 	codeUnsupportedNetworkAccess        = "unsupported_network_access"
 	codePayloadUnavailable              = "payload_unavailable"
 	codeSubmissionFailed                = "submission_failed"
+	codeInvalidRunID                    = "invalid_run_id"
+	codeExecutionNotFound               = "execution_not_found"
+	codeLogsUnavailable                 = "logs_unavailable"
 )
 
 var (

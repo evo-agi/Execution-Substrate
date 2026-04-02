@@ -73,6 +73,31 @@ type SubmitResult struct {
 	Status         string `json:"status"`
 }
 
+// ExecutionStatusResult is the bounded Nomad-backed lifecycle view for a
+// submitted execution. It intentionally reflects only minimal mapped state and
+// does not imply a durable ES-owned lifecycle record.
+type ExecutionStatusResult struct {
+	Success                bool   `json:"success"`
+	RunID                  string `json:"run_id"`
+	NomadJobID             string `json:"nomad_job_id"`
+	JobStatus              string `json:"job_status"`
+	AllocationID           string `json:"allocation_id,omitempty"`
+	AllocationClientStatus string `json:"allocation_client_status,omitempty"`
+	TaskState              string `json:"task_state,omitempty"`
+	ExitCode               *int   `json:"exit_code,omitempty"`
+	Terminal               bool   `json:"terminal"`
+}
+
+// ExecutionCancelResult is the bounded cancellation receipt for the Nomad-
+// backed lifecycle slice. It confirms that ES asked Nomad to stop the job,
+// but it does not create a durable execution record or wider lifecycle model.
+type ExecutionCancelResult struct {
+	Success    bool   `json:"success"`
+	RunID      string `json:"run_id"`
+	NomadJobID string `json:"nomad_job_id"`
+	Status     string `json:"status"`
+}
+
 type TrustModelInfo struct {
 	Version        string `json:"version"`
 	UpdateRevision int    `json:"update_revision"`
