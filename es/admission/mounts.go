@@ -115,6 +115,14 @@ func hasOverlappingRuntimeMountTargets(targets []string) bool {
 	return false
 }
 
+func stagedRuntimeMountTargets(mounts []stagedRuntimeMount) []string {
+	targets := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		targets = append(targets, mount.targetPath)
+	}
+	return targets
+}
+
 func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.TrustModel, stageRoot string, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
 	if len(mounts) == 0 {
 		return nil, nil
@@ -276,48 +284,48 @@ func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, per
 		}
 
 		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(absolutePath, 0o755); err != nil {
-				return 0, fmt.Errorf("mount payload directory creation failed")
-			}
-			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-				return 0, err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if header.Size < 0 {
-				return 0, fmt.Errorf("mount payload archive contains an invalid file size")
-			}
-			extractedBytes += header.Size
-			if extractedBytes > perMountLimit {
-				return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
-			}
-			if extractedBytes > remainingTotalLimit {
-				return 0, fmt.Errorf("mount payloads exceed the total size limit")
-			}
+			case tar.TypeDir:
+				if err := os.MkdirAll(absolutePath, 0o755); err != nil {
+					return 0, fmt.Errorf("mount payload directory creation failed")
+				}
+				if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
+					return 0, err
+				}
+			case tar.TypeReg, tar.TypeRegA:
+				if header.Size < 0 {
+					return 0, fmt.Errorf("mount payload archive contains an invalid file size")
+				}
+				extractedBytes += header.Size
+				if extractedBytes > perMountLimit {
+					return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
+				}
+				if extractedBytes > remainingTotalLimit {
+					return 0, fmt.Errorf("mount payloads exceed the total size limit")
+				}
 
-			if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
-				return 0, fmt.Errorf("mount payload directory creation failed")
-			}
-			file, err := os.OpenFile(absolutePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, header.FileInfo().Mode().Perm())
-			if err != nil {
-				return 0, fmt.Errorf("mount payload file creation failed")
-			}
-			if _, err := io.CopyN(file, tarReader, header.Size); err != nil {
-				file.Close()
-				return 0, fmt.Errorf("mount payload file extraction failed")
-			}
-			if err := file.Close(); err != nil {
-				return 0, fmt.Errorf("mount payload file extraction failed")
-			}
-			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-				return 0, err
-			}
-		case tar.TypeSymlink, tar.TypeLink:
-			return 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
-		case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-			return 0, fmt.Errorf("mount payload archive contains unsupported special files")
-		default:
-			return 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
+				if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+					return 0, fmt.Errorf("mount payload directory creation failed")
+				}
+				file, err := os.OpenFile(absolutePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, header.FileInfo().Mode().Perm())
+				if err != nil {
+					return 0, fmt.Errorf("mount payload file creation failed")
+				}
+				if _, err := io.CopyN(file, tarReader, header.Size); err != nil {
+					file.Close()
+					return 0, fmt.Errorf("mount payload file extraction failed")
+				}
+				if err := file.Close(); err != nil {
+					return 0, fmt.Errorf("mount payload file extraction failed")
+				}
+				if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
+					return 0, err
+				}
+			case tar.TypeSymlink, tar.TypeLink:
+				return 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
+			case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+				return 0, fmt.Errorf("mount payload archive contains unsupported special files")
+			default:
+				return 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
 		}
 	}
 

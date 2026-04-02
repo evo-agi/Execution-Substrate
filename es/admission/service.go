@@ -55,21 +55,23 @@ const (
 	codeMountArtifactInvalid            = "mount_artifact_invalid"
 )
 
+// TODO: Do not mention "monolith"
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	reservedRuntimeEnvKeys     = map[string]struct{}{
-		"PROJECT_NAME":           {},
-		"ENVIRONMENT":            {},
-		"PLATFORM":               {},
-		"GUID":                   {},
-		"SERVICE_ID":             {},
-		"SESSION_ID":             {},
-		"PARENT_SESSION_ID":      {},
-		"traceparent":            {},
-		"MONOLITH_SVID_PATH":     {},
-		"VAULT_AGENT_TOKEN_PATH": {},
-		"VAULT_ADDR":             {},
-		"VAULT_NAMESPACE":        {},
+		"PROJECT_NAME":                        {},
+		"ENVIRONMENT":                         {},
+		"PLATFORM":                            {},
+		"GUID":                                {},
+		"SERVICE_ID":                          {},
+		"SESSION_ID":                          {},
+		"PARENT_SESSION_ID":                   {},
+		"traceparent":                         {},
+		"MONOLITH_SVID_PATH":                  {},
+		"VAULT_AGENT_TOKEN_PATH":              {},
+		"VAULT_ADDR":                          {},
+		"VAULT_NAMESPACE":                     {},
+		"MONOLITH_WORKLOAD_IDENTITY_ENDPOINT": {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
@@ -196,6 +198,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	if cfg.SubmitConfigured() {
 		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create execution staging root: %w", err)
+		}
+		if err := validateWorkloadIdentityEndpointHostPath(cfg.Execution.WorkloadIdentityEndpointHostPath); err != nil {
+			return nil, err
 		}
 		nomadClient, err = newNomadClient(cfg.Nomad)
 		if err != nil {

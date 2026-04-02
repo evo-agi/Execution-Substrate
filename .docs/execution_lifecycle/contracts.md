@@ -18,6 +18,7 @@ ES must not:
 - reconstruct lifecycle state from local staging directories
 - invent private execution phases beyond what Nomad already exposes
 - reinterpret Nomad into a richer internal scheduler model
+- reinterpret runtime identity endpoint or Vault auth failures into ES-owned lifecycle state
 
 ## Data Flow Contract
 
@@ -113,6 +114,14 @@ ES must return `200` for status and reflect the failure through Nomad-derived fi
 - `terminal`
 
 ES must not translate a failed workload into a synthetic ES-specific lifecycle phase.
+
+Runtime identity plumbing does not change this rule:
+
+- failure to reach the mounted workload-identity endpoint
+- failure to obtain identity material
+- failure to authenticate to Vault
+
+remain ordinary container/workload failures. They do not create a new ES lifecycle phase, readiness state, or health model.
 
 ## Constraints
 

@@ -86,6 +86,7 @@ ES owns:
 - composition across ACS, ARS, and EGS
 - bounded Nomad submission
 - bounded Nomad-backed lifecycle projection
+- bounded runtime identity plumbing through one reserved generic workload-identity endpoint mount plus non-secret Vault auth metadata
 
 ES must not:
 
@@ -96,6 +97,10 @@ ES must not:
 - cache run data
 - synthesize lifecycle state
 - enforce policy that belongs to upstream boundaries
+- fetch or mint identity material
+- fetch or store Vault tokens
+- rotate credentials
+- treat identity endpoint or auth failures as ES lifecycle state
 
 ## Nomad
 

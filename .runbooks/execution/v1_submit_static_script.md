@@ -63,6 +63,10 @@ The environment must already satisfy these assumptions:
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.base_image`
+  - `execution.workload_identity_endpoint_host_path`
+- `execution.workload_identity_endpoint_host_path` points to a local Unix socket named `endpoint.sock` that exposes the external workload identity endpoint.
+  - ES does not read credentials from it.
+  - ES mounts its containing directory read-only so the workload sees it at `/monolith/runtime-identity/endpoint.sock`.
 - The Nomad client has the Docker driver available and bind mounts enabled.
   - The minimal ES slice depends on Docker bind mounts for staged payload execution.
   - In Nomad client config this means `docker.volumes.enabled = true`.

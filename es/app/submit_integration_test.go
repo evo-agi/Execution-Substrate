@@ -33,7 +33,13 @@ import (
 	esconfig "execution-platform/es/config"
 )
 
-const executionWorkspaceRoot = "/Users/ds/Repositories/Execution-Platform"
+const (
+	executionWorkspaceRoot             = "/Users/ds/Repositories/Execution-Platform"
+	workloadIdentityEndpointTargetDir  = "/monolith/runtime-identity"
+	workloadIdentityEndpointEnvKey     = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
+	workloadIdentityEndpointEnvValue   = "unix:///monolith/runtime-identity/endpoint.sock"
+	workloadIdentityEndpointTargetPath = "/monolith/runtime-identity/endpoint.sock"
+)
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	stack := startSubmitStack(t)
@@ -150,6 +156,130 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 	}
 	if exitCode := task.exitCode(); exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+}
+
+func TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks(t *testing.T) {
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage: "python:3.13-alpine",
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo "${MONOLITH_WORKLOAD_IDENTITY_ENDPOINT}"
+echo "${MONOLITH_WORKLOAD_VAULT_AUTH_MODE}"
+echo "IDENTITY-ENDPOINT-ENV-OK"
+echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+`))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
+		t.Fatalf("expected network_mode=none, got %#v", networkMode)
+	}
+
+	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityEndpointTargetDir)
+	if source, ok := mountConfig["source"].(string); !ok || source != filepath.Dir(stack.identityEndpoint.path) {
+		t.Fatalf("expected reserved identity mount source %q, got %#v", filepath.Dir(stack.identityEndpoint.path), mountConfig["source"])
+	}
+	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
+		t.Fatalf("expected readonly identity endpoint mount, got %#v", mountConfig["readonly"])
+	}
+
+	taskConfig := job.task(t)
+	if got := taskConfig.Env[workloadIdentityEndpointEnvKey]; got != workloadIdentityEndpointEnvValue {
+		t.Fatalf("expected %s=%q, got %q", workloadIdentityEndpointEnvKey, workloadIdentityEndpointEnvValue, got)
+	}
+
+	stack.nomad.waitForJob(t, payload.NomadJobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	if allocation.ClientStatus != "complete" {
+		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
+	}
+
+	statusResponse := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+payload.RunID+"/status",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+	}
+
+	logsResponse := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+payload.RunID+"/logs",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer logsResponse.Body.Close()
+	if logsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from logs, got %d body=%s", logsResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, logsResponse.Body))))
+	}
+
+	logs := string(mustReadBody(t, logsResponse.Body))
+	if !strings.Contains(logs, workloadIdentityEndpointEnvValue) || !strings.Contains(logs, "IDENTITY-ENDPOINT-ENV-OK") {
+		t.Fatalf("expected workload identity endpoint env markers in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, "vault_identity_jwt") {
+		t.Fatalf("expected bounded auth mode marker in logs, got %q", logs)
+	}
+}
+
+func TestWorkloadCanAccessMockWorkloadIdentityEndpointFromContainer(t *testing.T) {
+	rootDir := newShortSocketTempDir(t, "es-ri-")
+	endpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
+	t.Cleanup(func() { endpoint.shutdown(t) })
+
+	command := exec.Command(
+		"docker", "run", "--rm",
+		"-v", filepath.Dir(endpoint.path)+":"+workloadIdentityEndpointTargetDir+":ro",
+		"-e", workloadIdentityEndpointEnvKey+"="+workloadIdentityEndpointEnvValue,
+		"python:3.13-alpine",
+		"sh", "-lc",
+		`python3 - <<'PY'
+import os
+import socket
+
+endpoint = os.environ["MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"]
+if not endpoint.startswith("unix://"):
+    raise SystemExit(f"unexpected endpoint: {endpoint}")
+path = endpoint[len("unix://"):]
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(path)
+print(client.recv(64).decode().strip())
+client.close()
+print("ENDPOINT-ACCESS-OK")
+PY`,
+	)
+	output, err := command.CombinedOutput()
+	logs := string(output)
+	if err != nil {
+		if strings.Contains(logs, "Not supported") {
+			t.Skipf("docker runtime does not expose bind-mounted unix sockets as live sockets in this environment: %s", strings.TrimSpace(logs))
+		}
+		t.Fatalf("docker workload identity endpoint smoke failed: %v output=%s", err, strings.TrimSpace(logs))
+	}
+	if !strings.Contains(logs, "identity-ok") || !strings.Contains(logs, "ENDPOINT-ACCESS-OK") {
+		t.Fatalf("expected workload identity endpoint access markers, got %q", logs)
 	}
 }
 
@@ -324,11 +454,42 @@ func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
 	assertErrorResponseCode(t, response, http.StatusConflict, "mount_conflict")
 }
 
+func TestNewESRejectsNonSocketWorkloadIdentityEndpointPath(t *testing.T) {
+	stack := startDependencyStack(t, stackOptions{})
+	defer stack.shutdownAll(t)
+
+	nomad := startNomadHarness(t, t.TempDir())
+	defer nomad.shutdown(t)
+
+	badEndpointPath := filepath.Join(t.TempDir(), "endpoint.sock")
+	if err := os.WriteFile(badEndpointPath, []byte("not-a-socket"), 0o600); err != nil {
+		t.Fatalf("write invalid workload identity endpoint path: %v", err)
+	}
+
+	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
+		cfg.Nomad = esconfig.NomadConfig{
+			BaseURL:        nomad.baseURL(),
+			Datacenter:     "dc1",
+			TimeoutSeconds: 5,
+		}
+		cfg.Execution = esconfig.ExecutionConfig{
+			StagingRootDir:                   filepath.Join(t.TempDir(), "es-stage"),
+			BaseImage:                        "alpine:3.20",
+			WorkloadIdentityEndpointHostPath: badEndpointPath,
+		}
+	})
+
+	if _, err := esapp.New(cfg); err == nil || !strings.Contains(err.Error(), "must reference a unix socket") {
+		t.Fatalf("expected non-socket workload identity endpoint validation error, got %v", err)
+	}
+}
+
 type submitStack struct {
 	fixture *tlsFixture
 	rootDir string
 
-	nomad *nomadHarness
+	nomad            *nomadHarness
+	identityEndpoint *mockWorkloadIdentityEndpoint
 
 	acs *acsapp.App
 	ars *arsapp.App
@@ -355,15 +516,30 @@ type submitPublishResponse struct {
 	ArtifactDigest string `json:"artifact_digest"`
 }
 
+type submitStackOptions struct {
+	networkAccess bool
+	baseImage     string
+}
+
+type mockWorkloadIdentityEndpoint struct {
+	path     string
+	listener net.Listener
+}
+
 func startSubmitStack(t *testing.T) *submitStack {
-	return startSubmitStackWithNetworkAccess(t, false)
+	return startSubmitStackWithOptions(t, submitStackOptions{})
 }
 
 func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submitStack {
+	return startSubmitStackWithOptions(t, submitStackOptions{networkAccess: networkAccess})
+}
+
+func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitStack {
 	t.Helper()
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	fixture := newTLSFixture(t)
 	nomad := startNomadHarness(t, rootDir)
+	identityEndpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
 
 	arsRootDir := filepath.Join(rootDir, "ars-storage")
 	if err := os.MkdirAll(arsRootDir, 0o755); err != nil {
@@ -388,6 +564,7 @@ func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submit
 		fixture:                 fixture,
 		rootDir:                 rootDir,
 		nomad:                   nomad,
+		identityEndpoint:        identityEndpoint,
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
 		outputID:                "runtime",
@@ -612,8 +789,9 @@ func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submit
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir: filepath.Join(rootDir, "es-stage"),
-			BaseImage:      "alpine:3.20",
+			StagingRootDir:                   filepath.Join(rootDir, "es-stage"),
+			BaseImage:                        firstNonEmpty(opts.baseImage, "alpine:3.20"),
+			WorkloadIdentityEndpointHostPath: identityEndpoint.path,
 		},
 	}
 	esService, err := esapp.New(esCfg)
@@ -624,10 +802,61 @@ func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submit
 	startService(t, esService.Start, esService.Addr, fixture.serverTLSConfig(t, fixture.esServerName))
 	stack.esRunning = true
 
-	publishSubmitArtifact(t, stack, networkAccess)
+	publishSubmitArtifact(t, stack, opts.networkAccess)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
+}
+
+func startMockWorkloadIdentityEndpoint(t *testing.T, rootDir string) *mockWorkloadIdentityEndpoint {
+	t.Helper()
+
+	socketDir := filepath.Join(rootDir, "workload-identity")
+	if err := os.MkdirAll(socketDir, 0o755); err != nil {
+		t.Fatalf("mkdir workload identity socket dir: %v", err)
+	}
+
+	socketPath := filepath.Join(socketDir, "endpoint.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on workload identity endpoint socket: %v", err)
+	}
+	if err := os.Chmod(socketPath, 0o777); err != nil {
+		_ = listener.Close()
+		t.Fatalf("chmod workload identity endpoint socket: %v", err)
+	}
+
+	endpoint := &mockWorkloadIdentityEndpoint{
+		path:     socketPath,
+		listener: listener,
+	}
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = connection.Write([]byte("identity-ok\n"))
+			_ = connection.Close()
+		}
+	}()
+	return endpoint
+}
+
+func (e *mockWorkloadIdentityEndpoint) shutdown(t *testing.T) {
+	t.Helper()
+	if e == nil || e.listener == nil {
+		return
+	}
+	_ = e.listener.Close()
+	_ = os.Remove(e.path)
+}
+
+func firstNonEmpty(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
@@ -983,8 +1212,9 @@ type nomadTaskGroupDetail struct {
 }
 
 type nomadTaskDetail struct {
-	Name   string         `json:"Name"`
-	Config map[string]any `json:"Config"`
+	Name   string            `json:"Name"`
+	Config map[string]any    `json:"Config"`
+	Env    map[string]string `json:"Env"`
 }
 
 type nomadTaskState struct {
@@ -1147,13 +1377,19 @@ func (n *nomadHarness) fetchJobDetail(t *testing.T, jobID string) nomadJobDetail
 func (j nomadJobDetail) taskConfig(t *testing.T) map[string]any {
 	t.Helper()
 
+	return j.task(t).Config
+}
+
+func (j nomadJobDetail) task(t *testing.T) nomadTaskDetail {
+	t.Helper()
+
 	if len(j.TaskGroups) == 0 {
 		t.Fatalf("expected at least one task group in job")
 	}
 	if len(j.TaskGroups[0].Tasks) == 0 {
 		t.Fatalf("expected at least one task in job")
 	}
-	return j.TaskGroups[0].Tasks[0].Config
+	return j.TaskGroups[0].Tasks[0]
 }
 
 func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nomadAllocationSummary {
@@ -1260,6 +1496,7 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 		*step.running = false
 	}
 	s.nomad.shutdown(t)
+	s.identityEndpoint.shutdown(t)
 }
 
 func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
@@ -1268,6 +1505,19 @@ func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 	dir, err := os.MkdirTemp(executionWorkspaceRoot, prefix)
 	if err != nil {
 		t.Fatalf("create workspace temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+	return dir
+}
+
+func newShortSocketTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", prefix)
+	if err != nil {
+		t.Fatalf("create short socket temp dir: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)

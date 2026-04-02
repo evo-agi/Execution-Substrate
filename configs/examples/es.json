@@ -73,6 +73,7 @@
   },
   "execution": {
     "staging_root_dir": "/abs/path/es-staging",
-    "base_image": "alpine:3.20"
+    "base_image": "alpine:3.20",
+    "workload_identity_endpoint_host_path": "/abs/path/workload-identity/endpoint.sock"
   }
 }

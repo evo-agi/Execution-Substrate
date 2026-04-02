@@ -107,6 +107,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
+	if endpointErr := validateWorkloadIdentityEndpointHostPath(s.cfg.Execution.WorkloadIdentityEndpointHostPath); endpointErr != nil {
+		return SubmitResult{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeExecutionRuntimeUnavailable,
+			Message: endpointErr.Error(),
+		}
+	}
 
 	trustModel := s.currentTrustModel()
 	if trustModel == nil {
@@ -144,6 +151,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	stage.mounts, err = s.stageRuntimeMounts(ctx, *trustModel, stage.rootDir, req.Invocation.Mounts)
 	if err != nil {
 		return SubmitResult{}, err
+	}
+	if hasOverlappingRuntimeMountTargets(append(stagedRuntimeMountTargets(stage.mounts), runtimeIdentityEndpointTargetPath)) {
+		return SubmitResult{}, &Error{
+			Status:  http.StatusConflict,
+			Code:    codeMountConflict,
+			Message: "runtime mount target paths must not overlap reserved runtime paths",
+		}
 	}
 
 	env := buildRuntimeEnvironment(runID, prepareResult, req.Invocation.Env, req.TimeoutSeconds)
@@ -252,7 +266,7 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 }
 
 func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
-	env := make(map[string]string, len(invocationEnv)+10)
+	env := make(map[string]string, len(invocationEnv)+11)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
@@ -263,6 +277,7 @@ func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv
 	env["EXEC_WORK_DIR"] = "/monolith/run/work"
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = prepared.WorkloadVault.Address
+	env[runtimeIdentityEndpointEnvKey] = runtimeIdentityEndpointEnvValue
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = prepared.WorkloadVault.AuthMode
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = prepared.WorkloadVault.AuthMount
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = prepared.WorkloadVault.AuthRole
@@ -317,6 +332,12 @@ func buildNomadJobSpec(
 			"source":   stage.runDir,
 			"target":   "/monolith/run",
 			"readonly": false,
+		},
+		map[string]any{
+			"type":     "bind",
+			"source":   runtimeIdentityEndpointMountSource(cfg.Execution.WorkloadIdentityEndpointHostPath),
+			"target":   runtimeIdentityEndpointTargetDir,
+			"readonly": true,
 		},
 	}
 
