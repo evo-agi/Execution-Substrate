@@ -896,19 +896,25 @@ type tlsFixture struct {
 	esServerName      string
 	esServerCertPath  string
 	esServerKeyPath   string
+	agsServerName     string
+	agsServerCertPath string
+	agsServerKeyPath  string
 
 	executionClientCertPath string
 	executionClientKeyPath  string
+	agsClientCertPath       string
+	agsClientKeyPath        string
 
 	egsKeyID         string
 	egsPublicKey     ed25519.PublicKey
 	egsPublicKeyHex  string
 	egsPrivateKeyHex string
 
-	agsKeyID        string
-	agsPublicKey    ed25519.PublicKey
-	agsPublicKeyHex string
-	agsPrivateKey   ed25519.PrivateKey
+	agsKeyID         string
+	agsPublicKey     ed25519.PublicKey
+	agsPublicKeyHex  string
+	agsPrivateKey    ed25519.PrivateKey
+	agsPrivateKeyHex string
 
 	bootstrapCACN string
 }
@@ -938,6 +944,8 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 	egsCertPath, egsKeyPath := writeLeafCertificateFiles(t, dir, "egs", runtimeCA, runtimeCAKey, egsServerName, nil)
 	esServerName := "server.execution.internal"
 	esCertPath, esKeyPath := writeLeafCertificateFiles(t, dir, "es", runtimeCA, runtimeCAKey, esServerName, nil)
+	agsServerName := "server.artifact-governance.internal"
+	agsCertPath, agsKeyPath := writeLeafCertificateFiles(t, dir, "ags", runtimeCA, runtimeCAKey, agsServerName, nil)
 
 	executionClientCertPath, executionClientKeyPath := writeLeafCertificateFiles(
 		t,
@@ -947,6 +955,15 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		runtimeCAKey,
 		"client.service.execution",
 		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/execution")},
+	)
+	agsClientCertPath, agsClientKeyPath := writeLeafCertificateFiles(
+		t,
+		dir,
+		"ags-client",
+		runtimeCA,
+		runtimeCAKey,
+		"client.service.artifact-governance",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/artifact-governance")},
 	)
 
 	egsPublicKey, egsPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -977,8 +994,13 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		esServerName:            esServerName,
 		esServerCertPath:        esCertPath,
 		esServerKeyPath:         esKeyPath,
+		agsServerName:           agsServerName,
+		agsServerCertPath:       agsCertPath,
+		agsServerKeyPath:        agsKeyPath,
 		executionClientCertPath: executionClientCertPath,
 		executionClientKeyPath:  executionClientKeyPath,
+		agsClientCertPath:       agsClientCertPath,
+		agsClientKeyPath:        agsClientKeyPath,
 		egsKeyID:                "egs-trust-model-signing-v1",
 		egsPublicKey:            egsPublicKey,
 		egsPublicKeyHex:         hex.EncodeToString(egsPublicKey),
@@ -987,11 +1009,18 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		agsPublicKey:            agsPublicKey,
 		agsPublicKeyHex:         hex.EncodeToString(agsPublicKey),
 		agsPrivateKey:           agsPrivateKey,
+		agsPrivateKeyHex:        hex.EncodeToString(agsPrivateKey),
 		bootstrapCACN:           "bootstrap-ca",
 	}
 }
 
 func (f *tlsFixture) clientTLSConfig(t *testing.T, spiffePath string, bootstrap bool) *tls.Config {
+	t.Helper()
+
+	return f.clientTLSConfigForServer(t, f.esServerName, spiffePath, bootstrap)
+}
+
+func (f *tlsFixture) clientTLSConfigForServer(t *testing.T, serverName string, spiffePath string, bootstrap bool) *tls.Config {
 	t.Helper()
 
 	rootCAs := x509.NewCertPool()
@@ -1000,7 +1029,7 @@ func (f *tlsFixture) clientTLSConfig(t *testing.T, spiffePath string, bootstrap 
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    rootCAs,
-		ServerName: f.esServerName,
+		ServerName: serverName,
 	}
 
 	if strings.TrimSpace(spiffePath) == "" {

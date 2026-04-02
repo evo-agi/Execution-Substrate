@@ -41,6 +41,14 @@ const (
 	codeArtifactRevoked                 = "artifact_revoked"
 	codeWorkloadZoneVaultUnavailable    = "workload_zone_vault_unavailable"
 	codeUnsupportedAuthMode             = "unsupported_auth_mode"
+	codeExecutionRuntimeUnavailable     = "execution_runtime_unavailable"
+	codeUnsupportedExecutionMode        = "unsupported_execution_mode"
+	codeUnsupportedArtifactType         = "unsupported_artifact_type"
+	codeUnsupportedCapabilities         = "unsupported_capabilities"
+	codeUnsupportedMounts               = "unsupported_mounts"
+	codeUnsupportedNetworkAccess        = "unsupported_network_access"
+	codePayloadUnavailable              = "payload_unavailable"
+	codeSubmissionFailed                = "submission_failed"
 )
 
 var (
@@ -87,6 +95,7 @@ type Service struct {
 	provenanceVerifier              *ed25519Verifier
 	derivationAttestationVerifier   *ed25519Verifier
 	workloadIdentityBindingVerifier *ed25519Verifier
+	nomadClient                     *nomadClient
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.TrustModel
@@ -179,6 +188,17 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		return nil, err
 	}
 
+	var nomadClient *nomadClient
+	if cfg.SubmitConfigured() {
+		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create execution staging root: %w", err)
+		}
+		nomadClient, err = newNomadClient(cfg.Nomad)
+		if err != nil {
+			return nil, fmt.Errorf("build nomad client: %w", err)
+		}
+	}
+
 	return &Service{
 		cfg:                             cfg,
 		acsClient:                       acsClient,
@@ -188,6 +208,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		provenanceVerifier:              provenanceVerifier,
 		derivationAttestationVerifier:   derivationVerifier,
 		workloadIdentityBindingVerifier: bindingVerifier,
+		nomadClient:                     nomadClient,
 	}, nil
 }
 

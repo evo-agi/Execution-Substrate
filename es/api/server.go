@@ -16,6 +16,7 @@ const serviceName = "execution"
 type preparationService interface {
 	Health(ctx context.Context) admission.HealthSnapshot
 	Prepare(ctx context.Context, req admission.PrepareRequest) (admission.PrepareResult, *admission.Error)
+	Submit(ctx context.Context, req admission.PrepareRequest) (admission.SubmitResult, *admission.Error)
 }
 
 type Server struct {
@@ -40,6 +41,10 @@ func (s *Server) Handler() http.Handler {
 	// execution API and must not accumulate run IDs, scheduler metadata, or
 	// proto-execution state.
 	mux.HandleFunc("POST /v1/executions:prepare", s.handlePrepare)
+	// TODO: /v1/executions:submit is the minimal real execution surface for the
+	// first Nomad/Docker slice. It is intentionally async-only and returns a
+	// bounded submission receipt, not a durable execution lifecycle API.
+	mux.HandleFunc("POST /v1/executions:submit", s.handleSubmit)
 	return mux
 }
 
@@ -74,27 +79,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrepare(w http.ResponseWriter, r *http.Request) {
-	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	request, ok := s.decodeAuthorizedExecutionRequest(w, r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
-		return
-	}
-	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
-		return
-	}
-	if callerPath != "service/deployment" && callerPath != "operator" {
-		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
-		return
-	}
-
-	var request admission.PrepareRequest
-	if err := decodeJSON(r.Body, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, admission.ErrorResponse{
-			Success: false,
-			Error:   "invalid request body",
-			Code:    "invalid_request",
-		})
 		return
 	}
 
@@ -109,6 +95,52 @@ func (s *Server) handlePrepare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.decodeAuthorizedExecutionRequest(w, r)
+	if !ok {
+		return
+	}
+
+	result, err := s.service.Submit(r.Context(), request)
+	if err != nil {
+		writeJSON(w, err.Status, admission.ErrorResponse{
+			Success: false,
+			Error:   err.Message,
+			Code:    err.Code,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) decodeAuthorizedExecutionRequest(w http.ResponseWriter, r *http.Request) (admission.PrepareRequest, bool) {
+	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	if !ok {
+		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return admission.PrepareRequest{}, false
+	}
+	if issuerCommonName == s.bootstrapIssuerCN {
+		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
+		return admission.PrepareRequest{}, false
+	}
+	if callerPath != "service/deployment" && callerPath != "operator" {
+		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+		return admission.PrepareRequest{}, false
+	}
+
+	var request admission.PrepareRequest
+	if err := decodeJSON(r.Body, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, admission.ErrorResponse{
+			Success: false,
+			Error:   "invalid request body",
+			Code:    "invalid_request",
+		})
+		return admission.PrepareRequest{}, false
+	}
+	return request, true
 }
 
 func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {
@@ -130,12 +162,14 @@ func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerComm
 
 func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
 	const prefix = "spiffe://monolith.internal/"
+
 	for _, uri := range cert.URIs {
 		value := uri.String()
 		if strings.HasPrefix(value, prefix) {
 			return strings.TrimPrefix(value, prefix), true
 		}
 	}
+
 	return "", false
 }
 

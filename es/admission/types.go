@@ -59,6 +59,20 @@ type PrepareResult struct {
 	WorkloadVault        WorkloadVaultInfo `json:"workload_vault"`
 }
 
+// SubmitResult is the bounded async submission receipt for the first real
+// execution slice. It confirms that ES reused admission/prepare successfully
+// and handed a real Nomad job to the scheduler, but it intentionally does not
+// create a durable execution record or broader lifecycle surface.
+type SubmitResult struct {
+	Success        bool   `json:"success"`
+	Submitted      bool   `json:"submitted"`
+	RunID          string `json:"run_id"`
+	NomadJobID     string `json:"nomad_job_id"`
+	NomadEvalID    string `json:"nomad_eval_id"`
+	ArtifactDigest string `json:"artifact_digest"`
+	Status         string `json:"status"`
+}
+
 type TrustModelInfo struct {
 	Version        string `json:"version"`
 	UpdateRevision int    `json:"update_revision"`

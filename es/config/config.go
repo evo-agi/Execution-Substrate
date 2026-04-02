@@ -19,6 +19,8 @@ type Config struct {
 	Dependencies      DependenciesConfig      `json:"dependencies"`
 	Verification      VerificationConfig      `json:"verification"`
 	WorkloadVaultAuth WorkloadVaultAuthConfig `json:"workload_vault_auth"`
+	Nomad             NomadConfig             `json:"nomad,omitempty"`
+	Execution         ExecutionConfig         `json:"execution,omitempty"`
 }
 
 type HTTPConfig struct {
@@ -52,6 +54,17 @@ type DependencyConfig struct {
 	ClientKeyFile  string `json:"client_key_file"`
 	RootCAFile     string `json:"root_ca_file"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type NomadConfig struct {
+	BaseURL        string `json:"base_url"`
+	Datacenter     string `json:"datacenter"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type ExecutionConfig struct {
+	StagingRootDir string `json:"staging_root_dir"`
+	BaseImage      string `json:"base_image"`
 }
 
 type VerificationConfig struct {
@@ -197,6 +210,14 @@ func (c Config) Validate() error {
 	if err := c.WorkloadVaultAuth.Validate(); err != nil {
 		return err
 	}
+	if c.SubmitConfigured() {
+		if err := c.Nomad.Validate("nomad"); err != nil {
+			return err
+		}
+		if err := c.Execution.Validate("execution"); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -223,6 +244,36 @@ func (c DependencyConfig) Validate(field string) error {
 	}
 	if c.TimeoutSeconds <= 0 {
 		return fmt.Errorf("%s.timeout_seconds must be greater than 0", field)
+	}
+	return nil
+}
+
+func (c NomadConfig) Validate(field string) error {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return fmt.Errorf("%s.base_url is required", field)
+	}
+	parsed, err := url.Parse(c.BaseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s.base_url must be a valid absolute URL", field)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s.base_url must use http or https", field)
+	}
+	if strings.TrimSpace(c.Datacenter) == "" {
+		return fmt.Errorf("%s.datacenter is required", field)
+	}
+	if c.TimeoutSeconds <= 0 {
+		return fmt.Errorf("%s.timeout_seconds must be greater than 0", field)
+	}
+	return nil
+}
+
+func (c ExecutionConfig) Validate(field string) error {
+	if strings.TrimSpace(c.StagingRootDir) == "" {
+		return fmt.Errorf("%s.staging_root_dir is required", field)
+	}
+	if strings.TrimSpace(c.BaseImage) == "" {
+		return fmt.Errorf("%s.base_image is required", field)
 	}
 	return nil
 }
@@ -394,4 +445,12 @@ func (c Config) WriteTimeout() time.Duration {
 
 func (c Config) ShutdownTimeout() time.Duration {
 	return time.Duration(c.HTTP.ShutdownTimeoutSeconds) * time.Second
+}
+
+func (c Config) SubmitConfigured() bool {
+	return strings.TrimSpace(c.Nomad.BaseURL) != "" ||
+		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
+		c.Nomad.TimeoutSeconds != 0 ||
+		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
+		strings.TrimSpace(c.Execution.BaseImage) != ""
 }
