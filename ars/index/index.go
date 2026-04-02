@@ -32,31 +32,31 @@ type Lookup interface {
 
 func ParseKind(value string) (Kind, bool) {
 	switch Kind(value) {
-	case KindManifest,
-		KindProvenance,
-		KindDerivationMetadata,
-		KindDerivationAuthorizationAttestation,
-		KindWorkloadIdentityBinding:
-		return Kind(value), true
-	default:
-		return "", false
+		case KindManifest,
+			KindProvenance,
+			KindDerivationMetadata,
+			KindDerivationAuthorizationAttestation,
+			KindWorkloadIdentityBinding:
+			return Kind(value), true
+		default:
+			return "", false
 	}
 }
 
 func (e Entry) DigestFor(kind Kind) string {
 	switch kind {
-	case KindManifest:
-		return e.ManifestDigest
-	case KindProvenance:
-		return e.ProvenanceDigest
-	case KindDerivationMetadata:
-		return e.DerivationMetadataDigest
-	case KindDerivationAuthorizationAttestation:
-		return e.DerivationAuthorizationAttestationDigest
-	case KindWorkloadIdentityBinding:
-		return e.WorkloadIdentityBindingDigest
-	default:
-		return ""
+		case KindManifest:
+			return e.ManifestDigest
+		case KindProvenance:
+			return e.ProvenanceDigest
+		case KindDerivationMetadata:
+			return e.DerivationMetadataDigest
+		case KindDerivationAuthorizationAttestation:
+			return e.DerivationAuthorizationAttestationDigest
+		case KindWorkloadIdentityBinding:
+			return e.WorkloadIdentityBindingDigest
+		default:
+			return ""
 	}
 }
 

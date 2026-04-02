@@ -34,20 +34,20 @@ func RequiredWorkloadZoneVault() AssignmentKey {
 
 func (a AssignmentKey) Validate() error {
 	switch a.IdentityKind {
-	case AssignmentDeploymentStageConfig:
-		return validateShape(a, []string{"stage"}, nil)
-	case AssignmentDeploymentServiceConfig:
-		return validateShape(a, []string{"stage", "service", "version"}, []string{"instance"})
-	case AssignmentDeploymentStageDependency:
-		return validateShape(a, []string{"stage"}, []string{"service", "version", "instance"})
-	case AssignmentServiceDockerConfig, AssignmentServiceApplicationConfig, AssignmentSidecarDockerConfig:
-		return validateShape(a, []string{"service", "version", "instance"}, []string{"stage"})
-	case AssignmentServiceInstances, AssignmentSidecarInstances:
-		return validateShape(a, []string{"service", "version"}, []string{"stage", "instance"})
-	case AssignmentWorkloadZoneVault:
-		return validateShape(a, nil, []string{"stage", "service", "version", "instance"})
-	default:
-		return fmt.Errorf("unsupported identity_kind: %q", a.IdentityKind)
+		case AssignmentDeploymentStageConfig:
+			return validateShape(a, []string{"stage"}, nil)
+		case AssignmentDeploymentServiceConfig:
+			return validateShape(a, []string{"stage", "service", "version"}, []string{"instance"})
+		case AssignmentDeploymentStageDependency:
+			return validateShape(a, []string{"stage"}, []string{"service", "version", "instance"})
+		case AssignmentServiceDockerConfig, AssignmentServiceApplicationConfig, AssignmentSidecarDockerConfig:
+			return validateShape(a, []string{"service", "version", "instance"}, []string{"stage"})
+		case AssignmentServiceInstances, AssignmentSidecarInstances:
+			return validateShape(a, []string{"service", "version"}, []string{"stage", "instance"})
+		case AssignmentWorkloadZoneVault:
+			return validateShape(a, nil, []string{"stage", "service", "version", "instance"})
+		default:
+			return fmt.Errorf("unsupported identity_kind: %q", a.IdentityKind)
 	}
 }
 

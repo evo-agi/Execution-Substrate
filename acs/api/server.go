@@ -193,16 +193,16 @@ func parseAssignmentFromPath(path string) (catalog.AssignmentKey, int, error) {
 	}
 
 	switch segments[0] {
-	case "workload-zone":
-		if len(segments) == 2 && segments[1] == "vault" {
-			return catalog.RequiredWorkloadZoneVault(), http.StatusOK, nil
-		}
-	case "deployment":
-		return parseDeploymentAssignment(segments)
-	case "service":
-		return parseServiceAssignment(segments)
-	case "sidecar":
-		return parseSidecarAssignment(segments)
+		case "workload-zone":
+			if len(segments) == 2 && segments[1] == "vault" {
+				return catalog.RequiredWorkloadZoneVault(), http.StatusOK, nil
+			}
+		case "deployment":
+			return parseDeploymentAssignment(segments)
+		case "service":
+			return parseServiceAssignment(segments)
+		case "sidecar":
+			return parseSidecarAssignment(segments)
 	}
 
 	return catalog.AssignmentKey{}, http.StatusNotFound, fmt.Errorf("not found")
@@ -277,33 +277,35 @@ func parseServiceAssignment(segments []string) (catalog.AssignmentKey, int, erro
 		if err != nil {
 			return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid service path segment")
 		}
+
 		version, err := url.PathUnescape(segments[2])
 		if err != nil {
 			return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid version path segment")
 		}
+
 		switch {
-		case strings.HasSuffix(segments[3], ":docker"):
-			instance, err := url.PathUnescape(strings.TrimSuffix(segments[3], ":docker"))
-			if err != nil {
-				return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid instance path segment")
-			}
-			return catalog.AssignmentKey{
-				IdentityKind: catalog.AssignmentServiceDockerConfig,
-				Service:      service,
-				Version:      version,
-				Instance:     instance,
-			}, http.StatusOK, nil
-		case strings.HasSuffix(segments[3], ":application"):
-			instance, err := url.PathUnescape(strings.TrimSuffix(segments[3], ":application"))
-			if err != nil {
-				return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid instance path segment")
-			}
-			return catalog.AssignmentKey{
-				IdentityKind: catalog.AssignmentServiceApplicationConfig,
-				Service:      service,
-				Version:      version,
-				Instance:     instance,
-			}, http.StatusOK, nil
+			case strings.HasSuffix(segments[3], ":docker"):
+				instance, err := url.PathUnescape(strings.TrimSuffix(segments[3], ":docker"))
+				if err != nil {
+					return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid instance path segment")
+				}
+				return catalog.AssignmentKey{
+					IdentityKind: catalog.AssignmentServiceDockerConfig,
+					Service:      service,
+					Version:      version,
+					Instance:     instance,
+				}, http.StatusOK, nil
+			case strings.HasSuffix(segments[3], ":application"):
+				instance, err := url.PathUnescape(strings.TrimSuffix(segments[3], ":application"))
+				if err != nil {
+					return catalog.AssignmentKey{}, http.StatusBadRequest, fmt.Errorf("invalid instance path segment")
+				}
+				return catalog.AssignmentKey{
+					IdentityKind: catalog.AssignmentServiceApplicationConfig,
+					Service:      service,
+					Version:      version,
+					Instance:     instance,
+				}, http.StatusOK, nil
 		}
 	}
 

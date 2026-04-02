@@ -230,12 +230,12 @@ func routeLabel(method string, path string) string {
 
 func classifyInboundStatus(statusCode int) string {
 	switch {
-	case statusCode >= 200 && statusCode < 400:
-		return "success"
-	case statusCode >= 400 && statusCode < 500:
-		return "client_error"
-	default:
-		return "server_error"
+		case statusCode >= 200 && statusCode < 400:
+			return "success"
+		case statusCode >= 400 && statusCode < 500:
+			return "client_error"
+		default:
+			return "server_error"
 	}
 }
 

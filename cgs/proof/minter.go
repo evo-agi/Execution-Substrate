@@ -48,12 +48,12 @@ func NewHMACMinter(secretKey string, hashFunction string) (*HMACMinter, error) {
 
 	var constructor func() hash.Hash
 	switch strings.ToLower(strings.TrimSpace(hashFunction)) {
-	case "sha256":
-		constructor = sha256.New
-	case "sha512":
-		constructor = sha512.New
-	default:
-		return nil, fmt.Errorf("unsupported action proof hash function")
+		case "sha256":
+			constructor = sha256.New
+		case "sha512":
+			constructor = sha512.New
+		default:
+			return nil, fmt.Errorf("unsupported action proof hash function")
 	}
 
 	return &HMACMinter{

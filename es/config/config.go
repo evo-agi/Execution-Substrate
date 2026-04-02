@@ -319,10 +319,10 @@ func (s WorkloadVaultAuthSelector) Validate(field string) error {
 
 func isValidAuthMode(value WorkloadVaultAuthMode) bool {
 	switch value {
-	case WorkloadVaultAuthModeVaultIdentityJWT, WorkloadVaultAuthModeCGSProofLegacy:
-		return true
-	default:
-		return false
+		case WorkloadVaultAuthModeVaultIdentityJWT, WorkloadVaultAuthModeCGSProofLegacy:
+			return true
+		default:
+			return false
 	}
 }
 

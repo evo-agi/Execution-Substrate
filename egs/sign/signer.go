@@ -48,12 +48,12 @@ func NewEd25519Signer(keyID string, privateKeyHex string, publicKeyHex string, s
 	}
 	var privateKey ed25519.PrivateKey
 	switch len(privateKeyBytes) {
-	case ed25519.SeedSize:
-		privateKey = ed25519.NewKeyFromSeed(privateKeyBytes)
-	case ed25519.PrivateKeySize:
-		privateKey = ed25519.PrivateKey(privateKeyBytes)
-	default:
-		return nil, fmt.Errorf("signer.private_key_hex must be a %d-byte seed or %d-byte private key", ed25519.SeedSize, ed25519.PrivateKeySize)
+		case ed25519.SeedSize:
+			privateKey = ed25519.NewKeyFromSeed(privateKeyBytes)
+		case ed25519.PrivateKeySize:
+			privateKey = ed25519.PrivateKey(privateKeyBytes)
+		default:
+			return nil, fmt.Errorf("signer.private_key_hex must be a %d-byte seed or %d-byte private key", ed25519.SeedSize, ed25519.PrivateKeySize)
 	}
 
 	publicKeyBytes, err := hex.DecodeString(strings.TrimSpace(publicKeyHex))

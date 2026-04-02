@@ -129,10 +129,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ActionProof.SecretKey) == "" {
 		return fmt.Errorf("action_proof.secret_key is required")
 	}
+
 	switch strings.ToLower(strings.TrimSpace(c.ActionProof.HashFunction)) {
-	case "sha256", "sha512":
-	default:
-		return fmt.Errorf("action_proof.hash_function must be sha256 or sha512")
+		case "sha256", "sha512":
+		default:
+			return fmt.Errorf("action_proof.hash_function must be sha256 or sha512")
 	}
 
 	return nil

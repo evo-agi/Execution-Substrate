@@ -745,28 +745,28 @@ func fetchArtifactJSON[T any](ctx context.Context, client *dependencyClient, end
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-	case http.StatusOK:
-		var payload T
-		if err := decodeJSON(response.Body, &payload); err != nil {
+		case http.StatusOK:
+			var payload T
+			if err := decodeJSON(response.Body, &payload); err != nil {
+				return zero, &Error{
+					Status:  http.StatusServiceUnavailable,
+					Code:    notFoundCode,
+					Message: fmt.Sprintf("%s: dependency payload was invalid", notFoundMessage),
+				}
+			}
+			return payload, nil
+		case http.StatusNotFound:
+			return zero, &Error{
+				Status:  http.StatusNotFound,
+				Code:    notFoundCode,
+				Message: notFoundMessage,
+			}
+		default:
 			return zero, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    notFoundCode,
-				Message: fmt.Sprintf("%s: dependency payload was invalid", notFoundMessage),
+				Message: fmt.Sprintf("%s: dependency returned status %d", notFoundMessage, response.StatusCode),
 			}
-		}
-		return payload, nil
-	case http.StatusNotFound:
-		return zero, &Error{
-			Status:  http.StatusNotFound,
-			Code:    notFoundCode,
-			Message: notFoundMessage,
-		}
-	default:
-		return zero, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    notFoundCode,
-			Message: fmt.Sprintf("%s: dependency returned status %d", notFoundMessage, response.StatusCode),
-		}
 	}
 }
 

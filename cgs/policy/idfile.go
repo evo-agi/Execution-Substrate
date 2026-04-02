@@ -180,9 +180,9 @@ func (s *Set) PolicyDigest() string {
 func (s *Set) ValidateWorkload(workload Workload) error {
 	workload.Type = strings.TrimSpace(workload.Type)
 	switch workload.Type {
-	case "service", "script":
-	default:
-		return fmt.Errorf("workload.type must be service or script")
+		case "service", "script":
+		default:
+			return fmt.Errorf("workload.type must be service or script")
 	}
 
 	modulePath := strings.TrimSpace(workload.ModulePath)
@@ -226,24 +226,24 @@ func (s *Set) Evaluate(decisionID string, requestedBy RequestedBy, workload Work
 	locationValid := s.isLocationValid(workload.Type, location)
 
 	switch workload.Type {
-	case "service":
-		evaluatedRules = append(evaluatedRules, "service-id", "service-location")
-		considerations = append(considerations, validityMessage("Service ID", subjectIDValid))
-		considerations = append(considerations, validityMessage("Service location", locationValid))
-		if !subjectIDValid {
-			mainReason = "Service ID is not valid"
-		} else if !locationValid {
-			mainReason = "Service location is not valid"
-		}
-	case "script":
-		evaluatedRules = append(evaluatedRules, "script-id", "script-location")
-		considerations = append(considerations, validityMessage("Script ID", subjectIDValid))
-		considerations = append(considerations, validityMessage("Script location", locationValid))
-		if !subjectIDValid {
-			mainReason = "Script ID is not valid"
-		} else if !locationValid {
-			mainReason = "Script location is not valid"
-		}
+		case "service":
+			evaluatedRules = append(evaluatedRules, "service-id", "service-location")
+			considerations = append(considerations, validityMessage("Service ID", subjectIDValid))
+			considerations = append(considerations, validityMessage("Service location", locationValid))
+			if !subjectIDValid {
+				mainReason = "Service ID is not valid"
+			} else if !locationValid {
+				mainReason = "Service location is not valid"
+			}
+		case "script":
+			evaluatedRules = append(evaluatedRules, "script-id", "script-location")
+			considerations = append(considerations, validityMessage("Script ID", subjectIDValid))
+			considerations = append(considerations, validityMessage("Script location", locationValid))
+			if !subjectIDValid {
+				mainReason = "Script ID is not valid"
+			} else if !locationValid {
+				mainReason = "Script location is not valid"
+			}
 	}
 
 	allowed := subjectIDValid && locationValid
@@ -309,24 +309,24 @@ func (s *Set) determineSubjectLocation(workload Workload) string {
 
 func (s *Set) determineSubjectID(workload Workload) (string, bool) {
 	switch workload.Type {
-	case "service":
-		serviceName := strings.TrimSpace(workload.ServiceName)
-		if serviceName != "" {
-			return serviceName, s.isKnownServiceID(serviceName)
-		}
-		if resolved, ok := s.lookupServiceID(workload); ok {
-			return resolved, true
-		}
-		return "", false
-	case "script":
-		location := s.determineSubjectLocation(workload)
-		scriptID, ok := s.scriptModuleToID[location]
-		if !ok || strings.TrimSpace(scriptID) == "" {
+		case "service":
+			serviceName := strings.TrimSpace(workload.ServiceName)
+			if serviceName != "" {
+				return serviceName, s.isKnownServiceID(serviceName)
+			}
+			if resolved, ok := s.lookupServiceID(workload); ok {
+				return resolved, true
+			}
 			return "", false
-		}
-		return scriptID, true
-	default:
-		return "", false
+		case "script":
+			location := s.determineSubjectLocation(workload)
+			scriptID, ok := s.scriptModuleToID[location]
+			if !ok || strings.TrimSpace(scriptID) == "" {
+				return "", false
+			}
+			return scriptID, true
+		default:
+			return "", false
 	}
 }
 
@@ -335,14 +335,14 @@ func (s *Set) isLocationValid(workloadType string, location string) bool {
 		return false
 	}
 	switch workloadType {
-	case "service":
-		_, ok := s.serviceModuleToID[location]
-		return ok
-	case "script":
-		_, ok := s.scriptModuleToID[location]
-		return ok
-	default:
-		return false
+		case "service":
+			_, ok := s.serviceModuleToID[location]
+			return ok
+		case "script":
+			_, ok := s.scriptModuleToID[location]
+			return ok
+		default:
+			return false
 	}
 }
 

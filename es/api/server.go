@@ -134,30 +134,30 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-	case "status":
-		result, err := s.service.Status(r.Context(), runID)
-		if err != nil {
-			writeJSON(w, err.Status, admission.ErrorResponse{
-				Success: false,
-				Error:   err.Message,
-				Code:    err.Code,
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, result)
-	case "logs":
-		payload, err := s.service.Logs(r.Context(), runID)
-		if err != nil {
-			writeJSON(w, err.Status, admission.ErrorResponse{
-				Success: false,
-				Error:   err.Message,
-				Code:    err.Code,
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(payload)
+		case "status":
+			result, err := s.service.Status(r.Context(), runID)
+			if err != nil {
+				writeJSON(w, err.Status, admission.ErrorResponse{
+					Success: false,
+					Error:   err.Message,
+					Code:    err.Code,
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		case "logs":
+			payload, err := s.service.Logs(r.Context(), runID)
+			if err != nil {
+				writeJSON(w, err.Status, admission.ErrorResponse{
+					Success: false,
+					Error:   err.Message,
+					Code:    err.Code,
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
 	}
 }
 
@@ -227,17 +227,17 @@ func parseLifecycleRequest(requestPath string) (runID string, action string, ok 
 
 	trimmed := strings.TrimPrefix(requestPath, prefix)
 	switch {
-	case strings.HasSuffix(trimmed, "/status"):
-		runID = strings.TrimSuffix(trimmed, "/status")
-		action = "status"
-	case strings.HasSuffix(trimmed, "/logs"):
-		runID = strings.TrimSuffix(trimmed, "/logs")
-		action = "logs"
-	case strings.HasSuffix(trimmed, ":cancel"):
-		runID = strings.TrimSuffix(trimmed, ":cancel")
-		action = "cancel"
-	default:
-		return "", "", false
+		case strings.HasSuffix(trimmed, "/status"):
+			runID = strings.TrimSuffix(trimmed, "/status")
+			action = "status"
+		case strings.HasSuffix(trimmed, "/logs"):
+			runID = strings.TrimSuffix(trimmed, "/logs")
+			action = "logs"
+		case strings.HasSuffix(trimmed, ":cancel"):
+			runID = strings.TrimSuffix(trimmed, ":cancel")
+			action = "cancel"
+		default:
+			return "", "", false
 	}
 
 	if runID == "" || strings.Contains(runID, "/") {
