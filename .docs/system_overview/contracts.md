@@ -165,6 +165,11 @@ For the current bounded execution slice:
 
 - `constraints.network_access = false` must map to Docker `network_mode = "none"`
 - `constraints.network_access = true` must map to Docker `network_mode = "bridge"`
+- `invocation.mounts` may include only governed artifact-backed runtime mounts
+- each runtime mount must supply `source.artifact_digest`, `target_path`, and `read_only = true`
+- each runtime mount `target_path` must be absolute, already cleaned, and remain under `/monolith/mounts/`
+- ES must stage mount artifacts per run, extract them safely, and bind-mount the extracted directory into the task as read-only
+- ES must reject overlapping target paths, unsafe archives, and per-mount or total size-limit violations
 
 ES must not:
 
@@ -172,6 +177,9 @@ ES must not:
 - publish ports
 - attach tasks to custom Docker networks
 - reinterpret signed network constraints into a broader network-policy system
+- accept host-path or dynamic mount sources
+- accept writable runtime mounts
+- use mounts as an identity, secret, or orchestration channel
 
 ES must not:
 

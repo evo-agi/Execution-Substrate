@@ -32,14 +32,13 @@ type ExecutionResources struct {
 }
 
 type RuntimeMount struct {
-	Name          string      `json:"name"`
-	Source        MountSource `json:"source"`
-	TargetSubpath string      `json:"target_subpath"`
+	Source     MountSource `json:"source"`
+	TargetPath string      `json:"target_path"`
+	ReadOnly   bool        `json:"read_only"`
 }
 
 type MountSource struct {
-	Type   string `json:"type"`
-	Digest string `json:"digest"`
+	ArtifactDigest string `json:"artifact_digest"`
 }
 
 // PrepareResult is the bounded response contract for the milestone

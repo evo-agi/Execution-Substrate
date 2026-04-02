@@ -39,6 +39,7 @@ type stagedPayload struct {
 	rootDir    string
 	payloadDir string
 	runDir     string
+	mounts     []stagedRuntimeMount
 }
 
 func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult, *Error) {
@@ -77,13 +78,6 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 			Message: "only static-script artifacts are supported in this execution slice",
 		}
 	}
-	if len(req.Invocation.Mounts) > 0 {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeUnsupportedMounts,
-			Message: "runtime mounts are not supported in this execution slice",
-		}
-	}
 	if len(manifest.RuntimeInterface.RequiredCapabilities) > 0 {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusBadRequest,
@@ -114,6 +108,15 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		return SubmitResult{}, err
 	}
 
+	trustModel := s.currentTrustModel()
+	if trustModel == nil {
+		return SubmitResult{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    "trust_model_unavailable",
+			Message: "trust model is unavailable",
+		}
+	}
+
 	runID, jobID, runIDErr := newRunAndJobID()
 	if runIDErr != nil {
 		return SubmitResult{}, &Error{
@@ -137,6 +140,11 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 			_ = os.RemoveAll(stage.rootDir)
 		}
 	}()
+
+	stage.mounts, err = s.stageRuntimeMounts(ctx, *trustModel, stage.rootDir, req.Invocation.Mounts)
+	if err != nil {
+		return SubmitResult{}, err
+	}
 
 	env := buildRuntimeEnvironment(runID, prepareResult, req.Invocation.Env, req.TimeoutSeconds)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
@@ -295,21 +303,33 @@ func buildNomadJobSpec(
 		"image":   cfg.Execution.BaseImage,
 		"command": "/bin/sh",
 		"args":    shellArgs,
-		"mounts": []any{
-			map[string]any{
-				"type":     "bind",
-				"source":   stage.payloadDir,
-				"target":   "/monolith/staged",
-				"readonly": true,
-			},
-			map[string]any{
-				"type":     "bind",
-				"source":   stage.runDir,
-				"target":   "/monolith/run",
-				"readonly": false,
-			},
+	}
+
+	mounts := []any{
+		map[string]any{
+			"type":     "bind",
+			"source":   stage.payloadDir,
+			"target":   "/monolith/staged",
+			"readonly": true,
+		},
+		map[string]any{
+			"type":     "bind",
+			"source":   stage.runDir,
+			"target":   "/monolith/run",
+			"readonly": false,
 		},
 	}
+
+	for _, mount := range stage.mounts {
+		mounts = append(mounts, map[string]any{
+			"type":     "bind",
+			"source":   mount.sourceDir,
+			"target":   mount.targetPath,
+			"readonly": true,
+		})
+	}
+
+	taskConfig["mounts"] = mounts
 	if networkAccess {
 		taskConfig["network_mode"] = "bridge"
 	} else {

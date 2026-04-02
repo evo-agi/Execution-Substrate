@@ -19,6 +19,13 @@ In the current bounded slice, runtime networking is controlled only by signed de
 
 The slice still forbids host networking, port publishing, custom networks, and network-policy interpretation.
 
+Runtime mounts are also bounded in this slice:
+
+- mounts may reference only governed artifact digests
+- mounts must be read-only
+- mounts must target absolute cleaned paths under `/monolith/mounts/`
+- host-path mounts, writable mounts, identity injection, and secret injection remain unsupported
+
 ## 2. Prerequisites
 
 ### Required services

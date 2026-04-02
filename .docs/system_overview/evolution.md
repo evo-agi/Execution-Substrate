@@ -70,7 +70,8 @@ These are bounded slice choices and may evolve later through explicit planning:
 - `static-script` only
 - network access only through the signed `constraints.network_access` toggle
 - no host networking, port publishing, or custom networks
-- no runtime mounts
+- runtime mounts only through bounded artifact-backed read-only mounts under `/monolith/mounts/`
+- no host-path, writable, identity, or secret mounts
 - no retries or reschedule
 
 These constraints are still contractual for the current slice, but they are not system invariants. They may be extended later only through explicit design updates, not by convenience changes in code.

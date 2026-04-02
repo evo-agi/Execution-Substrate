@@ -153,6 +153,177 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 	}
 }
 
+func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {
+	stack := startSubmitStack(t)
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo START-BANNER
+cat /monolith/mounts/config/app.conf
+echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+`))
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "app.conf",
+			Mode: 0o644,
+			Body: []byte("MOUNT-CONTENT\n"),
+		},
+	}), "runtime-mount")
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source: admission.MountSource{
+				ArtifactDigest: mountArtifact.ArtifactDigest,
+			},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
+	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
+		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
+	}
+
+	stack.nomad.waitForJob(t, payload.NomadJobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	if allocation.ClientStatus != "complete" {
+		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
+	}
+
+	statusResponse := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+payload.RunID+"/status",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+	}
+
+	logsResponse := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+payload.RunID+"/logs",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer logsResponse.Body.Close()
+	if logsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from logs, got %d body=%s", logsResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, logsResponse.Body))))
+	}
+
+	logs := string(mustReadBody(t, logsResponse.Body))
+	if !strings.Contains(logs, "START-BANNER") || !strings.Contains(logs, "MOUNT-CONTENT") {
+		t.Fatalf("expected mounted content in logs, got %q", logs)
+	}
+}
+
+func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "../escape",
+			Mode: 0o644,
+			Body: []byte("nope"),
+		},
+	}), "runtime-mount")
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusConflict, "mount_artifact_invalid")
+}
+
+func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name:     "link",
+			Typeflag: tar.TypeSymlink,
+			Linkname: "/etc/passwd",
+			Mode:     0o777,
+		},
+	}), "runtime-mount")
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusConflict, "mount_artifact_invalid")
+}
+
+func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "large.bin",
+			Mode: 0o644,
+			Body: bytes.Repeat([]byte("a"), 9<<20),
+		},
+	}), "runtime-mount")
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusConflict, "mount_artifact_invalid")
+}
+
+func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source:     admission.MountSource{ArtifactDigest: stack.publishResponse.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+		{
+			Source:     admission.MountSource{ArtifactDigest: stack.publishResponse.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config/sub",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusConflict, "mount_conflict")
+}
+
 type submitStack struct {
 	fixture *tlsFixture
 	rootDir string
@@ -480,6 +651,28 @@ func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
 	})
 }
 
+func buildSubmitRequestBodyWithMounts(t *testing.T, stack *submitStack, mounts []admission.RuntimeMount) []byte {
+	t.Helper()
+	return mustMarshalJSON(t, admission.PrepareRequest{
+		SchemaVersion: "v1",
+		Invocation: admission.ArtifactInvocation{
+			SchemaVersion:        "v1",
+			ArtifactDigest:       stack.publishResponse.ArtifactDigest,
+			DerivationSpecDigest: stack.derivationSpecDigest,
+			OutputID:             stack.outputID,
+			Env: map[string]string{
+				"APP_MODE": "test",
+			},
+			Mounts: mounts,
+		},
+		Mode: admission.ExecutionModeAsync,
+		Resources: &admission.ExecutionResources{
+			CPU:      10,
+			MemoryMB: 128,
+		},
+	})
+}
+
 func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool) {
 	t.Helper()
 
@@ -586,6 +779,186 @@ func buildStaticScriptArchive(t *testing.T) []byte {
 		t.Fatalf("close gzip writer: %v", err)
 	}
 	return archiveBuffer.Bytes()
+}
+
+type archiveEntry struct {
+	Name     string
+	Mode     int64
+	Body     []byte
+	Typeflag byte
+	Linkname string
+}
+
+func buildArchiveWithEntries(t *testing.T, entries []archiveEntry) []byte {
+	t.Helper()
+
+	var archiveBuffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archiveBuffer)
+	gzipWriter.Header.ModTime = time.Unix(0, 0)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	for _, entry := range entries {
+		typeflag := entry.Typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		header := &tar.Header{
+			Name:     entry.Name,
+			Mode:     entry.Mode,
+			Size:     int64(len(entry.Body)),
+			Typeflag: typeflag,
+			Linkname: entry.Linkname,
+			ModTime:  time.Unix(0, 0),
+		}
+		if typeflag != tar.TypeReg && typeflag != tar.TypeRegA {
+			header.Size = 0
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if header.Size > 0 {
+			if _, err := tarWriter.Write(entry.Body); err != nil {
+				t.Fatalf("write tar payload: %v", err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	return archiveBuffer.Bytes()
+}
+
+func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive []byte, artifactType string) submitPublishResponse {
+	t.Helper()
+
+	requestBody := mustMarshalJSON(t, map[string]any{
+		"artifact_payload_b64": base64.StdEncoding.EncodeToString(archive),
+		"manifest": map[string]any{
+			"artifact_type": artifactType,
+			"intent_digest": labeledDigest("f1"),
+			"runtime_interface": map[string]any{
+				"parameters":            []string{},
+				"environment_variables": []string{},
+				"required_capabilities": []string{},
+			},
+		},
+		"provenance": map[string]any{
+			"builder_service": "artifact-governance",
+			"invoker": map[string]any{
+				"service":   "deployment",
+				"principal": "spiffe://monolith.internal/service/deployment",
+			},
+			"policy_decisions": []map[string]any{
+				{"rule": "allow", "result": "applied"},
+			},
+			"build_log_digest": labeledDigest("f2"),
+		},
+		"derivation_metadata": map[string]any{
+			"derivation_spec_digest": labeledDigest("f3"),
+			"output_id":              "mount-output",
+			"producer_run_id":        "build-run-mount",
+		},
+		"derivation_attestation": map[string]any{
+			"constraints": map[string]any{
+				"allowed_toolchains":      []string{},
+				"forbidden_toolchains":    []string{},
+				"os":                      "linux",
+				"arch":                    "amd64",
+				"network_access":          false,
+				"writable_paths":          []string{},
+				"forbidden_paths":         []string{},
+				"determinism_expectation": "deterministic",
+			},
+			"policy_version":         "2026-04-02",
+			"expected_artifact_type": artifactType,
+		},
+		"workload_identity_binding": map[string]any{
+			"artifact_class":       "service",
+			"workload_type":        "service",
+			"module_path":          "services.execution.ExecutionServer",
+			"policy_version":       "2026-04-02",
+			"service_name":         "execution",
+			"target_platform":      "docker",
+			"description":          "Mounted runtime artifact",
+			"workload_identity_id": stack.workloadIdentityID,
+		},
+	})
+
+	response := doJSONRequest(
+		t,
+		stack.ags.Addr(),
+		http.MethodPost,
+		"/v1/artifacts:publish",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "service/deployment", false),
+		requestBody,
+	)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload submitPublishResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if !payload.Published {
+		t.Fatalf("expected auxiliary publish response")
+	}
+	return payload
+}
+
+func submitExecutionRequest(t *testing.T, stack *submitStack, requestBody []byte) *http.Response {
+	t.Helper()
+
+	return doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodPost,
+		"/v1/executions:submit",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		requestBody,
+	)
+}
+
+func assertErrorResponseCode(t *testing.T, response *http.Response, expectedStatus int, expectedCode string) {
+	t.Helper()
+
+	body := strings.TrimSpace(string(mustReadBody(t, response.Body)))
+	if response.StatusCode != expectedStatus {
+		t.Fatalf("expected %d, got %d body=%s", expectedStatus, response.StatusCode, body)
+	}
+
+	var payload admission.ErrorResponse
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode error response: %v body=%s", err, body)
+	}
+	if payload.Code != expectedCode {
+		t.Fatalf("expected error code %q, got %q body=%s", expectedCode, payload.Code, body)
+	}
+}
+
+func findTaskBindMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {
+	t.Helper()
+
+	mounts, ok := rawMounts.([]any)
+	if !ok {
+		t.Fatalf("expected []any mounts config, got %#v", rawMounts)
+	}
+	for _, candidate := range mounts {
+		mountConfig, ok := candidate.(map[string]any)
+		if !ok {
+			continue
+		}
+		if mountTarget, ok := mountConfig["target"].(string); ok && mountTarget == target {
+			return mountConfig
+		}
+	}
+	t.Fatalf("expected bind mount targeting %q in %#v", target, rawMounts)
+	return nil
 }
 
 type nomadHarness struct {

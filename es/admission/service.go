@@ -46,17 +46,17 @@ const (
 	codeUnsupportedExecutionMode        = "unsupported_execution_mode"
 	codeUnsupportedArtifactType         = "unsupported_artifact_type"
 	codeUnsupportedCapabilities         = "unsupported_capabilities"
-	codeUnsupportedMounts               = "unsupported_mounts"
 	codePayloadUnavailable              = "payload_unavailable"
 	codeSubmissionFailed                = "submission_failed"
 	codeInvalidRunID                    = "invalid_run_id"
 	codeExecutionNotFound               = "execution_not_found"
 	codeLogsUnavailable                 = "logs_unavailable"
+	codeMountConflict                   = "mount_conflict"
+	codeMountArtifactInvalid            = "mount_artifact_invalid"
 )
 
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	validTargetSubpathPattern  = regexp.MustCompile(`^[a-zA-Z0-9_\-][a-zA-Z0-9_\-/]*$`)
 	reservedRuntimeEnvKeys     = map[string]struct{}{
 		"PROJECT_NAME":           {},
 		"ENVIRONMENT":            {},
@@ -713,19 +713,8 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 			}
 		}
 	}
-	for _, mount := range invocation.Mounts {
-		if strings.TrimSpace(mount.Name) == "" {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "mount name is required"}
-		}
-		if mount.Source.Type != "artifact" {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "mount source.type must be artifact"}
-		}
-		if !isLabeledSHA256Digest(mount.Source.Digest) {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("mount source digest must be a labeled sha256 digest: %s", mount.Name)}
-		}
-		if strings.HasPrefix(mount.TargetSubpath, "/") || strings.Contains(mount.TargetSubpath, "..") || !validTargetSubpathPattern.MatchString(mount.TargetSubpath) {
-			return &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: fmt.Sprintf("mount target_subpath must be workspace-relative: %s", mount.Name)}
-		}
+	if err := validateRuntimeMounts(invocation.Mounts); err != nil {
+		return err
 	}
 	return nil
 }
