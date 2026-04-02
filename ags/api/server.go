@@ -15,7 +15,7 @@ const serviceName = "artifact-governance"
 
 type publishingService interface {
 	Health(ctx context.Context) publish.HealthSnapshot
-	Publish(ctx context.Context, req publish.PublishRequest) (publish.PublishResult, *publish.Error)
+	Publish(ctx context.Context, caller publish.CallerIdentity, req publish.PublishRequest) (publish.PublishResult, *publish.Error)
 }
 
 type Server struct {
@@ -71,7 +71,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	caller, issuerCommonName, ok := authenticatedCallerIdentity(r)
 	if !ok {
 		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
 		return
@@ -80,7 +80,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
-	if callerPath != "service/deployment" && callerPath != "operator" {
+	if caller.Path != "service/deployment" && caller.Path != "operator" {
 		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
@@ -95,7 +95,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.service.Publish(r.Context(), request)
+	result, err := s.service.Publish(r.Context(), caller, request)
 	if err != nil {
 		writeJSON(w, err.Status, ErrorResponse{
 			Success: false,
@@ -108,35 +108,38 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {
+func authenticatedCallerIdentity(r *http.Request) (caller publish.CallerIdentity, issuerCommonName string, ok bool) {
 	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return "", "", false
+		return publish.CallerIdentity{}, "", false
 	}
 
 	cert := r.TLS.VerifiedChains[0][0]
 	if cert == nil {
-		return "", "", false
+		return publish.CallerIdentity{}, "", false
 	}
 
-	callerPath, ok = spiffePathFromCertificate(cert)
+	caller, ok = callerIdentityFromCertificate(cert)
 	if !ok {
-		return "", "", false
+		return publish.CallerIdentity{}, "", false
 	}
-	return callerPath, cert.Issuer.CommonName, true
+	return caller, cert.Issuer.CommonName, true
 }
 
-func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
+func callerIdentityFromCertificate(cert *x509.Certificate) (publish.CallerIdentity, bool) {
 	// TODO: Do not mention "monolith" or "internal"
 	const prefix = "spiffe://monolith.internal/"
 
 	for _, uri := range cert.URIs {
 		value := uri.String()
 		if strings.HasPrefix(value, prefix) {
-			return strings.TrimPrefix(value, prefix), true
+			return publish.CallerIdentity{
+				Path:     strings.TrimPrefix(value, prefix),
+				SPIFFEID: value,
+			}, true
 		}
 	}
 
-	return "", false
+	return publish.CallerIdentity{}, false
 }
 
 func decodeJSON(body io.ReadCloser, target any) error {

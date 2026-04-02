@@ -24,9 +24,12 @@ import (
 )
 
 const (
-	codeInvalidRequest  = "invalid_request"
-	codePublishFailed   = "publish_failed"
-	codeDependencyError = "artifact_registry_unavailable"
+	codeInvalidRequest   = "invalid_request"
+	codePublishFailed    = "publish_failed"
+	codeDependencyError  = "artifact_registry_unavailable"
+	codePublishForbidden = "publish_forbidden"
+	codeArtifactConflict = "artifact_fact_conflict"
+	builderServiceName   = "artifact-governance"
 )
 
 var labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -86,13 +89,13 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 	}
 }
 
-func (s *Service) Publish(ctx context.Context, req PublishRequest) (PublishResult, *Error) {
-	payloadBytes, validationErr := validatePublishRequest(&req)
+func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req PublishRequest) (PublishResult, *Error) {
+	validation, validationErr := validatePublishRequest(caller, &req)
 	if validationErr != nil {
 		return PublishResult{}, validationErr
 	}
 
-	artifactDigest := digestBytes(payloadBytes)
+	artifactDigest := digestBytes(validation.payloadBytes)
 
 	manifest := Manifest{
 		ArtifactDigest:   artifactDigest,
@@ -101,7 +104,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (PublishResul
 		RuntimeInterface: req.Manifest.RuntimeInterface,
 	}
 
-	provenance, err := s.buildProvenance(artifactDigest, req.Provenance)
+	provenance, err := s.buildProvenance(artifactDigest, req.Provenance, validation.invoker)
 	if err != nil {
 		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: err.Error()}
 	}
@@ -154,7 +157,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (PublishResul
 		digest string
 		data   []byte
 	}{
-		{digest: payloadDigest, data: payloadBytes},
+		{digest: payloadDigest, data: validation.payloadBytes},
 		{digest: manifestDigest, data: manifestBytes},
 		{digest: provenanceDigest, data: provenanceBytes},
 		{digest: metadataDigest, data: metadataBytes},
@@ -191,11 +194,11 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (PublishResul
 	}, nil
 }
 
-func (s *Service) buildProvenance(artifactDigest string, input ProvenanceInput) (Provenance, error) {
+func (s *Service) buildProvenance(artifactDigest string, input ProvenanceInput, invoker InvokerInfo) (Provenance, error) {
 	provenance := Provenance{
 		ArtifactDigest:  artifactDigest,
-		BuilderService:  strings.TrimSpace(input.BuilderService),
-		Invoker:         input.Invoker,
+		BuilderService:  builderServiceName,
+		Invoker:         invoker,
 		PolicyDecisions: normalizePolicyDecisions(input.PolicyDecisions),
 		BuildLogDigest:  strings.TrimSpace(input.BuildLogDigest),
 	}
@@ -268,61 +271,148 @@ func (s *Service) buildWorkloadIdentityBinding(artifactDigest string, metadata D
 	return binding, nil
 }
 
-func validatePublishRequest(req *PublishRequest) ([]byte, *Error) {
+type publishValidation struct {
+	payloadBytes []byte
+	invoker      InvokerInfo
+}
+
+func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publishValidation, *Error) {
 	if req == nil {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "request body is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "request body is required"}
+	}
+
+	invoker, authErr := expectedInvokerForCaller(caller)
+	if authErr != nil {
+		return publishValidation{}, authErr
 	}
 
 	payloadBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.ArtifactPayloadB64))
 	if err != nil {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact_payload_b64 must be valid base64"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact_payload_b64 must be valid base64"}
 	}
 	if strings.TrimSpace(req.Manifest.ArtifactType) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.artifact_type is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.artifact_type is required"}
 	}
 	if !isLabeledSHA256Digest(req.Manifest.IntentDigest) {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.intent_digest must be a labeled sha256 digest"}
-	}
-	if strings.TrimSpace(req.Provenance.BuilderService) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.builder_service is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.intent_digest must be a labeled sha256 digest"}
 	}
 	if strings.TrimSpace(req.Provenance.Invoker.Service) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.service is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.service is required"}
 	}
 	if strings.TrimSpace(req.Provenance.Invoker.Principal) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.principal is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.principal is required"}
 	}
 	if !isLabeledSHA256Digest(req.Provenance.BuildLogDigest) {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.build_log_digest must be a labeled sha256 digest"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.build_log_digest must be a labeled sha256 digest"}
 	}
 	if !isLabeledSHA256Digest(req.DerivationMetadata.DerivationSpecDigest) {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.derivation_spec_digest must be a labeled sha256 digest"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.derivation_spec_digest must be a labeled sha256 digest"}
 	}
 	if strings.TrimSpace(req.DerivationMetadata.OutputID) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.output_id is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.output_id is required"}
 	}
 	if strings.TrimSpace(req.DerivationMetadata.ProducerRunID) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.producer_run_id is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.producer_run_id is required"}
 	}
 	if strings.TrimSpace(req.DerivationAttestation.PolicyVersion) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_attestation.policy_version is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_attestation.policy_version is required"}
 	}
 	if strings.TrimSpace(req.WorkloadIdentityBinding.ArtifactClass) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.artifact_class is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.artifact_class is required"}
 	}
 	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadType) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_type is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_type is required"}
 	}
 	if strings.TrimSpace(req.WorkloadIdentityBinding.ModulePath) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.module_path is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.module_path is required"}
 	}
 	if strings.TrimSpace(req.WorkloadIdentityBinding.PolicyVersion) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.policy_version is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.policy_version is required"}
 	}
 	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadIdentityID) == "" {
-		return nil, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_identity_id is required"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_identity_id is required"}
 	}
-	return payloadBytes, nil
+	if strings.TrimSpace(req.Provenance.Invoker.Service) != invoker.Service {
+		return publishValidation{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "provenance.invoker.service does not match authenticated caller"}
+	}
+	if strings.TrimSpace(req.Provenance.Invoker.Principal) != invoker.Principal {
+		return publishValidation{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "provenance.invoker.principal does not match authenticated caller"}
+	}
+	workloadIdentityID := strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadIdentityID)
+	if !isValidSPIFFEURI(workloadIdentityID) {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_identity_id must be a valid SPIFFE URI"}
+	}
+	serviceName := strings.TrimSpace(req.WorkloadIdentityBinding.ServiceName)
+	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadType) == "service" && serviceName == "" {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "workload_identity_binding.service_name is required for service workloads"}
+	}
+	if strings.TrimSpace(req.DerivationAttestation.PolicyVersion) != strings.TrimSpace(req.WorkloadIdentityBinding.PolicyVersion) {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "derivation_attestation.policy_version must match workload_identity_binding.policy_version"}
+	}
+	expectedArtifactType := strings.TrimSpace(req.DerivationAttestation.ExpectedArtifactType)
+	if expectedArtifactType != "" && expectedArtifactType != strings.TrimSpace(req.Manifest.ArtifactType) {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "derivation_attestation.expected_artifact_type must match manifest.artifact_type"}
+	}
+	if serviceName != "" {
+		derivedServiceName, ok := spiffeServiceName(workloadIdentityID)
+		if !ok || derivedServiceName != serviceName {
+			return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "workload_identity_binding.service_name conflicts with workload_identity_binding.workload_identity_id"}
+		}
+	}
+
+	return publishValidation{
+		payloadBytes: payloadBytes,
+		invoker:      invoker,
+	}, nil
+}
+
+func expectedInvokerForCaller(caller CallerIdentity) (InvokerInfo, *Error) {
+	switch caller.Path {
+	case "service/deployment":
+		return InvokerInfo{
+			Service:   "deployment",
+			Principal: "spiffe://monolith.internal/service/deployment",
+		}, nil
+	case "operator":
+		return InvokerInfo{
+			Service:   "operator",
+			Principal: "spiffe://monolith.internal/operator",
+		}, nil
+	default:
+		return InvokerInfo{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "caller not authorized for artifact publication"}
+	}
+}
+
+func isValidSPIFFEURI(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "spiffe" || parsed.Host == "" {
+		return false
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	return strings.TrimSpace(parsed.Path) != ""
+}
+
+func spiffeServiceName(value string) (string, bool) {
+	if !isValidSPIFFEURI(value) {
+		return "", false
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+
+	trimmedPath := strings.Trim(parsed.Path, "/")
+	segments := strings.Split(trimmedPath, "/")
+	if len(segments) != 2 || segments[0] != "service" || strings.TrimSpace(segments[1]) == "" {
+		return "", false
+	}
+	return segments[1], true
 }
 
 func newDependencyClient(cfg config.DependencyConfig) (*dependencyClient, error) {

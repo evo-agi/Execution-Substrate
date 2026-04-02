@@ -10,6 +10,11 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+type CallerIdentity struct {
+	Path     string
+	SPIFFEID string
+}
+
 type PublishRequest struct {
 	ArtifactPayloadB64      string                       `json:"artifact_payload_b64"`
 	Manifest                ManifestInput                `json:"manifest"`

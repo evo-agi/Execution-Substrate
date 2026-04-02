@@ -10,6 +10,7 @@ Any change to:
 - execution lifecycle behavior
 - ARS write or read contract
 - EGS trust-model semantics
+- AGS publish authorization rules
 
 must:
 
@@ -86,6 +87,7 @@ That means:
 - AGS must not sign arbitrary caller-supplied facts without bounded publication rules
 - AGS must not be exposed as a general-purpose signing service
 - AGS caller trust is a system-level responsibility, not an implementation detail inside one request handler
+- AGS caller-to-provenance bindings, builder derivation, and publish-time conflict checks are contract-bound and must not drift silently
 
 The trustworthiness of AGS inputs is part of the system boundary. If caller trust assumptions change, that is a system contract change and must be documented explicitly.
 

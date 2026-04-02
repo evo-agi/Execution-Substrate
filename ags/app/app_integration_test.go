@@ -66,6 +66,208 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	}
 }
 
+func TestPublishValidDeploymentCallerSucceeds(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload publishResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if !payload.Published {
+		t.Fatalf("expected published response")
+	}
+}
+
+func TestPublishValidOperatorCallerSucceeds(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
+		provenance := body["provenance"].(map[string]any)
+		invoker := provenance["invoker"].(map[string]any)
+		invoker["service"] = "operator"
+		invoker["principal"] = "spiffe://monolith.internal/operator"
+	})
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
+func TestPublishRejectsUnauthorizedCaller(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/execution", false, nil)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
+func TestPublishRejectsBootstrapPKICaller(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", true, nil)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
+func TestPublishIgnoresCallerSuppliedBuilderServiceAndESAccepts(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		provenance := body["provenance"].(map[string]any)
+		provenance["builder_service"] = "caller-controlled-builder"
+	})
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(&stack.publishResponse); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+
+	entry := stack.loadIndexEntry(t)
+	var provenance map[string]any
+	readJSONBlob(t, stack.rootDir, entry.ProvenanceDigest, &provenance)
+	if got := provenance["builder_service"]; got != "artifact-governance" {
+		t.Fatalf("expected builder_service artifact-governance, got %v", got)
+	}
+
+	startES(t, stack)
+	response = doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 prepare, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
+func TestPublishRejectsDeploymentCallerMismatchedInvokerService(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		provenance := body["provenance"].(map[string]any)
+		invoker := provenance["invoker"].(map[string]any)
+		invoker["service"] = "operator"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
+}
+
+func TestPublishRejectsDeploymentCallerMismatchedInvokerPrincipal(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		provenance := body["provenance"].(map[string]any)
+		invoker := provenance["invoker"].(map[string]any)
+		invoker["principal"] = "spiffe://monolith.internal/service/other"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
+}
+
+func TestPublishRejectsOperatorCallerMismatchedInvokerFields(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
+		provenance := body["provenance"].(map[string]any)
+		invoker := provenance["invoker"].(map[string]any)
+		invoker["service"] = "deployment"
+		invoker["principal"] = "spiffe://monolith.internal/service/deployment"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
+}
+
+func TestPublishRejectsInvalidWorkloadIdentityID(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		binding := body["workload_identity_binding"].(map[string]any)
+		binding["workload_identity_id"] = "not-a-spiffe-uri"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
+}
+
+func TestPublishRejectsWorkloadIdentityIDServiceNameConflict(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		binding := body["workload_identity_binding"].(map[string]any)
+		binding["service_name"] = "payments"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+}
+
+func TestPublishRejectsPolicyVersionConflict(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		binding := body["workload_identity_binding"].(map[string]any)
+		binding["policy_version"] = "different-policy-version"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+}
+
+func TestPublishRejectsExpectedArtifactTypeConflict(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		attestation := body["derivation_attestation"].(map[string]any)
+		attestation["expected_artifact_type"] = "other-artifact-type"
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+}
+
+func TestPublishRejectsServiceWorkloadMissingServiceName(t *testing.T) {
+	stack := startDependencyStack(t)
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+		binding := body["workload_identity_binding"].(map[string]any)
+		delete(binding, "service_name")
+	})
+	defer response.Body.Close()
+
+	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+}
+
 func TestPrepareRejectsTamperedCanonicalizationAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
@@ -434,7 +636,43 @@ func startES(t *testing.T, stack *publishedStack) {
 func publishArtifact(t *testing.T, stack *publishedStack) {
 	t.Helper()
 
-	requestBody := mustMarshalJSON(t, map[string]any{
+	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(&stack.publishResponse); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if !stack.publishResponse.Published {
+		t.Fatalf("expected published response")
+	}
+}
+
+func publishArtifactRequest(t *testing.T, stack *publishedStack, callerPath string, bootstrap bool, mutate func(map[string]any)) *http.Response {
+	t.Helper()
+
+	requestBody := buildPublishRequestBody(t, stack)
+	if mutate != nil {
+		mutate(requestBody)
+	}
+
+	return doJSONRequest(
+		t,
+		stack.ags.Addr(),
+		http.MethodPost,
+		"/v1/artifacts:publish",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, callerPath, bootstrap),
+		mustMarshalJSON(t, requestBody),
+	)
+}
+
+func buildPublishRequestBody(t *testing.T, stack *publishedStack) map[string]any {
+	t.Helper()
+
+	return map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString([]byte("artifact payload bytes")),
 		"manifest": map[string]any{
 			"artifact_type": "static-service",
@@ -485,20 +723,27 @@ func publishArtifact(t *testing.T, stack *publishedStack) {
 			"description":          "Execution workload",
 			"workload_identity_id": stack.workloadIdentityID,
 		},
-	})
+	}
+}
 
-	response := doJSONRequest(t, stack.ags.Addr(), http.MethodPost, "/v1/artifacts:publish", stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "service/deployment", false), requestBody)
-	defer response.Body.Close()
+func assertPublishError(t *testing.T, response *http.Response, expectedStatus int, expectedCode string) {
+	t.Helper()
 
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	if response.StatusCode != expectedStatus {
+		t.Fatalf("expected %d, got %d body=%s", expectedStatus, response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
 	}
 
-	if err := json.NewDecoder(response.Body).Decode(&stack.publishResponse); err != nil {
-		t.Fatalf("decode publish response: %v", err)
-	}
-	if !stack.publishResponse.Published {
-		t.Fatalf("expected published response")
+	var payload map[string]any
+	if strings.Contains(response.Header.Get("Content-Type"), "application/json") {
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode publish error response: %v", err)
+		}
+		if payload["success"] != false {
+			t.Fatalf("expected success=false, got %v", payload["success"])
+		}
+		if expectedCode != "" && payload["code"] != expectedCode {
+			t.Fatalf("expected code %q, got %v", expectedCode, payload["code"])
+		}
 	}
 }
 

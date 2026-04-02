@@ -37,6 +37,7 @@ AGS owns:
 - artifact-fact production
 - artifact-fact signing
 - artifact publication through ARS
+- bounded publish authorization checks for trusted control-plane callers
 
 AGS must not:
 
@@ -45,6 +46,10 @@ AGS must not:
 - own runtime admission
 - enforce TrustModel policy at execution time
 - own scheduler or lifecycle behavior
+- act as a general-purpose signing service
+- sign caller identity claims without binding them to the authenticated caller
+- trust caller-supplied `builder_service`
+- semantically validate `policy_decisions` in this slice
 
 ## EGS
 

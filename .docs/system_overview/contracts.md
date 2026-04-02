@@ -25,6 +25,54 @@ Any change to those canonicalization rules must update:
 
 in one explicit contract change.
 
+## AGS Publish Authorization Contract
+
+AGS is a trusted control-plane publication boundary, not a general-purpose signing surface.
+
+Allowed public publish callers are limited to:
+
+- `spiffe://monolith.internal/service/deployment`
+- `spiffe://monolith.internal/operator`
+
+Transport preconditions remain:
+
+- SPIFFE caller identity is required
+- bootstrap-PKI callers are rejected
+
+AGS must bind authenticated caller identity into signed provenance facts:
+
+- `provenance.builder_service` is AGS-owned
+- AGS must ignore caller-supplied `provenance.builder_service`
+- AGS must always emit `provenance.builder_service = "artifact-governance"`
+- `provenance.invoker.service` and `provenance.invoker.principal` must match the authenticated caller identity
+
+AGS must validate bounded cross-field consistency before signing:
+
+- `workload_identity_binding.workload_identity_id` must be a valid SPIFFE URI under the current request contract
+- `workload_identity_binding.service_name` must not conflict with `workload_identity_binding.workload_identity_id`
+- `workload_identity_binding.workload_type = "service"` requires `service_name`
+- `derivation_attestation.policy_version` must match `workload_identity_binding.policy_version`
+- `derivation_attestation.expected_artifact_type`, when present, must match `manifest.artifact_type`
+
+`policy_decisions` remain caller-supplied in this slice.
+
+AGS must:
+
+- validate their structure and request-level consistency only
+- avoid semantic validation or policy evaluation in this slice
+
+AGS must not:
+
+- sign unbound caller identity claims
+- vary publish behavior by caller type beyond identity validation and caller-to-invoker binding
+- act as a signing oracle
+
+The bounded failure model is:
+
+- `400 invalid_request` for malformed or structurally invalid inputs
+- `403 publish_forbidden` for unauthorized callers or caller-to-claim identity mismatch
+- `409 artifact_fact_conflict` for internally conflicting artifact facts
+
 ## ARS Write / Read Contract
 
 ARS is the only storage boundary for published artifacts.
