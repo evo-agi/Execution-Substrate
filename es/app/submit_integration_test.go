@@ -72,6 +72,11 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 		t.Fatalf("unexpected status: %q", payload.Status)
 	}
 
+	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
+		t.Fatalf("expected network_mode=none for network_access=false, got %#v", networkMode)
+	}
+
 	stack.nomad.waitForJob(t, payload.NomadJobID)
 	alloc := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
 	if alloc.ClientStatus != "complete" {
@@ -98,6 +103,53 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	}
 	if !strings.Contains(logs, `"status":"ok"`) || !strings.Contains(logs, stack.publishResponse.ArtifactDigest) {
 		t.Fatalf("expected final json marker in logs, got %q", logs)
+	}
+}
+
+func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
+	stack := startSubmitStackWithNetworkAccess(t, true)
+
+	response := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodPost,
+		"/v1/executions:submit",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		buildSubmitRequestBody(t, stack),
+	)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	if !payload.Success || !payload.Submitted {
+		t.Fatalf("expected successful submission, got %+v", payload)
+	}
+
+	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "bridge" {
+		t.Fatalf("expected network_mode=bridge for network_access=true, got %#v", networkMode)
+	}
+
+	stack.nomad.waitForJob(t, payload.NomadJobID)
+	alloc := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	if alloc.ClientStatus != "complete" {
+		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
+	}
+	task, ok := alloc.TaskStates["task"]
+	if !ok {
+		t.Fatalf("expected task state for task")
+	}
+	if task.Failed {
+		t.Fatalf("expected successful task, got failed task state: %+v", task)
+	}
+	if exitCode := task.exitCode(); exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 }
 
@@ -133,6 +185,10 @@ type submitPublishResponse struct {
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
+	return startSubmitStackWithNetworkAccess(t, false)
+}
+
+func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submitStack {
 	t.Helper()
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	fixture := newTLSFixture(t)
@@ -397,7 +453,7 @@ func startSubmitStack(t *testing.T) *submitStack {
 	startService(t, esService.Start, esService.Addr, fixture.serverTLSConfig(t, fixture.esServerName))
 	stack.esRunning = true
 
-	publishSubmitArtifact(t, stack)
+	publishSubmitArtifact(t, stack, networkAccess)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
@@ -424,7 +480,7 @@ func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
 	})
 }
 
-func publishSubmitArtifact(t *testing.T, stack *submitStack) {
+func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool) {
 	t.Helper()
 
 	requestBody := mustMarshalJSON(t, map[string]any{
@@ -460,7 +516,7 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack) {
 				"forbidden_toolchains":    []string{},
 				"os":                      "linux",
 				"arch":                    "amd64",
-				"network_access":          false,
+				"network_access":          networkAccess,
 				"writable_paths":          []string{},
 				"forbidden_paths":         []string{},
 				"determinism_expectation": "deterministic",
@@ -543,6 +599,19 @@ type nomadAllocationSummary struct {
 	ID           string                    `json:"ID"`
 	ClientStatus string                    `json:"ClientStatus"`
 	TaskStates   map[string]nomadTaskState `json:"TaskStates"`
+}
+
+type nomadJobDetail struct {
+	TaskGroups []nomadTaskGroupDetail `json:"TaskGroups"`
+}
+
+type nomadTaskGroupDetail struct {
+	Tasks []nomadTaskDetail `json:"Tasks"`
+}
+
+type nomadTaskDetail struct {
+	Name   string         `json:"Name"`
+	Config map[string]any `json:"Config"`
 }
 
 type nomadTaskState struct {
@@ -679,6 +748,39 @@ func (n *nomadHarness) waitForJob(t *testing.T, jobID string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("nomad job %s did not appear", jobID)
+}
+
+func (n *nomadHarness) fetchJobDetail(t *testing.T, jobID string) nomadJobDetail {
+	t.Helper()
+
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/job/" + jobID)
+	if err != nil {
+		t.Fatalf("fetch job %s: %v", jobID, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("fetch job %s: unexpected status %d body=%s", jobID, response.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload nomadJobDetail
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode job %s: %v", jobID, err)
+	}
+	return payload
+}
+
+func (j nomadJobDetail) taskConfig(t *testing.T) map[string]any {
+	t.Helper()
+
+	if len(j.TaskGroups) == 0 {
+		t.Fatalf("expected at least one task group in job")
+	}
+	if len(j.TaskGroups[0].Tasks) == 0 {
+		t.Fatalf("expected at least one task in job")
+	}
+	return j.TaskGroups[0].Tasks[0].Config
 }
 
 func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nomadAllocationSummary {

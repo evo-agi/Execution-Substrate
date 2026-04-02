@@ -96,13 +96,6 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	if attestation.Constraints.NetworkAccess {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeUnsupportedNetworkAccess,
-			Message: "network_access=true is not supported in this execution slice",
-		}
-	}
 
 	binding, err := s.fetchWorkloadIdentityBinding(ctx, req.Invocation.ArtifactDigest)
 	if err != nil {
@@ -154,6 +147,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		stage,
 		req,
 		prepareResult,
+		attestation.Constraints.NetworkAccess,
 		taskCPU,
 		taskMemoryMB,
 		env,
@@ -276,6 +270,7 @@ func buildNomadJobSpec(
 	stage stagedPayload,
 	req PrepareRequest,
 	prepared PrepareResult,
+	networkAccess bool,
 	taskCPU int,
 	taskMemoryMB int,
 	env map[string]string,
@@ -297,10 +292,9 @@ func buildNomadJobSpec(
 
 	// TODO: Do not mention "monolith"
 	taskConfig := map[string]any{
-		"image":        cfg.Execution.BaseImage,
-		"command":      "/bin/sh",
-		"args":         shellArgs,
-		"network_mode": "none",
+		"image":   cfg.Execution.BaseImage,
+		"command": "/bin/sh",
+		"args":    shellArgs,
 		"mounts": []any{
 			map[string]any{
 				"type":     "bind",
@@ -315,6 +309,11 @@ func buildNomadJobSpec(
 				"readonly": false,
 			},
 		},
+	}
+	if networkAccess {
+		taskConfig["network_mode"] = "bridge"
+	} else {
+		taskConfig["network_mode"] = "none"
 	}
 
 	return map[string]any{

@@ -1,7 +1,7 @@
 # Runbook: Submit Static Script Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-01`
+- Last Updated: `2026-04-02`
 - Compatible System Version: `Execution-Platform commit 1a74b208cf970299e295d4479d2f4e1444930216`
 
 ## 1. Objective
@@ -11,6 +11,13 @@ Submit one real workload end to end through the governed execution path:
 `AGS publish -> ARS store/register -> ES submit -> Nomad batch job -> Docker container runs -> observable logs + exit code`
 
 This runbook proves the minimal real execution slice only. It does not cover durable run records, ES log/status APIs, cancel flows, sync waiting, or broader runtime orchestration.
+
+In the current bounded slice, runtime networking is controlled only by signed derivation constraints:
+
+- `network_access=false` -> Docker `network_mode = none`
+- `network_access=true` -> Docker `network_mode = bridge`
+
+The slice still forbids host networking, port publishing, custom networks, and network-policy interpretation.
 
 ## 2. Prerequisites
 

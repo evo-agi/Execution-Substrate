@@ -47,7 +47,6 @@ const (
 	codeUnsupportedArtifactType         = "unsupported_artifact_type"
 	codeUnsupportedCapabilities         = "unsupported_capabilities"
 	codeUnsupportedMounts               = "unsupported_mounts"
-	codeUnsupportedNetworkAccess        = "unsupported_network_access"
 	codePayloadUnavailable              = "payload_unavailable"
 	codeSubmissionFailed                = "submission_failed"
 	codeInvalidRunID                    = "invalid_run_id"

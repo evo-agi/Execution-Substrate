@@ -161,6 +161,18 @@ ES must:
 - submit one bounded class of execution to Nomad
 - derive lifecycle status, logs, and cancellation from Nomad only
 
+For the current bounded execution slice:
+
+- `constraints.network_access = false` must map to Docker `network_mode = "none"`
+- `constraints.network_access = true` must map to Docker `network_mode = "bridge"`
+
+ES must not:
+
+- enable host networking
+- publish ports
+- attach tasks to custom Docker networks
+- reinterpret signed network constraints into a broader network-policy system
+
 ES must not:
 
 - own trust policy

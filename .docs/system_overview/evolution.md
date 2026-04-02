@@ -68,7 +68,8 @@ Changing an invariant requires an explicit contract revision across code, tests,
 These are bounded slice choices and may evolve later through explicit planning:
 
 - `static-script` only
-- no outbound network access
+- network access only through the signed `constraints.network_access` toggle
+- no host networking, port publishing, or custom networks
 - no runtime mounts
 - no retries or reschedule
 
