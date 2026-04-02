@@ -1,0 +1,32 @@
+{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8441,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/abs/path/tls/acs-server-cert.pem",
+    "key_file": "/abs/path/tls/acs-server-key.pem",
+    "client_ca_file": "/abs/path/tls/runtime-ca.pem"
+  },
+  "authorization": {
+    "allowed_spiffe_path_prefixes": [
+      "service/execution",
+      "service/deployment",
+      "service/artifact-governance",
+      "operator"
+    ]
+  },
+  "catalog": {
+    "seed_artifact_digests": {
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+        "identity_kind": "workload_zone_vault"
+      }
+    }
+  },
+  "audit": {
+    "mode": "noop"
+  }
+}

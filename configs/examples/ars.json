@@ -1,0 +1,26 @@
+{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8442,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/abs/path/tls/ars-server-cert.pem",
+    "key_file": "/abs/path/tls/ars-server-key.pem",
+    "client_ca_file": "/abs/path/tls/runtime-ca.pem"
+  },
+  "authorization": {
+    "allowed_spiffe_path_prefixes": [
+      "service/execution",
+      "service/artifact-governance",
+      "service/deployment",
+      "operator"
+    ]
+  },
+  "storage": {
+    "root_dir": "/abs/path/ars-data/blobs",
+    "index_file": "/abs/path/ars-data/index.json"
+  }
+}

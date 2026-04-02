@@ -1,0 +1,33 @@
+{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8444,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/abs/path/tls/ags-server-cert.pem",
+    "key_file": "/abs/path/tls/ags-server-key.pem",
+    "client_ca_file": "/abs/path/tls/runtime-ca.pem"
+  },
+  "security": {
+    "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
+  },
+  "dependencies": {
+    "artifact_registry": {
+      "base_url": "https://127.0.0.1:8442",
+      "server_name": "server.artifact-registry.internal",
+      "client_cert_file": "/abs/path/tls/ags-client-cert.pem",
+      "client_key_file": "/abs/path/tls/ags-client-key.pem",
+      "root_ca_file": "/abs/path/tls/runtime-ca.pem",
+      "timeout_seconds": 5
+    }
+  },
+  "signer": {
+    "algorithm": "ed25519",
+    "key_id": "ags-key-1",
+    "private_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+  }
+}
