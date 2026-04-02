@@ -155,6 +155,7 @@ func callerSPIFFEPath(r *http.Request) (string, bool) {
 }
 
 func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
+	// TODO: Do not mention "monolith" or "internal"
 	const prefix = "spiffe://monolith.internal/"
 
 	for _, uri := range cert.URIs {

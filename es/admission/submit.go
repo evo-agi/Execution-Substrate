@@ -253,6 +253,8 @@ func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
+
+	// TODO: Do not mention "monolith"
 	env["EXEC_RUN_ID"] = runID
 	env["EXEC_ARTIFACT_DIGEST"] = prepared.ArtifactDigest
 	env["EXEC_WORK_DIR"] = "/monolith/run/work"
@@ -277,6 +279,7 @@ func buildNomadJobSpec(
 	taskMemoryMB int,
 	env map[string]string,
 ) map[string]any {
+	// TODO: Do not mention "monolith"
 	wrapper := strings.Join([]string{
 		"set -eu",
 		"mkdir -p /monolith/run/work",
@@ -291,6 +294,7 @@ func buildNomadJobSpec(
 	shellArgs := []string{"-ec", wrapper, "entrypoint"}
 	shellArgs = append(shellArgs, req.Invocation.Argv...)
 
+	// TODO: Do not mention "monolith"
 	taskConfig := map[string]any{
 		"image":        cfg.Execution.BaseImage,
 		"command":      "/bin/sh",
