@@ -12,6 +12,7 @@ import (
 	"execution-platform/cgs/config"
 	"execution-platform/cgs/policy"
 	"execution-platform/cgs/proof"
+	"execution-platform/observability"
 )
 
 const serviceName = "credential-governance"
@@ -49,7 +50,7 @@ func NewServer(
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/credential/authorize", s.handleAuthorize)
-	return mux
+	return observability.WrapHandler(serviceName, mux)
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {

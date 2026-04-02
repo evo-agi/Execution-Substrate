@@ -17,6 +17,7 @@ import (
 	"time"
 
 	esconfig "execution-platform/es/config"
+	"execution-platform/observability"
 )
 
 const (
@@ -374,6 +375,11 @@ func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {
 		datacenter: strings.TrimSpace(cfg.Datacenter),
 		client: &http.Client{
 			Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
+			// TODO: Nomad is treated as an external execution dependency in this
+			// slice, so traceparent propagation remains disabled explicitly.
+			// Future external dependencies must make the same propagation decision
+			// deliberately rather than inheriting internal behavior silently.
+			Transport: observability.WrapRoundTripper("execution", "nomad", false, nil),
 		},
 	}, nil
 }

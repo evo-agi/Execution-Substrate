@@ -15,6 +15,7 @@ import (
 
 	"execution-platform/ars/index"
 	"execution-platform/ars/store"
+	"execution-platform/observability"
 )
 
 const (
@@ -48,7 +49,7 @@ func (s *Server) Handler() http.Handler {
 	// be relied upon. ARS keeps manual routing here so invalid paths remain an
 	// explicit service concern. Revisit only if a future shared router can do the
 	// same without reintroducing implicit redirects.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return observability.WrapHandler(serviceName, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 
 		switch {
@@ -74,7 +75,7 @@ func (s *Server) Handler() http.Handler {
 		default:
 			http.NotFound(w, r)
 		}
-	})
+	}))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

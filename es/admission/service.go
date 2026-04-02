@@ -24,6 +24,7 @@ import (
 
 	egsmodel "execution-platform/egs/model"
 	esconfig "execution-platform/es/config"
+	"execution-platform/observability"
 )
 
 const (
@@ -105,8 +106,9 @@ type Service struct {
 }
 
 type dependencyClient struct {
-	baseURL *url.URL
-	client  *http.Client
+	dependencyName string
+	baseURL        *url.URL
+	client         *http.Client
 }
 
 type ed25519Verifier struct {
@@ -161,15 +163,15 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		return nil, err
 	}
 
-	acsClient, err := newDependencyClient(cfg.Dependencies.ArtifactCatalog)
+	acsClient, err := newDependencyClient(cfg.Dependencies.ArtifactCatalog, "artifact-catalog")
 	if err != nil {
 		return nil, fmt.Errorf("build artifact catalog client: %w", err)
 	}
-	arsClient, err := newDependencyClient(cfg.Dependencies.ArtifactRegistry)
+	arsClient, err := newDependencyClient(cfg.Dependencies.ArtifactRegistry, "artifact-registry")
 	if err != nil {
 		return nil, fmt.Errorf("build artifact registry client: %w", err)
 	}
-	egsClient, err := newDependencyClient(cfg.Dependencies.ExecutionGovernance)
+	egsClient, err := newDependencyClient(cfg.Dependencies.ExecutionGovernance, "execution-governance")
 	if err != nil {
 		return nil, fmt.Errorf("build execution governance client: %w", err)
 	}
@@ -768,7 +770,7 @@ func fetchArtifactJSON[T any](ctx context.Context, client *dependencyClient, end
 	}
 }
 
-func newDependencyClient(cfg esconfig.DependencyConfig) (*dependencyClient, error) {
+func newDependencyClient(cfg esconfig.DependencyConfig, dependencyName string) (*dependencyClient, error) {
 	certificate, err := tls.LoadX509KeyPair(cfg.ClientCertFile, cfg.ClientKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load client certificate: %w", err)
@@ -800,10 +802,11 @@ func newDependencyClient(cfg esconfig.DependencyConfig) (*dependencyClient, erro
 	}
 
 	return &dependencyClient{
-		baseURL: baseURL,
+		dependencyName: strings.TrimSpace(dependencyName),
+		baseURL:        baseURL,
 		client: &http.Client{
 			Timeout:   time.Duration(cfg.TimeoutSeconds) * time.Second,
-			Transport: transport,
+			Transport: observability.WrapRoundTripper("execution", strings.TrimSpace(dependencyName), true, transport),
 		},
 	}, nil
 }

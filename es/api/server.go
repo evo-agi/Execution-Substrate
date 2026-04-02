@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"execution-platform/es/admission"
+	"execution-platform/observability"
 )
 
 const serviceName = "execution"
@@ -50,7 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/executions:submit", s.handleSubmit)
 	mux.HandleFunc("GET /v1/executions/", s.handleLifecycleGet)
 	mux.HandleFunc("POST /v1/executions/", s.handleLifecyclePost)
-	return mux
+	return observability.WrapHandler(serviceName, mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

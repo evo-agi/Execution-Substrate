@@ -11,6 +11,7 @@ import (
 
 	"execution-platform/acs/audit"
 	"execution-platform/acs/catalog"
+	"execution-platform/observability"
 )
 
 const serviceName = "artifact-catalog"
@@ -39,7 +40,7 @@ func (s *Server) Handler() http.Handler {
 	// frozen ACS slice unless a critical bug requires explicit normalization later.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/configuration/", s.handleConfigurationLookup)
-	return mux
+	return observability.WrapHandler(serviceName, mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

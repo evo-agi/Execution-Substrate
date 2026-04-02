@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"execution-platform/ags/publish"
+	"execution-platform/observability"
 )
 
 const serviceName = "artifact-governance"
@@ -36,7 +37,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /v1/artifacts:publish", s.handlePublish)
-	return mux
+	return observability.WrapHandler(serviceName, mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +48,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		started = s.isStarted()
 	}
 
-	snapshot := s.service.Health(context.Background())
+	snapshot := s.service.Health(r.Context())
 	ready := started && snapshot.SignerReady && snapshot.ArtifactRegistryHealthy
 	status := "unhealthy"
 	if ready {

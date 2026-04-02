@@ -8,6 +8,7 @@ import (
 
 	"execution-platform/egs/model"
 	"execution-platform/egs/sign"
+	"execution-platform/observability"
 )
 
 const serviceName = "execution-governance"
@@ -40,7 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/trust-model", s.handleTrustModel)
-	return mux
+	return observability.WrapHandler(serviceName, mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

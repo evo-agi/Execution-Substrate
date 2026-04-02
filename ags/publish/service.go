@@ -21,6 +21,7 @@ import (
 
 	"execution-platform/ags/config"
 	"execution-platform/ags/sign"
+	"execution-platform/observability"
 )
 
 const (
@@ -437,14 +438,14 @@ func newDependencyClient(cfg config.DependencyConfig) (*dependencyClient, error)
 
 	client := &http.Client{
 		Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
-		Transport: &http.Transport{
+		Transport: observability.WrapRoundTripper(builderServiceName, "artifact-registry", true, &http.Transport{
 			TLSClientConfig: &tls.Config{
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{certificate},
 				RootCAs:      rootCAs,
 				ServerName:   cfg.ServerName,
 			},
-		},
+		}),
 	}
 
 	return &dependencyClient{
