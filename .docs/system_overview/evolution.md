@@ -73,6 +73,7 @@ These are bounded slice choices and may evolve later through explicit planning:
 - runtime mounts only through bounded artifact-backed read-only mounts under `/monolith/mounts/`
 - no host-path, writable, identity, or secret mounts
 - one reserved ES-owned Unix-socket workload-identity endpoint mount at a fixed in-container path
+- one startup-only behavior probe that proves the configured execution substrate can expose that mounted endpoint inside the workload container
 - no retries or reschedule
 
 These constraints are still contractual for the current slice, but they are not system invariants. They may be extended later only through explicit design updates, not by convenience changes in code.

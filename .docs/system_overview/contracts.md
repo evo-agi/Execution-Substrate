@@ -178,6 +178,8 @@ For the current bounded execution slice:
   - be read-only
   - be ES-owned and not caller-controlled
   - remain outside `invocation.mounts`
+- when submit is configured, ES must validate the configured endpoint path at startup and again at submit time
+- when submit is configured, ES must run one startup-only behavior probe that proves the configured execution substrate can expose the mounted endpoint inside the workload container
 - ES must also inject `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint.sock`
 
 ES must not:
@@ -191,6 +193,9 @@ ES must not:
 - use mounts as an identity, secret, or orchestration channel
 - widen the single reserved workload-identity endpoint mount into a general external-mount facility
 - inject credentials or endpoint-derived secret material through environment variables
+- branch on OS or runtime identity platform type
+- introduce fallback behavior when endpoint validation or exposure probing fails
+- move endpoint capability probing into lifecycle handlers, background workers, or post-submit business logic
 
 ES must not:
 

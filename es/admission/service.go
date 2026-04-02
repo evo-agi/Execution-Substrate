@@ -199,7 +199,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create execution staging root: %w", err)
 		}
-		if err := validateWorkloadIdentityEndpointHostPath(cfg.Execution.WorkloadIdentityEndpointHostPath); err != nil {
+		if err := ValidateIdentityEndpointPath(cfg.Execution.WorkloadIdentityEndpointHostPath); err != nil {
 			return nil, err
 		}
 		nomadClient, err = newNomadClient(cfg.Nomad)
@@ -256,6 +256,10 @@ func (s *Service) Initialize(ctx context.Context) error {
 	s.mu.Lock()
 	s.trustModel = &normalized
 	s.mu.Unlock()
+
+	if err := validateRuntimeIdentityPlumbingAtStartup(ctx, s.cfg, s.nomadClient); err != nil {
+		return err
+	}
 	return nil
 }
 

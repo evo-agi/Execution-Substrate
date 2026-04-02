@@ -107,7 +107,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	if endpointErr := validateWorkloadIdentityEndpointHostPath(s.cfg.Execution.WorkloadIdentityEndpointHostPath); endpointErr != nil {
+	if endpointErr := ValidateIdentityEndpointPath(s.cfg.Execution.WorkloadIdentityEndpointHostPath); endpointErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeExecutionRuntimeUnavailable,
@@ -152,11 +152,11 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	if hasOverlappingRuntimeMountTargets(append(stagedRuntimeMountTargets(stage.mounts), runtimeIdentityEndpointTargetPath)) {
+	if err := ValidateReservedRuntimePaths(stagedRuntimeMountTargets(stage.mounts)); err != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusConflict,
 			Code:    codeMountConflict,
-			Message: "runtime mount target paths must not overlap reserved runtime paths",
+			Message: err.Error(),
 		}
 	}
 

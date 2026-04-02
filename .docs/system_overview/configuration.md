@@ -216,6 +216,8 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
   - `execution.base_image`
   - `execution.workload_identity_endpoint_host_path`
 - `execution.workload_identity_endpoint_host_path` must be an absolute path to a Unix socket named `endpoint.sock` on the ES host
+- when submit is enabled, ES startup also proves that the configured execution substrate can expose that mounted host socket inside the workload container
+- if endpoint validation or runtime exposure probing fails, ES startup fails explicitly; there is no fallback mode for this slice
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 
 Minimal vault-auth example:

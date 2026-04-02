@@ -322,6 +322,25 @@ func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
 	}
 }
 
+func (c *nomadClient) purgeJob(ctx context.Context, jobID string) error {
+	query := url.Values{}
+	query.Set("purge", "true")
+
+	response, err := c.delete(ctx, "/v1/job/"+jobID, query)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+		case http.StatusOK, http.StatusNotFound:
+			return nil
+		default:
+			payload, _ := io.ReadAll(response.Body)
+			return fmt.Errorf("purge nomad job: unexpected status %d: %s", response.StatusCode, strings.TrimSpace(string(payload)))
+	}
+}
+
 func (c *nomadClient) get(ctx context.Context, requestPath string, query url.Values) (*http.Response, error) {
 	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean(requestPath)})
 	if query != nil {

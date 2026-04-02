@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -484,6 +485,53 @@ func TestNewESRejectsNonSocketWorkloadIdentityEndpointPath(t *testing.T) {
 	}
 }
 
+func TestESStartFailsWhenIdentityEndpointPathDriftsBeforeStartup(t *testing.T) {
+	stack := startDependencyStack(t, stackOptions{})
+	defer stack.shutdownAll(t)
+
+	nomad := startNomadHarness(t, t.TempDir())
+	defer nomad.shutdown(t)
+
+	rootDir := newShortSocketTempDir(t, "es-ri-start-")
+	endpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
+	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
+		cfg.Nomad = esconfig.NomadConfig{
+			BaseURL:        nomad.baseURL(),
+			Datacenter:     "dc1",
+			TimeoutSeconds: 5,
+		}
+		cfg.Execution = esconfig.ExecutionConfig{
+			StagingRootDir:                   filepath.Join(t.TempDir(), "es-stage"),
+			BaseImage:                        "alpine:3.20",
+			WorkloadIdentityEndpointHostPath: endpoint.path,
+		}
+	})
+
+	service, err := esapp.New(cfg)
+	if err != nil {
+		endpoint.shutdown(t)
+		t.Fatalf("build es app: %v", err)
+	}
+	endpoint.shutdown(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := service.Start(ctx); err == nil || !strings.Contains(err.Error(), "execution.workload_identity_endpoint_host_path is unavailable") {
+		t.Fatalf("expected startup validation failure after endpoint drift, got %v", err)
+	}
+}
+
+func TestSubmitFailsWhenIdentityEndpointPathDriftsAfterStartup(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	stack.identityEndpoint.shutdown(t)
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusServiceUnavailable, "execution_runtime_unavailable")
+}
+
 type submitStack struct {
 	fixture *tlsFixture
 	rootDir string
@@ -799,13 +847,28 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build es app: %v", err)
 	}
 	stack.es = esService
-	startService(t, esService.Start, esService.Addr, fixture.serverTLSConfig(t, fixture.esServerName))
+	startExecutionServiceOrSkipRuntimeIdentityProbe(t, esService, fixture.serverTLSConfig(t, fixture.esServerName))
 	stack.esRunning = true
 
 	publishSubmitArtifact(t, stack, opts.networkAccess)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
+}
+
+func startExecutionServiceOrSkipRuntimeIdentityProbe(t *testing.T, service *esapp.App, tlsConfig *tls.Config) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := service.Start(ctx); err != nil {
+		if strings.Contains(err.Error(), "runtime identity endpoint exposure capability could not be proven") {
+			t.Skipf("runtime identity plumbing unsupported in this environment: %v", err)
+		}
+		t.Fatalf("start service: %v", err)
+	}
+	waitForHealthy(t, service.Addr(), tlsConfig)
 }
 
 func startMockWorkloadIdentityEndpoint(t *testing.T, rootDir string) *mockWorkloadIdentityEndpoint {

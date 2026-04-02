@@ -15,7 +15,14 @@ const (
 	runtimeIdentityEndpointEnvValue   = "unix://" + runtimeIdentityEndpointTargetPath
 )
 
-func validateWorkloadIdentityEndpointHostPath(hostPath string) error {
+var reservedRuntimePaths = []string{
+	"/monolith/staged",
+	"/monolith/run",
+	runtimeIdentityEndpointTargetDir,
+	runtimeIdentityEndpointTargetPath,
+}
+
+func ValidateIdentityEndpointPath(hostPath string) error {
 	trimmed := strings.TrimSpace(hostPath)
 	if trimmed == "" {
 		return fmt.Errorf("execution.workload_identity_endpoint_host_path is required")
@@ -37,6 +44,27 @@ func validateWorkloadIdentityEndpointHostPath(hostPath string) error {
 	return nil
 }
 
+func ValidateReservedRuntimePaths(targetPaths []string) error {
+	for _, targetPath := range targetPaths {
+		normalized := strings.TrimSpace(targetPath)
+		if normalized == "" {
+			continue
+		}
+		for _, reservedPath := range reservedRuntimePaths {
+			if runtimePathsOverlap(normalized, reservedPath) {
+				return fmt.Errorf("runtime mount target paths must not overlap reserved runtime paths")
+			}
+		}
+	}
+	return nil
+}
+
 func runtimeIdentityEndpointMountSource(hostPath string) string {
 	return filepath.Dir(strings.TrimSpace(hostPath))
+}
+
+func runtimePathsOverlap(first string, second string) bool {
+	return first == second ||
+		strings.HasPrefix(first, second+"/") ||
+		strings.HasPrefix(second, first+"/")
 }
