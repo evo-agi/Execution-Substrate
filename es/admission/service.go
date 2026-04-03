@@ -551,21 +551,21 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 			Message: "artifact digest mismatch between request and artifact descriptor",
 		}
 	}
-	if evidence.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
+	if evidence.Claims.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
 			Message: "artifact digest mismatch between request and artifact evidence",
 		}
 	}
-	if evidence.Admission.Derivation.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
+	if evidence.Claims.Admission.Derivation.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
 			Message: "derivation_spec_digest does not match artifact evidence",
 		}
 	}
-	if evidence.Admission.Derivation.OutputID != req.Invocation.OutputID {
+	if evidence.Claims.Admission.Derivation.OutputID != req.Invocation.OutputID {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
@@ -584,7 +584,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 
 func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustModel, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
 	artifactDigest := strings.TrimSpace(descriptor.Artifact.ArtifactDigest)
-	if evidence.Artifact.ArtifactDigest != artifactDigest {
+	if evidence.Claims.Artifact.ArtifactDigest != artifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
@@ -598,21 +598,21 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustMod
 			Message: "artifact evidence is structurally invalid",
 		}
 	}
-	if evidence.Artifact.PayloadDigest != strings.TrimSpace(descriptor.Package.Payload.Digest) {
+	if evidence.Claims.Artifact.PayloadDigest != strings.TrimSpace(descriptor.Package.Payload.Digest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
 			Message: "artifact descriptor payload reference does not match artifact evidence",
 		}
 	}
-	if evidence.Artifact.ArtifactType != strings.TrimSpace(descriptor.Artifact.ArtifactType) {
+	if evidence.Claims.Artifact.ArtifactType != strings.TrimSpace(descriptor.Artifact.ArtifactType) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
 			Message: "artifact descriptor artifact type does not match artifact evidence",
 		}
 	}
-	if evidence.Artifact.IntentDigest != strings.TrimSpace(descriptor.Artifact.IntentDigest) {
+	if evidence.Claims.Artifact.IntentDigest != strings.TrimSpace(descriptor.Artifact.IntentDigest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
@@ -635,30 +635,30 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustMod
 		payloadDigest: strings.TrimSpace(descriptor.Package.Payload.Digest),
 		signerKeyID:   evidence.Seal.KeyID,
 		workload: WorkloadInfo{
-			Type:               evidence.Admission.Workload.WorkloadType,
-			ServiceName:        evidence.Admission.Workload.ServiceName,
-			WorkloadIdentityID: evidence.Admission.Workload.WorkloadIdentityID,
+			Type:               evidence.Claims.Admission.Workload.WorkloadType,
+			ServiceName:        evidence.Claims.Admission.Workload.ServiceName,
+			WorkloadIdentityID: evidence.Claims.Admission.Workload.WorkloadIdentityID,
 		},
 		workloadAttrs: esconfig.WorkloadIdentityAttributes{
-			ArtifactClass:      evidence.Admission.Workload.ArtifactClass,
-			WorkloadType:       evidence.Admission.Workload.WorkloadType,
-			ServiceName:        evidence.Admission.Workload.ServiceName,
-			WorkloadIdentityID: evidence.Admission.Workload.WorkloadIdentityID,
+			ArtifactClass:      evidence.Claims.Admission.Workload.ArtifactClass,
+			WorkloadType:       evidence.Claims.Admission.Workload.WorkloadType,
+			ServiceName:        evidence.Claims.Admission.Workload.ServiceName,
+			WorkloadIdentityID: evidence.Claims.Admission.Workload.WorkloadIdentityID,
 		},
-		targetPlatform: evidence.Admission.Workload.TargetPlatform,
-		networkAccess:  evidence.Admission.Derivation.Constraints.NetworkAccess,
+		targetPlatform: evidence.Claims.Admission.Workload.TargetPlatform,
+		networkAccess:  evidence.Claims.Admission.Derivation.Constraints.NetworkAccess,
 	}, nil
 }
 
 func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 	return Manifest{
-		ArtifactDigest: evidence.Artifact.ArtifactDigest,
-		ArtifactType:   evidence.Artifact.ArtifactType,
-		IntentDigest:   evidence.Artifact.IntentDigest,
+		ArtifactDigest: evidence.Claims.Artifact.ArtifactDigest,
+		ArtifactType:   evidence.Claims.Artifact.ArtifactType,
+		IntentDigest:   evidence.Claims.Artifact.IntentDigest,
 		RuntimeInterface: RuntimeInterface{
-			Parameters:           append([]string(nil), evidence.Admission.Runtime.Parameters...),
-			EnvironmentVariables: append([]string(nil), evidence.Admission.Runtime.EnvironmentVariables...),
-			RequiredCapabilities: append([]string(nil), evidence.Admission.Runtime.RequiredCapabilities...),
+			Parameters:           append([]string(nil), evidence.Claims.Admission.Runtime.Parameters...),
+			EnvironmentVariables: append([]string(nil), evidence.Claims.Admission.Runtime.EnvironmentVariables...),
+			RequiredCapabilities: append([]string(nil), evidence.Claims.Admission.Runtime.RequiredCapabilities...),
 		},
 	}
 }

@@ -55,18 +55,21 @@ Describe the current shared kernel that multiple services use directly today.
 - The repo now has one active shared artifact kernel:
   - `contracts/evidence/v1`
 - `contracts/evidence/v1` defines one aggregate `ArtifactEvidence` record with these top-level sections:
+  - `claims`
+  - `seal`
+- The `claims` section currently carries:
+  - `schema_version`
   - `artifact`
   - `publication`
   - `admission`
-  - `seal`
-- The aggregate evidence record carries explicit `artifact_digest` and `payload_digest` fields.
+- The aggregate evidence claims carry explicit `artifact_digest` and `payload_digest` fields.
 ### Current invariants
 
 `Current invariant`
 
 - AGS signs canonical aggregate evidence bytes and ES reconstructs those bytes before verifying the evidence `seal`.
 - When ES uses `contracts/evidence/v1`, it verifies:
-  - `schema_version == "v1"`
+  - `claims.schema_version == "v1"`
   - expected `algorithm`
   - expected `key_id`
   - recomputed `content_digest`
@@ -214,16 +217,16 @@ Current response shape:
 
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - AGS only allows publish callers from the deployment and operator identities above.
-- AGS computes the artifact digest from payload bytes.
-- AGS currently sets `payload_digest == artifact_digest`.
-- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record that carries artifact identity, publication claims, runtime/admission data, and explicit payload identity.
+- AGS computes `payload_digest` from payload bytes.
+- AGS derives `artifact_digest` separately from a deterministic package-identity claim set; artifact identity is no longer equal to payload identity by shortcut.
+- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section carries artifact identity, publication claims, runtime/admission data, and explicit payload identity.
 - AGS assembles and uploads:
   - payload bytes
   - aggregate artifact evidence
   - manifest
   - artifact descriptor
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
-- AGS derives publication caller binding from the authenticated caller and always emits `publication.builder_service = "artifact-governance"` in aggregate evidence.
+- AGS derives publication caller binding from the authenticated caller and always emits `claims.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS enforces bounded cross-field consistency before publishing, including:
   - valid SPIFFE workload identity
   - `service_name` required for service workloads
@@ -439,7 +442,6 @@ Current lifecycle mapping:
 `Temporary compatibility edge`
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
-- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ARS registration no longer encodes that equality and ES follows the explicit payload reference in the descriptor instead.
 - The current container path conventions under `/monolith/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `run_id -> exec-<run_id>` mapping and single-allocation lifecycle model are current slice mechanics, not a general scheduler abstraction.
 
@@ -683,7 +685,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 - `CGS` currently returns `workload_vault_source`, which reflects startup-owned vault runtime input rather than a broader runtime resolution contract.
 - `EGS` currently returns `source_digest`, but it is advisory only and excluded from trust decisions.
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
-- `AGS` still publishes `artifact_digest == payload_digest` in the current slice, but ES now resolves payload bytes through ARS descriptor discoverability rather than treating that equality as authoritative.
+- `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
 - `ES` currently uses `/monolith/staged`, `/monolith/run`, `/monolith/runtime-identity/`, and `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 

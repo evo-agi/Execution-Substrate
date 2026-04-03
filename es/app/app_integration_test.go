@@ -1081,56 +1081,58 @@ func signedArtifactEvidenceJSON(
 	t.Helper()
 
 	record := evidencev1.ArtifactEvidence{
-		SchemaVersion: evidencev1.Version,
-		Artifact: evidencev1.Artifact{
-			ArtifactDigest: artifactDigest,
-			PayloadDigest:  payloadDigest,
-			ArtifactType:   "static-service",
-			IntentDigest:   intentDigest,
-		},
-		Publication: evidencev1.Publication{
-			BuilderService: "artifact-governance",
-			Invoker: evidencev1.Invoker{
-				Service:   "deployment",
-				Principal: "spiffe://monolith.internal/service/deployment",
+		Claims: evidencev1.Claims{
+			SchemaVersion: evidencev1.Version,
+			Artifact: evidencev1.Artifact{
+				ArtifactDigest: artifactDigest,
+				PayloadDigest:  payloadDigest,
+				ArtifactType:   "static-service",
+				IntentDigest:   intentDigest,
 			},
-			PolicyDecisions: []evidencev1.PolicyDecision{
-				{Rule: "allow", Result: "applied"},
-			},
-			BuildLogDigest: labeledDigest("ee"),
-		},
-		Admission: evidencev1.Admission{
-			Runtime: evidencev1.Runtime{
-				Parameters:           []string{},
-				EnvironmentVariables: []string{"APP_MODE"},
-				RequiredCapabilities: []string{},
-			},
-			Derivation: evidencev1.Derivation{
-				DerivationSpecDigest: derivationSpecDigest,
-				OutputID:             "runtime",
-				ProducerRunID:        "build-run-1",
-				PolicyVersion:        "2026-03-31",
-				ExpectedArtifactType: "static-service",
-				Constraints: evidencev1.Constraints{
-					AllowedToolchains:      []string{},
-					ForbiddenToolchains:    []string{},
-					OS:                     "linux",
-					Arch:                   "amd64",
-					NetworkAccess:          false,
-					WritablePaths:          []string{},
-					ForbiddenPaths:         []string{},
-					DeterminismExpectation: "deterministic",
+			Publication: evidencev1.Publication{
+				BuilderService: "artifact-governance",
+				Invoker: evidencev1.Invoker{
+					Service:   "deployment",
+					Principal: "spiffe://monolith.internal/service/deployment",
 				},
+				PolicyDecisions: []evidencev1.PolicyDecision{
+					{Rule: "allow", Result: "applied"},
+				},
+				BuildLogDigest: labeledDigest("ee"),
 			},
-			Workload: evidencev1.Workload{
-				ArtifactClass:      "service",
-				WorkloadType:       "service",
-				ModulePath:         "services.execution.ExecutionServer",
-				ServiceName:        "execution",
-				TargetPlatform:     "docker",
-				Description:        "Execution workload",
-				WorkloadIdentityID: workloadIdentityID,
-				PolicyVersion:      "2026-03-31",
+			Admission: evidencev1.Admission{
+				Runtime: evidencev1.Runtime{
+					Parameters:           []string{},
+					EnvironmentVariables: []string{"APP_MODE"},
+					RequiredCapabilities: []string{},
+				},
+				Derivation: evidencev1.Derivation{
+					DerivationSpecDigest: derivationSpecDigest,
+					OutputID:             "runtime",
+					ProducerRunID:        "build-run-1",
+					PolicyVersion:        "2026-03-31",
+					ExpectedArtifactType: "static-service",
+					Constraints: evidencev1.Constraints{
+						AllowedToolchains:      []string{},
+						ForbiddenToolchains:    []string{},
+						OS:                     "linux",
+						Arch:                   "amd64",
+						NetworkAccess:          false,
+						WritablePaths:          []string{},
+						ForbiddenPaths:         []string{},
+						DeterminismExpectation: "deterministic",
+					},
+				},
+				Workload: evidencev1.Workload{
+					ArtifactClass:      "service",
+					WorkloadType:       "service",
+					ModulePath:         "services.execution.ExecutionServer",
+					ServiceName:        "execution",
+					TargetPlatform:     "docker",
+					Description:        "Execution workload",
+					WorkloadIdentityID: workloadIdentityID,
+					PolicyVersion:      "2026-03-31",
+				},
 			},
 		},
 	}

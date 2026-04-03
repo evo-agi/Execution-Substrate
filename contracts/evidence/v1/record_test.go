@@ -14,57 +14,59 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 	}
 
 	record := ArtifactEvidence{
-		SchemaVersion: Version,
-		Artifact: Artifact{
-			ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			ArtifactType:   "static-script",
-			IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		},
-		Publication: Publication{
-			BuilderService: "artifact-governance",
-			Invoker: Invoker{
-				Service:   "deployment",
-				Principal: "spiffe://monolith.internal/service/deployment",
+		Claims: Claims{
+			SchemaVersion: Version,
+			Artifact: Artifact{
+				ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				ArtifactType:   "static-script",
+				IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			},
-			PolicyDecisions: []PolicyDecision{
-				{Rule: "z-last", Result: "allow"},
-				{Rule: "a-first", Result: "allow"},
-			},
-			BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-		},
-		Admission: Admission{
-			Runtime: Runtime{
-				Parameters:           []string{"z", "a"},
-				EnvironmentVariables: []string{"APP_MODE", "API_URL"},
-				RequiredCapabilities: []string{"b", "a"},
-			},
-			Derivation: Derivation{
-				DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-				OutputID:             "runtime",
-				ProducerRunID:        "build-run-1",
-				PolicyVersion:        "2026-03-31",
-				ExpectedArtifactType: "static-script",
-				Constraints: Constraints{
-					AllowedToolchains:      []string{"go", "bash"},
-					ForbiddenToolchains:    []string{"python"},
-					OS:                     "linux",
-					Arch:                   "amd64",
-					NetworkAccess:          true,
-					WritablePaths:          []string{"/tmp", "/workspace"},
-					ForbiddenPaths:         []string{"/root"},
-					DeterminismExpectation: "deterministic",
+			Publication: Publication{
+				BuilderService: "artifact-governance",
+				Invoker: Invoker{
+					Service:   "deployment",
+					Principal: "spiffe://monolith.internal/service/deployment",
 				},
+				PolicyDecisions: []PolicyDecision{
+					{Rule: "z-last", Result: "allow"},
+					{Rule: "a-first", Result: "allow"},
+				},
+				BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			},
-			Workload: Workload{
-				ArtifactClass:      "service",
-				WorkloadType:       "service",
-				ModulePath:         "services.execution.ExecutionServer",
-				ServiceName:        "execution",
-				TargetPlatform:     "docker",
-				Description:        "Execution workload",
-				WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
-				PolicyVersion:      "2026-03-31",
+			Admission: Admission{
+				Runtime: Runtime{
+					Parameters:           []string{"z", "a"},
+					EnvironmentVariables: []string{"APP_MODE", "API_URL"},
+					RequiredCapabilities: []string{"b", "a"},
+				},
+				Derivation: Derivation{
+					DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+					OutputID:             "runtime",
+					ProducerRunID:        "build-run-1",
+					PolicyVersion:        "2026-03-31",
+					ExpectedArtifactType: "static-script",
+					Constraints: Constraints{
+						AllowedToolchains:      []string{"go", "bash"},
+						ForbiddenToolchains:    []string{"python"},
+						OS:                     "linux",
+						Arch:                   "amd64",
+						NetworkAccess:          true,
+						WritablePaths:          []string{"/tmp", "/workspace"},
+						ForbiddenPaths:         []string{"/root"},
+						DeterminismExpectation: "deterministic",
+					},
+				},
+				Workload: Workload{
+					ArtifactClass:      "service",
+					WorkloadType:       "service",
+					ModulePath:         "services.execution.ExecutionServer",
+					ServiceName:        "execution",
+					TargetPlatform:     "docker",
+					Description:        "Execution workload",
+					WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+					PolicyVersion:      "2026-03-31",
+				},
 			},
 		},
 	}
@@ -92,39 +94,41 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 
 func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
 	record := ArtifactEvidence{
-		SchemaVersion: Version,
-		Artifact: Artifact{
-			ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			ArtifactType:   "static-script",
-			IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		},
-		Publication: Publication{
-			BuilderService: "artifact-governance",
-			Invoker: Invoker{
-				Service:   "deployment",
-				Principal: "spiffe://monolith.internal/service/deployment",
+		Claims: Claims{
+			SchemaVersion: Version,
+			Artifact: Artifact{
+				ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				ArtifactType:   "static-script",
+				IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			},
-			BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-		},
-		Admission: Admission{
-			Derivation: Derivation{
-				DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-				OutputID:             "runtime",
-				ProducerRunID:        "build-run-1",
-				PolicyVersion:        "policy-a",
-				Constraints: Constraints{
-					OS:   "linux",
-					Arch: "amd64",
+			Publication: Publication{
+				BuilderService: "artifact-governance",
+				Invoker: Invoker{
+					Service:   "deployment",
+					Principal: "spiffe://monolith.internal/service/deployment",
 				},
+				BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			},
-			Workload: Workload{
-				ArtifactClass:      "service",
-				WorkloadType:       "service",
-				ModulePath:         "services.execution.ExecutionServer",
-				ServiceName:        "execution",
-				WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
-				PolicyVersion:      "policy-b",
+			Admission: Admission{
+				Derivation: Derivation{
+					DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+					OutputID:             "runtime",
+					ProducerRunID:        "build-run-1",
+					PolicyVersion:        "policy-a",
+					Constraints: Constraints{
+						OS:   "linux",
+						Arch: "amd64",
+					},
+				},
+				Workload: Workload{
+					ArtifactClass:      "service",
+					WorkloadType:       "service",
+					ModulePath:         "services.execution.ExecutionServer",
+					ServiceName:        "execution",
+					WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+					PolicyVersion:      "policy-b",
+				},
 			},
 		},
 		Seal: Seal{

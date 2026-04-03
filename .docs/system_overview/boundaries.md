@@ -127,7 +127,7 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 
 - The current descriptor-centered registration record shapes what AGS must publish and what ES can later discover through ARS.
 - Artifact discoverability is not independent of the registration/index model; downstream services inherit that model.
-- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ARS no longer treats that equality as a first-class registration fact and ES follows the descriptor payload reference instead.
+- AGS now publishes distinct artifact and payload identities. ARS discoverability and ES consumption both depend on the descriptor payload reference plus evidence-claim cross-checks rather than on any hidden digest equality.
 
 **Temporary compatibility edges**
 
@@ -228,7 +228,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES currently composes multiple upstream services into one admission path, making it the main cross-boundary choreography point.
 - `:prepare` and `:submit` are intentionally bounded current surfaces, not statements that this request shape is settled architecture.
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
-- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence instead of depending on that equality.
+- ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - Runtime staging, mount validation, and reserved `/monolith/...` path handling are part ownership and part current convention.
 - ES returns and relies on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`.
 
