@@ -27,6 +27,7 @@ import (
 	agsconfig "execution-platform/ags/config"
 	arsapp "execution-platform/ars/app"
 	arsconfig "execution-platform/ars/config"
+	arsindex "execution-platform/ars/index"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -420,6 +421,32 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 }
 
+func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "app.conf",
+			Mode: 0o644,
+			Body: []byte("MOUNT-CONTENT\n"),
+		},
+	}), "runtime-mount")
+
+	entry := stack.loadIndexEntry(t, mountArtifact.ArtifactDigest)
+	removeBlob(t, stack.arsRootDir, entry.EvidenceDigest)
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	assertErrorResponseCode(t, response, http.StatusServiceUnavailable, "artifact_evidence_unavailable")
+}
+
 func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
 	stack := startSubmitStack(t)
 
@@ -511,8 +538,10 @@ func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
 }
 
 type submitStack struct {
-	fixture *tlsFixture
-	rootDir string
+	fixture    *tlsFixture
+	rootDir    string
+	arsRootDir string
+	indexPath  string
 
 	nomad *nomadHarness
 
@@ -583,6 +612,8 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	stack := &submitStack{
 		fixture:                 fixture,
 		rootDir:                 rootDir,
+		arsRootDir:              arsRootDir,
+		indexPath:               indexPath,
 		nomad:                   nomad,
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
@@ -882,54 +913,49 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 
 	requestBody := mustMarshalJSON(t, map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString(buildStaticScriptArchive(t)),
-		"manifest": map[string]any{
+		"artifact": map[string]any{
 			"artifact_type": "static-script",
 			"intent_digest": stack.intentDigest,
-			"runtime_interface": map[string]any{
-				"parameters":            []string{},
-				"environment_variables": []string{"APP_MODE"},
-				"required_capabilities": []string{},
-			},
 		},
-		"provenance": map[string]any{
-			"builder_service": "artifact-governance",
-			"invoker": map[string]any{
-				"service":   "deployment",
-				"principal": "spiffe://monolith.internal/service/deployment",
-			},
+		"publication": map[string]any{
 			"policy_decisions": []map[string]any{
 				{"rule": "allow", "result": "applied"},
 			},
 			"build_log_digest": labeledDigest("ee"),
 		},
-		"derivation_metadata": map[string]any{
-			"derivation_spec_digest": stack.derivationSpecDigest,
-			"output_id":              stack.outputID,
-			"producer_run_id":        "build-run-1",
-		},
-		"derivation_attestation": map[string]any{
-			"constraints": map[string]any{
-				"allowed_toolchains":      []string{},
-				"forbidden_toolchains":    []string{},
-				"os":                      "linux",
-				"arch":                    "amd64",
-				"network_access":          networkAccess,
-				"writable_paths":          []string{},
-				"forbidden_paths":         []string{},
-				"determinism_expectation": "deterministic",
+		"admission": map[string]any{
+			"runtime": map[string]any{
+				"parameters":            []string{},
+				"environment_variables": []string{"APP_MODE"},
+				"required_capabilities": []string{},
 			},
-			"policy_version":         "2026-03-31",
-			"expected_artifact_type": "static-script",
-		},
-		"workload_identity_binding": map[string]any{
-			"artifact_class":       "service",
-			"workload_type":        "service",
-			"module_path":          "services.execution.ExecutionServer",
-			"policy_version":       "2026-03-31",
-			"service_name":         "execution",
-			"target_platform":      "docker",
-			"description":          "Execution workload",
-			"workload_identity_id": stack.workloadIdentityID,
+			"derivation": map[string]any{
+				"derivation_spec_digest": stack.derivationSpecDigest,
+				"output_id":              stack.outputID,
+				"producer_run_id":        "build-run-1",
+				"constraints": map[string]any{
+					"allowed_toolchains":      []string{},
+					"forbidden_toolchains":    []string{},
+					"os":                      "linux",
+					"arch":                    "amd64",
+					"network_access":          networkAccess,
+					"writable_paths":          []string{},
+					"forbidden_paths":         []string{},
+					"determinism_expectation": "deterministic",
+				},
+				"policy_version":         "2026-03-31",
+				"expected_artifact_type": "static-script",
+			},
+			"workload": map[string]any{
+				"artifact_class":       "service",
+				"workload_type":        "service",
+				"module_path":          "services.execution.ExecutionServer",
+				"policy_version":       "2026-03-31",
+				"service_name":         "execution",
+				"target_platform":      "docker",
+				"description":          "Execution workload",
+				"workload_identity_id": stack.workloadIdentityID,
+			},
 		},
 	})
 
@@ -1040,54 +1066,49 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 
 	requestBody := mustMarshalJSON(t, map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString(archive),
-		"manifest": map[string]any{
+		"artifact": map[string]any{
 			"artifact_type": artifactType,
 			"intent_digest": labeledDigest("f1"),
-			"runtime_interface": map[string]any{
-				"parameters":            []string{},
-				"environment_variables": []string{},
-				"required_capabilities": []string{},
-			},
 		},
-		"provenance": map[string]any{
-			"builder_service": "artifact-governance",
-			"invoker": map[string]any{
-				"service":   "deployment",
-				"principal": "spiffe://monolith.internal/service/deployment",
-			},
+		"publication": map[string]any{
 			"policy_decisions": []map[string]any{
 				{"rule": "allow", "result": "applied"},
 			},
 			"build_log_digest": labeledDigest("f2"),
 		},
-		"derivation_metadata": map[string]any{
-			"derivation_spec_digest": labeledDigest("f3"),
-			"output_id":              "mount-output",
-			"producer_run_id":        "build-run-mount",
-		},
-		"derivation_attestation": map[string]any{
-			"constraints": map[string]any{
-				"allowed_toolchains":      []string{},
-				"forbidden_toolchains":    []string{},
-				"os":                      "linux",
-				"arch":                    "amd64",
-				"network_access":          false,
-				"writable_paths":          []string{},
-				"forbidden_paths":         []string{},
-				"determinism_expectation": "deterministic",
+		"admission": map[string]any{
+			"runtime": map[string]any{
+				"parameters":            []string{},
+				"environment_variables": []string{},
+				"required_capabilities": []string{},
 			},
-			"policy_version":         "2026-04-02",
-			"expected_artifact_type": artifactType,
-		},
-		"workload_identity_binding": map[string]any{
-			"artifact_class":       "service",
-			"workload_type":        "service",
-			"module_path":          "services.execution.ExecutionServer",
-			"policy_version":       "2026-04-02",
-			"service_name":         "execution",
-			"target_platform":      "docker",
-			"description":          "Mounted runtime artifact",
-			"workload_identity_id": stack.workloadIdentityID,
+			"derivation": map[string]any{
+				"derivation_spec_digest": labeledDigest("f3"),
+				"output_id":              "mount-output",
+				"producer_run_id":        "build-run-mount",
+				"constraints": map[string]any{
+					"allowed_toolchains":      []string{},
+					"forbidden_toolchains":    []string{},
+					"os":                      "linux",
+					"arch":                    "amd64",
+					"network_access":          false,
+					"writable_paths":          []string{},
+					"forbidden_paths":         []string{},
+					"determinism_expectation": "deterministic",
+				},
+				"policy_version":         "2026-04-02",
+				"expected_artifact_type": artifactType,
+			},
+			"workload": map[string]any{
+				"artifact_class":       "service",
+				"workload_type":        "service",
+				"module_path":          "services.execution.ExecutionServer",
+				"policy_version":       "2026-04-02",
+				"service_name":         "execution",
+				"target_platform":      "docker",
+				"description":          "Mounted runtime artifact",
+				"workload_identity_id": stack.workloadIdentityID,
+			},
 		},
 	})
 
@@ -1143,6 +1164,23 @@ func assertErrorResponseCode(t *testing.T, response *http.Response, expectedStat
 	if payload.Code != expectedCode {
 		t.Fatalf("expected error code %q, got %q body=%s", expectedCode, payload.Code, body)
 	}
+}
+
+func (s *submitStack) loadIndexEntry(t *testing.T, artifactDigest string) arsindex.Entry {
+	t.Helper()
+	data, err := os.ReadFile(s.indexPath)
+	if err != nil {
+		t.Fatalf("read artifact index: %v", err)
+	}
+	var entries map[string]arsindex.Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("decode artifact index: %v", err)
+	}
+	entry, ok := entries[artifactDigest]
+	if !ok {
+		t.Fatalf("missing artifact index entry for %s", artifactDigest)
+	}
+	return entry
 }
 
 func findTaskMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {

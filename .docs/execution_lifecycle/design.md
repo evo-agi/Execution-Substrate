@@ -1,74 +1,206 @@
 # Execution Lifecycle Design
 
-## Execution Lifecycle Model
+## 1. Purpose and status
 
-The execution lifecycle is intentionally split into two phases:
+This document describes the current ES lifecycle design in the Go repository during an active redesign phase.
 
-1. `POST /v1/executions:submit` performs governed admission, stages the payload, and submits one real Nomad batch job.
-2. All later lifecycle inspection and control flows through Nomad-backed endpoints:
-   - `GET /v1/executions/{run_id}/status`
-   - `GET /v1/executions/{run_id}/logs`
-   - `POST /v1/executions/{run_id}:cancel`
+The lifecycle slice documented here is real and implemented today. At the same time, some lifecycle rules are intentionally bounded and must not be mistaken for long-term architecture simply because they are active in the current slice.
 
-ES is not a scheduler. ES submits work to Nomad and then reads or forwards lifecycle state from Nomad. ES does not own execution lifecycle state after submission.
+This file stays design-level. Detailed endpoint and response rules belong in `.docs/execution_lifecycle/contracts.md`. Current implementation behavior belongs in `.docs/execution_lifecycle/implementation.md`.
 
-## Core Principles
+## 2. How to read this document
 
-- Nomad is the source of truth for submitted execution state.
-- ES is stateless for lifecycle.
-- Lifecycle is read-through and control-through, not stateful orchestration.
-- Status is a projection of Nomad state, not an ES-owned execution model.
-- ES must not persist run state.
-- ES must not run background workers or reconciliation loops.
-- ES must not add retry or reschedule behavior.
-- ES must not invent a private execution model that diverges from Nomad.
+- **Observed current lifecycle model**: The phase structure and authority split implemented in the current Go repo.
+- **Current lifecycle invariant**: A lifecycle rule the current code and tests rely on and that must not change silently.
+- **Bounded slice rule**: A live rule used by the current slice that should be treated as a scoped design choice, not automatically permanent architecture.
+- **Deliberate absence**: A lifecycle capability or owner the current Go slice intentionally does not include.
+- **Reopened lifecycle seam**: A live lifecycle seam that `PLANS.md` and the redesign-phase system docs intentionally keep open.
 
-## Why This Design Exists
+These labels are intentionally separate. A rule can be real today, bounded in scope, and still explicitly reopened.
 
-This design exists to avoid duplicate state and the drift that follows from it.
+## 3. Lifecycle slice snapshot
 
-If ES stored its own lifecycle view, it would immediately create two competing truth sources:
+**Observed current lifecycle model**
 
-- Nomad job and allocation state
-- ES-maintained execution state
+- `POST /v1/executions:prepare`
+- `POST /v1/executions:submit`
+- `GET /v1/executions/{run_id}/status`
+- `GET /v1/executions/{run_id}/logs`
+- `POST /v1/executions/{run_id}:cancel`
 
-The Go slice deliberately avoids that split. ES stays thin by:
+Current slice summary:
 
-- validating and submitting once
-- deriving lifecycle answers directly from Nomad
-- exposing only minimal mapped responses
+- `:prepare` is active today, but it is explicitly a bounded milestone surface.
+- `:submit` is the real execution-submission surface in the current slice.
+- Lifecycle after submission is Nomad-backed.
+- ES is a composition and submission boundary, not a scheduler.
 
-That keeps the execution boundary explicit:
+## 4. Authority boundaries across the lifecycle
 
-- Nomad schedules and runs work
-- Docker runs the task container
-- ES admits, submits, and reads back Nomad state
+| Lifecycle stage | Primary authority | Role of other components |
+| --- | --- | --- |
+| Before submission | ES | ES validates the request, composes ACS, ARS, and EGS inputs, and returns a bounded preparation result. ARS is authoritative for artifact evidence, artifact facts, and payload reads. ACS is authoritative for workload-zone vault lookup. EGS is authoritative for trust-model publication. |
+| At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
+| After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
+| Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
+| Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, derives the Nomad job ID, reads Nomad job and allocation state, reads task stdout, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
 
-## Allocation Selection
+## 5. Phase model
 
-The current lifecycle slice assumes one meaningful allocation per submitted execution.
+### 5.1 Preparation phase
 
-ES resolves lifecycle requests by selecting the latest Nomad allocation for the job. That assumption is only valid because the current submit contract disables retries and reschedule. Under the current bounded execution slice, the latest allocation is expected to be the only relevant allocation.
+`POST /v1/executions:prepare` is a live public surface in the current repo.
 
-If retries or reschedule are ever introduced, this assumption must be revisited explicitly. ES must not silently continue treating "latest allocation" as a stable lifecycle rule once multiple meaningful allocations can exist.
+At a design level, it currently does four things:
 
-## Non-Goals
+- validates the incoming execution request and runtime constraints
+- requires the aggregate artifact-evidence record from ARS for admission
+- verifies publish-time evidence and trust requirements using the active shared evidence kernel and the loaded EGS trust model
+- resolves workload-zone vault metadata through ACS and ARS, then returns a bounded preparation result
 
-The current design explicitly does not include:
+The result is intentionally bounded. It proves admission and preparation facts, but it does not create a run ID, scheduler record, or proto-execution state.
 
-- durable run persistence
-- ES-owned log retention
-- sync execution
-- retries or reschedule
-- allocation aggregation across multiple retries
-- background cleanup or repair loops
-- a richer scheduler abstraction above Nomad
+This makes `:prepare` both active and bounded: it is part of the current design, but it is not presented here as the permanent long-term execution API shape.
 
-## Anti-Patterns
+### 5.2 Submission phase
 
-The following behaviors are explicitly forbidden in this design:
+`POST /v1/executions:submit` is the current real execution surface.
 
-- caching lifecycle responses instead of reading Nomad
-- storing execution lifecycle state inside ES
-- synthesizing private lifecycle phases not present in Nomad
-- aggregating multiple allocations into a synthetic execution timeline
+At a design level, it currently:
+
+- reuses the full preparation path first
+- resolves the artifact payload through the explicit payload digest carried by aggregate evidence, then stages it locally
+- revalidates and stages runtime mount artifacts when mounts are requested
+- reserves the runtime-identity workspace and enforces reserved-path exclusions
+- constructs one Nomad batch job with one Docker task
+- submits that job to Nomad and returns a bounded submission receipt
+
+In the current slice, `:submit` does not become:
+
+- a durable run registry
+- a richer execution-state model
+- a sync execution API
+- an orchestration layer above Nomad
+
+### 5.3 Lifecycle projection phase
+
+After submission, lifecycle is projected from Nomad.
+
+At a design level:
+
+- `status` reads Nomad job and allocation state and returns a minimal mapped view
+- `logs` reads stdout for the selected task from Nomad
+- `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
+
+This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
+
+## 6. Current lifecycle invariants
+
+**Current lifecycle invariants**
+
+- Nomad is authoritative for submitted execution lifecycle after `:submit`.
+- ES does not become the scheduler.
+- Lifecycle responses are projections of Nomad state, not ES-owned execution state.
+- `:submit` returns a bounded submission receipt rather than a durable run model.
+- ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
+- Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.
+- Docker is the task runtime under Nomad for the current submitted execution slice.
+
+## 7. Bounded slice rules
+
+**Bounded slice rules**
+
+- `POST /v1/executions:prepare` is active today as a bounded milestone/public slice surface.
+- Submission is currently async-only.
+- The current slice assumes one meaningful allocation per execution.
+- Lifecycle projection currently selects the latest allocation by `ModifyIndex`.
+- The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
+- The current lifecycle model is intentionally minimal rather than a broad orchestration API.
+- Retries and reschedule behavior are not part of the current ES slice.
+
+These rules are active today, but they should be treated as scoped slice design choices unless they are later retained explicitly.
+
+## 8. Deliberate absences
+
+**Deliberate absences**
+
+- No ES-owned lifecycle-state store
+- No ES-owned run persistence
+- No retry or reschedule orchestration in ES
+- No allocation aggregation model inside ES
+- No richer scheduler abstraction above Nomad
+- No runtime token minting owned by ES
+- No synthetic ES-specific lifecycle phase model
+- No background lifecycle workers or repair loops
+
+These absences are part of the current design shape, not missing implementation work.
+
+## 9. Current lifecycle pressure points
+
+**Reopened lifecycle seams under visible pressure**
+
+- `:prepare` is both an active public surface and an explicitly bounded milestone surface, which creates ongoing design tension about its long-term role.
+- ES currently depends on aggregate evidence as the only first-class admission input, which means lifecycle admission now rises or falls with the evidence-native publish/store path.
+- Lifecycle lookup currently depends on the `run_id -> exec-<run_id>` mapping owned by ES.
+- Latest-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
+- Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
+- `:submit` currently carries staging and package-resolution assumptions, including aggregate-evidence payload resolution and evidence-driven mount validation.
+- ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
+
+## 10. Runtime identity and lifecycle interaction
+
+ES currently reserves and/or stages these runtime areas as part of submission:
+
+- `/monolith/staged`
+- `/monolith/run`
+- `/monolith/runtime-identity`
+- `/monolith/runtime-identity/endpoint`
+- `/monolith/runtime-identity/vault-token`
+
+Design-level meaning:
+
+- ES reserves the runtime-identity workspace and injects the current endpoint environment convention.
+- Caller-provided runtime mounts must not overlap the reserved runtime paths.
+- The runtime-identity workspace is provisioned as tmpfs in the current submit path.
+- ES does not populate or manage token material at the reserved token path.
+- ES does not implement the workload-side runtime identity endpoint.
+
+Lifecycle implication:
+
+- Failure to use or populate the runtime identity path does not create a separate lifecycle state in ES.
+- Those failures remain workload/runtime failures reflected through Nomad-derived lifecycle projection.
+
+The reserved paths and endpoint conventions are active today, but they remain reopened seams rather than settled lifecycle architecture.
+
+## 11. Relationship to other docs
+
+Use the companion documents for detail:
+
+- `.docs/execution_lifecycle/contracts.md` for endpoint-level lifecycle rules and response semantics
+- `.docs/execution_lifecycle/implementation.md` for current execution-path behavior
+- `.docs/system_overview/contracts.md` for cross-service contract context
+- `.docs/system_overview/boundaries.md` for ownership and non-ownership
+- `PLANS.md` for redesign sequencing, superseded assumptions, and decision rules
+
+This file should remain the high-level lifecycle design map.
+
+## 12. Reopened lifecycle seams
+
+- The role and future of `:prepare`
+- The `run_id -> nomad_job_id` lookup shape
+- Latest-allocation lifecycle projection
+- Staging and package-resolution assumptions inside `:submit`
+- Runtime identity reserved-path and endpoint conventions
+- The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
+
+These seams are live today and intentionally not fixed.
+
+## 13. Decision rules for future edits
+
+- Keep this file design-level, not field-level.
+- Move endpoint specifics into `.docs/execution_lifecycle/contracts.md`.
+- Move concrete execution-path behavior into `.docs/execution_lifecycle/implementation.md`.
+- Do not present a bounded slice rule as a permanent invariant without support.
+- Do not omit active public surfaces from the design description just because they are bounded.
+- If code and tests disagree with this file, update this file to match reality.
+- Any lifecycle rule treated as fixed must also stay aligned with `PLANS.md`.

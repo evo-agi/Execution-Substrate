@@ -1,121 +1,194 @@
-# System Architecture
+# System Architecture Map
 
-## Overview
+## 1. Purpose and status
 
-The current system is a governed artifact and execution system composed of these boundaries:
+This document is the top-level architecture map for the Go repository.
 
-- ACS: digest lookup for governed configuration indirection
-- ARS: content-addressed blob storage, integrity verification, and artifact-fact retrieval
-- AGS: artifact-fact producer and publisher
-- EGS: TrustModel publication
-- CGS: separate compatibility authorization boundary
-- ES: governed admission, bounded execution submit, and bounded Nomad-backed lifecycle projection
-- Nomad: scheduler and execution-state authority
-- Docker: task runtime under Nomad
+It describes the current system during an active redesign phase. The architecture documented here is real and implemented, but several major seams are intentionally reopened in `PLANS.md` and must not be treated as settled merely because they are active today.
 
-The system is intentionally decomposed so that no single service owns all trust, storage, execution, and lifecycle responsibilities.
+This file stays high-level. Detailed cross-service contract rules belong in `.docs/system_overview/contracts.md`. Detailed ownership and non-ownership rules belong in `.docs/system_overview/boundaries.md`.
 
-## Primary Data Flows
+## 2. How to read this document
 
-### Publication Flow
+- **Observed current topology**: The major components and interactions implemented in the current Go repo.
+- **Current architectural invariant**: A system-level rule the current code and docs rely on and that must not change silently.
+- **Deliberate absence**: An architectural capability, boundary, or owner that the current Go system intentionally does not have.
+- **Temporary compatibility-heavy convention**: An active shape or convention that keeps the current slice working but should not be mistaken for a settled long-term architectural choice.
+- **Reopened redesign seam**: A major active architectural seam that `PLANS.md` explicitly reopens for redesign.
 
-Artifact publication flows through:
+These labels are different on purpose: a current topology can be real without being final, and a compatibility-heavy convention can be active without being architecture to preserve.
 
-`AGS -> ARS`
+## 3. System snapshot
 
-AGS:
+The current Go system is a governed publication + storage + policy + admission + bounded execution system.
 
-- computes digests
-- constructs manifest and signed artifact facts
-- signs the fact types ES later verifies
-- uploads blobs through the ARS write boundary
-- registers the artifact so it becomes visible
+| Component | Observed current role |
+| --- | --- |
+| ACS | Lookup and assignment-to-digest indirection service |
+| ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
+| AGS | Evidence-first artifact publication service |
+| EGS | Signed trust-model publication service |
+| CGS | Separate authorize-only compatibility service |
+| ES | Admission, submission, and Nomad-backed lifecycle projection service |
+| Nomad | Scheduler and authoritative submitted-execution lifecycle source |
+| Docker | Task runtime under Nomad for the current bounded execution slice |
 
-ARS is the only publication and retrieval boundary for published artifacts. ES must not bypass it.
+This is a coherent architecture, but it is not presented here as the final decomposition.
 
-### Admission and Execution Flow
+## 4. Topology overview
 
-Governed execution flows through:
+**Observed current topology**
 
-`request -> ES -> EGS / ACS / ARS -> Nomad -> Docker`
+```text
+publish caller -> AGS -> ARS
 
-ES:
+execution caller -> ES -> ACS
+                       -> ARS
+                       -> EGS
+                    -> Nomad -> Docker
 
-- validates the request
-- reads immutable artifact facts from ARS
-- resolves workload-zone Vault metadata through ACS
-- enforces the EGS TrustModel
-- stages the payload locally
-- submits one bounded Nomad batch job
+credential caller -> CGS
+```
 
-Nomad schedules the work. Docker runs the task container. ES does not become a scheduler or runtime state owner in this flow.
+Top-level interaction notes:
 
-### Lifecycle Flow
+- AGS is the write-time publication boundary. It publishes artifacts through ARS rather than owning storage itself.
+- ES is the main composition boundary. It consumes ACS, ARS, and EGS to admit and submit work.
+- CGS is active as a separate authorization surface, but it is intentionally outside the current ES hot path.
+- Nomad is the execution backend and lifecycle authority for submitted work.
+- Docker is the container runtime used underneath Nomad in the current slice.
+- `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
+- `observability` is cross-cutting support, not a system boundary.
 
-Execution lifecycle flows through:
+## 5. Primary system flows
 
-`request -> ES -> Nomad`
+### Publication flow
 
-Lifecycle endpoints are Nomad-backed only:
+AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from payload bytes, assembles the current aggregate artifact-evidence record, signs that evidence, and writes the canonical publication record through ARS.
 
-- `GET /v1/executions/{run_id}/status`
-- `GET /v1/executions/{run_id}/logs`
-- `POST /v1/executions/{run_id}:cancel`
+ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 
-ES derives the Nomad job identifier from `run_id` and projects or forwards Nomad state. ES does not maintain a separate lifecycle store.
+The aggregate evidence model in `contracts/evidence/v1` matters here because AGS emits the first-class publication record that ES later verifies.
 
-## Service Roles
+### Admission / preparation / submission flow
 
-### ACS
+ES is the current admission and submission composition point.
 
-ACS is a lookup boundary only. It maps fixed assignment keys to digests and exposes no storage or trust-policy behavior.
+At a high level, ES:
 
-### ARS
+- accepts execution requests through `:prepare` and `:submit`
+- reads aggregate artifact evidence and payloads from ARS
+- reads workload-zone and vault-related lookup data from ACS
+- loads and enforces the EGS trust model
+- stages payload and mount data locally
+- hands execution off to Nomad
 
-ARS is the storage and integrity boundary. It accepts content-addressed publication from AGS, verifies blobs by digest, makes artifacts discoverable only after registration, and re-verifies integrity on read paths.
+ES does not own artifact publication, artifact storage, trust publication, or scheduler state. It composes those inputs into a bounded execution decision and submission.
 
-### AGS
+For the main AGS-published artifact path, ES now requires the aggregate `contracts/evidence/v1` record. Missing or corrupt aggregate evidence is an admission failure, not a reason to re-enter the legacy fact family.
 
-AGS is the producer boundary. It publishes immutable facts and payloads that ES later consumes. AGS is a write-time component, not a runtime dependency for execution.
+### Lifecycle flow
 
-### EGS
+Lifecycle is Nomad-backed after submission.
 
-EGS publishes the external TrustModel that ES enforces. EGS signs constitutional policy, not artifacts.
+ES exposes lifecycle and log endpoints, but it does so by deriving state from Nomad job and allocation data. ES does not keep its own lifecycle store, does not run reconciliation loops, and does not create a separate execution-state authority above Nomad.
 
-### CGS
+### Policy / authorization flow
 
-CGS is a separate compatibility authorization boundary. It is not part of the current ES hot path.
+EGS and CGS occupy different roles today.
 
-### ES
+- EGS publishes signed trust policy that ES verifies and enforces during admission.
+- CGS provides a separate authorize-only surface backed by `id.conf` and startup-owned vault policy inputs.
 
-ES is the composition boundary. It does not own trust policy, storage, or scheduler state. It admits requests against governed facts, submits one bounded class of execution to Nomad, and exposes Nomad-backed lifecycle endpoints without persisting run state.
+CGS is active, but it is intentionally not part of the current ES hot path.
 
-### Nomad
+### Runtime identity / execution handoff flow
 
-Nomad is the scheduler and lifecycle authority for submitted executions.
+ES reserves a bounded runtime workspace and runtime-identity area, stages execution inputs, injects the current workload identity endpoint environment variable, and protects reserved runtime paths from caller overlap.
 
-### Docker
+The system stops short of making ES the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES currently owns the handoff boundary, not the full runtime identity system.
 
-Docker is the task runtime used by the current bounded execution slice under Nomad.
+## 6. Architectural invariants
 
-## Boundaries
+**Current architectural invariants**
 
-The system is intentionally split across write-time, read-time, trust, authorization, and execution concerns:
+- ARS is the storage and retrieval boundary for published artifacts in the current system.
+- AGS is a write-time publication service, not an execution-time dependency.
+- ES is a composition boundary for admission and submission, not a scheduler.
+- Nomad is authoritative for submitted execution lifecycle.
+- Docker is the task runtime under Nomad in the current bounded execution slice.
+- EGS publishes policy; it does not publish runtime state or own artifact execution.
+- CGS is a separate authorization boundary and is not in the current ES hot path.
+- `contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
+- ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
 
-- AGS owns artifact production
-- ARS owns artifact storage and integrity
-- EGS owns trust policy publication
-- CGS owns separate compatibility authorization
-- ES owns governed composition and bounded execution submit
-- Nomad owns scheduling and submitted execution state
+## 7. Deliberate absences
 
-These boundaries exist to prevent hidden coupling and duplicate state.
+**Deliberate absences**
 
-## Reference vs Authority
+- There is no standalone Deployment service boundary in this Go repo.
+- There is no standalone IGS boundary in this Go repo.
+- ES does not own a lifecycle-state store.
+- There is no general-purpose execution orchestrator above Nomad.
+- ES does not own runtime token minting.
+- There is no separate artifact-translation or read-indirection service beyond the current ACS and ARS roles.
+- The current Go repo does not define a separate lifecycle authority beyond ES projecting Nomad state.
 
-This repository is the authoritative source of truth for system behavior and design:
+These are current architectural absences, not omissions to fill automatically.
 
-- `/Users/ds/Repositories/Execution-Platform/PLANS.md`
-- `/Users/ds/Repositories/Execution-Platform/.docs/system_overview/`
-- `/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/`
-- current Go code and tests
+## 8. Current architectural pressure points
+
+**Reopened redesign seams under active pressure**
+
+- `contracts/evidence/v1` is now the only active shared artifact kernel for the AGS -> ARS -> ES path.
+- ACS currently expresses assignment and digest indirection through a broad lookup family whose long-term authority shape is reopened.
+- ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
+- AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
+- ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
+- EGS currently publishes a specific trust-model form that directly shapes execution-time enforcement.
+- CGS currently exposes an authorize and policy-input shape closely tied to `id.conf` and startup-owned workload-vault inputs.
+- Runtime identity handoff currently depends on reserved runtime workspace and path conventions that are active but not settled.
+
+## 9. Temporary compatibility-heavy conventions
+
+**Temporary compatibility-heavy conventions**
+
+- `POST /v1/executions:prepare` is active today but explicitly bounded rather than declared as the permanent execution API shape.
+- ES currently relies on `/monolith/...` runtime path conventions for staged data, run data, and runtime identity workspace.
+- ES currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
+- AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
+- CGS remains tied to `id.conf` and compatibility-heavy authorize inputs and outputs.
+- The current `artifact_digest == payload_digest` assumption remains active in AGS and ARS publication/storage, but ES now reads explicit `payload_digest` from aggregate evidence; the equality should still be read as a current slice rule rather than a settled architectural truth.
+
+## 10. Relationship to detailed docs
+
+Use the companion documents for detail:
+
+- `.docs/system_overview/contracts.md` for cross-service surfaces, active invariants, compatibility edges, and reopened contract seams
+- `.docs/system_overview/boundaries.md` for service ownership, explicit non-ownership, and boundary pressure points
+- `.docs/execution_lifecycle/*` for lifecycle-specific behavior and constraints
+- `PLANS.md` for redesign sequencing, superseded assumptions, and phase decision rules
+
+This file should stay architectural and top-level. It should not absorb detailed contract inventories or service-by-service ownership rules.
+
+## 11. Reopened redesign seams
+
+- The shared-kernel role and long-term scope of `contracts/evidence/v1`
+- The authority shape of ACS
+- The storage and discoverability shape of ARS
+- The publication and fact-assembly shape of AGS
+- The admission, package-resolution, and runtime-handoff shape of ES
+- The policy-publication shape of EGS
+- The authorize and policy-input shape of CGS
+- The current runtime identity handoff conventions
+
+These seams are active today and intentionally not fixed.
+
+## 12. Decision rules for future edits
+
+- Keep this file high-level and architecture-oriented.
+- Move detailed cross-service rules into `.docs/system_overview/contracts.md`.
+- Move ownership and non-ownership detail into `.docs/system_overview/boundaries.md`.
+- Do not describe a seam as settled unless `PLANS.md` says it is settled.
+- Document deliberate absences explicitly instead of implying them.
+- If code and tests disagree with this file, update this file to match reality.

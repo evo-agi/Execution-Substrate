@@ -62,40 +62,26 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	prepareResult, err := s.Prepare(ctx, req)
+	prepared, err := s.prepareAdmission(ctx, req)
 	if err != nil {
 		return SubmitResult{}, err
 	}
 
-	manifest, err := s.fetchManifest(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return SubmitResult{}, err
-	}
-	if manifest.ArtifactType != "static-script" {
+	if prepared.artifact.manifest.ArtifactType != "static-script" {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeUnsupportedArtifactType,
 			Message: "only static-script artifacts are supported in this execution slice",
 		}
 	}
-	if len(manifest.RuntimeInterface.RequiredCapabilities) > 0 {
+	if len(prepared.artifact.manifest.RuntimeInterface.RequiredCapabilities) > 0 {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeUnsupportedCapabilities,
 			Message: "required_capabilities are not supported in this execution slice",
 		}
 	}
-
-	attestation, err := s.fetchDerivationAttestation(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return SubmitResult{}, err
-	}
-
-	binding, err := s.fetchWorkloadIdentityBinding(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return SubmitResult{}, err
-	}
-	if targetPlatform := strings.TrimSpace(binding.Payload.Claims.Descriptor.TargetPlatform); targetPlatform != "" && targetPlatform != "docker" {
+	if targetPlatform := strings.TrimSpace(prepared.artifact.targetPlatform); targetPlatform != "" && targetPlatform != "docker" {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeUnsupportedArtifactType,
@@ -103,18 +89,9 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	payloadBytes, err := s.fetchPayloadBytes(ctx, req.Invocation.ArtifactDigest)
+	payloadBytes, err := s.fetchPayloadBytes(ctx, prepared.artifact.payloadDigest)
 	if err != nil {
 		return SubmitResult{}, err
-	}
-
-	trustModel := s.currentTrustModel()
-	if trustModel == nil {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    "trust_model_unavailable",
-			Message: "trust model is unavailable",
-		}
 	}
 
 	runID, jobID, runIDErr := newRunAndJobID()
@@ -147,7 +124,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	// externally, but the reserved runtime-identity workspace is provisioned as
 	// tmpfs and is no longer host-backed by the submit path.
 
-	stage.mounts, err = s.stageRuntimeMounts(ctx, *trustModel, stage.rootDir, req.Invocation.Mounts)
+	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.rootDir, req.Invocation.Mounts)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -159,7 +136,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(runID, prepareResult, req.Invocation.Env, req.TimeoutSeconds)
+	env := buildRuntimeEnvironment(runID, prepared.result, req.Invocation.Env, req.TimeoutSeconds)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -167,8 +144,8 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		runID,
 		stage,
 		req,
-		prepareResult,
-		attestation.Payload.Claims.Constraints.NetworkAccess,
+		prepared.result,
+		prepared.artifact.networkAccess,
 		taskCPU,
 		taskMemoryMB,
 		env,
@@ -190,18 +167,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		RunID:          runID,
 		NomadJobID:     jobID,
 		NomadEvalID:    evalID,
-		ArtifactDigest: prepareResult.ArtifactDigest,
+		ArtifactDigest: prepared.result.ArtifactDigest,
 		Status:         "submitted",
 	}, nil
 }
 
-func (s *Service) fetchPayloadBytes(ctx context.Context, artifactDigest string) ([]byte, *Error) {
-	// TODO: The first real execution slice fetches payload bytes directly from
-	// /v1/blobs/{artifact_digest}:bytes because the frozen AGS -> ARS contract
-	// currently makes artifact_digest equal payload_digest. If that producer or
-	// storage contract changes, widen the ES payload-resolution boundary
-	// explicitly instead of letting this assumption drift.
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+artifactDigest+":bytes")
+func (s *Service) fetchPayloadBytes(ctx context.Context, payloadDigest string) ([]byte, *Error) {
+	response, err := s.arsClient.get(ctx, "/v1/blobs/"+payloadDigest+":bytes")
 	if err != nil {
 		return nil, &Error{
 			Status:  http.StatusServiceUnavailable,

@@ -1,122 +1,428 @@
 # Execution Lifecycle Implementation
 
-## Current Endpoints
+## 1. Purpose and status
 
-- `POST /v1/executions:submit`
-- `GET /v1/executions/{run_id}/status`
-- `GET /v1/executions/{run_id}/logs`
-- `POST /v1/executions/{run_id}:cancel`
+This document describes the current ES lifecycle implementation during an active redesign phase.
 
-## Execution Flow
+The current implementation slice is real, exercised by integration tests, and visible directly in the ES Go packages. Public contract semantics live in `.docs/execution_lifecycle/contracts.md`. Lifecycle design and authority boundaries live in `.docs/execution_lifecycle/design.md` and the system overview docs.
 
-### 1. Submit
+This file is specifically about where lifecycle behavior lives in code today: handlers, wiring, call paths, local side effects, and where Nomad becomes authoritative.
 
-`POST /v1/executions:submit` reuses the full `:prepare` path first.
+## 2. How to read this document
 
-ES:
+- **Observed current implementation path**: A code path or sequencing rule implemented in the current Go repo.
+- **Implementation invariant**: A stable implementation fact future agents must preserve unless they intentionally change the lifecycle slice.
+- **Current simplification**: A real implementation shortcut or narrowing choice in the current slice that should not be mistaken for long-term architecture by default.
+- **Deliberate absence**: Behavior ES does not currently implement.
+- **Reopened implementation seam**: A live implementation seam that the redesign phase keeps open.
 
-- validates the request
-- reads artifact facts from ARS
-- resolves workload-zone Vault metadata through ACS
-- enforces the EGS TrustModel
-- validates the bounded runtime constraints for this slice
-- fetches the payload blob from ARS
-- stages the payload locally
-- builds one Nomad batch job with one Docker task
-- submits that job to Nomad
+These labels matter because implementation shape and public contract are related but not identical.
 
-The submit response is a bounded receipt only. It returns:
+## 3. Implementation module map
 
-- `run_id`
-- `nomad_job_id`
-- `nomad_eval_id`
-- `artifact_digest`
-- `status = "submitted"`
+| Module | What it owns | What it does not own | Why it matters to the lifecycle slice |
+| --- | --- | --- | --- |
+| `es/api/server.go` | HTTP route registration, caller authorization, request decoding, lifecycle path parsing, HTTP error shaping, handler-to-service dispatch | Admission logic, Nomad interaction, lifecycle state | This is where public lifecycle requests first enter ES |
+| `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
+| `es/admission/service.go` | Core service construction, dependency clients, verifier setup, trust-model initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
+| `es/admission/submit.go` | `Submit`, run/job ID creation, payload staging, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
+| `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, `run_id` resolution, Nomad lookup helpers, latest-allocation selection | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
+| `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env constant, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
+| `es/admission/mounts.go` | Runtime mount request validation, mount artifact revalidation, mount staging and archive extraction | General artifact publication, lifecycle state | This is where mount side effects and mount-specific trust checks live |
 
-### 2. Run Resolution
+Related support files:
 
-Lifecycle requests do not consult any ES-owned run store.
+- `es/admission/types.go` carries the current request/result/data structs used across prepare, submit, and lifecycle paths.
+- `es/api/types.go` currently carries the health response shape rather than lifecycle endpoint payloads.
 
-ES validates `run_id` and derives the Nomad job identifier directly:
+## 4. Handler-to-service flow
 
-- `run_id` must match `run-[0-9a-f]{16}`
-- `nomad_job_id = exec-<run_id>`
+**Observed current implementation path**
 
-That mapping is the only lifecycle lookup key ES owns.
+- `Server.Handler()` in `es/api/server.go` builds the HTTP mux.
+- The mux is wrapped with `observability.WrapHandler("execution", mux)` before serving.
+- Route entrypoints are:
+  - `handlePrepare -> service.Prepare`
+  - `handleSubmit -> service.Submit`
+  - `handleLifecycleGet -> service.Status` or `service.Logs`
+  - `handleLifecyclePost -> service.Cancel`
 
-### 3. Status
+Where behavior lives:
 
-`GET /v1/executions/{run_id}/status`:
+- Request decoding for `:prepare` and `:submit` happens in `decodeAuthorizedExecutionRequest`.
+- Caller authorization happens in `authorizeExecutionCaller`.
+- Lifecycle path parsing for `status`, `logs`, and `cancel` happens in `parseLifecycleRequest`.
+- JSON error shaping happens in `writeJSON`.
+- Authorization failures use `writeText`.
 
-- fetches the Nomad job
-- fetches that job's allocations
-- selects the latest allocation by `ModifyIndex`
-- fetches allocation detail
-- returns a minimal mapped response
+**Implementation invariants**
 
-The response may include:
+- Authorization runs before body decode for execution endpoints.
+- Lifecycle GET/POST handlers authorize first, then parse the path, then delegate to the admission service.
+- HTTP handlers do not own business logic beyond auth, decode, parse, and response shaping.
 
-- `job_status`
-- `allocation_id`
-- `allocation_client_status`
-- `task_state`
-- `exit_code`
-- `terminal`
+Observability placement:
 
-If the job exists but has no allocation yet, ES returns a valid status response with job-level data only.
+- Inbound request wrapping is applied once at the handler layer.
+- Outbound dependency logging is applied when dependency clients are constructed in the admission layer.
+- Integration tests confirm trace propagation across ES -> ACS and ES -> ARS health calls and confirm that edge logging remains separate from business-logic logging.
 
-### 4. Logs
+## 5. Application wiring
 
-`GET /v1/executions/{run_id}/logs`:
+`es/app/app.go` is the top-level assembly point.
 
-- fetches the Nomad job
-- resolves the latest allocation
-- reads stdout only for task `task`
-- returns `text/plain`
+**Observed current implementation path**
 
-This endpoint is intentionally minimal:
+- `app.New` validates config, constructs `admission.Service`, constructs the API server, and builds the TLS HTTP server.
+- `App.Start` calls `service.Initialize(ctx)` before the HTTP listener starts serving.
+- `service.Initialize` fetches the TrustModel from EGS, canonicalizes it, verifies its signature, normalizes it, and caches it in memory.
+- `service.Health` checks ACS and ARS readiness concurrently and combines those checks with the cached trust-model-loaded state.
 
-- no streaming
-- no pagination
-- no stderr aggregation
-- no multi-allocation merge
+Dependency wiring:
 
-If the allocation or task logs are not ready yet, ES returns `409`.
+- `admission.NewService` builds dependency clients for ACS, ARS, and EGS.
+- It also builds verifier instances for:
+  - TrustModel
+  - provenance
+  - derivation attestation
+  - workload identity binding
+- It creates the Nomad client only when submit is configured.
+- If submit is configured, it creates the local staging root on startup.
 
-### 5. Cancel
+**Implementation invariants**
 
-`POST /v1/executions/{run_id}:cancel`:
+- ES does not start serving until trust-model initialization succeeds.
+- Readiness after startup depends on:
+  - app `started`
+  - trust model loaded
+  - ACS ready
+  - ARS ready
+- Live EGS reachability is not treated as a post-start runtime readiness dependency in the current implementation.
 
-- fetches the Nomad job
-- stops the job through Nomad
-- does not purge the job
+What the app layer delegates:
 
-The response is a bounded cancellation receipt only:
+- App wiring owns process assembly, not lifecycle decisions.
+- All request-path lifecycle behavior is delegated into the admission service.
 
-- `run_id`
-- `nomad_job_id`
-- `status = "cancel_requested"`
+## 6. Prepare path implementation
 
-## What ES Actually Does
+`Prepare` is implemented in `es/admission/service.go` and is an active code path today.
 
-ES does:
+**Observed current implementation path**
 
-- derive `nomad_job_id` from `run_id`
-- query Nomad job state
-- query Nomad allocation state
-- query Nomad task stdout
-- stop Nomad jobs
-- map Nomad data into minimal API responses
+1. Validate the request with `validatePrepareRequest`.
+2. Read the currently loaded TrustModel from memory.
+3. Read the aggregate artifact-evidence record from ARS.
+4. Validate it, verify its seal, enforce TrustModel signer policy, and derive manifest/workload information from that one record.
+5. Fetch the workload-zone vault digest from ACS.
+6. Fetch the workload-zone vault config blob from ARS.
+7. Resolve the workload-vault auth plan through ES config selectors.
+8. Assemble and return `PrepareResult`.
 
-## What ES Does Not Do
+What `Prepare` reads:
 
-ES does not:
+- aggregate artifact evidence from ARS
+- lookup indirection from ACS
+- TrustModel state loaded from EGS at startup
 
-- store lifecycle state
-- cache status or logs
-- maintain a run registry
-- reconstruct missing state from local side effects
-- aggregate multiple allocations into a synthetic view
-- maintain retries or reschedule policy
-- run background lifecycle workers
-- own execution state after submission
+**Implementation invariants**
+
+- `Prepare` does not create a run ID.
+- `Prepare` does not build or submit a Nomad job.
+- `Prepare` does not create local staging directories.
+- `Prepare` returns a bounded result assembled in memory after verification and resolution steps complete.
+
+## 7. Submit path implementation
+
+`Submit` is implemented in `es/admission/submit.go`.
+
+**Observed current implementation path**
+
+1. Reject submission if the Nomad client is unavailable or submit is not configured.
+2. Default omitted mode to `async`.
+3. Reject non-async mode.
+4. Reuse the shared admission helper that also powers `Prepare`.
+5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
+6. Fetch payload bytes from ARS using the explicit payload digest from aggregate evidence.
+7. Generate:
+  - `run_id` in `newRunAndJobID`
+  - `nomad_job_id = exec-<run_id>`
+8. Stage the payload locally with `stagePayload`.
+9. Stage runtime mounts with `stageRuntimeMounts` when mounts are requested.
+10. Validate staged mount targets against reserved runtime paths.
+11. Build runtime environment variables.
+12. Build the Nomad job spec with `buildNomadJobSpec`.
+13. Submit the job through `nomadClient.submitJob`.
+14. Return the bounded `SubmitResult`.
+
+Where IDs are created:
+
+- `run_id` is created in `newRunAndJobID`.
+- The Nomad job ID is derived there as `exec-<run_id>`.
+
+Where ES stops and Nomad takes over:
+
+- ES stops at successful `submitJob`.
+- After that point, ES reads lifecycle state back from Nomad rather than maintaining its own execution state.
+
+**Implementation invariants**
+
+- `Submit` reuses `Prepare` instead of duplicating the full admission path inline.
+- Failed submits remove the staging root immediately through deferred cleanup.
+- Successful submits currently leave their host staging directories in place unless some other cleanup removes them.
+
+## 8. Lifecycle projection implementation
+
+`Status`, `Logs`, and `Cancel` are implemented in `es/admission/lifecycle.go`.
+
+**Observed current implementation path**
+
+- `resolveRunID` trims and validates `run_id` against `^run-[0-9a-f]{16}$`.
+- `resolveRunID` derives `exec-<run_id>` directly.
+- `fetchJob` reads the Nomad job summary.
+- `latestAllocation` reads the job's allocations, sorts by `ModifyIndex`, and selects the latest allocation.
+- `fetchAllocation` retrieves the detailed allocation record.
+
+Status path:
+
+- Fetch job summary.
+- Build a minimal `ExecutionStatusResult`.
+- Resolve the latest allocation if present.
+- Fill allocation/task/exit-code fields when available.
+- Treat "job exists but no allocation yet" as a successful job-level status view.
+
+Logs path:
+
+- Fetch job summary.
+- Resolve the latest allocation.
+- Require task `task` to be in `running` or `dead`.
+- Fetch stdout via Nomad client FS logs endpoint.
+
+Cancel path:
+
+- Fetch job summary.
+- Stop the job through Nomad with `purge=false`.
+- Return bounded cancel receipt.
+
+**Implementation invariants**
+
+- ES does not consult any ES-owned run store for lifecycle lookup.
+- Latest-allocation selection is the only allocation-selection logic in the current implementation.
+- Post-submit lifecycle reads are read-through from Nomad rather than reconstructed from staging directories or ES memory.
+
+## 9. Runtime identity and mount implementation
+
+`runtimeidentity.go` and `mounts.go` implement the local runtime handoff boundary.
+
+### `runtimeidentity.go`
+
+**Observed current implementation path**
+
+- Defines reserved runtime paths:
+  - `/monolith/staged`
+  - `/monolith/run`
+  - `/monolith/runtime-identity`
+  - `/monolith/runtime-identity/endpoint`
+  - `/monolith/runtime-identity/vault-token`
+- Defines the current endpoint environment key/value:
+  - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+  - `unix:///monolith/runtime-identity/endpoint`
+- Enforces overlap checks with `ValidateReservedRuntimePaths`.
+
+**Implementation invariant**
+
+- ES currently protects the reserved runtime paths from caller mount overlap.
+
+**Deliberate absence**
+
+- ES does not implement the endpoint behind the reserved path.
+- ES does not populate token material at `/monolith/runtime-identity/vault-token`.
+
+### `mounts.go`
+
+**Observed current implementation path**
+
+- `validateRuntimeMounts` runs during prepare-time request validation.
+- It enforces:
+  - max mount count
+  - read-only mounts only
+  - absolute cleaned target paths
+  - target paths under `/monolith/mounts`
+  - no overlapping mount targets
+- `stageRuntimeMounts` runs during submit-time staging.
+- For each mount artifact it:
+  - re-fetches and revalidates aggregate evidence and trust
+  - fetches payload bytes
+  - writes a temporary archive under the staging root
+  - extracts into a per-mount contents directory
+  - rejects symlinks, hard links, special files, and extraction escapes
+  - removes the temporary archive after extraction
+
+**Implementation invariant**
+
+- Runtime mounts are prepared from governed artifacts, not arbitrary host paths.
+
+**Current simplification**
+
+- Mount staging is folded into the submit path instead of being split into a separate artifact-preparation subsystem.
+
+## 10. Filesystem and local side effects
+
+Submission has visible local side effects under the configured staging root.
+
+**Observed current implementation path**
+
+- Startup creates the top-level staging root when submit is configured.
+- `stagePayload` creates:
+  - `<staging_root>/<run_id>/payload`
+  - `<staging_root>/<run_id>/run`
+- Payload bytes are written to:
+  - `<staging_root>/<run_id>/payload/artifact.tar.gz`
+- Mount staging creates:
+  - `<staging_root>/<run_id>/mounts/<index>/contents`
+
+Runtime-path effects in the Nomad job spec:
+
+- Host `payloadDir` is bind-mounted to `/monolith/staged`
+- Host `runDir` is bind-mounted to `/monolith/run`
+- Runtime identity workspace is mounted as tmpfs at `/monolith/runtime-identity`
+
+Cleanup behavior visible in code:
+
+- Failed submits remove the staged root directory.
+- Successful submits currently retain host staging unless cleaned elsewhere.
+- The runtime-identity workspace is not host-backed by the submit path.
+
+**Current simplification**
+
+- Local staging is a direct filesystem side effect of submit, not a separate managed artifact-execution cache.
+
+## 11. Nomad and Docker interaction
+
+`submit.go` and `lifecycle.go` together define the current Nomad/Docker interaction path.
+
+**Observed current implementation path**
+
+- `buildNomadJobSpec` assembles the Nomad job payload.
+- The current job spec is:
+  - one batch job
+  - one task group
+  - one task named `task`
+  - Docker driver
+- The wrapper shell command:
+  - creates `/monolith/run/work`
+  - creates the runtime-identity workspace path
+  - untars the staged artifact into the work directory
+  - `chmod +x` on `entrypoint`
+  - optionally wraps execution in `timeout`
+  - execs `/monolith/run/work/entrypoint`
+
+Current job-spec assumptions:
+
+- restart attempts: `0`
+- reschedule attempts: `0`
+- network mode:
+  - `none` when attestation says `network_access=false`
+  - `bridge` when `network_access=true`
+
+After submission, ES asks Nomad for:
+
+- job summary
+- job allocations
+- allocation detail
+- task stdout
+- job stop
+
+How Docker appears in the implementation:
+
+- Docker is not called directly by ES.
+- ES asks Nomad to run a Docker task and later reads Nomad's view of that execution.
+
+**Current simplification**
+
+- The implementation assumes one meaningful job, one meaningful task group, one meaningful task, and one meaningful allocation path in the current slice.
+
+## 12. Test-backed implementation facts
+
+The most important implementation facts are backed by integration tests:
+
+- `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES returns current trust, provenance, workload, and workload-vault data after ACS/ARS/EGS composition.
+- `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
+- `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
+- `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/monolith/mounts/...` remains allowed.
+- `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ACS and ES -> ARS health checks.
+- `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
+
+## 13. Current simplifications
+
+**Current simplifications**
+
+- `Prepare` is a bounded but live code path.
+- `Prepare` and `Submit` now share one internal admission helper instead of maintaining separate admission pipelines.
+- ES has no lifecycle store and uses direct `run_id -> exec-<run_id>` lookup.
+- Lifecycle uses latest-allocation selection instead of a broader allocation model.
+- Log retrieval is a minimal latest-allocation stdout path.
+- There is no retry or reschedule machinery in ES.
+- Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
+- TrustModel loading is startup-time initialization rather than a live refresh path in the current slice.
+- Aggregate evidence is the only first-class admission input for the published artifact path.
+
+These are active implementation choices, not automatically permanent design commitments.
+
+## 14. Deliberate absences
+
+**Deliberate absences**
+
+- No run persistence
+- No background lifecycle workers
+- No retry or reschedule orchestration
+- No multi-allocation aggregation
+- No streaming log implementation
+- No token minting or token population in the ES runtime-identity workspace
+- No scheduler abstraction above Nomad in the current slice
+
+## 15. Current implementation pressure points
+
+**Reopened implementation seams under visible pressure**
+
+- `Prepare` is live and important in code even though it is still described as bounded.
+- Admission logic now treats aggregate evidence as canonical with no remaining legacy fact fallback or side path.
+- `run_id -> exec-<run_id>` is hard-coded into the lifecycle lookup path.
+- Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
+- Runtime identity handling depends on reserved `/monolith/...` path conventions.
+- Submit currently depends on aggregate-evidence payload identity, while AGS and ARS still happen to publish `artifact_digest == payload_digest` in the bounded slice.
+- The implementation is coherent today as a thin composition and handoff layer, but several of its shortcuts are still under redesign pressure rather than being settled structure.
+
+## 16. Relationship to other docs
+
+Use the companion documents for other kinds of authority:
+
+- `.docs/execution_lifecycle/contracts.md` for public endpoint, response, and error semantics
+- `.docs/execution_lifecycle/design.md` for lifecycle design and authority boundaries
+- `.docs/system_overview/contracts.md` for cross-service contract context
+- `.docs/system_overview/boundaries.md` for service ownership and non-ownership
+- `PLANS.md` for redesign sequencing and reopened architectural decisions
+
+This file should stay focused on code paths and side effects.
+
+## 17. Reopened implementation seams
+
+- The implementation role of `Prepare`
+- The internal reuse of `Prepare` by `Submit`
+- `run_id -> exec-<run_id>` derivation
+- Latest-allocation selection path
+- Runtime identity reserved-path handling
+- Current staging and package-resolution flow
+- The extent to which current lifecycle minimalism is implementation convenience versus durable structure
+
+These seams are active today and intentionally not fixed.
+
+## 18. Decision rules for future edits
+
+- Keep this file implementation-level, not contract-level.
+- Do not omit active code paths from the implementation map.
+- Public semantics belong in `.docs/execution_lifecycle/contracts.md`.
+- System ownership belongs in `.docs/system_overview/boundaries.md`.
+- If code and tests disagree with this file, update this file to match reality.
+- Label current simplifications explicitly.
+- Do not describe an implementation shortcut as a durable invariant without support.

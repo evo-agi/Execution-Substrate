@@ -237,7 +237,7 @@ func TestPartialUploadDoesNotMakeArtifactVisible(t *testing.T) {
 		body   []byte
 	}{
 		{digest: seeded.ManifestDigest, body: seeded.ManifestJSON},
-		{digest: seeded.ProvenanceDigest, body: seeded.ProvenanceJSON},
+		{digest: seeded.EvidenceDigest, body: seeded.EvidenceJSON},
 		{digest: seeded.PayloadDigest, body: seeded.PayloadBytes},
 	}
 	for _, upload := range uploads {
@@ -282,6 +282,42 @@ func TestArtifactRegistrationMakesArtifactVisible(t *testing.T) {
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
+	}
+}
+
+func TestArtifactEvidenceReadReturnsRegisteredEvidence(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
+
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/evidence", fixture.clientTLSConfig(t, "service/execution"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+	if got := response.Header.Get("Content-Digest"); got != seeded.EvidenceDigest {
+		t.Fatalf("unexpected evidence digest header: %q", got)
+	}
+	if body := mustReadBody(t, response.Body); string(body) != string(seeded.EvidenceJSON) {
+		t.Fatalf("unexpected evidence body: %q", string(body))
+	}
+}
+
+func TestLegacyArtifactCompatibilityRoutesAreNotExposed(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
+
+	for _, path := range []string{
+		"/v1/artifacts/" + seeded.ArtifactDigest + "/provenance",
+		"/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-metadata",
+		"/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-authorization-attestation",
+		"/v1/artifacts/" + seeded.ArtifactDigest + "/workload-identity-binding",
+	} {
+		response := doRequest(t, service.Addr(), http.MethodGet, path, fixture.clientTLSConfig(t, "service/execution"))
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d", path, response.StatusCode)
+		}
 	}
 }
 
@@ -525,28 +561,10 @@ func TestArtifactEndpointsReturnExpectedResponses(t *testing.T) {
 			body:   string(seeded.ManifestJSON),
 		},
 		{
-			name:   "provenance",
-			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/provenance",
-			digest: seeded.ProvenanceDigest,
-			body:   string(seeded.ProvenanceJSON),
-		},
-		{
-			name:   "derivation metadata",
-			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-metadata",
-			digest: seeded.DerivationMetadataDigest,
-			body:   string(seeded.DerivationMetadataJSON),
-		},
-		{
-			name:   "derivation authorization attestation",
-			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-authorization-attestation",
-			digest: seeded.DerivationAuthorizationAttestationDigest,
-			body:   string(seeded.DerivationAuthorizationAttestationJSON),
-		},
-		{
-			name:   "workload identity binding",
-			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/workload-identity-binding",
-			digest: seeded.WorkloadIdentityBindingDigest,
-			body:   string(seeded.WorkloadIdentityBindingJSON),
+			name:   "evidence",
+			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/evidence",
+			digest: seeded.EvidenceDigest,
+			body:   string(seeded.EvidenceJSON),
 		},
 	}
 
@@ -628,35 +646,14 @@ func TestArtifactEndpointsReturnNotFoundForMissingReferencedBlobs(t *testing.T) 
 		digest func(seededStorage) string
 	}{
 		{
+			name:   "evidence",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/evidence" },
+			digest: func(seeded seededStorage) string { return seeded.EvidenceDigest },
+		},
+		{
 			name:   "manifest",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/manifest" },
 			digest: func(seeded seededStorage) string { return seeded.ManifestDigest },
-		},
-		{
-			name:   "provenance",
-			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/provenance" },
-			digest: func(seeded seededStorage) string { return seeded.ProvenanceDigest },
-		},
-		{
-			name: "derivation metadata",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-metadata"
-			},
-			digest: func(seeded seededStorage) string { return seeded.DerivationMetadataDigest },
-		},
-		{
-			name: "derivation authorization attestation",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-authorization-attestation"
-			},
-			digest: func(seeded seededStorage) string { return seeded.DerivationAuthorizationAttestationDigest },
-		},
-		{
-			name: "workload identity binding",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/workload-identity-binding"
-			},
-			digest: func(seeded seededStorage) string { return seeded.WorkloadIdentityBindingDigest },
 		},
 	}
 
@@ -771,35 +768,14 @@ func TestArtifactEndpointsReturnCorruptionForReferencedBlobs(t *testing.T) {
 		digest func(seededStorage) string
 	}{
 		{
+			name:   "evidence",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/evidence" },
+			digest: func(seeded seededStorage) string { return seeded.EvidenceDigest },
+		},
+		{
 			name:   "manifest",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/manifest" },
 			digest: func(seeded seededStorage) string { return seeded.ManifestDigest },
-		},
-		{
-			name:   "provenance",
-			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/provenance" },
-			digest: func(seeded seededStorage) string { return seeded.ProvenanceDigest },
-		},
-		{
-			name: "derivation metadata",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-metadata"
-			},
-			digest: func(seeded seededStorage) string { return seeded.DerivationMetadataDigest },
-		},
-		{
-			name: "derivation authorization attestation",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/derivation-authorization-attestation"
-			},
-			digest: func(seeded seededStorage) string { return seeded.DerivationAuthorizationAttestationDigest },
-		},
-		{
-			name: "workload identity binding",
-			pathFn: func(seeded seededStorage) string {
-				return "/v1/artifacts/" + seeded.ArtifactDigest + "/workload-identity-binding"
-			},
-			digest: func(seeded seededStorage) string { return seeded.WorkloadIdentityBindingDigest },
 		},
 	}
 
@@ -1120,13 +1096,10 @@ type rawHTTPResponse struct {
 }
 
 type artifactRegisterRequest struct {
-	ArtifactDigest                           string `json:"artifact_digest"`
-	ManifestDigest                           string `json:"manifest_digest"`
-	ProvenanceDigest                         string `json:"provenance_digest"`
-	PayloadDigest                            string `json:"payload_digest"`
-	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
-	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
-	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+	ArtifactDigest string `json:"artifact_digest"`
+	EvidenceDigest string `json:"evidence_digest"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+	PayloadDigest  string `json:"payload_digest"`
 }
 
 type seededStorage struct {
@@ -1139,19 +1112,13 @@ type seededStorage struct {
 	JSONDigest string
 	JSONBlob   []byte
 
-	ArtifactDigest                           string
-	ManifestDigest                           string
-	ManifestJSON                             []byte
-	ProvenanceDigest                         string
-	ProvenanceJSON                           []byte
-	DerivationMetadataDigest                 string
-	DerivationMetadataJSON                   []byte
-	DerivationAuthorizationAttestationDigest string
-	DerivationAuthorizationAttestationJSON   []byte
-	WorkloadIdentityBindingDigest            string
-	WorkloadIdentityBindingJSON              []byte
-	PayloadDigest                            string
-	PayloadBytes                             []byte
+	ArtifactDigest string
+	EvidenceDigest string
+	EvidenceJSON   []byte
+	ManifestDigest string
+	ManifestJSON   []byte
+	PayloadDigest  string
+	PayloadBytes   []byte
 }
 
 func newTLSFixture(t *testing.T) tlsFixture {
@@ -1233,44 +1200,32 @@ func seedStorageFixture(t *testing.T) seededStorage {
 		BlobContent: []byte("Hello, Artifact Registry!"),
 		JSONBlob:    []byte(`{"kind":"blob","value":"json"}`),
 
+		EvidenceJSON: []byte(`{"schema_version":"v1","artifact":{"artifact_digest":"artifact","payload_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_type":"static-script","intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"publication":{"builder_service":"artifact-governance","invoker":{"service":"deployment","principal":"spiffe://monolith.internal/service/deployment"},"policy_decisions":[],"build_log_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"admission":{"runtime":{"parameters":[],"environment_variables":["APP_MODE"],"required_capabilities":[]},"derivation":{"derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","producer_run_id":"run-1","policy_version":"2026-03-31","expected_artifact_type":"static-script","constraints":{"allowed_toolchains":[],"forbidden_toolchains":[],"os":"linux","arch":"amd64","network_access":false,"writable_paths":[],"forbidden_paths":[],"determinism_expectation":"deterministic"}},"workload":{"artifact_class":"service","workload_type":"service","module_path":"services.execution.ExecutionServer","service_name":"execution","workload_identity_id":"spiffe://monolith.internal/service/execution","policy_version":"2026-03-31"}},"seal":{"algorithm":"ed25519","key_id":"ags-artifact-fact-signer","content_digest":"sha256:4444444444444444444444444444444444444444444444444444444444444444","signature":"test-signature"}}`),
 		ManifestJSON: []byte(`{"schema_version":"v1","name":"runtime"}`),
-		ProvenanceJSON: []byte(`{"payload":{"kind":"provenance","subject":{"artifact_digest":"artifact"},"claims":{"builder_service":"artifact-governance","invoker":{"service":"deployment","principal":"spiffe://monolith.internal/service/deployment"},"policy_decisions":[],"build_log_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","signature_value":"test-signature"}}`),
-		DerivationMetadataJSON: []byte(`{"output_id":"runtime","producer_run_id":"run-1"}`),
-		DerivationAuthorizationAttestationJSON: []byte(`{"payload":{"kind":"derivation_attestation","subject":{"artifact_digest":"artifact","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"claims":{"constraints":{"allowed_toolchains":[],"forbidden_toolchains":[],"os":"linux","arch":"amd64","network_access":false,"writable_paths":[],"forbidden_paths":[],"determinism_expectation":"deterministic"},"policy":{"version":"2026-03-31","expected_artifact_type":"static-script"}}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","signature_value":"test-signature"}}`),
-		WorkloadIdentityBindingJSON: []byte(`{"payload":{"kind":"workload_identity_binding","subject":{"artifact_class":"service","artifact_digest":"artifact","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"claims":{"descriptor":{"workload_type":"service","module_path":"services.execution.ExecutionServer","service_name":"execution","workload_identity_id":"spiffe://monolith.internal/service/execution"},"policy":{"version":"2026-03-31"}}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","signature_value":"test-signature"}}`),
-		PayloadBytes:                           []byte("payload archive bytes"),
+		PayloadBytes: []byte("payload archive bytes"),
 	}
 
 	state.BlobDigest = store.DigestBytes(state.BlobContent)
 	state.JSONDigest = store.DigestBytes(state.JSONBlob)
+	state.EvidenceDigest = store.DigestBytes(state.EvidenceJSON)
 	state.ManifestDigest = store.DigestBytes(state.ManifestJSON)
-	state.ProvenanceDigest = store.DigestBytes(state.ProvenanceJSON)
-	state.DerivationMetadataDigest = store.DigestBytes(state.DerivationMetadataJSON)
-	state.DerivationAuthorizationAttestationDigest = store.DigestBytes(state.DerivationAuthorizationAttestationJSON)
-	state.WorkloadIdentityBindingDigest = store.DigestBytes(state.WorkloadIdentityBindingJSON)
 	state.PayloadDigest = store.DigestBytes(state.PayloadBytes)
 	state.ArtifactDigest = store.DigestBytes([]byte("artifact-1"))
 
 	writeBlobAtDigest(t, rootDir, state.BlobDigest, state.BlobContent)
 	writeBlobAtDigest(t, rootDir, state.JSONDigest, state.JSONBlob)
+	writeBlobAtDigest(t, rootDir, state.EvidenceDigest, state.EvidenceJSON)
 	writeBlobAtDigest(t, rootDir, state.ManifestDigest, state.ManifestJSON)
-	writeBlobAtDigest(t, rootDir, state.ProvenanceDigest, state.ProvenanceJSON)
-	writeBlobAtDigest(t, rootDir, state.DerivationMetadataDigest, state.DerivationMetadataJSON)
-	writeBlobAtDigest(t, rootDir, state.DerivationAuthorizationAttestationDigest, state.DerivationAuthorizationAttestationJSON)
-	writeBlobAtDigest(t, rootDir, state.WorkloadIdentityBindingDigest, state.WorkloadIdentityBindingJSON)
 	writeBlobAtDigest(t, rootDir, state.PayloadDigest, state.PayloadBytes)
 
 	state.IndexPath = filepath.Join(rootDir, "artifact-index.json")
 	indexPayload, err := json.MarshalIndent(map[string]index.Entry{
 		state.ArtifactDigest: {
-			ArtifactDigest:                           state.ArtifactDigest,
-			ManifestDigest:                           state.ManifestDigest,
-			ProvenanceDigest:                         state.ProvenanceDigest,
-			PayloadDigest:                            state.PayloadDigest,
-			DerivationMetadataDigest:                 state.DerivationMetadataDigest,
-			DerivationAuthorizationAttestationDigest: state.DerivationAuthorizationAttestationDigest,
-			WorkloadIdentityBindingDigest:            state.WorkloadIdentityBindingDigest,
-			CreatedAt:                                "2026-03-31T00:00:00Z",
+			ArtifactDigest: state.ArtifactDigest,
+			EvidenceDigest: state.EvidenceDigest,
+			ManifestDigest: state.ManifestDigest,
+			PayloadDigest:  state.PayloadDigest,
+			CreatedAt:      "2026-03-31T00:00:00Z",
 		},
 	}, "", "  ")
 	if err != nil {
@@ -1304,11 +1259,8 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 	digests := []string{
 		state.BlobDigest,
 		state.JSONDigest,
+		state.EvidenceDigest,
 		state.ManifestDigest,
-		state.ProvenanceDigest,
-		state.DerivationMetadataDigest,
-		state.DerivationAuthorizationAttestationDigest,
-		state.WorkloadIdentityBindingDigest,
 		state.PayloadDigest,
 	}
 	for _, digest := range digests {
@@ -1326,13 +1278,10 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 
 func artifactRegisterRequestFromSeeded(seeded seededStorage) artifactRegisterRequest {
 	return artifactRegisterRequest{
-		ArtifactDigest:                           seeded.ArtifactDigest,
-		ManifestDigest:                           seeded.ManifestDigest,
-		ProvenanceDigest:                         seeded.ProvenanceDigest,
-		PayloadDigest:                            seeded.PayloadDigest,
-		DerivationMetadataDigest:                 seeded.DerivationMetadataDigest,
-		DerivationAuthorizationAttestationDigest: seeded.DerivationAuthorizationAttestationDigest,
-		WorkloadIdentityBindingDigest:            seeded.WorkloadIdentityBindingDigest,
+		ArtifactDigest: seeded.ArtifactDigest,
+		EvidenceDigest: seeded.EvidenceDigest,
+		ManifestDigest: seeded.ManifestDigest,
+		PayloadDigest:  seeded.PayloadDigest,
 	}
 }
 

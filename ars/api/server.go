@@ -357,6 +357,13 @@ func (s *Server) handleArtifactRead(w http.ResponseWriter, rawArtifactDigest str
 	}
 
 	referencedDigest := entry.DigestFor(kind)
+	if strings.TrimSpace(referencedDigest) == "" {
+		writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+			Error:          "artifact data not registered",
+			ArtifactDigest: artifactDigest,
+		})
+		return
+	}
 	data, err := s.blobStore.Read(referencedDigest)
 	if err != nil {
 		var corrupt store.BlobCorruptError
@@ -416,14 +423,11 @@ func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) 
 	}
 
 	entry := index.Entry{
-		ArtifactDigest:                           request.ArtifactDigest,
-		ManifestDigest:                           request.ManifestDigest,
-		ProvenanceDigest:                         request.ProvenanceDigest,
-		PayloadDigest:                            request.PayloadDigest,
-		DerivationMetadataDigest:                 request.DerivationMetadataDigest,
-		DerivationAuthorizationAttestationDigest: request.DerivationAuthorizationAttestationDigest,
-		WorkloadIdentityBindingDigest:            request.WorkloadIdentityBindingDigest,
-		CreatedAt:                                time.Now().UTC().Format(time.RFC3339),
+		ArtifactDigest: request.ArtifactDigest,
+		EvidenceDigest: request.EvidenceDigest,
+		ManifestDigest: request.ManifestDigest,
+		PayloadDigest:  request.PayloadDigest,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if response, status, ok := s.validateArtifactRegistration(entry); !ok {
@@ -626,19 +630,31 @@ func decodeStrictJSONBody(body io.Reader, target any) error {
 }
 
 func (s *Server) validateArtifactRegistration(entry index.Entry) (ArtifactErrorResponse, int, bool) {
+	if strings.TrimSpace(entry.EvidenceDigest) == "" {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: entry.ArtifactDigest,
+		}, http.StatusBadRequest, false
+	}
+	if strings.TrimSpace(entry.PayloadDigest) == "" {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: entry.ArtifactDigest,
+		}, http.StatusBadRequest, false
+	}
 	referencedDigests := []struct {
 		digest     string
 		expectJSON bool
 	}{
+		{digest: entry.EvidenceDigest, expectJSON: true},
 		{digest: entry.ManifestDigest, expectJSON: true},
-		{digest: entry.ProvenanceDigest, expectJSON: true},
 		{digest: entry.PayloadDigest, expectJSON: false},
-		{digest: entry.DerivationMetadataDigest, expectJSON: true},
-		{digest: entry.DerivationAuthorizationAttestationDigest, expectJSON: true},
-		{digest: entry.WorkloadIdentityBindingDigest, expectJSON: true},
 	}
 
 	for _, referenced := range referencedDigests {
+		if strings.TrimSpace(referenced.digest) == "" {
+			continue
+		}
 		if err := store.ValidateDigest(referenced.digest); err != nil {
 			return ArtifactErrorResponse{
 				Error:          "invalid referenced digest",

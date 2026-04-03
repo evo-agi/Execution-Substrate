@@ -1,7 +1,5 @@
 package admission
 
-import signingv2 "execution-platform/contracts/signing/v2"
-
 type ExecutionMode string
 
 const (
@@ -148,27 +146,6 @@ type Manifest struct {
 	RuntimeInterface RuntimeInterface `json:"runtime_interface"`
 }
 
-type InvokerInfo struct {
-	Service   string `json:"service"`
-	Principal string `json:"principal"`
-}
-
-type PolicyDecision struct {
-	Rule   string `json:"rule"`
-	Result string `json:"result"`
-}
-
-type Provenance struct {
-	Payload   signingv2.ProvenancePayload `json:"payload"`
-	Signature signingv2.Envelope          `json:"signature"`
-}
-
-type DerivationMetadata struct {
-	DerivationSpecDigest string `json:"derivation_spec_digest"`
-	OutputID             string `json:"output_id"`
-	ProducerRunID        string `json:"producer_run_id"`
-}
-
 type DerivationSpecConstraintsInfo struct {
 	AllowedToolchains      []string `json:"allowed_toolchains"`
 	ForbiddenToolchains    []string `json:"forbidden_toolchains"`
@@ -178,14 +155,4 @@ type DerivationSpecConstraintsInfo struct {
 	WritablePaths          []string `json:"writable_paths"`
 	ForbiddenPaths         []string `json:"forbidden_paths"`
 	DeterminismExpectation string   `json:"determinism_expectation"`
-}
-
-type DerivationAttestation struct {
-	Payload   signingv2.DerivationAttestationPayload `json:"payload"`
-	Signature signingv2.Envelope                     `json:"signature"`
-}
-
-type WorkloadIdentityBinding struct {
-	Payload   signingv2.WorkloadIdentityBindingPayload `json:"payload"`
-	Signature signingv2.Envelope                       `json:"signature"`
 }

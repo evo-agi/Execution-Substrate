@@ -1,273 +1,708 @@
-# System Contracts
+# Cross-Service Contracts
 
-## Purpose
+## 1. Purpose And Authority
 
-This document defines the system-wide contracts that span multiple services. These are not local implementation details. They are cross-service rules that must remain aligned across publication, storage, trust, admission, execution, and lifecycle.
+This document inventories the current cross-service contracts in the Go repository.
 
-## AGS -> ES Canonicalization Contract
+A system contract, for this document, is any rule, DTO, route, shared payload, or ownership boundary that crosses service or runtime boundaries and that another component can rely on.
 
-AGS and ES are bound by an explicit versioned producer/consumer contract for signed artifact facts:
+Authoritative sources, in order, are:
 
-- provenance
-- derivation attestation
-- workload identity binding
+1. `PLANS.md`
+2. `.docs/system_overview/`
+3. `.docs/execution_lifecycle/`
+4. current Go code and tests
 
-The active signing contract is v2 and is isolated in:
+This document describes the Go repo's active cross-service behavior during an architecture-reset phase. A contract may be active today without being treated as a permanent endpoint.
 
-- `/Users/ds/Repositories/Execution-Platform/contracts/signing/v2`
+When existing prose disagrees with code or tests, prefer code and tests.
 
-Each signed fact is a two-part document:
+## 2. How To Read This Document
 
-- `payload`
-- `signature`
+This file uses four status labels.
 
-`payload` carries the fact body using a versioned v2 shape with:
+| Label | Meaning |
+| --- | --- |
+| `Observed current contract` | A behavior, surface, or payload shape enforced by the current Go code and tests. |
+| `Current invariant` | An active cross-service rule that other components currently depend on and that must not change silently during redesign. |
+| `Temporary compatibility edge` | An active field, shape, or behavior retained for continuity or consumer compatibility, but not treated as a long-term architectural endpoint. |
+| `Reopened redesign seam` | A currently active surface that `PLANS.md` explicitly reopens for redesign. Its present shape must not be mistaken for settled architecture. |
 
-- `kind`
-- `subject`
-- `claims`
+The labels are intentionally different:
 
-`signature` is a detached digest-only envelope with:
+- `Observed current contract` says what exists now.
+- `Current invariant` says what must remain explicit and aligned while redesign is underway.
+- `Temporary compatibility edge` says the system still uses it, but future work must not preserve it by inertia.
+- `Reopened redesign seam` says the surface is live today and also explicitly under architectural review.
 
-- `canonicalization_version = "v2"`
-- `algorithm`
-- `key_id`
+## 3. Shared Cross-Service Kernel
+
+### Purpose
+
+Describe the current shared kernel that multiple services use directly today.
+
+### Current producers / consumers
+
+- `AGS` produces aggregate artifact evidence using `contracts/evidence/v1` for the publish path.
+- `ES` treats the `contracts/evidence/v1` artifact record as the canonical admission input.
+- `ARS` stores and serves the evidence record as the first-class artifact representation, and ARS does not interpret signing semantics.
+- `EGS` does not use either package; it has its own TrustModel signing surface.
+
+### Public surface
+
+`Observed current contract`
+
+- The repo now has one active shared artifact kernel:
+  - `contracts/evidence/v1`
+- `contracts/evidence/v1` defines one aggregate `ArtifactEvidence` record with these top-level sections:
+  - `artifact`
+  - `publication`
+  - `admission`
+  - `seal`
+- The aggregate evidence record carries explicit `artifact_digest` and `payload_digest` fields.
+### Current invariants
+
+`Current invariant`
+
+- AGS signs canonical aggregate evidence bytes and ES reconstructs those bytes before verifying the evidence `seal`.
+- When ES uses `contracts/evidence/v1`, it verifies:
+  - `schema_version == "v1"`
+  - expected `algorithm`
+  - expected `key_id`
+  - recomputed `content_digest`
+  - signature over canonical aggregate bytes
+- The aggregate evidence canonicalization is typed and normalizes current set-like collections such as:
+  - publication `policy_decisions`
+  - runtime allowlists and capability lists
+  - derivation constraint string sets
+- EGS TrustModel signing is a separate contract and must not be conflated with either artifact kernel.
+
+### Ownership boundary
+
+- `AGS` owns aggregate evidence production.
+- `ES` owns verification of the aggregate evidence record that now drives its first-class admission path.
+- `ARS` owns storage and retrieval, not signature semantics.
+- Shared packages are transport for jointly owned contract logic, not owners of broader system policy.
+
+### Temporary compatibility edges
+
+- The current ES evidence verification path reuses the AGS artifact signer trust settings already configured for provenance verification. That reuse is a first-cut compatibility choice, not a statement that the two verifier surfaces are permanently identical.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- The shared-kernel role of `contracts/evidence/v1` remains explicitly reopened by `PLANS.md`.
+- The new aggregate evidence record is active today, but it is still a first migration cut rather than the declared end-state kernel.
+
+## 4. ACS Contract
+
+### Purpose
+
+Provide governed assignment-to-digest lookup.
+
+### Current producers / consumers
+
+- `ACS` publishes digest lookups over HTTPS.
+- `ES` currently consumes ACS for `/v1/configuration/workload-zone/vault`.
+- Other callers may read ACS if their SPIFFE path matches configured allowed prefixes.
+
+### Public surface
+
+`Observed current contract`
+
+- `GET /v1/configuration/workload-zone/vault`
+- `GET /v1/configuration/deployment/stage/{stage}`
+- `GET /v1/configuration/deployment/dependency/{stage}`
+- `GET /v1/configuration/deployment/service/{stage}/{service}/{version}`
+- `GET /v1/configuration/service/{service}/{version}:instances`
+- `GET /v1/configuration/service/{service}/{version}/{instance}:docker`
+- `GET /v1/configuration/service/{service}/{version}/{instance}:application`
+- `GET /v1/configuration/sidecar/{service}/{version}:instances`
+- `GET /v1/configuration/sidecar/{service}/{version}/{instance}:docker`
+
+Lookup responses currently use this envelope:
+
+- `success`
+- `digest` on success
+- `assignment`
+- `catalog_snapshot_digest`
+- `error` on failure
+
+The current assignment taxonomy is encoded in `acs/catalog/assignment.go`:
+
+- `deployment_stage_config`
+- `deployment_service_config`
+- `deployment_stage_dependency`
+- `service_docker_config`
+- `service_application_config`
+- `service_instances`
+- `sidecar_docker_config`
+- `sidecar_instances`
+- `workload_zone_vault`
+
+### Current invariants
+
+`Current invariant`
+
+- ACS is a lookup boundary only. It maps validated assignment keys to digests.
+- Assignment shape validation is strict and tied to `identity_kind`.
+- `workload_zone_vault` is the only ACS lookup ES currently requires in its hot path.
+- Not-found lookups return structured JSON with `success=false`; they do not fall through to an undocumented alternate path.
+- ACS health and lookup responses include richer service-specific fields, but ES currently depends only on:
+  - top-level `status` and `ready` from `/health`
+  - `success` and `digest` from the workload-zone vault lookup
+
+### Ownership boundary
+
+- ACS owns assignment validation and digest lookup.
+- ACS does not own blob storage, policy publication, artifact verification, or runtime execution logic.
+
+### Temporary compatibility edges
+
+`Temporary compatibility edge`
+
+- `assignment` and `catalog_snapshot_digest` are returned to callers today, but ES treats them as advisory rather than as execution inputs.
+- ACS route families reflect the current assignment taxonomy; they should not be treated as permanent solely because they already exist.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- The ACS lookup family and assignment taxonomy are explicitly reopened in `PLANS.md`.
+- The assignment-to-digest indirection model is active today, but it is not a settled architectural endpoint.
+
+## 5. AGS Publication Contract
+
+### Purpose
+
+Accept bounded publication input, assemble the canonical aggregate evidence record, and publish the resulting artifact package through ARS.
+
+### Current producers / consumers
+
+- Current allowed callers are:
+  - `spiffe://monolith.internal/service/deployment`
+  - `spiffe://monolith.internal/operator`
+- `AGS` consumes the ARS write boundary.
+- `ES` later consumes AGS output indirectly through ARS reads.
+
+### Public surface
+
+`Observed current contract`
+
+- `POST /v1/artifacts:publish`
+
+Current request shape:
+
+- `artifact_payload_b64`
+- `artifact`
+- `publication`
+- `admission`
+
+Current response shape:
+
+- `published`
+- `artifact_digest`
+- `evidence_digest`
+- `manifest_digest`
 - `payload_digest`
-- `signature_value`
 
-AGS must:
+### Current invariants
 
-- canonicalize the v2 payload deterministically
-- compute `payload_digest = sha256(canonical payload bytes)`
-- sign the canonical payload bytes
-- emit the v2 payload plus detached envelope together
+`Current invariant`
 
-ES must:
+- AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- AGS only allows publish callers from the deployment and operator identities above.
+- AGS computes the artifact digest from payload bytes.
+- AGS currently sets `payload_digest == artifact_digest`.
+- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record that carries artifact identity, publication claims, runtime/admission data, and explicit payload identity.
+- AGS assembles and uploads:
+  - payload bytes
+  - aggregate artifact evidence
+  - manifest
+- AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
+- AGS derives publication caller binding from the authenticated caller and always emits `publication.builder_service = "artifact-governance"` in aggregate evidence.
+- AGS enforces bounded cross-field consistency before publishing, including:
+  - valid SPIFFE workload identity
+  - `service_name` required for service workloads
+  - `service_name` must match the SPIFFE service name when present
+  - `admission.derivation.policy_version` must match `admission.workload.policy_version`
+  - `admission.derivation.expected_artifact_type`, when set, must match `artifact.artifact_type`
+- `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
+- AGS publishes only through ARS:
+  - `PUT /v1/blobs/{digest}`
+  - `POST /v1/artifacts:register`
 
-- decode the v2 payload and signature wrapper strictly
-- reconstruct canonical payload bytes from the decoded payload
-- recompute `payload_digest`
-- verify `signature_value` over the canonical payload bytes
-- reject any payload whose digest or signature does not match
+### Ownership boundary
 
-The signature envelope must not embed canonical payload bytes.
+- AGS owns artifact-fact assembly, signing, upload, and registration.
+- AGS does not own TrustModel publication, runtime admission, scheduler behavior, or runtime credential delivery.
 
-ES must not silently accept semantically equivalent but differently canonicalized payloads.
+### Temporary compatibility edges
 
-Any change to the v2 canonicalization rules must update:
+`Temporary compatibility edge`
 
-- AGS production
-- ES verification
-- fixtures and integration tests
-- authoritative Go documentation
+- None on the current AGS publish path.
 
-in one explicit contract change.
+### Reopened seams
 
-## AGS Publish Authorization Contract
+`Reopened redesign seam`
 
-AGS is a trusted control-plane publication boundary, not a general-purpose signing surface.
+- The AGS publish contract and fact-assembly model are explicitly reopened in `PLANS.md`.
+- The current digest tuple, fact bundle, and caller-binding model are live today, but they are not automatically the target end-state.
 
-Allowed public publish callers are limited to:
+## 6. ARS Storage And Discoverability Contract
 
-- `spiffe://monolith.internal/service/deployment`
-- `spiffe://monolith.internal/operator`
+### Purpose
 
-Transport preconditions remain:
+Provide content-addressed blob storage, integrity enforcement, artifact registration, and fact discoverability.
 
-- SPIFFE caller identity is required
-- bootstrap-PKI callers are rejected
+### Current producers / consumers
 
-AGS must bind authenticated caller identity into signed provenance facts:
+- `AGS` is the fixed writer for the current ARS write boundary.
+- `ES` consumes ARS for evidence, payload bytes, manifest reads when needed, and workload-zone vault blob reads.
+- Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes.
 
-- `provenance.builder_service` is AGS-owned
-- AGS must ignore caller-supplied `provenance.builder_service`
-- AGS must always emit `provenance.builder_service = "artifact-governance"`
-- `provenance.invoker.service` and `provenance.invoker.principal` must match the authenticated caller identity
+### Public surface
 
-AGS must validate bounded cross-field consistency before signing:
+`Observed current contract`
 
-- `workload_identity_binding.workload_identity_id` must be a valid SPIFFE URI under the current request contract
-- `workload_identity_binding.service_name` must not conflict with `workload_identity_binding.workload_identity_id`
-- `workload_identity_binding.workload_type = "service"` requires `service_name`
-- `derivation_attestation.policy_version` must match `workload_identity_binding.policy_version`
-- `derivation_attestation.expected_artifact_type`, when present, must match `manifest.artifact_type`
-
-`policy_decisions` remain caller-supplied in this slice.
-
-AGS must:
-
-- validate their structure and request-level consistency only
-- avoid semantic validation or policy evaluation in this slice
-
-AGS must not:
-
-- sign unbound caller identity claims
-- vary publish behavior by caller type beyond identity validation and caller-to-invoker binding
-- act as a signing oracle
-
-The bounded failure model is:
-
-- `400 invalid_request` for malformed or structurally invalid inputs
-- `403 publish_forbidden` for unauthorized callers or caller-to-claim identity mismatch
-- `409 artifact_fact_conflict` for internally conflicting artifact facts
-
-## ARS Write / Read Contract
-
-ARS is the only storage boundary for published artifacts.
-
-### Write Contract
-
-AGS publishes through the authoritative ARS write boundary only:
+Write surface:
 
 - `PUT /v1/blobs/{digest}`
 - `POST /v1/artifacts:register`
 
-ARS must:
+Read surface:
 
-- verify uploaded blob bytes against the requested digest
-- validate registration at the storage level only
-- make artifacts visible only after successful atomic registration
+- `HEAD /v1/blobs/{digest}`
+- `GET /v1/blobs/{digest}:bytes`
+- `GET /v1/blobs/{digest}:json`
+- `GET /v1/artifacts/{artifact_digest}/evidence`
+- `GET /v1/artifacts/{artifact_digest}/manifest`
 
-ARS must not:
+Current registration record:
 
-- perform governance validation
-- verify artifact signatures
-- enforce trust policy
+- `artifact_digest`
+- `evidence_digest`
+- `payload_digest`
+- optional `manifest_digest`
 
-### Read Contract
+### Current invariants
 
-ES reads artifacts and payloads through ARS only.
+`Current invariant`
 
-ARS must:
+- ARS is the only current publication and retrieval boundary for published artifacts.
+- Write access is limited to SPIFFE caller path `service/artifact-governance`.
+- `PUT /v1/blobs/{digest}` recomputes the digest from received bytes.
+- Upload is idempotent for identical content.
+- `HEAD /v1/blobs/{digest}` is an integrity check, not a mere presence check.
+- `GET /v1/blobs/{digest}:bytes` and `GET /v1/blobs/{digest}:json` both re-read and re-verify blob integrity on the read path.
+- `GET /v1/blobs/{digest}:json` additionally requires the blob bytes to be valid JSON.
+- Artifact reads become visible only after successful registration.
+- ARS serves `evidence_digest` as the first-class artifact read surface at `/v1/artifacts/{artifact_digest}/evidence`.
+- ARS requires `evidence_digest` for artifact registration.
+- Registration validates every referenced digest by:
+  - checking digest syntax
+  - reading the referenced blob through the storage layer
+  - rejecting missing or corrupted blobs
+  - requiring JSON validity for evidence and manifest blobs
+- Registration is idempotent for the same tuple and a conflict for a different tuple under the same `artifact_digest`.
+- ARS read paths treat referenced blob corruption as a storage failure, not as valid discoverability.
 
-- verify blob integrity on read paths
-- serve artifact-fact indirection only after registration
+### Ownership boundary
 
-ES must not:
+- ARS owns storage correctness, read integrity, and discoverability.
+- ARS does not own signature verification, trust enforcement, or policy evaluation.
 
-- bypass ARS for payload or fact retrieval
-- treat registration alone as proof of integrity without ARS read verification
+### Temporary compatibility edges
 
-## EGS Trust Model Contract
+`Temporary compatibility edge`
 
-EGS publishes the external TrustModel that ES enforces.
+- None on the current ARS artifact contract.
 
-EGS must:
+### Reopened seams
 
-- sign the canonical TrustModel payload
-- publish trust policy separately from artifact facts
+`Reopened redesign seam`
 
-ES must:
+- The ARS registration and index model are explicitly reopened in `PLANS.md`.
+- The current discoverability tuple and artifact record shape are active, but must not be assumed long-term solely because ES currently consumes them.
 
-- verify the EGS signature
-- treat only `payload_digest` and `signature` as authoritative in EGS v1
-- treat `trust_model.signer_policy.allowed_signers` as artifact provenance signer key IDs
+## 7. ES Admission And Execution Contract
 
-ES must not:
+### Purpose
 
-- define trust policy locally
-- treat the EGS signing key as the artifact provenance signer set
-- use `source_digest` for trust decisions in EGS v1
+Compose ACS, ARS, and EGS into governed admission and one bounded execution submit path, then project lifecycle state from Nomad.
 
-## CGS Isolation Contract
+### Current producers / consumers
 
-CGS is a separate compatibility authorization boundary.
+- Current allowed callers are:
+  - `spiffe://monolith.internal/service/deployment`
+  - `spiffe://monolith.internal/operator`
+- ES consumes:
+  - ACS workload-zone vault lookup
+  - ARS artifact evidence, manifest support data when needed, and payload/blob reads
+  - EGS TrustModel publication
+  - Nomad job and allocation APIs
 
-CGS is not part of the current ES admission or execution hot path.
+### Public surface
 
-ES must not:
+`Observed current contract`
 
-- call CGS during the current bounded admission or execution path
-- absorb CGS decision ownership into ES
+- `POST /v1/executions:prepare`
+- `POST /v1/executions:submit`
+- `GET /v1/executions/{run_id}/status`
+- `GET /v1/executions/{run_id}/logs`
+- `POST /v1/executions/{run_id}:cancel`
 
-Any future reintroduction of CGS into the ES path requires an explicit contract change.
+Current prepare request shape:
 
-## ES Composition Contract
+- `schema_version`
+- `invocation`
+- `mode`
+- `timeout_seconds`
+- `resources`
 
-ES is a composition boundary, not an ownership boundary.
+Current invocation shape:
 
-ES must:
+- `schema_version`
+- `artifact_digest`
+- `derivation_spec_digest`
+- `output_id`
+- `argv`
+- `env`
+- `mounts`
+- `annotations`
 
-- validate execution requests
-- retrieve immutable facts from ARS
-- resolve workload-zone Vault metadata through ACS
-- enforce the EGS TrustModel
-- submit one bounded class of execution to Nomad
-- derive lifecycle status, logs, and cancellation from Nomad only
+Current lifecycle mapping:
 
-For the current bounded execution slice:
+- `run_id` must match `run-[0-9a-f]{16}`
+- `nomad_job_id = exec-<run_id>`
 
-- `constraints.network_access = false` must map to Docker `network_mode = "none"`
-- `constraints.network_access = true` must map to Docker `network_mode = "bridge"`
-- `invocation.mounts` may include only governed artifact-backed runtime mounts
-- each runtime mount must supply `source.artifact_digest`, `target_path`, and `read_only = true`
-- each runtime mount `target_path` must be absolute, already cleaned, and remain under `/monolith/mounts/`
-- ES must stage mount artifacts per run, extract them safely, and bind-mount the extracted directory into the task as read-only
-- ES must reject overlapping target paths, unsafe archives, and per-mount or total size-limit violations
-- ES may add exactly one reserved runtime-identity workspace mount
-- the reserved runtime-identity workspace must:
-  - be mounted at `/monolith/runtime-identity/`
-  - expose the reserved runtime interface paths:
-    - `/monolith/runtime-identity/endpoint`
-    - `/monolith/runtime-identity/vault-token`
-  - be writable
-  - be memory-backed tmpfs, not host-backed staging
-  - be ES-owned and not caller-controlled
-  - remain outside `invocation.mounts`
-- ES must clean failed-submit staging before returning an error
-- successful-submit payload and run staging currently remains under `execution.staging_root_dir/<run_id>/` unless removed externally in the current slice, but the reserved runtime-identity workspace must not be persisted there
-- `/monolith/run` is a host-backed writable execution workspace in the current slice and is not guaranteed non-sensitive
-- `/monolith/staged` and caller-visible `/monolith/mounts/...` are host-backed copies of governed artifact content in the current slice
-- ES verifies artifact integrity, trust facts, mount structure, and archive safety, but does not semantically inspect payloads or mount contents for secrecy
-- ES must also inject `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+### Current invariants
 
-ES must not:
+`Current invariant`
 
-- enable host networking
-- publish ports
-- attach tasks to custom Docker networks
-- reinterpret signed network constraints into a broader network-policy system
-- accept host-path or dynamic mount sources
-- accept writable runtime mounts
-- use mounts as an identity, secret, or orchestration channel
-- widen the single reserved runtime-identity workspace into a general external-mount facility
-- inject credentials or endpoint-derived secret material through environment variables
-- branch on OS or runtime identity platform type
-- introduce fallback behavior when runtime identity contract requirements are not met
+- ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- ES admits only deployment and operator callers today.
+- `:prepare` validates request shape, fetches aggregate evidence from ARS at `/v1/artifacts/{artifact_digest}/evidence`, verifies that record with `contracts/evidence/v1`, enforces the current EGS TrustModel against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
+- `:prepare` does not create run IDs, scheduler metadata, or durable execution state.
+- ES verifies and consumes these current ARS artifact surfaces:
+  - aggregate evidence at `/v1/artifacts/{artifact_digest}/evidence`
+  - payload bytes at `/v1/blobs/{payload_digest}:bytes`
+- ES currently depends on ACS only for `/v1/configuration/workload-zone/vault`.
+- ES currently interprets EGS `trust_model.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
+- ES treats EGS `source_digest` as advisory and ignores it for trust decisions.
+- `:submit` reuses the full `:prepare` path first.
+- `:submit` is async-only in the current execution slice.
+- `:submit` currently supports only:
+  - `static-script` artifacts
+  - Docker target platform when a target platform is present
+  - no required runtime capabilities
+- ES currently fetches payload bytes via the explicit payload digest carried in aggregate evidence.
+- Runtime network mode is derived directly from signed derivation constraints:
+  - `network_access=false -> network_mode=none`
+  - `network_access=true -> network_mode=bridge`
+- Caller runtime mounts are currently limited to governed artifact-backed mounts that are:
+  - read-only
+  - absolute
+  - already cleaned
+  - under `/monolith/mounts`
+  - non-overlapping
+- Each runtime mount artifact is revalidated through ARS and TrustModel enforcement before staging.
+- Failed submit staging is cleaned immediately.
+- Successful submit payload and run staging may remain under `execution.staging_root_dir/<run_id>/`.
+- Lifecycle is Nomad-backed only:
+  - ES does not persist run state
+  - ES resolves status, logs, and cancel through Nomad
+  - logs are stdout-only for task `task`
+  - ES chooses the latest allocation in the current no-retry, no-reschedule slice
 
-ES must not:
+### Ownership boundary
 
-- own trust policy
-- own storage semantics
-- own artifact publication
-- own scheduler state
-- own execution lifecycle state
-- fetch or mint workload identity material
-- fetch, store, or rotate Vault tokens
-- broaden bounded lifecycle projection into a private scheduler abstraction
+- ES owns request validation, cross-service composition, Nomad submission, and Nomad-backed lifecycle projection.
+- ES does not own:
+  - trust policy
+  - artifact publication
+  - storage semantics
+  - scheduler state
+  - durable lifecycle state
 
-## Lifecycle Contract
+### Temporary compatibility edges
 
-For submitted execution lifecycle:
+`Temporary compatibility edge`
 
-- Nomad is authoritative
-- ES is stateless
-- lifecycle is derived from Nomad only
+- `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
+- AGS and ARS still publish `artifact_digest == payload_digest` in the current slice, but ES now consumes the explicit `payload_digest` field from aggregate evidence rather than depending on that equality.
+- The current container path conventions under `/monolith/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
+- The current `run_id -> exec-<run_id>` mapping and single-allocation lifecycle model are current slice mechanics, not a general scheduler abstraction.
 
-ES must not:
+### Reopened seams
 
-- cache lifecycle state
-- reconstruct lifecycle state from local artifacts
-- synthesize private lifecycle phases
-- aggregate allocations into a synthetic execution model
+`Reopened redesign seam`
 
-## Reference vs Authority
+- The ES public request model is explicitly reopened in `PLANS.md`.
+- The current prepare/submit split, payload-resolution path, runtime mount model, and scheduler handoff shape are live today but not treated as settled architecture.
 
-This repository is authoritative.
+## 8. EGS Policy Contract
 
-Authoritative sources are:
+### Purpose
 
-- `PLANS.md`
-- `.docs/system_overview/`
-- `.docs/execution_lifecycle/`
-- current Go code and tests
+Publish the signed TrustModel that ES enforces at admission time.
+
+### Current producers / consumers
+
+- `EGS` publishes the TrustModel.
+- Current allowed callers are:
+  - `spiffe://monolith.internal/service/execution`
+  - `spiffe://monolith.internal/operator`
+- `ES` is the current runtime consumer.
+
+### Public surface
+
+`Observed current contract`
+
+- `GET /v1/trust-model`
+
+Current response shape:
+
+- `trust_model`
+- `algorithm`
+- `key_id`
+- `payload_digest`
+- `signature`
+- optional `source_digest`
+
+Current `trust_model` payload shape:
+
+- `signer_policy.allowed_signers`
+- `signer_policy.revoked_signers`
+- `artifact_policy.revoked_artifacts`
+- `update_revision`
+- `version`
+
+### Current invariants
+
+`Current invariant`
+
+- EGS signs the canonical TrustModel payload, not artifact facts.
+- Current canonical TrustModel signing covers:
+  - `signer_policy`
+  - `artifact_policy`
+  - `update_revision`
+  - `version`
+- TrustModel list fields are normalized deterministically before digest and signature generation.
+- `payload_digest` and `signature` are the authoritative trust signals in the current contract.
+- ES verifies the EGS signature and then enforces:
+  - provenance signer allow-list
+  - provenance signer revocation
+  - artifact revocation
+
+### Ownership boundary
+
+- EGS owns TrustModel publication and signing.
+- EGS does not own artifact signing, artifact retrieval, runtime execution, or lifecycle state.
+
+### Temporary compatibility edges
+
+`Temporary compatibility edge`
+
+- `source_digest` is returned today as advisory metadata only. It is active in the wire contract but explicitly excluded from trust decisions.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- The current TrustModel form and response wrapper are explicitly reopened in `PLANS.md`.
+- The current EGS surface is live, but its exact payload and wrapper shape must not be treated as frozen architecture.
+
+## 9. CGS Authorization Contract
+
+### Purpose
+
+Provide a separate authorization decision boundary for credential-related access.
+
+### Current producers / consumers
+
+- Callers invoke CGS directly with their own authenticated SPIFFE identity.
+- The caller identity must match `workload.workload_identity_id`.
+- ES is not a current CGS consumer in the active ES hot path.
+
+### Public surface
+
+`Observed current contract`
+
+- `POST /v1/credential/authorize`
+
+Current request shape:
+
+- `requested_by`
+- `workload`
+- `requested_capabilities`
+- `context`
+
+Current response shape:
+
+- `allowed`
+- `request_id`
+- `decision_id`
+- `credential` on allow
+- `constraints` when present
+- `audit`
+- `credential_policy_digest`
+- `workload_vault_digest`
+- optional `workload_vault_source`
+- optional `record_proof`
+- optional `record_proof_expires_at`
+- optional `reason` on deny
+
+### Current invariants
+
+`Current invariant`
+
+- CGS exposes only `POST /v1/credential/authorize` in the current Go contract.
+- CGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
+- The authenticated caller identity must equal `workload.workload_identity_id`.
+- The workload descriptor must also match CGS local policy derivation when a subject can be derived from policy.
+- `requested_capabilities` currently allows only `vault:read`.
+- `context` must be an object.
+- `id.conf` is loaded at startup, parsed into service and script mappings, and used to:
+  - compute `credential_policy_digest`
+  - validate workload descriptors
+  - derive subject IDs
+  - evaluate allow or deny decisions
+- Allow and deny both return `200` in the current boundary.
+- Allow responses currently return:
+  - `role`
+  - `auth_method = "spiffe"`
+  - Vault auth plan fields
+  - token constraints
+- Current authorize responses include no secret material.
+
+### Ownership boundary
+
+- CGS owns the current authorization decision surface only.
+- CGS does not own artifact publication, TrustModel publication, scheduler state, or the current ES admission path.
+
+### Temporary compatibility edges
+
+`Temporary compatibility edge`
+
+- `requested_by` is accepted on the wire, but CGS v1 does not trust it as an authorization input.
+- `record_proof` and `record_proof_expires_at` are active response fields, but they are compatibility-heavy and not documented here as settled long-term ownership.
+- `workload_vault_source` is active today and currently reflects startup-owned vault runtime input.
+- `id.conf` is an active local policy input, but it should not be mistaken for a permanent repo-wide policy architecture just because it is currently in use.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- The CGS authorize DTO, `id.conf` policy-input model, and proof-related fields are explicitly reopened in `PLANS.md`.
+- CGS remains live today, but its current wire and policy-input shape must not be treated as the final core authorization contract.
+
+## 10. Runtime Identity Handoff Contract
+
+### Purpose
+
+Describe the current ES-to-runtime identity boundary used during submission and execution.
+
+### Current producers / consumers
+
+- `ES` provisions the runtime-identity workspace and environment marker at submit time.
+- The workload container consumes the resulting reserved workspace and endpoint path.
+- Nomad and Docker carry the mounts, but they do not own the handoff semantics.
+
+### Public surface
+
+`Observed current contract`
+
+Current reserved workspace and paths:
+
+- `/monolith/runtime-identity/`
+- `/monolith/runtime-identity/endpoint`
+- `/monolith/runtime-identity/vault-token`
+
+Current environment marker:
+
+- `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+
+Current runtime rules:
+
+- ES adds exactly one writable tmpfs-backed runtime-identity workspace mount.
+- The reserved runtime-identity workspace is not caller-controlled.
+- Caller mounts must not overlap reserved runtime paths.
+- ES also injects non-secret Vault auth metadata through environment variables.
+
+### Current invariants
+
+`Current invariant`
+
+- ES reserves the runtime-identity workspace and validates that caller mount targets do not overlap it.
+- The runtime-identity workspace is tmpfs-backed, writable, and not persisted into host staging.
+- ES does not fetch, mint, or store identity material.
+- ES does not populate `/monolith/runtime-identity/vault-token` in the current slice.
+- ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
+- Capability-sensitive behavior in this area must not rely on OS-based branching or fallback behavior.
+
+### Ownership boundary
+
+- ES owns workspace reservation and boundary enforcement.
+- The workload owns use of the endpoint inside the container.
+- ES does not own:
+  - token minting
+  - Vault token storage
+  - runtime identity material delivery
+  - post-submit identity lifecycle
+
+### Temporary compatibility edges
+
+`Temporary compatibility edge`
+
+- The specific `/monolith/...` path conventions are active today but are still conventions, not a declared permanent architecture.
+- `/monolith/runtime-identity/vault-token` is currently reserved for future use and remains unused by ES.
+
+### Reopened seams
+
+`Reopened redesign seam`
+
+- The runtime identity handoff surface is explicitly reopened in `PLANS.md`.
+- The current reserved paths, env var, and ES/runtime division of responsibility are active now, but must not be preserved automatically.
+
+## 11. Temporary Compatibility Edges
+
+The following active edges are compatibility-heavy enough to keep in one place:
+
+- `CGS` accepts `requested_by` on the wire even though it is not trusted as an authorization input in v1.
+- `CGS` currently returns `record_proof` and `record_proof_expires_at` on allow responses.
+- `CGS` currently returns `workload_vault_source`, which reflects startup-owned vault runtime input rather than a broader runtime resolution contract.
+- `EGS` currently returns `source_digest`, but it is advisory only and excluded from trust decisions.
+- `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
+- `AGS` and `ARS` still publish `artifact_digest == payload_digest` in the current slice, but ES now resolves payload bytes through explicit aggregate-evidence `payload_digest`.
+- `ES` currently uses `/monolith/staged`, `/monolith/run`, `/monolith/runtime-identity/`, and `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as active runtime conventions.
+- `CGS` currently uses `id.conf` as a local policy input format.
+
+## 12. Reopened Redesign Seams
+
+The following cross-service seams are active today and explicitly not fixed architectural endpoints:
+
+- The shared-kernel role of `contracts/evidence/v1`.
+- The ARS registration and index model.
+- The ACS assignment and digest indirection contract.
+- The AGS publish grammar and fact-assembly model.
+- The ES request model, payload-resolution path, and scheduler handoff shape.
+- The EGS TrustModel form and response wrapper.
+- The CGS authorize DTO and `id.conf` policy-input model.
+- The ES/runtime identity handoff surface, including reserved path conventions.
+
+This section is not a proposal for replacements. It exists to prevent future readers from preserving the current choreography by accident.
+
+## 13. Decision Rules For Future Edits
+
+Future edits to cross-service contracts must follow these rules:
+
+- Code and tests outrank stale prose.
+- Structural coupling must be documented before being preserved.
+- Compatibility-only edges must be labeled as such.
+- A shared kernel must not grow casually.
+- No contract becomes "fixed" merely because it is already implemented.
+- No contract becomes "fixed" unless it is named explicitly as such in `PLANS.md` and aligned docs.
+- If cross-service behavior changes, update `PLANS.md`, the relevant `.docs/` pages, and tests before treating the change as complete.

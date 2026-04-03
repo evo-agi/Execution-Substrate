@@ -1,143 +1,177 @@
 # System Evolution Rules
 
-## 1. Change Discipline
+## 1. Purpose and status
 
-Changes to system-defining contracts must be documented before or alongside implementation. Code must not be the first place a contract change appears.
+This document defines change governance for the Go repository during the architecture-reset phase.
 
-Any change to:
+Doc-first discipline still applies: code must not be the first place a system contract, boundary, lifecycle rule, or shared-kernel decision appears.
 
-- canonicalization
-- execution lifecycle behavior
-- ARS write or read contract
-- EGS trust-model semantics
-- AGS publish authorization rules
+This file governs how the repo may evolve. It does not decide which seams are open. `PLANS.md` is authoritative for:
 
-must:
+- which architecture-defining surfaces are explicitly reopened
+- which redesign work is in scope now
+- which order redesign work must follow
 
-- update `PLANS.md`
-- update the relevant `.docs/` pages
-- update or add tests that lock the changed behavior
+The detailed current-state meaning of contracts, boundaries, and lifecycle rules lives in:
 
-before implementation is treated as complete.
+- `.docs/system_overview/architecture.md`
+- `.docs/system_overview/contracts.md`
+- `.docs/system_overview/boundaries.md`
+- `.docs/execution_lifecycle/*`
 
-For these contract classes, the required order of operations is:
+## 2. Redesign-phase clarification
 
-1. define the change in `PLANS.md`
-2. update the authoritative Go docs
-3. update the tests that express the new contract
-4. implement code to match
+The repository is currently in a mixed state:
 
-Silent contract drift is forbidden.
+- some behavior is active and should be treated as a `Current invariant`
+- some behavior is active only as a `Bounded slice rule`
+- some active shapes exist only as a `Temporary compatibility edge`
+- some architecture-defining surfaces are active today but intentionally open as a `Reopened redesign seam`
 
-## 2. Temporary Exceptions
+How to tell the difference:
 
-Temporary deviations are allowed only when they are explicit and bounded.
+- use `PLANS.md` to determine whether a surface is explicitly reopened
+- use the core docs to determine whether a rule is an invariant, bounded rule, compatibility edge, or reopened seam
+- use code and tests as the factual source of current behavior when prose is stale
 
-Every temporary exception must be documented with:
+Agent behavior in this phase:
 
-- reason
-- scope
-- removal condition
+- prefer structural clarity over preservation-by-inertia
+- prefer explicit ownership over shared convenience
+- preserve current structure only when the docs intentionally retain it
+- surface design-governance conflicts instead of guessing
 
-The documentation must say exactly:
+## 3. Change classifications
 
-- what contract is being deviated from
-- which component is affected
-- whether the deviation is test-only, local-runtime-only, or system-visible
-- what event or milestone ends the exception
+This repository uses the same governance terms as the core docs.
 
-Temporary exceptions must not silently modify system contracts. If a temporary deviation affects externally visible behavior, that behavior must still be documented explicitly as temporary rather than treated as an unannounced contract change.
+- `Current invariant`: An active rule that other components depend on and that must not change silently.
+- `Bounded slice rule`: A live, intentionally narrow rule for the current slice. It is real today, but it is not automatically long-term architecture.
+- `Temporary compatibility edge`: An active field, path, DTO shape, or behavior retained for continuity. It must be labeled explicitly and must not become permanent by inertia.
+- `Reopened redesign seam`: A live surface that `PLANS.md` explicitly reopens for redesign. Its current shape is descriptive, not final.
 
-## 3. Slice Constraints vs System Invariants
+These labels are intentionally separate. A rule can be active today and still be bounded, compatibility-heavy, or explicitly reopened.
 
-The system distinguishes between invariants and slice constraints.
+## 4. Governed surfaces
 
-### System Invariants
+Doc-first governance applies to all architecture-defining surfaces, especially:
 
-These must not change silently:
+- the shared cross-service kernel, including `contracts/evidence/v1` or any future replacement
+- ACS authority shape, including lookup, assignment taxonomy, and digest indirection
+- ARS storage, registration, index, and discoverability model
+- AGS publication, caller binding, and evidence/fact assembly model
+- ES admission, package resolution, submission, lifecycle projection, and public execution shape
+- EGS trust-model and policy-publication shape
+- CGS authorize DTO, proof fields, and policy-input model
+- runtime identity handoff, reserved paths, and runtime workspace conventions
+- execution lifecycle contract shape, including prepare, submit, status, logs, cancel, and scheduler lookup rules
+- canonicalization and verification rules that cross service boundaries
+- ownership boundaries and explicit non-ownership where service interaction depends on them
 
-- Nomad is the source of truth for submitted execution lifecycle state
-- ES lifecycle remains stateless
-- ARS remains the storage and integrity boundary
-- the `AGS -> ES` canonicalization contract remains explicit and enforced
+`PLANS.md` is the authoritative redesign-phase list of reopened high-risk surfaces. If this file and `PLANS.md` differ on scope, `PLANS.md` controls.
 
-Changing an invariant requires an explicit contract revision across code, tests, `PLANS.md`, and the authoritative docs.
+## 5. Allowed evolution modes
 
-### Slice Constraints
+The repository may evolve in three ways.
 
-These are bounded slice choices and may evolve later through explicit planning:
+### Extend slices
 
-- `static-script` only
-- network access only through the signed `constraints.network_access` toggle
-- no host networking, port publishing, or custom networks
-- runtime mounts only through bounded artifact-backed read-only mounts under `/monolith/mounts/`
-- no host-path, writable, identity, or secret mounts
-- one reserved ES-owned writable runtime-identity workspace at `/monolith/runtime-identity/`, backed by tmpfs rather than host staging
-- one reserved runtime identity endpoint path at `/monolith/runtime-identity/endpoint`
-- one reserved future token path at `/monolith/runtime-identity/vault-token`
-- failed-submit staging is cleaned immediately, while successful-submit payload/run staging currently remains under `execution.staging_root_dir` unless removed externally
-- `/monolith/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
-- `/monolith/staged` and caller-visible `/monolith/mounts/...` remain host-backed copies of governed artifact content
-- ES does not semantically inspect payloads or mount contents for secrecy
-- the runtime-identity workspace is memory-backed and is not persisted to host staging in this slice
-- no retries or reschedule
+Add new behavior or a new bounded surface without changing the governing architecture of an existing surface that is not marked as a reopened redesign seam.
 
-These constraints are still contractual for the current slice, but they are not system invariants. They may be extended later only through explicit design updates, not by convenience changes in code.
+Use this when:
 
-## 4. AGS Trust Boundary
+- adding a clearly scoped new capability
+- widening a bounded slice intentionally
+- introducing a new documented surface without reopening existing ownership
 
-AGS is a trusted control-plane boundary.
+### Refine slices
 
-AGS must be callable only by trusted control-plane identities authorized to publish artifacts into the governed system.
+Tighten, clarify, or constrain existing behavior without changing the structural boundary or core contract family.
 
-AGS must not become a signing oracle.
+Use this when:
 
-That means:
+- tightening validation
+- clarifying ownership or non-ownership
+- reducing ambiguity in an existing bounded slice
+- labeling an active compatibility edge explicitly
 
-- AGS must not sign arbitrary caller-supplied facts without bounded publication rules
-- AGS must not be exposed as a general-purpose signing service
-- AGS caller trust is a system-level responsibility, not an implementation detail inside one request handler
-- AGS caller-to-provenance bindings, builder derivation, and publish-time conflict checks are contract-bound and must not drift silently
+### Re-derive seams
 
-The trustworthiness of AGS inputs is part of the system boundary. If caller trust assumptions change, that is a system contract change and must be documented explicitly.
+Rework an architecture-defining surface that is explicitly reopened in `PLANS.md`.
 
-## 5. Evolution Rules
+Use this when:
 
-The system evolves by extending slices, not by silently rewriting existing contracts.
+- the current contract or boundary is no longer the desired architectural endpoint
+- a shared kernel role needs to be narrowed, replaced, or deliberately retained
+- the current cross-service choreography is being re-derived rather than merely extended
 
-Allowed evolution pattern:
+Re-derivation is allowed only when the surface is explicitly reopened in `PLANS.md`. Re-derivation still requires doc-first governance and must not begin in code.
 
-- define the next bounded slice
-- document its scope and boundaries
-- lock behavior with tests
-- implement the slice
+## 6. Required order of operations
 
-Disallowed evolution pattern:
+For any governed change, the required order is:
 
-- broaden an existing contract without updating `PLANS.md`
-- rely on undocumented behavior
-- let tests, code, and docs disagree about authoritative semantics
+1. confirm the surface classification in `PLANS.md` and the core docs
+2. document the intended change in `PLANS.md` when redesign scope, sequencing, or seam status changes
+3. update the authoritative `.docs/` pages that define the affected contract, boundary, lifecycle rule, or ownership split
+4. update or add tests that express the intended behavior
+5. implement code to match
 
-The governing rule is simple:
+Code may confirm current behavior. It must not become the design source of truth for cross-service contracts or architectural boundaries.
 
-- extend slices explicitly
-- do not modify existing contracts silently
+## 7. Decision rules
 
-## 6. Contract Violations
+- Do not preserve a contract, boundary, DTO, path convention, or shared package role just because it already exists.
+- Any re-derived surface must be documented before implementation.
+- Any retained compatibility behavior must be labeled as a `Temporary compatibility edge`.
+- A `Reopened redesign seam` must not be treated as fixed unless `PLANS.md` and aligned docs explicitly retain it.
+- `Current invariant` changes require explicit cross-doc revision; they must not drift silently.
+- `Bounded slice rule` changes still require documentation; bounded does not mean undocumented.
+- Shared kernels must not grow implicitly. Any new shared meaning requires explicit ownership and cross-service justification.
+- Structural coupling must be documented before it is preserved.
+- Avoid introducing a new shared kernel or shared grammar casually.
+- Do not let code comments or implementation shortcuts substitute for contract documentation.
 
-If a contract violation is discovered:
+## 8. Temporary compatibility edges and exceptions
 
-- stop further feature work
-- identify the violated contract (invariant or slice constraint)
-- classify the violation:
+Temporary behavior is allowed only when it is explicit and bounded.
+
+Every temporary compatibility edge or exception must document:
+
+- the reason
+- the scope
+- the affected contract or boundary
+- whether it is test-only, local-runtime-only, or system-visible
+- the removal condition
+
+Temporary behavior must not silently redefine a contract. If externally visible behavior is temporary, the docs must say so explicitly.
+
+## 9. Mixed-state guardrails
+
+During the reset phase:
+
+- stable current behavior may remain in place while a nearby seam is reopened
+- reopened seams may be re-derived without treating current compatibility as a default requirement
+- convenience reuse across services is not sufficient reason to retain a boundary or shared contract
+
+Future agents should use the core docs to distinguish:
+
+- top-level architecture in `architecture.md`
+- cross-service contract rules in `contracts.md`
+- ownership and non-ownership in `boundaries.md`
+- execution lifecycle design and public semantics in `.docs/execution_lifecycle/*`
+
+## 10. Drift and violation handling
+
+If drift or a contract violation is discovered:
+
+- stop further feature work on the affected surface
+- identify whether the issue touches a `Current invariant`, `Bounded slice rule`, `Temporary compatibility edge`, or `Reopened redesign seam`
+- classify the issue as:
   - unintended drift
-  - temporary exception
-  - deliberate contract change
-- apply one of:
-  - revert the change
-  - document as a temporary exception
-  - update PLANS.md and docs as a formal contract revision
+  - undocumented compatibility behavior
+  - deliberate redesign change
+  - unresolved design-governance conflict
+- realign the docs, tests, and code before continuing
 
-The system must be realigned before continuing development.
-
-Unresolved contract violations must not accumulate.
+Unresolved drift must not accumulate. Silent structural change is forbidden.

@@ -21,7 +21,7 @@ import (
 
 	"execution-platform/ags/config"
 	"execution-platform/ags/sign"
-	signingv2 "execution-platform/contracts/signing/v2"
+	evidencev1 "execution-platform/contracts/evidence/v1"
 	"execution-platform/observability"
 )
 
@@ -48,18 +48,20 @@ type dependencyClient struct {
 }
 
 type registerArtifactRequest struct {
-	ArtifactDigest                           string `json:"artifact_digest"`
-	ManifestDigest                           string `json:"manifest_digest"`
-	ProvenanceDigest                         string `json:"provenance_digest"`
-	PayloadDigest                            string `json:"payload_digest"`
-	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
-	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
-	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+	ArtifactDigest string `json:"artifact_digest"`
+	EvidenceDigest string `json:"evidence_digest"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+	PayloadDigest  string `json:"payload_digest"`
 }
 
 type dependencyHealthResponse struct {
 	Status string `json:"status"`
 	Ready  bool   `json:"ready"`
+}
+
+type blobUpload struct {
+	digest string
+	data   []byte
 }
 
 func NewService(cfg config.Config) (*Service, error) {
@@ -98,31 +100,22 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 
 	artifactDigest := digestBytes(validation.payloadBytes)
+	payloadDigest := artifactDigest
 
 	manifest := Manifest{
 		ArtifactDigest:   artifactDigest,
-		ArtifactType:     strings.TrimSpace(req.Manifest.ArtifactType),
-		IntentDigest:     strings.TrimSpace(req.Manifest.IntentDigest),
-		RuntimeInterface: req.Manifest.RuntimeInterface,
-	}
-
-	provenance, err := s.buildProvenance(artifactDigest, req.Provenance, validation.invoker)
-	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: err.Error()}
+		ArtifactType:     strings.TrimSpace(req.Artifact.ArtifactType),
+		IntentDigest:     strings.TrimSpace(req.Artifact.IntentDigest),
+		RuntimeInterface: req.Admission.Runtime,
 	}
 
 	metadata := DerivationMetadata{
-		DerivationSpecDigest: strings.TrimSpace(req.DerivationMetadata.DerivationSpecDigest),
-		OutputID:             strings.TrimSpace(req.DerivationMetadata.OutputID),
-		ProducerRunID:        strings.TrimSpace(req.DerivationMetadata.ProducerRunID),
+		DerivationSpecDigest: strings.TrimSpace(req.Admission.Derivation.DerivationSpecDigest),
+		OutputID:             strings.TrimSpace(req.Admission.Derivation.OutputID),
+		ProducerRunID:        strings.TrimSpace(req.Admission.Derivation.ProducerRunID),
 	}
 
-	attestation, err := s.buildDerivationAttestation(artifactDigest, metadata, req.DerivationAttestation)
-	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: err.Error()}
-	}
-
-	binding, err := s.buildWorkloadIdentityBinding(artifactDigest, metadata, req.WorkloadIdentityBinding)
+	evidence, err := s.buildArtifactEvidence(payloadDigest, manifest, metadata, req, validation.invoker)
 	if err != nil {
 		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: err.Error()}
 	}
@@ -131,41 +124,19 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	if err != nil {
 		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal manifest failed"}
 	}
-	provenanceBytes, err := json.Marshal(provenance)
+	evidenceBytes, err := json.Marshal(evidence)
 	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal provenance failed"}
+		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal artifact evidence failed"}
 	}
-	metadataBytes, err := json.Marshal(metadata)
-	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal derivation metadata failed"}
-	}
-	attestationBytes, err := json.Marshal(attestation)
-	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal derivation attestation failed"}
-	}
-	bindingBytes, err := json.Marshal(binding)
-	if err != nil {
-		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal workload identity binding failed"}
-	}
-
+	evidenceDigest := digestBytes(evidenceBytes)
 	manifestDigest := digestBytes(manifestBytes)
-	provenanceDigest := digestBytes(provenanceBytes)
-	payloadDigest := artifactDigest
-	metadataDigest := digestBytes(metadataBytes)
-	attestationDigest := digestBytes(attestationBytes)
-	bindingDigest := digestBytes(bindingBytes)
 
-	uploads := []struct {
-		digest string
-		data   []byte
-	}{
+	uploads := []blobUpload{
 		{digest: payloadDigest, data: validation.payloadBytes},
+		{digest: evidenceDigest, data: evidenceBytes},
 		{digest: manifestDigest, data: manifestBytes},
-		{digest: provenanceDigest, data: provenanceBytes},
-		{digest: metadataDigest, data: metadataBytes},
-		{digest: attestationDigest, data: attestationBytes},
-		{digest: bindingDigest, data: bindingBytes},
 	}
+
 	for _, upload := range uploads {
 		if err := s.arsClient.putBlob(ctx, upload.digest, upload.data); err != nil {
 			return PublishResult{}, &Error{Status: http.StatusServiceUnavailable, Code: codeDependencyError, Message: err.Error()}
@@ -173,136 +144,93 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 
 	if err := s.arsClient.registerArtifact(ctx, registerArtifactRequest{
-		ArtifactDigest:                           artifactDigest,
-		ManifestDigest:                           manifestDigest,
-		ProvenanceDigest:                         provenanceDigest,
-		PayloadDigest:                            payloadDigest,
-		DerivationMetadataDigest:                 metadataDigest,
-		DerivationAuthorizationAttestationDigest: attestationDigest,
-		WorkloadIdentityBindingDigest:            bindingDigest,
+		ArtifactDigest: artifactDigest,
+		EvidenceDigest: evidenceDigest,
+		ManifestDigest: manifestDigest,
+		PayloadDigest:  payloadDigest,
 	}); err != nil {
 		return PublishResult{}, &Error{Status: http.StatusServiceUnavailable, Code: codeDependencyError, Message: err.Error()}
 	}
 
 	return PublishResult{
-		Published:                                true,
-		ArtifactDigest:                           artifactDigest,
-		ManifestDigest:                           manifestDigest,
-		ProvenanceDigest:                         provenanceDigest,
-		PayloadDigest:                            payloadDigest,
-		DerivationMetadataDigest:                 metadataDigest,
-		DerivationAuthorizationAttestationDigest: attestationDigest,
-		WorkloadIdentityBindingDigest:            bindingDigest,
+		Published:      true,
+		ArtifactDigest: artifactDigest,
+		EvidenceDigest: evidenceDigest,
+		ManifestDigest: manifestDigest,
+		PayloadDigest:  payloadDigest,
 	}, nil
 }
 
-func (s *Service) buildProvenance(artifactDigest string, input ProvenanceInput, invoker InvokerInfo) (Provenance, error) {
-	provenance := Provenance{
-		Payload: signingv2.ProvenancePayload{
-			Kind: signingv2.KindProvenance,
-			Subject: signingv2.ProvenanceSubject{
-				ArtifactDigest: artifactDigest,
-			},
-			Claims: signingv2.ProvenanceClaims{
-				BuilderService: builderServiceName,
-				Invoker: signingv2.ProvenanceInvoker{
-					Service:   invoker.Service,
-					Principal: invoker.Principal,
-				},
-				PolicyDecisions: toSigningPolicyDecisions(normalizePolicyDecisions(input.PolicyDecisions)),
-				BuildLogDigest:  strings.TrimSpace(input.BuildLogDigest),
-			},
+func (s *Service) buildArtifactEvidence(
+	payloadDigest string,
+	manifest Manifest,
+	metadata DerivationMetadata,
+	req PublishRequest,
+	invoker InvokerInfo,
+) (evidencev1.ArtifactEvidence, error) {
+	record := evidencev1.ArtifactEvidence{
+		SchemaVersion: evidencev1.Version,
+		Artifact: evidencev1.Artifact{
+			ArtifactDigest: manifest.ArtifactDigest,
+			PayloadDigest:  payloadDigest,
+			ArtifactType:   manifest.ArtifactType,
+			IntentDigest:   manifest.IntentDigest,
 		},
-	}
-
-	canonical, err := signingv2.CanonicalProvenancePayload(provenance.Payload)
-	if err != nil {
-		return Provenance{}, err
-	}
-	signature, err := s.signer.SignDetached(canonical)
-	if err != nil {
-		return Provenance{}, err
-	}
-	provenance.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
-	return provenance, nil
-}
-
-func (s *Service) buildDerivationAttestation(artifactDigest string, metadata DerivationMetadata, input DerivationAttestationInput) (DerivationAttestation, error) {
-	attestation := DerivationAttestation{
-		Payload: signingv2.DerivationAttestationPayload{
-			Kind: signingv2.KindDerivationAttestation,
-			Subject: signingv2.DerivationSubject{
-				ArtifactDigest:       artifactDigest,
+		Publication: evidencev1.Publication{
+			BuilderService: builderServiceName,
+			Invoker: evidencev1.Invoker{
+				Service:   invoker.Service,
+				Principal: invoker.Principal,
+			},
+			PolicyDecisions: toEvidencePolicyDecisions(normalizePolicyDecisions(req.Publication.PolicyDecisions)),
+			BuildLogDigest:  strings.TrimSpace(req.Publication.BuildLogDigest),
+		},
+		Admission: evidencev1.Admission{
+			Runtime: evidencev1.Runtime{
+				Parameters:           cloneStringsPreserveShape(manifest.RuntimeInterface.Parameters),
+				EnvironmentVariables: cloneStringsPreserveShape(manifest.RuntimeInterface.EnvironmentVariables),
+				RequiredCapabilities: cloneStringsPreserveShape(manifest.RuntimeInterface.RequiredCapabilities),
+			},
+			Derivation: evidencev1.Derivation{
 				DerivationSpecDigest: metadata.DerivationSpecDigest,
 				OutputID:             metadata.OutputID,
-			},
-			Claims: signingv2.DerivationAttestationClaims{
-				Constraints: signingv2.DerivationConstraints{
-					AllowedToolchains:      cloneStringsPreserveShape(input.Constraints.AllowedToolchains),
-					ForbiddenToolchains:    cloneStringsPreserveShape(input.Constraints.ForbiddenToolchains),
-					OS:                     input.Constraints.OS,
-					Arch:                   input.Constraints.Arch,
-					NetworkAccess:          input.Constraints.NetworkAccess,
-					WritablePaths:          cloneStringsPreserveShape(input.Constraints.WritablePaths),
-					ForbiddenPaths:         cloneStringsPreserveShape(input.Constraints.ForbiddenPaths),
-					DeterminismExpectation: input.Constraints.DeterminismExpectation,
-				},
-				Policy: signingv2.DerivationPolicy{
-					Version:              strings.TrimSpace(input.PolicyVersion),
-					ExpectedArtifactType: strings.TrimSpace(input.ExpectedArtifactType),
+				ProducerRunID:        metadata.ProducerRunID,
+				PolicyVersion:        strings.TrimSpace(req.Admission.Derivation.PolicyVersion),
+				ExpectedArtifactType: strings.TrimSpace(req.Admission.Derivation.ExpectedArtifactType),
+				Constraints: evidencev1.Constraints{
+					AllowedToolchains:      cloneStringsPreserveShape(req.Admission.Derivation.Constraints.AllowedToolchains),
+					ForbiddenToolchains:    cloneStringsPreserveShape(req.Admission.Derivation.Constraints.ForbiddenToolchains),
+					OS:                     req.Admission.Derivation.Constraints.OS,
+					Arch:                   req.Admission.Derivation.Constraints.Arch,
+					NetworkAccess:          req.Admission.Derivation.Constraints.NetworkAccess,
+					WritablePaths:          cloneStringsPreserveShape(req.Admission.Derivation.Constraints.WritablePaths),
+					ForbiddenPaths:         cloneStringsPreserveShape(req.Admission.Derivation.Constraints.ForbiddenPaths),
+					DeterminismExpectation: req.Admission.Derivation.Constraints.DeterminismExpectation,
 				},
 			},
-		},
-	}
-
-	canonical, err := signingv2.CanonicalDerivationAttestationPayload(attestation.Payload)
-	if err != nil {
-		return DerivationAttestation{}, err
-	}
-	signature, err := s.signer.SignDetached(canonical)
-	if err != nil {
-		return DerivationAttestation{}, err
-	}
-	attestation.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
-	return attestation, nil
-}
-
-func (s *Service) buildWorkloadIdentityBinding(artifactDigest string, metadata DerivationMetadata, input WorkloadIdentityBindingInput) (WorkloadIdentityBinding, error) {
-	binding := WorkloadIdentityBinding{
-		Payload: signingv2.WorkloadIdentityBindingPayload{
-			Kind: signingv2.KindWorkloadIdentityBinding,
-			Subject: signingv2.WorkloadIdentitySubject{
-				ArtifactClass:        strings.TrimSpace(input.ArtifactClass),
-				ArtifactDigest:       artifactDigest,
-				DerivationSpecDigest: metadata.DerivationSpecDigest,
-				OutputID:             metadata.OutputID,
-			},
-			Claims: signingv2.WorkloadIdentityBindingClaims{
-				Descriptor: signingv2.WorkloadDescriptor{
-					WorkloadType:       strings.TrimSpace(input.WorkloadType),
-					ModulePath:         strings.TrimSpace(input.ModulePath),
-					ServiceName:        strings.TrimSpace(input.ServiceName),
-					TargetPlatform:     strings.TrimSpace(input.TargetPlatform),
-					Description:        strings.TrimSpace(input.Description),
-					WorkloadIdentityID: strings.TrimSpace(input.WorkloadIdentityID),
-				},
-				Policy: signingv2.WorkloadPolicy{
-					Version: strings.TrimSpace(input.PolicyVersion),
-				},
+			Workload: evidencev1.Workload{
+				ArtifactClass:      strings.TrimSpace(req.Admission.Workload.ArtifactClass),
+				WorkloadType:       strings.TrimSpace(req.Admission.Workload.WorkloadType),
+				ModulePath:         strings.TrimSpace(req.Admission.Workload.ModulePath),
+				ServiceName:        strings.TrimSpace(req.Admission.Workload.ServiceName),
+				TargetPlatform:     strings.TrimSpace(req.Admission.Workload.TargetPlatform),
+				Description:        strings.TrimSpace(req.Admission.Workload.Description),
+				WorkloadIdentityID: strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID),
+				PolicyVersion:      strings.TrimSpace(req.Admission.Workload.PolicyVersion),
 			},
 		},
 	}
 
-	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(binding.Payload)
+	canonical, err := record.CanonicalBytes()
 	if err != nil {
-		return WorkloadIdentityBinding{}, err
+		return evidencev1.ArtifactEvidence{}, err
 	}
 	signature, err := s.signer.SignDetached(canonical)
 	if err != nil {
-		return WorkloadIdentityBinding{}, err
+		return evidencev1.ArtifactEvidence{}, err
 	}
-	binding.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
-	return binding, nil
+	record.Seal = evidencev1.NewSeal(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
+	return record, nil
 }
 
 type publishValidation struct {
@@ -324,73 +252,61 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 	if err != nil {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact_payload_b64 must be valid base64"}
 	}
-	if strings.TrimSpace(req.Manifest.ArtifactType) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.artifact_type is required"}
+	if strings.TrimSpace(req.Artifact.ArtifactType) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact.artifact_type is required"}
 	}
-	if !isLabeledSHA256Digest(req.Manifest.IntentDigest) {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "manifest.intent_digest must be a labeled sha256 digest"}
+	if !isLabeledSHA256Digest(req.Artifact.IntentDigest) {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "artifact.intent_digest must be a labeled sha256 digest"}
 	}
-	if strings.TrimSpace(req.Provenance.Invoker.Service) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.service is required"}
+	if !isLabeledSHA256Digest(req.Publication.BuildLogDigest) {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "publication.build_log_digest must be a labeled sha256 digest"}
 	}
-	if strings.TrimSpace(req.Provenance.Invoker.Principal) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.invoker.principal is required"}
+	if !isLabeledSHA256Digest(req.Admission.Derivation.DerivationSpecDigest) {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.derivation_spec_digest must be a labeled sha256 digest"}
 	}
-	if !isLabeledSHA256Digest(req.Provenance.BuildLogDigest) {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "provenance.build_log_digest must be a labeled sha256 digest"}
+	if strings.TrimSpace(req.Admission.Derivation.OutputID) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.output_id is required"}
 	}
-	if !isLabeledSHA256Digest(req.DerivationMetadata.DerivationSpecDigest) {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.derivation_spec_digest must be a labeled sha256 digest"}
+	if strings.TrimSpace(req.Admission.Derivation.ProducerRunID) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.producer_run_id is required"}
 	}
-	if strings.TrimSpace(req.DerivationMetadata.OutputID) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.output_id is required"}
+	if strings.TrimSpace(req.Admission.Derivation.PolicyVersion) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.policy_version is required"}
 	}
-	if strings.TrimSpace(req.DerivationMetadata.ProducerRunID) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_metadata.producer_run_id is required"}
+	if strings.TrimSpace(req.Admission.Workload.ArtifactClass) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.artifact_class is required"}
 	}
-	if strings.TrimSpace(req.DerivationAttestation.PolicyVersion) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "derivation_attestation.policy_version is required"}
+	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_type is required"}
 	}
-	if strings.TrimSpace(req.WorkloadIdentityBinding.ArtifactClass) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.artifact_class is required"}
+	if strings.TrimSpace(req.Admission.Workload.ModulePath) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.module_path is required"}
 	}
-	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadType) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_type is required"}
+	if strings.TrimSpace(req.Admission.Workload.PolicyVersion) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.policy_version is required"}
 	}
-	if strings.TrimSpace(req.WorkloadIdentityBinding.ModulePath) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.module_path is required"}
+	if strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID) == "" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_identity_id is required"}
 	}
-	if strings.TrimSpace(req.WorkloadIdentityBinding.PolicyVersion) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.policy_version is required"}
-	}
-	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadIdentityID) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_identity_id is required"}
-	}
-	if strings.TrimSpace(req.Provenance.Invoker.Service) != invoker.Service {
-		return publishValidation{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "provenance.invoker.service does not match authenticated caller"}
-	}
-	if strings.TrimSpace(req.Provenance.Invoker.Principal) != invoker.Principal {
-		return publishValidation{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "provenance.invoker.principal does not match authenticated caller"}
-	}
-	workloadIdentityID := strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadIdentityID)
+	workloadIdentityID := strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID)
 	if !isValidSPIFFEURI(workloadIdentityID) {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "workload_identity_binding.workload_identity_id must be a valid SPIFFE URI"}
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_identity_id must be a valid SPIFFE URI"}
 	}
-	serviceName := strings.TrimSpace(req.WorkloadIdentityBinding.ServiceName)
-	if strings.TrimSpace(req.WorkloadIdentityBinding.WorkloadType) == "service" && serviceName == "" {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "workload_identity_binding.service_name is required for service workloads"}
+	serviceName := strings.TrimSpace(req.Admission.Workload.ServiceName)
+	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "service" && serviceName == "" {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.workload.service_name is required for service workloads"}
 	}
-	if strings.TrimSpace(req.DerivationAttestation.PolicyVersion) != strings.TrimSpace(req.WorkloadIdentityBinding.PolicyVersion) {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "derivation_attestation.policy_version must match workload_identity_binding.policy_version"}
+	if strings.TrimSpace(req.Admission.Derivation.PolicyVersion) != strings.TrimSpace(req.Admission.Workload.PolicyVersion) {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.derivation.policy_version must match admission.workload.policy_version"}
 	}
-	expectedArtifactType := strings.TrimSpace(req.DerivationAttestation.ExpectedArtifactType)
-	if expectedArtifactType != "" && expectedArtifactType != strings.TrimSpace(req.Manifest.ArtifactType) {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "derivation_attestation.expected_artifact_type must match manifest.artifact_type"}
+	expectedArtifactType := strings.TrimSpace(req.Admission.Derivation.ExpectedArtifactType)
+	if expectedArtifactType != "" && expectedArtifactType != strings.TrimSpace(req.Artifact.ArtifactType) {
+		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.derivation.expected_artifact_type must match artifact.artifact_type"}
 	}
 	if serviceName != "" {
 		derivedServiceName, ok := spiffeServiceName(workloadIdentityID)
 		if !ok || derivedServiceName != serviceName {
-			return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "workload_identity_binding.service_name conflicts with workload_identity_binding.workload_identity_id"}
+			return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.workload.service_name conflicts with admission.workload.workload_identity_id"}
 		}
 	}
 
@@ -594,10 +510,10 @@ func cloneStringsPreserveShape(values []string) []string {
 	return append([]string{}, values...)
 }
 
-func toSigningPolicyDecisions(decisions []PolicyDecision) []signingv2.PolicyDecision {
-	normalized := make([]signingv2.PolicyDecision, 0, len(decisions))
+func toEvidencePolicyDecisions(decisions []PolicyDecision) []evidencev1.PolicyDecision {
+	normalized := make([]evidencev1.PolicyDecision, 0, len(decisions))
 	for _, decision := range decisions {
-		normalized = append(normalized, signingv2.PolicyDecision{
+		normalized = append(normalized, evidencev1.PolicyDecision{
 			Rule:   decision.Rule,
 			Result: decision.Result,
 		})

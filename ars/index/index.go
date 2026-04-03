@@ -5,22 +5,16 @@ import "fmt"
 type Kind string
 
 const (
-	KindManifest                           Kind = "manifest"
-	KindProvenance                         Kind = "provenance"
-	KindDerivationMetadata                 Kind = "derivation-metadata"
-	KindDerivationAuthorizationAttestation Kind = "derivation-authorization-attestation"
-	KindWorkloadIdentityBinding            Kind = "workload-identity-binding"
+	KindEvidence Kind = "evidence"
+	KindManifest Kind = "manifest"
 )
 
 type Entry struct {
-	ArtifactDigest                           string `json:"artifact_digest"`
-	ManifestDigest                           string `json:"manifest_digest"`
-	ProvenanceDigest                         string `json:"provenance_digest"`
-	PayloadDigest                            string `json:"payload_digest"`
-	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
-	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
-	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
-	CreatedAt                                string `json:"created_at"`
+	ArtifactDigest string `json:"artifact_digest"`
+	EvidenceDigest string `json:"evidence_digest"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+	PayloadDigest  string `json:"payload_digest"`
+	CreatedAt      string `json:"created_at"`
 }
 
 type Lookup interface {
@@ -32,11 +26,7 @@ type Lookup interface {
 
 func ParseKind(value string) (Kind, bool) {
 	switch Kind(value) {
-		case KindManifest,
-			KindProvenance,
-			KindDerivationMetadata,
-			KindDerivationAuthorizationAttestation,
-			KindWorkloadIdentityBinding:
+		case KindEvidence, KindManifest:
 			return Kind(value), true
 		default:
 			return "", false
@@ -45,16 +35,10 @@ func ParseKind(value string) (Kind, bool) {
 
 func (e Entry) DigestFor(kind Kind) string {
 	switch kind {
+		case KindEvidence:
+			return e.EvidenceDigest
 		case KindManifest:
 			return e.ManifestDigest
-		case KindProvenance:
-			return e.ProvenanceDigest
-		case KindDerivationMetadata:
-			return e.DerivationMetadataDigest
-		case KindDerivationAuthorizationAttestation:
-			return e.DerivationAuthorizationAttestationDigest
-		case KindWorkloadIdentityBinding:
-			return e.WorkloadIdentityBindingDigest
 		default:
 			return ""
 	}

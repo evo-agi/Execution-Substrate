@@ -331,54 +331,49 @@ func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []by
 
 	requestBody := mustMarshalJSON(t, map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString(archive),
-		"manifest": map[string]any{
+		"artifact": map[string]any{
 			"artifact_type": "static-script",
 			"intent_digest": stack.intentDigest,
-			"runtime_interface": map[string]any{
-				"parameters":            []string{},
-				"environment_variables": []string{"APP_MODE"},
-				"required_capabilities": []string{},
-			},
 		},
-		"provenance": map[string]any{
-			"builder_service": "artifact-governance",
-			"invoker": map[string]any{
-				"service":   "deployment",
-				"principal": "spiffe://monolith.internal/service/deployment",
-			},
+		"publication": map[string]any{
 			"policy_decisions": []map[string]any{
 				{"rule": "allow", "result": "applied"},
 			},
 			"build_log_digest": labeledDigest("ee"),
 		},
-		"derivation_metadata": map[string]any{
-			"derivation_spec_digest": stack.derivationSpecDigest,
-			"output_id":              stack.outputID,
-			"producer_run_id":        "build-run-1",
-		},
-		"derivation_attestation": map[string]any{
-			"constraints": map[string]any{
-				"allowed_toolchains":      []string{},
-				"forbidden_toolchains":    []string{},
-				"os":                      "linux",
-				"arch":                    "amd64",
-				"network_access":          false,
-				"writable_paths":          []string{},
-				"forbidden_paths":         []string{},
-				"determinism_expectation": "deterministic",
+		"admission": map[string]any{
+			"runtime": map[string]any{
+				"parameters":            []string{},
+				"environment_variables": []string{"APP_MODE"},
+				"required_capabilities": []string{},
 			},
-			"policy_version":         "2026-03-31",
-			"expected_artifact_type": "static-script",
-		},
-		"workload_identity_binding": map[string]any{
-			"artifact_class":       "service",
-			"workload_type":        "service",
-			"module_path":          "services.execution.ExecutionServer",
-			"policy_version":       "2026-03-31",
-			"service_name":         "execution",
-			"target_platform":      "docker",
-			"description":          "Execution workload",
-			"workload_identity_id": stack.workloadIdentityID,
+			"derivation": map[string]any{
+				"derivation_spec_digest": stack.derivationSpecDigest,
+				"output_id":              stack.outputID,
+				"producer_run_id":        "build-run-1",
+				"constraints": map[string]any{
+					"allowed_toolchains":      []string{},
+					"forbidden_toolchains":    []string{},
+					"os":                      "linux",
+					"arch":                    "amd64",
+					"network_access":          false,
+					"writable_paths":          []string{},
+					"forbidden_paths":         []string{},
+					"determinism_expectation": "deterministic",
+				},
+				"policy_version":         "2026-03-31",
+				"expected_artifact_type": "static-script",
+			},
+			"workload": map[string]any{
+				"artifact_class":       "service",
+				"workload_type":        "service",
+				"module_path":          "services.execution.ExecutionServer",
+				"policy_version":       "2026-03-31",
+				"service_name":         "execution",
+				"target_platform":      "docker",
+				"description":          "Execution workload",
+				"workload_identity_id": stack.workloadIdentityID,
+			},
 		},
 	})
 

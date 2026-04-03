@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	signingv2 "execution-platform/contracts/signing/v2"
+	evidencev1 "execution-platform/contracts/evidence/v1"
 	egsmodel "execution-platform/egs/model"
 	esconfig "execution-platform/es/config"
 	"execution-platform/observability"
@@ -28,7 +28,10 @@ import (
 
 const (
 	codeInvalidRequest                  = "invalid_request"
+	codeArtifactEvidenceNotFound        = "artifact_evidence_not_found"
 	codeManifestNotFound                = "manifest_not_found"
+	codeArtifactEvidenceInvalid         = "artifact_evidence_invalid"
+	codeArtifactEvidenceUnavailable     = "artifact_evidence_unavailable"
 	codeProvenanceNotFound              = "provenance_not_found"
 	codeDerivationMetadataNotFound      = "derivation_metadata_not_found"
 	codeDerivationAttestationNotFound   = "derivation_attestation_not_found"
@@ -94,11 +97,9 @@ type Service struct {
 	arsClient *dependencyClient
 	egsClient *dependencyClient
 
-	trustModelVerifier              *ed25519Verifier
-	provenanceVerifier              *ed25519Verifier
-	derivationAttestationVerifier   *ed25519Verifier
-	workloadIdentityBindingVerifier *ed25519Verifier
-	nomadClient                     *nomadClient
+	trustModelVerifier *ed25519Verifier
+	provenanceVerifier *ed25519Verifier
+	nomadClient        *nomadClient
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.TrustModel
@@ -157,6 +158,26 @@ type workloadZoneVaultBlob struct {
 	} `json:"vault_config"`
 }
 
+type artifactRegistryErrorResponse struct {
+	Error string `json:"error"`
+}
+
+type preparedArtifact struct {
+	manifest       Manifest
+	payloadDigest  string
+	signerKeyID    string
+	workload       WorkloadInfo
+	workloadAttrs  esconfig.WorkloadIdentityAttributes
+	targetPlatform string
+	networkAccess  bool
+}
+
+type preparedAdmission struct {
+	result     PrepareResult
+	artifact   preparedArtifact
+	trustModel egsmodel.TrustModel
+}
+
 func NewService(cfg esconfig.Config) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -183,12 +204,10 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	derivationVerifier, err := newEd25519Verifier(cfg.Verification.DerivationAttestation)
-	if err != nil {
+	if _, err := newEd25519Verifier(cfg.Verification.DerivationAttestation); err != nil {
 		return nil, err
 	}
-	bindingVerifier, err := newEd25519Verifier(cfg.Verification.WorkloadIdentityBinding)
-	if err != nil {
+	if _, err := newEd25519Verifier(cfg.Verification.WorkloadIdentityBinding); err != nil {
 		return nil, err
 	}
 
@@ -204,15 +223,13 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	}
 
 	return &Service{
-		cfg:                             cfg,
-		acsClient:                       acsClient,
-		arsClient:                       arsClient,
-		egsClient:                       egsClient,
-		trustModelVerifier:              trustModelVerifier,
-		provenanceVerifier:              provenanceVerifier,
-		derivationAttestationVerifier:   derivationVerifier,
-		workloadIdentityBindingVerifier: bindingVerifier,
-		nomadClient:                     nomadClient,
+		cfg:                cfg,
+		acsClient:          acsClient,
+		arsClient:          arsClient,
+		egsClient:          egsClient,
+		trustModelVerifier: trustModelVerifier,
+		provenanceVerifier: provenanceVerifier,
+		nomadClient:        nomadClient,
 	}, nil
 }
 
@@ -289,91 +306,44 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 }
 
 func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, *Error) {
-	if err := validatePrepareRequest(&req); err != nil {
+	prepared, err := s.prepareAdmission(ctx, req)
+	if err != nil {
 		return PrepareResult{}, err
+	}
+	return prepared.result, nil
+}
+
+func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (preparedAdmission, *Error) {
+	if err := validatePrepareRequest(&req); err != nil {
+		return preparedAdmission{}, err
 	}
 
 	trustModel := s.currentTrustModel()
 	if trustModel == nil {
-		return PrepareResult{}, &Error{
+		return preparedAdmission{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    "trust_model_unavailable",
 			Message: "trust model is unavailable",
 		}
 	}
 
-	manifest, err := s.fetchManifest(ctx, req.Invocation.ArtifactDigest)
+	artifact, err := s.prepareArtifact(ctx, req, *trustModel)
 	if err != nil {
-		return PrepareResult{}, err
-	}
-	if err := validateInvocationAgainstManifest(req.Invocation, manifest); err != nil {
-		return PrepareResult{}, err
-	}
-
-	provenance, err := s.fetchProvenance(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return PrepareResult{}, err
-	}
-	if err := s.verifyProvenance(provenance, req.Invocation.ArtifactDigest); err != nil {
-		return PrepareResult{}, err
-	}
-
-	metadata, err := s.fetchDerivationMetadata(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return PrepareResult{}, err
-	}
-	if metadata.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
-		return PrepareResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeInvalidRequest,
-			Message: "derivation_spec_digest does not match artifact metadata",
-		}
-	}
-	if metadata.OutputID != req.Invocation.OutputID {
-		return PrepareResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeInvalidRequest,
-			Message: "output_id does not match artifact metadata",
-		}
-	}
-
-	attestation, err := s.fetchDerivationAttestation(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return PrepareResult{}, err
-	}
-	if err := s.verifyDerivationAttestation(attestation, req.Invocation.ArtifactDigest, metadata); err != nil {
-		return PrepareResult{}, err
-	}
-
-	binding, err := s.fetchWorkloadIdentityBinding(ctx, req.Invocation.ArtifactDigest)
-	if err != nil {
-		return PrepareResult{}, err
-	}
-	if err := s.verifyWorkloadIdentityBinding(binding, req.Invocation.ArtifactDigest, metadata); err != nil {
-		return PrepareResult{}, err
-	}
-
-	if err := enforceTrustModel(*trustModel, provenance.Signature.KeyID, req.Invocation.ArtifactDigest); err != nil {
-		return PrepareResult{}, err
+		return preparedAdmission{}, err
 	}
 
 	workloadVaultDigest, err := s.fetchWorkloadZoneVaultDigest(ctx)
 	if err != nil {
-		return PrepareResult{}, err
+		return preparedAdmission{}, err
 	}
 
 	workloadVaultConfig, err := s.fetchWorkloadZoneVaultConfig(ctx, workloadVaultDigest)
 	if err != nil {
-		return PrepareResult{}, err
+		return preparedAdmission{}, err
 	}
 
 	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(
-		esconfig.WorkloadIdentityAttributes{
-			ArtifactClass:      binding.Payload.Subject.ArtifactClass,
-			WorkloadType:       binding.Payload.Claims.Descriptor.WorkloadType,
-			ServiceName:        binding.Payload.Claims.Descriptor.ServiceName,
-			WorkloadIdentityID: binding.Payload.Claims.Descriptor.WorkloadIdentityID,
-		},
+		artifact.workloadAttrs,
 		esconfig.VaultRuntimeFields{
 			Address:     workloadVaultConfig.VaultConfig.Address,
 			AuthMount:   workloadVaultConfig.VaultConfig.AuthMount,
@@ -382,41 +352,49 @@ func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResul
 		},
 	)
 	if resolveErr != nil {
-		return PrepareResult{}, &Error{
+		return preparedAdmission{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
 			Message: resolveErr.Error(),
 		}
 	}
 
-	return PrepareResult{
-		Success:              true,
-		ArtifactDigest:       req.Invocation.ArtifactDigest,
-		DerivationSpecDigest: req.Invocation.DerivationSpecDigest,
-		OutputID:             req.Invocation.OutputID,
-		IntentDigest:         manifest.IntentDigest,
-		ArtifactType:         manifest.ArtifactType,
-		TrustModel: TrustModelInfo{
-			Version:        trustModel.Version,
-			UpdateRevision: trustModel.UpdateRevision,
+	return preparedAdmission{
+		result: PrepareResult{
+			Success:              true,
+			ArtifactDigest:       req.Invocation.ArtifactDigest,
+			DerivationSpecDigest: req.Invocation.DerivationSpecDigest,
+			OutputID:             req.Invocation.OutputID,
+			IntentDigest:         artifact.manifest.IntentDigest,
+			ArtifactType:         artifact.manifest.ArtifactType,
+			TrustModel: TrustModelInfo{
+				Version:        trustModel.Version,
+				UpdateRevision: trustModel.UpdateRevision,
+			},
+			Provenance: ProvenanceInfo{
+				SignerKeyID: artifact.signerKeyID,
+			},
+			Workload: artifact.workload,
+			WorkloadVault: WorkloadVaultInfo{
+				Digest:      workloadVaultDigest,
+				Address:     plan.Address,
+				AuthMode:    string(plan.Mode),
+				AuthMount:   plan.AuthMount,
+				AuthRole:    plan.AuthRole,
+				JWTAudience: plan.JWTAudience,
+			},
 		},
-		Provenance: ProvenanceInfo{
-			SignerKeyID: provenance.Signature.KeyID,
-		},
-		Workload: WorkloadInfo{
-			Type:               binding.Payload.Claims.Descriptor.WorkloadType,
-			ServiceName:        binding.Payload.Claims.Descriptor.ServiceName,
-			WorkloadIdentityID: binding.Payload.Claims.Descriptor.WorkloadIdentityID,
-		},
-		WorkloadVault: WorkloadVaultInfo{
-			Digest:      workloadVaultDigest,
-			Address:     plan.Address,
-			AuthMode:    string(plan.Mode),
-			AuthMount:   plan.AuthMount,
-			AuthRole:    plan.AuthRole,
-			JWTAudience: plan.JWTAudience,
-		},
+		artifact:   artifact,
+		trustModel: *trustModel,
 	}, nil
+}
+
+func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trustModel egsmodel.TrustModel) (preparedArtifact, *Error) {
+	evidence, err := s.fetchArtifactEvidence(ctx, req.Invocation.ArtifactDigest)
+	if err != nil {
+		return preparedArtifact{}, err
+	}
+	return s.prepareArtifactFromEvidence(req, trustModel, evidence)
 }
 
 func (s *Service) currentTrustModel() *egsmodel.TrustModel {
@@ -429,24 +407,143 @@ func (s *Service) currentTrustModel() *egsmodel.TrustModel {
 	return &copy
 }
 
-func (s *Service) fetchManifest(ctx context.Context, artifactDigest string) (Manifest, *Error) {
-	return fetchArtifactJSON[Manifest](ctx, s.arsClient, "/v1/artifacts/"+artifactDigest+"/manifest", codeManifestNotFound, "manifest not found")
+func (s *Service) fetchArtifactEvidence(ctx context.Context, artifactDigest string) (evidencev1.ArtifactEvidence, *Error) {
+	response, err := s.arsClient.get(ctx, "/v1/artifacts/"+artifactDigest+"/evidence")
+	if err != nil {
+		return evidencev1.ArtifactEvidence{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeArtifactEvidenceUnavailable,
+			Message: "artifact evidence read failed",
+		}
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+		case http.StatusOK:
+			var payload evidencev1.ArtifactEvidence
+			if err := decodeJSON(response.Body, &payload); err != nil {
+				return evidencev1.ArtifactEvidence{}, &Error{
+					Status:  http.StatusServiceUnavailable,
+					Code:    codeArtifactEvidenceUnavailable,
+					Message: "artifact evidence payload was invalid",
+				}
+			}
+			return payload, nil
+		case http.StatusNotFound:
+			var payload artifactRegistryErrorResponse
+			if err := json.NewDecoder(response.Body).Decode(&payload); err == nil {
+				switch strings.TrimSpace(payload.Error) {
+					case "artifact not found", "artifact data not registered":
+						return evidencev1.ArtifactEvidence{}, &Error{
+							Status:  http.StatusNotFound,
+							Code:    codeArtifactEvidenceNotFound,
+							Message: "artifact evidence not found",
+						}
+				}
+			}
+			return evidencev1.ArtifactEvidence{}, &Error{
+				Status:  http.StatusServiceUnavailable,
+				Code:    codeArtifactEvidenceUnavailable,
+				Message: "artifact evidence is unavailable",
+			}
+		default:
+			return evidencev1.ArtifactEvidence{}, &Error{
+				Status:  http.StatusServiceUnavailable,
+				Code:    codeArtifactEvidenceUnavailable,
+				Message: "artifact evidence is unavailable",
+			}
+	}
 }
 
-func (s *Service) fetchProvenance(ctx context.Context, artifactDigest string) (Provenance, *Error) {
-	return fetchArtifactJSON[Provenance](ctx, s.arsClient, "/v1/artifacts/"+artifactDigest+"/provenance", codeProvenanceNotFound, "provenance not found")
+func (s *Service) prepareArtifactFromEvidence(req PrepareRequest, trustModel egsmodel.TrustModel, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
+	if evidence.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusBadRequest,
+			Code:    codeInvalidRequest,
+			Message: "artifact digest mismatch between request and artifact evidence",
+		}
+	}
+	if evidence.Admission.Derivation.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusBadRequest,
+			Code:    codeInvalidRequest,
+			Message: "derivation_spec_digest does not match artifact evidence",
+		}
+	}
+	if evidence.Admission.Derivation.OutputID != req.Invocation.OutputID {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusBadRequest,
+			Code:    codeInvalidRequest,
+			Message: "output_id does not match artifact evidence",
+		}
+	}
+	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, evidence.Artifact.ArtifactDigest, evidence)
+	if err != nil {
+		return preparedArtifact{}, err
+	}
+	if err := validateInvocationAgainstManifest(req.Invocation, artifact.manifest); err != nil {
+		return preparedArtifact{}, err
+	}
+	return artifact, nil
 }
 
-func (s *Service) fetchDerivationMetadata(ctx context.Context, artifactDigest string) (DerivationMetadata, *Error) {
-	return fetchArtifactJSON[DerivationMetadata](ctx, s.arsClient, "/v1/artifacts/"+artifactDigest+"/derivation-metadata", codeDerivationMetadataNotFound, "derivation metadata not found")
+func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustModel, artifactDigest string, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
+	if evidence.Artifact.ArtifactDigest != artifactDigest {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusForbidden,
+			Code:    codeArtifactEvidenceInvalid,
+			Message: "artifact evidence does not match the requested artifact digest",
+		}
+	}
+	if err := evidence.Validate(); err != nil {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusForbidden,
+			Code:    codeArtifactEvidenceInvalid,
+			Message: "artifact evidence is structurally invalid",
+		}
+	}
+	if err := evidencev1.Verify(evidence, s.provenanceVerifier.keyID, s.provenanceVerifier.algorithm, s.provenanceVerifier.publicKey); err != nil {
+		return preparedArtifact{}, &Error{
+			Status:  http.StatusForbidden,
+			Code:    codeArtifactEvidenceInvalid,
+			Message: "artifact evidence signature verification failed",
+		}
+	}
+	if err := enforceTrustModel(trustModel, evidence.Seal.KeyID, artifactDigest); err != nil {
+		return preparedArtifact{}, err
+	}
+
+	return preparedArtifact{
+		manifest:      manifestFromEvidence(evidence),
+		payloadDigest: evidence.Artifact.PayloadDigest,
+		signerKeyID:   evidence.Seal.KeyID,
+		workload: WorkloadInfo{
+			Type:               evidence.Admission.Workload.WorkloadType,
+			ServiceName:        evidence.Admission.Workload.ServiceName,
+			WorkloadIdentityID: evidence.Admission.Workload.WorkloadIdentityID,
+		},
+		workloadAttrs: esconfig.WorkloadIdentityAttributes{
+			ArtifactClass:      evidence.Admission.Workload.ArtifactClass,
+			WorkloadType:       evidence.Admission.Workload.WorkloadType,
+			ServiceName:        evidence.Admission.Workload.ServiceName,
+			WorkloadIdentityID: evidence.Admission.Workload.WorkloadIdentityID,
+		},
+		targetPlatform: evidence.Admission.Workload.TargetPlatform,
+		networkAccess:  evidence.Admission.Derivation.Constraints.NetworkAccess,
+	}, nil
 }
 
-func (s *Service) fetchDerivationAttestation(ctx context.Context, artifactDigest string) (DerivationAttestation, *Error) {
-	return fetchArtifactJSON[DerivationAttestation](ctx, s.arsClient, "/v1/artifacts/"+artifactDigest+"/derivation-authorization-attestation", codeDerivationAttestationNotFound, "derivation authorization attestation not found")
-}
-
-func (s *Service) fetchWorkloadIdentityBinding(ctx context.Context, artifactDigest string) (WorkloadIdentityBinding, *Error) {
-	return fetchArtifactJSON[WorkloadIdentityBinding](ctx, s.arsClient, "/v1/artifacts/"+artifactDigest+"/workload-identity-binding", codeWorkloadIdentityBindingNotFound, "workload identity binding not found")
+func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
+	return Manifest{
+		ArtifactDigest: evidence.Artifact.ArtifactDigest,
+		ArtifactType:   evidence.Artifact.ArtifactType,
+		IntentDigest:   evidence.Artifact.IntentDigest,
+		RuntimeInterface: RuntimeInterface{
+			Parameters:           append([]string(nil), evidence.Admission.Runtime.Parameters...),
+			EnvironmentVariables: append([]string(nil), evidence.Admission.Runtime.EnvironmentVariables...),
+			RequiredCapabilities: append([]string(nil), evidence.Admission.Runtime.RequiredCapabilities...),
+		},
+	}
 }
 
 func (s *Service) fetchWorkloadZoneVaultDigest(ctx context.Context) (string, *Error) {
@@ -539,98 +636,6 @@ func (s *Service) verifyTrustModelEnvelope(payload signedTrustModelResponse, can
 	// authoritative in the current versioned contract.
 	if err := s.trustModelVerifier.verifyDetached(canonical, payload.KeyID, payload.Algorithm, payload.Signature); err != nil {
 		return err
-	}
-	return nil
-}
-
-func (s *Service) verifyProvenance(provenance Provenance, artifactDigest string) *Error {
-	if provenance.Payload.Subject.ArtifactDigest != artifactDigest {
-		return &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeInvalidRequest,
-			Message: "artifact digest mismatch between request and provenance",
-		}
-	}
-
-	canonical, err := signingv2.CanonicalProvenancePayload(provenance.Payload)
-	if err != nil {
-		return &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeProvenanceNotFound,
-			Message: "provenance canonicalization failed",
-		}
-	}
-	if err := signingv2.VerifyEnvelope(canonical, provenance.Signature, s.provenanceVerifier.keyID, s.provenanceVerifier.algorithm, s.provenanceVerifier.publicKey); err != nil {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeProvenanceInvalid,
-			Message: "provenance signature verification failed",
-		}
-	}
-	return nil
-}
-
-func (s *Service) verifyDerivationAttestation(attestation DerivationAttestation, artifactDigest string, metadata DerivationMetadata) *Error {
-	if attestation.Payload.Subject.ArtifactDigest != artifactDigest ||
-		attestation.Payload.Subject.DerivationSpecDigest != metadata.DerivationSpecDigest ||
-		attestation.Payload.Subject.OutputID != metadata.OutputID {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeDerivationAttestationInvalid,
-			Message: "derivation authorization attestation does not match artifact metadata",
-		}
-	}
-
-	canonical, err := signingv2.CanonicalDerivationAttestationPayload(attestation.Payload)
-	if err != nil {
-		return &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeDerivationAttestationNotFound,
-			Message: "derivation authorization attestation canonicalization failed",
-		}
-	}
-	if err := signingv2.VerifyEnvelope(canonical, attestation.Signature, s.derivationAttestationVerifier.keyID, s.derivationAttestationVerifier.algorithm, s.derivationAttestationVerifier.publicKey); err != nil {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeDerivationAttestationInvalid,
-			Message: "derivation authorization attestation signature verification failed",
-		}
-	}
-	return nil
-}
-
-func (s *Service) verifyWorkloadIdentityBinding(binding WorkloadIdentityBinding, artifactDigest string, metadata DerivationMetadata) *Error {
-	if binding.Payload.Subject.ArtifactDigest != artifactDigest ||
-		binding.Payload.Subject.DerivationSpecDigest != metadata.DerivationSpecDigest ||
-		binding.Payload.Subject.OutputID != metadata.OutputID {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeWorkloadIdentityBindingInvalid,
-			Message: "workload identity binding does not match artifact metadata",
-		}
-	}
-	if strings.TrimSpace(binding.Payload.Claims.Descriptor.WorkloadIdentityID) == "" {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeWorkloadIdentityBindingInvalid,
-			Message: "workload identity binding is missing workload_identity_id",
-		}
-	}
-
-	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(binding.Payload)
-	if err != nil {
-		return &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadIdentityBindingNotFound,
-			Message: "workload identity binding canonicalization failed",
-		}
-	}
-	if err := signingv2.VerifyEnvelope(canonical, binding.Signature, s.workloadIdentityBindingVerifier.keyID, s.workloadIdentityBindingVerifier.algorithm, s.workloadIdentityBindingVerifier.publicKey); err != nil {
-		return &Error{
-			Status:  http.StatusForbidden,
-			Code:    codeWorkloadIdentityBindingInvalid,
-			Message: "workload identity binding signature verification failed",
-		}
 	}
 	return nil
 }
@@ -732,45 +737,6 @@ func validateInvocationAgainstManifest(invocation ArtifactInvocation, manifest M
 		return err
 	}
 	return nil
-}
-
-func fetchArtifactJSON[T any](ctx context.Context, client *dependencyClient, endpoint string, notFoundCode string, notFoundMessage string) (T, *Error) {
-	var zero T
-
-	response, err := client.get(ctx, endpoint)
-	if err != nil {
-		return zero, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    notFoundCode,
-			Message: fmt.Sprintf("%s: dependency request failed", notFoundMessage),
-		}
-	}
-	defer response.Body.Close()
-
-	switch response.StatusCode {
-		case http.StatusOK:
-			var payload T
-			if err := decodeJSON(response.Body, &payload); err != nil {
-				return zero, &Error{
-					Status:  http.StatusServiceUnavailable,
-					Code:    notFoundCode,
-					Message: fmt.Sprintf("%s: dependency payload was invalid", notFoundMessage),
-				}
-			}
-			return payload, nil
-		case http.StatusNotFound:
-			return zero, &Error{
-				Status:  http.StatusNotFound,
-				Code:    notFoundCode,
-				Message: notFoundMessage,
-			}
-		default:
-			return zero, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    notFoundCode,
-				Message: fmt.Sprintf("%s: dependency returned status %d", notFoundMessage, response.StatusCode),
-			}
-	}
 }
 
 func newDependencyClient(cfg esconfig.DependencyConfig, dependencyName string) (*dependencyClient, error) {

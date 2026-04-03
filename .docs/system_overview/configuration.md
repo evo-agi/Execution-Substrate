@@ -130,6 +130,8 @@ Minimal seed example:
 - `dependencies.artifact_registry.base_url` must be an absolute `https://` URL
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
 
+AGS no longer exposes a legacy-signing compatibility control. The current publish path is evidence-native only.
+
 ## EGS
 
 ### Required config groups
@@ -149,6 +151,13 @@ Minimal seed example:
 - `signer.public_key_hex`
 - `trust_model.version`
 - `trust_model.update_revision`
+
+### Optional fields
+
+- `signer.source_digest`
+  - optional labeled SHA-256 digest
+  - affects EGS readiness detail and advisory `source_digest` in the trust-model response
+  - does not affect trust decisions
 
 ### Required external dependencies
 

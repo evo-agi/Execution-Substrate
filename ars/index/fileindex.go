@@ -122,21 +122,26 @@ func validateEntry(key string, entry Entry) error {
 		return fmt.Errorf("artifact index entry %s has mismatched artifact_digest", key)
 	}
 
-	requiredDigests := map[string]string{
-		"manifest_digest":                             entry.ManifestDigest,
-		"provenance_digest":                           entry.ProvenanceDigest,
-		"payload_digest":                              entry.PayloadDigest,
-		"derivation_metadata_digest":                  entry.DerivationMetadataDigest,
-		"derivation_authorization_attestation_digest": entry.DerivationAuthorizationAttestationDigest,
-		"workload_identity_binding_digest":            entry.WorkloadIdentityBindingDigest,
+	if strings.TrimSpace(entry.PayloadDigest) == "" {
+		return fmt.Errorf("artifact index entry %s is missing payload_digest", key)
 	}
-	for field, digest := range requiredDigests {
-		if strings.TrimSpace(digest) == "" {
-			return fmt.Errorf("artifact index entry %s is missing %s", key, field)
-		}
+	if err := store.ValidateDigest(entry.PayloadDigest); err != nil {
+		return fmt.Errorf("artifact index entry %s has invalid payload_digest: %w", key, err)
+	}
+
+	if digest := strings.TrimSpace(entry.EvidenceDigest); digest != "" {
 		if err := store.ValidateDigest(digest); err != nil {
-			return fmt.Errorf("artifact index entry %s has invalid %s: %w", key, field, err)
+			return fmt.Errorf("artifact index entry %s has invalid evidence_digest: %w", key, err)
 		}
+	}
+	if digest := strings.TrimSpace(entry.ManifestDigest); digest != "" {
+		if err := store.ValidateDigest(digest); err != nil {
+			return fmt.Errorf("artifact index entry %s has invalid manifest_digest: %w", key, err)
+		}
+	}
+
+	if strings.TrimSpace(entry.EvidenceDigest) == "" {
+		return fmt.Errorf("artifact index entry %s is missing evidence_digest", key)
 	}
 
 	if strings.TrimSpace(entry.CreatedAt) == "" {
@@ -148,12 +153,9 @@ func validateEntry(key string, entry Entry) error {
 
 func sameDigestTuple(left Entry, right Entry) bool {
 	return left.ArtifactDigest == right.ArtifactDigest &&
+		left.EvidenceDigest == right.EvidenceDigest &&
 		left.ManifestDigest == right.ManifestDigest &&
-		left.ProvenanceDigest == right.ProvenanceDigest &&
-		left.PayloadDigest == right.PayloadDigest &&
-		left.DerivationMetadataDigest == right.DerivationMetadataDigest &&
-		left.DerivationAuthorizationAttestationDigest == right.DerivationAuthorizationAttestationDigest &&
-		left.WorkloadIdentityBindingDigest == right.WorkloadIdentityBindingDigest
+		left.PayloadDigest == right.PayloadDigest
 }
 
 func persistEntries(path string, entries map[string]Entry) error {

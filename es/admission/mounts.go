@@ -202,53 +202,46 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Tr
 
 func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.TrustModel, artifactDigest string) ([]byte, *Error) {
 	trimmedDigest := strings.TrimSpace(artifactDigest)
-
-	manifest, err := s.fetchManifest(ctx, trimmedDigest)
-	if err != nil {
-		return nil, err
-	}
-	if manifest.ArtifactDigest != trimmedDigest {
-		return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount manifest does not match the requested artifact digest")
-	}
-
-	provenance, err := s.fetchProvenance(ctx, trimmedDigest)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.verifyProvenance(provenance, trimmedDigest); err != nil {
-		return nil, err
-	}
-
-	metadata, err := s.fetchDerivationMetadata(ctx, trimmedDigest)
+	prepared, err := s.prepareMountArtifact(ctx, trustModel, trimmedDigest)
 	if err != nil {
 		return nil, err
 	}
 
-	attestation, err := s.fetchDerivationAttestation(ctx, trimmedDigest)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.verifyDerivationAttestation(attestation, trimmedDigest, metadata); err != nil {
-		return nil, err
-	}
-
-	binding, err := s.fetchWorkloadIdentityBinding(ctx, trimmedDigest)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.verifyWorkloadIdentityBinding(binding, trimmedDigest, metadata); err != nil {
-		return nil, err
-	}
-
-	if err := enforceTrustModel(trustModel, provenance.Signature.KeyID, trimmedDigest); err != nil {
-		return nil, err
-	}
-
-	payloadBytes, err := s.fetchPayloadBytes(ctx, trimmedDigest)
+	payloadBytes, err := s.fetchPayloadBytes(ctx, prepared.payloadDigest)
 	if err != nil {
 		return nil, err
 	}
 	return payloadBytes, nil
+}
+
+func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.TrustModel, artifactDigest string) (preparedArtifact, *Error) {
+	evidence, err := s.fetchArtifactEvidence(ctx, artifactDigest)
+	if err != nil {
+		return preparedArtifact{}, remapMountArtifactPreparationError(err)
+	}
+
+	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, artifactDigest, evidence)
+	if err != nil {
+		return preparedArtifact{}, remapMountArtifactPreparationError(err)
+	}
+	return artifact, nil
+}
+
+func remapMountArtifactPreparationError(err *Error) *Error {
+	if err == nil {
+		return nil
+	}
+
+	switch err.Code {
+	case codeArtifactEvidenceNotFound,
+		codeArtifactEvidenceInvalid,
+		codeSignerNotAllowed,
+		codeSignerRevoked,
+		codeArtifactRevoked:
+		return mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, err.Message)
+	default:
+		return err
+	}
 }
 
 func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, perMountLimit int64, remainingTotalLimit int64) (int64, error) {

@@ -1,7 +1,5 @@
 package publish
 
-import signingv2 "execution-platform/contracts/signing/v2"
-
 type Error struct {
 	Status  int
 	Code    string
@@ -18,18 +16,26 @@ type CallerIdentity struct {
 }
 
 type PublishRequest struct {
-	ArtifactPayloadB64      string                       `json:"artifact_payload_b64"`
-	Manifest                ManifestInput                `json:"manifest"`
-	Provenance              ProvenanceInput              `json:"provenance"`
-	DerivationMetadata      DerivationMetadataInput      `json:"derivation_metadata"`
-	DerivationAttestation   DerivationAttestationInput   `json:"derivation_attestation"`
-	WorkloadIdentityBinding WorkloadIdentityBindingInput `json:"workload_identity_binding"`
+	ArtifactPayloadB64 string           `json:"artifact_payload_b64"`
+	Artifact           ArtifactInput    `json:"artifact"`
+	Publication        PublicationInput `json:"publication"`
+	Admission          AdmissionInput   `json:"admission"`
 }
 
-type ManifestInput struct {
-	ArtifactType     string           `json:"artifact_type"`
-	IntentDigest     string           `json:"intent_digest"`
-	RuntimeInterface RuntimeInterface `json:"runtime_interface"`
+type ArtifactInput struct {
+	ArtifactType string `json:"artifact_type"`
+	IntentDigest string `json:"intent_digest"`
+}
+
+type PublicationInput struct {
+	PolicyDecisions []PolicyDecision `json:"policy_decisions"`
+	BuildLogDigest  string           `json:"build_log_digest"`
+}
+
+type AdmissionInput struct {
+	Runtime    RuntimeInterface `json:"runtime"`
+	Derivation DerivationInput  `json:"derivation"`
+	Workload   WorkloadInput    `json:"workload"`
 }
 
 type RuntimeInterface struct {
@@ -38,30 +44,21 @@ type RuntimeInterface struct {
 	RequiredCapabilities []string `json:"required_capabilities"`
 }
 
-type ProvenanceInput struct {
-	BuilderService  string           `json:"builder_service"`
-	Invoker         InvokerInfo      `json:"invoker"`
-	PolicyDecisions []PolicyDecision `json:"policy_decisions"`
-	BuildLogDigest  string           `json:"build_log_digest"`
-}
-
-type InvokerInfo struct {
-	Service   string `json:"service"`
-	Principal string `json:"principal"`
-}
-
 type PolicyDecision struct {
 	Rule   string `json:"rule"`
 	Result string `json:"result"`
 }
 
-type DerivationMetadataInput struct {
-	DerivationSpecDigest string `json:"derivation_spec_digest"`
-	OutputID             string `json:"output_id"`
-	ProducerRunID        string `json:"producer_run_id"`
+type DerivationInput struct {
+	DerivationSpecDigest string           `json:"derivation_spec_digest"`
+	OutputID             string           `json:"output_id"`
+	ProducerRunID        string           `json:"producer_run_id"`
+	Constraints          ConstraintsInput `json:"constraints"`
+	PolicyVersion        string           `json:"policy_version"`
+	ExpectedArtifactType string           `json:"expected_artifact_type,omitempty"`
 }
 
-type DerivationSpecConstraintsInfo struct {
+type ConstraintsInput struct {
 	AllowedToolchains      []string `json:"allowed_toolchains"`
 	ForbiddenToolchains    []string `json:"forbidden_toolchains"`
 	OS                     string   `json:"os"`
@@ -72,13 +69,7 @@ type DerivationSpecConstraintsInfo struct {
 	DeterminismExpectation string   `json:"determinism_expectation"`
 }
 
-type DerivationAttestationInput struct {
-	Constraints          DerivationSpecConstraintsInfo `json:"constraints"`
-	PolicyVersion        string                        `json:"policy_version"`
-	ExpectedArtifactType string                        `json:"expected_artifact_type,omitempty"`
-}
-
-type WorkloadIdentityBindingInput struct {
+type WorkloadInput struct {
 	ArtifactClass      string `json:"artifact_class"`
 	WorkloadType       string `json:"workload_type"`
 	ModulePath         string `json:"module_path"`
@@ -90,14 +81,11 @@ type WorkloadIdentityBindingInput struct {
 }
 
 type PublishResult struct {
-	Published                                bool   `json:"published"`
-	ArtifactDigest                           string `json:"artifact_digest"`
-	ManifestDigest                           string `json:"manifest_digest"`
-	ProvenanceDigest                         string `json:"provenance_digest"`
-	PayloadDigest                            string `json:"payload_digest"`
-	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
-	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
-	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+	Published      bool   `json:"published"`
+	ArtifactDigest string `json:"artifact_digest"`
+	EvidenceDigest string `json:"evidence_digest"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
+	PayloadDigest  string `json:"payload_digest"`
 }
 
 type HealthSnapshot struct {
@@ -112,23 +100,13 @@ type Manifest struct {
 	RuntimeInterface RuntimeInterface `json:"runtime_interface"`
 }
 
-type Provenance struct {
-	Payload   signingv2.ProvenancePayload `json:"payload"`
-	Signature signingv2.Envelope          `json:"signature"`
-}
-
 type DerivationMetadata struct {
 	DerivationSpecDigest string `json:"derivation_spec_digest"`
 	OutputID             string `json:"output_id"`
 	ProducerRunID        string `json:"producer_run_id"`
 }
 
-type DerivationAttestation struct {
-	Payload   signingv2.DerivationAttestationPayload `json:"payload"`
-	Signature signingv2.Envelope                     `json:"signature"`
-}
-
-type WorkloadIdentityBinding struct {
-	Payload   signingv2.WorkloadIdentityBindingPayload `json:"payload"`
-	Signature signingv2.Envelope                       `json:"signature"`
+type InvokerInfo struct {
+	Service   string `json:"service"`
+	Principal string `json:"principal"`
 }

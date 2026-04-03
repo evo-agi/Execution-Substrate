@@ -30,7 +30,7 @@ import (
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
-	signingv2 "execution-platform/contracts/signing/v2"
+	evidencev1 "execution-platform/contracts/evidence/v1"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -83,29 +83,14 @@ func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
 	}
 }
 
-func TestPrepareReturns404WhenManifestIsMissing(t *testing.T) {
+func TestPrepareIgnoresMissingManifestWhenEvidenceIsPresent(t *testing.T) {
 	stack := startStack(t, stackOptions{MissingManifest: true})
-	assertPrepareError(t, stack, http.StatusNotFound, codeManifestNotFound)
+	assertPrepareSuccess(t, stack)
 }
 
-func TestPrepareReturns404WhenProvenanceIsMissing(t *testing.T) {
-	stack := startStack(t, stackOptions{MissingProvenance: true})
-	assertPrepareError(t, stack, http.StatusNotFound, codeProvenanceNotFound)
-}
-
-func TestPrepareReturns404WhenDerivationMetadataIsMissing(t *testing.T) {
-	stack := startStack(t, stackOptions{MissingDerivationMetadata: true})
-	assertPrepareError(t, stack, http.StatusNotFound, codeDerivationMetadataNotFound)
-}
-
-func TestPrepareReturns404WhenWorkloadIdentityBindingIsMissing(t *testing.T) {
-	stack := startStack(t, stackOptions{MissingBinding: true})
-	assertPrepareError(t, stack, http.StatusNotFound, codeBindingNotFound)
-}
-
-func TestPrepareReturns404WhenDerivationAttestationIsMissing(t *testing.T) {
-	stack := startStack(t, stackOptions{MissingAttestation: true})
-	assertPrepareError(t, stack, http.StatusNotFound, codeAttestationNotFound)
+func TestPrepareReturns404WhenEvidenceIsMissing(t *testing.T) {
+	stack := startStack(t, stackOptions{MissingEvidence: true})
+	assertPrepareError(t, stack, http.StatusNotFound, codeArtifactEvidenceNotFound)
 }
 
 func TestPrepareReturns403WhenSignerIsNotAllowed(t *testing.T) {
@@ -139,19 +124,14 @@ func TestPrepareReturns503WhenVaultBlobIsCorrupt(t *testing.T) {
 	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
 }
 
-func TestPrepareReturns503WhenManifestBlobIsCorrupt(t *testing.T) {
+func TestPrepareIgnoresCorruptManifestWhenEvidenceIsPresent(t *testing.T) {
 	stack := startStack(t, stackOptions{CorruptManifest: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeManifestNotFound)
+	assertPrepareSuccess(t, stack)
 }
 
-func TestPrepareReturns503WhenProvenanceBlobIsCorrupt(t *testing.T) {
-	stack := startStack(t, stackOptions{CorruptProvenance: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeProvenanceNotFound)
-}
-
-func TestPrepareReturns503WhenDerivationAttestationBlobIsCorrupt(t *testing.T) {
-	stack := startStack(t, stackOptions{CorruptAttestation: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeAttestationNotFound)
+func TestPrepareReturns503WhenEvidenceBlobIsCorrupt(t *testing.T) {
+	stack := startStack(t, stackOptions{CorruptEvidence: true})
+	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeArtifactEvidenceUnavailable)
 }
 
 func TestStartFailsWhenTrustModelVerificationIsInvalid(t *testing.T) {
@@ -259,6 +239,8 @@ func TestPrepareReturns400WhenJSONIsMalformed(t *testing.T) {
 
 const (
 	codeInvalidRequest               = "invalid_request"
+	codeArtifactEvidenceNotFound     = "artifact_evidence_not_found"
+	codeArtifactEvidenceUnavailable  = "artifact_evidence_unavailable"
 	codeManifestNotFound             = "manifest_not_found"
 	codeProvenanceNotFound           = "provenance_not_found"
 	codeDerivationMetadataNotFound   = "derivation_metadata_not_found"
@@ -271,20 +253,16 @@ const (
 )
 
 type stackOptions struct {
-	MissingManifest           bool
-	MissingProvenance         bool
-	MissingDerivationMetadata bool
-	MissingBinding            bool
-	MissingAttestation        bool
-	MissingVaultBlob          bool
-	CorruptVaultBlob          bool
-	CorruptManifest           bool
-	CorruptProvenance         bool
-	CorruptAttestation        bool
-	DisallowedSigner          bool
-	RevokedSigner             bool
-	RevokedArtifact           bool
-	DefaultAuthMode           esconfig.WorkloadVaultAuthMode
+	MissingManifest  bool
+	MissingEvidence  bool
+	MissingVaultBlob bool
+	CorruptVaultBlob bool
+	CorruptManifest  bool
+	CorruptEvidence  bool
+	DisallowedSigner bool
+	RevokedSigner    bool
+	RevokedArtifact  bool
+	DefaultAuthMode  esconfig.WorkloadVaultAuthMode
 }
 
 type testStack struct {
@@ -364,23 +342,9 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	})
 	manifestDigest := writeBlobBytes(t, rootDir, manifestBytes)
 
-	provenanceBytes := signedProvenanceJSON(t, fixture, artifactDigest)
-	provenanceDigest := writeBlobBytes(t, rootDir, provenanceBytes)
-
-	derivationMetadataBytes := mustMarshalJSON(t, map[string]any{
-		"derivation_spec_digest": derivationSpecDigest,
-		"output_id":              "runtime",
-		"producer_run_id":        "build-run-1",
-	})
-	derivationMetadataDigest := writeBlobBytes(t, rootDir, derivationMetadataBytes)
-
-	derivationAttestationBytes := signedDerivationAttestationJSON(t, fixture, artifactDigest, derivationSpecDigest)
-	derivationAttestationDigest := writeBlobBytes(t, rootDir, derivationAttestationBytes)
-
-	bindingBytes := signedWorkloadIdentityBindingJSON(t, fixture, artifactDigest, derivationSpecDigest, workloadIdentityID)
-	bindingDigest := writeBlobBytes(t, rootDir, bindingBytes)
-
 	payloadDigest := writeBlobBytes(t, rootDir, []byte("artifact payload bytes"))
+	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, workloadIdentityID)
+	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
 
 	workloadZoneVaultBytes := mustMarshalJSON(t, map[string]any{
 		"vault_config": map[string]any{
@@ -395,17 +359,8 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	if opts.MissingManifest {
 		removeBlob(t, rootDir, manifestDigest)
 	}
-	if opts.MissingProvenance {
-		removeBlob(t, rootDir, provenanceDigest)
-	}
-	if opts.MissingDerivationMetadata {
-		removeBlob(t, rootDir, derivationMetadataDigest)
-	}
-	if opts.MissingBinding {
-		removeBlob(t, rootDir, bindingDigest)
-	}
-	if opts.MissingAttestation {
-		removeBlob(t, rootDir, derivationAttestationDigest)
+	if opts.MissingEvidence {
+		removeBlob(t, rootDir, evidenceDigest)
 	}
 	if opts.MissingVaultBlob {
 		removeBlob(t, rootDir, workloadZoneVaultDigest)
@@ -416,25 +371,22 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	if opts.CorruptManifest {
 		corruptBlob(t, rootDir, manifestDigest)
 	}
-	if opts.CorruptProvenance {
-		corruptBlob(t, rootDir, provenanceDigest)
-	}
-	if opts.CorruptAttestation {
-		corruptBlob(t, rootDir, derivationAttestationDigest)
+	if opts.CorruptEvidence {
+		corruptBlob(t, rootDir, evidenceDigest)
 	}
 
 	indexPath := filepath.Join(t.TempDir(), "artifact-index.json")
 	indexPayload := map[string]arsindex.Entry{
 		artifactDigest: {
-			ArtifactDigest:                           artifactDigest,
-			ManifestDigest:                           manifestDigest,
-			ProvenanceDigest:                         provenanceDigest,
-			PayloadDigest:                            payloadDigest,
-			DerivationMetadataDigest:                 derivationMetadataDigest,
-			DerivationAuthorizationAttestationDigest: derivationAttestationDigest,
-			WorkloadIdentityBindingDigest:            bindingDigest,
-			CreatedAt:                                "2026-03-31T00:00:00Z",
+			ArtifactDigest: artifactDigest,
+			EvidenceDigest: evidenceDigest,
+			ManifestDigest: manifestDigest,
+			PayloadDigest:  payloadDigest,
+			CreatedAt:      "2026-03-31T00:00:00Z",
 		},
+	}
+	if opts.MissingEvidence {
+		delete(indexPayload, artifactDigest)
 	}
 	if err := os.WriteFile(indexPath, mustMarshalJSON(t, indexPayload), 0o600); err != nil {
 		t.Fatalf("write artifact index: %v", err)
@@ -682,6 +634,25 @@ func assertPrepareError(t *testing.T, stack *testStack, expectedStatus int, expe
 	assertPrepareErrorForBody(t, stack, buildPrepareRequestBody(t, stack), expectedStatus, expectedCode)
 }
 
+func assertPrepareSuccess(t *testing.T, stack *testStack) {
+	t.Helper()
+
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.PrepareResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode prepare response: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected successful prepare response: %+v", payload)
+	}
+}
+
 func assertPrepareErrorForBody(t *testing.T, stack *testStack, body []byte, expectedStatus int, expectedCode string) {
 	t.Helper()
 
@@ -842,6 +813,37 @@ func writeBlobBytes(t *testing.T, rootDir string, data []byte) string {
 		t.Fatalf("write blob: %v", err)
 	}
 	return digest
+}
+
+func overwriteBlobBytes(t *testing.T, rootDir string, digest string, data []byte) {
+	t.Helper()
+
+	blobPath, err := arsstore.ResolvePath(rootDir, digest)
+	if err != nil {
+		t.Fatalf("resolve blob path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+		t.Fatalf("mkdir blob dir: %v", err)
+	}
+	if err := os.WriteFile(blobPath, data, 0o600); err != nil {
+		t.Fatalf("overwrite blob: %v", err)
+	}
+}
+
+func readJSONBlob(t *testing.T, rootDir string, digest string, target any) {
+	t.Helper()
+
+	blobPath, err := arsstore.ResolvePath(rootDir, digest)
+	if err != nil {
+		t.Fatalf("resolve blob path: %v", err)
+	}
+	data, err := os.ReadFile(blobPath)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		t.Fatalf("decode blob: %v", err)
+	}
 }
 
 func removeBlob(t *testing.T, rootDir string, digest string) {
@@ -1066,133 +1068,78 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 	}
 }
 
-func signedProvenanceJSON(t *testing.T, fixture *tlsFixture, artifactDigest string) []byte {
+func signedArtifactEvidenceJSON(
+	t *testing.T,
+	fixture *tlsFixture,
+	artifactDigest string,
+	payloadDigest string,
+	intentDigest string,
+	derivationSpecDigest string,
+	workloadIdentityID string,
+) []byte {
 	t.Helper()
 
-	payload := signingv2.ProvenancePayload{
-		Kind: signingv2.KindProvenance,
-		Subject: signingv2.ProvenanceSubject{
+	record := evidencev1.ArtifactEvidence{
+		SchemaVersion: evidencev1.Version,
+		Artifact: evidencev1.Artifact{
 			ArtifactDigest: artifactDigest,
+			PayloadDigest:  payloadDigest,
+			ArtifactType:   "static-service",
+			IntentDigest:   intentDigest,
 		},
-		Claims: signingv2.ProvenanceClaims{
+		Publication: evidencev1.Publication{
 			BuilderService: "artifact-governance",
-			Invoker: signingv2.ProvenanceInvoker{
+			Invoker: evidencev1.Invoker{
 				Service:   "deployment",
 				Principal: "spiffe://monolith.internal/service/deployment",
 			},
-			PolicyDecisions: []signingv2.PolicyDecision{
+			PolicyDecisions: []evidencev1.PolicyDecision{
 				{Rule: "allow", Result: "applied"},
 			},
 			BuildLogDigest: labeledDigest("ee"),
 		},
-	}
-	canonical, err := signingv2.CanonicalProvenancePayload(payload)
-	if err != nil {
-		t.Fatalf("canonicalize provenance: %v", err)
-	}
-	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
-
-	return mustMarshalJSON(t, map[string]any{
-		"payload":   payload,
-		"signature": signature,
-	})
-}
-
-func signedDerivationAttestationJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string) []byte {
-	t.Helper()
-
-	constraints := admission.DerivationSpecConstraintsInfo{
-		AllowedToolchains:      []string{},
-		ForbiddenToolchains:    []string{},
-		OS:                     "linux",
-		Arch:                   "amd64",
-		NetworkAccess:          false,
-		WritablePaths:          []string{},
-		ForbiddenPaths:         []string{},
-		DeterminismExpectation: "deterministic",
-	}
-
-	payload := signingv2.DerivationAttestationPayload{
-		Kind: signingv2.KindDerivationAttestation,
-		Subject: signingv2.DerivationSubject{
-			ArtifactDigest:       artifactDigest,
-			DerivationSpecDigest: derivationSpecDigest,
-			OutputID:             "runtime",
-		},
-		Claims: signingv2.DerivationAttestationClaims{
-			Constraints: signingv2.DerivationConstraints{
-				AllowedToolchains:      []string{},
-				ForbiddenToolchains:    []string{},
-				OS:                     "linux",
-				Arch:                   "amd64",
-				NetworkAccess:          false,
-				WritablePaths:          []string{},
-				ForbiddenPaths:         []string{},
-				DeterminismExpectation: "deterministic",
+		Admission: evidencev1.Admission{
+			Runtime: evidencev1.Runtime{
+				Parameters:           []string{},
+				EnvironmentVariables: []string{"APP_MODE"},
+				RequiredCapabilities: []string{},
 			},
-			Policy: signingv2.DerivationPolicy{
-				Version:              "2026-03-31",
+			Derivation: evidencev1.Derivation{
+				DerivationSpecDigest: derivationSpecDigest,
+				OutputID:             "runtime",
+				ProducerRunID:        "build-run-1",
+				PolicyVersion:        "2026-03-31",
 				ExpectedArtifactType: "static-service",
-			},
-		},
-	}
-	canonical, err := signingv2.CanonicalDerivationAttestationPayload(payload)
-	if err != nil {
-		t.Fatalf("canonicalize derivation attestation: %v", err)
-	}
-	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
-
-	return mustMarshalJSON(t, map[string]any{
-		"payload": map[string]any{
-			"kind":    payload.Kind,
-			"subject": payload.Subject,
-			"claims": map[string]any{
-				"constraints": constraints,
-				"policy": map[string]any{
-					"version":                "2026-03-31",
-					"expected_artifact_type": "static-service",
+				Constraints: evidencev1.Constraints{
+					AllowedToolchains:      []string{},
+					ForbiddenToolchains:    []string{},
+					OS:                     "linux",
+					Arch:                   "amd64",
+					NetworkAccess:          false,
+					WritablePaths:          []string{},
+					ForbiddenPaths:         []string{},
+					DeterminismExpectation: "deterministic",
 				},
 			},
-		},
-		"signature": signature,
-	})
-}
-
-func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string) []byte {
-	t.Helper()
-
-	payload := signingv2.WorkloadIdentityBindingPayload{
-		Kind: signingv2.KindWorkloadIdentityBinding,
-		Subject: signingv2.WorkloadIdentitySubject{
-			ArtifactClass:        "service",
-			ArtifactDigest:       artifactDigest,
-			DerivationSpecDigest: derivationSpecDigest,
-			OutputID:             "runtime",
-		},
-		Claims: signingv2.WorkloadIdentityBindingClaims{
-			Descriptor: signingv2.WorkloadDescriptor{
+			Workload: evidencev1.Workload{
+				ArtifactClass:      "service",
 				WorkloadType:       "service",
 				ModulePath:         "services.execution.ExecutionServer",
 				ServiceName:        "execution",
 				TargetPlatform:     "docker",
 				Description:        "Execution workload",
 				WorkloadIdentityID: workloadIdentityID,
-			},
-			Policy: signingv2.WorkloadPolicy{
-				Version: "2026-03-31",
+				PolicyVersion:      "2026-03-31",
 			},
 		},
 	}
-	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(payload)
-	if err != nil {
-		t.Fatalf("canonicalize workload identity binding: %v", err)
-	}
-	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 
-	return mustMarshalJSON(t, map[string]any{
-		"payload":   payload,
-		"signature": signature,
-	})
+	canonical, err := record.CanonicalBytes()
+	if err != nil {
+		t.Fatalf("canonicalize artifact evidence: %v", err)
+	}
+	record.Seal = evidencev1.NewSeal(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
+	return mustMarshalJSON(t, record)
 }
 
 func digestBytes(data []byte) string {

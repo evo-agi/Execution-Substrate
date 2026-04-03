@@ -32,7 +32,7 @@ import (
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
-	signingv2 "execution-platform/contracts/signing/v2"
+	evidencev1 "execution-platform/contracts/evidence/v1"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -61,6 +61,18 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	}
 	if payload.ArtifactDigest != stack.publishResponse.ArtifactDigest {
 		t.Fatalf("unexpected artifact digest: %q", payload.ArtifactDigest)
+	}
+	if strings.TrimSpace(stack.publishResponse.EvidenceDigest) == "" {
+		t.Fatalf("expected evidence digest in publish response")
+	}
+	entry := stack.loadIndexEntry(t)
+	if entry.EvidenceDigest != stack.publishResponse.EvidenceDigest {
+		t.Fatalf("expected index evidence digest %q, got %q", stack.publishResponse.EvidenceDigest, entry.EvidenceDigest)
+	}
+	var evidence evidencev1.ArtifactEvidence
+	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	if evidence.Artifact.ArtifactDigest != stack.publishResponse.ArtifactDigest {
+		t.Fatalf("unexpected evidence artifact digest: %q", evidence.Artifact.ArtifactDigest)
 	}
 	if payload.Provenance.SignerKeyID != stack.fixture.agsKeyID {
 		t.Fatalf("unexpected provenance signer key: %q", payload.Provenance.SignerKeyID)
@@ -91,12 +103,7 @@ func TestPublishValidOperatorCallerSucceeds(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
-		provenance := body["provenance"].(map[string]any)
-		invoker := provenance["invoker"].(map[string]any)
-		invoker["service"] = "operator"
-		invoker["principal"] = "spiffe://monolith.internal/operator"
-	})
+	response := publishArtifactRequest(t, stack, "operator", false, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -128,14 +135,11 @@ func TestPublishRejectsBootstrapPKICaller(t *testing.T) {
 	}
 }
 
-func TestPublishIgnoresCallerSuppliedBuilderServiceAndESAccepts(t *testing.T) {
+func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		provenance := body["provenance"].(map[string]any)
-		provenance["builder_service"] = "caller-controlled-builder"
-	})
+	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -147,10 +151,18 @@ func TestPublishIgnoresCallerSuppliedBuilderServiceAndESAccepts(t *testing.T) {
 	}
 
 	entry := stack.loadIndexEntry(t)
-	var provenance map[string]any
-	readJSONBlob(t, stack.rootDir, entry.ProvenanceDigest, &provenance)
-	if got := provenance["payload"].(map[string]any)["claims"].(map[string]any)["builder_service"]; got != "artifact-governance" {
+	var evidence map[string]any
+	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	publication := evidence["publication"].(map[string]any)
+	if got := publication["builder_service"]; got != "artifact-governance" {
 		t.Fatalf("expected builder_service artifact-governance, got %v", got)
+	}
+	invoker := publication["invoker"].(map[string]any)
+	if got := invoker["service"]; got != "deployment" {
+		t.Fatalf("expected invoker service deployment, got %v", got)
+	}
+	if got := invoker["principal"]; got != "spiffe://monolith.internal/service/deployment" {
+		t.Fatalf("expected invoker principal derived from caller, got %v", got)
 	}
 
 	startES(t, stack)
@@ -161,47 +173,50 @@ func TestPublishIgnoresCallerSuppliedBuilderServiceAndESAccepts(t *testing.T) {
 	}
 }
 
-func TestPublishRejectsDeploymentCallerMismatchedInvokerService(t *testing.T) {
+func TestPublishResponseAndIndexAreEvidenceOnly(t *testing.T) {
+	stack := startPublishOnlyStack(t)
+	defer stack.shutdownAll(t)
+
+	if strings.Contains(string(stack.publishResponseBody), `"compatibility"`) || strings.Contains(string(stack.publishResponseBody), `"legacy_signing_v2"`) {
+		t.Fatalf("expected publish response to omit legacy compatibility inventory, got %s", strings.TrimSpace(string(stack.publishResponseBody)))
+	}
+
+	indexBytes, err := os.ReadFile(stack.indexPath)
+	if err != nil {
+		t.Fatalf("read artifact index: %v", err)
+	}
+	if strings.Contains(string(indexBytes), `"compatibility"`) || strings.Contains(string(indexBytes), `"legacy_signing_v2"`) {
+		t.Fatalf("expected artifact index to omit legacy compatibility inventory, got %s", strings.TrimSpace(string(indexBytes)))
+	}
+}
+
+func TestPublishRejectsLegacyPublicationBuilderField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		provenance := body["provenance"].(map[string]any)
-		invoker := provenance["invoker"].(map[string]any)
-		invoker["service"] = "operator"
+		publication := body["publication"].(map[string]any)
+		publication["builder_service"] = "caller-controlled-builder"
 	})
 	defer response.Body.Close()
 
-	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func TestPublishRejectsDeploymentCallerMismatchedInvokerPrincipal(t *testing.T) {
+func TestPublishRejectsLegacyPublicationInvokerField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		provenance := body["provenance"].(map[string]any)
-		invoker := provenance["invoker"].(map[string]any)
-		invoker["principal"] = "spiffe://monolith.internal/service/other"
+		publication := body["publication"].(map[string]any)
+		publication["invoker"] = map[string]any{
+			"service":   "deployment",
+			"principal": "spiffe://monolith.internal/service/deployment",
+		}
 	})
 	defer response.Body.Close()
 
-	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
-}
-
-func TestPublishRejectsOperatorCallerMismatchedInvokerFields(t *testing.T) {
-	stack := startDependencyStack(t)
-	defer stack.shutdownAll(t)
-
-	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
-		provenance := body["provenance"].(map[string]any)
-		invoker := provenance["invoker"].(map[string]any)
-		invoker["service"] = "deployment"
-		invoker["principal"] = "spiffe://monolith.internal/service/deployment"
-	})
-	defer response.Body.Close()
-
-	assertPublishError(t, response, http.StatusForbidden, "publish_forbidden")
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
 func TestPublishRejectsInvalidWorkloadIdentityID(t *testing.T) {
@@ -209,7 +224,8 @@ func TestPublishRejectsInvalidWorkloadIdentityID(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		binding := body["workload_identity_binding"].(map[string]any)
+		admissionBody := body["admission"].(map[string]any)
+		binding := admissionBody["workload"].(map[string]any)
 		binding["workload_identity_id"] = "not-a-spiffe-uri"
 	})
 	defer response.Body.Close()
@@ -222,7 +238,8 @@ func TestPublishRejectsWorkloadIdentityIDServiceNameConflict(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		binding := body["workload_identity_binding"].(map[string]any)
+		admissionBody := body["admission"].(map[string]any)
+		binding := admissionBody["workload"].(map[string]any)
 		binding["service_name"] = "payments"
 	})
 	defer response.Body.Close()
@@ -235,7 +252,8 @@ func TestPublishRejectsPolicyVersionConflict(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		binding := body["workload_identity_binding"].(map[string]any)
+		admissionBody := body["admission"].(map[string]any)
+		binding := admissionBody["workload"].(map[string]any)
 		binding["policy_version"] = "different-policy-version"
 	})
 	defer response.Body.Close()
@@ -248,7 +266,8 @@ func TestPublishRejectsExpectedArtifactTypeConflict(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		attestation := body["derivation_attestation"].(map[string]any)
+		admissionBody := body["admission"].(map[string]any)
+		attestation := admissionBody["derivation"].(map[string]any)
 		attestation["expected_artifact_type"] = "other-artifact-type"
 	})
 	defer response.Body.Close()
@@ -261,7 +280,8 @@ func TestPublishRejectsServiceWorkloadMissingServiceName(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		binding := body["workload_identity_binding"].(map[string]any)
+		admissionBody := body["admission"].(map[string]any)
+		binding := admissionBody["workload"].(map[string]any)
 		delete(binding, "service_name")
 	})
 	defer response.Body.Close()
@@ -274,70 +294,29 @@ func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	defer stack.shutdownAll(t)
 
 	entry := stack.loadIndexEntry(t)
-	var attestation map[string]any
-	readJSONBlob(t, stack.rootDir, entry.DerivationAuthorizationAttestationDigest, &attestation)
-	payload := attestation["payload"].(map[string]any)
-	policy := payload["claims"].(map[string]any)["policy"].(map[string]any)
-	policy["version"] = "tampered"
+	var evidence map[string]any
+	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	admissionPayload := evidence["admission"].(map[string]any)
+	derivation := admissionPayload["derivation"].(map[string]any)
+	derivation["policy_version"] = "tampered"
 	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
-		entry.DerivationAuthorizationAttestationDigest = stack.writeJSONBlob(t, attestation)
+		entry.EvidenceDigest = stack.writeJSONBlob(t, evidence)
 	})
 
 	startES(t, stack)
-	assertPrepareError(t, stack, http.StatusForbidden, "derivation_attestation_invalid")
+	assertPrepareError(t, stack, http.StatusForbidden, "artifact_evidence_invalid")
 }
 
-func TestPrepareRejectsTamperedSignatureAfterPublish(t *testing.T) {
+func TestPrepareRejectsMissingEvidenceBlobAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
 
 	entry := stack.loadIndexEntry(t)
-	var provenance map[string]any
-	readJSONBlob(t, stack.rootDir, entry.ProvenanceDigest, &provenance)
-	signature := provenance["signature"].(map[string]any)
-	signature["signature_value"] = base64.StdEncoding.EncodeToString([]byte("invalid-signature"))
-	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
-		entry.ProvenanceDigest = stack.writeJSONBlob(t, provenance)
-	})
-
-	startES(t, stack)
-	assertPrepareError(t, stack, http.StatusForbidden, "provenance_invalid")
-}
-
-func TestPrepareRejectsCrossFactMismatchAfterPublish(t *testing.T) {
-	stack := startPublishOnlyStack(t)
-	defer stack.shutdownAll(t)
-
-	entry := stack.loadIndexEntry(t)
-	mismatchedBinding := signedWorkloadIdentityBindingJSON(
-		t,
-		stack.fixture,
-		stack.publishResponse.ArtifactDigest,
-		labeledDigest("99"),
-		stack.workloadIdentityID,
-		stack.outputID,
-	)
-	mismatchedBindingDigest := writeBlobBytes(t, stack.rootDir, mismatchedBinding)
-
-	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
-		entry.WorkloadIdentityBindingDigest = mismatchedBindingDigest
-	})
-
-	_ = entry
-	startES(t, stack)
-	assertPrepareError(t, stack, http.StatusForbidden, "workload_identity_binding_invalid")
-}
-
-func TestPrepareRejectsMissingReferencedBlobAfterPublish(t *testing.T) {
-	stack := startPublishOnlyStack(t)
-	defer stack.shutdownAll(t)
-
-	entry := stack.loadIndexEntry(t)
-	removeBlob(t, stack.rootDir, entry.ManifestDigest)
+	removeBlob(t, stack.rootDir, entry.EvidenceDigest)
 	stack.restartARS(t)
 
 	startES(t, stack)
-	assertPrepareError(t, stack, http.StatusNotFound, "manifest_not_found")
+	assertPrepareError(t, stack, http.StatusServiceUnavailable, "artifact_evidence_unavailable")
 }
 
 type publishedStack struct {
@@ -358,7 +337,8 @@ type publishedStack struct {
 	agsRunning bool
 	esRunning  bool
 
-	publishResponse publishResponse
+	publishResponse     publishResponse
+	publishResponseBody []byte
 
 	intentDigest            string
 	derivationSpecDigest    string
@@ -368,14 +348,11 @@ type publishedStack struct {
 }
 
 type publishResponse struct {
-	Published                                bool   `json:"published"`
-	ArtifactDigest                           string `json:"artifact_digest"`
-	ManifestDigest                           string `json:"manifest_digest"`
-	ProvenanceDigest                         string `json:"provenance_digest"`
-	PayloadDigest                            string `json:"payload_digest"`
-	DerivationMetadataDigest                 string `json:"derivation_metadata_digest"`
-	DerivationAuthorizationAttestationDigest string `json:"derivation_authorization_attestation_digest"`
-	WorkloadIdentityBindingDigest            string `json:"workload_identity_binding_digest"`
+	Published      bool   `json:"published"`
+	ArtifactDigest string `json:"artifact_digest"`
+	EvidenceDigest string `json:"evidence_digest"`
+	ManifestDigest string `json:"manifest_digest"`
+	PayloadDigest  string `json:"payload_digest"`
 }
 
 func startPublishedStack(t *testing.T) *publishedStack {
@@ -645,7 +622,8 @@ func publishArtifact(t *testing.T, stack *publishedStack) {
 		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
 	}
 
-	if err := json.NewDecoder(response.Body).Decode(&stack.publishResponse); err != nil {
+	stack.publishResponseBody = mustReadBody(t, response.Body)
+	if err := json.Unmarshal(stack.publishResponseBody, &stack.publishResponse); err != nil {
 		t.Fatalf("decode publish response: %v", err)
 	}
 	if !stack.publishResponse.Published {
@@ -676,54 +654,49 @@ func buildPublishRequestBody(t *testing.T, stack *publishedStack) map[string]any
 
 	return map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString([]byte("artifact payload bytes")),
-		"manifest": map[string]any{
+		"artifact": map[string]any{
 			"artifact_type": "static-service",
 			"intent_digest": stack.intentDigest,
-			"runtime_interface": map[string]any{
-				"parameters":            []string{},
-				"environment_variables": []string{"APP_MODE"},
-				"required_capabilities": []string{},
-			},
 		},
-		"provenance": map[string]any{
-			"builder_service": "artifact-governance",
-			"invoker": map[string]any{
-				"service":   "deployment",
-				"principal": "spiffe://monolith.internal/service/deployment",
-			},
+		"publication": map[string]any{
 			"policy_decisions": []map[string]any{
 				{"rule": "allow", "result": "applied"},
 			},
 			"build_log_digest": labeledDigest("ee"),
 		},
-		"derivation_metadata": map[string]any{
-			"derivation_spec_digest": stack.derivationSpecDigest,
-			"output_id":              stack.outputID,
-			"producer_run_id":        "build-run-1",
-		},
-		"derivation_attestation": map[string]any{
-			"constraints": map[string]any{
-				"allowed_toolchains":      []string{},
-				"forbidden_toolchains":    []string{},
-				"os":                      "linux",
-				"arch":                    "amd64",
-				"network_access":          false,
-				"writable_paths":          []string{},
-				"forbidden_paths":         []string{},
-				"determinism_expectation": "deterministic",
+		"admission": map[string]any{
+			"runtime": map[string]any{
+				"parameters":            []string{},
+				"environment_variables": []string{"APP_MODE"},
+				"required_capabilities": []string{},
 			},
-			"policy_version":         "2026-03-31",
-			"expected_artifact_type": "static-service",
-		},
-		"workload_identity_binding": map[string]any{
-			"artifact_class":       "service",
-			"workload_type":        "service",
-			"module_path":          "services.execution.ExecutionServer",
-			"policy_version":       "2026-03-31",
-			"service_name":         "execution",
-			"target_platform":      "docker",
-			"description":          "Execution workload",
-			"workload_identity_id": stack.workloadIdentityID,
+			"derivation": map[string]any{
+				"derivation_spec_digest": stack.derivationSpecDigest,
+				"output_id":              stack.outputID,
+				"producer_run_id":        "build-run-1",
+				"constraints": map[string]any{
+					"allowed_toolchains":      []string{},
+					"forbidden_toolchains":    []string{},
+					"os":                      "linux",
+					"arch":                    "amd64",
+					"network_access":          false,
+					"writable_paths":          []string{},
+					"forbidden_paths":         []string{},
+					"determinism_expectation": "deterministic",
+				},
+				"policy_version":         "2026-03-31",
+				"expected_artifact_type": "static-service",
+			},
+			"workload": map[string]any{
+				"artifact_class":       "service",
+				"workload_type":        "service",
+				"module_path":          "services.execution.ExecutionServer",
+				"policy_version":       "2026-03-31",
+				"service_name":         "execution",
+				"target_platform":      "docker",
+				"description":          "Execution workload",
+				"workload_identity_id": stack.workloadIdentityID,
+			},
 		},
 	}
 }
@@ -806,6 +779,17 @@ func assertPrepareError(t *testing.T, stack *publishedStack, expectedStatus int,
 	}
 	if payload.Code != expectedCode {
 		t.Fatalf("expected code %q, got %q", expectedCode, payload.Code)
+	}
+}
+
+func assertPrepareSuccess(t *testing.T, stack *publishedStack) {
+	t.Helper()
+
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
 	}
 }
 
@@ -1217,43 +1201,6 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 		RootCAs:    rootCAs,
 		ServerName: serverName,
 	}
-}
-
-func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string, outputID string) []byte {
-	t.Helper()
-
-	payload := signingv2.WorkloadIdentityBindingPayload{
-		Kind: signingv2.KindWorkloadIdentityBinding,
-		Subject: signingv2.WorkloadIdentitySubject{
-			ArtifactClass:        "service",
-			ArtifactDigest:       artifactDigest,
-			DerivationSpecDigest: derivationSpecDigest,
-			OutputID:             outputID,
-		},
-		Claims: signingv2.WorkloadIdentityBindingClaims{
-			Descriptor: signingv2.WorkloadDescriptor{
-				WorkloadType:       "service",
-				ModulePath:         "services.execution.ExecutionServer",
-				ServiceName:        "execution",
-				TargetPlatform:     "docker",
-				Description:        "Execution workload",
-				WorkloadIdentityID: workloadIdentityID,
-			},
-			Policy: signingv2.WorkloadPolicy{
-				Version: "2026-03-31",
-			},
-		},
-	}
-	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(payload)
-	if err != nil {
-		t.Fatalf("canonicalize workload identity binding: %v", err)
-	}
-	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
-
-	return mustMarshalJSON(t, map[string]any{
-		"payload":   payload,
-		"signature": signature,
-	})
 }
 
 func digestBytes(data []byte) string {
