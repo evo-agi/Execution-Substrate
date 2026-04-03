@@ -213,8 +213,17 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.base_image`
+  - optionally `execution.runtime_identity_tmpfs_size`
+- `execution.staging_root_dir` is a writable host-local staging root
+  - it backs successful-submit payload/run staging in the current slice unless removed externally
+  - `/monolith/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
+  - `/monolith/staged` and caller-visible `/monolith/mounts/...` remain host-backed copies of governed artifact content
+  - ES does not semantically inspect payloads or mount contents for secrecy
 - the runtime identity contract no longer requires ES-local identity plumbing configuration
 - ES reserves `/monolith/runtime-identity/` inside the workload container for topology-neutral identity plumbing
+  - this reserved workspace is memory-backed tmpfs and is not persisted to host staging
+  - `execution.runtime_identity_tmpfs_size` defaults to `1048576` bytes (`1 MiB`) and must not exceed `8388608` bytes (`8 MiB`)
+  - `/monolith/runtime-identity/vault-token` remains reserved for future use in the current slice
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 
 Minimal vault-auth example:

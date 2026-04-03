@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,6 @@ import (
 )
 
 const (
-	executionWorkspaceRoot             = "/Users/ds/Repositories/Execution-Platform"
 	workloadIdentityWorkspaceTargetDir = "/monolith/runtime-identity"
 	workloadIdentityEndpointEnvKey     = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
 	workloadIdentityEndpointEnvValue   = "unix:///monolith/runtime-identity/endpoint"
@@ -189,13 +190,22 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected network_mode=none, got %#v", networkMode)
 	}
 
-	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
-	source, ok := mountConfig["source"].(string)
-	if !ok || !strings.HasSuffix(source, string(filepath.Separator)+"runtime-identity") {
-		t.Fatalf("expected reserved runtime identity workspace source, got %#v", mountConfig["source"])
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
+	if mountType := mountConfig["type"]; mountType != "tmpfs" {
+		t.Fatalf("expected tmpfs runtime identity workspace mount, got %#v", mountType)
+	}
+	if _, ok := mountConfig["source"]; ok {
+		t.Fatalf("did not expect host source for tmpfs runtime identity mount, got %#v", mountConfig["source"])
 	}
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || readonly {
 		t.Fatalf("expected writable runtime identity workspace mount, got %#v", mountConfig["readonly"])
+	}
+	tmpfsOptions, ok := mountConfig["tmpfs_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tmpfs_options for runtime identity mount, got %#v", mountConfig["tmpfs_options"])
+	}
+	if size := tmpfsOptions["size"]; size != float64(1<<20) && size != int64(1<<20) && size != int(1<<20) {
+		t.Fatalf("expected default tmpfs size 1048576, got %#v", size)
 	}
 
 	taskConfig := job.task(t)
@@ -244,11 +254,10 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 }
 
-func TestWorkloadCanCreateAndUseLocalRuntimeIdentityEndpointFromContainer(t *testing.T) {
-	rootDir := t.TempDir()
+func TestWorkloadCanCreateAndUseLocalRuntimeIdentityEndpointFromTmpfsWorkspace(t *testing.T) {
 	command := exec.Command(
 		"docker", "run", "--rm",
-		"-v", rootDir+":"+workloadIdentityWorkspaceTargetDir,
+		"--tmpfs", workloadIdentityWorkspaceTargetDir+":rw,size=1048576",
 		"-e", workloadIdentityEndpointEnvKey+"="+workloadIdentityEndpointEnvValue,
 		"python:3.13-alpine",
 		"sh", "-lc",
@@ -298,6 +307,34 @@ PY`,
 	}
 }
 
+func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		runtimeIdentityTmpfsSize: 2 << 20,
+	})
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
+	tmpfsOptions, ok := mountConfig["tmpfs_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tmpfs_options for runtime identity mount, got %#v", mountConfig["tmpfs_options"])
+	}
+	if size := tmpfsOptions["size"]; size != float64(2<<20) && size != int64(2<<20) && size != int(2<<20) {
+		t.Fatalf("expected configured tmpfs size %d, got %#v", 2<<20, size)
+	}
+}
+
 func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {
 	stack := startSubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
@@ -336,9 +373,13 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 
 	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
-	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
 		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
+	}
+	mountArchivePath := filepath.Join(stack.rootDir, "es-stage", payload.RunID, "mounts", "00", "artifact.tar.gz")
+	if _, err := os.Stat(mountArchivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected extracted runtime mount archive residue to be removed, got err=%v", err)
 	}
 
 	stack.nomad.waitForJob(t, payload.NomadJobID)
@@ -501,8 +542,9 @@ type submitPublishResponse struct {
 }
 
 type submitStackOptions struct {
-	networkAccess bool
-	baseImage     string
+	networkAccess            bool
+	baseImage                string
+	runtimeIdentityTmpfsSize int64
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -766,8 +808,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir: filepath.Join(rootDir, "es-stage"),
-			BaseImage:      firstNonEmpty(opts.baseImage, "alpine:3.20"),
+			StagingRootDir:           filepath.Join(rootDir, "es-stage"),
+			BaseImage:                firstNonEmpty(opts.baseImage, "alpine:3.20"),
+			RuntimeIdentityTmpfsSize: opts.runtimeIdentityTmpfsSize,
 		},
 	}
 	esService, err := esapp.New(esCfg)
@@ -1102,7 +1145,7 @@ func assertErrorResponseCode(t *testing.T, response *http.Response, expectedStat
 	}
 }
 
-func findTaskBindMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {
+func findTaskMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {
 	t.Helper()
 
 	mounts, ok := rawMounts.([]any)
@@ -1118,7 +1161,7 @@ func findTaskBindMountByTarget(t *testing.T, rawMounts any, target string) map[s
 			return mountConfig
 		}
 	}
-	t.Fatalf("expected bind mount targeting %q in %#v", target, rawMounts)
+	t.Fatalf("expected mount targeting %q in %#v", target, rawMounts)
 	return nil
 }
 
@@ -1433,7 +1476,13 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 	t.Helper()
 
-	dir, err := os.MkdirTemp(executionWorkspaceRoot, prefix)
+	_, filePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("resolve test file path: runtime caller unavailable")
+	}
+	workspaceRoot := filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", ".."))
+
+	dir, err := os.MkdirTemp(workspaceRoot, prefix)
 	if err != nil {
 		t.Fatalf("create workspace temp dir: %v", err)
 	}

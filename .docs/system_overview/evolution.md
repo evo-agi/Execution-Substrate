@@ -72,9 +72,14 @@ These are bounded slice choices and may evolve later through explicit planning:
 - no host networking, port publishing, or custom networks
 - runtime mounts only through bounded artifact-backed read-only mounts under `/monolith/mounts/`
 - no host-path, writable, identity, or secret mounts
-- one reserved ES-owned writable runtime-identity workspace at `/monolith/runtime-identity/`
+- one reserved ES-owned writable runtime-identity workspace at `/monolith/runtime-identity/`, backed by tmpfs rather than host staging
 - one reserved runtime identity endpoint path at `/monolith/runtime-identity/endpoint`
 - one reserved future token path at `/monolith/runtime-identity/vault-token`
+- failed-submit staging is cleaned immediately, while successful-submit payload/run staging currently remains under `execution.staging_root_dir` unless removed externally
+- `/monolith/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
+- `/monolith/staged` and caller-visible `/monolith/mounts/...` remain host-backed copies of governed artifact content
+- ES does not semantically inspect payloads or mount contents for secrecy
+- the runtime-identity workspace is memory-backed and is not persisted to host staging in this slice
 - no retries or reschedule
 
 These constraints are still contractual for the current slice, but they are not system invariants. They may be extended later only through explicit design updates, not by convenience changes in code.

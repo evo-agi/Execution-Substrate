@@ -57,6 +57,7 @@ Optional local helpers are provided:
 - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py`
 
 These helpers are reference tooling only. They are not platform components.
+`REFERENCE_IDENTITY_URL`, the local bridge protocol, and the helper response shapes are reference-workload inputs only. They are not part of the platform runtime-identity contract.
 
 ## 4. Optional Local Reference Helpers
 
@@ -182,6 +183,8 @@ Publish and extract the artifact digest exactly as in:
 Create the ES submit request:
 
 ```bash
+export REFERENCE_IDENTITY_URL_VALUE="http://<container-reachable-identity-host>:18081"
+
 python3 - <<'PY' > "$WORKDIR/submit.json"
 import json, os
 
@@ -193,7 +196,7 @@ payload = {
         "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
         "output_id": os.environ["OUTPUT_ID"],
         "env": {
-            "REFERENCE_IDENTITY_URL": "http://host.docker.internal:18081",
+            "REFERENCE_IDENTITY_URL": os.environ["REFERENCE_IDENTITY_URL_VALUE"],
             "REFERENCE_SECRET_PATH": "secret/data/runtime-identity-reference"
         }
     },
@@ -208,7 +211,7 @@ print(json.dumps(payload))
 PY
 ```
 
-If `host.docker.internal` is not reachable from your container runtime, replace it with any identity-service address the workload container can reach.
+Set `REFERENCE_IDENTITY_URL_VALUE` to any identity-service address the workload container can reach in your environment. `host.docker.internal` is only one possible runtime-specific example, not a platform default.
 
 Submit and extract `RUN_ID`, `NOMAD_JOB_ID`, and `NOMAD_EVAL_ID` exactly as in:
 

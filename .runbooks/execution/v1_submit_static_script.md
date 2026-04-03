@@ -69,7 +69,8 @@ The environment must already satisfy these assumptions:
   - `execution.base_image`
 - ES reserves `/monolith/runtime-identity/` inside the workload container for runtime identity plumbing.
   - ES does not provide credentials there.
-  - the workload or workload-local helper may create `/monolith/runtime-identity/endpoint` and later `/monolith/runtime-identity/vault-token`.
+  - the workload or workload-local helper may create `/monolith/runtime-identity/endpoint`.
+  - `/monolith/runtime-identity/vault-token` is reserved for a future slice only. The current workspace is tmpfs-backed and not persisted to host staging, but ES still does not populate or manage token material there.
 - The Nomad client has the Docker driver available and bind mounts enabled.
   - The minimal ES slice depends on Docker bind mounts for staged payload execution.
   - In Nomad client config this means `docker.volumes.enabled = true`.

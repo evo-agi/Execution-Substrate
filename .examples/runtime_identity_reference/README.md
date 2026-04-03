@@ -2,6 +2,8 @@
 
 This directory contains a reference `static-script` workload that exercises the current runtime identity contract without changing platform behavior.
 
+Everything in this directory is example-level behavior. The platform contract is limited to the reserved runtime-identity workspace, the reserved endpoint path, and the non-secret Vault auth environment variables.
+
 ## What It Demonstrates
 
 The workload:
@@ -45,6 +47,10 @@ and respond with:
 ```json
 {"jwt":"reference-runtime-identity-jwt"}
 ```
+
+`REFERENCE_IDENTITY_URL`, the upstream helper protocol, and the local bridge protocol are all reference-workload choices. They are not platform requirements.
+
+The current entrypoint also uses permissive local socket permissions as a validation convenience. That is not part of the platform contract or a production recommendation.
 
 ## Files
 

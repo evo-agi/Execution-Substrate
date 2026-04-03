@@ -177,6 +177,9 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Tr
 			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, extractErr.Error())
 		}
 		totalExtractedBytes += extractedBytes
+		if err := os.Remove(mountArchivePath); err != nil {
+			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "remove runtime mount payload archive failed")
+		}
 
 		realPath, realPathErr := filepath.EvalSymlinks(mountContentsDir)
 		if realPathErr != nil {

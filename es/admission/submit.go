@@ -36,11 +36,10 @@ type nomadJobRegisterResponse struct {
 }
 
 type stagedPayload struct {
-	rootDir            string
-	payloadDir         string
-	runDir             string
-	runtimeIdentityDir string
-	mounts             []stagedRuntimeMount
+	rootDir    string
+	payloadDir string
+	runDir     string
+	mounts     []stagedRuntimeMount
 }
 
 func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult, *Error) {
@@ -108,6 +107,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
+
 	trustModel := s.currentTrustModel()
 	if trustModel == nil {
 		return SubmitResult{}, &Error{
@@ -134,12 +134,18 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 			Message: "stage artifact payload failed",
 		}
 	}
+
 	submitted := false
 	defer func() {
 		if !submitted {
 			_ = os.RemoveAll(stage.rootDir)
 		}
 	}()
+
+	// Failed submits are cleaned immediately. Successful submits currently retain
+	// payload/run staging under execution.staging_root_dir unless removed
+	// externally, but the reserved runtime-identity workspace is provisioned as
+	// tmpfs and is no longer host-backed by the submit path.
 
 	stage.mounts, err = s.stageRuntimeMounts(ctx, *trustModel, stage.rootDir, req.Invocation.Mounts)
 	if err != nil {
@@ -235,24 +241,19 @@ func (s *Service) stagePayload(runID string, payloadBytes []byte) (stagedPayload
 	stageRoot := filepath.Join(s.cfg.Execution.StagingRootDir, runID)
 	payloadDir := filepath.Join(stageRoot, "payload")
 	runDir := filepath.Join(stageRoot, "run")
-	runtimeIdentityDir := filepath.Join(stageRoot, "runtime-identity")
 	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
 		return stagedPayload{}, err
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return stagedPayload{}, err
 	}
-	if err := os.MkdirAll(runtimeIdentityDir, 0o755); err != nil {
-		return stagedPayload{}, err
-	}
 	if err := os.WriteFile(filepath.Join(payloadDir, "artifact.tar.gz"), payloadBytes, 0o600); err != nil {
 		return stagedPayload{}, err
 	}
 	return stagedPayload{
-		rootDir:            stageRoot,
-		payloadDir:         payloadDir,
-		runDir:             runDir,
-		runtimeIdentityDir: runtimeIdentityDir,
+		rootDir:    stageRoot,
+		payloadDir: payloadDir,
+		runDir:     runDir,
 	}, nil
 }
 
@@ -333,10 +334,12 @@ func buildNomadJobSpec(
 			"readonly": false,
 		},
 		map[string]any{
-			"type":     "bind",
-			"source":   stage.runtimeIdentityDir,
+			"type":     "tmpfs",
 			"target":   runtimeIdentityWorkspaceTargetDir,
 			"readonly": false,
+			"tmpfs_options": map[string]any{
+				"size": cfg.Execution.EffectiveRuntimeIdentityTmpfsSize(),
+			},
 		},
 	}
 

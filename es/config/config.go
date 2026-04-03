@@ -64,9 +64,15 @@ type NomadConfig struct {
 }
 
 type ExecutionConfig struct {
-	StagingRootDir string `json:"staging_root_dir"`
-	BaseImage      string `json:"base_image"`
+	StagingRootDir           string `json:"staging_root_dir"`
+	BaseImage                string `json:"base_image"`
+	RuntimeIdentityTmpfsSize int64  `json:"runtime_identity_tmpfs_size,omitempty"`
 }
+
+const (
+	defaultRuntimeIdentityTmpfsSizeBytes int64 = 1 << 20
+	maxRuntimeIdentityTmpfsSizeBytes     int64 = 8 << 20
+)
 
 type VerificationConfig struct {
 	TrustModel              SignerVerifierConfig `json:"trust_model"`
@@ -279,7 +285,20 @@ func (c ExecutionConfig) Validate(field string) error {
 	if !filepath.IsAbs(strings.TrimSpace(c.StagingRootDir)) {
 		return fmt.Errorf("%s.staging_root_dir must be an absolute path", field)
 	}
+	if c.RuntimeIdentityTmpfsSize < 0 {
+		return fmt.Errorf("%s.runtime_identity_tmpfs_size must be greater than or equal to 0", field)
+	}
+	if c.RuntimeIdentityTmpfsSize > maxRuntimeIdentityTmpfsSizeBytes {
+		return fmt.Errorf("%s.runtime_identity_tmpfs_size must not exceed %d bytes", field, maxRuntimeIdentityTmpfsSizeBytes)
+	}
 	return nil
+}
+
+func (c ExecutionConfig) EffectiveRuntimeIdentityTmpfsSize() int64 {
+	if c.RuntimeIdentityTmpfsSize <= 0 {
+		return defaultRuntimeIdentityTmpfsSizeBytes
+	}
+	return c.RuntimeIdentityTmpfsSize
 }
 
 func (s SignerVerifierConfig) Validate(field string) error {

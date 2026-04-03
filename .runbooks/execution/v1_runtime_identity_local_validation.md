@@ -193,6 +193,8 @@ It:
 - returns the configured JWT
 - stays stateless request -> response only
 
+This HTTP request/response shape is reference-helper behavior only. It is not part of the platform runtime-identity contract.
+
 Start it on the local host:
 
 ```bash
@@ -248,10 +250,10 @@ Use these important values:
 - publish request:
   - `constraints.network_access = true`
 - submit env:
-  - `REFERENCE_IDENTITY_URL=http://host.docker.internal:18081`
+  - `REFERENCE_IDENTITY_URL=http://<container-reachable-identity-host>:18081`
   - `REFERENCE_SECRET_PATH=secret/data/runtime-identity-reference`
 
-If `host.docker.internal` is not reachable in your container runtime, replace it with any host or service address that the workload container can reach without changing platform code.
+Set `REFERENCE_IDENTITY_URL` to any host or service address that the workload container can reach without changing platform code. `host.docker.internal` may work in some runtimes, but it is not the default assumption for this runbook.
 
 The workload then runs this real local flow:
 

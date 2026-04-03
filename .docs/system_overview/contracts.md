@@ -177,8 +177,14 @@ For the current bounded execution slice:
     - `/monolith/runtime-identity/endpoint`
     - `/monolith/runtime-identity/vault-token`
   - be writable
+  - be memory-backed tmpfs, not host-backed staging
   - be ES-owned and not caller-controlled
   - remain outside `invocation.mounts`
+- ES must clean failed-submit staging before returning an error
+- successful-submit payload and run staging currently remains under `execution.staging_root_dir/<run_id>/` unless removed externally in the current slice, but the reserved runtime-identity workspace must not be persisted there
+- `/monolith/run` is a host-backed writable execution workspace in the current slice and is not guaranteed non-sensitive
+- `/monolith/staged` and caller-visible `/monolith/mounts/...` are host-backed copies of governed artifact content in the current slice
+- ES verifies artifact integrity, trust facts, mount structure, and archive safety, but does not semantically inspect payloads or mount contents for secrecy
 - ES must also inject `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
 
 ES must not:
