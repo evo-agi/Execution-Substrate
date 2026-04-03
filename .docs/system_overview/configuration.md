@@ -189,7 +189,7 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
 - `verification.workload_identity_binding.*`
 - `workload_vault_auth.default_mode`
 - `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds` when submit is enabled
-- `execution.staging_root_dir`, `execution.base_image`, `execution.workload_identity_endpoint_host_path` when submit is enabled
+- `execution.staging_root_dir`, `execution.base_image` when submit is enabled
 
 ### Required external dependencies
 
@@ -199,7 +199,6 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
 - Nomad for real execution submit
 - Docker under Nomad for container runtime
 - workload-zone Vault config available through ACS -> ARS
-- one local Unix-socket workload identity endpoint available on the ES host when submit is enabled
 
 ### Minimal valid configuration
 
@@ -214,10 +213,8 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.base_image`
-  - `execution.workload_identity_endpoint_host_path`
-- `execution.workload_identity_endpoint_host_path` must be an absolute path to a Unix socket named `endpoint.sock` on the ES host
-- when submit is enabled, ES startup also proves that the configured execution substrate can expose that mounted host socket inside the workload container
-- if endpoint validation or runtime exposure probing fails, ES startup fails explicitly; there is no fallback mode for this slice
+- the runtime identity contract no longer requires ES-local identity plumbing configuration
+- ES reserves `/monolith/runtime-identity/` inside the workload container for topology-neutral identity plumbing
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 
 Minimal vault-auth example:

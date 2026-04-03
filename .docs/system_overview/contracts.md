@@ -170,17 +170,16 @@ For the current bounded execution slice:
 - each runtime mount `target_path` must be absolute, already cleaned, and remain under `/monolith/mounts/`
 - ES must stage mount artifacts per run, extract them safely, and bind-mount the extracted directory into the task as read-only
 - ES must reject overlapping target paths, unsafe archives, and per-mount or total size-limit violations
-- ES may add exactly one reserved workload-identity endpoint mount
-- the reserved identity mount must:
-  - accept one configured absolute host path to a Unix socket named `endpoint.sock`
-  - mount only the containing host directory read-only
-  - expose the endpoint at the fixed in-container path `/monolith/runtime-identity/endpoint.sock`
-  - be read-only
+- ES may add exactly one reserved runtime-identity workspace mount
+- the reserved runtime-identity workspace must:
+  - be mounted at `/monolith/runtime-identity/`
+  - expose the reserved runtime interface paths:
+    - `/monolith/runtime-identity/endpoint`
+    - `/monolith/runtime-identity/vault-token`
+  - be writable
   - be ES-owned and not caller-controlled
   - remain outside `invocation.mounts`
-- when submit is configured, ES must validate the configured endpoint path at startup and again at submit time
-- when submit is configured, ES must run one startup-only behavior probe that proves the configured execution substrate can expose the mounted endpoint inside the workload container
-- ES must also inject `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint.sock`
+- ES must also inject `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
 
 ES must not:
 
@@ -191,11 +190,10 @@ ES must not:
 - accept host-path or dynamic mount sources
 - accept writable runtime mounts
 - use mounts as an identity, secret, or orchestration channel
-- widen the single reserved workload-identity endpoint mount into a general external-mount facility
+- widen the single reserved runtime-identity workspace into a general external-mount facility
 - inject credentials or endpoint-derived secret material through environment variables
 - branch on OS or runtime identity platform type
-- introduce fallback behavior when endpoint validation or exposure probing fails
-- move endpoint capability probing into lifecycle handlers, background workers, or post-submit business logic
+- introduce fallback behavior when runtime identity contract requirements are not met
 
 ES must not:
 

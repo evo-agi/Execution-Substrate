@@ -40,7 +40,7 @@ It exists for cases where a slice depends on the execution substrate behaving a 
 
 Examples include:
 
-- proving that a mounted Unix socket is actually usable inside a workload container
+- proving that a topology-specific runtime interface is actually usable inside a workload container
 
 Runtime capability probes are used at:
 
@@ -115,8 +115,8 @@ Probes do not define new behavior on their own and must not silently widen a ser
 
 For the bounded runtime-identity plumbing slice:
 
-- static validation proves that the configured endpoint path is a Unix socket with the required path contract
-- the runtime capability probe proves that the mounted socket is actually usable inside the workload container
-- if that capability cannot be proven, ES startup fails explicitly
+- static validation proves that caller mounts do not overlap the reserved runtime-identity workspace and paths
+- no dedicated runtime capability probe is required in the current slice because ES no longer depends on topology-specific host plumbing
+- if a future plumbing slice adds topology-specific behavior again, it must probe the reserved runtime interface by behavior rather than branch on OS labels
 
 This keeps the slice behavior-based, deterministic, and consistent across environments without introducing OS-based branching.

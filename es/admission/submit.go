@@ -36,10 +36,11 @@ type nomadJobRegisterResponse struct {
 }
 
 type stagedPayload struct {
-	rootDir    string
-	payloadDir string
-	runDir     string
-	mounts     []stagedRuntimeMount
+	rootDir            string
+	payloadDir         string
+	runDir             string
+	runtimeIdentityDir string
+	mounts             []stagedRuntimeMount
 }
 
 func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult, *Error) {
@@ -107,14 +108,6 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	if endpointErr := ValidateIdentityEndpointPath(s.cfg.Execution.WorkloadIdentityEndpointHostPath); endpointErr != nil {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeExecutionRuntimeUnavailable,
-			Message: endpointErr.Error(),
-		}
-	}
-
 	trustModel := s.currentTrustModel()
 	if trustModel == nil {
 		return SubmitResult{}, &Error{
@@ -242,19 +235,24 @@ func (s *Service) stagePayload(runID string, payloadBytes []byte) (stagedPayload
 	stageRoot := filepath.Join(s.cfg.Execution.StagingRootDir, runID)
 	payloadDir := filepath.Join(stageRoot, "payload")
 	runDir := filepath.Join(stageRoot, "run")
+	runtimeIdentityDir := filepath.Join(stageRoot, "runtime-identity")
 	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
 		return stagedPayload{}, err
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return stagedPayload{}, err
 	}
+	if err := os.MkdirAll(runtimeIdentityDir, 0o755); err != nil {
+		return stagedPayload{}, err
+	}
 	if err := os.WriteFile(filepath.Join(payloadDir, "artifact.tar.gz"), payloadBytes, 0o600); err != nil {
 		return stagedPayload{}, err
 	}
 	return stagedPayload{
-		rootDir:    stageRoot,
-		payloadDir: payloadDir,
-		runDir:     runDir,
+		rootDir:            stageRoot,
+		payloadDir:         payloadDir,
+		runDir:             runDir,
+		runtimeIdentityDir: runtimeIdentityDir,
 	}, nil
 }
 
@@ -302,6 +300,7 @@ func buildNomadJobSpec(
 	wrapper := strings.Join([]string{
 		"set -eu",
 		"mkdir -p /monolith/run/work",
+		"mkdir -p " + runtimeIdentityWorkspaceTargetDir,
 		"tar -xzf /monolith/staged/artifact.tar.gz -C /monolith/run/work",
 		"chmod +x /monolith/run/work/entrypoint",
 		"if [ \"$EXEC_TIMEOUT_SECONDS\" -gt 0 ]; then",
@@ -335,9 +334,9 @@ func buildNomadJobSpec(
 		},
 		map[string]any{
 			"type":     "bind",
-			"source":   runtimeIdentityEndpointMountSource(cfg.Execution.WorkloadIdentityEndpointHostPath),
-			"target":   runtimeIdentityEndpointTargetDir,
-			"readonly": true,
+			"source":   stage.runtimeIdentityDir,
+			"target":   runtimeIdentityWorkspaceTargetDir,
+			"readonly": false,
 		},
 	}
 

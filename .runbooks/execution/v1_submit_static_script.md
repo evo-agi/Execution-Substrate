@@ -67,10 +67,9 @@ The environment must already satisfy these assumptions:
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.base_image`
-  - `execution.workload_identity_endpoint_host_path`
-- `execution.workload_identity_endpoint_host_path` points to a local Unix socket named `endpoint.sock` that exposes the external workload identity endpoint.
-  - ES does not read credentials from it.
-  - ES mounts its containing directory read-only so the workload sees it at `/monolith/runtime-identity/endpoint.sock`.
+- ES reserves `/monolith/runtime-identity/` inside the workload container for runtime identity plumbing.
+  - ES does not provide credentials there.
+  - the workload or workload-local helper may create `/monolith/runtime-identity/endpoint` and later `/monolith/runtime-identity/vault-token`.
 - The Nomad client has the Docker driver available and bind mounts enabled.
   - The minimal ES slice depends on Docker bind mounts for staged payload execution.
   - In Nomad client config this means `docker.volumes.enabled = true`.
@@ -507,7 +506,7 @@ Common causes:
 - artifact type is not `static-script`
 - `required_capabilities` is not empty
 - auth mode resolves to `cgs_proof_legacy`
-- runtime-identity endpoint validation or startup capability probing failed when submit is configured
+- runtime-identity workspace reservation conflicted with caller mounts or runtime path assumptions
 
 How to debug:
 

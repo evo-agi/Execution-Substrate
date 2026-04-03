@@ -7,16 +7,16 @@
 
 Submit the reference runtime-identity workload end to end through the existing governed execution path:
 
-`AGS publish -> ARS store/register -> ES submit -> Nomad/Docker run -> workload obtains identity from mounted endpoint -> workload authenticates to Vault -> workload reads secret -> observable logs + exit code`
+`AGS publish -> ARS store/register -> ES submit -> Nomad/Docker run -> workload creates a local identity bridge in /monolith/runtime-identity -> workload authenticates to Vault -> workload reads secret -> observable logs + exit code`
 
 This runbook does not change platform behavior. It uses the existing runtime identity contract:
 
 - ES passes non-secret Vault auth metadata only
-- ES exposes one mounted workload identity endpoint only
+- ES reserves `/monolith/runtime-identity/` only
 - workload obtains identity externally
 - workload authenticates to Vault locally
 
-For a minimal local validation path using Vault dev mode plus a static-JWT Unix-socket adapter, see:
+For a minimal local validation path using Vault dev mode plus a simple HTTP identity adapter, see:
 
 - `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md`
 
@@ -42,7 +42,8 @@ All prerequisites from `/Users/ds/Repositories/Execution-Platform/.runbooks/exec
 
 - ES base image must include `python3`
 - the publish request must set `constraints.network_access = true`
-- the mounted workload identity endpoint must implement the reference JSON-line protocol documented in:
+- the submit request must include `REFERENCE_IDENTITY_URL`
+- the workload-local identity bridge protocol is documented in:
   - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md`
 - `VAULT_ADDR` must resolve to a Vault-compatible HTTP endpoint reachable from the workload container
 - the configured Vault endpoint must accept:
@@ -59,11 +60,12 @@ These helpers are reference tooling only. They are not platform components.
 
 ## 4. Optional Local Reference Helpers
 
-Start the reference identity endpoint on the ES host:
+Start the reference identity endpoint:
 
 ```bash
 python3 /Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py \
-  --socket /abs/path/to/endpoint.sock \
+  --http-bind 0.0.0.0 \
+  --http-port 18081 \
   --audience vault \
   --jwt reference-runtime-identity-jwt
 ```
@@ -121,7 +123,7 @@ payload = {
         "intent_digest": os.environ["INTENT_DIGEST"],
         "runtime_interface": {
             "parameters": [],
-            "environment_variables": ["REFERENCE_SECRET_PATH", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY"],
+            "environment_variables": ["REFERENCE_IDENTITY_URL", "REFERENCE_SECRET_PATH", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY"],
             "required_capabilities": []
         }
     },
@@ -191,6 +193,7 @@ payload = {
         "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
         "output_id": os.environ["OUTPUT_ID"],
         "env": {
+            "REFERENCE_IDENTITY_URL": "http://host.docker.internal:18081",
             "REFERENCE_SECRET_PATH": "secret/data/runtime-identity-reference"
         }
     },
@@ -204,6 +207,8 @@ payload = {
 print(json.dumps(payload))
 PY
 ```
+
+If `host.docker.internal` is not reachable from your container runtime, replace it with any identity-service address the workload container can reach.
 
 Submit and extract `RUN_ID`, `NOMAD_JOB_ID`, and `NOMAD_EVAL_ID` exactly as in:
 

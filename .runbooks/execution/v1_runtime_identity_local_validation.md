@@ -7,7 +7,7 @@
 
 Validate the current runtime identity plumbing end to end using the existing Go platform plus minimal local infrastructure:
 
-`ES -> mounted endpoint socket -> reference workload -> local identity adapter -> Vault dev mode -> secret read`
+`ES -> runtime-identity workspace -> reference workload local bridge -> local identity adapter -> Vault dev mode -> secret read`
 
 This runbook is intentionally local and non-production:
 
@@ -33,7 +33,7 @@ This runbook adds only:
 - a local Vault dev server
 - one locally generated RSA keypair for JWT signing
 - one static RS256 JWT
-- one local Unix-socket identity adapter
+- one local HTTP identity adapter
 
 You also need:
 
@@ -188,19 +188,19 @@ Use the existing minimal adapter:
 
 It:
 
-- listens on a Unix socket
-- accepts the reference workload JSON-line request
+- listens over HTTP
+- accepts the reference workload audience request
 - returns the configured JWT
 - stays stateless request -> response only
 
-Start it on the ES host:
+Start it on the local host:
 
 ```bash
-export RI_ENDPOINT_SOCKET="/tmp/endpoint.sock"
-rm -f "$RI_ENDPOINT_SOCKET"
+export RI_IDENTITY_PORT="18081"
 
 python3 /Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py \
-  --socket "$RI_ENDPOINT_SOCKET" \
+  --http-bind 0.0.0.0 \
+  --http-port "$RI_IDENTITY_PORT" \
   --audience vault \
   --jwt "$(cat "$RI_LOCAL_DIR/runtime-identity.jwt")"
 ```
@@ -209,7 +209,7 @@ Leave that running in its own terminal.
 
 ## 5. ES Config Snippet
 
-The only local runtime identity plumbing change needed in ES config is the host socket path and a base image with `python3`.
+The only local runtime identity plumbing requirement in ES config is a base image with `python3`.
 
 Example execution snippet:
 
@@ -222,8 +222,7 @@ Example execution snippet:
   },
   "execution": {
     "staging_root_dir": "/tmp/es-stage",
-    "base_image": "python:3.13-alpine",
-    "workload_identity_endpoint_host_path": "/tmp/endpoint.sock"
+    "base_image": "python:3.13-alpine"
   }
 }
 ```
@@ -249,12 +248,15 @@ Use these important values:
 - publish request:
   - `constraints.network_access = true`
 - submit env:
+  - `REFERENCE_IDENTITY_URL=http://host.docker.internal:18081`
   - `REFERENCE_SECRET_PATH=secret/data/runtime-identity-reference`
+
+If `host.docker.internal` is not reachable in your container runtime, replace it with any host or service address that the workload container can reach without changing platform code.
 
 The workload then runs this real local flow:
 
-1. connect to `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
-2. receive the static RS256 JWT from the Unix-socket adapter
+1. create a local bridge at `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+2. obtain the static RS256 JWT through that bridge
 3. call `POST $VAULT_ADDR/v1/auth/jwt/login`
 4. receive a real Vault token from Vault dev mode
 5. call `GET $VAULT_ADDR/v1/secret/data/runtime-identity-reference`
@@ -282,26 +284,25 @@ Expected final JSON line:
 
 This proves:
 
-- socket mount worked
-- the workload reached the mounted endpoint
+- the runtime identity workspace was usable
+- the workload created and reached the reserved local endpoint
 - the adapter returned a JWT
 - Vault auth worked
 - the secret read worked
 
 ## 8. Failure Guide
 
-### Socket not reachable
+### Identity bridge not reachable
 
 What it means:
 
-- the workload could not use the mounted Unix socket
+- the workload could not create or use the reserved local endpoint
 
 Common causes:
 
-- `/tmp/endpoint.sock` does not exist
-- ES points at the wrong host path
-- adapter is not running
-- container runtime cannot expose the mounted socket correctly
+- `REFERENCE_IDENTITY_URL` is missing or wrong
+- the local adapter is not running
+- the workload could not create `/monolith/runtime-identity/endpoint`
 
 ### JWT not returned
 

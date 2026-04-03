@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -36,10 +35,10 @@ import (
 
 const (
 	executionWorkspaceRoot             = "/Users/ds/Repositories/Execution-Platform"
-	workloadIdentityEndpointTargetDir  = "/monolith/runtime-identity"
+	workloadIdentityWorkspaceTargetDir = "/monolith/runtime-identity"
 	workloadIdentityEndpointEnvKey     = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	workloadIdentityEndpointEnvValue   = "unix:///monolith/runtime-identity/endpoint.sock"
-	workloadIdentityEndpointTargetPath = "/monolith/runtime-identity/endpoint.sock"
+	workloadIdentityEndpointEnvValue   = "unix:///monolith/runtime-identity/endpoint"
+	workloadIdentityEndpointTargetPath = "/monolith/runtime-identity/endpoint"
 )
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
@@ -190,12 +189,13 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected network_mode=none, got %#v", networkMode)
 	}
 
-	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityEndpointTargetDir)
-	if source, ok := mountConfig["source"].(string); !ok || source != filepath.Dir(stack.identityEndpoint.path) {
-		t.Fatalf("expected reserved identity mount source %q, got %#v", filepath.Dir(stack.identityEndpoint.path), mountConfig["source"])
+	mountConfig := findTaskBindMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
+	source, ok := mountConfig["source"].(string)
+	if !ok || !strings.HasSuffix(source, string(filepath.Separator)+"runtime-identity") {
+		t.Fatalf("expected reserved runtime identity workspace source, got %#v", mountConfig["source"])
 	}
-	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
-		t.Fatalf("expected readonly identity endpoint mount, got %#v", mountConfig["readonly"])
+	if readonly, ok := mountConfig["readonly"].(bool); !ok || readonly {
+		t.Fatalf("expected writable runtime identity workspace mount, got %#v", mountConfig["readonly"])
 	}
 
 	taskConfig := job.task(t)
@@ -244,25 +244,42 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 }
 
-func TestWorkloadCanAccessMockWorkloadIdentityEndpointFromContainer(t *testing.T) {
-	rootDir := newShortSocketTempDir(t, "es-ri-")
-	endpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
-	t.Cleanup(func() { endpoint.shutdown(t) })
-
+func TestWorkloadCanCreateAndUseLocalRuntimeIdentityEndpointFromContainer(t *testing.T) {
+	rootDir := t.TempDir()
 	command := exec.Command(
 		"docker", "run", "--rm",
-		"-v", filepath.Dir(endpoint.path)+":"+workloadIdentityEndpointTargetDir+":ro",
+		"-v", rootDir+":"+workloadIdentityWorkspaceTargetDir,
 		"-e", workloadIdentityEndpointEnvKey+"="+workloadIdentityEndpointEnvValue,
 		"python:3.13-alpine",
 		"sh", "-lc",
 		`python3 - <<'PY'
 import os
 import socket
+import threading
 
 endpoint = os.environ["MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"]
 if not endpoint.startswith("unix://"):
     raise SystemExit(f"unexpected endpoint: {endpoint}")
 path = endpoint[len("unix://"):]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+try:
+    os.remove(path)
+except FileNotFoundError:
+    pass
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(1)
+
+def serve():
+    connection, _ = server.accept()
+    connection.sendall(b"identity-ok\n")
+    connection.close()
+    server.close()
+
+thread = threading.Thread(target=serve, daemon=True)
+thread.start()
+
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 client.settimeout(5)
 client.connect(path)
@@ -274,10 +291,7 @@ PY`,
 	output, err := command.CombinedOutput()
 	logs := string(output)
 	if err != nil {
-		if strings.Contains(logs, "Not supported") {
-			t.Skipf("docker runtime does not expose bind-mounted unix sockets as live sockets in this environment: %s", strings.TrimSpace(logs))
-		}
-		t.Fatalf("docker workload identity endpoint smoke failed: %v output=%s", err, strings.TrimSpace(logs))
+		t.Fatalf("docker runtime identity workspace smoke failed: %v output=%s", err, strings.TrimSpace(logs))
 	}
 	if !strings.Contains(logs, "identity-ok") || !strings.Contains(logs, "ENDPOINT-ACCESS-OK") {
 		t.Fatalf("expected workload identity endpoint access markers, got %q", logs)
@@ -455,89 +469,11 @@ func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
 	assertErrorResponseCode(t, response, http.StatusConflict, "mount_conflict")
 }
 
-func TestNewESRejectsNonSocketWorkloadIdentityEndpointPath(t *testing.T) {
-	stack := startDependencyStack(t, stackOptions{})
-	defer stack.shutdownAll(t)
-
-	nomad := startNomadHarness(t, t.TempDir())
-	defer nomad.shutdown(t)
-
-	badEndpointPath := filepath.Join(t.TempDir(), "endpoint.sock")
-	if err := os.WriteFile(badEndpointPath, []byte("not-a-socket"), 0o600); err != nil {
-		t.Fatalf("write invalid workload identity endpoint path: %v", err)
-	}
-
-	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
-		cfg.Nomad = esconfig.NomadConfig{
-			BaseURL:        nomad.baseURL(),
-			Datacenter:     "dc1",
-			TimeoutSeconds: 5,
-		}
-		cfg.Execution = esconfig.ExecutionConfig{
-			StagingRootDir:                   filepath.Join(t.TempDir(), "es-stage"),
-			BaseImage:                        "alpine:3.20",
-			WorkloadIdentityEndpointHostPath: badEndpointPath,
-		}
-	})
-
-	if _, err := esapp.New(cfg); err == nil || !strings.Contains(err.Error(), "must reference a unix socket") {
-		t.Fatalf("expected non-socket workload identity endpoint validation error, got %v", err)
-	}
-}
-
-func TestESStartFailsWhenIdentityEndpointPathDriftsBeforeStartup(t *testing.T) {
-	stack := startDependencyStack(t, stackOptions{})
-	defer stack.shutdownAll(t)
-
-	nomad := startNomadHarness(t, t.TempDir())
-	defer nomad.shutdown(t)
-
-	rootDir := newShortSocketTempDir(t, "es-ri-start-")
-	endpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
-	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
-		cfg.Nomad = esconfig.NomadConfig{
-			BaseURL:        nomad.baseURL(),
-			Datacenter:     "dc1",
-			TimeoutSeconds: 5,
-		}
-		cfg.Execution = esconfig.ExecutionConfig{
-			StagingRootDir:                   filepath.Join(t.TempDir(), "es-stage"),
-			BaseImage:                        "alpine:3.20",
-			WorkloadIdentityEndpointHostPath: endpoint.path,
-		}
-	})
-
-	service, err := esapp.New(cfg)
-	if err != nil {
-		endpoint.shutdown(t)
-		t.Fatalf("build es app: %v", err)
-	}
-	endpoint.shutdown(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := service.Start(ctx); err == nil || !strings.Contains(err.Error(), "execution.workload_identity_endpoint_host_path is unavailable") {
-		t.Fatalf("expected startup validation failure after endpoint drift, got %v", err)
-	}
-}
-
-func TestSubmitFailsWhenIdentityEndpointPathDriftsAfterStartup(t *testing.T) {
-	stack := startSubmitStack(t)
-
-	stack.identityEndpoint.shutdown(t)
-
-	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
-	defer response.Body.Close()
-
-	assertErrorResponseCode(t, response, http.StatusServiceUnavailable, "execution_runtime_unavailable")
-}
-
 type submitStack struct {
 	fixture *tlsFixture
 	rootDir string
 
-	nomad            *nomadHarness
-	identityEndpoint *mockWorkloadIdentityEndpoint
+	nomad *nomadHarness
 
 	acs *acsapp.App
 	ars *arsapp.App
@@ -569,11 +505,6 @@ type submitStackOptions struct {
 	baseImage     string
 }
 
-type mockWorkloadIdentityEndpoint struct {
-	path     string
-	listener net.Listener
-}
-
 func startSubmitStack(t *testing.T) *submitStack {
 	return startSubmitStackWithOptions(t, submitStackOptions{})
 }
@@ -587,7 +518,6 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	fixture := newTLSFixture(t)
 	nomad := startNomadHarness(t, rootDir)
-	identityEndpoint := startMockWorkloadIdentityEndpoint(t, rootDir)
 
 	arsRootDir := filepath.Join(rootDir, "ars-storage")
 	if err := os.MkdirAll(arsRootDir, 0o755); err != nil {
@@ -612,7 +542,6 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		fixture:                 fixture,
 		rootDir:                 rootDir,
 		nomad:                   nomad,
-		identityEndpoint:        identityEndpoint,
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
 		outputID:                "runtime",
@@ -837,9 +766,8 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir:                   filepath.Join(rootDir, "es-stage"),
-			BaseImage:                        firstNonEmpty(opts.baseImage, "alpine:3.20"),
-			WorkloadIdentityEndpointHostPath: identityEndpoint.path,
+			StagingRootDir: filepath.Join(rootDir, "es-stage"),
+			BaseImage:      firstNonEmpty(opts.baseImage, "alpine:3.20"),
 		},
 	}
 	esService, err := esapp.New(esCfg)
@@ -847,72 +775,13 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build es app: %v", err)
 	}
 	stack.es = esService
-	startExecutionServiceOrSkipRuntimeIdentityProbe(t, esService, fixture.serverTLSConfig(t, fixture.esServerName))
+	startService(t, esService.Start, esService.Addr, fixture.serverTLSConfig(t, fixture.esServerName))
 	stack.esRunning = true
 
 	publishSubmitArtifact(t, stack, opts.networkAccess)
 
 	t.Cleanup(func() { stack.shutdownAll(t) })
 	return stack
-}
-
-func startExecutionServiceOrSkipRuntimeIdentityProbe(t *testing.T, service *esapp.App, tlsConfig *tls.Config) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if _, err := service.Start(ctx); err != nil {
-		if strings.Contains(err.Error(), "runtime identity endpoint exposure capability could not be proven") {
-			t.Skipf("runtime identity plumbing unsupported in this environment: %v", err)
-		}
-		t.Fatalf("start service: %v", err)
-	}
-	waitForHealthy(t, service.Addr(), tlsConfig)
-}
-
-func startMockWorkloadIdentityEndpoint(t *testing.T, rootDir string) *mockWorkloadIdentityEndpoint {
-	t.Helper()
-
-	socketDir := filepath.Join(rootDir, "workload-identity")
-	if err := os.MkdirAll(socketDir, 0o755); err != nil {
-		t.Fatalf("mkdir workload identity socket dir: %v", err)
-	}
-
-	socketPath := filepath.Join(socketDir, "endpoint.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen on workload identity endpoint socket: %v", err)
-	}
-	if err := os.Chmod(socketPath, 0o777); err != nil {
-		_ = listener.Close()
-		t.Fatalf("chmod workload identity endpoint socket: %v", err)
-	}
-
-	endpoint := &mockWorkloadIdentityEndpoint{
-		path:     socketPath,
-		listener: listener,
-	}
-	go func() {
-		for {
-			connection, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_, _ = connection.Write([]byte("identity-ok\n"))
-			_ = connection.Close()
-		}
-	}()
-	return endpoint
-}
-
-func (e *mockWorkloadIdentityEndpoint) shutdown(t *testing.T) {
-	t.Helper()
-	if e == nil || e.listener == nil {
-		return
-	}
-	_ = e.listener.Close()
-	_ = os.Remove(e.path)
 }
 
 func firstNonEmpty(value string, fallback string) string {
@@ -1559,7 +1428,6 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 		*step.running = false
 	}
 	s.nomad.shutdown(t)
-	s.identityEndpoint.shutdown(t)
 }
 
 func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
@@ -1568,19 +1436,6 @@ func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 	dir, err := os.MkdirTemp(executionWorkspaceRoot, prefix)
 	if err != nil {
 		t.Fatalf("create workspace temp dir: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(dir)
-	})
-	return dir
-}
-
-func newShortSocketTempDir(t *testing.T, prefix string) string {
-	t.Helper()
-
-	dir, err := os.MkdirTemp("/tmp", prefix)
-	if err != nil {
-		t.Fatalf("create short socket temp dir: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = os.RemoveAll(dir)

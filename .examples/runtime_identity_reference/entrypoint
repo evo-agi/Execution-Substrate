@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import ssl
+import threading
 import sys
 import urllib.error
 import urllib.parse
@@ -65,6 +66,77 @@ def request_identity_jwt(socket_path: str, audience: str) -> str:
     if not jwt:
         raise SystemExit("identity endpoint response did not include jwt")
     return jwt
+
+
+def request_upstream_identity_jwt(opener, identity_url: str, audience: str) -> str:
+    response = do_json_request(
+        opener,
+        "POST",
+        identity_url,
+        payload={"audience": audience},
+    )
+    jwt = str(response.get("jwt", "")).strip()
+    if not jwt:
+        raise SystemExit("upstream identity response did not include jwt")
+    return jwt
+
+
+def start_local_identity_bridge(socket_path: str, identity_url: str):
+    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+    try:
+        os.remove(socket_path)
+    except FileNotFoundError:
+        pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(socket_path)
+    server.listen()
+    os.chmod(socket_path, 0o777)
+    stop_event = threading.Event()
+    opener = make_urlopener()
+
+    def serve():
+        try:
+            while not stop_event.is_set():
+                try:
+                    connection, _ = server.accept()
+                except OSError:
+                    if stop_event.is_set():
+                        return
+                    raise
+                with connection:
+                    raw = b""
+                    while b"\n" not in raw:
+                        chunk = connection.recv(4096)
+                        if not chunk:
+                            break
+                        raw += chunk
+                    payload = json.loads(raw.decode("utf-8").strip() or "{}")
+                    audience = str(payload.get("audience", "")).strip()
+                    jwt = request_upstream_identity_jwt(opener, identity_url, audience)
+                    connection.sendall((json.dumps({"jwt": jwt}) + "\n").encode("utf-8"))
+        finally:
+            server.close()
+            try:
+                os.remove(socket_path)
+            except FileNotFoundError:
+                pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    def cleanup():
+        stop_event.set()
+        try:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(1)
+            probe.connect(socket_path)
+            probe.close()
+        except OSError:
+            pass
+        thread.join(timeout=2)
+
+    return cleanup
 
 
 def build_url(base: str, suffix: str) -> str:
@@ -140,6 +212,7 @@ def read_secret(opener, vault_addr: str, client_token: str, secret_path: str):
 
 def main() -> int:
     identity_endpoint = require_env("MONOLITH_WORKLOAD_IDENTITY_ENDPOINT")
+    identity_url = require_env("REFERENCE_IDENTITY_URL")
     vault_addr = require_env("VAULT_ADDR")
     auth_mode = require_env("MONOLITH_WORKLOAD_VAULT_AUTH_MODE")
     auth_mount = require_env("MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT")
@@ -159,7 +232,11 @@ def main() -> int:
     print(f"SECRET-PATH={secret_path}")
 
     socket_path = parse_identity_endpoint(identity_endpoint)
-    jwt = request_identity_jwt(socket_path, jwt_audience)
+    cleanup = start_local_identity_bridge(socket_path, identity_url)
+    try:
+        jwt = request_identity_jwt(socket_path, jwt_audience)
+    finally:
+        cleanup()
     print("IDENTITY-JWT-RECEIVED")
 
     opener = make_urlopener()

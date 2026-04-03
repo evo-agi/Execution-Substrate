@@ -7,15 +7,18 @@ This directory contains a reference `static-script` workload that exercises the 
 The workload:
 
 - reads `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+- creates a local bridge at the reserved runtime identity path
 - reads bounded non-secret Vault auth metadata from the environment
-- obtains a JWT from the mounted identity endpoint
+- obtains a JWT from `REFERENCE_IDENTITY_URL` through that local bridge
 - authenticates to Vault locally
 - reads one test secret from Vault
 - prints success markers and the secret message to stdout
 
-## Reference Identity Endpoint Protocol
+## Reference Identity Protocols
 
-This workload expects the mounted endpoint to speak a small JSON-line protocol over a Unix socket.
+This workload creates a Unix-socket endpoint at `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`.
+
+The local endpoint speaks a small JSON-line protocol:
 
 Request:
 
@@ -30,6 +33,18 @@ Response:
 ```
 
 The platform contract remains generic. This protocol exists only for the reference workload and its helper scripts.
+
+The upstream identity URL in `REFERENCE_IDENTITY_URL` is expected to accept:
+
+```json
+{"audience":"vault"}
+```
+
+and respond with:
+
+```json
+{"jwt":"reference-runtime-identity-jwt"}
+```
 
 ## Files
 
@@ -58,6 +73,7 @@ This produces:
   - `MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT`
   - `MONOLITH_WORKLOAD_VAULT_AUTH_ROLE`
   - `MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - `REFERENCE_IDENTITY_URL`
 
 Optional:
 

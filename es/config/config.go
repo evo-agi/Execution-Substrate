@@ -64,9 +64,8 @@ type NomadConfig struct {
 }
 
 type ExecutionConfig struct {
-	StagingRootDir                   string `json:"staging_root_dir"`
-	BaseImage                        string `json:"base_image"`
-	WorkloadIdentityEndpointHostPath string `json:"workload_identity_endpoint_host_path"`
+	StagingRootDir string `json:"staging_root_dir"`
+	BaseImage      string `json:"base_image"`
 }
 
 type VerificationConfig struct {
@@ -277,11 +276,8 @@ func (c ExecutionConfig) Validate(field string) error {
 	if strings.TrimSpace(c.BaseImage) == "" {
 		return fmt.Errorf("%s.base_image is required", field)
 	}
-	if strings.TrimSpace(c.WorkloadIdentityEndpointHostPath) == "" {
-		return fmt.Errorf("%s.workload_identity_endpoint_host_path is required", field)
-	}
-	if !filepath.IsAbs(strings.TrimSpace(c.WorkloadIdentityEndpointHostPath)) {
-		return fmt.Errorf("%s.workload_identity_endpoint_host_path must be an absolute path", field)
+	if !filepath.IsAbs(strings.TrimSpace(c.StagingRootDir)) {
+		return fmt.Errorf("%s.staging_root_dir must be an absolute path", field)
 	}
 	return nil
 }
@@ -460,6 +456,5 @@ func (c Config) SubmitConfigured() bool {
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
 		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
-		strings.TrimSpace(c.Execution.BaseImage) != "" ||
-		strings.TrimSpace(c.Execution.WorkloadIdentityEndpointHostPath) != ""
+		strings.TrimSpace(c.Execution.BaseImage) != ""
 }

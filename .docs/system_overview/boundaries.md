@@ -86,8 +86,7 @@ ES owns:
 - composition across ACS, ARS, and EGS
 - bounded Nomad submission
 - bounded Nomad-backed lifecycle projection
-- bounded runtime identity plumbing through one reserved generic workload-identity endpoint mount plus non-secret Vault auth metadata
-- startup-only validation that the configured identity endpoint path is valid and that the configured execution substrate can expose that mounted endpoint inside the workload container
+- bounded runtime identity plumbing through one reserved runtime-identity workspace plus non-secret Vault auth metadata
 
 ES must not:
 

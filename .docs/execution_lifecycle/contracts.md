@@ -117,7 +117,7 @@ ES must not translate a failed workload into a synthetic ES-specific lifecycle p
 
 Runtime identity plumbing does not change this rule:
 
-- failure to reach the mounted workload-identity endpoint
+- failure to reach or populate the reserved local workload-identity interface
 - failure to obtain identity material
 - failure to authenticate to Vault
 
