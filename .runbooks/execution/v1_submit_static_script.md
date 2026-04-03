@@ -12,6 +12,8 @@ Submit one real workload end to end through the governed execution path:
 
 This runbook proves the minimal real execution slice only. It does not cover durable run records, ES log/status APIs, cancel flows, sync waiting, or broader runtime orchestration.
 
+For a single-command bounded loop over the same public AGS and ES APIs, use `scripts/60_execute_loop.sh` with `.examples/execution_loop/static_script_success.input.json`. The detailed steps below remain the authoritative breakdown of what that helper does.
+
 For a reference workload that exercises the bounded runtime-identity contract on top of the same static-script execution model, see:
 
 - `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md`

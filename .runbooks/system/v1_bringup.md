@@ -213,6 +213,8 @@ Treat failures in this section as diagnostic signals. They indicate which bounda
 
 If you prefer wrappers instead of typing the commands manually, you may use `scripts/10_health_check.sh`, `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, and `scripts/50_lifecycle.sh`. These helpers are direct command wrappers only. They do not generate configs, infer topology, or manage service state.
 
+If you want one bounded execution loop after the stack is already up, use `scripts/60_execute_loop.sh` with a single input spec such as `.examples/execution_loop/static_script_success.input.json`. That helper still calls the public AGS and ES APIs directly; it does not orchestrate services or introduce hidden state.
+
 ### Step 1 — Verify service health
 
 ```bash
