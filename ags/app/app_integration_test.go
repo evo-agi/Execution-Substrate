@@ -28,6 +28,7 @@ import (
 	acsconfig "execution-platform/acs/config"
 	agsapp "execution-platform/ags/app"
 	agsconfig "execution-platform/ags/config"
+	arsapi "execution-platform/ars/api"
 	arsapp "execution-platform/ars/app"
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
@@ -62,15 +63,15 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	if payload.ArtifactDigest != stack.publishResponse.ArtifactDigest {
 		t.Fatalf("unexpected artifact digest: %q", payload.ArtifactDigest)
 	}
-	if strings.TrimSpace(stack.publishResponse.EvidenceDigest) == "" {
-		t.Fatalf("expected evidence digest in publish response")
+	if strings.TrimSpace(stack.publishResponse.DescriptorDigest) == "" {
+		t.Fatalf("expected descriptor digest in publish response")
 	}
-	entry := stack.loadIndexEntry(t)
-	if entry.EvidenceDigest != stack.publishResponse.EvidenceDigest {
-		t.Fatalf("expected index evidence digest %q, got %q", stack.publishResponse.EvidenceDigest, entry.EvidenceDigest)
+	entry, descriptor := stack.loadDescriptor(t)
+	if entry.DescriptorDigest != stack.publishResponse.DescriptorDigest {
+		t.Fatalf("expected index descriptor digest %q, got %q", stack.publishResponse.DescriptorDigest, entry.DescriptorDigest)
 	}
 	var evidence evidencev1.ArtifactEvidence
-	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	if evidence.Artifact.ArtifactDigest != stack.publishResponse.ArtifactDigest {
 		t.Fatalf("unexpected evidence artifact digest: %q", evidence.Artifact.ArtifactDigest)
 	}
@@ -150,9 +151,9 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 		t.Fatalf("decode publish response: %v", err)
 	}
 
-	entry := stack.loadIndexEntry(t)
+	_, descriptor := stack.loadDescriptor(t)
 	var evidence map[string]any
-	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	publication := evidence["publication"].(map[string]any)
 	if got := publication["builder_service"]; got != "artifact-governance" {
 		t.Fatalf("expected builder_service artifact-governance, got %v", got)
@@ -180,6 +181,9 @@ func TestPublishResponseAndIndexAreEvidenceOnly(t *testing.T) {
 	if strings.Contains(string(stack.publishResponseBody), `"compatibility"`) || strings.Contains(string(stack.publishResponseBody), `"legacy_signing_v2"`) {
 		t.Fatalf("expected publish response to omit legacy compatibility inventory, got %s", strings.TrimSpace(string(stack.publishResponseBody)))
 	}
+	if !strings.Contains(string(stack.publishResponseBody), `"descriptor_digest"`) {
+		t.Fatalf("expected publish response to expose descriptor digest, got %s", strings.TrimSpace(string(stack.publishResponseBody)))
+	}
 
 	indexBytes, err := os.ReadFile(stack.indexPath)
 	if err != nil {
@@ -187,6 +191,9 @@ func TestPublishResponseAndIndexAreEvidenceOnly(t *testing.T) {
 	}
 	if strings.Contains(string(indexBytes), `"compatibility"`) || strings.Contains(string(indexBytes), `"legacy_signing_v2"`) {
 		t.Fatalf("expected artifact index to omit legacy compatibility inventory, got %s", strings.TrimSpace(string(indexBytes)))
+	}
+	if !strings.Contains(string(indexBytes), `"descriptor_digest"`) {
+		t.Fatalf("expected artifact index to be descriptor-centered, got %s", strings.TrimSpace(string(indexBytes)))
 	}
 }
 
@@ -293,14 +300,14 @@ func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
 
-	entry := stack.loadIndexEntry(t)
+	_, descriptor := stack.loadDescriptor(t)
 	var evidence map[string]any
-	readJSONBlob(t, stack.rootDir, entry.EvidenceDigest, &evidence)
+	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	admissionPayload := evidence["admission"].(map[string]any)
 	derivation := admissionPayload["derivation"].(map[string]any)
 	derivation["policy_version"] = "tampered"
-	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
-		entry.EvidenceDigest = stack.writeJSONBlob(t, evidence)
+	stack.mutateDescriptorAndRestartARS(t, func(descriptor *arsapi.ArtifactDescriptor) {
+		descriptor.Package.Evidence.Digest = stack.writeJSONBlob(t, evidence)
 	})
 
 	startES(t, stack)
@@ -311,8 +318,8 @@ func TestPrepareRejectsMissingEvidenceBlobAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
 
-	entry := stack.loadIndexEntry(t)
-	removeBlob(t, stack.rootDir, entry.EvidenceDigest)
+	_, descriptor := stack.loadDescriptor(t)
+	removeBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest)
 	stack.restartARS(t)
 
 	startES(t, stack)
@@ -348,11 +355,12 @@ type publishedStack struct {
 }
 
 type publishResponse struct {
-	Published      bool   `json:"published"`
-	ArtifactDigest string `json:"artifact_digest"`
-	EvidenceDigest string `json:"evidence_digest"`
-	ManifestDigest string `json:"manifest_digest"`
-	PayloadDigest  string `json:"payload_digest"`
+	Published        bool   `json:"published"`
+	ArtifactDigest   string `json:"artifact_digest"`
+	DescriptorDigest string `json:"descriptor_digest"`
+	EvidenceDigest   string `json:"evidence_digest"`
+	ManifestDigest   string `json:"manifest_digest"`
+	PayloadDigest    string `json:"payload_digest"`
 }
 
 func startPublishedStack(t *testing.T) *publishedStack {
@@ -857,6 +865,15 @@ func (s *publishedStack) loadIndexEntry(t *testing.T) arsindex.Entry {
 	return entry
 }
 
+func (s *publishedStack) loadDescriptor(t *testing.T) (arsindex.Entry, arsapi.ArtifactDescriptor) {
+	t.Helper()
+
+	entry := s.loadIndexEntry(t)
+	var descriptor arsapi.ArtifactDescriptor
+	readJSONBlob(t, s.rootDir, entry.DescriptorDigest, &descriptor)
+	return entry, descriptor
+}
+
 func (s *publishedStack) replaceIndexedBlobAndRestartARS(t *testing.T, mutate func(*arsindex.Entry)) {
 	t.Helper()
 
@@ -887,6 +904,20 @@ func (s *publishedStack) replaceIndexedBlobAndRestartARS(t *testing.T, mutate fu
 	}
 
 	s.restartARS(t)
+}
+
+func (s *publishedStack) mutateDescriptorAndRestartARS(t *testing.T, mutate func(*arsapi.ArtifactDescriptor)) {
+	t.Helper()
+
+	entry, descriptor := s.loadDescriptor(t)
+	mutate(&descriptor)
+	updatedDescriptorDigest := s.writeJSONBlob(t, descriptor)
+	s.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
+		entry.DescriptorDigest = updatedDescriptorDigest
+	})
+	if s.publishResponse.DescriptorDigest == entry.DescriptorDigest {
+		s.publishResponse.DescriptorDigest = updatedDescriptorDigest
+	}
 }
 
 func (s *publishedStack) writeJSONBlob(t *testing.T, value any) string {

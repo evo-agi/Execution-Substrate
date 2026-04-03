@@ -158,7 +158,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` and compatibility-heavy authorize inputs and outputs.
-- The current `artifact_digest == payload_digest` assumption remains active in AGS and ARS publication/storage, but ES now reads explicit `payload_digest` from aggregate evidence; the equality should still be read as a current slice rule rather than a settled architectural truth.
+- The current `artifact_digest == payload_digest` assumption remains active only in the bounded AGS publish path; ARS registration now centers a descriptor that carries explicit payload discoverability, and ES follows that descriptor rather than treating the equality as architectural truth.
 
 ## 10. Relationship to detailed docs
 

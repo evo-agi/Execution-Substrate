@@ -203,6 +203,7 @@ Current response shape:
 
 - `published`
 - `artifact_digest`
+- `descriptor_digest`
 - `evidence_digest`
 - `manifest_digest`
 - `payload_digest`
@@ -220,6 +221,7 @@ Current response shape:
   - payload bytes
   - aggregate artifact evidence
   - manifest
+  - artifact descriptor
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
 - AGS derives publication caller binding from the authenticated caller and always emits `publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS enforces bounded cross-field consistency before publishing, including:
@@ -232,6 +234,7 @@ Current response shape:
 - AGS publishes only through ARS:
   - `PUT /v1/blobs/{digest}`
   - `POST /v1/artifacts:register`
+  - registration is now descriptor-centered rather than tuple-centered
 
 ### Ownership boundary
 
@@ -249,18 +252,18 @@ Current response shape:
 `Reopened redesign seam`
 
 - The AGS publish contract and fact-assembly model are explicitly reopened in `PLANS.md`.
-- The current digest tuple, fact bundle, and caller-binding model are live today, but they are not automatically the target end-state.
+- The current descriptor record, manifest support data, and caller-binding model are live today, but they are not automatically the target end-state.
 
 ## 6. ARS Storage And Discoverability Contract
 
 ### Purpose
 
-Provide content-addressed blob storage, integrity enforcement, artifact registration, and fact discoverability.
+Provide content-addressed blob storage, integrity enforcement, artifact registration, and descriptor-driven discoverability.
 
 ### Current producers / consumers
 
 - `AGS` is the fixed writer for the current ARS write boundary.
-- `ES` consumes ARS for evidence, payload bytes, manifest reads when needed, and workload-zone vault blob reads.
+- `ES` consumes ARS for descriptor discovery, evidence and payload blob reads, manifest reads when needed, and workload-zone vault blob reads.
 - Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes.
 
 ### Public surface
@@ -277,15 +280,16 @@ Read surface:
 - `HEAD /v1/blobs/{digest}`
 - `GET /v1/blobs/{digest}:bytes`
 - `GET /v1/blobs/{digest}:json`
+- `GET /v1/artifacts/{artifact_digest}/descriptor`
 - `GET /v1/artifacts/{artifact_digest}/evidence`
 - `GET /v1/artifacts/{artifact_digest}/manifest`
 
-Current registration record:
+Current registration record is descriptor-centered:
 
 - `artifact_digest`
-- `evidence_digest`
-- `payload_digest`
-- optional `manifest_digest`
+- `descriptor_digest`
+- descriptor `artifact` identity
+- descriptor `package` references for evidence, payload, and supporting data such as manifest
 
 ### Current invariants
 
@@ -299,14 +303,16 @@ Current registration record:
 - `GET /v1/blobs/{digest}:bytes` and `GET /v1/blobs/{digest}:json` both re-read and re-verify blob integrity on the read path.
 - `GET /v1/blobs/{digest}:json` additionally requires the blob bytes to be valid JSON.
 - Artifact reads become visible only after successful registration.
-- ARS serves `evidence_digest` as the first-class artifact read surface at `/v1/artifacts/{artifact_digest}/evidence`.
-- ARS requires `evidence_digest` for artifact registration.
+- ARS serves the registered descriptor as the first-class artifact discoverability surface at `/v1/artifacts/{artifact_digest}/descriptor`.
+- ARS requires `descriptor_digest` for artifact registration.
+- ARS resolves `/evidence` and `/manifest` reads through the registered descriptor rather than storing those digests as first-class index fields.
 - Registration validates every referenced digest by:
   - checking digest syntax
+  - validating descriptor structure and identity fields
   - reading the referenced blob through the storage layer
   - rejecting missing or corrupted blobs
-  - requiring JSON validity for evidence and manifest blobs
-- Registration is idempotent for the same tuple and a conflict for a different tuple under the same `artifact_digest`.
+  - requiring JSON validity for the descriptor, evidence, and manifest blobs
+- Registration is idempotent for the same descriptor reference and a conflict for a different descriptor under the same `artifact_digest`.
 - ARS read paths treat referenced blob corruption as a storage failure, not as valid discoverability.
 
 ### Ownership boundary
@@ -325,7 +331,7 @@ Current registration record:
 `Reopened redesign seam`
 
 - The ARS registration and index model are explicitly reopened in `PLANS.md`.
-- The current discoverability tuple and artifact record shape are active, but must not be assumed long-term solely because ES currently consumes them.
+- The current descriptor record and discoverability shape are active, but must not be assumed long-term solely because ES currently consumes them.
 
 ## 7. ES Admission And Execution Contract
 
@@ -384,10 +390,11 @@ Current lifecycle mapping:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES admits only deployment and operator callers today.
-- `:prepare` validates request shape, fetches aggregate evidence from ARS at `/v1/artifacts/{artifact_digest}/evidence`, verifies that record with `contracts/evidence/v1`, enforces the current EGS TrustModel against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
+- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS TrustModel against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
 - `:prepare` does not create run IDs, scheduler metadata, or durable execution state.
 - ES verifies and consumes these current ARS artifact surfaces:
-  - aggregate evidence at `/v1/artifacts/{artifact_digest}/evidence`
+  - artifact descriptor at `/v1/artifacts/{artifact_digest}/descriptor`
+  - aggregate evidence blob referenced by that descriptor
   - payload bytes at `/v1/blobs/{payload_digest}:bytes`
 - ES currently depends on ACS only for `/v1/configuration/workload-zone/vault`.
 - ES currently interprets EGS `trust_model.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
@@ -398,7 +405,7 @@ Current lifecycle mapping:
   - `static-script` artifacts
   - Docker target platform when a target platform is present
   - no required runtime capabilities
-- ES currently fetches payload bytes via the explicit payload digest carried in aggregate evidence.
+- ES currently fetches payload bytes via the explicit payload reference carried in the ARS descriptor and cross-checks that reference against aggregate evidence.
 - Runtime network mode is derived directly from signed derivation constraints:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
@@ -432,7 +439,7 @@ Current lifecycle mapping:
 `Temporary compatibility edge`
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
-- AGS and ARS still publish `artifact_digest == payload_digest` in the current slice, but ES now consumes the explicit `payload_digest` field from aggregate evidence rather than depending on that equality.
+- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ARS registration no longer encodes that equality and ES follows the explicit payload reference in the descriptor instead.
 - The current container path conventions under `/monolith/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `run_id -> exec-<run_id>` mapping and single-allocation lifecycle model are current slice mechanics, not a general scheduler abstraction.
 
@@ -676,7 +683,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 - `CGS` currently returns `workload_vault_source`, which reflects startup-owned vault runtime input rather than a broader runtime resolution contract.
 - `EGS` currently returns `source_digest`, but it is advisory only and excluded from trust decisions.
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
-- `AGS` and `ARS` still publish `artifact_digest == payload_digest` in the current slice, but ES now resolves payload bytes through explicit aggregate-evidence `payload_digest`.
+- `AGS` still publishes `artifact_digest == payload_digest` in the current slice, but ES now resolves payload bytes through ARS descriptor discoverability rather than treating that equality as authoritative.
 - `ES` currently uses `/monolith/staged`, `/monolith/run`, `/monolith/runtime-identity/`, and `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 

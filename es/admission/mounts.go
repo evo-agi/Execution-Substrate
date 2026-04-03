@@ -215,12 +215,12 @@ func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egs
 }
 
 func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.TrustModel, artifactDigest string) (preparedArtifact, *Error) {
-	evidence, err := s.fetchArtifactEvidence(ctx, artifactDigest)
+	discovery, err := s.fetchArtifactDiscovery(ctx, artifactDigest)
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)
 	}
 
-	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, artifactDigest, evidence)
+	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, discovery.descriptor, discovery.evidence)
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)
 	}

@@ -125,9 +125,9 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 
 **Boundary pressure points**
 
-- The current evidence-centered registration record shapes what AGS must publish and what ES can later discover through ARS.
+- The current descriptor-centered registration record shapes what AGS must publish and what ES can later discover through ARS.
 - Artifact discoverability is not independent of the registration/index model; downstream services inherit that model.
-- AGS and ARS still publish `artifact_digest == payload_digest` in the bounded slice, but ES submit now consumes explicit `payload_digest` from aggregate evidence instead of depending on that equality.
+- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ARS no longer treats that equality as a first-class registration fact and ES follows the descriptor payload reference instead.
 
 **Temporary compatibility edges**
 
@@ -136,7 +136,7 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 **Reopened seams**
 
 - The long-term role of the current artifact registration/index model
-- Whether ARS should continue to expose the current tuple-driven discoverability contract
+- Whether ARS should continue to expose the current descriptor-driven discoverability contract
 - Whether current artifact read paths are the right ownership split between storage authority and broader choreography
 
 ## 7. AGS boundary
@@ -228,7 +228,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES currently composes multiple upstream services into one admission path, making it the main cross-boundary choreography point.
 - `:prepare` and `:submit` are intentionally bounded current surfaces, not statements that this request shape is settled architecture.
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
-- AGS and ARS still publish `artifact_digest == payload_digest` in the bounded slice, but ES submit now consumes explicit `payload_digest` from aggregate evidence instead of depending on that equality.
+- AGS still publishes `artifact_digest == payload_digest` in the bounded slice, but ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence instead of depending on that equality.
 - Runtime staging, mount validation, and reserved `/monolith/...` path handling are part ownership and part current convention.
 - ES returns and relies on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`.
 
@@ -343,7 +343,7 @@ These layers can create coupling pressure without owning domain responsibilities
 
 - `contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
 - ACS, ARS, and ES currently participate in a tight choreography around lookup, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
-- The ARS evidence-centered registration record constrains both AGS publication and ES discoverability. That storage-facing model currently reaches further into service interaction than a pure storage boundary would.
+- The ARS descriptor-centered registration record constrains both AGS publication and ES discoverability. That storage-facing model currently reaches further into service interaction than a pure storage boundary would.
 - ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions under `/monolith/...`. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
 - CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and workload vault configuration shapes.
 - ACS currently exposes a broader assignment taxonomy than the active ES path needs. That creates pressure between ACS as lookup authority and ACS as a potential broader configuration authority.
@@ -354,12 +354,12 @@ These layers can create coupling pressure without owning domain responsibilities
 - ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and `/monolith/runtime-identity` are active today but should be treated as conventions under review.
 - AGS retains request fields such as `builder_service` and `policy_decisions` in forms that help preserve the current publication slice without proving those fields belong in the long-term kernel.
 - CGS keeps `requested_by`, `record_proof`, and `workload_vault_source` behaviors that are active today but compatibility-heavy.
-- ARS exposes an evidence-centered registration record because that is the active bounded choreography, not because that specific surface is already frozen as the final storage boundary.
+- ARS exposes a descriptor-centered registration record because that is the active bounded choreography, not because that specific surface is already frozen as the final storage boundary.
 
 ## 14. Reopened redesign seams
 
 - ACS authority shape, especially the current assignment and digest indirection model
-- ARS storage, registration, and discoverability shape, including the current tuple and index contract
+- ARS storage, registration, and discoverability shape, including the current descriptor and index contract
 - AGS publication responsibility shape and its relationship to shared signed fact assembly
 - ES admission surface and runtime package boundary, including prepare/submit partitioning and package-resolution assumptions
 - EGS policy-publication shape, especially the current trust model form

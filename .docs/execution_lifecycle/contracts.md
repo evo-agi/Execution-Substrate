@@ -122,7 +122,7 @@ The response is an admission/preparation fact bundle. It includes current trust-
 
 **Current contract invariants**
 
-- `:prepare` reads the aggregate artifact-evidence record from ARS.
+- `:prepare` reads the registered artifact descriptor from ARS and follows it to the aggregate artifact-evidence blob.
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
 - `:prepare` verifies publish-time evidence and TrustModel constraints before success.
 - `:prepare` resolves workload-zone vault information through ACS and ARS before success.
@@ -243,7 +243,7 @@ Successful response is `202` JSON with these fields:
 - `:submit` is the real execution surface, but it is intentionally narrow.
 - It is async-only.
 - Its response is a bounded receipt, not a durable run model.
-- It uses explicit payload identity from aggregate evidence rather than treating `artifact_digest` as the payload locator.
+- It uses the explicit payload reference carried by the ARS descriptor and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
 
 ### Reopened seams
 

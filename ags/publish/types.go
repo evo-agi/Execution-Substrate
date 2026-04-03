@@ -81,11 +81,12 @@ type WorkloadInput struct {
 }
 
 type PublishResult struct {
-	Published      bool   `json:"published"`
-	ArtifactDigest string `json:"artifact_digest"`
-	EvidenceDigest string `json:"evidence_digest"`
-	ManifestDigest string `json:"manifest_digest,omitempty"`
-	PayloadDigest  string `json:"payload_digest"`
+	Published        bool   `json:"published"`
+	ArtifactDigest   string `json:"artifact_digest"`
+	DescriptorDigest string `json:"descriptor_digest"`
+	EvidenceDigest   string `json:"evidence_digest"`
+	ManifestDigest   string `json:"manifest_digest,omitempty"`
+	PayloadDigest    string `json:"payload_digest"`
 }
 
 type HealthSnapshot struct {

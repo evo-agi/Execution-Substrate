@@ -437,10 +437,20 @@ func TestArtifactRegistrationRejectsDifferentTuple(t *testing.T) {
 	alternateManifest := []byte(`{"schema_version":"v1","name":"alternate"}`)
 	alternateManifestDigest := store.DigestBytes(alternateManifest)
 	writeBlobAtDigest(t, state.RootDir, alternateManifestDigest, alternateManifest)
+	var descriptor map[string]any
+	if err := json.Unmarshal(state.DescriptorJSON, &descriptor); err != nil {
+		t.Fatalf("decode descriptor json: %v", err)
+	}
+	pkg := descriptor["package"].(map[string]any)
+	supporting := pkg["supporting"].([]any)
+	supporting[0].(map[string]any)["digest"] = alternateManifestDigest
+	alternateDescriptorJSON := mustMarshalJSON(t, descriptor)
+	alternateDescriptorDigest := store.DigestBytes(alternateDescriptorJSON)
+	writeBlobAtDigest(t, state.RootDir, alternateDescriptorDigest, alternateDescriptorJSON)
 
 	service, seeded := startTestApp(t, fixture, state)
 	request := artifactRegisterRequestFromSeeded(seeded)
-	request.ManifestDigest = alternateManifestDigest
+	request.DescriptorDigest = alternateDescriptorDigest
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/artifacts:register", request, fixture.clientTLSConfig(t, "service/artifact-governance"))
 	defer response.Body.Close()
@@ -555,6 +565,12 @@ func TestArtifactEndpointsReturnExpectedResponses(t *testing.T) {
 		body   string
 	}{
 		{
+			name:   "descriptor",
+			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor",
+			digest: seeded.DescriptorDigest,
+			body:   string(seeded.DescriptorJSON),
+		},
+		{
 			name:   "manifest",
 			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/manifest",
 			digest: seeded.ManifestDigest,
@@ -645,6 +661,11 @@ func TestArtifactEndpointsReturnNotFoundForMissingReferencedBlobs(t *testing.T) 
 		pathFn func(seededStorage) string
 		digest func(seededStorage) string
 	}{
+		{
+			name:   "descriptor",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor" },
+			digest: func(seeded seededStorage) string { return seeded.DescriptorDigest },
+		},
 		{
 			name:   "evidence",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/evidence" },
@@ -767,6 +788,11 @@ func TestArtifactEndpointsReturnCorruptionForReferencedBlobs(t *testing.T) {
 		pathFn func(seededStorage) string
 		digest func(seededStorage) string
 	}{
+		{
+			name:   "descriptor",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor" },
+			digest: func(seeded seededStorage) string { return seeded.DescriptorDigest },
+		},
 		{
 			name:   "evidence",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/evidence" },
@@ -1096,10 +1122,7 @@ type rawHTTPResponse struct {
 }
 
 type artifactRegisterRequest struct {
-	ArtifactDigest string `json:"artifact_digest"`
-	EvidenceDigest string `json:"evidence_digest"`
-	ManifestDigest string `json:"manifest_digest,omitempty"`
-	PayloadDigest  string `json:"payload_digest"`
+	DescriptorDigest string `json:"descriptor_digest"`
 }
 
 type seededStorage struct {
@@ -1112,13 +1135,15 @@ type seededStorage struct {
 	JSONDigest string
 	JSONBlob   []byte
 
-	ArtifactDigest string
-	EvidenceDigest string
-	EvidenceJSON   []byte
-	ManifestDigest string
-	ManifestJSON   []byte
-	PayloadDigest  string
-	PayloadBytes   []byte
+	ArtifactDigest   string
+	DescriptorDigest string
+	DescriptorJSON   []byte
+	EvidenceDigest   string
+	EvidenceJSON     []byte
+	ManifestDigest   string
+	ManifestJSON     []byte
+	PayloadDigest    string
+	PayloadBytes     []byte
 }
 
 func newTLSFixture(t *testing.T) tlsFixture {
@@ -1211,9 +1236,36 @@ func seedStorageFixture(t *testing.T) seededStorage {
 	state.ManifestDigest = store.DigestBytes(state.ManifestJSON)
 	state.PayloadDigest = store.DigestBytes(state.PayloadBytes)
 	state.ArtifactDigest = store.DigestBytes([]byte("artifact-1"))
+	state.DescriptorJSON = mustMarshalJSON(t, map[string]any{
+		"schema_version": "v1",
+		"artifact": map[string]any{
+			"artifact_digest": state.ArtifactDigest,
+			"artifact_type":   "static-script",
+			"intent_digest":   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		},
+		"package": map[string]any{
+			"evidence": map[string]any{
+				"digest":     state.EvidenceDigest,
+				"media_type": "application/json",
+			},
+			"payload": map[string]any{
+				"digest":     state.PayloadDigest,
+				"media_type": "application/octet-stream",
+			},
+			"supporting": []map[string]any{
+				{
+					"name":       "manifest",
+					"digest":     state.ManifestDigest,
+					"media_type": "application/json",
+				},
+			},
+		},
+	})
+	state.DescriptorDigest = store.DigestBytes(state.DescriptorJSON)
 
 	writeBlobAtDigest(t, rootDir, state.BlobDigest, state.BlobContent)
 	writeBlobAtDigest(t, rootDir, state.JSONDigest, state.JSONBlob)
+	writeBlobAtDigest(t, rootDir, state.DescriptorDigest, state.DescriptorJSON)
 	writeBlobAtDigest(t, rootDir, state.EvidenceDigest, state.EvidenceJSON)
 	writeBlobAtDigest(t, rootDir, state.ManifestDigest, state.ManifestJSON)
 	writeBlobAtDigest(t, rootDir, state.PayloadDigest, state.PayloadBytes)
@@ -1221,11 +1273,9 @@ func seedStorageFixture(t *testing.T) seededStorage {
 	state.IndexPath = filepath.Join(rootDir, "artifact-index.json")
 	indexPayload, err := json.MarshalIndent(map[string]index.Entry{
 		state.ArtifactDigest: {
-			ArtifactDigest: state.ArtifactDigest,
-			EvidenceDigest: state.EvidenceDigest,
-			ManifestDigest: state.ManifestDigest,
-			PayloadDigest:  state.PayloadDigest,
-			CreatedAt:      "2026-03-31T00:00:00Z",
+			ArtifactDigest:   state.ArtifactDigest,
+			DescriptorDigest: state.DescriptorDigest,
+			CreatedAt:        "2026-03-31T00:00:00Z",
 		},
 	}, "", "  ")
 	if err != nil {
@@ -1259,6 +1309,7 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 	digests := []string{
 		state.BlobDigest,
 		state.JSONDigest,
+		state.DescriptorDigest,
 		state.EvidenceDigest,
 		state.ManifestDigest,
 		state.PayloadDigest,
@@ -1278,10 +1329,7 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 
 func artifactRegisterRequestFromSeeded(seeded seededStorage) artifactRegisterRequest {
 	return artifactRegisterRequest{
-		ArtifactDigest: seeded.ArtifactDigest,
-		EvidenceDigest: seeded.EvidenceDigest,
-		ManifestDigest: seeded.ManifestDigest,
-		PayloadDigest:  seeded.PayloadDigest,
+		DescriptorDigest: seeded.DescriptorDigest,
 	}
 }
 
@@ -1298,6 +1346,16 @@ func writeBlobAtDigest(t *testing.T, rootDir string, digest string, content []by
 	if err := os.WriteFile(blobPath, content, 0o600); err != nil {
 		t.Fatalf("write blob: %v", err)
 	}
+}
+
+func mustMarshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return data
 }
 
 func startTestApp(t *testing.T, fixture tlsFixture, seeded seededStorage) (*app.App, seededStorage) {

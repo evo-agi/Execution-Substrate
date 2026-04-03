@@ -112,8 +112,8 @@ What the app layer delegates:
 
 1. Validate the request with `validatePrepareRequest`.
 2. Read the currently loaded TrustModel from memory.
-3. Read the aggregate artifact-evidence record from ARS.
-4. Validate it, verify its seal, enforce TrustModel signer policy, and derive manifest/workload information from that one record.
+3. Read the artifact descriptor from ARS and follow it to the aggregate artifact-evidence blob.
+4. Validate the descriptor/evidence relationship, verify the evidence seal, enforce TrustModel signer policy, and derive manifest/workload information from that one record.
 5. Fetch the workload-zone vault digest from ACS.
 6. Fetch the workload-zone vault config blob from ARS.
 7. Resolve the workload-vault auth plan through ES config selectors.
@@ -121,7 +121,7 @@ What the app layer delegates:
 
 What `Prepare` reads:
 
-- aggregate artifact evidence from ARS
+- ARS descriptor discoverability plus aggregate artifact evidence from ARS
 - lookup indirection from ACS
 - TrustModel state loaded from EGS at startup
 
@@ -143,7 +143,7 @@ What `Prepare` reads:
 3. Reject non-async mode.
 4. Reuse the shared admission helper that also powers `Prepare`.
 5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
-6. Fetch payload bytes from ARS using the explicit payload digest from aggregate evidence.
+6. Fetch payload bytes from ARS using the payload reference carried by the descriptor and cross-checked against aggregate evidence.
 7. Generate:
   - `run_id` in `newRunAndJobID`
   - `nomad_job_id = exec-<run_id>`
@@ -390,7 +390,7 @@ These are active implementation choices, not automatically permanent design comm
 - `run_id -> exec-<run_id>` is hard-coded into the lifecycle lookup path.
 - Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
 - Runtime identity handling depends on reserved `/monolith/...` path conventions.
-- Submit currently depends on aggregate-evidence payload identity, while AGS and ARS still happen to publish `artifact_digest == payload_digest` in the bounded slice.
+- Submit currently depends on descriptor-driven payload discoverability, while AGS still happens to publish `artifact_digest == payload_digest` in the bounded slice.
 - The implementation is coherent today as a thin composition and handoff layer, but several of its shortcuts are still under redesign pressure rather than being settled structure.
 
 ## 16. Relationship to other docs

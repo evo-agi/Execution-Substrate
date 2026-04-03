@@ -26,6 +26,7 @@ import (
 	acsapp "execution-platform/acs/app"
 	acscatalog "execution-platform/acs/catalog"
 	acsconfig "execution-platform/acs/config"
+	arsapi "execution-platform/ars/api"
 	arsapp "execution-platform/ars/app"
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
@@ -345,6 +346,8 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	payloadDigest := writeBlobBytes(t, rootDir, []byte("artifact payload bytes"))
 	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, workloadIdentityID)
 	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
+	descriptorBytes := artifactDescriptorJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest, manifestDigest)
+	descriptorDigest := writeBlobBytes(t, rootDir, descriptorBytes)
 
 	workloadZoneVaultBytes := mustMarshalJSON(t, map[string]any{
 		"vault_config": map[string]any{
@@ -378,11 +381,9 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	indexPath := filepath.Join(t.TempDir(), "artifact-index.json")
 	indexPayload := map[string]arsindex.Entry{
 		artifactDigest: {
-			ArtifactDigest: artifactDigest,
-			EvidenceDigest: evidenceDigest,
-			ManifestDigest: manifestDigest,
-			PayloadDigest:  payloadDigest,
-			CreatedAt:      "2026-03-31T00:00:00Z",
+			ArtifactDigest:   artifactDigest,
+			DescriptorDigest: descriptorDigest,
+			CreatedAt:        "2026-03-31T00:00:00Z",
 		},
 	}
 	if opts.MissingEvidence {
@@ -1140,6 +1141,44 @@ func signedArtifactEvidenceJSON(
 	}
 	record.Seal = evidencev1.NewSeal(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 	return mustMarshalJSON(t, record)
+}
+
+func artifactDescriptorJSON(
+	t *testing.T,
+	artifactDigest string,
+	artifactType string,
+	intentDigest string,
+	evidenceDigest string,
+	payloadDigest string,
+	manifestDigest string,
+) []byte {
+	t.Helper()
+
+	return mustMarshalJSON(t, arsapi.ArtifactDescriptor{
+		SchemaVersion: arsapi.ArtifactDescriptorSchemaVersion,
+		Artifact: arsapi.ArtifactIdentity{
+			ArtifactDigest: artifactDigest,
+			ArtifactType:   artifactType,
+			IntentDigest:   intentDigest,
+		},
+		Package: arsapi.ArtifactPackage{
+			Evidence: arsapi.ArtifactBlobRef{
+				Digest:    evidenceDigest,
+				MediaType: "application/json",
+			},
+			Payload: arsapi.ArtifactBlobRef{
+				Digest:    payloadDigest,
+				MediaType: "application/octet-stream",
+			},
+			Supporting: []arsapi.ArtifactSupportRef{
+				{
+					Name:      "manifest",
+					Digest:    manifestDigest,
+					MediaType: "application/json",
+				},
+			},
+		},
+	})
 }
 
 func digestBytes(data []byte) string {

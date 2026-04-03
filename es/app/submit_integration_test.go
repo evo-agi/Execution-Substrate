@@ -25,9 +25,11 @@ import (
 	acsconfig "execution-platform/acs/config"
 	agsapp "execution-platform/ags/app"
 	agsconfig "execution-platform/ags/config"
+	arsapi "execution-platform/ars/api"
 	arsapp "execution-platform/ars/app"
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
+	arsstore "execution-platform/ars/store"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -432,8 +434,8 @@ func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
 		},
 	}), "runtime-mount")
 
-	entry := stack.loadIndexEntry(t, mountArtifact.ArtifactDigest)
-	removeBlob(t, stack.arsRootDir, entry.EvidenceDigest)
+	descriptor := stack.loadDescriptor(t, mountArtifact.ArtifactDigest)
+	removeBlob(t, stack.arsRootDir, descriptor.Package.Evidence.Digest)
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
@@ -1181,6 +1183,25 @@ func (s *submitStack) loadIndexEntry(t *testing.T, artifactDigest string) arsind
 		t.Fatalf("missing artifact index entry for %s", artifactDigest)
 	}
 	return entry
+}
+
+func (s *submitStack) loadDescriptor(t *testing.T, artifactDigest string) arsapi.ArtifactDescriptor {
+	t.Helper()
+
+	entry := s.loadIndexEntry(t, artifactDigest)
+	descriptorPath, err := arsstore.ResolvePath(s.arsRootDir, entry.DescriptorDigest)
+	if err != nil {
+		t.Fatalf("resolve descriptor blob path: %v", err)
+	}
+	data, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		t.Fatalf("read descriptor blob: %v", err)
+	}
+	var descriptor arsapi.ArtifactDescriptor
+	if err := json.Unmarshal(data, &descriptor); err != nil {
+		t.Fatalf("decode descriptor blob: %v", err)
+	}
+	return descriptor
 }
 
 func findTaskMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {

@@ -48,10 +48,36 @@ type dependencyClient struct {
 }
 
 type registerArtifactRequest struct {
+	DescriptorDigest string `json:"descriptor_digest"`
+}
+
+type artifactDescriptor struct {
+	SchemaVersion string           `json:"schema_version"`
+	Artifact      artifactIdentity `json:"artifact"`
+	Package       artifactPackage  `json:"package"`
+}
+
+type artifactIdentity struct {
 	ArtifactDigest string `json:"artifact_digest"`
-	EvidenceDigest string `json:"evidence_digest"`
-	ManifestDigest string `json:"manifest_digest,omitempty"`
-	PayloadDigest  string `json:"payload_digest"`
+	ArtifactType   string `json:"artifact_type"`
+	IntentDigest   string `json:"intent_digest"`
+}
+
+type artifactPackage struct {
+	Evidence   artifactBlobRef      `json:"evidence"`
+	Payload    artifactBlobRef      `json:"payload"`
+	Supporting []artifactSupportRef `json:"supporting,omitempty"`
+}
+
+type artifactBlobRef struct {
+	Digest    string `json:"digest"`
+	MediaType string `json:"media_type,omitempty"`
+}
+
+type artifactSupportRef struct {
+	Name      string `json:"name"`
+	Digest    string `json:"digest"`
+	MediaType string `json:"media_type,omitempty"`
 }
 
 type dependencyHealthResponse struct {
@@ -130,11 +156,42 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 	evidenceDigest := digestBytes(evidenceBytes)
 	manifestDigest := digestBytes(manifestBytes)
+	descriptor := artifactDescriptor{
+		SchemaVersion: "v1",
+		Artifact: artifactIdentity{
+			ArtifactDigest: artifactDigest,
+			ArtifactType:   manifest.ArtifactType,
+			IntentDigest:   manifest.IntentDigest,
+		},
+		Package: artifactPackage{
+			Evidence: artifactBlobRef{
+				Digest:    evidenceDigest,
+				MediaType: "application/json",
+			},
+			Payload: artifactBlobRef{
+				Digest:    payloadDigest,
+				MediaType: "application/octet-stream",
+			},
+			Supporting: []artifactSupportRef{
+				{
+					Name:      "manifest",
+					Digest:    manifestDigest,
+					MediaType: "application/json",
+				},
+			},
+		},
+	}
+	descriptorBytes, err := json.Marshal(descriptor)
+	if err != nil {
+		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal artifact descriptor failed"}
+	}
+	descriptorDigest := digestBytes(descriptorBytes)
 
 	uploads := []blobUpload{
 		{digest: payloadDigest, data: validation.payloadBytes},
 		{digest: evidenceDigest, data: evidenceBytes},
 		{digest: manifestDigest, data: manifestBytes},
+		{digest: descriptorDigest, data: descriptorBytes},
 	}
 
 	for _, upload := range uploads {
@@ -144,20 +201,18 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 
 	if err := s.arsClient.registerArtifact(ctx, registerArtifactRequest{
-		ArtifactDigest: artifactDigest,
-		EvidenceDigest: evidenceDigest,
-		ManifestDigest: manifestDigest,
-		PayloadDigest:  payloadDigest,
+		DescriptorDigest: descriptorDigest,
 	}); err != nil {
 		return PublishResult{}, &Error{Status: http.StatusServiceUnavailable, Code: codeDependencyError, Message: err.Error()}
 	}
 
 	return PublishResult{
-		Published:      true,
-		ArtifactDigest: artifactDigest,
-		EvidenceDigest: evidenceDigest,
-		ManifestDigest: manifestDigest,
-		PayloadDigest:  payloadDigest,
+		Published:        true,
+		ArtifactDigest:   artifactDigest,
+		DescriptorDigest: descriptorDigest,
+		EvidenceDigest:   evidenceDigest,
+		ManifestDigest:   manifestDigest,
+		PayloadDigest:    payloadDigest,
 	}, nil
 }
 
@@ -459,13 +514,13 @@ func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody reg
 
 	response, err := c.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("register artifact %s: %w", requestBody.ArtifactDigest, err)
+		return fmt.Errorf("register descriptor %s: %w", requestBody.DescriptorDigest, err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("register artifact %s: unexpected status %d body=%s", requestBody.ArtifactDigest, response.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("register descriptor %s: unexpected status %d body=%s", requestBody.DescriptorDigest, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }
