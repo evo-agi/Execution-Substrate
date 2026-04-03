@@ -1,7 +1,6 @@
 package admission
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -17,13 +16,13 @@ import (
 	"os"
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	egsmodel "execution-platform/egs/model"
 	esconfig "execution-platform/es/config"
+	signingv1 "execution-platform/legacy/contracts/signing/v1"
 	"execution-platform/observability"
 )
 
@@ -561,7 +560,7 @@ func (s *Service) verifyProvenance(provenance Provenance, artifactDigest string)
 		}
 	}
 
-	canonical := canonicalProvenanceBytes(provenance)
+	canonical := signingv1.CanonicalProvenanceBytes(provenanceClaimsFromDTO(provenance))
 	if err := s.provenanceVerifier.verifyDetached(canonical, provenance.Signature.KeyID, provenance.Signature.Alg, provenance.Signature.Value); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
@@ -583,8 +582,14 @@ func (s *Service) verifyDerivationAttestation(attestation DerivationAttestation,
 		}
 	}
 
-	canonical := canonicalDerivationAttestationBytes(attestation)
-	if err := s.derivationAttestationVerifier.verifyEnvelope(canonical, attestation.SignatureInfo); err != nil {
+	canonical := signingv1.CanonicalDerivationAttestationBytes(derivationClaimsFromDTO(attestation))
+	if err := signingv1.VerifyDetachedEnvelope(
+		canonical,
+		detachedEnvelopeFromDTO(attestation.SignatureInfo),
+		s.derivationAttestationVerifier.keyID,
+		s.derivationAttestationVerifier.algorithm,
+		s.derivationAttestationVerifier.publicKey,
+	); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeDerivationAttestationInvalid,
@@ -612,8 +617,14 @@ func (s *Service) verifyWorkloadIdentityBinding(binding WorkloadIdentityBinding,
 		}
 	}
 
-	canonical := canonicalWorkloadIdentityBindingBytes(binding)
-	if err := s.workloadIdentityBindingVerifier.verifyEnvelope(canonical, binding.SignatureInfo); err != nil {
+	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(workloadIdentityClaimsFromDTO(binding))
+	if err := signingv1.VerifyDetachedEnvelope(
+		canonical,
+		detachedEnvelopeFromDTO(binding.SignatureInfo),
+		s.workloadIdentityBindingVerifier.keyID,
+		s.workloadIdentityBindingVerifier.algorithm,
+		s.workloadIdentityBindingVerifier.publicKey,
+	); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeWorkloadIdentityBindingInvalid,
@@ -861,45 +872,6 @@ func (v *ed25519Verifier) verifyDetached(canonical []byte, keyID string, algorit
 	return nil
 }
 
-func (v *ed25519Verifier) verifyEnvelope(expectedCanonical []byte, info SignatureInfo) error {
-	// TODO: ES reconstructs canonical bytes from parsed ARS artifact facts
-	// before verifying AGS signatures. That works for this slice, but it assumes
-	// AGS signed the same canonical structure ES rebuilds here. When the AGS
-	// producer slice lands, freeze this canonical producer/consumer contract
-	// explicitly before widening artifact fact schemas.
-	// Detached-envelope rules in this slice:
-	// 1. signature_info.key_id and signature_info.algorithm identify the signer
-	// 2. signature_info.canonical_spec_b64 must contain the exact canonical
-	//    payload bytes that ES reconstructs for the artifact fact
-	// 3. signature_info.payload_digest must equal sha256(canonical payload)
-	// 4. signature_info.signature_value signs only the canonical payload bytes;
-	//    the signature_info wrapper itself is not signed
-	if strings.TrimSpace(info.KeyID) != v.keyID {
-		return fmt.Errorf("unexpected signing key id")
-	}
-	if strings.TrimSpace(info.Algorithm) != v.algorithm {
-		return fmt.Errorf("unexpected signing algorithm")
-	}
-	canonicalFromEnvelope, err := base64.StdEncoding.DecodeString(strings.TrimSpace(info.CanonicalSpecB64))
-	if err != nil {
-		return fmt.Errorf("decode canonical payload: %w", err)
-	}
-	if !bytes.Equal(canonicalFromEnvelope, expectedCanonical) {
-		return fmt.Errorf("canonical payload mismatch")
-	}
-	if info.PayloadDigest != digestBytes(expectedCanonical) {
-		return fmt.Errorf("payload digest mismatch")
-	}
-	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(info.SignatureValue))
-	if err != nil {
-		return fmt.Errorf("decode signature: %w", err)
-	}
-	if !ed25519.Verify(v.publicKey, expectedCanonical, signature) {
-		return fmt.Errorf("signature verification failed")
-	}
-	return nil
-}
-
 func decodeJSON(reader io.Reader, target any) error {
 	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
@@ -936,123 +908,4 @@ func isReservedRuntimeEnvKey(key string) bool {
 		}
 	}
 	return false
-}
-
-func canonicalProvenanceBytes(provenance Provenance) []byte {
-	// Provenance canonicalization contract for the current ES slice:
-	// 1. policy_decisions are normalized by sorting ascending on (rule, result)
-	// 2. policy_decisions_hash = sha256("rule:result|...") over that sorted list
-	// 3. the signed JSON payload is marshaled with fields in this exact order:
-	//    artifact_digest, builder_service, invoker_service, invoker_principal,
-	//    policy_decisions_hash, build_log_digest
-	// 4. the outer policy_decisions array and signature wrapper are NOT signed;
-	//    they are transport fields only
-	// TODO: This producer/consumer contract is provisional until AGS exists in
-	// Go. AGS must either sign exactly this canonical payload or explicitly
-	// redefine the provenance signing contract and update ES accordingly.
-	policyDecisions := append([]PolicyDecision(nil), provenance.PolicyDecisions...)
-	sort.Slice(policyDecisions, func(i, j int) bool {
-		if policyDecisions[i].Rule == policyDecisions[j].Rule {
-			return policyDecisions[i].Result < policyDecisions[j].Result
-		}
-		return policyDecisions[i].Rule < policyDecisions[j].Rule
-	})
-
-	parts := make([]string, 0, len(policyDecisions))
-	for _, decision := range policyDecisions {
-		parts = append(parts, decision.Rule+":"+decision.Result)
-	}
-	policyDecisionHash := digestBytes([]byte(strings.Join(parts, "|")))
-
-	payload := struct {
-		ArtifactDigest      string `json:"artifact_digest"`
-		BuilderService      string `json:"builder_service"`
-		InvokerService      string `json:"invoker_service"`
-		InvokerPrincipal    string `json:"invoker_principal"`
-		PolicyDecisionsHash string `json:"policy_decisions_hash"`
-		BuildLogDigest      string `json:"build_log_digest"`
-	}{
-		ArtifactDigest:      provenance.ArtifactDigest,
-		BuilderService:      provenance.BuilderService,
-		InvokerService:      provenance.Invoker.Service,
-		InvokerPrincipal:    provenance.Invoker.Principal,
-		PolicyDecisionsHash: policyDecisionHash,
-		BuildLogDigest:      provenance.BuildLogDigest,
-	}
-	encoded, _ := json.Marshal(payload)
-	return encoded
-}
-
-func canonicalDerivationAttestationBytes(attestation DerivationAttestation) []byte {
-	// Derivation attestation canonicalization contract for the current ES slice:
-	// 1. the signed JSON payload is marshaled with fields in this exact order:
-	//    artifact_digest, derivation_spec_digest, output_id, constraints,
-	//    policy_version, expected_artifact_type
-	// 2. constraints are serialized in the struct field order:
-	//    allowed_toolchains, forbidden_toolchains, os, arch, network_access,
-	//    writable_paths, forbidden_paths, determinism_expectation
-	// 3. signature_info is NOT part of the signed payload; it carries detached
-	//    signature metadata for verification only
-	// TODO: This producer/consumer contract is provisional until AGS exists in
-	// Go. AGS must either sign exactly this canonical payload or explicitly
-	// redefine the attestation signing contract and update ES accordingly.
-	payload := struct {
-		ArtifactDigest       string                        `json:"artifact_digest"`
-		DerivationSpecDigest string                        `json:"derivation_spec_digest"`
-		OutputID             string                        `json:"output_id"`
-		Constraints          DerivationSpecConstraintsInfo `json:"constraints"`
-		PolicyVersion        string                        `json:"policy_version"`
-		ExpectedArtifactType string                        `json:"expected_artifact_type,omitempty"`
-	}{
-		ArtifactDigest:       attestation.ArtifactDigest,
-		DerivationSpecDigest: attestation.DerivationSpecDigest,
-		OutputID:             attestation.OutputID,
-		Constraints:          attestation.Constraints,
-		PolicyVersion:        attestation.PolicyVersion,
-		ExpectedArtifactType: attestation.ExpectedArtifactType,
-	}
-	encoded, _ := json.Marshal(payload)
-	return encoded
-}
-
-func canonicalWorkloadIdentityBindingBytes(binding WorkloadIdentityBinding) []byte {
-	// Workload identity binding canonicalization contract for the current ES
-	// slice:
-	// 1. the signed JSON payload is marshaled with fields in this exact order:
-	//    artifact_class, artifact_digest, derivation_spec_digest, description,
-	//    module_path, output_id, policy_version, service_name, target_platform,
-	//    workload_identity_id, workload_type
-	// 2. omitempty fields participate only when present in the binding payload
-	// 3. signature_info is NOT part of the signed payload; it carries detached
-	//    signature metadata for verification only
-	// TODO: This producer/consumer contract is provisional until AGS exists in
-	// Go. AGS must either sign exactly this canonical payload or explicitly
-	// redefine the binding signing contract and update ES accordingly.
-	payload := struct {
-		ArtifactClass        string `json:"artifact_class"`
-		ArtifactDigest       string `json:"artifact_digest"`
-		DerivationSpecDigest string `json:"derivation_spec_digest"`
-		Description          string `json:"description,omitempty"`
-		ModulePath           string `json:"module_path"`
-		OutputID             string `json:"output_id"`
-		PolicyVersion        string `json:"policy_version"`
-		ServiceName          string `json:"service_name,omitempty"`
-		TargetPlatform       string `json:"target_platform,omitempty"`
-		WorkloadIdentityID   string `json:"workload_identity_id,omitempty"`
-		WorkloadType         string `json:"workload_type"`
-	}{
-		ArtifactClass:        binding.ArtifactClass,
-		ArtifactDigest:       binding.ArtifactDigest,
-		DerivationSpecDigest: binding.DerivationSpecDigest,
-		Description:          binding.Description,
-		ModulePath:           binding.ModulePath,
-		OutputID:             binding.OutputID,
-		PolicyVersion:        binding.PolicyVersion,
-		ServiceName:          binding.ServiceName,
-		TargetPlatform:       binding.TargetPlatform,
-		WorkloadIdentityID:   binding.WorkloadIdentityID,
-		WorkloadType:         binding.WorkloadType,
-	}
-	encoded, _ := json.Marshal(payload)
-	return encoded
 }

@@ -38,6 +38,7 @@ import (
 	"execution-platform/es/admission"
 	esapp "execution-platform/es/app"
 	esconfig "execution-platform/es/config"
+	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
@@ -1220,30 +1221,22 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string, outputID string) []byte {
 	t.Helper()
 
-	canonical := mustMarshalJSON(t, struct {
-		ArtifactClass        string `json:"artifact_class"`
-		ArtifactDigest       string `json:"artifact_digest"`
-		DerivationSpecDigest string `json:"derivation_spec_digest"`
-		Description          string `json:"description,omitempty"`
-		ModulePath           string `json:"module_path"`
-		OutputID             string `json:"output_id"`
-		PolicyVersion        string `json:"policy_version"`
-		ServiceName          string `json:"service_name,omitempty"`
-		TargetPlatform       string `json:"target_platform,omitempty"`
-		WorkloadIdentityID   string `json:"workload_identity_id,omitempty"`
-		WorkloadType         string `json:"workload_type"`
-	}{
-		ArtifactClass:        "service",
-		ArtifactDigest:       artifactDigest,
-		DerivationSpecDigest: derivationSpecDigest,
-		Description:          "Execution workload",
-		ModulePath:           "services.execution.ExecutionServer",
-		OutputID:             outputID,
-		PolicyVersion:        "2026-03-31",
-		ServiceName:          "execution",
-		TargetPlatform:       "docker",
-		WorkloadIdentityID:   workloadIdentityID,
-		WorkloadType:         "service",
+	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(signingv1.WorkloadIdentityBindingClaims{
+		Subject: signingv1.WorkloadIdentitySubjectClaims{
+			ArtifactClass:        "service",
+			ArtifactDigest:       artifactDigest,
+			DerivationSpecDigest: derivationSpecDigest,
+			OutputID:             outputID,
+			PolicyVersion:        "2026-03-31",
+		},
+		Descriptor: signingv1.WorkloadDescriptorClaims{
+			WorkloadType:       "service",
+			ModulePath:         "services.execution.ExecutionServer",
+			ServiceName:        "execution",
+			TargetPlatform:     "docker",
+			Description:        "Execution workload",
+			WorkloadIdentityID: workloadIdentityID,
+		},
 	})
 	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
 

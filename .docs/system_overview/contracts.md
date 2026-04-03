@@ -16,6 +16,12 @@ AGS must emit the exact canonical payloads ES verifies.
 
 ES must verify those facts using the frozen canonicalization rules and must not silently accept semantically equivalent but differently canonicalized payloads.
 
+The current v1 canonicalization and detached-envelope rules are isolated in the versioned compatibility package:
+
+- `/Users/ds/Repositories/Execution-Platform/legacy/contracts/signing/v1`
+
+That package is the frozen compatibility boundary for signed artifact-fact bytes in the current system version. It is not the place to evolve future canonicalization designs in place.
+
 Any change to those canonicalization rules must update:
 
 - AGS production

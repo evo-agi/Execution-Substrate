@@ -36,6 +36,7 @@ import (
 	"execution-platform/es/admission"
 	esapp "execution-platform/es/app"
 	esconfig "execution-platform/es/config"
+	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
@@ -1074,22 +1075,16 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 func signedProvenanceJSON(t *testing.T, fixture *tlsFixture, artifactDigest string) []byte {
 	t.Helper()
 
-	payload := struct {
-		ArtifactDigest      string `json:"artifact_digest"`
-		BuilderService      string `json:"builder_service"`
-		InvokerService      string `json:"invoker_service"`
-		InvokerPrincipal    string `json:"invoker_principal"`
-		PolicyDecisionsHash string `json:"policy_decisions_hash"`
-		BuildLogDigest      string `json:"build_log_digest"`
-	}{
-		ArtifactDigest:      artifactDigest,
-		BuilderService:      "artifact-governance",
-		InvokerService:      "deployment",
-		InvokerPrincipal:    "spiffe://monolith.internal/service/deployment",
-		PolicyDecisionsHash: digestBytes([]byte("allow:applied")),
-		BuildLogDigest:      labeledDigest("ee"),
-	}
-	canonical := mustMarshalJSON(t, payload)
+	canonical := signingv1.CanonicalProvenanceBytes(signingv1.ProvenanceClaims{
+		ArtifactDigest:   artifactDigest,
+		BuilderService:   "artifact-governance",
+		InvokerService:   "deployment",
+		InvokerPrincipal: "spiffe://monolith.internal/service/deployment",
+		PolicyDecisions: []signingv1.PolicyDecisionEntry{
+			{Rule: "allow", Result: "applied"},
+		},
+		BuildLogDigest: labeledDigest("ee"),
+	})
 	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
 
 	return mustMarshalJSON(t, map[string]any{
@@ -1125,20 +1120,26 @@ func signedDerivationAttestationJSON(t *testing.T, fixture *tlsFixture, artifact
 		DeterminismExpectation: "deterministic",
 	}
 
-	canonical := mustMarshalJSON(t, struct {
-		ArtifactDigest       string                                  `json:"artifact_digest"`
-		DerivationSpecDigest string                                  `json:"derivation_spec_digest"`
-		OutputID             string                                  `json:"output_id"`
-		Constraints          admission.DerivationSpecConstraintsInfo `json:"constraints"`
-		PolicyVersion        string                                  `json:"policy_version"`
-		ExpectedArtifactType string                                  `json:"expected_artifact_type,omitempty"`
-	}{
-		ArtifactDigest:       artifactDigest,
-		DerivationSpecDigest: derivationSpecDigest,
-		OutputID:             "runtime",
-		Constraints:          constraints,
-		PolicyVersion:        "2026-03-31",
-		ExpectedArtifactType: "static-service",
+	canonical := signingv1.CanonicalDerivationAttestationBytes(signingv1.DerivationAttestationClaims{
+		Subject: signingv1.DerivationSubjectClaims{
+			ArtifactDigest:       artifactDigest,
+			DerivationSpecDigest: derivationSpecDigest,
+			OutputID:             "runtime",
+		},
+		Constraints: signingv1.DerivationConstraintsClaims{
+			AllowedToolchains:      []string{},
+			ForbiddenToolchains:    []string{},
+			OS:                     "linux",
+			Arch:                   "amd64",
+			NetworkAccess:          false,
+			WritablePaths:          []string{},
+			ForbiddenPaths:         []string{},
+			DeterminismExpectation: "deterministic",
+		},
+		Policy: signingv1.DerivationPolicyClaims{
+			Version:              "2026-03-31",
+			ExpectedArtifactType: "static-service",
+		},
 	})
 	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
 
@@ -1162,30 +1163,22 @@ func signedDerivationAttestationJSON(t *testing.T, fixture *tlsFixture, artifact
 func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string) []byte {
 	t.Helper()
 
-	canonical := mustMarshalJSON(t, struct {
-		ArtifactClass        string `json:"artifact_class"`
-		ArtifactDigest       string `json:"artifact_digest"`
-		DerivationSpecDigest string `json:"derivation_spec_digest"`
-		Description          string `json:"description,omitempty"`
-		ModulePath           string `json:"module_path"`
-		OutputID             string `json:"output_id"`
-		PolicyVersion        string `json:"policy_version"`
-		ServiceName          string `json:"service_name,omitempty"`
-		TargetPlatform       string `json:"target_platform,omitempty"`
-		WorkloadIdentityID   string `json:"workload_identity_id,omitempty"`
-		WorkloadType         string `json:"workload_type"`
-	}{
-		ArtifactClass:        "service",
-		ArtifactDigest:       artifactDigest,
-		DerivationSpecDigest: derivationSpecDigest,
-		Description:          "Execution workload",
-		ModulePath:           "services.execution.ExecutionServer",
-		OutputID:             "runtime",
-		PolicyVersion:        "2026-03-31",
-		ServiceName:          "execution",
-		TargetPlatform:       "docker",
-		WorkloadIdentityID:   workloadIdentityID,
-		WorkloadType:         "service",
+	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(signingv1.WorkloadIdentityBindingClaims{
+		Subject: signingv1.WorkloadIdentitySubjectClaims{
+			ArtifactClass:        "service",
+			ArtifactDigest:       artifactDigest,
+			DerivationSpecDigest: derivationSpecDigest,
+			OutputID:             "runtime",
+			PolicyVersion:        "2026-03-31",
+		},
+		Descriptor: signingv1.WorkloadDescriptorClaims{
+			WorkloadType:       "service",
+			ModulePath:         "services.execution.ExecutionServer",
+			ServiceName:        "execution",
+			TargetPlatform:     "docker",
+			Description:        "Execution workload",
+			WorkloadIdentityID: workloadIdentityID,
+		},
 	})
 	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
 

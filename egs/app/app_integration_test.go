@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"execution-platform/egs/app"
 	"execution-platform/egs/config"
 	"execution-platform/egs/model"
+	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {
@@ -641,32 +641,13 @@ func canonicalTrustModelBytes(payload struct {
 	UpdateRevision int    `json:"update_revision"`
 	Version        string `json:"version"`
 }) []byte {
-	allowed := append([]string(nil), payload.SignerPolicy.AllowedSigners...)
-	revoked := append([]string(nil), payload.SignerPolicy.RevokedSigners...)
-	artifacts := append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...)
-	slices.Sort(allowed)
-	slices.Sort(revoked)
-	slices.Sort(artifacts)
-
-	canonicalPayload := struct {
-		ArtifactPolicy struct {
-			RevokedArtifacts []string `json:"revoked_artifacts"`
-		} `json:"artifact_policy"`
-		SignerPolicy struct {
-			AllowedSigners []string `json:"allowed_signers"`
-			RevokedSigners []string `json:"revoked_signers"`
-		} `json:"signer_policy"`
-		UpdateRevision int    `json:"update_revision"`
-		Version        string `json:"version"`
-	}{
-		UpdateRevision: payload.UpdateRevision,
-		Version:        payload.Version,
-	}
-	canonicalPayload.ArtifactPolicy.RevokedArtifacts = artifacts
-	canonicalPayload.SignerPolicy.AllowedSigners = allowed
-	canonicalPayload.SignerPolicy.RevokedSigners = revoked
-
-	encoded, err := json.Marshal(canonicalPayload)
+	encoded, err := signingv1.CanonicalTrustModelBytes(signingv1.TrustModelClaims{
+		AllowedSigners:   append([]string(nil), payload.SignerPolicy.AllowedSigners...),
+		RevokedSigners:   append([]string(nil), payload.SignerPolicy.RevokedSigners...),
+		RevokedArtifacts: append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...),
+		UpdateRevision:   payload.UpdateRevision,
+		Version:          payload.Version,
+	})
 	if err != nil {
 		panic(err)
 	}
