@@ -40,7 +40,6 @@ const (
 	codeSignerRevoked                   = "signer_revoked"
 	codeArtifactRevoked                 = "artifact_revoked"
 	codeWorkloadZoneVaultUnavailable    = "workload_zone_vault_unavailable"
-	codeUnsupportedAuthMode             = "unsupported_auth_mode"
 	codeExecutionRuntimeUnavailable     = "execution_runtime_unavailable"
 	codeUnsupportedExecutionMode        = "unsupported_execution_mode"
 	codeUnsupportedArtifactType         = "unsupported_artifact_type"
@@ -387,13 +386,6 @@ func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResul
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
 			Message: resolveErr.Error(),
-		}
-	}
-	if plan.Mode != esconfig.WorkloadVaultAuthModeVaultIdentityJWT {
-		return PrepareResult{}, &Error{
-			Status:  http.StatusConflict,
-			Code:    codeUnsupportedAuthMode,
-			Message: "only vault_identity_jwt is supported in the prepare milestone slice",
 		}
 	}
 

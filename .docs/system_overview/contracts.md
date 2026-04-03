@@ -175,10 +175,6 @@ CGS is a separate compatibility authorization boundary.
 
 CGS is not part of the current ES admission or execution hot path.
 
-ES must:
-
-- reject `cgs_proof_legacy` locally in the current slice
-
 ES must not:
 
 - call CGS during the current bounded admission or execution path

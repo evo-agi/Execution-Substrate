@@ -90,7 +90,6 @@ type SignerVerifierConfig struct {
 type WorkloadVaultAuthMode string
 
 const (
-	WorkloadVaultAuthModeCGSProofLegacy   WorkloadVaultAuthMode = "cgs_proof_legacy"
 	WorkloadVaultAuthModeVaultIdentityJWT WorkloadVaultAuthMode = "vault_identity_jwt"
 )
 
@@ -323,7 +322,7 @@ func (s SignerVerifierConfig) Validate(field string) error {
 
 func (c WorkloadVaultAuthConfig) Validate() error {
 	if !isValidAuthMode(c.DefaultMode) {
-		return fmt.Errorf("workload_vault_auth.default_mode must be vault_identity_jwt or cgs_proof_legacy")
+		return fmt.Errorf("workload_vault_auth.default_mode must be vault_identity_jwt")
 	}
 	for i, selector := range c.Selectors {
 		if err := selector.Validate(fmt.Sprintf("workload_vault_auth.selectors[%d]", i)); err != nil {
@@ -335,17 +334,17 @@ func (c WorkloadVaultAuthConfig) Validate() error {
 
 func (s WorkloadVaultAuthSelector) Validate(field string) error {
 	if !isValidAuthMode(s.Mode) {
-		return fmt.Errorf("%s.mode must be vault_identity_jwt or cgs_proof_legacy", field)
+		return fmt.Errorf("%s.mode must be vault_identity_jwt", field)
 	}
 	return nil
 }
 
 func isValidAuthMode(value WorkloadVaultAuthMode) bool {
 	switch value {
-		case WorkloadVaultAuthModeVaultIdentityJWT, WorkloadVaultAuthModeCGSProofLegacy:
-			return true
-		default:
-			return false
+	case WorkloadVaultAuthModeVaultIdentityJWT:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -358,11 +357,6 @@ func (c WorkloadVaultAuthConfig) Resolve(attrs WorkloadIdentityAttributes, vault
 	mode := c.DefaultMode
 	if selected != nil {
 		mode = selected.Mode
-	}
-	if mode == WorkloadVaultAuthModeCGSProofLegacy {
-		return ResolvedWorkloadVaultAuthPlan{
-			Mode: mode,
-		}, nil
 	}
 
 	address := strings.TrimSpace(vault.Address)

@@ -123,11 +123,6 @@ func TestPrepareReturns403WhenArtifactIsRevoked(t *testing.T) {
 	assertPrepareError(t, stack, http.StatusForbidden, codeArtifactRevoked)
 }
 
-func TestPrepareRejectsLegacyAuthModeForThisSlice(t *testing.T) {
-	stack := startStack(t, stackOptions{DefaultAuthMode: esconfig.WorkloadVaultAuthModeCGSProofLegacy})
-	assertPrepareError(t, stack, http.StatusConflict, codeUnsupportedAuthMode)
-}
-
 func TestPrepareReturns503WhenACSIsUnavailable(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 	stack.shutdownACS(t)
@@ -272,7 +267,6 @@ const (
 	codeSignerNotAllowed             = "signer_not_allowed"
 	codeSignerRevoked                = "signer_revoked"
 	codeArtifactRevoked              = "artifact_revoked"
-	codeUnsupportedAuthMode          = "unsupported_auth_mode"
 	codeWorkloadZoneVaultUnavailable = "workload_zone_vault_unavailable"
 )
 

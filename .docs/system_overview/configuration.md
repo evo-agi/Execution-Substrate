@@ -205,8 +205,7 @@ For a minimal active system, `trust_model.signer_policy.allowed_signers` must in
 - all verifier algorithms must be `ed25519`
 - verifier key IDs and public keys must match the active EGS and AGS signers
 - all dependency base URLs must be absolute `https://` URLs
-- `workload_vault_auth.default_mode` must be either `vault_identity_jwt` or `cgs_proof_legacy`
-- for the current governed execution path, use `vault_identity_jwt`
+- `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - for full end-to-end execution verification, include:
   - `nomad.base_url`

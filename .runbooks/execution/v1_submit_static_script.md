@@ -61,7 +61,7 @@ The environment must already satisfy these assumptions:
 - ES verification keys match the AGS and EGS public keys.
 - ACS already has the `workload-zone/vault` assignment seeded.
 - ARS already contains the workload-zone Vault JSON blob referenced by ACS.
-- ES is configured for the `vault_identity_jwt` path, not `cgs_proof_legacy`.
+- ES is configured for the `vault_identity_jwt` path.
 - ES is configured with Nomad submission settings:
   - `nomad.base_url`
   - `nomad.datacenter`
@@ -506,7 +506,6 @@ Common causes:
 - request mode is not `async`
 - artifact type is not `static-script`
 - `required_capabilities` is not empty
-- auth mode resolves to `cgs_proof_legacy`
 - runtime-identity workspace reservation conflicted with caller mounts or runtime path assumptions
 
 How to debug:
@@ -523,7 +522,6 @@ Interpretation hints:
 
 - HTTP `400` means request or artifact-type constraints failed
 - HTTP `403` means caller certificate is not authorized
-- HTTP `409` means unsupported auth mode such as `cgs_proof_legacy`
 - HTTP `503` means an upstream dependency or payload/fact read failed
 
 ### Nomad job not created
