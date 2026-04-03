@@ -35,9 +35,9 @@ set -euo pipefail
 #       exit
 #
 #       # Copy this script to Linux VM and run it
-#       scp setup.sh vm-user@vm-ip-address:/tmp
+#       scp 70_linux_setup.sh vm-user@vm-ip-address:/tmp
 #       ssh vm-user@vm-ip-address
-#       bash /tmp/setup.sh
+#       bash /tmp/70_linux_setup.sh
 #
 #       # Follow the script's prompts to complete the setup
 #

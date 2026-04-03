@@ -20,7 +20,7 @@ It proves plumbing and contract compatibility only.
 
 For a fresh Linux VM, an optional explicit bootstrap helper is available at:
 
-- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/linux_vm_runtime_identity/setup.sh`
+- `/Users/ds/Repositories/Execution-Platform/scripts/70_linux_setup.sh`
 
 That helper installs dependencies, pauses for GitHub SSH-key setup, clones the repository once, verifies the required tools, and then hands control back to this runbook.
 
