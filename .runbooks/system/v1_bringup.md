@@ -48,7 +48,7 @@ export NOMAD_CONFIG="/abs/path/nomad.hcl"
 
 This repository does not ship ready-to-run JSON config files. Build them explicitly from the current validators and the configuration matrix in `/Users/ds/Repositories/Execution-Platform/.docs/system_overview/configuration.md`.
 All service configs used in this runbook must be built from that configuration matrix rather than inferred from older repos, ad-hoc examples, or implicit defaults.
-Example templates are available in `/Users/ds/Repositories/Execution-Platform/configs/examples/`:
+Example templates are available in `/Users/ds/Repositories/Execution-Platform/.examples/config/`:
 
 - `acs.json`
 - `ars.json`

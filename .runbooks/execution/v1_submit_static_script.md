@@ -12,6 +12,10 @@ Submit one real workload end to end through the governed execution path:
 
 This runbook proves the minimal real execution slice only. It does not cover durable run records, ES log/status APIs, cancel flows, sync waiting, or broader runtime orchestration.
 
+For a reference workload that exercises the bounded runtime-identity contract on top of the same static-script execution model, see:
+
+- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md`
+
 In the current bounded slice, runtime networking is controlled only by signed derivation constraints:
 
 - `network_access=false` -> Docker `network_mode = none`
@@ -502,8 +506,8 @@ Common causes:
 - request mode is not `async`
 - artifact type is not `static-script`
 - `required_capabilities` is not empty
-- `network_access` is `true`
 - auth mode resolves to `cgs_proof_legacy`
+- runtime-identity endpoint validation or startup capability probing failed when submit is configured
 
 How to debug:
 
