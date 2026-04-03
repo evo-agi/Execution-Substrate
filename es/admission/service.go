@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
+	signingv2 "execution-platform/contracts/signing/v2"
 	egsmodel "execution-platform/egs/model"
 	esconfig "execution-platform/es/config"
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
 	"execution-platform/observability"
 )
 
@@ -370,10 +370,10 @@ func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResul
 
 	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(
 		esconfig.WorkloadIdentityAttributes{
-			ArtifactClass:      binding.ArtifactClass,
-			WorkloadType:       binding.WorkloadType,
-			ServiceName:        binding.ServiceName,
-			WorkloadIdentityID: binding.WorkloadIdentityID,
+			ArtifactClass:      binding.Payload.Subject.ArtifactClass,
+			WorkloadType:       binding.Payload.Claims.Descriptor.WorkloadType,
+			ServiceName:        binding.Payload.Claims.Descriptor.ServiceName,
+			WorkloadIdentityID: binding.Payload.Claims.Descriptor.WorkloadIdentityID,
 		},
 		esconfig.VaultRuntimeFields{
 			Address:     workloadVaultConfig.VaultConfig.Address,
@@ -412,9 +412,9 @@ func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResul
 			SignerKeyID: provenance.Signature.KeyID,
 		},
 		Workload: WorkloadInfo{
-			Type:               binding.WorkloadType,
-			ServiceName:        binding.ServiceName,
-			WorkloadIdentityID: binding.WorkloadIdentityID,
+			Type:               binding.Payload.Claims.Descriptor.WorkloadType,
+			ServiceName:        binding.Payload.Claims.Descriptor.ServiceName,
+			WorkloadIdentityID: binding.Payload.Claims.Descriptor.WorkloadIdentityID,
 		},
 		WorkloadVault: WorkloadVaultInfo{
 			Digest:      workloadVaultDigest,
@@ -552,7 +552,7 @@ func (s *Service) verifyTrustModelEnvelope(payload signedTrustModelResponse, can
 }
 
 func (s *Service) verifyProvenance(provenance Provenance, artifactDigest string) *Error {
-	if provenance.ArtifactDigest != artifactDigest {
+	if provenance.Payload.Subject.ArtifactDigest != artifactDigest {
 		return &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
@@ -560,8 +560,15 @@ func (s *Service) verifyProvenance(provenance Provenance, artifactDigest string)
 		}
 	}
 
-	canonical := signingv1.CanonicalProvenanceBytes(provenanceClaimsFromDTO(provenance))
-	if err := s.provenanceVerifier.verifyDetached(canonical, provenance.Signature.KeyID, provenance.Signature.Alg, provenance.Signature.Value); err != nil {
+	canonical, err := signingv2.CanonicalProvenancePayload(provenance.Payload)
+	if err != nil {
+		return &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeProvenanceNotFound,
+			Message: "provenance canonicalization failed",
+		}
+	}
+	if err := signingv2.VerifyEnvelope(canonical, provenance.Signature, s.provenanceVerifier.keyID, s.provenanceVerifier.algorithm, s.provenanceVerifier.publicKey); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeProvenanceInvalid,
@@ -572,9 +579,9 @@ func (s *Service) verifyProvenance(provenance Provenance, artifactDigest string)
 }
 
 func (s *Service) verifyDerivationAttestation(attestation DerivationAttestation, artifactDigest string, metadata DerivationMetadata) *Error {
-	if attestation.ArtifactDigest != artifactDigest ||
-		attestation.DerivationSpecDigest != metadata.DerivationSpecDigest ||
-		attestation.OutputID != metadata.OutputID {
+	if attestation.Payload.Subject.ArtifactDigest != artifactDigest ||
+		attestation.Payload.Subject.DerivationSpecDigest != metadata.DerivationSpecDigest ||
+		attestation.Payload.Subject.OutputID != metadata.OutputID {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeDerivationAttestationInvalid,
@@ -582,14 +589,15 @@ func (s *Service) verifyDerivationAttestation(attestation DerivationAttestation,
 		}
 	}
 
-	canonical := signingv1.CanonicalDerivationAttestationBytes(derivationClaimsFromDTO(attestation))
-	if err := signingv1.VerifyDetachedEnvelope(
-		canonical,
-		detachedEnvelopeFromDTO(attestation.SignatureInfo),
-		s.derivationAttestationVerifier.keyID,
-		s.derivationAttestationVerifier.algorithm,
-		s.derivationAttestationVerifier.publicKey,
-	); err != nil {
+	canonical, err := signingv2.CanonicalDerivationAttestationPayload(attestation.Payload)
+	if err != nil {
+		return &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeDerivationAttestationNotFound,
+			Message: "derivation authorization attestation canonicalization failed",
+		}
+	}
+	if err := signingv2.VerifyEnvelope(canonical, attestation.Signature, s.derivationAttestationVerifier.keyID, s.derivationAttestationVerifier.algorithm, s.derivationAttestationVerifier.publicKey); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeDerivationAttestationInvalid,
@@ -600,16 +608,16 @@ func (s *Service) verifyDerivationAttestation(attestation DerivationAttestation,
 }
 
 func (s *Service) verifyWorkloadIdentityBinding(binding WorkloadIdentityBinding, artifactDigest string, metadata DerivationMetadata) *Error {
-	if binding.ArtifactDigest != artifactDigest ||
-		binding.DerivationSpecDigest != metadata.DerivationSpecDigest ||
-		binding.OutputID != metadata.OutputID {
+	if binding.Payload.Subject.ArtifactDigest != artifactDigest ||
+		binding.Payload.Subject.DerivationSpecDigest != metadata.DerivationSpecDigest ||
+		binding.Payload.Subject.OutputID != metadata.OutputID {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeWorkloadIdentityBindingInvalid,
 			Message: "workload identity binding does not match artifact metadata",
 		}
 	}
-	if strings.TrimSpace(binding.WorkloadIdentityID) == "" {
+	if strings.TrimSpace(binding.Payload.Claims.Descriptor.WorkloadIdentityID) == "" {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeWorkloadIdentityBindingInvalid,
@@ -617,14 +625,15 @@ func (s *Service) verifyWorkloadIdentityBinding(binding WorkloadIdentityBinding,
 		}
 	}
 
-	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(workloadIdentityClaimsFromDTO(binding))
-	if err := signingv1.VerifyDetachedEnvelope(
-		canonical,
-		detachedEnvelopeFromDTO(binding.SignatureInfo),
-		s.workloadIdentityBindingVerifier.keyID,
-		s.workloadIdentityBindingVerifier.algorithm,
-		s.workloadIdentityBindingVerifier.publicKey,
-	); err != nil {
+	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(binding.Payload)
+	if err != nil {
+		return &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeWorkloadIdentityBindingNotFound,
+			Message: "workload identity binding canonicalization failed",
+		}
+	}
+	if err := signingv2.VerifyEnvelope(canonical, binding.Signature, s.workloadIdentityBindingVerifier.keyID, s.workloadIdentityBindingVerifier.algorithm, s.workloadIdentityBindingVerifier.publicKey); err != nil {
 		return &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeWorkloadIdentityBindingInvalid,

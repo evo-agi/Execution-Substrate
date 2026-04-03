@@ -2,7 +2,7 @@
 
 ## Overview
 
-The current Go rewrite is a governed artifact and execution system composed of these boundaries:
+The current system is a governed artifact and execution system composed of these boundaries:
 
 - ACS: digest lookup for governed configuration indirection
 - ARS: content-addressed blob storage, integrity verification, and artifact-fact retrieval
@@ -113,15 +113,9 @@ These boundaries exist to prevent hidden coupling and duplicate state.
 
 ## Reference vs Authority
 
-The Go repository is the only authoritative source of truth for system behavior and design:
+This repository is the authoritative source of truth for system behavior and design:
 
 - `/Users/ds/Repositories/Execution-Platform/PLANS.md`
 - `/Users/ds/Repositories/Execution-Platform/.docs/system_overview/`
 - `/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/`
 - current Go code and tests
-
-The Python repository is historical reference only:
-
-- `/Users/ds/Repositories/Monolith`
-
-Python behavior must not be used as ground truth for implementation decisions in the Go rewrite. If Go documentation and Python behavior differ, the Go documentation and Go code control the decision.

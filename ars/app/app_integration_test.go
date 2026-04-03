@@ -1233,11 +1233,11 @@ func seedStorageFixture(t *testing.T) seededStorage {
 		BlobContent: []byte("Hello, Artifact Registry!"),
 		JSONBlob:    []byte(`{"kind":"blob","value":"json"}`),
 
-		ManifestJSON:                           []byte(`{"schema_version":"v1","name":"runtime"}`),
-		ProvenanceJSON:                         []byte(`{"artifact_digest":"artifact","builder":"ags"}`),
-		DerivationMetadataJSON:                 []byte(`{"output_id":"runtime","producer_run_id":"run-1"}`),
-		DerivationAuthorizationAttestationJSON: []byte(`{"signature":"attestation-signature"}`),
-		WorkloadIdentityBindingJSON:            []byte(`{"spiffe_id":"spiffe://monolith.internal/service/execution"}`),
+		ManifestJSON: []byte(`{"schema_version":"v1","name":"runtime"}`),
+		ProvenanceJSON: []byte(`{"payload":{"kind":"provenance","subject":{"artifact_digest":"artifact"},"claims":{"builder_service":"artifact-governance","invoker":{"service":"deployment","principal":"spiffe://monolith.internal/service/deployment"},"policy_decisions":[],"build_log_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","signature_value":"test-signature"}}`),
+		DerivationMetadataJSON: []byte(`{"output_id":"runtime","producer_run_id":"run-1"}`),
+		DerivationAuthorizationAttestationJSON: []byte(`{"payload":{"kind":"derivation_attestation","subject":{"artifact_digest":"artifact","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"claims":{"constraints":{"allowed_toolchains":[],"forbidden_toolchains":[],"os":"linux","arch":"amd64","network_access":false,"writable_paths":[],"forbidden_paths":[],"determinism_expectation":"deterministic"},"policy":{"version":"2026-03-31","expected_artifact_type":"static-script"}}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","signature_value":"test-signature"}}`),
+		WorkloadIdentityBindingJSON: []byte(`{"payload":{"kind":"workload_identity_binding","subject":{"artifact_class":"service","artifact_digest":"artifact","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"claims":{"descriptor":{"workload_type":"service","module_path":"services.execution.ExecutionServer","service_name":"execution","workload_identity_id":"spiffe://monolith.internal/service/execution"},"policy":{"version":"2026-03-31"}}},"signature":{"canonicalization_version":"v2","algorithm":"ed25519","key_id":"ags-artifact-fact-signer","payload_digest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","signature_value":"test-signature"}}`),
 		PayloadBytes:                           []byte("payload archive bytes"),
 	}
 

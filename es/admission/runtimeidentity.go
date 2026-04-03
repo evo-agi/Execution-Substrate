@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// TODO: Do not mention "monolith"
 const (
 	// runtimeIdentityTokenTargetPath remains reserved for a future slice. The
 	// workspace is tmpfs-backed in the current substrate, but ES still does not
@@ -16,6 +17,7 @@ const (
 	runtimeIdentityEndpointEnvValue = "unix://" + runtimeIdentityEndpointTargetPath
 )
 
+// TODO: Do not mention "monolith"
 var reservedRuntimePaths = []string{
 	"/monolith/staged",
 	"/monolith/run",

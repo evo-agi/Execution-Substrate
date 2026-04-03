@@ -6,23 +6,55 @@ This document defines the system-wide contracts that span multiple services. The
 
 ## AGS -> ES Canonicalization Contract
 
-AGS and ES are bound by a fixed producer/consumer contract for signed artifact facts:
+AGS and ES are bound by an explicit versioned producer/consumer contract for signed artifact facts:
 
 - provenance
 - derivation attestation
 - workload identity binding
 
-AGS must emit the exact canonical payloads ES verifies.
+The active signing contract is v2 and is isolated in:
 
-ES must verify those facts using the frozen canonicalization rules and must not silently accept semantically equivalent but differently canonicalized payloads.
+- `/Users/ds/Repositories/Execution-Platform/contracts/signing/v2`
 
-The current v1 canonicalization and detached-envelope rules are isolated in the versioned compatibility package:
+Each signed fact is a two-part document:
 
-- `/Users/ds/Repositories/Execution-Platform/legacy/contracts/signing/v1`
+- `payload`
+- `signature`
 
-That package is the frozen compatibility boundary for signed artifact-fact bytes in the current system version. It is not the place to evolve future canonicalization designs in place.
+`payload` carries the fact body using a versioned v2 shape with:
 
-Any change to those canonicalization rules must update:
+- `kind`
+- `subject`
+- `claims`
+
+`signature` is a detached digest-only envelope with:
+
+- `canonicalization_version = "v2"`
+- `algorithm`
+- `key_id`
+- `payload_digest`
+- `signature_value`
+
+AGS must:
+
+- canonicalize the v2 payload deterministically
+- compute `payload_digest = sha256(canonical payload bytes)`
+- sign the canonical payload bytes
+- emit the v2 payload plus detached envelope together
+
+ES must:
+
+- decode the v2 payload and signature wrapper strictly
+- reconstruct canonical payload bytes from the decoded payload
+- recompute `payload_digest`
+- verify `signature_value` over the canonical payload bytes
+- reject any payload whose digest or signature does not match
+
+The signature envelope must not embed canonical payload bytes.
+
+ES must not silently accept semantically equivalent but differently canonicalized payloads.
+
+Any change to the v2 canonicalization rules must update:
 
 - AGS production
 - ES verification
@@ -235,7 +267,7 @@ ES must not:
 
 ## Reference vs Authority
 
-The Go rewrite is authoritative.
+This repository is authoritative.
 
 Authoritative sources are:
 
@@ -243,5 +275,3 @@ Authoritative sources are:
 - `.docs/system_overview/`
 - `.docs/execution_lifecycle/`
 - current Go code and tests
-
-The Python repository is historical reference only and must not override Go documentation, Go contracts, or Go implementation decisions.

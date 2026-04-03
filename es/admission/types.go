@@ -1,5 +1,7 @@
 package admission
 
+import signingv2 "execution-platform/contracts/signing/v2"
+
 type ExecutionMode string
 
 const (
@@ -156,19 +158,9 @@ type PolicyDecision struct {
 	Result string `json:"result"`
 }
 
-type ProvenanceSignature struct {
-	Alg   string `json:"alg"`
-	KeyID string `json:"key_id"`
-	Value string `json:"value"`
-}
-
 type Provenance struct {
-	ArtifactDigest  string              `json:"artifact_digest"`
-	BuilderService  string              `json:"builder_service"`
-	Invoker         InvokerInfo         `json:"invoker"`
-	PolicyDecisions []PolicyDecision    `json:"policy_decisions"`
-	BuildLogDigest  string              `json:"build_log_digest"`
-	Signature       ProvenanceSignature `json:"signature"`
+	Payload   signingv2.ProvenancePayload `json:"payload"`
+	Signature signingv2.Envelope          `json:"signature"`
 }
 
 type DerivationMetadata struct {
@@ -188,35 +180,12 @@ type DerivationSpecConstraintsInfo struct {
 	DeterminismExpectation string   `json:"determinism_expectation"`
 }
 
-type SignatureInfo struct {
-	PayloadDigest    string `json:"payload_digest"`
-	CanonicalSpecB64 string `json:"canonical_spec_b64"`
-	SignatureValue   string `json:"signature_value"`
-	KeyID            string `json:"key_id"`
-	Algorithm        string `json:"algorithm"`
-}
-
 type DerivationAttestation struct {
-	ArtifactDigest       string                        `json:"artifact_digest"`
-	DerivationSpecDigest string                        `json:"derivation_spec_digest"`
-	OutputID             string                        `json:"output_id"`
-	Constraints          DerivationSpecConstraintsInfo `json:"constraints"`
-	PolicyVersion        string                        `json:"policy_version"`
-	SignatureInfo        SignatureInfo                 `json:"signature_info"`
-	ExpectedArtifactType string                        `json:"expected_artifact_type,omitempty"`
+	Payload   signingv2.DerivationAttestationPayload `json:"payload"`
+	Signature signingv2.Envelope                     `json:"signature"`
 }
 
 type WorkloadIdentityBinding struct {
-	WorkloadType         string        `json:"workload_type"`
-	ModulePath           string        `json:"module_path"`
-	DerivationSpecDigest string        `json:"derivation_spec_digest"`
-	OutputID             string        `json:"output_id"`
-	ArtifactDigest       string        `json:"artifact_digest"`
-	ArtifactClass        string        `json:"artifact_class"`
-	PolicyVersion        string        `json:"policy_version"`
-	SignatureInfo        SignatureInfo `json:"signature_info"`
-	ServiceName          string        `json:"service_name,omitempty"`
-	TargetPlatform       string        `json:"target_platform,omitempty"`
-	Description          string        `json:"description,omitempty"`
-	WorkloadIdentityID   string        `json:"workload_identity_id,omitempty"`
+	Payload   signingv2.WorkloadIdentityBindingPayload `json:"payload"`
+	Signature signingv2.Envelope                       `json:"signature"`
 }

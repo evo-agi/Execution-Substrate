@@ -1,12 +1,12 @@
 package model
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
-
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 type TrustModel struct {
@@ -77,32 +77,34 @@ func (m TrustModel) CanonicalBytes() ([]byte, error) {
 	}
 
 	normalized := m.Normalized()
-	return signingv1.CanonicalTrustModelBytes(signingv1.TrustModelClaims{
-		AllowedSigners:   append([]string(nil), normalized.SignerPolicy.AllowedSigners...),
-		RevokedSigners:   append([]string(nil), normalized.SignerPolicy.RevokedSigners...),
-		RevokedArtifacts: append([]string(nil), normalized.ArtifactPolicy.RevokedArtifacts...),
-		UpdateRevision:   normalized.UpdateRevision,
-		Version:          normalized.Version,
-	})
+	payload := struct {
+		ArtifactPolicy struct {
+			RevokedArtifacts []string `json:"revoked_artifacts"`
+		} `json:"artifact_policy"`
+		SignerPolicy struct {
+			AllowedSigners []string `json:"allowed_signers"`
+			RevokedSigners []string `json:"revoked_signers"`
+		} `json:"signer_policy"`
+		UpdateRevision int    `json:"update_revision"`
+		Version        string `json:"version"`
+	}{
+		UpdateRevision: normalized.UpdateRevision,
+		Version:        normalized.Version,
+	}
+	payload.ArtifactPolicy.RevokedArtifacts = append([]string(nil), normalized.ArtifactPolicy.RevokedArtifacts...)
+	payload.SignerPolicy.AllowedSigners = append([]string(nil), normalized.SignerPolicy.AllowedSigners...)
+	payload.SignerPolicy.RevokedSigners = append([]string(nil), normalized.SignerPolicy.RevokedSigners...)
+
+	return json.Marshal(payload)
 }
 
 func (m TrustModel) PayloadDigest() (string, error) {
-	if err := m.Validate(); err != nil {
-		return "", err
-	}
-
-	normalized := m.Normalized()
-	digest, err := signingv1.TrustModelPayloadDigest(signingv1.TrustModelClaims{
-		AllowedSigners:   append([]string(nil), normalized.SignerPolicy.AllowedSigners...),
-		RevokedSigners:   append([]string(nil), normalized.SignerPolicy.RevokedSigners...),
-		RevokedArtifacts: append([]string(nil), normalized.ArtifactPolicy.RevokedArtifacts...),
-		UpdateRevision:   normalized.UpdateRevision,
-		Version:          normalized.Version,
-	})
+	canonical, err := m.CanonicalBytes()
 	if err != nil {
 		return "", err
 	}
-	return digest, nil
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func normalizeStrings(values []string) []string {

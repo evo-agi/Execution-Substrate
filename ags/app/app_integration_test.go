@@ -32,13 +32,13 @@ import (
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
+	signingv2 "execution-platform/contracts/signing/v2"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
 	"execution-platform/es/admission"
 	esapp "execution-platform/es/app"
 	esconfig "execution-platform/es/config"
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
@@ -149,7 +149,7 @@ func TestPublishIgnoresCallerSuppliedBuilderServiceAndESAccepts(t *testing.T) {
 	entry := stack.loadIndexEntry(t)
 	var provenance map[string]any
 	readJSONBlob(t, stack.rootDir, entry.ProvenanceDigest, &provenance)
-	if got := provenance["builder_service"]; got != "artifact-governance" {
+	if got := provenance["payload"].(map[string]any)["claims"].(map[string]any)["builder_service"]; got != "artifact-governance" {
 		t.Fatalf("expected builder_service artifact-governance, got %v", got)
 	}
 
@@ -269,15 +269,16 @@ func TestPublishRejectsServiceWorkloadMissingServiceName(t *testing.T) {
 	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
 }
 
-func TestPrepareRejectsTamperedCanonicalizationAfterPublish(t *testing.T) {
+func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
 
 	entry := stack.loadIndexEntry(t)
 	var attestation map[string]any
 	readJSONBlob(t, stack.rootDir, entry.DerivationAuthorizationAttestationDigest, &attestation)
-	signatureInfo := attestation["signature_info"].(map[string]any)
-	signatureInfo["canonical_spec_b64"] = base64.StdEncoding.EncodeToString([]byte(`{"tampered":true}`))
+	payload := attestation["payload"].(map[string]any)
+	policy := payload["claims"].(map[string]any)["policy"].(map[string]any)
+	policy["version"] = "tampered"
 	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
 		entry.DerivationAuthorizationAttestationDigest = stack.writeJSONBlob(t, attestation)
 	})
@@ -294,7 +295,7 @@ func TestPrepareRejectsTamperedSignatureAfterPublish(t *testing.T) {
 	var provenance map[string]any
 	readJSONBlob(t, stack.rootDir, entry.ProvenanceDigest, &provenance)
 	signature := provenance["signature"].(map[string]any)
-	signature["value"] = base64.StdEncoding.EncodeToString([]byte("invalid-signature"))
+	signature["signature_value"] = base64.StdEncoding.EncodeToString([]byte("invalid-signature"))
 	stack.replaceIndexedBlobAndRestartARS(t, func(entry *arsindex.Entry) {
 		entry.ProvenanceDigest = stack.writeJSONBlob(t, provenance)
 	})
@@ -1156,10 +1157,10 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		executionClientKeyPath:  executionClientKeyPath,
 		agsClientCertPath:       agsClientCertPath,
 		agsClientKeyPath:        agsClientKeyPath,
-		egsKeyID:                "egs-trust-model-signing-v1",
+		egsKeyID:                "egs-trust-model-signer",
 		egsPublicKeyHex:         hex.EncodeToString(egsPublicKey),
 		egsPrivateKeyHex:        hex.EncodeToString(egsPrivateKey),
-		agsKeyID:                "ags-provenance-signing-v1",
+		agsKeyID:                "ags-artifact-fact-signer",
 		agsPublicKeyHex:         hex.EncodeToString(agsPublicKey),
 		agsPrivateKey:           agsPrivateKey,
 		agsPrivateKeyHex:        hex.EncodeToString(agsPrivateKey),
@@ -1221,44 +1222,37 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string, outputID string) []byte {
 	t.Helper()
 
-	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(signingv1.WorkloadIdentityBindingClaims{
-		Subject: signingv1.WorkloadIdentitySubjectClaims{
+	payload := signingv2.WorkloadIdentityBindingPayload{
+		Kind: signingv2.KindWorkloadIdentityBinding,
+		Subject: signingv2.WorkloadIdentitySubject{
 			ArtifactClass:        "service",
 			ArtifactDigest:       artifactDigest,
 			DerivationSpecDigest: derivationSpecDigest,
 			OutputID:             outputID,
-			PolicyVersion:        "2026-03-31",
 		},
-		Descriptor: signingv1.WorkloadDescriptorClaims{
-			WorkloadType:       "service",
-			ModulePath:         "services.execution.ExecutionServer",
-			ServiceName:        "execution",
-			TargetPlatform:     "docker",
-			Description:        "Execution workload",
-			WorkloadIdentityID: workloadIdentityID,
+		Claims: signingv2.WorkloadIdentityBindingClaims{
+			Descriptor: signingv2.WorkloadDescriptor{
+				WorkloadType:       "service",
+				ModulePath:         "services.execution.ExecutionServer",
+				ServiceName:        "execution",
+				TargetPlatform:     "docker",
+				Description:        "Execution workload",
+				WorkloadIdentityID: workloadIdentityID,
+			},
+			Policy: signingv2.WorkloadPolicy{
+				Version: "2026-03-31",
+			},
 		},
-	})
-	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
+	}
+	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(payload)
+	if err != nil {
+		t.Fatalf("canonicalize workload identity binding: %v", err)
+	}
+	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 
 	return mustMarshalJSON(t, map[string]any{
-		"workload_type":          "service",
-		"module_path":            "services.execution.ExecutionServer",
-		"derivation_spec_digest": derivationSpecDigest,
-		"output_id":              outputID,
-		"artifact_digest":        artifactDigest,
-		"artifact_class":         "service",
-		"policy_version":         "2026-03-31",
-		"service_name":           "execution",
-		"target_platform":        "docker",
-		"description":            "Execution workload",
-		"workload_identity_id":   workloadIdentityID,
-		"signature_info": map[string]any{
-			"payload_digest":     digestBytes(canonical),
-			"canonical_spec_b64": base64.StdEncoding.EncodeToString(canonical),
-			"signature_value":    base64.StdEncoding.EncodeToString(signature),
-			"key_id":             fixture.agsKeyID,
-			"algorithm":          "ed25519",
-		},
+		"payload":   payload,
+		"signature": signature,
 	})
 }
 

@@ -903,8 +903,8 @@ func newTLSFixture(t *testing.T) tlsFixture {
 
 	dir := t.TempDir()
 
-	normalCACert, normalCAKey, normalCAPEM := createCertificateAuthority(t, "Monolith Runtime CA")
-	bootstrapCACert, bootstrapCAKey, bootstrapCAPEM := createCertificateAuthority(t, "Monolith Bootstrap CA (monolith.internal)")
+	normalCACert, normalCAKey, normalCAPEM := createCertificateAuthority(t, "Runtime Test CA")
+	bootstrapCACert, bootstrapCAKey, bootstrapCAPEM := createCertificateAuthority(t, "Bootstrap SPIFFE Test CA")
 
 	serverCertPEM, serverKeyPEM := createLeafCertificate(t, normalCACert, normalCAKey, certificateRequest{
 		commonName: "credential-governance.internal",
@@ -972,7 +972,7 @@ func buildConfig(fixture tlsFixture, idConfPath string) config.Config {
 			TimeoutSeconds:   30,
 		},
 		Security: config.SecurityConfig{
-			BootstrapIssuerCommonName: "Monolith Bootstrap CA (monolith.internal)",
+			BootstrapIssuerCommonName: "Bootstrap SPIFFE Test CA",
 		},
 		ActionProof: config.ActionProofConfig{
 			SecretKey:    "integration-test-secret-key",

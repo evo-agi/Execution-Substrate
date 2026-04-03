@@ -95,7 +95,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	if err != nil {
 		return SubmitResult{}, err
 	}
-	if targetPlatform := strings.TrimSpace(binding.TargetPlatform); targetPlatform != "" && targetPlatform != "docker" {
+	if targetPlatform := strings.TrimSpace(binding.Payload.Claims.Descriptor.TargetPlatform); targetPlatform != "" && targetPlatform != "docker" {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeUnsupportedArtifactType,
@@ -168,7 +168,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		stage,
 		req,
 		prepareResult,
-		attestation.Constraints.NetworkAccess,
+		attestation.Payload.Claims.Constraints.NetworkAccess,
 		taskCPU,
 		taskMemoryMB,
 		env,
@@ -313,13 +313,13 @@ func buildNomadJobSpec(
 	shellArgs := []string{"-ec", wrapper, "entrypoint"}
 	shellArgs = append(shellArgs, req.Invocation.Argv...)
 
-	// TODO: Do not mention "monolith"
 	taskConfig := map[string]any{
 		"image":   cfg.Execution.BaseImage,
 		"command": "/bin/sh",
 		"args":    shellArgs,
 	}
 
+	// TODO: Do not mention "monolith"
 	mounts := []any{
 		map[string]any{
 			"type":     "bind",

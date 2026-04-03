@@ -30,13 +30,13 @@ import (
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
+	signingv2 "execution-platform/contracts/signing/v2"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
 	"execution-platform/es/admission"
 	esapp "execution-platform/es/app"
 	esconfig "execution-platform/es/config"
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
@@ -1002,11 +1002,11 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		executionClientKeyPath:  executionClientKeyPath,
 		agsClientCertPath:       agsClientCertPath,
 		agsClientKeyPath:        agsClientKeyPath,
-		egsKeyID:                "egs-trust-model-signing-v1",
+		egsKeyID:                "egs-trust-model-signer",
 		egsPublicKey:            egsPublicKey,
 		egsPublicKeyHex:         hex.EncodeToString(egsPublicKey),
 		egsPrivateKeyHex:        hex.EncodeToString(egsPrivateKey),
-		agsKeyID:                "ags-provenance-signing-v1",
+		agsKeyID:                "ags-artifact-fact-signer",
 		agsPublicKey:            agsPublicKey,
 		agsPublicKeyHex:         hex.EncodeToString(agsPublicKey),
 		agsPrivateKey:           agsPrivateKey,
@@ -1075,34 +1075,32 @@ func (f *tlsFixture) serverTLSConfig(t *testing.T, serverName string) *tls.Confi
 func signedProvenanceJSON(t *testing.T, fixture *tlsFixture, artifactDigest string) []byte {
 	t.Helper()
 
-	canonical := signingv1.CanonicalProvenanceBytes(signingv1.ProvenanceClaims{
-		ArtifactDigest:   artifactDigest,
-		BuilderService:   "artifact-governance",
-		InvokerService:   "deployment",
-		InvokerPrincipal: "spiffe://monolith.internal/service/deployment",
-		PolicyDecisions: []signingv1.PolicyDecisionEntry{
-			{Rule: "allow", Result: "applied"},
+	payload := signingv2.ProvenancePayload{
+		Kind: signingv2.KindProvenance,
+		Subject: signingv2.ProvenanceSubject{
+			ArtifactDigest: artifactDigest,
 		},
-		BuildLogDigest: labeledDigest("ee"),
-	})
-	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
+		Claims: signingv2.ProvenanceClaims{
+			BuilderService: "artifact-governance",
+			Invoker: signingv2.ProvenanceInvoker{
+				Service:   "deployment",
+				Principal: "spiffe://monolith.internal/service/deployment",
+			},
+			PolicyDecisions: []signingv2.PolicyDecision{
+				{Rule: "allow", Result: "applied"},
+			},
+			BuildLogDigest: labeledDigest("ee"),
+		},
+	}
+	canonical, err := signingv2.CanonicalProvenancePayload(payload)
+	if err != nil {
+		t.Fatalf("canonicalize provenance: %v", err)
+	}
+	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 
 	return mustMarshalJSON(t, map[string]any{
-		"artifact_digest": artifactDigest,
-		"builder_service": "artifact-governance",
-		"invoker": map[string]any{
-			"service":   "deployment",
-			"principal": "spiffe://monolith.internal/service/deployment",
-		},
-		"policy_decisions": []map[string]any{
-			{"rule": "allow", "result": "applied"},
-		},
-		"build_log_digest": labeledDigest("ee"),
-		"signature": map[string]any{
-			"alg":    "ed25519",
-			"key_id": fixture.agsKeyID,
-			"value":  base64.StdEncoding.EncodeToString(signature),
-		},
+		"payload":   payload,
+		"signature": signature,
 	})
 }
 
@@ -1120,87 +1118,86 @@ func signedDerivationAttestationJSON(t *testing.T, fixture *tlsFixture, artifact
 		DeterminismExpectation: "deterministic",
 	}
 
-	canonical := signingv1.CanonicalDerivationAttestationBytes(signingv1.DerivationAttestationClaims{
-		Subject: signingv1.DerivationSubjectClaims{
+	payload := signingv2.DerivationAttestationPayload{
+		Kind: signingv2.KindDerivationAttestation,
+		Subject: signingv2.DerivationSubject{
 			ArtifactDigest:       artifactDigest,
 			DerivationSpecDigest: derivationSpecDigest,
 			OutputID:             "runtime",
 		},
-		Constraints: signingv1.DerivationConstraintsClaims{
-			AllowedToolchains:      []string{},
-			ForbiddenToolchains:    []string{},
-			OS:                     "linux",
-			Arch:                   "amd64",
-			NetworkAccess:          false,
-			WritablePaths:          []string{},
-			ForbiddenPaths:         []string{},
-			DeterminismExpectation: "deterministic",
+		Claims: signingv2.DerivationAttestationClaims{
+			Constraints: signingv2.DerivationConstraints{
+				AllowedToolchains:      []string{},
+				ForbiddenToolchains:    []string{},
+				OS:                     "linux",
+				Arch:                   "amd64",
+				NetworkAccess:          false,
+				WritablePaths:          []string{},
+				ForbiddenPaths:         []string{},
+				DeterminismExpectation: "deterministic",
+			},
+			Policy: signingv2.DerivationPolicy{
+				Version:              "2026-03-31",
+				ExpectedArtifactType: "static-service",
+			},
 		},
-		Policy: signingv1.DerivationPolicyClaims{
-			Version:              "2026-03-31",
-			ExpectedArtifactType: "static-service",
-		},
-	})
-	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
+	}
+	canonical, err := signingv2.CanonicalDerivationAttestationPayload(payload)
+	if err != nil {
+		t.Fatalf("canonicalize derivation attestation: %v", err)
+	}
+	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 
 	return mustMarshalJSON(t, map[string]any{
-		"artifact_digest":        artifactDigest,
-		"derivation_spec_digest": derivationSpecDigest,
-		"output_id":              "runtime",
-		"constraints":            constraints,
-		"policy_version":         "2026-03-31",
-		"expected_artifact_type": "static-service",
-		"signature_info": map[string]any{
-			"payload_digest":     digestBytes(canonical),
-			"canonical_spec_b64": base64.StdEncoding.EncodeToString(canonical),
-			"signature_value":    base64.StdEncoding.EncodeToString(signature),
-			"key_id":             fixture.agsKeyID,
-			"algorithm":          "ed25519",
+		"payload": map[string]any{
+			"kind":    payload.Kind,
+			"subject": payload.Subject,
+			"claims": map[string]any{
+				"constraints": constraints,
+				"policy": map[string]any{
+					"version":                "2026-03-31",
+					"expected_artifact_type": "static-service",
+				},
+			},
 		},
+		"signature": signature,
 	})
 }
 
 func signedWorkloadIdentityBindingJSON(t *testing.T, fixture *tlsFixture, artifactDigest string, derivationSpecDigest string, workloadIdentityID string) []byte {
 	t.Helper()
 
-	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(signingv1.WorkloadIdentityBindingClaims{
-		Subject: signingv1.WorkloadIdentitySubjectClaims{
+	payload := signingv2.WorkloadIdentityBindingPayload{
+		Kind: signingv2.KindWorkloadIdentityBinding,
+		Subject: signingv2.WorkloadIdentitySubject{
 			ArtifactClass:        "service",
 			ArtifactDigest:       artifactDigest,
 			DerivationSpecDigest: derivationSpecDigest,
 			OutputID:             "runtime",
-			PolicyVersion:        "2026-03-31",
 		},
-		Descriptor: signingv1.WorkloadDescriptorClaims{
-			WorkloadType:       "service",
-			ModulePath:         "services.execution.ExecutionServer",
-			ServiceName:        "execution",
-			TargetPlatform:     "docker",
-			Description:        "Execution workload",
-			WorkloadIdentityID: workloadIdentityID,
+		Claims: signingv2.WorkloadIdentityBindingClaims{
+			Descriptor: signingv2.WorkloadDescriptor{
+				WorkloadType:       "service",
+				ModulePath:         "services.execution.ExecutionServer",
+				ServiceName:        "execution",
+				TargetPlatform:     "docker",
+				Description:        "Execution workload",
+				WorkloadIdentityID: workloadIdentityID,
+			},
+			Policy: signingv2.WorkloadPolicy{
+				Version: "2026-03-31",
+			},
 		},
-	})
-	signature := ed25519.Sign(fixture.agsPrivateKey, canonical)
+	}
+	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(payload)
+	if err != nil {
+		t.Fatalf("canonicalize workload identity binding: %v", err)
+	}
+	signature := signingv2.NewEnvelope(canonical, fixture.agsKeyID, "ed25519", base64.StdEncoding.EncodeToString(ed25519.Sign(fixture.agsPrivateKey, canonical)))
 
 	return mustMarshalJSON(t, map[string]any{
-		"workload_type":          "service",
-		"module_path":            "services.execution.ExecutionServer",
-		"derivation_spec_digest": derivationSpecDigest,
-		"output_id":              "runtime",
-		"artifact_digest":        artifactDigest,
-		"artifact_class":         "service",
-		"policy_version":         "2026-03-31",
-		"service_name":           "execution",
-		"target_platform":        "docker",
-		"description":            "Execution workload",
-		"workload_identity_id":   workloadIdentityID,
-		"signature_info": map[string]any{
-			"payload_digest":     digestBytes(canonical),
-			"canonical_spec_b64": base64.StdEncoding.EncodeToString(canonical),
-			"signature_value":    base64.StdEncoding.EncodeToString(signature),
-			"key_id":             fixture.agsKeyID,
-			"algorithm":          "ed25519",
-		},
+		"payload":   payload,
+		"signature": signature,
 	})
 }
 

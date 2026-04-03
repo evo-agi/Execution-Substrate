@@ -21,7 +21,7 @@ import (
 
 	"execution-platform/ags/config"
 	"execution-platform/ags/sign"
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
+	signingv2 "execution-platform/contracts/signing/v2"
 	"execution-platform/observability"
 )
 
@@ -198,78 +198,110 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 
 func (s *Service) buildProvenance(artifactDigest string, input ProvenanceInput, invoker InvokerInfo) (Provenance, error) {
 	provenance := Provenance{
-		ArtifactDigest:  artifactDigest,
-		BuilderService:  builderServiceName,
-		Invoker:         invoker,
-		PolicyDecisions: normalizePolicyDecisions(input.PolicyDecisions),
-		BuildLogDigest:  strings.TrimSpace(input.BuildLogDigest),
+		Payload: signingv2.ProvenancePayload{
+			Kind: signingv2.KindProvenance,
+			Subject: signingv2.ProvenanceSubject{
+				ArtifactDigest: artifactDigest,
+			},
+			Claims: signingv2.ProvenanceClaims{
+				BuilderService: builderServiceName,
+				Invoker: signingv2.ProvenanceInvoker{
+					Service:   invoker.Service,
+					Principal: invoker.Principal,
+				},
+				PolicyDecisions: toSigningPolicyDecisions(normalizePolicyDecisions(input.PolicyDecisions)),
+				BuildLogDigest:  strings.TrimSpace(input.BuildLogDigest),
+			},
+		},
 	}
 
-	canonical := signingv1.CanonicalProvenanceBytes(provenanceClaimsFromDTO(provenance))
+	canonical, err := signingv2.CanonicalProvenancePayload(provenance.Payload)
+	if err != nil {
+		return Provenance{}, err
+	}
 	signature, err := s.signer.SignDetached(canonical)
 	if err != nil {
 		return Provenance{}, err
 	}
-	provenance.Signature = ProvenanceSignature{
-		Alg:   s.signer.Algorithm(),
-		KeyID: s.signer.KeyID(),
-		Value: signature,
-	}
+	provenance.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
 	return provenance, nil
 }
 
 func (s *Service) buildDerivationAttestation(artifactDigest string, metadata DerivationMetadata, input DerivationAttestationInput) (DerivationAttestation, error) {
 	attestation := DerivationAttestation{
-		ArtifactDigest:       artifactDigest,
-		DerivationSpecDigest: metadata.DerivationSpecDigest,
-		OutputID:             metadata.OutputID,
-		Constraints:          input.Constraints,
-		PolicyVersion:        strings.TrimSpace(input.PolicyVersion),
-		ExpectedArtifactType: strings.TrimSpace(input.ExpectedArtifactType),
+		Payload: signingv2.DerivationAttestationPayload{
+			Kind: signingv2.KindDerivationAttestation,
+			Subject: signingv2.DerivationSubject{
+				ArtifactDigest:       artifactDigest,
+				DerivationSpecDigest: metadata.DerivationSpecDigest,
+				OutputID:             metadata.OutputID,
+			},
+			Claims: signingv2.DerivationAttestationClaims{
+				Constraints: signingv2.DerivationConstraints{
+					AllowedToolchains:      cloneStringsPreserveShape(input.Constraints.AllowedToolchains),
+					ForbiddenToolchains:    cloneStringsPreserveShape(input.Constraints.ForbiddenToolchains),
+					OS:                     input.Constraints.OS,
+					Arch:                   input.Constraints.Arch,
+					NetworkAccess:          input.Constraints.NetworkAccess,
+					WritablePaths:          cloneStringsPreserveShape(input.Constraints.WritablePaths),
+					ForbiddenPaths:         cloneStringsPreserveShape(input.Constraints.ForbiddenPaths),
+					DeterminismExpectation: input.Constraints.DeterminismExpectation,
+				},
+				Policy: signingv2.DerivationPolicy{
+					Version:              strings.TrimSpace(input.PolicyVersion),
+					ExpectedArtifactType: strings.TrimSpace(input.ExpectedArtifactType),
+				},
+			},
+		},
 	}
 
-	canonical := signingv1.CanonicalDerivationAttestationBytes(derivationClaimsFromDTO(attestation))
+	canonical, err := signingv2.CanonicalDerivationAttestationPayload(attestation.Payload)
+	if err != nil {
+		return DerivationAttestation{}, err
+	}
 	signature, err := s.signer.SignDetached(canonical)
 	if err != nil {
 		return DerivationAttestation{}, err
 	}
-	attestation.SignatureInfo = SignatureInfo{
-		PayloadDigest:    digestBytes(canonical),
-		CanonicalSpecB64: base64.StdEncoding.EncodeToString(canonical),
-		SignatureValue:   signature,
-		KeyID:            s.signer.KeyID(),
-		Algorithm:        s.signer.Algorithm(),
-	}
+	attestation.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
 	return attestation, nil
 }
 
 func (s *Service) buildWorkloadIdentityBinding(artifactDigest string, metadata DerivationMetadata, input WorkloadIdentityBindingInput) (WorkloadIdentityBinding, error) {
 	binding := WorkloadIdentityBinding{
-		WorkloadType:         strings.TrimSpace(input.WorkloadType),
-		ModulePath:           strings.TrimSpace(input.ModulePath),
-		DerivationSpecDigest: metadata.DerivationSpecDigest,
-		OutputID:             metadata.OutputID,
-		ArtifactDigest:       artifactDigest,
-		ArtifactClass:        strings.TrimSpace(input.ArtifactClass),
-		PolicyVersion:        strings.TrimSpace(input.PolicyVersion),
-		ServiceName:          strings.TrimSpace(input.ServiceName),
-		TargetPlatform:       strings.TrimSpace(input.TargetPlatform),
-		Description:          strings.TrimSpace(input.Description),
-		WorkloadIdentityID:   strings.TrimSpace(input.WorkloadIdentityID),
+		Payload: signingv2.WorkloadIdentityBindingPayload{
+			Kind: signingv2.KindWorkloadIdentityBinding,
+			Subject: signingv2.WorkloadIdentitySubject{
+				ArtifactClass:        strings.TrimSpace(input.ArtifactClass),
+				ArtifactDigest:       artifactDigest,
+				DerivationSpecDigest: metadata.DerivationSpecDigest,
+				OutputID:             metadata.OutputID,
+			},
+			Claims: signingv2.WorkloadIdentityBindingClaims{
+				Descriptor: signingv2.WorkloadDescriptor{
+					WorkloadType:       strings.TrimSpace(input.WorkloadType),
+					ModulePath:         strings.TrimSpace(input.ModulePath),
+					ServiceName:        strings.TrimSpace(input.ServiceName),
+					TargetPlatform:     strings.TrimSpace(input.TargetPlatform),
+					Description:        strings.TrimSpace(input.Description),
+					WorkloadIdentityID: strings.TrimSpace(input.WorkloadIdentityID),
+				},
+				Policy: signingv2.WorkloadPolicy{
+					Version: strings.TrimSpace(input.PolicyVersion),
+				},
+			},
+		},
 	}
 
-	canonical := signingv1.CanonicalWorkloadIdentityBindingBytes(workloadIdentityClaimsFromDTO(binding))
+	canonical, err := signingv2.CanonicalWorkloadIdentityBindingPayload(binding.Payload)
+	if err != nil {
+		return WorkloadIdentityBinding{}, err
+	}
 	signature, err := s.signer.SignDetached(canonical)
 	if err != nil {
 		return WorkloadIdentityBinding{}, err
 	}
-	binding.SignatureInfo = SignatureInfo{
-		PayloadDigest:    digestBytes(canonical),
-		CanonicalSpecB64: base64.StdEncoding.EncodeToString(canonical),
-		SignatureValue:   signature,
-		KeyID:            s.signer.KeyID(),
-		Algorithm:        s.signer.Algorithm(),
-	}
+	binding.Signature = signingv2.NewEnvelope(canonical, s.signer.KeyID(), s.signer.Algorithm(), signature)
 	return binding, nil
 }
 
@@ -369,8 +401,8 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 }
 
 func expectedInvokerForCaller(caller CallerIdentity) (InvokerInfo, *Error) {
+	// TODO: Do not mention "monolith"
 	switch caller.Path {
-		// TODO: Do not mention "monolith"
 		case "service/deployment":
 			return InvokerInfo{
 				Service:   "deployment",
@@ -552,6 +584,24 @@ func normalizePolicyDecisions(decisions []PolicyDecision) []PolicyDecision {
 		}
 		return normalized[i].Rule < normalized[j].Rule
 	})
+	return normalized
+}
+
+func cloneStringsPreserveShape(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string{}, values...)
+}
+
+func toSigningPolicyDecisions(decisions []PolicyDecision) []signingv2.PolicyDecision {
+	normalized := make([]signingv2.PolicyDecision, 0, len(decisions))
+	for _, decision := range decisions {
+		normalized = append(normalized, signingv2.PolicyDecision{
+			Rule:   decision.Rule,
+			Result: decision.Result,
+		})
+	}
 	return normalized
 }
 

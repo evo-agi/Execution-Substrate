@@ -26,7 +26,6 @@ import (
 	"execution-platform/egs/app"
 	"execution-platform/egs/config"
 	"execution-platform/egs/model"
-	signingv1 "execution-platform/legacy/contracts/signing/v1"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {
@@ -206,7 +205,7 @@ func TestPayloadDigestIsDeterministicAcrossSignerOrdering(t *testing.T) {
 
 	cfgA := buildConfig(fixture)
 	cfgB := buildConfig(fixture)
-	cfgB.TrustModel.SignerPolicy.AllowedSigners = []string{"ags-signing-key-v2", "ags-signing-key-v1"}
+	cfgB.TrustModel.SignerPolicy.AllowedSigners = []string{"ags-artifact-fact-signer-b", "ags-artifact-fact-signer-a"}
 	cfgB.TrustModel.SignerPolicy.RevokedSigners = []string{"ags-signing-key-compromised", "ags-signing-key-old"}
 	cfgA.TrustModel.SignerPolicy.RevokedSigners = []string{"ags-signing-key-old", "ags-signing-key-compromised"}
 	cfgB.TrustModel.ArtifactPolicy.RevokedArtifacts = []string{cfgA.TrustModel.ArtifactPolicy.RevokedArtifacts[1], cfgA.TrustModel.ArtifactPolicy.RevokedArtifacts[0]}
@@ -419,8 +418,8 @@ func buildConfig(fixture *tlsFixture) config.Config {
 		TrustModel: model.TrustModel{
 			SignerPolicy: model.SignerPolicy{
 				AllowedSigners: []string{
-					"ags-signing-key-v1",
-					"ags-signing-key-v2",
+					"ags-artifact-fact-signer-a",
+					"ags-artifact-fact-signer-b",
 				},
 				RevokedSigners: []string{
 					"ags-signing-key-old",
@@ -493,7 +492,7 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		publicKey:      publicKey,
 		privateKeyHex:  hex.EncodeToString(privateKey),
 		publicKeyHex:   hex.EncodeToString(publicKey),
-		keyID:          "egs-trust-model-signing-v1",
+		keyID:          "egs-trust-model-signer",
 		sourceDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		bootstrapCACN:  "bootstrap-ca",
 	}
@@ -641,13 +640,17 @@ func canonicalTrustModelBytes(payload struct {
 	UpdateRevision int    `json:"update_revision"`
 	Version        string `json:"version"`
 }) []byte {
-	encoded, err := signingv1.CanonicalTrustModelBytes(signingv1.TrustModelClaims{
-		AllowedSigners:   append([]string(nil), payload.SignerPolicy.AllowedSigners...),
-		RevokedSigners:   append([]string(nil), payload.SignerPolicy.RevokedSigners...),
-		RevokedArtifacts: append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...),
-		UpdateRevision:   payload.UpdateRevision,
-		Version:          payload.Version,
-	})
+	encoded, err := model.TrustModel{
+		SignerPolicy: model.SignerPolicy{
+			AllowedSigners: append([]string(nil), payload.SignerPolicy.AllowedSigners...),
+			RevokedSigners: append([]string(nil), payload.SignerPolicy.RevokedSigners...),
+		},
+		ArtifactPolicy: model.ArtifactPolicy{
+			RevokedArtifacts: append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...),
+		},
+		UpdateRevision: payload.UpdateRevision,
+		Version:        payload.Version,
+	}.CanonicalBytes()
 	if err != nil {
 		panic(err)
 	}
