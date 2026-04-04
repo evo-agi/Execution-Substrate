@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+OPERATOR_FAILURES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPERATOR_FAILURES_REPO_ROOT="$(cd "${OPERATOR_FAILURES_DIR}/../.." && pwd)"
+OPERATOR_TROUBLESHOOTING_RUNBOOK="${OPERATOR_FAILURES_REPO_ROOT}/.runbooks/system/v1_bringup.md"
+
 operator_category_auth() {
   printf '%s\n' "caller authorization / credential failure"
 }
@@ -28,34 +32,41 @@ operator_category_input() {
   printf '%s\n' "operator misuse / invalid input"
 }
 
+operator_troubleshooting_reference() {
+  printf '%s\n' "See ${OPERATOR_TROUBLESHOOTING_RUNBOOK} for the operator troubleshooting matrix."
+}
+
 operator_next_step_for_category() {
   local category=$1
   local phase=${2:-}
+  local reference
+
+  reference="$(operator_troubleshooting_reference)"
 
   case "${category}" in
     "$(operator_category_auth)")
-      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator, then retry ${phase}."
+      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator, then retry ${phase}. ${reference}"
       ;;
     "$(operator_category_trust)")
-      printf '%s\n' "Check the published artifact, aggregate evidence, and EGS trust inputs before retrying ${phase}."
+      printf '%s\n' "Check the published artifact, aggregate evidence, and EGS trust inputs before retrying ${phase}. ${reference}"
       ;;
     "$(operator_category_runtime_config)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check, then confirm ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest points at a readable ARS JSON blob."
+      printf '%s\n' "Re-run scripts/01_bringup.sh check, then confirm ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest points at a readable ARS JSON blob. ${reference}"
       ;;
     "$(operator_category_readiness)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check and restore service health or prepare-ready state before retrying ${phase}."
+      printf '%s\n' "Re-run scripts/01_bringup.sh check and restore service health or prepare-ready state before retrying ${phase}. ${reference}"
       ;;
     "$(operator_category_substrate)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying ${phase}."
+      printf '%s\n' "Re-run scripts/01_bringup.sh check, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying ${phase}. ${reference}"
       ;;
     "$(operator_category_execution)")
-      printf '%s\n' "Inspect lifecycle status/logs for the run. Non-success runs retain host staging under execution.staging_root_dir/<run_id> for debugging in this slice."
+      printf '%s\n' "Inspect lifecycle status/logs for the run. Non-success runs retain host staging under execution.staging_root_dir/<run_id> for debugging in this slice. ${reference}"
       ;;
     "$(operator_category_input)")
-      printf '%s\n' "Check request JSON, env vars, readable file paths, and run_id values before retrying ${phase}."
+      printf '%s\n' "Check request JSON, env vars, readable file paths, and run_id values before retrying ${phase}. ${reference}"
       ;;
     *)
-      printf '%s\n' "Inspect the response below and retry once the underlying issue is clear."
+      printf '%s\n' "Inspect the response below and retry once the underlying issue is clear. ${reference}"
       ;;
   esac
 }

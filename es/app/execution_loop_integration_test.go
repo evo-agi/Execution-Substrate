@@ -140,6 +140,9 @@ exit 7
 	if strings.TrimSpace(result.Summary.NextStep) == "" {
 		t.Fatalf("expected next_step guidance, got %+v", result.Summary)
 	}
+	if !strings.Contains(result.Summary.NextStep, ".runbooks/system/v1_bringup.md") {
+		t.Fatalf("expected troubleshooting matrix reference in next_step, got %+v", result.Summary)
+	}
 	if !result.Summary.Terminal {
 		t.Fatalf("expected terminal failure summary, got %+v", result.Summary)
 	}

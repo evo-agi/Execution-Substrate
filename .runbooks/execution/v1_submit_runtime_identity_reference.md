@@ -76,15 +76,9 @@ scripts/01_bringup.sh check
 
 For this full-profile runbook, do not continue unless the check reports `submit-ready: true`.
 
-If the later publish / prepare / submit / lifecycle helpers fail, treat `scripts/01_bringup.sh check` as the readiness baseline and then use the bounded failure categories:
+If the later publish / prepare / submit / lifecycle helpers fail, first re-run `scripts/01_bringup.sh check`, then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category.
 
-- caller authorization / credential failure
-- trust / evidence / admission failure
-- runtime-config reference or blob failure
-- service health / readiness failure
-- substrate failure (Docker / Nomad / runtime availability)
-- execution failure after successful submit
-- operator misuse / invalid input
+Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.
 
 ## 6. Optional Local Reference Helpers
 

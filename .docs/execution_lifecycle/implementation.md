@@ -382,6 +382,7 @@ Operator helper ownership in the current slice:
   - substrate failure (Docker / Nomad / runtime availability)
   - execution failure after successful submit
   - operator misuse / invalid input
+- the compact troubleshooting matrix for those categories lives in `/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md`; later helpers point operators there for the matching logs, readiness checks, staging-inspection guidance, and next action
 - `scripts/50_lifecycle.sh` now observes execution strictly through public ES lifecycle endpoints rather than through Nomad job/eval IDs.
 
 ## 13. Current simplifications

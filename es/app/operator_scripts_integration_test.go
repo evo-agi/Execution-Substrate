@@ -428,6 +428,43 @@ func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
 	}
 }
 
+func TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	runbookPath := filepath.Join(repoRoot, ".runbooks", "system", "v1_bringup.md")
+
+	body, err := os.ReadFile(runbookPath)
+	if err != nil {
+		t.Fatalf("read runbook: %v", err)
+	}
+
+	text := string(body)
+	requiredSnippets := []string{
+		"## 5. Operator Troubleshooting Matrix",
+		"caller authorization / credential failure",
+		"trust / evidence / admission failure",
+		"runtime-config reference or blob failure",
+		"service health / readiness failure",
+		"substrate failure (Docker / Nomad / runtime availability)",
+		"execution failure after successful submit",
+		"operator misuse / invalid input",
+		"scripts/01_bringup.sh check",
+		"ars.log",
+		"egs.log",
+		"ags.log",
+		"es.log",
+		"nomad.log",
+		"Docker daemon logs are outside this repo",
+		"execution.staging_root_dir/<run_id>",
+		"if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("expected %q in troubleshooting matrix, got %s", snippet, text)
+		}
+	}
+}
+
 func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
@@ -539,6 +576,9 @@ func TestPublishScriptCategorizesAuthorizationFailure(t *testing.T) {
 	if !strings.Contains(text, "Caller not authorized for this operation") {
 		t.Fatalf("expected caller authorization message, got %s", text)
 	}
+	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
+	}
 }
 
 func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
@@ -584,6 +624,9 @@ func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, "service code: workload_zone_vault_unavailable") {
 		t.Fatalf("expected workload-zone vault error code, got %s", text)
+	}
+	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 }
 
@@ -631,6 +674,9 @@ func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, "service code: execution_runtime_unavailable") && !strings.Contains(text, "service code: submission_failed") {
 		t.Fatalf("expected runtime availability or submission failure code, got %s", text)
+	}
+	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 }
 
@@ -685,6 +731,9 @@ exit 7
 	}
 	if !strings.Contains(text, "exit_code=7") {
 		t.Fatalf("expected exit code guidance in lifecycle output, got %s", text)
+	}
+	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
+		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
 }
 

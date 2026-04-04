@@ -38,16 +38,10 @@ For this full-profile runbook, do not continue unless the check reports `submit-
 
 When later helpers fail, keep the bring-up check as the readiness source of truth:
 
-- readiness or substrate trouble:
-  - re-run `scripts/01_bringup.sh check`
-- caller authorization / credential failure:
-  - check `OPERATOR_CERT` and `OPERATOR_KEY` for `spiffe://execution.internal/operator`
-- trust / evidence / admission failure:
-  - inspect the publish response, artifact digest, and trust inputs before retrying `:prepare` or `:submit`
-- runtime-config reference or blob failure:
-  - confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a valid ARS blob
-- execution failure after successful submit:
-  - inspect `scripts/50_lifecycle.sh` output, workload logs, and retained staging for the `run_id`
+- first re-run `scripts/01_bringup.sh check`
+- then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
+
+Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.
 
 ## 3. Create The Artifact Payload
 

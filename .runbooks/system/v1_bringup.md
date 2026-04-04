@@ -205,31 +205,42 @@ For `prepare-only`, success still means:
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
 - `submit-ready` is reported as skipped for that profile
 
-## 5. Failure Guidance
+## 5. Operator Troubleshooting Matrix
 
-Use the current bounded failure classes when operator-facing helpers fail:
+Use this matrix after an operator-facing helper already surfaced one of the bounded failure categories. Keep `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` as the readiness source of truth. Later helpers should point back here rather than inventing a second readiness story.
 
-- caller authorization / credential failure
-  - check `OPERATOR_CERT` and `OPERATOR_KEY`
-  - confirm the client identity is `spiffe://execution.internal/operator`
-- trust / evidence / admission failure
-  - check the published artifact, aggregate evidence, and EGS trust model inputs
-- runtime-config reference or blob failure
-  - re-run `scripts/01_bringup.sh check`
-  - confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` points at a readable ARS blob with the expected JSON shape
-- service health / readiness failure
-  - re-run `scripts/01_bringup.sh check`
-  - restore service health or prepare-ready before retrying publish / prepare / submit
-- substrate failure (Docker / Nomad / runtime availability)
-  - re-run `scripts/01_bringup.sh check`
-  - confirm Docker is reachable and Nomad has a leader plus a ready client
-- execution failure after successful submit
-  - inspect `scripts/50_lifecycle.sh` output and workload logs
-  - in this slice, failed, canceled, lost, or otherwise ambiguous runs retain host staging under `execution.staging_root_dir/<run_id>` for debugging
-- operator misuse / invalid input
-  - validate request JSON, env vars, readable file paths, and `run_id`
+Managed bring-up logs live under:
 
-Later helpers still rely on this bring-up/check path as the readiness source of truth. They should not be treated as a replacement readiness probe.
+```bash
+${BRINGUP_DIR:-/Users/ds/Repositories/Execution-Platform/.tmp/bringup}/logs
+```
+
+The current one-path bring-up writes:
+
+- `ars.log`
+- `egs.log`
+- `ags.log`
+- `es.log`
+- `nomad.log` for `BRINGUP_PROFILE=full`
+
+Docker daemon logs are outside this repo and are only a useful next step for substrate trouble.
+
+| Failure class | Usually means | Source of truth | Most relevant logs | Retained staging useful? | Most useful next action |
+| --- | --- | --- | --- | --- | --- |
+| caller authorization / credential failure | The helper reached AGS or ES, but the caller cert/key was wrong for that operation or TLS auth failed before the request was accepted. | The failing helper itself (`scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, or `scripts/50_lifecycle.sh`). This is not a bring-up readiness failure. | `ags.log` for publish; `es.log` for prepare / submit / lifecycle. | No. There is no admitted run to inspect. | Verify `OPERATOR_CERT` and `OPERATOR_KEY`, confirm the caller is `spiffe://execution.internal/operator`, then retry. |
+| trust / evidence / admission failure | The published artifact, aggregate evidence, signer policy, or admission inputs were rejected after auth succeeded. | The failing publish / prepare / submit helper. | `ags.log` for publish-side evidence handling, `es.log` for prepare / submit rejection, `egs.log` when signer or artifact trust policy is the likely cause. | No. The failure is before runtime handoff. | Check the published artifact digest, aggregate evidence, and EGS trust inputs before retrying. |
+| runtime-config reference or blob failure | ES runtime-config points at a missing, unreadable, or structurally invalid workload-zone Vault blob in ARS. | `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`. | `es.log` and `ars.log`. | No. Fix the referenced blob first. | Re-run `scripts/01_bringup.sh check`, then confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a readable ARS JSON blob with the expected shape. |
+| service health / readiness failure | A required service is down, unhealthy, or not ready enough to claim service health or prepare-ready. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh`. | The failing service log under `logs/`; if ES health is failing because an upstream dependency is sick, inspect that upstream log too. | No. Readiness must be restored first. | Re-run `scripts/01_bringup.sh check`, restore service health or prepare-ready, then retry publish / prepare / submit. |
+| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info` fails. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying. |
+| execution failure after successful submit | `:submit` returned a `run_id`, but the workload later failed, was canceled, got lost, or otherwise ended non-successfully. | `scripts/50_lifecycle.sh` or `scripts/60_execute_loop.sh`. | Workload logs from `scripts/50_lifecycle.sh` or the per-run `logs.txt` from `scripts/60_execute_loop.sh`, plus `es.log` and `nomad.log` if the runtime handoff itself looks suspicious. | Yes, but only for non-success outcomes with a real `run_id`. | Inspect lifecycle status/logs for the `run_id`, then inspect retained host staging under `execution.staging_root_dir/<run_id>` if the run failed, was canceled, was lost, or never reached clean success. |
+| operator misuse / invalid input | The helper caught missing env vars, unreadable files, malformed JSON, or an invalid `run_id`, or the service returned a bounded input-validation error. | The failing helper itself. | Usually none. If the malformed request reached a service, inspect `ags.log` or `es.log` for the matching `400`. | No. Fix the input first. | Validate request JSON, env vars, readable file paths, and `run_id`, then retry. |
+
+Staging inspection guidance in this slice:
+
+- staging is only useful after a successful `:submit` already returned a real `run_id`
+- failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain `execution.staging_root_dir/<run_id>`
+- terminal success may remove `execution.staging_root_dir/<run_id>` best-effort once ES observes success through `status` or `logs`
+- if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step
 
 ## 6. First Execution Verification
 
