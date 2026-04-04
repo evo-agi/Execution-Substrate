@@ -155,14 +155,12 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 - `/monolith/run`
 - `/monolith/runtime-identity`
 - `/monolith/runtime-identity/endpoint`
-- `/monolith/runtime-identity/vault-token`
 
 Design-level meaning:
 
 - ES reserves the runtime-identity workspace and injects the current endpoint environment convention.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
-- ES does not populate or manage token material at the reserved token path.
 - ES does not implement the workload-side runtime identity endpoint.
 
 Lifecycle implication:

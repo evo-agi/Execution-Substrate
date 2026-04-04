@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1210,6 +1211,7 @@ type nomadHarness struct {
 
 type nomadAllocationSummary struct {
 	ID           string                    `json:"ID"`
+	ModifyIndex  uint64                    `json:"ModifyIndex"`
 	ClientStatus string                    `json:"ClientStatus"`
 	TaskStates   map[string]nomadTaskState `json:"TaskStates"`
 }
@@ -1408,6 +1410,7 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(45 * time.Second)
+	var lastObserved *nomadAllocationSummary
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/job/" + jobID + "/allocations")
 		if err != nil {
@@ -1418,21 +1421,45 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 		decodeErr := json.NewDecoder(response.Body).Decode(&allocations)
 		response.Body.Close()
 		if decodeErr == nil && len(allocations) > 0 {
-			alloc := n.fetchAllocation(t, allocations[0].ID)
-			switch alloc.ClientStatus {
-			case "complete", "failed", "lost":
-				return alloc
-			}
-			for _, taskState := range alloc.TaskStates {
-				if taskState.Failed || taskState.State == "dead" {
+			sort.SliceStable(allocations, func(i, j int) bool {
+				return allocations[i].ModifyIndex > allocations[j].ModifyIndex
+			})
+			alloc, ok := n.tryFetchAllocation(allocations[0].ID)
+			if ok {
+				lastObserved = &alloc
+				switch alloc.ClientStatus {
+				case "complete", "failed", "lost":
 					return alloc
 				}
 			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Fatalf("nomad allocation for job %s did not reach a terminal state", jobID)
+
+	output, _ := os.ReadFile(n.outputPath)
+	if lastObserved != nil {
+		t.Fatalf("nomad allocation for job %s did not reach a terminal client status; last allocation=%+v logs=%s", jobID, *lastObserved, strings.TrimSpace(string(output)))
+	}
+	t.Fatalf("nomad allocation for job %s did not reach a terminal state; logs=%s", jobID, strings.TrimSpace(string(output)))
 	return nomadAllocationSummary{}
+}
+
+func (n *nomadHarness) tryFetchAllocation(allocationID string) (nomadAllocationSummary, bool) {
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/allocation/" + allocationID)
+	if err != nil {
+		return nomadAllocationSummary{}, false
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nomadAllocationSummary{}, false
+	}
+
+	var payload nomadAllocationSummary
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nomadAllocationSummary{}, false
+	}
+	return payload, true
 }
 
 func (n *nomadHarness) fetchAllocation(t *testing.T, allocationID string) nomadAllocationSummary {

@@ -396,7 +396,7 @@ Current lifecycle mapping:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES admits only deployment and operator callers today.
-- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
+- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns admission facts only.
 - `:prepare` does not create run IDs, scheduler metadata, or durable execution state.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact descriptor at `/v1/artifacts/{artifact_digest}/descriptor`
@@ -629,7 +629,6 @@ Current reserved workspace and paths:
 
 - `/monolith/runtime-identity/`
 - `/monolith/runtime-identity/endpoint`
-- `/monolith/runtime-identity/vault-token`
 
 Current environment marker:
 
@@ -641,6 +640,7 @@ Current runtime rules:
 - The reserved runtime-identity workspace is not caller-controlled.
 - Caller mounts must not overlap reserved runtime paths.
 - ES also injects non-secret Vault auth metadata through environment variables.
+- ES does not apply per-workload selector overrides when shaping that Vault auth metadata in the current slice.
 
 ### Current invariants
 
@@ -649,7 +649,7 @@ Current runtime rules:
 - ES reserves the runtime-identity workspace and validates that caller mount targets do not overlap it.
 - The runtime-identity workspace is tmpfs-backed, writable, and not persisted into host staging.
 - ES does not fetch, mint, or store identity material.
-- ES does not populate `/monolith/runtime-identity/vault-token` in the current slice.
+- ES derives `workload_vault` from workload-zone vault runtime fields plus the locally configured default auth mode.
 - ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
 - Capability-sensitive behavior in this area must not rely on OS-based branching or fallback behavior.
 
@@ -668,7 +668,6 @@ Current runtime rules:
 `Temporary compatibility edge`
 
 - The specific `/monolith/...` path conventions are active today but are still conventions, not a declared permanent architecture.
-- `/monolith/runtime-identity/vault-token` is currently reserved for future use and remains unused by ES.
 
 ### Reopened seams
 

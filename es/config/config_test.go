@@ -46,3 +46,44 @@ func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *te
 		t.Fatalf("expected explicit tmpfs size to be preserved, got %d", got)
 	}
 }
+
+func TestWorkloadVaultAuthResolveUsesVaultRuntimeFields(t *testing.T) {
+	cfg := WorkloadVaultAuthConfig{
+		DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
+	}
+
+	plan, err := cfg.Resolve(VaultRuntimeFields{
+		Address:     "https://vault.internal:8200",
+		AuthMount:   "jwt",
+		AuthRole:    "service_execution",
+		JWTAudience: "vault",
+	})
+	if err != nil {
+		t.Fatalf("expected workload vault auth plan to resolve, got %v", err)
+	}
+
+	if plan.Mode != WorkloadVaultAuthModeVaultIdentityJWT {
+		t.Fatalf("expected default auth mode to be preserved, got %q", plan.Mode)
+	}
+	if plan.Address != "https://vault.internal:8200" || plan.AuthMount != "jwt" || plan.AuthRole != "service_execution" || plan.JWTAudience != "vault" {
+		t.Fatalf("unexpected resolved plan: %+v", plan)
+	}
+}
+
+func TestWorkloadVaultAuthResolveRejectsMissingVaultRole(t *testing.T) {
+	cfg := WorkloadVaultAuthConfig{
+		DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
+	}
+
+	_, err := cfg.Resolve(VaultRuntimeFields{
+		Address:     "https://vault.internal:8200",
+		AuthMount:   "jwt",
+		JWTAudience: "vault",
+	})
+	if err == nil {
+		t.Fatalf("expected workload vault auth plan resolution to fail without auth role")
+	}
+	if !strings.Contains(err.Error(), "auth role") {
+		t.Fatalf("expected missing auth role error, got %v", err)
+	}
+}

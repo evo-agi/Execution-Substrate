@@ -201,7 +201,6 @@ type preparedArtifact struct {
 	payloadDigest  string
 	signerKeyID    string
 	workload       WorkloadInfo
-	workloadAttrs  esconfig.WorkloadIdentityAttributes
 	targetPlatform string
 	networkAccess  bool
 }
@@ -376,15 +375,12 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 		return preparedAdmission{}, err
 	}
 
-	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(
-		artifact.workloadAttrs,
-		esconfig.VaultRuntimeFields{
-			Address:     workloadVaultConfig.VaultConfig.Address,
-			AuthMount:   workloadVaultConfig.VaultConfig.AuthMount,
-			AuthRole:    workloadVaultConfig.VaultConfig.AuthRole,
-			JWTAudience: workloadVaultConfig.VaultConfig.JWTAudience,
-		},
-	)
+	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(esconfig.VaultRuntimeFields{
+		Address:     workloadVaultConfig.VaultConfig.Address,
+		AuthMount:   workloadVaultConfig.VaultConfig.AuthMount,
+		AuthRole:    workloadVaultConfig.VaultConfig.AuthRole,
+		JWTAudience: workloadVaultConfig.VaultConfig.JWTAudience,
+	})
 	if resolveErr != nil {
 		return preparedAdmission{}, &Error{
 			Status:  http.StatusServiceUnavailable,
@@ -634,12 +630,6 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 		signerKeyID:   evidence.Seal.KeyID,
 		workload: WorkloadInfo{
 			Type:               execution.Workload.WorkloadType,
-			ServiceName:        execution.Workload.ServiceName,
-			WorkloadIdentityID: execution.Workload.WorkloadIdentityID,
-		},
-		workloadAttrs: esconfig.WorkloadIdentityAttributes{
-			ArtifactClass:      execution.Workload.ArtifactClass,
-			WorkloadType:       execution.Workload.WorkloadType,
 			ServiceName:        execution.Workload.ServiceName,
 			WorkloadIdentityID: execution.Workload.WorkloadIdentityID,
 		},

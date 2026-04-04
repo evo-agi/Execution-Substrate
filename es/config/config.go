@@ -94,25 +94,7 @@ const (
 )
 
 type WorkloadVaultAuthConfig struct {
-	DefaultMode WorkloadVaultAuthMode       `json:"default_mode"`
-	Selectors   []WorkloadVaultAuthSelector `json:"selectors"`
-}
-
-type WorkloadVaultAuthSelector struct {
-	Mode               WorkloadVaultAuthMode `json:"mode"`
-	ArtifactClass      string                `json:"artifact_class,omitempty"`
-	WorkloadType       string                `json:"workload_type,omitempty"`
-	ServiceName        string                `json:"service_name,omitempty"`
-	WorkloadIdentityID string                `json:"workload_identity_id,omitempty"`
-	VaultAuthRole      string                `json:"vault_auth_role,omitempty"`
-	JWTAudience        string                `json:"jwt_audience,omitempty"`
-}
-
-type WorkloadIdentityAttributes struct {
-	ArtifactClass      string
-	WorkloadType       string
-	ServiceName        string
-	WorkloadIdentityID string
+	DefaultMode WorkloadVaultAuthMode `json:"default_mode"`
 }
 
 type VaultRuntimeFields struct {
@@ -324,18 +306,6 @@ func (c WorkloadVaultAuthConfig) Validate() error {
 	if !isValidAuthMode(c.DefaultMode) {
 		return fmt.Errorf("workload_vault_auth.default_mode must be vault_identity_jwt")
 	}
-	for i, selector := range c.Selectors {
-		if err := selector.Validate(fmt.Sprintf("workload_vault_auth.selectors[%d]", i)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s WorkloadVaultAuthSelector) Validate(field string) error {
-	if !isValidAuthMode(s.Mode) {
-		return fmt.Errorf("%s.mode must be vault_identity_jwt", field)
-	}
 	return nil
 }
 
@@ -348,17 +318,7 @@ func isValidAuthMode(value WorkloadVaultAuthMode) bool {
 	}
 }
 
-func (c WorkloadVaultAuthConfig) Resolve(attrs WorkloadIdentityAttributes, vault VaultRuntimeFields) (ResolvedWorkloadVaultAuthPlan, error) {
-	selected, err := c.selectRule(attrs)
-	if err != nil {
-		return ResolvedWorkloadVaultAuthPlan{}, err
-	}
-
-	mode := c.DefaultMode
-	if selected != nil {
-		mode = selected.Mode
-	}
-
+func (c WorkloadVaultAuthConfig) Resolve(vault VaultRuntimeFields) (ResolvedWorkloadVaultAuthPlan, error) {
 	address := strings.TrimSpace(vault.Address)
 	if address == "" {
 		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("workload-zone vault address is required")
@@ -374,82 +334,22 @@ func (c WorkloadVaultAuthConfig) Resolve(attrs WorkloadIdentityAttributes, vault
 	}
 
 	authRole := strings.TrimSpace(vault.AuthRole)
-	if selected != nil && strings.TrimSpace(selected.VaultAuthRole) != "" {
-		authRole = strings.TrimSpace(selected.VaultAuthRole)
-	}
 	if authRole == "" {
 		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("vault_identity_jwt auth plan requires an auth role")
 	}
 
 	jwtAudience := strings.TrimSpace(vault.JWTAudience)
-	if selected != nil && strings.TrimSpace(selected.JWTAudience) != "" {
-		jwtAudience = strings.TrimSpace(selected.JWTAudience)
-	}
 	if jwtAudience == "" {
 		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("vault_identity_jwt auth plan requires a jwt audience")
 	}
 
 	return ResolvedWorkloadVaultAuthPlan{
-		Mode:        mode,
+		Mode:        c.DefaultMode,
 		Address:     address,
 		AuthMount:   authMount,
 		AuthRole:    authRole,
 		JWTAudience: jwtAudience,
 	}, nil
-}
-
-func (c WorkloadVaultAuthConfig) selectRule(attrs WorkloadIdentityAttributes) (*WorkloadVaultAuthSelector, error) {
-	matches := make([]WorkloadVaultAuthSelector, 0, len(c.Selectors))
-	for _, selector := range c.Selectors {
-		if selector.matches(attrs) {
-			matches = append(matches, selector)
-		}
-	}
-	if len(matches) == 0 {
-		return nil, nil
-	}
-
-	best := matches[0]
-	bestSpecificity := best.specificity()
-	for _, candidate := range matches[1:] {
-		specificity := candidate.specificity()
-		if specificity > bestSpecificity {
-			best = candidate
-			bestSpecificity = specificity
-			continue
-		}
-		if specificity == bestSpecificity {
-			return nil, fmt.Errorf("workload_vault_auth selectors are ambiguous for workload identity %q", attrs.WorkloadIdentityID)
-		}
-	}
-
-	return &best, nil
-}
-
-func (s WorkloadVaultAuthSelector) matches(attrs WorkloadIdentityAttributes) bool {
-	if value := strings.TrimSpace(s.ArtifactClass); value != "" && value != strings.TrimSpace(attrs.ArtifactClass) {
-		return false
-	}
-	if value := strings.TrimSpace(s.WorkloadType); value != "" && value != strings.TrimSpace(attrs.WorkloadType) {
-		return false
-	}
-	if value := strings.TrimSpace(s.ServiceName); value != "" && value != strings.TrimSpace(attrs.ServiceName) {
-		return false
-	}
-	if value := strings.TrimSpace(s.WorkloadIdentityID); value != "" && value != strings.TrimSpace(attrs.WorkloadIdentityID) {
-		return false
-	}
-	return true
-}
-
-func (s WorkloadVaultAuthSelector) specificity() int {
-	score := 0
-	for _, value := range []string{s.ArtifactClass, s.WorkloadType, s.ServiceName, s.WorkloadIdentityID} {
-		if strings.TrimSpace(value) != "" {
-			score++
-		}
-	}
-	return score
 }
 
 func (c Config) ReadTimeout() time.Duration {

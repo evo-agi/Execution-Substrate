@@ -207,6 +207,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state
 - Reserved runtime workspace and runtime-identity path protection
+- Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
 
 **Explicit non-ownership**
 
@@ -216,6 +217,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Canonical lifecycle state independent of Nomad
 - Vault token minting, storage, or rotation
 - Runtime identity endpoint implementation inside the workload
+- Workload-vault selector policy or workload-specific auth-role/audience override logic
 - Policy publication or broader governance decisions that belong upstream
 
 **Current consumers / collaborators**

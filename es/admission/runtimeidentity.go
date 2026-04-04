@@ -7,14 +7,10 @@ import (
 
 // TODO: Do not mention "monolith"
 const (
-	// runtimeIdentityTokenTargetPath remains reserved for a future slice. The
-	// workspace is tmpfs-backed in the current substrate, but ES still does not
-	// populate or manage token material there.
 	runtimeIdentityWorkspaceTargetDir = "/monolith/runtime-identity"
 	runtimeIdentityEndpointTargetPath = runtimeIdentityWorkspaceTargetDir + "/endpoint"
-	runtimeIdentityTokenTargetPath  = runtimeIdentityWorkspaceTargetDir + "/vault-token"
-	runtimeIdentityEndpointEnvKey   = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	runtimeIdentityEndpointEnvValue = "unix://" + runtimeIdentityEndpointTargetPath
+	runtimeIdentityEndpointEnvKey     = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
+	runtimeIdentityEndpointEnvValue   = "unix://" + runtimeIdentityEndpointTargetPath
 )
 
 // TODO: Do not mention "monolith"
@@ -23,7 +19,6 @@ var reservedRuntimePaths = []string{
 	"/monolith/run",
 	runtimeIdentityWorkspaceTargetDir,
 	runtimeIdentityEndpointTargetPath,
-	runtimeIdentityTokenTargetPath,
 }
 
 func ValidateReservedRuntimePaths(targetPaths []string) error {

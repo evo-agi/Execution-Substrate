@@ -9,7 +9,6 @@ func TestValidateReservedRuntimePathsRejectsRuntimeIdentityWorkspaceOverlap(t *t
 	testCases := []string{
 		runtimeIdentityWorkspaceTargetDir,
 		runtimeIdentityEndpointTargetPath,
-		runtimeIdentityTokenTargetPath,
 		runtimeIdentityWorkspaceTargetDir + "/helper.sock",
 	}
 

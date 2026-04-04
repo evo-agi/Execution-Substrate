@@ -209,6 +209,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - verifier key IDs and public keys must match the active EGS and AGS signers
 - all dependency base URLs must be absolute `https://` URLs
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
+- `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
@@ -225,7 +226,6 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - ES reserves `/monolith/runtime-identity/` inside the workload container for topology-neutral identity plumbing
   - this reserved workspace is memory-backed tmpfs and is not persisted to host staging
   - `execution.runtime_identity_tmpfs_size` defaults to `1048576` bytes (`1 MiB`) and must not exceed `8388608` bytes (`8 MiB`)
-  - `/monolith/runtime-identity/vault-token` remains reserved for future use in the current slice
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 
 Minimal vault-auth example:
@@ -233,8 +233,7 @@ Minimal vault-auth example:
 ```json
 {
   "workload_vault_auth": {
-    "default_mode": "vault_identity_jwt",
-    "selectors": []
+    "default_mode": "vault_identity_jwt"
   }
 }
 ```

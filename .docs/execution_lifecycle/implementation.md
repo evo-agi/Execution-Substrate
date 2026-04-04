@@ -116,7 +116,7 @@ What the app layer delegates:
 4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
 5. Fetch the workload-zone vault digest from ACS.
 6. Fetch the workload-zone vault config blob from ARS.
-7. Resolve the workload-vault auth plan through ES config selectors.
+7. Resolve the workload-vault auth plan from workload-zone vault runtime fields plus ES `workload_vault_auth.default_mode`.
 8. Assemble and return `PrepareResult`.
 
 What `Prepare` reads:
@@ -223,7 +223,6 @@ Cancel path:
   - `/monolith/run`
   - `/monolith/runtime-identity`
   - `/monolith/runtime-identity/endpoint`
-  - `/monolith/runtime-identity/vault-token`
 - Defines the current endpoint environment key/value:
   - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
   - `unix:///monolith/runtime-identity/endpoint`
@@ -236,7 +235,6 @@ Cancel path:
 **Deliberate absence**
 
 - ES does not implement the endpoint behind the reserved path.
-- ES does not populate token material at `/monolith/runtime-identity/vault-token`.
 
 ### `mounts.go`
 
