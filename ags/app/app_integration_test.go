@@ -199,8 +199,27 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	if _, ok := admission["runtime"]; ok {
 		t.Fatalf("expected evidence admission claims to omit the old mixed runtime field, got %v", admission["runtime"])
 	}
-	if got := authorization["workload_binding"].(map[string]any)["module_path"]; got != "services.execution.ExecutionServer" {
-		t.Fatalf("expected workload binding module_path in authorization claims, got %v", got)
+	derivation := authorization["derivation"].(map[string]any)
+	if got := derivation["derivation_spec_digest"]; got != stack.derivationSpecDigest {
+		t.Fatalf("expected derivation_spec_digest %q, got %v", stack.derivationSpecDigest, got)
+	}
+	if got := derivation["output_id"]; got != stack.outputID {
+		t.Fatalf("expected output_id %q, got %v", stack.outputID, got)
+	}
+	if _, ok := authorization["workload_binding"]; ok {
+		t.Fatalf("expected workload_binding to be absent from authorization claims, got %v", authorization["workload_binding"])
+	}
+	if _, ok := derivation["producer_run_id"]; ok {
+		t.Fatalf("expected producer_run_id to be absent from authorization derivation claims, got %v", derivation["producer_run_id"])
+	}
+	if _, ok := derivation["policy_version"]; ok {
+		t.Fatalf("expected policy_version to be absent from authorization derivation claims, got %v", derivation["policy_version"])
+	}
+	if _, ok := derivation["expected_artifact_type"]; ok {
+		t.Fatalf("expected expected_artifact_type to be absent from authorization derivation claims, got %v", derivation["expected_artifact_type"])
+	}
+	if _, ok := derivation["constraints"]; ok {
+		t.Fatalf("expected constraints to be absent from authorization derivation claims, got %v", derivation["constraints"])
 	}
 	if got := execution["access"].(map[string]any)["network_access"]; got != false {
 		t.Fatalf("expected execution access network_access false, got %v", got)
@@ -332,32 +351,33 @@ func TestPublishRejectsWorkloadIdentityIDServiceNameConflict(t *testing.T) {
 	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
 }
 
-func TestPublishRejectsPolicyVersionConflict(t *testing.T) {
+func TestPublishRejectsRemovedDerivationPolicyVersionField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
-		binding := admissionBody["workload"].(map[string]any)
-		binding["policy_version"] = "different-policy-version"
+		derivation := admissionBody["derivation"].(map[string]any)
+		derivation["policy_version"] = "2026-03-31"
 	})
 	defer response.Body.Close()
 
-	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func TestPublishRejectsExpectedArtifactTypeConflict(t *testing.T) {
+func TestPublishRejectsRemovedWorkloadBindingFields(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
-		attestation := admissionBody["derivation"].(map[string]any)
-		attestation["expected_artifact_type"] = "other-artifact-type"
+		workload := admissionBody["workload"].(map[string]any)
+		workload["module_path"] = "services.execution.ExecutionServer"
+		workload["policy_version"] = "2026-03-31"
 	})
 	defer response.Body.Close()
 
-	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
 func TestPublishRejectsServiceWorkloadMissingServiceName(t *testing.T) {
@@ -383,9 +403,9 @@ func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	claims := evidence["claims"].(map[string]any)
 	admissionPayload := claims["admission"].(map[string]any)
-	authorization := admissionPayload["authorization"].(map[string]any)
-	derivation := authorization["derivation"].(map[string]any)
-	derivation["policy_version"] = "tampered"
+	execution := admissionPayload["execution"].(map[string]any)
+	workload := execution["workload"].(map[string]any)
+	workload["description"] = "tampered"
 	stack.mutateDescriptorAndRestartARS(t, func(descriptor *arsapi.ArtifactDescriptor) {
 		descriptor.Package.Evidence.Digest = stack.writeJSONBlob(t, evidence)
 	})
@@ -758,28 +778,16 @@ func buildPublishRequestBody(t *testing.T, stack *publishedStack) map[string]any
 				"environment_variables": []string{"APP_MODE"},
 				"required_capabilities": []string{},
 			},
+			"access": map[string]any{
+				"network_access": false,
+			},
 			"derivation": map[string]any{
 				"derivation_spec_digest": stack.derivationSpecDigest,
 				"output_id":              stack.outputID,
-				"producer_run_id":        "build-run-1",
-				"constraints": map[string]any{
-					"allowed_toolchains":      []string{},
-					"forbidden_toolchains":    []string{},
-					"os":                      "linux",
-					"arch":                    "amd64",
-					"network_access":          false,
-					"writable_paths":          []string{},
-					"forbidden_paths":         []string{},
-					"determinism_expectation": "deterministic",
-				},
-				"policy_version":         "2026-03-31",
-				"expected_artifact_type": "static-service",
 			},
 			"workload": map[string]any{
 				"artifact_class":       "service",
 				"workload_type":        "service",
-				"module_path":          "services.execution.ExecutionServer",
-				"policy_version":       "2026-03-31",
 				"service_name":         "execution",
 				"target_platform":      "docker",
 				"description":          "Execution workload",

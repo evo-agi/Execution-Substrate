@@ -525,25 +525,19 @@ publish_request = {
     },
     "admission": {
         "runtime": publish["runtime_interface"],
+        "access": {
+            "network_access": publish["access"]["network_access"],
+        },
         "derivation": {
             "derivation_spec_digest": derivation_spec_digest,
             "output_id": publish["derivation"]["output_id"],
-            "producer_run_id": publish["derivation"]["producer_run_id"],
-            "constraints": publish["derivation"]["constraints"],
-            "policy_version": publish["derivation"]["policy_version"],
         },
         "workload": {
             "artifact_class": publish["workload_identity"]["artifact_class"],
             "workload_type": publish["workload_identity"]["workload_type"],
-            "module_path": publish["workload_identity"]["module_path"],
-            "policy_version": publish["workload_identity"]["policy_version"],
         },
     },
 }
-
-expected_artifact_type = publish["derivation"].get("expected_artifact_type")
-if expected_artifact_type:
-    publish_request["admission"]["derivation"]["expected_artifact_type"] = expected_artifact_type
 
 optional_binding_fields = (
     "service_name",

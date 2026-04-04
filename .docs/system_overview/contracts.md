@@ -79,7 +79,6 @@ Describe the current shared kernel that multiple services use directly today.
 - The aggregate evidence canonicalization is typed and normalizes current set-like collections such as:
   - publication `policy_decisions`
   - runtime allowlists and capability lists
-  - derivation constraint string sets
 - EGS TrustModel signing is a separate contract and must not be conflated with either artifact kernel.
 
 ### Ownership boundary
@@ -223,7 +222,7 @@ Current response shape:
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
   - `claims.package` for publication/discoverability-facing meaning
-  - `claims.admission.authorization` for derivation and workload-binding authorization meaning
+  - `claims.admission.authorization` for derivation request-binding meaning only
   - `claims.admission.execution` for runtime interface, execution workload, and execution access meaning
 - AGS assembles and uploads:
   - payload bytes
@@ -236,8 +235,7 @@ Current response shape:
   - valid SPIFFE workload identity
   - `service_name` required for service workloads
   - `service_name` must match the SPIFFE service name when present
-  - `admission.authorization.derivation.policy_version` must match `admission.authorization.workload_binding.policy_version`
-  - `admission.authorization.derivation.expected_artifact_type`, when set, must match `artifact.artifact_type`
+- AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
 - `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
 - AGS publishes only through ARS:
   - `PUT /v1/blobs/{digest}`
@@ -549,24 +547,16 @@ Provide a separate authorization decision boundary for credential-related access
 
 Current request shape:
 
-- `requested_by`
 - `workload`
 - `requested_capabilities`
-- `context`
 
 Current response shape:
 
 - `allowed`
 - `request_id`
 - `decision_id`
-- `credential` on allow
-- `constraints` when present
+- `decision` on allow
 - `audit`
-- `credential_policy_digest`
-- `workload_vault_digest`
-- optional `workload_vault_source`
-- optional `record_proof`
-- optional `record_proof_expires_at`
 - optional `reason` on deny
 
 ### Current invariants
@@ -578,19 +568,21 @@ Current response shape:
 - The authenticated caller identity must equal `workload.workload_identity_id`.
 - The workload descriptor must also match CGS local policy derivation when a subject can be derived from policy.
 - `requested_capabilities` currently allows only `vault:read`.
-- `context` must be an object.
 - `id.conf` is loaded at startup, parsed into service and script mappings, and used to:
-  - compute `credential_policy_digest`
   - validate workload descriptors
   - derive subject IDs
   - evaluate allow or deny decisions
+- The current supported `id.conf` grammar remains:
+  - `service_id`
+  - `approle`
+- The repo now carries a minimal checked-in baseline at `cgs/policy/id.conf`.
+  - It is grounded in current Go-repo tests/examples only.
+  - It must not be mistaken for a complete production policy file or final long-term policy grammar.
 - Allow and deny both return `200` in the current boundary.
 - Allow responses currently return:
   - `role`
-  - `auth_method = "spiffe"`
-  - Vault auth plan fields
-  - token constraints
-- Current authorize responses include no secret material.
+  - optional decision constraints
+- Current authorize responses include no secret material and no runtime auth-plan payload.
 
 ### Ownership boundary
 
@@ -601,16 +593,13 @@ Current response shape:
 
 `Temporary compatibility edge`
 
-- `requested_by` is accepted on the wire, but CGS v1 does not trust it as an authorization input.
-- `record_proof` and `record_proof_expires_at` are active response fields, but they are compatibility-heavy and not documented here as settled long-term ownership.
-- `workload_vault_source` is active today and currently reflects startup-owned vault runtime input.
 - `id.conf` is an active local policy input, but it should not be mistaken for a permanent repo-wide policy architecture just because it is currently in use.
 
 ### Reopened seams
 
 `Reopened redesign seam`
 
-- The CGS authorize DTO, `id.conf` policy-input model, and proof-related fields are explicitly reopened in `PLANS.md`.
+- The CGS authorize DTO and `id.conf` policy-input model are explicitly reopened in `PLANS.md`.
 - CGS remains live today, but its current wire and policy-input shape must not be treated as the final core authorization contract.
 
 ## 10. Runtime Identity Handoff Contract
@@ -685,9 +674,6 @@ Current runtime rules:
 
 The following active edges are compatibility-heavy enough to keep in one place:
 
-- `CGS` accepts `requested_by` on the wire even though it is not trusted as an authorization input in v1.
-- `CGS` currently returns `record_proof` and `record_proof_expires_at` on allow responses.
-- `CGS` currently returns `workload_vault_source`, which reflects startup-owned vault runtime input rather than a broader runtime resolution contract.
 - `EGS` currently returns `source_digest`, but it is advisory only and excluded from trust decisions.
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.

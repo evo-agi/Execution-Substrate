@@ -31,7 +31,7 @@ When prose and code disagree, code and tests win.
 | ARS | Storage and artifact discoverability service | Blob storage, integrity enforcement, evidence-centered artifact registration, and canonical artifact retrieval |
 | AGS | Artifact publication service | Evidence-first publication assembly, caller-bound publication claims, and publication into ARS |
 | EGS | Trust model publication service | Signed trust model publication for execution-time trust decisions |
-| CGS | Compatibility authorization service | Authorize-only decision surface backed by `id.conf` and startup-owned vault policy inputs |
+| CGS | Authorization service | Authorize-only decision surface backed by caller/workload identity checks and `id.conf` subject mapping |
 | ES | Admission, submission, and lifecycle projection service | Execution request validation, composition across upstream services, Nomad submission, and bounded execution status/log projection |
 
 Important absences in the current Go repo:
@@ -150,7 +150,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - Publish API at `/v1/artifacts:publish`
 - Artifact digest derivation from package-facing identity inputs rooted in `payload_digest`, `artifact_type`, and `intent_digest`
 - Evidence-native publish request grammar with `artifact`, `publication`, and `admission` sections
-- Construction of the aggregate `contracts/evidence/v1` publication record, with package identity/publication claims kept separate from admission authorization and execution claims
+- Construction of the aggregate `contracts/evidence/v1` publication record, with package identity/publication claims kept separate from narrow shared derivation request-binding authorization claims and execution/runtime claims
 - Construction of manifest as supporting publication data
 - Signing of the aggregate artifact-evidence record using `contracts/evidence/v1`
 - Bounded publish caller authorization for trusted deployment and operator identities
@@ -175,7 +175,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - AGS currently sits at the seam between caller input and the canonical aggregate evidence record.
 - The publication material AGS assembles determines what ES can verify and admit later.
 - AGS and ARS are coupled through the current evidence-centered registration record.
-- The shared evidence kernel is narrower than before, but AGS still sits at the split between package/publication claims and admission/runtime claims.
+- The shared evidence kernel is narrower than before, but AGS still sits at the split between package/publication claims, narrow derivation request-binding authorization, and execution/runtime claims.
 
 **Temporary compatibility edges**
 
@@ -290,14 +290,14 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 
 **Purpose**
 
-Provide a separate authorize-only decision surface for workload credential access using startup-loaded policy inputs.
+Provide a separate authorize-only decision surface for workload credential access using caller/workload identity checks and startup-loaded subject-mapping policy.
 
 **Current ownership**
 
 - `POST /v1/credential/authorize`
 - Bounded authorization decisions for current requested capabilities
 - Policy loading from `id.conf`
-- Mapping authenticated callers and workload descriptors into authorization output, including vault runtime metadata when allowed
+- Mapping authenticated callers and workload descriptors into authorization decisions
 
 **Explicit non-ownership**
 
@@ -305,7 +305,7 @@ Provide a separate authorize-only decision surface for workload credential acces
 - Trust model publication
 - ES scheduler submission or lifecycle state
 - General execution admission
-- Vault token issuance itself
+- Vault token issuance or workload-vault auth-plan shaping
 
 **Current consumers / collaborators**
 
@@ -314,15 +314,16 @@ Provide a separate authorize-only decision surface for workload credential acces
 
 **Boundary pressure points**
 
-- `id.conf` and startup-owned workload vault inputs strongly influence CGS's current policy-input shape.
-- The authorize DTO carries caller-supplied fields that are not all trusted as authorization inputs.
-- CGS mixes narrow authorization decisions with compatibility-heavy response shaping for downstream consumers.
+- `id.conf` still strongly influences CGS's current subject-derivation and policy-input shape.
+- The current authorize surface still carries more workload-descriptor shape than the narrow decision logic uses.
+- CGS must stay separate from ES-owned workload-vault auth resolution and runtime identity handling.
 
 **Temporary compatibility edges**
 
-- `requested_by` remains required on the wire but is not trusted as the authoritative caller identity.
-- `record_proof` and related proof-expiry fields remain in the response.
-- `workload_vault_source` reflects current startup-owned vault input conventions rather than a broader policy publication boundary.
+- `id.conf` remains active as the current subject-mapping grammar even though its long-term role is reopened.
+- The repo ships a minimal checked-in baseline at `cgs/policy/id.conf`.
+  - It exists to make the current `id.conf` dependency explicit and testable.
+  - It does not expand `id.conf` into a declared complete production policy grammar.
 
 **Reopened seams**
 
@@ -354,7 +355,6 @@ These layers can create coupling pressure without owning domain responsibilities
 - ES `:prepare` remains an active but bounded compatibility surface rather than the declared long-term execution API.
 - ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and `/monolith/runtime-identity` are active today but should be treated as conventions under review.
 - AGS retains request fields such as `builder_service` and `policy_decisions` in forms that help preserve the current publication slice without proving those fields belong in the long-term kernel.
-- CGS keeps `requested_by`, `record_proof`, and `workload_vault_source` behaviors that are active today but compatibility-heavy.
 - ARS exposes a descriptor-centered registration record because that is the active bounded choreography, not because that specific surface is already frozen as the final storage boundary.
 
 ## 14. Reopened redesign seams

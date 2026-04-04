@@ -34,8 +34,13 @@ type PublicationInput struct {
 
 type AdmissionInput struct {
 	Runtime    RuntimeInterface `json:"runtime"`
+	Access     AccessInput      `json:"access"`
 	Derivation DerivationInput  `json:"derivation"`
 	Workload   WorkloadInput    `json:"workload"`
+}
+
+type AccessInput struct {
+	NetworkAccess bool `json:"network_access"`
 }
 
 type RuntimeInterface struct {
@@ -50,30 +55,13 @@ type PolicyDecision struct {
 }
 
 type DerivationInput struct {
-	DerivationSpecDigest string           `json:"derivation_spec_digest"`
-	OutputID             string           `json:"output_id"`
-	ProducerRunID        string           `json:"producer_run_id"`
-	Constraints          ConstraintsInput `json:"constraints"`
-	PolicyVersion        string           `json:"policy_version"`
-	ExpectedArtifactType string           `json:"expected_artifact_type,omitempty"`
-}
-
-type ConstraintsInput struct {
-	AllowedToolchains      []string `json:"allowed_toolchains"`
-	ForbiddenToolchains    []string `json:"forbidden_toolchains"`
-	OS                     string   `json:"os"`
-	Arch                   string   `json:"arch"`
-	NetworkAccess          bool     `json:"network_access"`
-	WritablePaths          []string `json:"writable_paths"`
-	ForbiddenPaths         []string `json:"forbidden_paths"`
-	DeterminismExpectation string   `json:"determinism_expectation"`
+	DerivationSpecDigest string `json:"derivation_spec_digest"`
+	OutputID             string `json:"output_id"`
 }
 
 type WorkloadInput struct {
 	ArtifactClass      string `json:"artifact_class"`
 	WorkloadType       string `json:"workload_type"`
-	ModulePath         string `json:"module_path"`
-	PolicyVersion      string `json:"policy_version"`
 	ServiceName        string `json:"service_name,omitempty"`
 	TargetPlatform     string `json:"target_platform,omitempty"`
 	Description        string `json:"description,omitempty"`
@@ -104,7 +92,6 @@ type Manifest struct {
 type DerivationMetadata struct {
 	DerivationSpecDigest string `json:"derivation_spec_digest"`
 	OutputID             string `json:"output_id"`
-	ProducerRunID        string `json:"producer_run_id"`
 }
 
 type InvokerInfo struct {

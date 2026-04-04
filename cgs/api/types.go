@@ -3,16 +3,8 @@ package api
 import "time"
 
 type AuthorizeRequest struct {
-	RequestedBy           RequestedByInfo    `json:"requested_by"`
 	Workload              WorkloadDescriptor `json:"workload"`
 	RequestedCapabilities []string           `json:"requested_capabilities"`
-	Context               map[string]any     `json:"context"`
-}
-
-type RequestedByInfo struct {
-	Component string `json:"component"`
-	Platform  string `json:"platform"`
-	User      string `json:"user"`
 }
 
 type WorkloadDescriptor struct {
@@ -27,41 +19,20 @@ type WorkloadDescriptor struct {
 }
 
 type AuthorizeResponse struct {
-	Allowed                bool                   `json:"allowed"`
-	RequestID              string                 `json:"request_id"`
-	DecisionID             string                 `json:"decision_id"`
-	Credential             *AuthorizedCredential  `json:"credential,omitempty"`
-	Constraints            *CredentialConstraints `json:"constraints,omitempty"`
-	Audit                  AuthorizationAudit     `json:"audit"`
-	CredentialPolicyDigest string                 `json:"credential_policy_digest"`
-	WorkloadVaultDigest    string                 `json:"workload_vault_digest"`
-	WorkloadVaultSource    string                 `json:"workload_vault_source,omitempty"`
-	RecordProof            string                 `json:"record_proof,omitempty"`
-	RecordProofExpiresAt   *time.Time             `json:"record_proof_expires_at,omitempty"`
-	Reason                 *ReasonResponse        `json:"reason,omitempty"`
+	Allowed    bool                   `json:"allowed"`
+	RequestID  string                 `json:"request_id"`
+	DecisionID string                 `json:"decision_id"`
+	Decision   *AuthorizationDecision `json:"decision,omitempty"`
+	Audit      AuthorizationAudit     `json:"audit"`
+	Reason     *ReasonResponse        `json:"reason,omitempty"`
 }
 
-type AuthorizedCredential struct {
-	Role             string           `json:"role"`
-	AuthMethod       string           `json:"auth_method"`
-	AuthPlan         VaultAuthPlan    `json:"auth_plan"`
-	TokenConstraints TokenConstraints `json:"token_constraints"`
+type AuthorizationDecision struct {
+	Role        string                    `json:"role"`
+	Constraints *AuthorizationConstraints `json:"constraints,omitempty"`
 }
 
-type VaultAuthPlan struct {
-	WorkloadIdentityID string `json:"workload_identity_id"`
-	VaultAddress       string `json:"vault_address"`
-	AuthMount          string `json:"auth_mount"`
-	AuthRole           string `json:"auth_role"`
-	JWTAudience        string `json:"jwt_audience"`
-}
-
-type TokenConstraints struct {
-	TTLSeconds int  `json:"ttl_seconds"`
-	Renewable  bool `json:"renewable"`
-}
-
-type CredentialConstraints struct {
+type AuthorizationConstraints struct {
 	ForbiddenStages []string  `json:"forbidden_stages"`
 	ExpiresAt       time.Time `json:"expires_at"`
 }

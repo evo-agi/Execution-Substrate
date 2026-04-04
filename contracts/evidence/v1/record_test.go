@@ -45,22 +45,6 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 					Derivation: DerivationAuthorization{
 						DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 						OutputID:             "runtime",
-						ProducerRunID:        "build-run-1",
-						PolicyVersion:        "2026-03-31",
-						ExpectedArtifactType: "static-script",
-						Constraints: DerivationConstraints{
-							AllowedToolchains:      []string{"go", "bash"},
-							ForbiddenToolchains:    []string{"python"},
-							OS:                     "linux",
-							Arch:                   "amd64",
-							WritablePaths:          []string{"/tmp", "/workspace"},
-							ForbiddenPaths:         []string{"/root"},
-							DeterminismExpectation: "deterministic",
-						},
-					},
-					WorkloadBinding: WorkloadBinding{
-						ModulePath:    "services.execution.ExecutionServer",
-						PolicyVersion: "2026-03-31",
 					},
 				},
 				Execution: ExecutionClaims{
@@ -107,6 +91,12 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 	if !strings.Contains(canonicalString, `"authorization":{"derivation"`) {
 		t.Fatalf("expected canonical bytes to encode admission authorization claims: %s", canonicalString)
 	}
+	if strings.Contains(canonicalString, `"workload_binding"`) {
+		t.Fatalf("expected canonical bytes to omit workload binding from authorization claims: %s", canonicalString)
+	}
+	if strings.Contains(canonicalString, `"producer_run_id"`) || strings.Contains(canonicalString, `"policy_version"`) || strings.Contains(canonicalString, `"expected_artifact_type"`) || strings.Contains(canonicalString, `"constraints"`) {
+		t.Fatalf("expected canonical bytes to omit removed authorization residue: %s", canonicalString)
+	}
 	if !strings.Contains(canonicalString, `"execution":{"runtime"`) {
 		t.Fatalf("expected canonical bytes to encode admission execution claims: %s", canonicalString)
 	}
@@ -115,7 +105,7 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
+func TestValidateRejectsMissingAuthorizationOutputID(t *testing.T) {
 	identity, err := NewArtifactIdentity(
 		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"static-script",
@@ -143,17 +133,6 @@ func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
 				Authorization: AuthorizationClaims{
 					Derivation: DerivationAuthorization{
 						DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-						OutputID:             "runtime",
-						ProducerRunID:        "build-run-1",
-						PolicyVersion:        "policy-a",
-						Constraints: DerivationConstraints{
-							OS:   "linux",
-							Arch: "amd64",
-						},
-					},
-					WorkloadBinding: WorkloadBinding{
-						ModulePath:    "services.execution.ExecutionServer",
-						PolicyVersion: "policy-b",
 					},
 				},
 				Execution: ExecutionClaims{
@@ -174,8 +153,8 @@ func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
 		},
 	}
 
-	if err := record.Validate(); err == nil || !strings.Contains(err.Error(), "policy_version") {
-		t.Fatalf("expected policy version mismatch error, got %v", err)
+	if err := record.Validate(); err == nil || !strings.Contains(err.Error(), "output_id") {
+		t.Fatalf("expected missing output_id error, got %v", err)
 	}
 }
 

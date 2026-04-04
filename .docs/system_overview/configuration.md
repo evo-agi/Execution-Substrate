@@ -252,36 +252,24 @@ Minimal vault-auth example:
 - `http`
 - `tls`
 - `policy`
-- `vault_runtime`
 - `security`
-- `action_proof`
 
 ### Required fields
 
 - `policy.id_conf_path`
-- `vault_runtime.address`
-- `vault_runtime.auth_mount`
-- `vault_runtime.auth_role`
-- `vault_runtime.jwt_audience`
-- `vault_runtime.expected_spiffe_id`
-- `vault_runtime.client_cert_file`
-- `vault_runtime.client_key_file`
-- `vault_runtime.client_ca_file`
-- `vault_runtime.timeout_seconds`
 - `security.bootstrap_issuer_common_name`
-- `action_proof.secret_key`
-- `action_proof.hash_function`
 
 ### Required external dependencies
 
 - local policy file
-- Vault runtime connection details and client TLS
 
 ### Minimal valid configuration
 
-- `action_proof.hash_function` must be `sha256` or `sha512`
-- `vault_runtime.expected_spiffe_id` must be a valid SPIFFE URI
 - `policy.id_conf_path` must point to a valid policy file
+- the repo includes a minimal checked-in subject-mapping baseline at `cgs/policy/id.conf`
+- that checked-in file is a current baseline only
+  - it is derived from current Go-repo tests/examples
+  - it is not documented as complete production policy or final long-term grammar
 
 CGS is not required for the current ES hot path and is not part of the minimal governed execution bring-up runbook.
 

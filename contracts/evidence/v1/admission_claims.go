@@ -10,8 +10,8 @@ type canonicalAdmissionClaims struct {
 	Execution     canonicalExecutionClaims     `json:"execution"`
 }
 
-func (a AdmissionClaims) validate(artifactType string) error {
-	if err := a.Authorization.validate(artifactType); err != nil {
+func (a AdmissionClaims) validate() error {
+	if err := a.Authorization.validate(); err != nil {
 		return err
 	}
 	if err := a.Execution.validate(); err != nil {

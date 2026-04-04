@@ -2,11 +2,8 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -18,27 +15,16 @@ import (
 	"execution-platform/cgs/api"
 	"execution-platform/cgs/config"
 	"execution-platform/cgs/policy"
-	"execution-platform/cgs/proof"
 )
 
-type Dependencies struct {
-	ProofMinter proof.Minter
-}
-
 type App struct {
-	cfg          config.Config
-	httpServer   *http.Server
-	listener     net.Listener
-	mu           sync.RWMutex
-	policyDigest string
-	vaultDigest  string
+	cfg        config.Config
+	httpServer *http.Server
+	listener   net.Listener
+	mu         sync.RWMutex
 }
 
 func New(cfg config.Config) (*App, error) {
-	return NewWithDependencies(cfg, Dependencies{})
-}
-
-func NewWithDependencies(cfg config.Config, deps Dependencies) (*App, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -48,32 +34,11 @@ func NewWithDependencies(cfg config.Config, deps Dependencies) (*App, error) {
 		return nil, err
 	}
 
-	if err := validateVaultRuntime(cfg.VaultRuntime); err != nil {
-		return nil, err
-	}
-
-	proofMinter := deps.ProofMinter
-	if proofMinter == nil {
-		proofMinter, err = proof.NewHMACMinter(cfg.ActionProof.SecretKey, cfg.ActionProof.HashFunction)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	app := &App{
-		cfg:          cfg,
-		policyDigest: policies.PolicyDigest(),
-		vaultDigest:  digestVaultRuntime(cfg.VaultRuntime),
-	}
+	app := &App{cfg: cfg}
 
 	server := api.NewServer(
 		policies,
-		cfg.VaultRuntime,
 		cfg.Security.BootstrapIssuerCommonName,
-		proofMinter,
-		app.policyDigest,
-		app.vaultDigest,
-		"startup",
 	)
 	app.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTP.Port)),
@@ -150,35 +115,4 @@ func (a *App) loadTLSConfig() (*tls.Config, error) {
 		ClientCAs:    clientCAs,
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 	}, nil
-}
-
-func validateVaultRuntime(v config.VaultRuntimeConfig) error {
-	if _, err := tls.LoadX509KeyPair(v.ClientCertFile, v.ClientKeyFile); err != nil {
-		return fmt.Errorf("load vault_runtime client key pair: %w", err)
-	}
-
-	caPEM, err := os.ReadFile(v.ClientCAFile)
-	if err != nil {
-		return fmt.Errorf("read vault_runtime client ca file: %w", err)
-	}
-
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return fmt.Errorf("append vault_runtime client ca file: no valid certificates found")
-	}
-
-	return nil
-}
-
-func digestVaultRuntime(v config.VaultRuntimeConfig) string {
-	payload := map[string]any{
-		"address":            v.Address,
-		"auth_mount":         v.AuthMount,
-		"auth_role":          v.AuthRole,
-		"jwt_audience":       v.JWTAudience,
-		"expected_spiffe_id": v.ExpectedSPIFFEID,
-	}
-	canonical, _ := json.Marshal(payload)
-	sum := sha256.Sum256(canonical)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }

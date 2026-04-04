@@ -146,7 +146,6 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	metadata := DerivationMetadata{
 		DerivationSpecDigest: strings.TrimSpace(req.Admission.Derivation.DerivationSpecDigest),
 		OutputID:             strings.TrimSpace(req.Admission.Derivation.OutputID),
-		ProducerRunID:        strings.TrimSpace(req.Admission.Derivation.ProducerRunID),
 	}
 
 	evidence, err := s.buildArtifactEvidence(identity, manifest, metadata, req, validation.invoker)
@@ -251,22 +250,6 @@ func (s *Service) buildArtifactEvidence(
 					Derivation: evidencev1.DerivationAuthorization{
 						DerivationSpecDigest: metadata.DerivationSpecDigest,
 						OutputID:             metadata.OutputID,
-						ProducerRunID:        metadata.ProducerRunID,
-						PolicyVersion:        strings.TrimSpace(req.Admission.Derivation.PolicyVersion),
-						ExpectedArtifactType: strings.TrimSpace(req.Admission.Derivation.ExpectedArtifactType),
-						Constraints: evidencev1.DerivationConstraints{
-							AllowedToolchains:      cloneStringsPreserveShape(req.Admission.Derivation.Constraints.AllowedToolchains),
-							ForbiddenToolchains:    cloneStringsPreserveShape(req.Admission.Derivation.Constraints.ForbiddenToolchains),
-							OS:                     req.Admission.Derivation.Constraints.OS,
-							Arch:                   req.Admission.Derivation.Constraints.Arch,
-							WritablePaths:          cloneStringsPreserveShape(req.Admission.Derivation.Constraints.WritablePaths),
-							ForbiddenPaths:         cloneStringsPreserveShape(req.Admission.Derivation.Constraints.ForbiddenPaths),
-							DeterminismExpectation: req.Admission.Derivation.Constraints.DeterminismExpectation,
-						},
-					},
-					WorkloadBinding: evidencev1.WorkloadBinding{
-						ModulePath:    strings.TrimSpace(req.Admission.Workload.ModulePath),
-						PolicyVersion: strings.TrimSpace(req.Admission.Workload.PolicyVersion),
 					},
 				},
 				Execution: evidencev1.ExecutionClaims{
@@ -284,7 +267,7 @@ func (s *Service) buildArtifactEvidence(
 						WorkloadIdentityID: strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID),
 					},
 					Access: evidencev1.ExecutionAccess{
-						NetworkAccess: req.Admission.Derivation.Constraints.NetworkAccess,
+						NetworkAccess: req.Admission.Access.NetworkAccess,
 					},
 				},
 			},
@@ -337,23 +320,11 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 	if strings.TrimSpace(req.Admission.Derivation.OutputID) == "" {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.output_id is required"}
 	}
-	if strings.TrimSpace(req.Admission.Derivation.ProducerRunID) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.producer_run_id is required"}
-	}
-	if strings.TrimSpace(req.Admission.Derivation.PolicyVersion) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.policy_version is required"}
-	}
 	if strings.TrimSpace(req.Admission.Workload.ArtifactClass) == "" {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.artifact_class is required"}
 	}
 	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "" {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_type is required"}
-	}
-	if strings.TrimSpace(req.Admission.Workload.ModulePath) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.module_path is required"}
-	}
-	if strings.TrimSpace(req.Admission.Workload.PolicyVersion) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.policy_version is required"}
 	}
 	if strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID) == "" {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_identity_id is required"}
@@ -365,13 +336,6 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 	serviceName := strings.TrimSpace(req.Admission.Workload.ServiceName)
 	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "service" && serviceName == "" {
 		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.workload.service_name is required for service workloads"}
-	}
-	if strings.TrimSpace(req.Admission.Derivation.PolicyVersion) != strings.TrimSpace(req.Admission.Workload.PolicyVersion) {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.derivation.policy_version must match admission.workload.policy_version"}
-	}
-	expectedArtifactType := strings.TrimSpace(req.Admission.Derivation.ExpectedArtifactType)
-	if expectedArtifactType != "" && expectedArtifactType != strings.TrimSpace(req.Artifact.ArtifactType) {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.derivation.expected_artifact_type must match artifact.artifact_type"}
 	}
 	if serviceName != "" {
 		derivedServiceName, ok := spiffeServiceName(workloadIdentityID)

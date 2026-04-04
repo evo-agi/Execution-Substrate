@@ -2,30 +2,18 @@ package policy
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 )
 
 const policyVersion = "go-cgs-v1"
 const deploymentServiceID = "deployment"
-const defaultTokenTTLSeconds = 900
 
 type Set struct {
 	serviceModuleToID map[string]string
 	scriptModuleToID  map[string]string
-	policyDigest      string
-}
-
-type RequestedBy struct {
-	Component string
-	Platform  string
-	User      string
 }
 
 type Workload struct {
@@ -161,20 +149,10 @@ func Load(path string) (*Set, error) {
 		return nil, fmt.Errorf("id.conf does not define any service_id or approle mappings")
 	}
 
-	policyDigest, err := computePolicyDigest(serviceMap, scriptMap)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Set{
 		serviceModuleToID: serviceMap,
 		scriptModuleToID:  scriptMap,
-		policyDigest:      policyDigest,
 	}, nil
-}
-
-func (s *Set) PolicyDigest() string {
-	return s.policyDigest
 }
 
 func (s *Set) ValidateWorkload(workload Workload) error {
@@ -213,9 +191,7 @@ func (s *Set) ValidateWorkload(workload Workload) error {
 	return nil
 }
 
-func (s *Set) Evaluate(decisionID string, requestedBy RequestedBy, workload Workload) Evaluation {
-	_ = requestedBy
-
+func (s *Set) Evaluate(decisionID string, workload Workload) Evaluation {
 	location := s.determineSubjectLocation(workload)
 	evaluatedRules := []string{}
 	considerations := []string{}
@@ -359,36 +335,6 @@ func (s *Set) isKnownServiceID(serviceID string) bool {
 		}
 	}
 	return false
-}
-
-func computePolicyDigest(serviceMap map[string]string, scriptMap map[string]string) (string, error) {
-	canonical := map[string]any{
-		"approle":    orderedMap(scriptMap),
-		"service_id": orderedMap(serviceMap),
-	}
-	payload, err := json.Marshal(canonical)
-	if err != nil {
-		return "", fmt.Errorf("marshal id.conf policy digest: %w", err)
-	}
-	sum := sha256.Sum256(payload)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-func orderedMap(source map[string]string) []map[string]string {
-	keys := make([]string, 0, len(source))
-	for key := range source {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	entries := make([]map[string]string, 0, len(keys))
-	for _, key := range keys {
-		entries = append(entries, map[string]string{
-			"module_path": key,
-			"id":          source[key],
-		})
-	}
-	return entries
 }
 
 func parseMappingLine(line string) (string, string, bool) {

@@ -42,7 +42,7 @@ func (c Claims) Validate() error {
 	if err := c.Package.validate(); err != nil {
 		return err
 	}
-	if err := c.Admission.validate(c.Package.Identity.ArtifactType); err != nil {
+	if err := c.Admission.validate(); err != nil {
 		return err
 	}
 	return nil

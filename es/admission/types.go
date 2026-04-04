@@ -145,14 +145,3 @@ type Manifest struct {
 	IntentDigest     string           `json:"intent_digest"`
 	RuntimeInterface RuntimeInterface `json:"runtime_interface"`
 }
-
-type DerivationSpecConstraintsInfo struct {
-	AllowedToolchains      []string `json:"allowed_toolchains"`
-	ForbiddenToolchains    []string `json:"forbidden_toolchains"`
-	OS                     string   `json:"os"`
-	Arch                   string   `json:"arch"`
-	NetworkAccess          bool     `json:"network_access"`
-	WritablePaths          []string `json:"writable_paths"`
-	ForbiddenPaths         []string `json:"forbidden_paths"`
-	DeterminismExpectation string   `json:"determinism_expectation"`
-}

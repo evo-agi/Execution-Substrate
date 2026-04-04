@@ -28,7 +28,7 @@ The current Go system is a governed publication + storage + policy + admission +
 | ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
 | AGS | Evidence-first artifact publication service |
 | EGS | Signed trust-model publication service |
-| CGS | Separate authorize-only compatibility service |
+| CGS | Separate authorize-only policy service |
 | ES | Admission, submission, and Nomad-backed lifecycle projection service |
 | Nomad | Scheduler and authoritative submitted-execution lifecycle source |
 | Docker | Task runtime under Nomad for the current bounded execution slice |
@@ -64,7 +64,7 @@ Top-level interaction notes:
 
 ### Publication flow
 
-AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from package-facing identity inputs anchored to the payload digest, assembles the current aggregate artifact-evidence record with separate package and admission claim sections plus seal, signs that evidence, and writes the canonical publication record through ARS.
+AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from package-facing identity inputs anchored to the payload digest, assembles the current aggregate artifact-evidence record with separate package claims, narrow derivation request-binding authorization claims, execution/runtime claims, and seal, signs that evidence, and writes the canonical publication record through ARS.
 
 ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 
@@ -98,7 +98,7 @@ ES exposes lifecycle and log endpoints, but it does so by deriving state from No
 EGS and CGS occupy different roles today.
 
 - EGS publishes signed trust policy that ES verifies and enforces during admission.
-- CGS provides a separate authorize-only surface backed by `id.conf` and startup-owned vault policy inputs.
+- CGS provides a separate authorize-only surface backed by authenticated caller interpretation and `id.conf` subject mapping.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
 
@@ -146,7 +146,7 @@ These are current architectural absences, not omissions to fill automatically.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
 - EGS currently publishes a specific trust-model form that directly shapes execution-time enforcement.
-- CGS currently exposes an authorize and policy-input shape closely tied to `id.conf` and startup-owned workload-vault inputs.
+- CGS currently exposes an authorize and policy-input shape closely tied to `id.conf` subject mapping and caller/workload identity interpretation.
 - Runtime identity handoff currently depends on reserved runtime workspace and path conventions that are active but not settled.
 
 ## 9. Temporary compatibility-heavy conventions
@@ -157,9 +157,9 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently relies on `/monolith/...` runtime path conventions for staged data, run data, and runtime identity workspace.
 - ES currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
-- CGS remains tied to `id.conf` and compatibility-heavy authorize inputs and outputs.
+- CGS remains tied to `id.conf` as the current subject-mapping grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the descriptor payload reference and cross-checked against evidence claims.
-- The current aggregate evidence grammar is intentionally split into package-facing identity/publication claims, admission authorization claims, and execution/runtime claims rather than one mixed claim bag.
+- The current aggregate evidence grammar is intentionally split into package-facing identity/publication claims, narrow derivation request-binding authorization claims, and execution/runtime claims rather than one mixed claim bag.
 
 ## 10. Relationship to detailed docs
 

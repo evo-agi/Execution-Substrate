@@ -1270,22 +1270,6 @@ func seedStorageFixture(t *testing.T) seededStorage {
 					"derivation": map[string]any{
 						"derivation_spec_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 						"output_id":              "runtime",
-						"producer_run_id":        "run-1",
-						"policy_version":         "2026-03-31",
-						"expected_artifact_type": "static-script",
-						"constraints": map[string]any{
-							"allowed_toolchains":      []any{},
-							"forbidden_toolchains":    []any{},
-							"os":                      "linux",
-							"arch":                    "amd64",
-							"writable_paths":          []any{},
-							"forbidden_paths":         []any{},
-							"determinism_expectation": "deterministic",
-						},
-					},
-					"workload_binding": map[string]any{
-						"module_path":    "services.execution.ExecutionServer",
-						"policy_version": "2026-03-31",
 					},
 				},
 				"execution": map[string]any{

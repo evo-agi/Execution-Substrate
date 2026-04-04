@@ -8,10 +8,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -19,13 +17,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"execution-platform/cgs/app"
 	"execution-platform/cgs/config"
-	"execution-platform/cgs/proof"
+	"execution-platform/cgs/policy"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {
@@ -55,7 +54,7 @@ func TestLoadConfigRejectsTrailingData(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
-	idConfPath := writeIDConf(t, validIDConf)
+	idConfPath := writeIDConf(t, checkedInIDConfContents(t))
 	cfg := buildConfig(fixture, idConfPath)
 	payload, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -128,23 +127,46 @@ func TestNewRejectsInvalidIDConf(t *testing.T) {
 	}
 }
 
-func TestNewRejectsMissingVaultRuntimeClientCert(t *testing.T) {
+func TestLoadConfigRejectsRemovedCompatibilityConfigGroups(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
-	idConfPath := writeIDConf(t, validIDConf)
-	cfg := buildConfig(fixture, idConfPath)
-	cfg.VaultRuntime.ClientCertFile = filepath.Join(t.TempDir(), "missing-client.pem")
-	cfgPath := writeConfig(t, cfg)
-
-	loaded, err := config.Load(cfgPath)
+	idConfPath := writeIDConf(t, checkedInIDConfContents(t))
+	payload, err := json.MarshalIndent(map[string]any{
+		"http": map[string]any{
+			"bind_address":             "127.0.0.1",
+			"port":                     0,
+			"read_timeout_seconds":     5,
+			"write_timeout_seconds":    5,
+			"shutdown_timeout_seconds": 5,
+		},
+		"tls": map[string]any{
+			"cert_file":      fixture.serverCertPath,
+			"key_file":       fixture.serverKeyPath,
+			"client_ca_file": fixture.serverTrustPath,
+		},
+		"policy": map[string]any{
+			"id_conf_path": idConfPath,
+		},
+		"security": map[string]any{
+			"bootstrap_issuer_common_name": "Bootstrap SPIFFE Test CA",
+		},
+		"vault_runtime": map[string]any{
+			"address": "https://vault.internal:8200",
+		},
+	}, "", "  ")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatalf("marshal config: %v", err)
 	}
 
-	_, err = app.New(loaded)
-	if err == nil || !strings.Contains(err.Error(), "load vault_runtime client key pair") {
-		t.Fatalf("expected unusable vault_runtime error, got %v", err)
+	path := filepath.Join(t.TempDir(), "cgs-removed-groups.json")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err = config.Load(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown field \"vault_runtime\"") {
+		t.Fatalf("expected removed-group validation error, got %v", err)
 	}
 }
 
@@ -152,7 +174,7 @@ func TestLoadConfigRejectsBlankBootstrapIssuerConfig(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
-	idConfPath := writeIDConf(t, validIDConf)
+	idConfPath := writeIDConf(t, checkedInIDConfContents(t))
 	cfg := buildConfig(fixture, idConfPath)
 	cfg.Security.BootstrapIssuerCommonName = ""
 
@@ -166,7 +188,7 @@ func TestLoadConfigRejectsMissingBootstrapIssuerConfig(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
-	idConfPath := writeIDConf(t, validIDConf)
+	idConfPath := writeIDConf(t, checkedInIDConfContents(t))
 	cfg := buildConfig(fixture, idConfPath)
 
 	payload, err := json.MarshalIndent(map[string]any{
@@ -185,22 +207,7 @@ func TestLoadConfigRejectsMissingBootstrapIssuerConfig(t *testing.T) {
 		"policy": map[string]any{
 			"id_conf_path": cfg.Policy.IDConfPath,
 		},
-		"vault_runtime": map[string]any{
-			"address":            cfg.VaultRuntime.Address,
-			"auth_mount":         cfg.VaultRuntime.AuthMount,
-			"auth_role":          cfg.VaultRuntime.AuthRole,
-			"jwt_audience":       cfg.VaultRuntime.JWTAudience,
-			"expected_spiffe_id": cfg.VaultRuntime.ExpectedSPIFFEID,
-			"client_cert_file":   cfg.VaultRuntime.ClientCertFile,
-			"client_key_file":    cfg.VaultRuntime.ClientKeyFile,
-			"client_ca_file":     cfg.VaultRuntime.ClientCAFile,
-			"timeout_seconds":    cfg.VaultRuntime.TimeoutSeconds,
-		},
 		"security": map[string]any{},
-		"action_proof": map[string]any{
-			"secret_key":    cfg.ActionProof.SecretKey,
-			"hash_function": cfg.ActionProof.HashFunction,
-		},
 	}, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
@@ -311,14 +318,9 @@ service_id {
 
 func TestAuthorizeAllowsValidServiceWorkload(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -329,10 +331,6 @@ func TestAuthorizeAllowsValidServiceWorkload(t *testing.T) {
 			"ephemeral":            false,
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context": map[string]any{
-			"run_id":        "run-1",
-			"allocation_id": "alloc-1",
-		},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
@@ -342,91 +340,57 @@ func TestAuthorizeAllowsValidServiceWorkload(t *testing.T) {
 		t.Fatalf("expected 200, got %d", response.StatusCode)
 	}
 
-	var payload struct {
-		Allowed                bool   `json:"allowed"`
-		RequestID              string `json:"request_id"`
-		DecisionID             string `json:"decision_id"`
-		CredentialPolicyDigest string `json:"credential_policy_digest"`
-		WorkloadVaultDigest    string `json:"workload_vault_digest"`
-		WorkloadVaultSource    string `json:"workload_vault_source"`
-		RecordProof            string `json:"record_proof"`
-		RecordProofExpiresAt   string `json:"record_proof_expires_at"`
-		Credential             struct {
-			Role       string `json:"role"`
-			AuthMethod string `json:"auth_method"`
-			AuthPlan   struct {
-				WorkloadIdentityID string `json:"workload_identity_id"`
-				VaultAddress       string `json:"vault_address"`
-				AuthMount          string `json:"auth_mount"`
-				AuthRole           string `json:"auth_role"`
-				JWTAudience        string `json:"jwt_audience"`
-			} `json:"auth_plan"`
-			TokenConstraints struct {
-				TTLSeconds int  `json:"ttl_seconds"`
-				Renewable  bool `json:"renewable"`
-			} `json:"token_constraints"`
-		} `json:"credential"`
-		Constraints struct {
-			ForbiddenStages []string `json:"forbidden_stages"`
-			ExpiresAt       string   `json:"expires_at"`
-		} `json:"constraints"`
-		Audit struct {
-			DecisionID string   `json:"decision_id"`
-			Reasons    []string `json:"reasons"`
-		} `json:"audit"`
-	}
+	var payload map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if !payload.Allowed {
+	if allowed, _ := payload["allowed"].(bool); !allowed {
 		t.Fatalf("expected allowed response, got %+v", payload)
 	}
-	if payload.RequestID == "" || payload.DecisionID == "" {
+	requestID, _ := payload["request_id"].(string)
+	decisionID, _ := payload["decision_id"].(string)
+	if requestID == "" || decisionID == "" {
 		t.Fatalf("expected request and decision ids, got %+v", payload)
 	}
-	if payload.Credential.Role != "worker" || payload.Credential.AuthMethod != "spiffe" {
-		t.Fatalf("unexpected credential payload: %+v", payload.Credential)
+	decision, ok := payload["decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected decision payload, got %+v", payload)
 	}
-	if payload.Credential.AuthPlan.WorkloadIdentityID != "spiffe://monolith.internal/service/execution" {
-		t.Fatalf("unexpected auth plan workload identity: %+v", payload.Credential.AuthPlan)
+	if role, _ := decision["role"].(string); role != "worker" {
+		t.Fatalf("unexpected decision role: %+v", decision)
 	}
-	if payload.Credential.AuthPlan.AuthMount != "jwt" || payload.Credential.AuthPlan.AuthRole != "service_execution" {
-		t.Fatalf("unexpected auth plan: %+v", payload.Credential.AuthPlan)
+	constraints, ok := decision["constraints"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected decision constraints, got %+v", decision)
 	}
-	if payload.Credential.TokenConstraints.TTLSeconds != 900 || !payload.Credential.TokenConstraints.Renewable {
-		t.Fatalf("unexpected token constraints: %+v", payload.Credential.TokenConstraints)
+	forbiddenStages, ok := constraints["forbidden_stages"].([]any)
+	if !ok || len(forbiddenStages) != 1 || forbiddenStages[0] != "bootstrap" {
+		t.Fatalf("unexpected constraints: %+v", constraints)
 	}
-	if payload.CredentialPolicyDigest == "" || payload.WorkloadVaultDigest == "" {
-		t.Fatalf("expected digests, got %+v", payload)
+	audit, ok := payload["audit"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected audit payload, got %+v", payload)
 	}
-	if payload.WorkloadVaultSource != "startup" {
-		t.Fatalf("unexpected workload_vault_source: %q", payload.WorkloadVaultSource)
+	if got, _ := audit["decision_id"].(string); got != decisionID {
+		t.Fatalf("unexpected audit decision id: %+v", audit)
 	}
-	if payload.RecordProof == "" || payload.RecordProofExpiresAt == "" {
-		t.Fatalf("expected record proof fields, got %+v", payload)
+	reasons, ok := audit["reasons"].([]any)
+	if !ok || len(reasons) == 0 {
+		t.Fatalf("unexpected audit payload: %+v", audit)
 	}
-	if len(payload.Constraints.ForbiddenStages) != 1 || payload.Constraints.ForbiddenStages[0] != "bootstrap" {
-		t.Fatalf("unexpected constraints: %+v", payload.Constraints)
+	for _, removed := range []string{"credential", "constraints", "credential_policy_digest", "workload_vault_digest", "workload_vault_source", "record_proof", "record_proof_expires_at"} {
+		if _, exists := payload[removed]; exists {
+			t.Fatalf("expected %s to be absent from core response: %+v", removed, payload)
+		}
 	}
-	if payload.Audit.DecisionID != payload.DecisionID || len(payload.Audit.Reasons) == 0 {
-		t.Fatalf("unexpected audit payload: %+v", payload.Audit)
-	}
-
-	claims := decodeRecordProofClaims(t, payload.RecordProof)
-	assertMinimalRecordProofClaims(t, claims, payload.DecisionID, "spiffe://monolith.internal/service/execution")
 }
 
 func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "script",
 			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
@@ -434,7 +398,6 @@ func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "script/bot_test_privileged"))
@@ -445,24 +408,22 @@ func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 	}
 
 	var payload struct {
-		Allowed    bool `json:"allowed"`
-		Credential struct {
-			AuthPlan struct {
-				WorkloadIdentityID string `json:"workload_identity_id"`
-			} `json:"auth_plan"`
-		} `json:"credential"`
+		Allowed  bool `json:"allowed"`
+		Decision struct {
+			Role string `json:"role"`
+		} `json:"decision"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !payload.Allowed || payload.Credential.AuthPlan.WorkloadIdentityID != "spiffe://monolith.internal/script/bot_test_privileged" {
+	if !payload.Allowed || payload.Decision.Role != "worker" {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
 
-func TestAuthorizeAcceptsRequestedByForWireCompatibilityButIgnoresItForDecision(t *testing.T) {
+func TestAuthorizeRejectsRemovedRequestedByField(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
 		"requested_by": map[string]any{
@@ -478,37 +439,22 @@ func TestAuthorizeAcceptsRequestedByForWireCompatibilityButIgnoresItForDecision(
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
 	}
-
-	var payload struct {
-		Allowed bool `json:"allowed"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if !payload.Allowed {
-		t.Fatalf("expected requested_by to be accepted for compatibility, got %+v", payload)
-	}
+	assertErrorPayload(t, response, "malformed JSON request body")
 }
 
 func TestAuthorizeRejectsUnsupportedRequestedCapabilities(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -517,7 +463,6 @@ func TestAuthorizeRejectsUnsupportedRequestedCapabilities(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:write"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
@@ -532,14 +477,9 @@ func TestAuthorizeRejectsUnsupportedRequestedCapabilities(t *testing.T) {
 
 func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"workload_identity_id": "spiffe://monolith.internal/service/unknown",
@@ -547,7 +487,6 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/unknown"))
@@ -558,9 +497,9 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 	}
 
 	var payload struct {
-		Allowed    bool `json:"allowed"`
-		Credential any  `json:"credential"`
-		Reason     struct {
+		Allowed  bool `json:"allowed"`
+		Decision any  `json:"decision"`
+		Reason   struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"reason"`
@@ -574,8 +513,8 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 	if payload.Allowed {
 		t.Fatalf("expected deny response, got %+v", payload)
 	}
-	if payload.Credential != nil {
-		t.Fatalf("expected denied response without credential, got %+v", payload)
+	if payload.Decision != nil {
+		t.Fatalf("expected denied response without decision payload, got %+v", payload)
 	}
 	if payload.Reason.Code != "EVALUATION_FAILED" || payload.Reason.Message == "" {
 		t.Fatalf("unexpected denial reason: %+v", payload.Reason)
@@ -587,14 +526,9 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 
 func TestAuthorizeRejectsMissingWorkloadIdentityID(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":            "service",
 			"service_name":    "execution",
@@ -602,7 +536,6 @@ func TestAuthorizeRejectsMissingWorkloadIdentityID(t *testing.T) {
 			"target_platform": "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
@@ -617,14 +550,9 @@ func TestAuthorizeRejectsMissingWorkloadIdentityID(t *testing.T) {
 
 func TestAuthorizeRejectsInvalidDescriptorShape(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "deployment",
@@ -633,7 +561,6 @@ func TestAuthorizeRejectsInvalidDescriptorShape(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
@@ -648,7 +575,7 @@ func TestAuthorizeRejectsInvalidDescriptorShape(t *testing.T) {
 
 func TestAuthorizeRejectsMalformedJSON(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	response := doRawRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", []byte("{"), fixture.clientTLSConfig(t, "service/execution"), "application/json")
 	defer response.Body.Close()
@@ -662,7 +589,7 @@ func TestAuthorizeRejectsMalformedJSON(t *testing.T) {
 
 func TestAuthorizeWithoutClientCertReturnsUnauthorized(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", map[string]any{}, fixture.baseClientTLSConfig(t))
 	defer response.Body.Close()
@@ -677,14 +604,9 @@ func TestAuthorizeWithoutClientCertReturnsUnauthorized(t *testing.T) {
 
 func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -693,7 +615,6 @@ func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
@@ -709,14 +630,9 @@ func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 
 func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
@@ -724,7 +640,6 @@ func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
@@ -740,14 +655,9 @@ func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
 
 func TestAuthorizeRejectsCallerMismatchWithValidServiceName(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -756,7 +666,6 @@ func TestAuthorizeRejectsCallerMismatchWithValidServiceName(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
@@ -772,14 +681,9 @@ func TestAuthorizeRejectsCallerMismatchWithValidServiceName(t *testing.T) {
 
 func TestAuthorizeRejectsCallerMismatchWithValidScriptPath(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "script",
 			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
@@ -787,7 +691,6 @@ func TestAuthorizeRejectsCallerMismatchWithValidScriptPath(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
@@ -803,14 +706,9 @@ func TestAuthorizeRejectsCallerMismatchWithValidScriptPath(t *testing.T) {
 
 func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, nil)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -819,7 +717,6 @@ func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
 			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
-		"context":                map[string]any{},
 	}
 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.bootstrapClientTLSConfig(t, "service/execution"))
@@ -833,16 +730,11 @@ func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
 	}
 }
 
-func TestAuthorizeReturnsInternalServerErrorWhenProofMintingFails(t *testing.T) {
+func TestAuthorizeRejectsRemovedContextField(t *testing.T) {
 	fixture := newTLSFixture(t)
-	service := startTestApp(t, fixture, validIDConf, &failingMinter{err: errors.New("boom")})
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
-		"requested_by": map[string]any{
-			"component": "execution-service",
-			"platform":  "host",
-			"user":      "runner",
-		},
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
@@ -857,40 +749,41 @@ func TestAuthorizeReturnsInternalServerErrorWhenProofMintingFails(t *testing.T) 
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
 	}
-	assertErrorPayload(t, response, "failed to mint record proof")
+	assertErrorPayload(t, response, "malformed JSON request body")
 }
 
-type failingMinter struct {
-	err error
-}
+func TestCheckedInIDConfBaselineParsesAndMapsCurrentSubjects(t *testing.T) {
+	t.Parallel()
 
-func (f *failingMinter) MintRecordProof(proof.Input) (proof.MintedProof, error) {
-	return proof.MintedProof{}, f.err
-}
+	set, err := policy.Load(checkedInIDConfPath(t))
+	if err != nil {
+		t.Fatalf("load checked-in id.conf baseline: %v", err)
+	}
 
-const validIDConf = `
-service_id {
-  services.catalog.ArtifactCatalogServer: "artifact-catalog"
-  services.governance.CredentialGovernanceServer: "credential-governance"
-  services.deployment.DeploymentServer: "deployment"
-  services.execution.ExecutionServer: "execution"
-}
+	serviceType, serviceID, ok := set.SubjectFromWorkload(policy.Workload{
+		Type:       "service",
+		ModulePath: "services.execution.ExecutionServer",
+	})
+	if !ok || serviceType != "service" || serviceID != "execution" {
+		t.Fatalf("unexpected service subject mapping: type=%q id=%q ok=%v", serviceType, serviceID, ok)
+	}
 
-approle {
-  scripts.vault.Run: "bot_test_privileged"
+	scriptType, scriptID, ok := set.SubjectFromWorkload(policy.Workload{
+		Type:       "script",
+		ModulePath: "scripts.vault.Run",
+	})
+	if !ok || scriptType != "script" || scriptID != "bot_test_privileged" {
+		t.Fatalf("unexpected script subject mapping: type=%q id=%q ok=%v", scriptType, scriptID, ok)
+	}
 }
-`
 
 type tlsFixture struct {
 	serverTrustPath     string
 	serverCertPath      string
 	serverKeyPath       string
-	vaultClientCertPath string
-	vaultClientKeyPath  string
-	vaultClientCAPath   string
 	normalCACert        *x509.Certificate
 	normalCAKey         *rsa.PrivateKey
 	bootstrapCACert     *x509.Certificate
@@ -911,12 +804,6 @@ func newTLSFixture(t *testing.T) tlsFixture {
 		dnsNames:   []string{"localhost"},
 		ipAddrs:    []net.IP{net.ParseIP("127.0.0.1")},
 	})
-	vaultCertPEM, vaultKeyPEM := createLeafCertificate(t, normalCACert, normalCAKey, certificateRequest{
-		commonName: "vault-client",
-		uris:       []string{"spiffe://monolith.internal/service/credential-governance"},
-		clientAuth: true,
-	})
-
 	bundlePath := filepath.Join(dir, "client-ca-bundle.pem")
 	writePEMFile(t, bundlePath, append(normalCAPEM, bootstrapCAPEM...))
 
@@ -924,9 +811,6 @@ func newTLSFixture(t *testing.T) tlsFixture {
 		serverTrustPath:     bundlePath,
 		serverCertPath:      filepath.Join(dir, "server.pem"),
 		serverKeyPath:       filepath.Join(dir, "server.key"),
-		vaultClientCertPath: filepath.Join(dir, "vault-client.pem"),
-		vaultClientKeyPath:  filepath.Join(dir, "vault-client.key"),
-		vaultClientCAPath:   filepath.Join(dir, "vault-client-ca.pem"),
 		normalCACert:        normalCACert,
 		normalCAKey:         normalCAKey,
 		bootstrapCACert:     bootstrapCACert,
@@ -936,9 +820,6 @@ func newTLSFixture(t *testing.T) tlsFixture {
 
 	writePEMFile(t, fixture.serverCertPath, serverCertPEM)
 	writePEMFile(t, fixture.serverKeyPath, serverKeyPEM)
-	writePEMFile(t, fixture.vaultClientCertPath, vaultCertPEM)
-	writePEMFile(t, fixture.vaultClientKeyPath, vaultKeyPEM)
-	writePEMFile(t, fixture.vaultClientCAPath, normalCAPEM)
 
 	return fixture
 }
@@ -960,23 +841,8 @@ func buildConfig(fixture tlsFixture, idConfPath string) config.Config {
 		Policy: config.PolicyConfig{
 			IDConfPath: idConfPath,
 		},
-		VaultRuntime: config.VaultRuntimeConfig{
-			Address:          "https://vault.internal:8200",
-			AuthMount:        "jwt",
-			AuthRole:         "service_execution",
-			JWTAudience:      "vault",
-			ExpectedSPIFFEID: "spiffe://monolith.internal/infrastructure/vault",
-			ClientCertFile:   fixture.vaultClientCertPath,
-			ClientKeyFile:    fixture.vaultClientKeyPath,
-			ClientCAFile:     fixture.vaultClientCAPath,
-			TimeoutSeconds:   30,
-		},
 		Security: config.SecurityConfig{
 			BootstrapIssuerCommonName: "Bootstrap SPIFFE Test CA",
-		},
-		ActionProof: config.ActionProofConfig{
-			SecretKey:    "integration-test-secret-key",
-			HashFunction: "sha256",
 		},
 	}
 }
@@ -1003,7 +869,31 @@ func writeIDConf(t *testing.T, contents string) string {
 	return path
 }
 
-func startTestApp(t *testing.T, fixture tlsFixture, idConfContents string, minter proof.Minter) *app.App {
+func checkedInIDConfPath(t *testing.T) string {
+	t.Helper()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file path")
+	}
+	path := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "policy", "id.conf"))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stat checked-in id.conf baseline: %v", err)
+	}
+	return path
+}
+
+func checkedInIDConfContents(t *testing.T) string {
+	t.Helper()
+
+	bytes, err := os.ReadFile(checkedInIDConfPath(t))
+	if err != nil {
+		t.Fatalf("read checked-in id.conf baseline: %v", err)
+	}
+	return string(bytes)
+}
+
+func startTestApp(t *testing.T, fixture tlsFixture, idConfContents string) *app.App {
 	t.Helper()
 
 	cfgPath := writeConfig(t, buildConfig(fixture, writeIDConf(t, idConfContents)))
@@ -1012,7 +902,7 @@ func startTestApp(t *testing.T, fixture tlsFixture, idConfContents string, minte
 		t.Fatalf("load config: %v", err)
 	}
 
-	service, err := app.NewWithDependencies(cfg, app.Dependencies{ProofMinter: minter})
+	service, err := app.New(cfg)
 	if err != nil {
 		t.Fatalf("build app: %v", err)
 	}
@@ -1152,61 +1042,6 @@ func assertErrorPayload(t *testing.T, response *http.Response, expected string) 
 	}
 	if payload.Error != expected {
 		t.Fatalf("unexpected error payload: %+v", payload)
-	}
-}
-
-func decodeRecordProofClaims(t *testing.T, token string) map[string]any {
-	t.Helper()
-
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		t.Fatalf("unexpected record_proof format: %q", token)
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		t.Fatalf("decode proof payload: %v", err)
-	}
-
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		t.Fatalf("unmarshal proof payload: %v", err)
-	}
-	return claims
-}
-
-func assertMinimalRecordProofClaims(t *testing.T, claims map[string]any, decisionID string, workloadIdentityID string) {
-	t.Helper()
-
-	if got := claims["version"]; got != float64(1) {
-		t.Fatalf("unexpected proof version: %#v", got)
-	}
-	if got := claims["purpose"]; got != "record" {
-		t.Fatalf("unexpected proof purpose: %#v", got)
-	}
-	if got := claims["decision_id"]; got != decisionID {
-		t.Fatalf("unexpected proof decision_id: %#v", got)
-	}
-	if got := claims["caller_identity_id"]; got != workloadIdentityID {
-		t.Fatalf("unexpected proof caller_identity_id: %#v", got)
-	}
-	if got := claims["workload_identity_id"]; got != workloadIdentityID {
-		t.Fatalf("unexpected proof workload_identity_id: %#v", got)
-	}
-	if _, ok := claims["issued_at"]; !ok {
-		t.Fatalf("expected issued_at in proof claims: %+v", claims)
-	}
-	if _, ok := claims["expires_at"]; !ok {
-		t.Fatalf("expected expires_at in proof claims: %+v", claims)
-	}
-	if got := claims["jti"]; got == "" || got == nil {
-		t.Fatalf("expected non-empty jti in proof claims: %+v", claims)
-	}
-	if _, ok := claims["run_id"]; ok {
-		t.Fatalf("expected run_id to be absent from minimal proof claims: %+v", claims)
-	}
-	if _, ok := claims["allocation_id"]; ok {
-		t.Fatalf("expected allocation_id to be absent from minimal proof claims: %+v", claims)
 	}
 }
 

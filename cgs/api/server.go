@@ -9,41 +9,21 @@ import (
 	"net/url"
 	"strings"
 
-	"execution-platform/cgs/config"
 	"execution-platform/cgs/policy"
-	"execution-platform/cgs/proof"
 	"execution-platform/observability"
 )
 
 const serviceName = "credential-governance"
 
 type Server struct {
-	policies            *policy.Set
-	vaultRuntime        config.VaultRuntimeConfig
-	bootstrapIssuerCN   string
-	proofMinter         proof.Minter
-	policyDigest        string
-	workloadVaultDigest string
-	workloadVaultSource string
+	policies          *policy.Set
+	bootstrapIssuerCN string
 }
 
-func NewServer(
-	policies *policy.Set,
-	vaultRuntime config.VaultRuntimeConfig,
-	bootstrapIssuerCN string,
-	proofMinter proof.Minter,
-	policyDigest string,
-	workloadVaultDigest string,
-	workloadVaultSource string,
-) *Server {
+func NewServer(policies *policy.Set, bootstrapIssuerCN string) *Server {
 	return &Server{
-		policies:            policies,
-		vaultRuntime:        vaultRuntime,
-		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
-		proofMinter:         proofMinter,
-		policyDigest:        policyDigest,
-		workloadVaultDigest: workloadVaultDigest,
-		workloadVaultSource: workloadVaultSource,
+		policies:          policies,
+		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
 	}
 }
 
@@ -117,14 +97,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	requestID := newID("req")
 	decisionID := newID("dec")
 
-	// requested_by is accepted for wire compatibility, but CGS v1 does not trust
-	// it as an authorization input. The authenticated SPIFFE caller and local
-	// policy determine the decision boundary for this slice.
-	evaluation := s.policies.Evaluate(decisionID, policy.RequestedBy{
-		Component: request.RequestedBy.Component,
-		Platform:  request.RequestedBy.Platform,
-		User:      request.RequestedBy.User,
-	}, workload)
+	evaluation := s.policies.Evaluate(decisionID, workload)
 
 	response := AuthorizeResponse{
 		Allowed:    evaluation.Allowed,
@@ -136,9 +109,6 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			PolicyVersion:  evaluation.Audit.PolicyVersion,
 			EvaluatedRules: evaluation.Audit.EvaluatedRules,
 		},
-		CredentialPolicyDigest: s.policyDigest,
-		WorkloadVaultDigest:    s.workloadVaultDigest,
-		WorkloadVaultSource:    s.workloadVaultSource,
 	}
 
 	if !evaluation.Allowed {
@@ -150,58 +120,18 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mintedProof, err := s.proofMinter.MintRecordProof(proof.Input{
-		DecisionID:         decisionID,
-		CallerIdentityID:   callerIdentity,
-		WorkloadIdentityID: request.Workload.WorkloadIdentityID,
-		RunID:              contextString(request.Context, "run_id"),
-		AllocationID:       firstContextString(request.Context, "allocation_id", "alloc_id", "nomad_allocation_id", "nomad_alloc_id"),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, ErrorResponse{
-			Success: false,
-			Error:   "failed to mint record proof",
-		})
-		return
-	}
-
-	response.Credential = &AuthorizedCredential{
-		Role:       evaluation.Role,
-		AuthMethod: "spiffe",
-		AuthPlan: VaultAuthPlan{
-			WorkloadIdentityID: request.Workload.WorkloadIdentityID,
-			VaultAddress:       s.vaultRuntime.Address,
-			AuthMount:          s.vaultRuntime.AuthMount,
-			AuthRole:           s.vaultRuntime.AuthRole,
-			JWTAudience:        s.vaultRuntime.JWTAudience,
-		},
-		TokenConstraints: TokenConstraints{
-			TTLSeconds: 900,
-			Renewable:  true,
-		},
-	}
+	response.Decision = &AuthorizationDecision{Role: evaluation.Role}
 	if evaluation.Constraints != nil {
-		response.Constraints = &CredentialConstraints{
+		response.Decision.Constraints = &AuthorizationConstraints{
 			ForbiddenStages: append([]string(nil), evaluation.Constraints.ForbiddenStages...),
 			ExpiresAt:       evaluation.Constraints.ExpiresAt,
 		}
 	}
-	response.RecordProof = mintedProof.Token
-	response.RecordProofExpiresAt = &mintedProof.ExpiresAt
 
 	writeJSON(w, http.StatusOK, response)
 }
 
 func validateRequestShape(request AuthorizeRequest) error {
-	if strings.TrimSpace(request.RequestedBy.Component) == "" {
-		return fmt.Errorf("requested_by.component is required")
-	}
-	if strings.TrimSpace(request.RequestedBy.Platform) == "" {
-		return fmt.Errorf("requested_by.platform is required")
-	}
-	if strings.TrimSpace(request.RequestedBy.User) == "" {
-		return fmt.Errorf("requested_by.user is required")
-	}
 	if strings.TrimSpace(request.Workload.WorkloadIdentityID) == "" {
 		return fmt.Errorf("workload.workload_identity_id is required")
 	}
@@ -212,9 +142,6 @@ func validateRequestShape(request AuthorizeRequest) error {
 		if capability != "vault:read" {
 			return fmt.Errorf("requested_capabilities contains unsupported capability: %s", capability)
 		}
-	}
-	if request.Context == nil {
-		return fmt.Errorf("context must be an object")
 	}
 	return nil
 }
@@ -284,29 +211,6 @@ func subjectFromSPIFFEID(identityID string) (string, string, bool) {
 	}
 
 	return segments[0], segments[1], true
-}
-
-func contextString(context map[string]any, key string) string {
-	if context == nil {
-		return ""
-	}
-	value, ok := context[key]
-	if !ok {
-		return ""
-	}
-	if text, ok := value.(string); ok {
-		return text
-	}
-	return ""
-}
-
-func firstContextString(context map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value := contextString(context, key); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

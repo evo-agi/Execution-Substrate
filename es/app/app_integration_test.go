@@ -1113,22 +1113,6 @@ func signedArtifactEvidenceJSON(
 					Derivation: evidencev1.DerivationAuthorization{
 						DerivationSpecDigest: derivationSpecDigest,
 						OutputID:             "runtime",
-						ProducerRunID:        "build-run-1",
-						PolicyVersion:        "2026-03-31",
-						ExpectedArtifactType: "static-service",
-						Constraints: evidencev1.DerivationConstraints{
-							AllowedToolchains:      []string{},
-							ForbiddenToolchains:    []string{},
-							OS:                     "linux",
-							Arch:                   "amd64",
-							WritablePaths:          []string{},
-							ForbiddenPaths:         []string{},
-							DeterminismExpectation: "deterministic",
-						},
-					},
-					WorkloadBinding: evidencev1.WorkloadBinding{
-						ModulePath:    "services.execution.ExecutionServer",
-						PolicyVersion: "2026-03-31",
 					},
 				},
 				Execution: evidencev1.ExecutionClaims{
