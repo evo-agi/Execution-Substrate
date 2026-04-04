@@ -44,7 +44,7 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	stack := startPublishedStack(t)
 	defer stack.shutdownAll(t)
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -98,23 +98,15 @@ func TestPublishDerivesArtifactIdentityDistinctFromPayloadIdentity(t *testing.T)
 	}
 }
 
-func TestPublishValidDeploymentCallerSucceeds(t *testing.T) {
+func TestPublishRejectsDeploymentCaller(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
-	}
-
-	var payload publishResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode publish response: %v", err)
-	}
-	if !payload.Published {
-		t.Fatalf("expected published response")
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
 	}
 }
 
@@ -146,7 +138,7 @@ func TestPublishRejectsBootstrapPKICaller(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", true, nil)
+	response := publishArtifactRequest(t, stack, "operator", true, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusForbidden {
@@ -158,7 +150,7 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
+	response := publishArtifactRequest(t, stack, "operator", false, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -179,10 +171,10 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 		t.Fatalf("expected builder_service artifact-governance, got %v", got)
 	}
 	invoker := publication["invoker"].(map[string]any)
-	if got := invoker["service"]; got != "deployment" {
-		t.Fatalf("expected invoker service deployment, got %v", got)
+	if got := invoker["service"]; got != "operator" {
+		t.Fatalf("expected invoker service operator, got %v", got)
 	}
-	if got := invoker["principal"]; got != "spiffe://execution.internal/service/deployment" {
+	if got := invoker["principal"]; got != "spiffe://execution.internal/operator" {
 		t.Fatalf("expected invoker principal derived from caller, got %v", got)
 	}
 	admission := claims["admission"].(map[string]any)
@@ -231,7 +223,7 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	}
 
 	startES(t, stack)
-	response = doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response = doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 prepare, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
@@ -268,7 +260,7 @@ func TestPublishArtifactIdentityIgnoresAdmissionOnlyChanges(t *testing.T) {
 	second := startDependencyStack(t)
 	defer second.shutdownAll(t)
 
-	response := publishArtifactRequest(t, second, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, second, "operator", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		runtime := admissionBody["runtime"].(map[string]any)
 		runtime["environment_variables"] = []string{"APP_MODE", "EXTRA_FLAG"}
@@ -299,7 +291,7 @@ func TestPublishRejectsLegacyPublicationBuilderField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		publication := body["publication"].(map[string]any)
 		publication["builder_service"] = "caller-controlled-builder"
 	})
@@ -312,11 +304,11 @@ func TestPublishRejectsLegacyPublicationInvokerField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		publication := body["publication"].(map[string]any)
 		publication["invoker"] = map[string]any{
-			"service":   "deployment",
-			"principal": "spiffe://execution.internal/service/deployment",
+			"service":   "operator",
+			"principal": "spiffe://execution.internal/operator",
 		}
 	})
 	defer response.Body.Close()
@@ -328,7 +320,7 @@ func TestPublishRejectsRemovedWorkloadIdentityIDField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		binding := admissionBody["workload"].(map[string]any)
 		binding["workload_identity_id"] = "not-a-spiffe-uri"
@@ -342,7 +334,7 @@ func TestPublishRejectsRemovedServiceNameField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		binding := admissionBody["workload"].(map[string]any)
 		binding["service_name"] = "payments"
@@ -356,7 +348,7 @@ func TestPublishRejectsRemovedDerivationPolicyVersionField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		derivation := admissionBody["derivation"].(map[string]any)
 		derivation["policy_version"] = "2026-03-31"
@@ -370,7 +362,7 @@ func TestPublishRejectsRemovedWorkloadBindingFields(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
+	response := publishArtifactRequest(t, stack, "operator", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		workload := admissionBody["workload"].(map[string]any)
 		workload["module_path"] = "services.execution.ExecutionServer"
@@ -674,7 +666,7 @@ func startES(t *testing.T, stack *publishedStack) {
 func publishArtifact(t *testing.T, stack *publishedStack) {
 	t.Helper()
 
-	response := publishArtifactRequest(t, stack, "service/deployment", false, nil)
+	response := publishArtifactRequest(t, stack, "operator", false, nil)
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -807,7 +799,7 @@ func buildPrepareRequestBody(t *testing.T, stack *publishedStack) []byte {
 func assertPrepareError(t *testing.T, stack *publishedStack, expectedStatus int, expectedCode string) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != expectedStatus {
@@ -826,7 +818,7 @@ func assertPrepareError(t *testing.T, stack *publishedStack, expectedStatus int,
 func assertPrepareSuccess(t *testing.T, stack *publishedStack) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {

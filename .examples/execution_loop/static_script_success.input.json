@@ -17,7 +17,6 @@
   },
   "publish": {
     "artifact_type": "static-script",
-    "caller": "deployment",
     "runtime_interface": {
       "environment_variables": [
         "APP_MODE"

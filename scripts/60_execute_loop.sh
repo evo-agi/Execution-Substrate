@@ -51,8 +51,8 @@ Required environment variables:
   AGS_URL
   ES_URL
   CA_CERT
-  DEPLOY_CERT
-  DEPLOY_KEY
+  OPERATOR_CERT
+  OPERATOR_KEY
 
 Optional environment variables:
   WORKDIR_BASE   Base directory for per-run output workdirs
@@ -215,8 +215,8 @@ curl_json() {
     --silent
     --show-error
     --cacert "${CA_CERT}"
-    --cert "${DEPLOY_CERT}"
-    --key "${DEPLOY_KEY}"
+    --cert "${OPERATOR_CERT}"
+    --key "${OPERATOR_KEY}"
     --output "${response_path}"
     --write-out "%{http_code}"
     -X "${method}"
@@ -306,12 +306,12 @@ fi
 require_env AGS_URL
 require_env ES_URL
 require_env CA_CERT
-require_env DEPLOY_CERT
-require_env DEPLOY_KEY
+require_env OPERATOR_CERT
+require_env OPERATOR_KEY
 
 require_readable "${CA_CERT}" "CA_CERT"
-require_readable "${DEPLOY_CERT}" "DEPLOY_CERT"
-require_readable "${DEPLOY_KEY}" "DEPLOY_KEY"
+require_readable "${OPERATOR_CERT}" "OPERATOR_CERT"
+require_readable "${OPERATOR_KEY}" "OPERATOR_KEY"
 require_readable "${SPEC_PATH}" "input spec"
 require_readable "${CANONICALIZE_JSON}" "canonicalize_json.py"
 
@@ -476,10 +476,8 @@ spec = json.loads(spec_path.read_text(encoding="utf-8"))
 publish = spec["publish"]
 prepare = spec.get("prepare", {})
 submit = spec.get("submit", {})
-caller = str(publish.get("caller", "deployment")).strip()
-
-if caller not in ("deployment", "operator"):
-    raise SystemExit(f"unsupported publish.caller {caller!r}")
+if "caller" in publish:
+    raise SystemExit("publish.caller is no longer supported; caller identity comes from OPERATOR_CERT/OPERATOR_KEY")
 
 artifact_payload_b64 = base64.b64encode(payload_path.read_bytes()).decode("ascii")
 

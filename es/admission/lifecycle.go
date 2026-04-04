@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 )
@@ -104,6 +106,9 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	if exitCode, ok := taskState.exitCode(); ok {
 		result.ExitCode = &exitCode
 	}
+	if result.Terminal {
+		s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+	}
 
 	return result, nil
 }
@@ -139,16 +144,21 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 		}
 	}
 	switch taskState.State {
-		case "running", "dead":
-		default:
-			return nil, &Error{
-				Status:  http.StatusConflict,
-				Code:    codeLogsUnavailable,
-				Message: "execution logs are not available yet",
-			}
+	case "running", "dead":
+	default:
+		return nil, &Error{
+			Status:  http.StatusConflict,
+			Code:    codeLogsUnavailable,
+			Message: "execution logs are not available yet",
+		}
 	}
 
-	return s.nomadClient.fetchTaskLogs(ctx, allocation.ID, nomadTaskName)
+	logs, err := s.nomadClient.fetchTaskLogs(ctx, allocation.ID, nomadTaskName)
+	if err != nil {
+		return nil, err
+	}
+	s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+	return logs, nil
 }
 
 func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResult, *Error) {
@@ -179,6 +189,39 @@ func isTerminalAllocationStatus(status string) bool {
 		default:
 			return false
 	}
+}
+
+func (s *Service) maybeCleanupSuccessfulStageRoot(locator executionLocator, allocation *nomadAllocationDetail) {
+	if !representsTerminalSuccess(allocation) {
+		return
+	}
+
+	layout := newExecutionPackageLayout(s.cfg, locator)
+	if err := os.RemoveAll(layout.stageRootDir); err != nil {
+		log.Printf("es successful stage cleanup failed run_id=%s path=%s err=%v", locator.RunID, layout.stageRootDir, err)
+	}
+}
+
+func representsTerminalSuccess(allocation *nomadAllocationDetail) bool {
+	if allocation == nil {
+		return false
+	}
+
+	taskState, ok := allocation.TaskStates[nomadTaskName]
+	if !ok {
+		return false
+	}
+
+	taskTerminal := strings.TrimSpace(taskState.State) == "dead" || isTerminalAllocationStatus(strings.TrimSpace(allocation.ClientStatus))
+	if !taskTerminal {
+		return false
+	}
+
+	exitCode, ok := taskState.exitCode()
+	if !ok {
+		return false
+	}
+	return exitCode == 0
 }
 
 func (c *nomadClient) fetchJob(ctx context.Context, jobID string) (nomadJobSummary, *Error) {

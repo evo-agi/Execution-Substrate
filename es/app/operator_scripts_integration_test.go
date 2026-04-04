@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,14 +25,14 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := newExecutionWorkspaceTempDir(t, "bringup-script-")
 	fixture := newTLSFixture(t)
-	deploymentCertPath, deploymentKeyPath := writeLeafCertificateFiles(
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
 		t,
 		rootDir,
-		"bringup-deployment-client",
+		"bringup-operator-client",
 		fixture.runtimeCA,
 		fixture.runtimeCAKey,
-		"client.service.deployment",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
 	)
 
 	arsPort := reserveTCPPort(t)
@@ -75,7 +76,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			ClientCAFile: fixture.clientCAPath,
 		},
 		Authorization: arsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"service/execution", "service/deployment", "operator"},
+			AllowedSPIFFEPathPrefixes: []string{"service/execution", "operator"},
 		},
 		Storage: arsconfig.StorageConfig{
 			RootDir:   arsRootDir,
@@ -288,8 +289,8 @@ ports {
 		"AGS_RESOLVE="+fixture.agsServerName+":"+itoa(t, agsPort)+":127.0.0.1",
 		"ES_RESOLVE="+fixture.esServerName+":"+itoa(t, esPort)+":127.0.0.1",
 		"CA_CERT="+fixture.runtimeCAPath,
-		"DEPLOY_CERT="+deploymentCertPath,
-		"DEPLOY_KEY="+deploymentKeyPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
 		"ARS_READ_CERT="+fixture.executionClientCertPath,
 		"ARS_READ_KEY="+fixture.executionClientKeyPath,
 	)
@@ -318,6 +319,9 @@ ports {
 	if !strings.Contains(string(upOutput), "bring-up complete") {
 		t.Fatalf("expected successful bringup output, got %s", string(upOutput))
 	}
+	if !strings.Contains(string(upOutput), "prepare-ready: true") || !strings.Contains(string(upOutput), "submit-ready: true") {
+		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(upOutput))
+	}
 
 	checkCmd := exec.CommandContext(ctx, bringupScript, "check")
 	checkCmd.Dir = repoRoot
@@ -329,6 +333,98 @@ ports {
 	if !strings.Contains(string(checkOutput), "nomad: leader=") {
 		t.Fatalf("expected nomad readiness in bringup check output, got %s", string(checkOutput))
 	}
+	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
+		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
+	}
+
+	stopManagedBringupService(t, bringupDir, "nomad")
+
+	failedCheckCmd := exec.CommandContext(ctx, bringupScript, "check")
+	failedCheckCmd.Dir = repoRoot
+	failedCheckCmd.Env = baseEnv
+	failedCheckOutput, err := failedCheckCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected bringup check to fail once nomad is stopped, got output=%s", string(failedCheckOutput))
+	}
+	if !strings.Contains(string(failedCheckOutput), "prepare-ready: true") {
+		t.Fatalf("expected prepare-ready state to remain visible during submit-readiness failure, got %s", string(failedCheckOutput))
+	}
+	if !strings.Contains(string(failedCheckOutput), "nomad: leader request failed") {
+		t.Fatalf("expected explicit nomad submit-readiness failure, got %s", string(failedCheckOutput))
+	}
+}
+
+func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "10_health_check.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"prepare-only-health-check-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
+	if err != nil {
+		t.Fatalf("split ars addr: %v", err)
+	}
+	egsHost, egsPort, err := splitHostPort(t, stack.egs.Addr())
+	if err != nil {
+		t.Fatalf("split egs addr: %v", err)
+	}
+	agsHost, agsPort, err := splitHostPort(t, stack.ags.Addr())
+	if err != nil {
+		t.Fatalf("split ags addr: %v", err)
+	}
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	esConfigPath := writeJSONConfigFile(t, t.TempDir(), "es-prepare-only-health.json", map[string]any{
+		"runtime_config": map[string]any{
+			"workload_zone_vault_config_ref": map[string]any{
+				"digest": stack.workloadZoneVaultDigest,
+			},
+		},
+	})
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"BRINGUP_PROFILE=prepare-only",
+		"VERIFY_RUNTIME_CONFIG=1",
+		"ES_CONFIG="+esConfigPath,
+		"ARS_URL=https://"+stack.fixture.arsServerName+":"+arsPort,
+		"EGS_URL=https://"+stack.fixture.egsServerName+":"+egsPort,
+		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
+		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
+		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"ARS_READ_CERT="+stack.fixture.executionClientCertPath,
+		"ARS_READ_KEY="+stack.fixture.executionClientKeyPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prepare-only health check failed: %v output=%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "prepare-ready: true") {
+		t.Fatalf("expected prepare-ready output, got %s", string(output))
+	}
+	if !strings.Contains(string(output), "submit-ready: skipped (BRINGUP_PROFILE=prepare-only)") {
+		t.Fatalf("expected submit-ready skip output, got %s", string(output))
+	}
 }
 
 func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
@@ -337,14 +433,14 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "50_lifecycle.sh")
-	deploymentCertPath, deploymentKeyPath := writeLeafCertificateFiles(
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
 		t,
 		t.TempDir(),
-		"lifecycle-deployment-client",
+		"lifecycle-operator-client",
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
-		"client.service.deployment",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
@@ -362,8 +458,8 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
 		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
 		"CA_CERT="+stack.fixture.runtimeCAPath,
-		"DEPLOY_CERT="+deploymentCertPath,
-		"DEPLOY_KEY="+deploymentKeyPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -403,4 +499,29 @@ func splitHostPort(t *testing.T, addr string) (string, string, error) {
 func itoa(t *testing.T, value int) string {
 	t.Helper()
 	return strconv.Itoa(value)
+}
+
+func stopManagedBringupService(t *testing.T, bringupDir string, service string) {
+	t.Helper()
+
+	pidBytes, err := os.ReadFile(filepath.Join(bringupDir, "pids", service+".pid"))
+	if err != nil {
+		t.Fatalf("read %s pid: %v", service, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatalf("parse %s pid: %v", service, err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		t.Fatalf("stop %s pid %d: %v", service, pid, err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s pid %d did not stop", service, pid)
 }

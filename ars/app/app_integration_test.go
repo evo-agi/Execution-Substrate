@@ -1283,8 +1283,8 @@ func seedStorageFixture(t *testing.T) seededStorage {
 				"publication": map[string]any{
 					"builder_service": "artifact-governance",
 					"invoker": map[string]any{
-						"service":   "deployment",
-						"principal": "spiffe://execution.internal/service/deployment",
+						"service":   "operator",
+						"principal": "spiffe://execution.internal/operator",
 					},
 					"policy_decisions": []any{},
 					"build_log_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -1623,7 +1623,6 @@ func buildConfig(fixture tlsFixture, rootDir string, indexPath string) config.Co
 			AllowedSPIFFEPathPrefixes: []string{
 				"service/artifact-governance",
 				"service/execution",
-				"service/deployment",
 				"service/credential-governance",
 				"operator",
 			},

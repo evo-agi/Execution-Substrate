@@ -19,6 +19,12 @@ The preferred operator path is now:
 
 The lower-level `scripts/02_start_*.sh` through `scripts/06_start_nomad.sh` helpers remain available as manual fallback, but they are no longer the primary documented bring-up flow.
 
+The readiness vocabulary for that primary path is now:
+
+- `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
+- `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS
+- `submit-ready`: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node
+
 ## 2. Prerequisites
 
 ### Required software
@@ -53,25 +59,24 @@ Build these from the current validators and the configuration matrix in [configu
 
 ### Required TLS material for API calls and bring-up verification
 
-Export a CA bundle and a client cert/key that authenticate as either:
+Export a CA bundle and a client cert/key that authenticate as:
 
-- `spiffe://execution.internal/service/deployment`
 - `spiffe://execution.internal/operator`
 
 ```bash
 export CA_CERT="/abs/path/runtime-ca.pem"
-export DEPLOY_CERT="/abs/path/deployment-client.pem"
-export DEPLOY_KEY="/abs/path/deployment-client-key.pem"
+export OPERATOR_CERT="/abs/path/operator-client.pem"
+export OPERATOR_KEY="/abs/path/operator-client-key.pem"
 ```
 
-If your ARS read policy does not allow the deployment/operator identity, also export a separate ARS read client:
+If your ARS read policy does not allow the operator identity, also export a separate ARS read client:
 
 ```bash
 export ARS_READ_CERT="/abs/path/execution-client.pem"
 export ARS_READ_KEY="/abs/path/execution-client-key.pem"
 ```
 
-`scripts/01_bringup.sh` and `scripts/10_health_check.sh` use the ARS read client only to verify the configured workload-zone Vault blob exists and has the expected JSON shape before first execution. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `DEPLOY_CERT` and `DEPLOY_KEY`.
+`scripts/01_bringup.sh` and `scripts/10_health_check.sh` use the ARS read client only to verify the configured workload-zone Vault blob exists and has the expected JSON shape before first execution. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `OPERATOR_CERT` and `OPERATOR_KEY`.
 
 ### Required service URLs
 
@@ -131,7 +136,7 @@ What this does:
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`
 - verifies Docker readiness
 - starts Nomad and waits for a leader plus at least one ready node
-- runs the unified readiness check once more before reporting success
+- runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
 
 Successful output ends with:
 
@@ -156,6 +161,8 @@ scripts/01_bringup.sh up
 
 This still starts ARS, EGS, AGS, and ES, and it still verifies the workload-zone Vault blob. It intentionally skips Nomad and Docker readiness.
 
+In this profile, successful bring-up proves `prepare-ready` only. `submit-ready` is intentionally skipped because `:submit` and lifecycle are out of scope for `prepare-only`.
+
 ## 4. Readiness Verification
 
 Re-run readiness checks at any time with:
@@ -170,11 +177,18 @@ Or directly:
 VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
 ```
 
-For the full profile, success means:
+For the full profile, `scripts/01_bringup.sh check` now reports three layers:
+
+- service health
+- prepare-ready
+- submit-ready
+
+For the full profile, `submit-ready: true` means:
 
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
 - Nomad has a leader and at least one ready node
 - `docker info` succeeds
+- ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, and `execution.base_image`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
 
 For ES specifically, `/health` still confirms:
@@ -184,6 +198,12 @@ For ES specifically, `/health` still confirms:
 - ARS healthy
 
 It still does **not** imply Nomad is reachable, which is why the bring-up path verifies Nomad separately.
+
+For `prepare-only`, success still means:
+
+- ARS, EGS, AGS, and ES each return `200` with `"ready": true`
+- the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
+- `submit-ready` is reported as skipped for that profile
 
 ## 5. First Execution Verification
 
@@ -202,6 +222,8 @@ That helper drives:
 - ES `logs`
 
 and writes a structured summary plus captured logs to a per-run work directory.
+
+Because that helper waits for terminal status and then reads logs, it also exercises the current successful-submit staging cleanup policy: ES keeps `execution.staging_root_dir/<run_id>` while the workload may still depend on it, then best-effort removes that staging root after terminal success is observed. Failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain staging for debugging.
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 

@@ -99,6 +99,7 @@ Dependency wiring:
   - trust model loaded
   - ARS ready
 - Live EGS reachability is not treated as a post-start runtime readiness dependency in the current implementation.
+- ES `/health` remains admission-oriented only; the operator bring-up/check path now layers workload-zone Vault runtime-config verification and, for the full profile, ES submit-config, Docker, and Nomad checks on top before declaring submit readiness.
 
 What the app layer delegates:
 
@@ -174,7 +175,7 @@ Where ES stops and Nomad takes over:
 
 - `Submit` reuses `Prepare` instead of duplicating the full admission path inline.
 - Failed submits remove the staging root immediately through deferred cleanup.
-- Successful submits currently leave their host staging directories in place unless some other cleanup removes them.
+- Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
 
 ## 8. Lifecycle projection implementation
@@ -200,6 +201,7 @@ Status path:
   - `terminal`
 - Fill `exit_code` when available.
 - Treat "job exists but no allocation yet" as a successful `submitted` view.
+- If terminal success is observed, best-effort remove the run-scoped host staging root.
 
 Logs path:
 
@@ -207,6 +209,7 @@ Logs path:
 - Resolve the currently projected allocation.
 - Require task `task` to be in `running` or `dead`.
 - Fetch stdout via Nomad client FS logs endpoint.
+- If the selected task is terminal-successful, best-effort remove the run-scoped host staging root after stdout is fetched.
 
 Cancel path:
 
@@ -297,7 +300,9 @@ Runtime-path effects in the Nomad job spec are now assembled from that same inte
 Cleanup behavior visible in code:
 
 - Failed submits remove the staged root directory.
-- Successful submits currently retain host staging unless cleaned elsewhere.
+- Successful submits retain host staging only while the run may still depend on it.
+- ES best-effort removes `execution.staging_root_dir/<run_id>/` after `status` or `logs` observes terminal success for the run.
+- Failed, canceled, lost, or otherwise ambiguous outcomes retain their staging root for debugging.
 - The runtime-identity workspace is not host-backed by the submit path.
 
 **Current simplification**
@@ -356,6 +361,7 @@ The most important implementation facts are backed by integration tests:
 - `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
+- The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` as sufficient on its own.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.

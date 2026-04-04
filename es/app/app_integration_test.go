@@ -41,7 +41,7 @@ import (
 func TestPrepareFlowReturnsBoundedPreflightSuccess(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -212,10 +212,24 @@ func TestPrepareReturns403WhenCallerIsDisallowed(t *testing.T) {
 	}
 }
 
+func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
+	stack := startStack(t, stackOptions{})
+
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+	if got := strings.TrimSpace(string(mustReadBody(t, response.Body))); got != "Caller not authorized for this operation" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
 func TestPrepareReturns403WhenBootstrapPKICallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", true), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", true), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusForbidden {
@@ -247,7 +261,7 @@ func TestPrepareReturns400WhenReservedRuntimeEnvKeyIsProvided(t *testing.T) {
 func TestPrepareReturns400WhenJSONIsMalformed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), []byte(`{"schema_version":"v1"`))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), []byte(`{"schema_version":"v1"`))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusBadRequest {
@@ -642,7 +656,7 @@ func assertPrepareError(t *testing.T, stack *testStack, expectedStatus int, expe
 func assertPrepareSuccess(t *testing.T, stack *testStack) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -661,7 +675,7 @@ func assertPrepareSuccess(t *testing.T, stack *testStack) {
 func assertPrepareErrorForBody(t *testing.T, stack *testStack, body []byte, expectedStatus int, expectedCode string) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), body)
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), body)
 	defer response.Body.Close()
 
 	if response.StatusCode != expectedStatus {
@@ -1074,8 +1088,8 @@ func signedArtifactEvidenceJSON(
 				Publication: evidencev1.Publication{
 					BuilderService: "artifact-governance",
 					Invoker: evidencev1.Invoker{
-						Service:   "deployment",
-						Principal: "spiffe://execution.internal/service/deployment",
+						Service:   "operator",
+						Principal: "spiffe://execution.internal/operator",
 					},
 					PolicyDecisions: []evidencev1.PolicyDecision{
 						{Rule: "allow", Result: "applied"},

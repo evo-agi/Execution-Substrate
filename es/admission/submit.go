@@ -109,10 +109,11 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}()
 
-	// Failed submits are cleaned immediately. Successful submits currently retain
-	// payload/run staging under execution.staging_root_dir unless removed
-	// externally, but the reserved runtime-identity workspace is provisioned as
-	// tmpfs and is no longer host-backed by the submit path.
+	// Failed submits are cleaned immediately. Successful submits retain
+	// payload/run staging only while the workload may still depend on those bind
+	// mounts; the lifecycle path now performs best-effort cleanup after terminal
+	// success is observed. The reserved runtime-identity workspace is provisioned
+	// as tmpfs and is no longer host-backed by the submit path.
 
 	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, req.Invocation.Mounts)
 	if err != nil {

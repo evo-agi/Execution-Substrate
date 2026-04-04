@@ -81,7 +81,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
-	if caller.Path != "service/deployment" && caller.Path != "operator" {
+	if caller.Path != "operator" {
 		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}

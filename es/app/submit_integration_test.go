@@ -48,7 +48,7 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		buildSubmitRequestBody(t, stack),
 	)
 	defer response.Body.Close()
@@ -113,7 +113,7 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		buildSubmitRequestBody(t, stack),
 	)
 	defer response.Body.Close()
@@ -220,7 +220,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		nil,
 	)
 	defer statusResponse.Body.Close()
@@ -233,7 +233,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		nil,
 	)
 	defer logsResponse.Body.Close()
@@ -403,7 +403,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		nil,
 	)
 	defer statusResponse.Body.Close()
@@ -416,7 +416,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		nil,
 	)
 	defer logsResponse.Body.Close()
@@ -968,7 +968,7 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 		stack.ags.Addr(),
 		http.MethodPost,
 		"/v1/artifacts:publish",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator", false),
 		requestBody,
 	)
 	defer response.Body.Close()
@@ -1103,7 +1103,7 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 		stack.ags.Addr(),
 		http.MethodPost,
 		"/v1/artifacts:publish",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator", false),
 		requestBody,
 	)
 	defer response.Body.Close()
@@ -1130,7 +1130,7 @@ func submitExecutionRequest(t *testing.T, stack *submitStack, requestBody []byte
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
 		requestBody,
 	)
 }

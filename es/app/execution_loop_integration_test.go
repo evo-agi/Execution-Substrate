@@ -146,14 +146,14 @@ exit 7
 func runExecutionLoopScript(t *testing.T, stack *submitStack, specPath string, workdirBase string) executionLoopResult {
 	t.Helper()
 
-	deployCertPath, deployKeyPath := writeLeafCertificateFiles(
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
 		t,
 		t.TempDir(),
-		"loop-deployment",
+		"loop-operator",
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
-		"loop-deployment-client",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
+		"loop-operator-client",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
 	)
 
 	agsHost, agsPort, err := net.SplitHostPort(stack.ags.Addr())
@@ -176,8 +176,8 @@ func runExecutionLoopScript(t *testing.T, stack *submitStack, specPath string, w
 		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
 		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
 		"CA_CERT="+stack.fixture.runtimeCAPath,
-		"DEPLOY_CERT="+deployCertPath,
-		"DEPLOY_KEY="+deployKeyPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
 		"WORKDIR_BASE="+workdirBase,
 	)
 
@@ -269,7 +269,6 @@ func writeExecutionLoopSpec(t *testing.T, dir string, name string, script string
 		},
 		"publish": map[string]any{
 			"artifact_type": "static-script",
-			"caller":        "deployment",
 			"runtime_interface": map[string]any{
 				"environment_variables": []any{"APP_MODE"},
 				"required_capabilities": []any{},

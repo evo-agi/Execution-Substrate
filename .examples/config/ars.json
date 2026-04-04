@@ -15,7 +15,6 @@
     "allowed_spiffe_path_prefixes": [
       "service/execution",
       "service/artifact-governance",
-      "service/deployment",
       "operator"
     ]
   },

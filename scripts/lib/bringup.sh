@@ -10,6 +10,11 @@ bringup_profile() {
   printf '%s\n' "${BRINGUP_PROFILE:-full}"
 }
 
+print_check_section() {
+  local title=$1
+  printf '\n==> %s\n' "${title}"
+}
+
 validate_bringup_profile() {
   local profile
   profile="$(bringup_profile)"
@@ -210,10 +215,10 @@ wait_for_nomad_ready() {
 
 check_docker_ready() {
   if ! docker info >/dev/null 2>&1; then
-    echo "docker: docker info failed" >&2
+    echo "docker: docker info failed; submit readiness requires a reachable Docker daemon" >&2
     return 1
   fi
-  echo "docker: ready"
+  echo "docker: ready (docker info succeeded)"
 }
 
 verify_es_submit_config_enabled() {
@@ -244,12 +249,70 @@ for path in (
 PY
 }
 
+check_es_submit_config_once() {
+  local config_path=$1
+  local summary
+
+  if ! summary="$(python3 - <<'PY' "$config_path"
+import json
+import os
+import pathlib
+import sys
+from urllib.parse import urlparse
+
+cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+def require_non_empty(path):
+    cur = cfg
+    for segment in path:
+        if not isinstance(cur, dict) or segment not in cur:
+            raise SystemExit(f"es submit config: missing {'.'.join(path)}")
+        cur = cur[segment]
+    if not isinstance(cur, str) or not cur.strip():
+        raise SystemExit(f"es submit config: missing {'.'.join(path)}")
+    return cur.strip()
+
+base_url = require_non_empty(("nomad", "base_url"))
+datacenter = require_non_empty(("nomad", "datacenter"))
+staging_root_dir = require_non_empty(("execution", "staging_root_dir"))
+base_image = require_non_empty(("execution", "base_image"))
+
+parsed = urlparse(base_url)
+if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    raise SystemExit("es submit config: nomad.base_url must be a valid absolute http(s) URL")
+
+staging_root = pathlib.Path(staging_root_dir)
+if not staging_root.is_absolute():
+    raise SystemExit("es submit config: execution.staging_root_dir must be an absolute path")
+if not staging_root.exists():
+    raise SystemExit(f"es submit config: execution.staging_root_dir does not exist: {staging_root_dir}")
+if not staging_root.is_dir():
+    raise SystemExit(f"es submit config: execution.staging_root_dir is not a directory: {staging_root_dir}")
+if not os.access(staging_root_dir, os.W_OK):
+    raise SystemExit(f"es submit config: execution.staging_root_dir is not writable: {staging_root_dir}")
+
+print(
+    "es submit config: "
+    f"base_url={base_url} "
+    f"datacenter={datacenter} "
+    f"staging_root_dir={staging_root_dir} "
+    f"base_image={base_image} "
+    "ready=true"
+)
+PY
+)"; then
+    return 1
+  fi
+
+  echo "${summary}"
+}
+
 resolve_ars_read_credentials() {
-  local cert="${ARS_READ_CERT:-${DEPLOY_CERT:-}}"
-  local key="${ARS_READ_KEY:-${DEPLOY_KEY:-}}"
+  local cert="${ARS_READ_CERT:-${OPERATOR_CERT:-}}"
+  local key="${ARS_READ_KEY:-${OPERATOR_KEY:-}}"
 
   if [[ -z "${cert}" || -z "${key}" ]]; then
-    echo "ARS blob readiness verification requires ARS_READ_CERT/ARS_READ_KEY or DEPLOY_CERT/DEPLOY_KEY" >&2
+    echo "ARS blob readiness verification requires ARS_READ_CERT/ARS_READ_KEY or OPERATOR_CERT/OPERATOR_KEY" >&2
     return 1
   fi
   require_readable_path "ARS read client cert" "${cert}" || return 1

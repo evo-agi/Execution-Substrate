@@ -14,15 +14,15 @@ required_envs=(
   RUN_ID
   ES_URL
   CA_CERT
-  DEPLOY_CERT
-  DEPLOY_KEY
+  OPERATOR_CERT
+  OPERATOR_KEY
 )
 
 for name in "${required_envs[@]}"; do
   require_env "${name}"
 done
 
-for path_name in CA_CERT DEPLOY_CERT DEPLOY_KEY; do
+for path_name in CA_CERT OPERATOR_CERT OPERATOR_KEY; do
   require_readable_env "${path_name}"
 done
 
@@ -31,12 +31,12 @@ logs_path="$(mktemp)"
 trap 'rm -f "${status_path}" "${logs_path}"' EXIT
 
 curl_status() {
-  curl_tls_get_to_file "${status_path}" "${ES_URL}/v1/executions/${RUN_ID}/status" "$(resolve_value ES_RESOLVE)" --cert "${DEPLOY_CERT}" --key "${DEPLOY_KEY}"
+  curl_tls_get_to_file "${status_path}" "${ES_URL}/v1/executions/${RUN_ID}/status" "$(resolve_value ES_RESOLVE)" --cert "${OPERATOR_CERT}" --key "${OPERATOR_KEY}"
 }
 
 print_status_json() {
   printf '+ curl --fail-with-body --silent --show-error --cacert %q --cert %q --key %q %q | python3 -m json.tool\n' \
-    "${CA_CERT}" "${DEPLOY_CERT}" "${DEPLOY_KEY}" "${ES_URL}/v1/executions/${RUN_ID}/status"
+    "${CA_CERT}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" "${ES_URL}/v1/executions/${RUN_ID}/status"
   python3 -m json.tool "${status_path}"
   printf '\n'
 }
@@ -54,7 +54,7 @@ PY
 
 print_logs() {
   printf '+ curl --fail-with-body --silent --show-error --cacert %q --cert %q --key %q %q\n' \
-    "${CA_CERT}" "${DEPLOY_CERT}" "${DEPLOY_KEY}" "${ES_URL}/v1/executions/${RUN_ID}/logs"
+    "${CA_CERT}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" "${ES_URL}/v1/executions/${RUN_ID}/logs"
   cat "${logs_path}"
   printf '\n\n'
 }
@@ -80,7 +80,7 @@ fi
 
 print_status_json
 
-if curl_tls_get_to_file "${logs_path}" "${ES_URL}/v1/executions/${RUN_ID}/logs" "$(resolve_value ES_RESOLVE)" --cert "${DEPLOY_CERT}" --key "${DEPLOY_KEY}"; then
+if curl_tls_get_to_file "${logs_path}" "${ES_URL}/v1/executions/${RUN_ID}/logs" "$(resolve_value ES_RESOLVE)" --cert "${OPERATOR_CERT}" --key "${OPERATOR_KEY}"; then
   print_logs
 else
   echo "logs are not available yet" >&2
@@ -88,9 +88,9 @@ fi
 
 if [[ "${DO_CANCEL}" == "1" ]]; then
   printf '+ curl --fail-with-body --silent --show-error --cacert %q --cert %q --key %q -X POST %q | python3 -m json.tool\n' \
-    "${CA_CERT}" "${DEPLOY_CERT}" "${DEPLOY_KEY}" "${ES_URL}/v1/executions/${RUN_ID}:cancel"
+    "${CA_CERT}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" "${ES_URL}/v1/executions/${RUN_ID}:cancel"
   cancel_path="$(mktemp)"
   trap 'rm -f "${status_path}" "${logs_path}" "${cancel_path}"' EXIT
-  curl_tls_get_to_file "${cancel_path}" "${ES_URL}/v1/executions/${RUN_ID}:cancel" "$(resolve_value ES_RESOLVE)" --cert "${DEPLOY_CERT}" --key "${DEPLOY_KEY}" -X POST
+  curl_tls_get_to_file "${cancel_path}" "${ES_URL}/v1/executions/${RUN_ID}:cancel" "$(resolve_value ES_RESOLVE)" --cert "${OPERATOR_CERT}" --key "${OPERATOR_KEY}" -X POST
   python3 -m json.tool "${cancel_path}"
 fi

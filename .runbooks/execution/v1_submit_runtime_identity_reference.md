@@ -71,8 +71,10 @@ scripts/01_bringup.sh up
 Then re-check readiness:
 
 ```bash
-VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
+scripts/01_bringup.sh check
 ```
+
+For this full-profile runbook, do not continue unless the check reports `submit-ready: true`.
 
 ## 6. Optional Local Reference Helpers
 

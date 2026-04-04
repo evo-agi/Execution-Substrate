@@ -213,7 +213,7 @@ func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request
 		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return false
 	}
-	if callerPath != "service/deployment" && callerPath != "operator" {
+	if callerPath != "operator" {
 		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return false
 	}

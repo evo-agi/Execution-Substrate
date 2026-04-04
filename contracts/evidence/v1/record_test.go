@@ -30,8 +30,8 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 				Publication: Publication{
 					BuilderService: "artifact-governance",
 					Invoker: Invoker{
-						Service:   "deployment",
-						Principal: "spiffe://execution.internal/service/deployment",
+						Service:   "operator",
+						Principal: "spiffe://execution.internal/operator",
 					},
 					PolicyDecisions: []PolicyDecision{
 						{Rule: "z-last", Result: "allow"},
@@ -120,8 +120,8 @@ func TestValidateRejectsMissingAuthorizationOutputID(t *testing.T) {
 				Publication: Publication{
 					BuilderService: "artifact-governance",
 					Invoker: Invoker{
-						Service:   "deployment",
-						Principal: "spiffe://execution.internal/service/deployment",
+						Service:   "operator",
+						Principal: "spiffe://execution.internal/operator",
 					},
 					BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				},

@@ -35,7 +35,6 @@ These labels are intentionally different. A contract may be live today, relied o
 - All five lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Current accepted caller identities are:
-  - `spiffe://execution.internal/service/deployment`
   - `spiffe://execution.internal/operator`
 - These caller rules apply to:
   - `:prepare`
@@ -183,6 +182,7 @@ Successful response is `200` JSON with these contract fields:
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
+- Successful submit staging remains available only while the running workload may still depend on those host bind mounts.
 
 ### Response contract
 
@@ -277,6 +277,8 @@ Successful response is `200` JSON with these current fields:
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
 - Failed workloads still return `200`; failure is expressed through terminal state plus `exit_code` when available.
 - ES must not synthesize richer lifecycle phases than the current Nomad-backed projection exposes.
+- When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/`.
+- Failed, canceled, lost, or otherwise ambiguous terminal outcomes do not trigger staging cleanup through `status`.
 
 ### Error contract
 
@@ -333,6 +335,7 @@ Successful response is:
 - Task name is fixed to `task`.
 - Output source is stdout only.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
+- If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout.
 
 ### Error contract
 

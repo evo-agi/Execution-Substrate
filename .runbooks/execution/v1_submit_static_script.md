@@ -25,14 +25,16 @@ The steps below remain the transparent manual breakdown for the same current sli
 - The stack is already up through [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md)
 - `BRINGUP_PROFILE=full`
 - `curl`, `python3`, `tar`, `gzip`, `nomad`, and `docker` are available
-- `CA_CERT`, `DEPLOY_CERT`, `DEPLOY_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
+- `CA_CERT`, `OPERATOR_CERT`, `OPERATOR_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
 - Optional `AGS_RESOLVE` and `ES_RESOLVE` are exported if your local URLs require `curl --resolve`
 
 Before publishing or submitting, re-run the stack check:
 
 ```bash
-VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
+scripts/01_bringup.sh check
 ```
+
+For this full-profile runbook, do not continue unless the check reports `submit-ready: true`.
 
 ## 3. Create The Artifact Payload
 

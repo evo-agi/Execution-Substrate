@@ -156,7 +156,6 @@ Accept bounded publication input, assemble the canonical aggregate evidence reco
 ### Current producers / consumers
 
 - Current allowed callers are:
-  - `spiffe://execution.internal/service/deployment`
   - `spiffe://execution.internal/operator`
 - `AGS` consumes the ARS write boundary.
 - `ES` later consumes AGS output indirectly through ARS reads.
@@ -189,7 +188,7 @@ Current response shape:
 `Current invariant`
 
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
-- AGS only allows publish callers from the deployment and operator identities above.
+- AGS only allows publish callers from the operator identity above in the current bounded slice.
 - AGS computes `payload_digest` from payload bytes.
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
@@ -327,7 +326,6 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 ### Current producers / consumers
 
 - Current allowed callers are:
-  - `spiffe://execution.internal/service/deployment`
   - `spiffe://execution.internal/operator`
 - ES consumes:
   - the configured workload-zone Vault config reference
@@ -395,7 +393,7 @@ Current successful response shapes:
 `Current invariant`
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
-- ES admits only deployment and operator callers today.
+- ES admits only the operator caller identity today on its public execution and lifecycle entry surfaces.
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:
@@ -424,7 +422,9 @@ Current successful response shapes:
   - non-overlapping
 - Each runtime mount artifact is revalidated through ARS and runtime-trust enforcement before staging.
 - Failed submit staging is cleaned immediately.
-- Successful submit payload and run staging may remain under `execution.staging_root_dir/<run_id>/`.
+- Successful submit payload, run, and mount staging remain under `execution.staging_root_dir/<run_id>/` only while the workload may still depend on those bind mounts.
+- Once ES observes terminal success for the run through the current lifecycle path, it best-effort removes `execution.staging_root_dir/<run_id>/`.
+- Failed, canceled, lost, or otherwise ambiguous terminal outcomes retain their staging root for operator debugging in the current slice.
 - Lifecycle is Nomad-backed only:
   - ES does not persist run state
   - ES resolves status, logs, and cancel through Nomad

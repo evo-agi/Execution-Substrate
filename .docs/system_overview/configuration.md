@@ -208,7 +208,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `execution.base_image`
   - optionally `execution.runtime_identity_tmpfs_size`
 - `execution.staging_root_dir` is a writable host-local staging root
-  - it backs successful-submit payload/run staging in the current slice unless removed externally
+  - it backs run-scoped payload, run, and mount staging while the workload may still depend on those bind mounts
+  - ES best-effort removes `<staging_root>/<run_id>` after it observes terminal success for that run through the current lifecycle path
+  - failed, canceled, lost, or otherwise ambiguous outcomes retain `<staging_root>/<run_id>` for debugging in the current slice
   - `/execution/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
   - `/execution/staged` and caller-visible `/execution/mounts/...` remain host-backed copies of governed artifact content
   - ES does not semantically inspect payloads or mount contents for secrecy
@@ -218,6 +220,10 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `execution.runtime_identity_tmpfs_size` controls that ES-owned backing workspace and defaults to `1048576` bytes (`1 MiB`); it must not exceed `8388608` bytes (`8 MiB`)
 - workloads should rely on `EXEC_WORKLOAD_IDENTITY_ENDPOINT` for endpoint discovery rather than on any fixed socket path
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
+- The primary bring-up/check path distinguishes:
+  - service health: ARS, EGS, AGS, and ES public health surfaces
+  - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS
+  - submit-ready: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node
 
 Minimal vault-auth example:
 
@@ -297,6 +303,10 @@ For local operator bring-up against this practical minimum:
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the primary bootstrap path
 - use `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh` to re-run readiness checks
 - use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad/Docker submit
+- use an operator SPIFFE client cert/key for AGS and ES operator-facing helpers:
+  - `CA_CERT`
+  - `OPERATOR_CERT`
+  - `OPERATOR_KEY`
 
 The current unified health check verifies:
 

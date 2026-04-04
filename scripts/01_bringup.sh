@@ -30,7 +30,7 @@ Required for up:
   ARS_CONFIG EGS_CONFIG AGS_CONFIG ES_CONFIG
   ARS_URL EGS_URL AGS_URL ES_URL
   CA_CERT
-  DEPLOY_CERT and DEPLOY_KEY, or ARS_READ_CERT and ARS_READ_KEY
+  OPERATOR_CERT and OPERATOR_KEY, or ARS_READ_CERT and ARS_READ_KEY
 
 Required additionally for full profile:
   NOMAD_CONFIG
@@ -38,6 +38,10 @@ Required additionally for full profile:
 
 Optional resolve helpers for local hostnames:
   ARS_RESOLVE EGS_RESOLVE AGS_RESOLVE ES_RESOLVE
+
+Notes:
+  check reports service health, prepare-ready state, and submit-ready state
+  prepare-only proves bounded preflight readiness only; it intentionally skips submit readiness
 EOF
 }
 
@@ -207,6 +211,11 @@ cmd_up() {
 
   start_managed_service "es" "${SCRIPT_DIR}/05_start_es.sh"
   wait_for_service_ready "execution" "${ES_URL}" "$(resolve_value ES_RESOLVE)" "${READY_TIMEOUT_SECONDS}"
+  if [[ "${PROFILE}" == "full" ]]; then
+    echo "prepare-ready: true (service health is up and the workload-zone Vault runtime-config blob has already been verified; submit readiness still depends on Docker and Nomad)"
+  else
+    echo "prepare-ready: true (prepare-only profile; submit readiness is intentionally skipped)"
+  fi
 
   if [[ "${PROFILE}" == "full" ]]; then
     check_docker_ready
@@ -220,9 +229,19 @@ cmd_up() {
   echo
   echo "bring-up complete"
   echo "profile: ${PROFILE}"
+  if [[ "${PROFILE}" == "full" ]]; then
+    echo "readiness: prepare-ready + submit-ready"
+  else
+    echo "readiness: prepare-ready"
+    echo "submit readiness: skipped for prepare-only profile"
+  fi
   echo "state dir: ${BRINGUP_DIR}"
   echo "next:"
-  echo "  scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json"
+  if [[ "${PROFILE}" == "full" ]]; then
+    echo "  scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json"
+  else
+    echo "  scripts/30_prepare.sh   # after exporting PREPARE_JSON and the usual TLS/URL env"
+  fi
   echo "  scripts/01_bringup.sh down"
 }
 

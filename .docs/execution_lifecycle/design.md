@@ -105,6 +105,7 @@ This is a bounded projection model, not rich execution tracking. ES does not mai
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
 - Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.
 - Docker is the task runtime under Nomad for the current submitted execution slice.
+- Submit-created host staging remains in place only while the workload may still depend on its bind mounts; after ES observes terminal success, the current slice cleans that staging best-effort while retaining non-success outcomes for debugging.
 
 ## 7. Bounded slice rules
 

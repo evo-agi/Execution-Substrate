@@ -310,11 +310,6 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 
 func expectedInvokerForCaller(caller CallerIdentity) (InvokerInfo, *Error) {
 	switch caller.Path {
-		case "service/deployment":
-			return InvokerInfo{
-				Service:   "deployment",
-				Principal: "spiffe://execution.internal/service/deployment",
-			}, nil
 		case "operator":
 			return InvokerInfo{
 				Service:   "operator",
