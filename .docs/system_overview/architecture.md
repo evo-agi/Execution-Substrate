@@ -98,7 +98,7 @@ ES exposes lifecycle and log endpoints, but it does so by deriving state from No
 EGS and CGS occupy different roles today.
 
 - EGS publishes signed trust policy that ES verifies and enforces during admission.
-- CGS provides a separate authorize-only surface backed by authenticated caller interpretation and `id.conf` subject mapping.
+- CGS provides a separate authorize-only surface backed by authenticated caller interpretation and explicit `id.conf` subject records.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
 
@@ -146,7 +146,7 @@ These are current architectural absences, not omissions to fill automatically.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
 - EGS currently publishes a specific trust-model form that directly shapes execution-time enforcement.
-- CGS currently exposes an authorize and policy-input shape closely tied to `id.conf` subject mapping and caller/workload identity interpretation.
+- CGS currently exposes an authorize and policy-input shape closely tied to explicit `id.conf` subject records and caller/workload identity interpretation.
 - Runtime identity handoff currently depends on reserved runtime workspace and path conventions that are active but not settled.
 
 ## 9. Temporary compatibility-heavy conventions
@@ -157,7 +157,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently relies on `/monolith/...` runtime path conventions for staged data, run data, and runtime identity workspace.
 - ES currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
-- CGS remains tied to `id.conf` as the current subject-mapping grammar.
+- CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the descriptor payload reference and cross-checked against evidence claims.
 - The current aggregate evidence grammar is intentionally split into package-facing identity/publication claims, narrow derivation request-binding authorization claims, and execution/runtime claims rather than one mixed claim bag.
 

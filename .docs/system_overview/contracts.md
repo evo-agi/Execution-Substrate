@@ -566,15 +566,21 @@ Current response shape:
 - CGS exposes only `POST /v1/credential/authorize` in the current Go contract.
 - CGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - The authenticated caller identity must equal `workload.workload_identity_id`.
-- The workload descriptor must also match CGS local policy derivation when a subject can be derived from policy.
+- CGS currently depends only on:
+  - `workload.type`
+  - `workload.workload_identity_id`
+- Removed location-convenience fields such as `module_path`, `file_path`, and `service_name` are not part of the active request contract.
 - `requested_capabilities` currently allows only `vault:read`.
-- `id.conf` is loaded at startup, parsed into service and script mappings, and used to:
-  - validate workload descriptors
-  - derive subject IDs
+- `id.conf` is loaded at startup, parsed into explicit subject records, and used to:
+  - validate workload principals
+  - derive subject IDs from explicit policy records
   - evaluate allow or deny decisions
-- The current supported `id.conf` grammar remains:
-  - `service_id`
-  - `approle`
+- The current supported `id.conf` grammar is:
+  - `subject "<id>" {`
+  - `type: "service" | "script"`
+  - `principal: "spiffe://..."`
+  - `role: "<role>"`
+  - `}`
 - The repo now carries a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It is grounded in current Go-repo tests/examples only.
   - It must not be mistaken for a complete production policy file or final long-term policy grammar.

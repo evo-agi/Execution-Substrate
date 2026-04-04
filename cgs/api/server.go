@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"execution-platform/cgs/policy"
@@ -63,13 +62,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	workload := policy.Workload{
 		Type:               request.Workload.Type,
-		ServiceName:        request.Workload.ServiceName,
 		WorkloadIdentityID: request.Workload.WorkloadIdentityID,
-		ModulePath:         request.Workload.ModulePath,
-		FilePath:           request.Workload.FilePath,
-		TargetPlatform:     request.Workload.TargetPlatform,
-		Description:        request.Workload.Description,
-		Ephemeral:          request.Workload.Ephemeral,
 	}
 	if err := s.policies.ValidateWorkload(workload); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{
@@ -83,7 +76,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusForbidden, "Authenticated caller does not match requested workload principal")
 		return
 	}
-	callerSubjectType, callerSubjectID, ok := subjectFromSPIFFEID(callerIdentity)
+	callerSubjectType, callerSubjectID, ok := policy.SubjectFromSPIFFEID(callerIdentity)
 	if !ok {
 		writeText(w, http.StatusForbidden, "Authenticated caller does not match requested workload principal")
 		return
@@ -191,26 +184,6 @@ func spiffeIdentityFromCertificate(cert *x509.Certificate) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func subjectFromSPIFFEID(identityID string) (string, string, bool) {
-	parsed, err := url.Parse(identityID)
-	if err != nil || parsed.Scheme != "spiffe" || parsed.Host == "" {
-		return "", "", false
-	}
-
-	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) != 2 {
-		return "", "", false
-	}
-	if segments[0] != "service" && segments[0] != "script" {
-		return "", "", false
-	}
-	if strings.TrimSpace(segments[1]) == "" {
-		return "", "", false
-	}
-
-	return segments[0], segments[1], true
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

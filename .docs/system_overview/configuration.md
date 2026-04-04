@@ -266,10 +266,14 @@ Minimal vault-auth example:
 ### Minimal valid configuration
 
 - `policy.id_conf_path` must point to a valid policy file
-- the repo includes a minimal checked-in subject-mapping baseline at `cgs/policy/id.conf`
+- the repo includes a minimal checked-in subject-policy baseline at `cgs/policy/id.conf`
 - that checked-in file is a current baseline only
   - it is derived from current Go-repo tests/examples
   - it is not documented as complete production policy or final long-term grammar
+- the current `id.conf` grammar uses explicit `subject` records with:
+  - `type`
+  - `principal`
+  - `role`
 
 CGS is not required for the current ES hot path and is not part of the minimal governed execution bring-up runbook.
 

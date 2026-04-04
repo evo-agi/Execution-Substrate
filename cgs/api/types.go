@@ -9,13 +9,7 @@ type AuthorizeRequest struct {
 
 type WorkloadDescriptor struct {
 	Type               string `json:"type"`
-	ServiceName        string `json:"service_name,omitempty"`
 	WorkloadIdentityID string `json:"workload_identity_id,omitempty"`
-	ModulePath         string `json:"module_path,omitempty"`
-	FilePath           string `json:"file_path,omitempty"`
-	TargetPlatform     string `json:"target_platform,omitempty"`
-	Description        string `json:"description,omitempty"`
-	Ephemeral          bool   `json:"ephemeral"`
 }
 
 type AuthorizeResponse struct {

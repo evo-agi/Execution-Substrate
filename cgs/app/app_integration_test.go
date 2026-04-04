@@ -113,7 +113,7 @@ func TestNewRejectsInvalidIDConf(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
-	idConfPath := writeIDConf(t, "service_id {\ninvalid-line\n}\n")
+	idConfPath := writeIDConf(t, "subject \"execution\" {\ninvalid-line\n}\n")
 	cfgPath := writeConfig(t, buildConfig(fixture, idConfPath))
 
 	loaded, err := config.Load(cfgPath)
@@ -224,14 +224,20 @@ func TestLoadConfigRejectsMissingBootstrapIssuerConfig(t *testing.T) {
 	}
 }
 
-func TestNewRejectsDuplicateServiceModuleMapping(t *testing.T) {
+func TestNewRejectsDuplicateSubject(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
 	idConfPath := writeIDConf(t, `
-service_id {
-  services.execution.ExecutionServer: "execution"
-  services.execution.ExecutionServer: "execution"
+subject "execution" {
+  type: "service"
+  principal: "spiffe://monolith.internal/service/execution"
+  role: "worker"
+}
+subject "execution" {
+  type: "service"
+  principal: "spiffe://monolith.internal/service/execution"
+  role: "worker"
 }
 `)
 	cfgPath := writeConfig(t, buildConfig(fixture, idConfPath))
@@ -242,19 +248,20 @@ service_id {
 	}
 
 	_, err = app.New(loaded)
-	if err == nil || !strings.Contains(err.Error(), "duplicate service_id module_path mapping") {
-		t.Fatalf("expected duplicate module mapping error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicate subject service execution") {
+		t.Fatalf("expected duplicate subject error, got %v", err)
 	}
 }
 
-func TestNewRejectsDuplicateServiceIDMapping(t *testing.T) {
+func TestNewRejectsInvalidSubjectType(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
 	idConfPath := writeIDConf(t, `
-service_id {
-  services.execution.ExecutionServer: "execution"
-  services.execution.OtherServer: "execution"
+subject "other" {
+  type: "job"
+  principal: "spiffe://monolith.internal/service/other"
+  role: "worker"
 }
 `)
 	cfgPath := writeConfig(t, buildConfig(fixture, idConfPath))
@@ -265,19 +272,20 @@ service_id {
 	}
 
 	_, err = app.New(loaded)
-	if err == nil || !strings.Contains(err.Error(), "duplicate service_id subject id") {
-		t.Fatalf("expected duplicate service id error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid type") {
+		t.Fatalf("expected invalid subject type error, got %v", err)
 	}
 }
 
-func TestNewRejectsDuplicateScriptMapping(t *testing.T) {
+func TestNewRejectsSubjectPrincipalMismatch(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
 	idConfPath := writeIDConf(t, `
-approle {
-  scripts.vault.Run: "bot_test_privileged"
-  scripts.vault.Run: "bot_test_privileged"
+subject "execution" {
+  type: "service"
+  principal: "spiffe://monolith.internal/service/deployment"
+  role: "worker"
 }
 `)
 	cfgPath := writeConfig(t, buildConfig(fixture, idConfPath))
@@ -288,19 +296,21 @@ approle {
 	}
 
 	_, err = app.New(loaded)
-	if err == nil || !strings.Contains(err.Error(), "duplicate approle module_path mapping") {
-		t.Fatalf("expected duplicate script mapping error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "principal does not match declared subject") {
+		t.Fatalf("expected subject principal mismatch error, got %v", err)
 	}
 }
 
-func TestNewRejectsConflictingDuplicateServiceModuleMapping(t *testing.T) {
+func TestNewRejectsUnsupportedSubjectField(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTLSFixture(t)
 	idConfPath := writeIDConf(t, `
-service_id {
-  services.execution.ExecutionServer: "execution"
-  services.execution.ExecutionServer: "deployment"
+subject "execution" {
+  type: "service"
+  principal: "spiffe://monolith.internal/service/execution"
+  module_path: "services.execution.ExecutionServer"
+  role: "worker"
 }
 `)
 	cfgPath := writeConfig(t, buildConfig(fixture, idConfPath))
@@ -311,8 +321,8 @@ service_id {
 	}
 
 	_, err = app.New(loaded)
-	if err == nil || !strings.Contains(err.Error(), "duplicate service_id module_path mapping") {
-		t.Fatalf("expected conflicting duplicate module mapping error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported subject field module_path") {
+		t.Fatalf("expected unsupported subject field error, got %v", err)
 	}
 }
 
@@ -323,12 +333,7 @@ func TestAuthorizeAllowsValidServiceWorkload(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
-			"description":          "execution",
-			"ephemeral":            false,
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -394,8 +399,6 @@ func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 		"workload": map[string]any{
 			"type":                 "script",
 			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
-			"module_path":          "scripts.vault.Run",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -433,10 +436,7 @@ func TestAuthorizeRejectsRemovedRequestedByField(t *testing.T) {
 		},
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -457,10 +457,7 @@ func TestAuthorizeRejectsUnsupportedRequestedCapabilities(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:write"},
 	}
@@ -483,8 +480,6 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 		"workload": map[string]any{
 			"type":                 "service",
 			"workload_identity_id": "spiffe://monolith.internal/service/unknown",
-			"module_path":          "services.unknown.Server",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -530,10 +525,7 @@ func TestAuthorizeRejectsMissingWorkloadIdentityID(t *testing.T) {
 
 	body := map[string]any{
 		"workload": map[string]any{
-			"type":            "service",
-			"service_name":    "execution",
-			"module_path":     "services.execution.ExecutionServer",
-			"target_platform": "docker",
+			"type": "service",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -548,17 +540,16 @@ func TestAuthorizeRejectsMissingWorkloadIdentityID(t *testing.T) {
 	assertErrorPayload(t, response, "workload.workload_identity_id is required")
 }
 
-func TestAuthorizeRejectsInvalidDescriptorShape(t *testing.T) {
+func TestAuthorizeRejectsRemovedDescriptorConvenienceFields(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "deployment",
 			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
 			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
+			"service_name":         "deployment",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -570,7 +561,29 @@ func TestAuthorizeRejectsInvalidDescriptorShape(t *testing.T) {
 		t.Fatalf("expected 400, got %d", response.StatusCode)
 	}
 
-	assertErrorPayload(t, response, "workload.service_name does not match module_path")
+	assertErrorPayload(t, response, "malformed JSON request body")
+}
+
+func TestAuthorizeRejectsTypeMismatchWithWorkloadPrincipal(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
+
+	body := map[string]any{
+		"workload": map[string]any{
+			"type":                 "service",
+			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
+		},
+		"requested_capabilities": []string{"vault:read"},
+	}
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "script/bot_test_privileged"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
+	}
+
+	assertErrorPayload(t, response, "workload.type does not match workload.workload_identity_id")
 }
 
 func TestAuthorizeRejectsMalformedJSON(t *testing.T) {
@@ -609,10 +622,7 @@ func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -628,7 +638,7 @@ func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 	}
 }
 
-func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
+func TestAuthorizeDeniesUnknownPolicySubjectAfterPrincipalMatch(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
@@ -636,8 +646,6 @@ func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
 		"workload": map[string]any{
 			"type":                 "service",
 			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -645,15 +653,25 @@ func TestAuthorizeRejectsCallerMismatchWithValidModulePath(t *testing.T) {
 	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
 	}
-	if body := string(mustReadBody(t, response.Body)); body != "Authenticated caller does not match workload descriptor subject" {
-		t.Fatalf("unexpected 403 body: %q", body)
+
+	var payload struct {
+		Allowed bool `json:"allowed"`
+		Reason  struct {
+			Code string `json:"code"`
+		} `json:"reason"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Allowed || payload.Reason.Code != "EVALUATION_FAILED" {
+		t.Fatalf("unexpected deny payload: %+v", payload)
 	}
 }
 
-func TestAuthorizeRejectsCallerMismatchWithValidServiceName(t *testing.T) {
+func TestAuthorizeRejectsRemovedServiceNameField(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
@@ -661,47 +679,40 @@ func TestAuthorizeRejectsCallerMismatchWithValidServiceName(t *testing.T) {
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
-			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
+			"workload_identity_id": "spiffe://monolith.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
 
-	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
 	}
-	if body := string(mustReadBody(t, response.Body)); body != "Authenticated caller does not match workload descriptor subject" {
-		t.Fatalf("unexpected 403 body: %q", body)
-	}
+	assertErrorPayload(t, response, "malformed JSON request body")
 }
 
-func TestAuthorizeRejectsCallerMismatchWithValidScriptPath(t *testing.T) {
+func TestAuthorizeRejectsRemovedFilePathField(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "script",
-			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
-			"module_path":          "scripts.vault.Run",
-			"target_platform":      "docker",
+			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
+			"file_path":            "./scripts/vault/Run.py",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
 
-	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/deployment"))
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "script/bot_test_privileged"))
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
 	}
-	if body := string(mustReadBody(t, response.Body)); body != "Authenticated caller does not match workload descriptor subject" {
-		t.Fatalf("unexpected 403 body: %q", body)
-	}
+	assertErrorPayload(t, response, "malformed JSON request body")
 }
 
 func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
@@ -711,10 +722,7 @@ func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -737,10 +745,7 @@ func TestAuthorizeRejectsRemovedContextField(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"service_name":         "execution",
 			"workload_identity_id": "spiffe://monolith.internal/service/execution",
-			"module_path":          "services.execution.ExecutionServer",
-			"target_platform":      "docker",
 		},
 		"requested_capabilities": []string{"vault:read"},
 		"context":                map[string]any{},
@@ -764,16 +769,16 @@ func TestCheckedInIDConfBaselineParsesAndMapsCurrentSubjects(t *testing.T) {
 	}
 
 	serviceType, serviceID, ok := set.SubjectFromWorkload(policy.Workload{
-		Type:       "service",
-		ModulePath: "services.execution.ExecutionServer",
+		Type:               "service",
+		WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
 	})
 	if !ok || serviceType != "service" || serviceID != "execution" {
 		t.Fatalf("unexpected service subject mapping: type=%q id=%q ok=%v", serviceType, serviceID, ok)
 	}
 
 	scriptType, scriptID, ok := set.SubjectFromWorkload(policy.Workload{
-		Type:       "script",
-		ModulePath: "scripts.vault.Run",
+		Type:               "script",
+		WorkloadIdentityID: "spiffe://monolith.internal/script/bot_test_privileged",
 	})
 	if !ok || scriptType != "script" || scriptID != "bot_test_privileged" {
 		t.Fatalf("unexpected script subject mapping: type=%q id=%q ok=%v", scriptType, scriptID, ok)

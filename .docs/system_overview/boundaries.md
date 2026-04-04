@@ -31,7 +31,7 @@ When prose and code disagree, code and tests win.
 | ARS | Storage and artifact discoverability service | Blob storage, integrity enforcement, evidence-centered artifact registration, and canonical artifact retrieval |
 | AGS | Artifact publication service | Evidence-first publication assembly, caller-bound publication claims, and publication into ARS |
 | EGS | Trust model publication service | Signed trust model publication for execution-time trust decisions |
-| CGS | Authorization service | Authorize-only decision surface backed by caller/workload identity checks and `id.conf` subject mapping |
+| CGS | Authorization service | Authorize-only decision surface backed by caller/workload identity checks and explicit `id.conf` subject policy |
 | ES | Admission, submission, and lifecycle projection service | Execution request validation, composition across upstream services, Nomad submission, and bounded execution status/log projection |
 
 Important absences in the current Go repo:
@@ -290,14 +290,14 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 
 **Purpose**
 
-Provide a separate authorize-only decision surface for workload credential access using caller/workload identity checks and startup-loaded subject-mapping policy.
+Provide a separate authorize-only decision surface for workload credential access using caller/workload identity checks and startup-loaded explicit subject policy.
 
 **Current ownership**
 
 - `POST /v1/credential/authorize`
 - Bounded authorization decisions for current requested capabilities
 - Policy loading from `id.conf`
-- Mapping authenticated callers and workload descriptors into authorization decisions
+- Mapping authenticated callers and workload principals into authorization decisions
 
 **Explicit non-ownership**
 
@@ -314,13 +314,13 @@ Provide a separate authorize-only decision surface for workload credential acces
 
 **Boundary pressure points**
 
-- `id.conf` still strongly influences CGS's current subject-derivation and policy-input shape.
-- The current authorize surface still carries more workload-descriptor shape than the narrow decision logic uses.
+- `id.conf` still strongly influences CGS's current explicit subject grammar and policy-input shape.
+- CGS's request and decision logic now center on workload principal identity instead of path-derived workload location.
 - CGS must stay separate from ES-owned workload-vault auth resolution and runtime identity handling.
 
 **Temporary compatibility edges**
 
-- `id.conf` remains active as the current subject-mapping grammar even though its long-term role is reopened.
+- `id.conf` remains active as the current explicit subject-policy grammar even though its long-term role is reopened.
 - The repo ships a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It exists to make the current `id.conf` dependency explicit and testable.
   - It does not expand `id.conf` into a declared complete production policy grammar.

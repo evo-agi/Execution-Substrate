@@ -3,28 +3,29 @@ package policy
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 )
 
-const policyVersion = "go-cgs-v1"
-const deploymentServiceID = "deployment"
+const policyVersion = "go-cgs-v2"
 
 type Set struct {
-	serviceModuleToID map[string]string
-	scriptModuleToID  map[string]string
+	subjectsByKey       map[string]Subject
+	subjectsByPrincipal map[string]Subject
 }
 
 type Workload struct {
 	Type               string
-	ServiceName        string
 	WorkloadIdentityID string
-	ModulePath         string
-	FilePath           string
-	TargetPlatform     string
-	Description        string
-	Ephemeral          bool
+}
+
+type Subject struct {
+	Type      string
+	ID        string
+	Principal string
+	Role      string
 }
 
 type Evaluation struct {
@@ -73,15 +74,12 @@ func Load(path string) (*Set, error) {
 		return nil, fmt.Errorf("id.conf is empty")
 	}
 
-	serviceMap := make(map[string]string)
-	scriptMap := make(map[string]string)
-	serviceIDs := make(map[string]string)
-	scriptIDs := make(map[string]string)
+	subjectsByKey := make(map[string]Subject)
+	subjectsByPrincipal := make(map[string]Subject)
 
 	scanner := bufio.NewScanner(file)
-	depth := 0
-	currentSection := ""
 	lineNumber := 0
+	var currentSubject *Subject
 
 	for scanner.Scan() {
 		lineNumber++
@@ -91,142 +89,112 @@ func Load(path string) (*Set, error) {
 			continue
 		}
 
-		if strings.HasSuffix(line, "{") && !strings.Contains(line, ":") {
-			sectionName := strings.TrimSpace(strings.TrimSuffix(line, "{"))
-			sectionName = strings.Trim(sectionName, "\"")
-			if depth == 0 {
-				currentSection = sectionName
+		if subjectID, ok := parseSubjectHeader(line); ok {
+			if currentSubject != nil {
+				return nil, fmt.Errorf("parse id.conf: nested subject block at line %d", lineNumber)
 			}
-			depth++
+			currentSubject = &Subject{ID: subjectID}
 			continue
 		}
 
 		if line == "}" {
-			if depth == 0 {
+			if currentSubject == nil {
 				return nil, fmt.Errorf("parse id.conf: unexpected closing brace at line %d", lineNumber)
 			}
-			depth--
-			if depth == 0 {
-				currentSection = ""
+			if err := validateSubject(*currentSubject); err != nil {
+				return nil, fmt.Errorf("parse id.conf: %w", err)
 			}
+			key := subjectKey(currentSubject.Type, currentSubject.ID)
+			if _, exists := subjectsByKey[key]; exists {
+				return nil, fmt.Errorf("parse id.conf: duplicate subject %s %s", currentSubject.Type, currentSubject.ID)
+			}
+			if existing, exists := subjectsByPrincipal[currentSubject.Principal]; exists {
+				return nil, fmt.Errorf("parse id.conf: duplicate subject principal %s for %s %s and %s %s", currentSubject.Principal, existing.Type, existing.ID, currentSubject.Type, currentSubject.ID)
+			}
+			subjectsByKey[key] = *currentSubject
+			subjectsByPrincipal[currentSubject.Principal] = *currentSubject
+			currentSubject = nil
 			continue
 		}
 
-		if depth == 1 && (currentSection == "service_id" || currentSection == "approle") {
-			key, value, ok := parseMappingLine(line)
-			if !ok {
-				return nil, fmt.Errorf("parse id.conf: invalid mapping at line %d", lineNumber)
-			}
-			if currentSection == "service_id" {
-				if _, exists := serviceMap[key]; exists {
-					return nil, fmt.Errorf("parse id.conf: duplicate service_id module_path mapping for %s", key)
-				}
-				if existingModulePath, exists := serviceIDs[value]; exists {
-					return nil, fmt.Errorf("parse id.conf: duplicate service_id subject id %s for %s and %s", value, existingModulePath, key)
-				}
-				serviceMap[key] = value
-				serviceIDs[value] = key
-			} else {
-				if _, exists := scriptMap[key]; exists {
-					return nil, fmt.Errorf("parse id.conf: duplicate approle module_path mapping for %s", key)
-				}
-				if existingModulePath, exists := scriptIDs[value]; exists {
-					return nil, fmt.Errorf("parse id.conf: duplicate approle subject id %s for %s and %s", value, existingModulePath, key)
-				}
-				scriptMap[key] = value
-				scriptIDs[value] = key
-			}
+		if currentSubject == nil {
+			return nil, fmt.Errorf("parse id.conf: invalid subject declaration at line %d", lineNumber)
+		}
+
+		key, value, ok := parseMappingLine(line)
+		if !ok {
+			return nil, fmt.Errorf("parse id.conf: invalid subject field at line %d", lineNumber)
+		}
+		switch key {
+		case "type":
+			currentSubject.Type = value
+		case "principal":
+			currentSubject.Principal = value
+		case "role":
+			currentSubject.Role = value
+		default:
+			return nil, fmt.Errorf("parse id.conf: unsupported subject field %s at line %d", key, lineNumber)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read id.conf: %w", err)
 	}
-	if depth != 0 {
+	if currentSubject != nil {
 		return nil, fmt.Errorf("parse id.conf: unbalanced braces")
 	}
-	if len(serviceMap) == 0 && len(scriptMap) == 0 {
-		return nil, fmt.Errorf("id.conf does not define any service_id or approle mappings")
+	if len(subjectsByKey) == 0 {
+		return nil, fmt.Errorf("id.conf does not define any subjects")
 	}
 
 	return &Set{
-		serviceModuleToID: serviceMap,
-		scriptModuleToID:  scriptMap,
+		subjectsByKey:       subjectsByKey,
+		subjectsByPrincipal: subjectsByPrincipal,
 	}, nil
 }
 
 func (s *Set) ValidateWorkload(workload Workload) error {
 	workload.Type = strings.TrimSpace(workload.Type)
 	switch workload.Type {
-		case "service", "script":
-		default:
-			return fmt.Errorf("workload.type must be service or script")
+	case "service", "script":
+	default:
+		return fmt.Errorf("workload.type must be service or script")
 	}
 
-	modulePath := strings.TrimSpace(workload.ModulePath)
-	filePath := strings.TrimSpace(workload.FilePath)
-	if modulePath == "" && filePath == "" {
-		return fmt.Errorf("must specify either workload.module_path or workload.file_path")
+	workload.WorkloadIdentityID = strings.TrimSpace(workload.WorkloadIdentityID)
+	if workload.WorkloadIdentityID == "" {
+		return fmt.Errorf("workload.workload_identity_id is required")
 	}
 
-	if filePath != "" {
-		converted := filePathToModulePath(filePath)
-		if converted == "" {
-			return fmt.Errorf("workload.file_path is invalid")
-		}
-		if modulePath != "" && converted != modulePath {
-			return fmt.Errorf("workload.module_path and workload.file_path do not match")
-		}
+	subjectType, _, ok := SubjectFromSPIFFEID(workload.WorkloadIdentityID)
+	if !ok {
+		return fmt.Errorf("workload.workload_identity_id must be a valid SPIFFE URI")
 	}
-
-	if workload.Type == "service" {
-		serviceName := strings.TrimSpace(workload.ServiceName)
-		if serviceName != "" {
-			if resolved, ok := s.lookupServiceID(workload); ok && resolved != serviceName {
-				return fmt.Errorf("workload.service_name does not match module_path")
-			}
-		}
+	if subjectType != workload.Type {
+		return fmt.Errorf("workload.type does not match workload.workload_identity_id")
 	}
 
 	return nil
 }
 
 func (s *Set) Evaluate(decisionID string, workload Workload) Evaluation {
-	location := s.determineSubjectLocation(workload)
-	evaluatedRules := []string{}
-	considerations := []string{}
+	workloadType, workloadSubjectID, principalValid := SubjectFromSPIFFEID(workload.WorkloadIdentityID)
+	evaluatedRules := []string{"workload-principal", "subject-policy"}
+	considerations := []string{validityMessage("Workload principal", principalValid)}
 	mainReason := ""
 
-	subjectRole := "worker"
-	subjectID, subjectIDValid := s.determineSubjectID(workload)
-	locationValid := s.isLocationValid(workload.Type, location)
-
-	switch workload.Type {
-		case "service":
-			evaluatedRules = append(evaluatedRules, "service-id", "service-location")
-			considerations = append(considerations, validityMessage("Service ID", subjectIDValid))
-			considerations = append(considerations, validityMessage("Service location", locationValid))
-			if !subjectIDValid {
-				mainReason = "Service ID is not valid"
-			} else if !locationValid {
-				mainReason = "Service location is not valid"
-			}
-		case "script":
-			evaluatedRules = append(evaluatedRules, "script-id", "script-location")
-			considerations = append(considerations, validityMessage("Script ID", subjectIDValid))
-			considerations = append(considerations, validityMessage("Script location", locationValid))
-			if !subjectIDValid {
-				mainReason = "Script ID is not valid"
-			} else if !locationValid {
-				mainReason = "Script location is not valid"
-			}
+	subject, subjectKnown := s.subjectsByPrincipal[strings.TrimSpace(workload.WorkloadIdentityID)]
+	considerations = append(considerations, validityMessage("Policy subject", subjectKnown))
+	if !principalValid {
+		mainReason = "Workload principal is not valid"
+	} else if !subjectKnown {
+		mainReason = "Policy subject is not defined"
+	} else if subject.Type != workloadType || subject.ID != workloadSubjectID {
+		subjectKnown = false
+		mainReason = "Policy subject does not match workload principal"
 	}
 
-	allowed := subjectIDValid && locationValid
-	if allowed {
-		considerations = append(considerations, "Workload SPIFFE identity is specified")
-		evaluatedRules = append(evaluatedRules, "workload-identity")
-	}
+	allowed := principalValid && subjectKnown
 
 	audit := AuditMetadata{
 		DecisionID:     decisionID,
@@ -239,7 +207,7 @@ func (s *Set) Evaluate(decisionID string, workload Workload) Evaluation {
 		return Evaluation{
 			Allowed:     false,
 			SubjectType: workload.Type,
-			SubjectID:   subjectID,
+			SubjectID:   workloadSubjectID,
 			Audit:       audit,
 			Reason: &Reason{
 				Code:    "EVALUATION_FAILED",
@@ -248,93 +216,28 @@ func (s *Set) Evaluate(decisionID string, workload Workload) Evaluation {
 		}
 	}
 
-	var constraints *Constraints
-	if subjectID != deploymentServiceID {
-		expiry := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
-		constraints = &Constraints{
-			ForbiddenStages: []string{"bootstrap"},
-			ExpiresAt:       expiry,
-		}
+	expiry := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+	constraints := &Constraints{
+		ForbiddenStages: []string{"bootstrap"},
+		ExpiresAt:       expiry,
 	}
 
 	return Evaluation{
 		Allowed:     true,
-		Role:        subjectRole,
-		SubjectType: workload.Type,
-		SubjectID:   subjectID,
+		Role:        subject.Role,
+		SubjectType: subject.Type,
+		SubjectID:   subject.ID,
 		Audit:       audit,
 		Constraints: constraints,
 	}
 }
 
 func (s *Set) SubjectFromWorkload(workload Workload) (string, string, bool) {
-	subjectID, ok := s.determineSubjectID(workload)
+	subject, ok := s.subjectsByPrincipal[strings.TrimSpace(workload.WorkloadIdentityID)]
 	if !ok {
 		return "", "", false
 	}
-	return workload.Type, subjectID, true
-}
-
-func (s *Set) determineSubjectLocation(workload Workload) string {
-	modulePath := strings.TrimSpace(workload.ModulePath)
-	if modulePath != "" {
-		return modulePath
-	}
-	return filePathToModulePath(workload.FilePath)
-}
-
-func (s *Set) determineSubjectID(workload Workload) (string, bool) {
-	switch workload.Type {
-		case "service":
-			serviceName := strings.TrimSpace(workload.ServiceName)
-			if serviceName != "" {
-				return serviceName, s.isKnownServiceID(serviceName)
-			}
-			if resolved, ok := s.lookupServiceID(workload); ok {
-				return resolved, true
-			}
-			return "", false
-		case "script":
-			location := s.determineSubjectLocation(workload)
-			scriptID, ok := s.scriptModuleToID[location]
-			if !ok || strings.TrimSpace(scriptID) == "" {
-				return "", false
-			}
-			return scriptID, true
-		default:
-			return "", false
-	}
-}
-
-func (s *Set) isLocationValid(workloadType string, location string) bool {
-	if strings.TrimSpace(location) == "" {
-		return false
-	}
-	switch workloadType {
-		case "service":
-			_, ok := s.serviceModuleToID[location]
-			return ok
-		case "script":
-			_, ok := s.scriptModuleToID[location]
-			return ok
-		default:
-			return false
-	}
-}
-
-func (s *Set) lookupServiceID(workload Workload) (string, bool) {
-	location := s.determineSubjectLocation(workload)
-	serviceID, ok := s.serviceModuleToID[location]
-	return serviceID, ok
-}
-
-func (s *Set) isKnownServiceID(serviceID string) bool {
-	for _, known := range s.serviceModuleToID {
-		if known == serviceID {
-			return true
-		}
-	}
-	return false
+	return subject.Type, subject.ID, true
 }
 
 func parseMappingLine(line string) (string, string, bool) {
@@ -375,21 +278,77 @@ func stripInlineComment(line string) string {
 	return builder.String()
 }
 
-func filePathToModulePath(filePath string) string {
-	trimmed := strings.TrimSpace(filePath)
-	trimmed = strings.TrimPrefix(trimmed, "./")
-	trimmed = strings.TrimSuffix(trimmed, ".py")
-	trimmed = strings.Trim(trimmed, "/")
-	if trimmed == "" {
-		return ""
-	}
-	replacer := strings.NewReplacer("/", ".", "\\", ".")
-	return replacer.Replace(trimmed)
-}
-
 func validityMessage(subject string, valid bool) string {
 	if valid {
 		return subject + " is valid"
 	}
 	return subject + " is not valid"
+}
+
+func parseSubjectHeader(line string) (string, bool) {
+	if !strings.HasSuffix(line, "{") {
+		return "", false
+	}
+	header := strings.TrimSpace(strings.TrimSuffix(line, "{"))
+	if !strings.HasPrefix(header, "subject ") {
+		return "", false
+	}
+	identifier := strings.TrimSpace(strings.TrimPrefix(header, "subject "))
+	if !strings.HasPrefix(identifier, "\"") || !strings.HasSuffix(identifier, "\"") {
+		return "", false
+	}
+	identifier = strings.Trim(identifier, "\"")
+	if strings.TrimSpace(identifier) == "" {
+		return "", false
+	}
+	return identifier, true
+}
+
+func validateSubject(subject Subject) error {
+	subject.Type = strings.TrimSpace(subject.Type)
+	switch subject.Type {
+	case "service", "script":
+	default:
+		return fmt.Errorf("subject %s has invalid type %q", subject.ID, subject.Type)
+	}
+	subject.Principal = strings.TrimSpace(subject.Principal)
+	if subject.Principal == "" {
+		return fmt.Errorf("subject %s principal is required", subject.ID)
+	}
+	principalType, principalID, ok := SubjectFromSPIFFEID(subject.Principal)
+	if !ok {
+		return fmt.Errorf("subject %s principal must be a valid SPIFFE URI", subject.ID)
+	}
+	if principalType != subject.Type || principalID != subject.ID {
+		return fmt.Errorf("subject %s principal does not match declared subject", subject.ID)
+	}
+	subject.Role = strings.TrimSpace(subject.Role)
+	if subject.Role == "" {
+		return fmt.Errorf("subject %s role is required", subject.ID)
+	}
+	return nil
+}
+
+func subjectKey(subjectType string, subjectID string) string {
+	return strings.TrimSpace(subjectType) + ":" + strings.TrimSpace(subjectID)
+}
+
+func SubjectFromSPIFFEID(identityID string) (string, string, bool) {
+	parsed, err := url.Parse(identityID)
+	if err != nil || parsed.Scheme != "spiffe" || parsed.Host == "" {
+		return "", "", false
+	}
+
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) != 2 {
+		return "", "", false
+	}
+	if segments[0] != "service" && segments[0] != "script" {
+		return "", "", false
+	}
+	if strings.TrimSpace(segments[1]) == "" {
+		return "", "", false
+	}
+
+	return segments[0], segments[1], true
 }
