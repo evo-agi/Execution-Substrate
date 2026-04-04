@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 )
 
 type Config struct {
@@ -18,6 +20,7 @@ type Config struct {
 	TLS               TLSConfig               `json:"tls"`
 	Security          SecurityConfig          `json:"security"`
 	Dependencies      DependenciesConfig      `json:"dependencies"`
+	RuntimeConfig     RuntimeConfigConfig     `json:"runtime_config"`
 	Verification      VerificationConfig      `json:"verification"`
 	WorkloadVaultAuth WorkloadVaultAuthConfig `json:"workload_vault_auth"`
 	Nomad             NomadConfig             `json:"nomad,omitempty"`
@@ -43,9 +46,12 @@ type SecurityConfig struct {
 }
 
 type DependenciesConfig struct {
-	ArtifactCatalog     DependencyConfig `json:"artifact_catalog"`
 	ArtifactRegistry    DependencyConfig `json:"artifact_registry"`
 	ExecutionGovernance DependencyConfig `json:"execution_governance"`
+}
+
+type RuntimeConfigConfig struct {
+	WorkloadZoneVaultConfigRef runtimeconfigv1.WorkloadZoneVaultConfigRef `json:"workload_zone_vault_config_ref"`
 }
 
 type DependencyConfig struct {
@@ -95,13 +101,6 @@ const (
 
 type WorkloadVaultAuthConfig struct {
 	DefaultMode WorkloadVaultAuthMode `json:"default_mode"`
-}
-
-type VaultRuntimeFields struct {
-	Address     string
-	AuthMount   string
-	AuthRole    string
-	JWTAudience string
 }
 
 type ResolvedWorkloadVaultAuthPlan struct {
@@ -172,13 +171,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
 	}
 
-	if err := c.Dependencies.ArtifactCatalog.Validate("dependencies.artifact_catalog"); err != nil {
-		return err
-	}
 	if err := c.Dependencies.ArtifactRegistry.Validate("dependencies.artifact_registry"); err != nil {
 		return err
 	}
 	if err := c.Dependencies.ExecutionGovernance.Validate("dependencies.execution_governance"); err != nil {
+		return err
+	}
+	if err := c.RuntimeConfig.Validate(); err != nil {
 		return err
 	}
 
@@ -207,6 +206,13 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func (c RuntimeConfigConfig) Validate() error {
+	if err := c.WorkloadZoneVaultConfigRef.Validate(); err != nil {
+		return fmt.Errorf("runtime_config.workload_zone_vault_config_ref: %w", err)
+	}
 	return nil
 }
 
@@ -318,37 +324,18 @@ func isValidAuthMode(value WorkloadVaultAuthMode) bool {
 	}
 }
 
-func (c WorkloadVaultAuthConfig) Resolve(vault VaultRuntimeFields) (ResolvedWorkloadVaultAuthPlan, error) {
-	address := strings.TrimSpace(vault.Address)
-	if address == "" {
-		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("workload-zone vault address is required")
-	}
-	parsedAddress, err := url.Parse(address)
-	if err != nil || parsedAddress.Scheme != "https" || parsedAddress.Host == "" {
-		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("workload-zone vault address must be a valid absolute https URL")
-	}
-
-	authMount := strings.TrimSpace(vault.AuthMount)
-	if authMount == "" {
-		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("workload-zone vault auth_mount is required")
-	}
-
-	authRole := strings.TrimSpace(vault.AuthRole)
-	if authRole == "" {
-		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("vault_identity_jwt auth plan requires an auth role")
-	}
-
-	jwtAudience := strings.TrimSpace(vault.JWTAudience)
-	if jwtAudience == "" {
-		return ResolvedWorkloadVaultAuthPlan{}, fmt.Errorf("vault_identity_jwt auth plan requires a jwt audience")
+func (c WorkloadVaultAuthConfig) Resolve(vault runtimeconfigv1.WorkloadZoneVaultConfig) (ResolvedWorkloadVaultAuthPlan, error) {
+	normalized := vault.Normalized()
+	if err := normalized.Validate(); err != nil {
+		return ResolvedWorkloadVaultAuthPlan{}, err
 	}
 
 	return ResolvedWorkloadVaultAuthPlan{
 		Mode:        c.DefaultMode,
-		Address:     address,
-		AuthMount:   authMount,
-		AuthRole:    authRole,
-		JWTAudience: jwtAudience,
+		Address:     normalized.Address,
+		AuthMount:   normalized.AuthMount,
+		AuthRole:    normalized.AuthRole,
+		JWTAudience: normalized.JWTAudience,
 	}, nil
 }
 

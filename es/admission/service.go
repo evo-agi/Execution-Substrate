@@ -21,6 +21,7 @@ import (
 	"time"
 
 	evidencev1 "execution-platform/contracts/evidence/v1"
+	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 	egsmodel "execution-platform/egs/model"
 	esconfig "execution-platform/es/config"
 	"execution-platform/observability"
@@ -93,9 +94,9 @@ func (e *Error) Error() string {
 type Service struct {
 	cfg esconfig.Config
 
-	acsClient *dependencyClient
-	arsClient *dependencyClient
-	egsClient *dependencyClient
+	workloadZoneVaultConfigRef runtimeconfigv1.WorkloadZoneVaultConfigRef
+	arsClient                  *dependencyClient
+	egsClient                  *dependencyClient
 
 	trustModelVerifier *ed25519Verifier
 	provenanceVerifier *ed25519Verifier
@@ -117,11 +118,10 @@ type ed25519Verifier struct {
 	publicKey ed25519.PublicKey
 }
 
+// TODO: ARS publishes richer health payloads today, but ES must not grow an
+// 		implicit shared health-schema dependency around those additional fields.
+// 		Revisit only if the platform adopts an explicit shared readiness contract.
 // healthResponse is intentionally minimal. ES only depends on dependency
-// /health responses exposing top-level status and ready signals in this slice.
-// TODO: ACS and ARS publish richer health payloads today, but ES must not grow
-// an implicit shared health-schema dependency around their additional fields.
-// Revisit only if the platform adopts an explicit shared readiness contract.
 type healthResponse struct {
 	Status string `json:"status"`
 	Ready  bool   `json:"ready"`
@@ -134,26 +134,6 @@ type signedRuntimeTrustResponse struct {
 	PayloadDigest string                      `json:"payload_digest"`
 	Signature     string                      `json:"signature"`
 	Publication   json.RawMessage             `json:"publication,omitempty"`
-}
-
-// workloadZoneVaultDiscoveryResponse models the dedicated ACS discovery
-// contract for the workload-zone vault path. ES intentionally depends only on
-// the resolved reference it needs from ACS and must not absorb generic ACS
-// assignment or snapshot envelope fields on the runtime path unless that
-// boundary is explicitly expanded again.
-type workloadZoneVaultDiscoveryResponse struct {
-	Success bool    `json:"success"`
-	Digest  *string `json:"digest"`
-	Error   *string `json:"error,omitempty"`
-}
-
-type workloadZoneVaultBlob struct {
-	VaultConfig struct {
-		Address     string `json:"address"`
-		AuthMount   string `json:"auth_mount"`
-		AuthRole    string `json:"auth_role"`
-		JWTAudience string `json:"jwt_audience"`
-	} `json:"vault_config"`
 }
 
 type artifactRegistryErrorResponse struct {
@@ -214,10 +194,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		return nil, err
 	}
 
-	acsClient, err := newDependencyClient(cfg.Dependencies.ArtifactCatalog, "artifact-catalog")
-	if err != nil {
-		return nil, fmt.Errorf("build artifact catalog client: %w", err)
-	}
+	workloadZoneVaultConfigRef := cfg.RuntimeConfig.WorkloadZoneVaultConfigRef.Normalized()
 	arsClient, err := newDependencyClient(cfg.Dependencies.ArtifactRegistry, "artifact-registry")
 	if err != nil {
 		return nil, fmt.Errorf("build artifact registry client: %w", err)
@@ -254,13 +231,13 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	}
 
 	return &Service{
-		cfg:                cfg,
-		acsClient:          acsClient,
-		arsClient:          arsClient,
-		egsClient:          egsClient,
-		trustModelVerifier: trustModelVerifier,
-		provenanceVerifier: provenanceVerifier,
-		nomadClient:        nomadClient,
+		cfg:                        cfg,
+		workloadZoneVaultConfigRef: workloadZoneVaultConfigRef,
+		arsClient:                  arsClient,
+		egsClient:                  egsClient,
+		trustModelVerifier:         trustModelVerifier,
+		provenanceVerifier:         provenanceVerifier,
+		nomadClient:                nomadClient,
 	}, nil
 }
 
@@ -312,17 +289,12 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 		ok bool
 	}
 
-	acsCh := make(chan result, 1)
 	arsCh := make(chan result, 1)
 
-	go func() {
-		acsCh <- result{ok: s.acsClient.checkReady(ctx)}
-	}()
 	go func() {
 		arsCh <- result{ok: s.arsClient.checkReady(ctx)}
 	}()
 
-	acsResult := <-acsCh
 	arsResult := <-arsCh
 
 	s.mu.RLock()
@@ -330,7 +302,6 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 	s.mu.RUnlock()
 
 	return HealthSnapshot{
-		ArtifactCatalogHealthy:  acsResult.ok,
 		ArtifactRegistryHealthy: arsResult.ok,
 		TrustModelLoaded:        loaded,
 	}
@@ -363,22 +334,13 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 		return preparedAdmission{}, err
 	}
 
-	workloadVaultDigest, err := s.fetchWorkloadZoneVaultDigest(ctx)
+	workloadVaultRef := s.workloadZoneVaultConfigRef
+	workloadVaultConfig, err := s.fetchWorkloadZoneVaultConfig(ctx, workloadVaultRef)
 	if err != nil {
 		return preparedAdmission{}, err
 	}
 
-	workloadVaultConfig, err := s.fetchWorkloadZoneVaultConfig(ctx, workloadVaultDigest)
-	if err != nil {
-		return preparedAdmission{}, err
-	}
-
-	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(esconfig.VaultRuntimeFields{
-		Address:     workloadVaultConfig.VaultConfig.Address,
-		AuthMount:   workloadVaultConfig.VaultConfig.AuthMount,
-		AuthRole:    workloadVaultConfig.VaultConfig.AuthRole,
-		JWTAudience: workloadVaultConfig.VaultConfig.JWTAudience,
-	})
+	plan, resolveErr := s.cfg.WorkloadVaultAuth.Resolve(workloadVaultConfig)
 	if resolveErr != nil {
 		return preparedAdmission{}, &Error{
 			Status:  http.StatusServiceUnavailable,
@@ -400,7 +362,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 			},
 			Workload: artifact.workload,
 			WorkloadVault: WorkloadVaultInfo{
-				Digest:      workloadVaultDigest,
+				Digest:      workloadVaultRef.Digest,
 				Address:     plan.Address,
 				AuthMode:    string(plan.Mode),
 				AuthMount:   plan.AuthMount,
@@ -650,47 +612,10 @@ func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 	}
 }
 
-func (s *Service) fetchWorkloadZoneVaultDigest(ctx context.Context) (string, *Error) {
-	response, err := s.acsClient.get(ctx, "/v1/configuration/workload-zone/vault")
+func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, ref runtimeconfigv1.WorkloadZoneVaultConfigRef) (runtimeconfigv1.WorkloadZoneVaultConfig, *Error) {
+	response, err := s.arsClient.get(ctx, "/v1/blobs/"+ref.Digest+":json")
 	if err != nil {
-		return "", &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact catalog lookup failed",
-		}
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return "", &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact catalog lookup failed",
-		}
-	}
-
-	var payload workloadZoneVaultDiscoveryResponse
-	if err := decodeJSON(response.Body, &payload); err != nil {
-		return "", &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact catalog response was invalid",
-		}
-	}
-	if !payload.Success || payload.Digest == nil || strings.TrimSpace(*payload.Digest) == "" {
-		return "", &Error{
-			Status:  http.StatusServiceUnavailable,
-			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: "artifact catalog did not return a workload-zone vault digest",
-		}
-	}
-	return strings.TrimSpace(*payload.Digest), nil
-}
-
-func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, digest string) (workloadZoneVaultBlob, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/blobs/"+digest+":json")
-	if err != nil {
-		return workloadZoneVaultBlob{}, &Error{
+		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
 			Message: "artifact registry workload-zone vault blob read failed",
@@ -699,29 +624,29 @@ func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, digest strin
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return workloadZoneVaultBlob{}, &Error{
+		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
 			Message: "artifact registry workload-zone vault blob is unavailable",
 		}
 	}
 
-	var payload workloadZoneVaultBlob
+	var payload runtimeconfigv1.WorkloadZoneVaultConfigBlob
 	if err := decodeJSON(response.Body, &payload); err != nil {
-		return workloadZoneVaultBlob{}, &Error{
+		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
 			Message: "artifact registry workload-zone vault blob was invalid",
 		}
 	}
-
-	// TODO: ES intentionally parses only the minimal vault_config fields needed
-	// for vault_identity_jwt preparation in this milestone slice: address,
-	// auth_mount, auth_role, and jwt_audience. It does not own the broader
-	// workload-zone Vault schema and should not absorb unrelated configuration
-	// semantics here. Namespace and any future Vault fields remain upstream
-	// concerns until a dedicated runtime-auth config boundary exists.
-	return payload, nil
+	if err := payload.Validate(); err != nil {
+		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeWorkloadZoneVaultUnavailable,
+			Message: "artifact registry workload-zone vault blob was invalid",
+		}
+	}
+	return payload.Normalized().VaultConfig, nil
 }
 
 func (s *Service) verifyTrustModelEnvelope(payload signedRuntimeTrustResponse, canonical []byte) error {

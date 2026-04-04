@@ -122,7 +122,6 @@ type ErrorResponse struct {
 }
 
 type HealthSnapshot struct {
-	ArtifactCatalogHealthy  bool
 	ArtifactRegistryHealthy bool
 	TrustModelLoaded        bool
 }

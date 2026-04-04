@@ -22,9 +22,6 @@ import (
 	"testing"
 	"time"
 
-	acsapp "execution-platform/acs/app"
-	acscatalog "execution-platform/acs/catalog"
-	acsconfig "execution-platform/acs/config"
 	agsapp "execution-platform/ags/app"
 	agsconfig "execution-platform/ags/config"
 	arsapi "execution-platform/ars/api"
@@ -32,6 +29,7 @@ import (
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
+	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -562,13 +560,11 @@ type submitStack struct {
 
 	nomad *nomadHarness
 
-	acs *acsapp.App
 	ars *arsapp.App
 	egs *egsapp.App
 	ags *agsapp.App
 	es  *esapp.App
 
-	acsRunning bool
 	arsRunning bool
 	egsRunning bool
 	agsRunning bool
@@ -667,37 +663,6 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	stack.ars = arsService
 	startService(t, arsService.Start, arsService.Addr, fixture.serverTLSConfig(t, fixture.arsServerName))
 	stack.arsRunning = true
-
-	acsCfg := acsconfig.Config{
-		HTTP: acsconfig.HTTPConfig{
-			BindAddress:            "127.0.0.1",
-			Port:                   0,
-			ReadTimeoutSeconds:     5,
-			WriteTimeoutSeconds:    5,
-			ShutdownTimeoutSeconds: 5,
-		},
-		TLS: acsconfig.TLSConfig{
-			CertFile:     fixture.acsServerCertPath,
-			KeyFile:      fixture.acsServerKeyPath,
-			ClientCAFile: fixture.clientCAPath,
-		},
-		Authorization: acsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"service/execution"},
-		},
-		Catalog: acsconfig.CatalogConfig{
-			SeedArtifactDigests: map[string]acscatalog.AssignmentKey{
-				workloadZoneVaultDigest: acscatalog.RequiredWorkloadZoneVault(),
-			},
-		},
-		Audit: acsconfig.AuditConfig{Mode: "noop"},
-	}
-	acsService, err := acsapp.New(acsCfg)
-	if err != nil {
-		t.Fatalf("build acs app: %v", err)
-	}
-	stack.acs = acsService
-	startService(t, acsService.Start, acsService.Addr, fixture.serverTLSConfig(t, fixture.acsServerName))
-	stack.acsRunning = true
 
 	egsCfg := egsconfig.Config{
 		HTTP: egsconfig.HTTPConfig{
@@ -801,14 +766,6 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Dependencies: esconfig.DependenciesConfig{
-			ArtifactCatalog: esconfig.DependencyConfig{
-				BaseURL:        "https://" + stack.acs.Addr(),
-				ServerName:     fixture.acsServerName,
-				ClientCertFile: fixture.executionClientCertPath,
-				ClientKeyFile:  fixture.executionClientKeyPath,
-				RootCAFile:     fixture.runtimeCAPath,
-				TimeoutSeconds: 5,
-			},
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),
 				ServerName:     fixture.arsServerName,
@@ -824,6 +781,11 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 				ClientKeyFile:  fixture.executionClientKeyPath,
 				RootCAFile:     fixture.runtimeCAPath,
 				TimeoutSeconds: 5,
+			},
+		},
+		RuntimeConfig: esconfig.RuntimeConfigConfig{
+			WorkloadZoneVaultConfigRef: runtimeconfigv1.WorkloadZoneVaultConfigRef{
+				Digest: workloadZoneVaultDigest,
 			},
 		},
 		Verification: esconfig.VerificationConfig{
@@ -1534,7 +1496,6 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 		{&s.agsRunning, "ags", func(ctx context.Context) error { return s.ags.Shutdown(ctx) }},
 		{&s.egsRunning, "egs", func(ctx context.Context) error { return s.egs.Shutdown(ctx) }},
 		{&s.arsRunning, "ars", func(ctx context.Context) error { return s.ars.Shutdown(ctx) }},
-		{&s.acsRunning, "acs", func(ctx context.Context) error { return s.acs.Shutdown(ctx) }},
 	} {
 		if step.running == nil || !*step.running {
 			continue

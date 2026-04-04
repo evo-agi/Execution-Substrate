@@ -25,45 +25,34 @@ All path values are expected to be explicit local filesystem paths.
 
 This repository does not ship ready-to-run service config examples. Operators must provide explicit JSON config files that satisfy the current validators.
 
-## ACS
+## Workload-Zone Vault Runtime Config
 
 ### Required config groups
 
-- `http`
-- `tls`
-- `authorization`
-- `catalog`
-- `audit`
+- none as a standalone service
+- the current required installation point is `ES.runtime_config`
 
 ### Required fields
 
-- `authorization.allowed_spiffe_path_prefixes`
-- `audit.mode`
+- `runtime_config.workload_zone_vault_config_ref.digest`
 
 ### Required external dependencies
 
-- none for runtime calls
-- local seed data for governed assignment lookup
+- the workload-zone Vault config blob must be stored in ARS under the referenced digest
 
 ### Minimal valid configuration
 
-- `audit.mode` must be `noop`
-- `authorization.allowed_spiffe_path_prefixes` must contain at least one non-empty SPIFFE path prefix
-- for the governed execution system, `catalog.seed_artifact_digests` must include the required workload-zone Vault assignment that backs ACS's dedicated workload-zone Vault discovery route
+- `runtime_config.workload_zone_vault_config_ref.digest` must contain the digest of the named workload-zone Vault config blob
+- the current workload-zone Vault blob must satisfy `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
 
-Minimal seed example:
+Minimal reference example:
 
 ```json
 {
-  "catalog": {
-    "seed_artifact_digests": {
-      "sha256:<workload-zone-vault-digest>": {
-        "identity_kind": "workload_zone_vault"
-      }
+  "runtime_config": {
+    "workload_zone_vault_config_ref": {
+      "digest": "sha256:<workload-zone-vault-digest>"
     }
-  },
-  "audit": {
-    "mode": "noop"
   }
 }
 ```
@@ -183,9 +172,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 ### Required fields
 
 - `security.bootstrap_issuer_common_name`
-- `dependencies.artifact_catalog.*`
 - `dependencies.artifact_registry.*`
 - `dependencies.execution_governance.*`
+- `runtime_config.workload_zone_vault_config_ref.digest`
 - `verification.trust_model.*`
 - `verification.provenance.*`
 - `verification.derivation_attestation.*`
@@ -196,12 +185,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 
 ### Required external dependencies
 
-- ACS over HTTPS
 - ARS over HTTPS
 - EGS over HTTPS
 - Nomad for real execution submit
 - Docker under Nomad for container runtime
-- workload-zone Vault config reference available through ACS's dedicated discovery route, with the blob available through ARS
+- workload-zone Vault config reference installed in ES startup config, with the blob available through ARS
+- the current workload-zone Vault blob must satisfy the `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob` schema
 
 ### Minimal valid configuration
 
@@ -210,6 +199,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - all dependency base URLs must be absolute `https://` URLs
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
+- `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
@@ -292,7 +282,6 @@ These are not configured through the Go service config files, but they are requi
 
 For the current bounded governed execution path, the practical minimum is:
 
-- ACS
 - ARS
 - EGS
 - AGS

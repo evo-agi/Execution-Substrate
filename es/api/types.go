@@ -13,7 +13,6 @@ type HealthAdditionalProperties struct {
 }
 
 type HealthDependencies struct {
-	ArtifactCatalog  string `json:"artifact_catalog"`
 	ArtifactRegistry string `json:"artifact_registry"`
 }
 

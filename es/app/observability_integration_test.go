@@ -37,12 +37,10 @@ func TestObservabilityPropagatesTraceparentAcrossServices(t *testing.T) {
 
 	traceID := "0123456789abcdef0123456789abcdef"
 	esInbound := requireEvent(t, events, "inbound_request_complete", "execution", "", "GET /health")
-	esToACS := requireEvent(t, events, "outbound_dependency_complete", "execution", "artifact-catalog", "GET /health")
 	esToARS := requireEvent(t, events, "outbound_dependency_complete", "execution", "artifact-registry", "GET /health")
-	acsInbound := requireEvent(t, events, "inbound_request_complete", "artifact-catalog", "", "GET /health")
 	arsInbound := requireEvent(t, events, "inbound_request_complete", "artifact-registry", "", "GET /health")
 
-	for _, event := range []loggedEvent{esInbound, esToACS, esToARS, acsInbound, arsInbound} {
+	for _, event := range []loggedEvent{esInbound, esToARS, arsInbound} {
 		if event.TraceID != traceID {
 			t.Fatalf("expected trace_id %q, got %+v", traceID, event)
 		}
@@ -63,12 +61,12 @@ func TestObservabilityPropagatesTraceparentAcrossServices(t *testing.T) {
 		}
 	}
 
-	if esToACS.Dependency != "artifact-catalog" || esToARS.Dependency != "artifact-registry" {
-		t.Fatalf("unexpected dependency events: %+v %+v", esToACS, esToARS)
+	if esToARS.Dependency != "artifact-registry" {
+		t.Fatalf("unexpected dependency event: %+v", esToARS)
 	}
 
 	seenRequestIDs := map[string]struct{}{}
-	for _, event := range []loggedEvent{esInbound, esToACS, esToARS, acsInbound, arsInbound} {
+	for _, event := range []loggedEvent{esInbound, esToARS, arsInbound} {
 		if _, ok := seenRequestIDs[event.RequestID]; ok {
 			t.Fatalf("expected unique request ids per hop, duplicate %q in %+v", event.RequestID, event)
 		}

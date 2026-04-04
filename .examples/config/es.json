@@ -15,14 +15,6 @@
     "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
   },
   "dependencies": {
-    "artifact_catalog": {
-      "base_url": "https://127.0.0.1:8441",
-      "server_name": "server.artifact-catalog.internal",
-      "client_cert_file": "/abs/path/tls/es-client-cert.pem",
-      "client_key_file": "/abs/path/tls/es-client-key.pem",
-      "root_ca_file": "/abs/path/tls/runtime-ca.pem",
-      "timeout_seconds": 5
-    },
     "artifact_registry": {
       "base_url": "https://127.0.0.1:8442",
       "server_name": "server.artifact-registry.internal",
@@ -38,6 +30,11 @@
       "client_key_file": "/abs/path/tls/es-client-key.pem",
       "root_ca_file": "/abs/path/tls/runtime-ca.pem",
       "timeout_seconds": 5
+    }
+  },
+  "runtime_config": {
+    "workload_zone_vault_config_ref": {
+      "digest": "sha256:<workload-zone-vault-config-digest>"
     }
   },
   "verification": {
@@ -63,8 +60,7 @@
     }
   },
   "workload_vault_auth": {
-    "default_mode": "vault_identity_jwt",
-    "selectors": []
+    "default_mode": "vault_identity_jwt"
   },
   "nomad": {
     "base_url": "http://127.0.0.1:4646",

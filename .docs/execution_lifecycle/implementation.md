@@ -65,7 +65,7 @@ Observability placement:
 
 - Inbound request wrapping is applied once at the handler layer.
 - Outbound dependency logging is applied when dependency clients are constructed in the admission layer.
-- Integration tests confirm trace propagation across ES -> ACS and ES -> ARS health calls and confirm that edge logging remains separate from business-logic logging.
+- Integration tests confirm trace propagation across ES -> ARS health calls and confirm that edge logging remains separate from business-logic logging.
 
 ## 5. Application wiring
 
@@ -76,11 +76,11 @@ Observability placement:
 - `app.New` validates config, constructs `admission.Service`, constructs the API server, and builds the TLS HTTP server.
 - `App.Start` calls `service.Initialize(ctx)` before the HTTP listener starts serving.
 - `service.Initialize` fetches the signed runtime-trust payload from EGS, canonicalizes it, verifies its signature, normalizes it, and caches it in memory.
-- `service.Health` checks ACS and ARS readiness concurrently and combines those checks with the cached trust-policy-loaded state.
+- `service.Health` checks ARS readiness and combines that check with the cached trust-policy-loaded state.
 
 Dependency wiring:
 
-- `admission.NewService` builds dependency clients for ACS, ARS, and EGS.
+- `admission.NewService` builds dependency clients for ARS and EGS and captures the validated workload-zone Vault config reference from ES startup config.
 - It also builds verifier instances for:
   - TrustModel
   - provenance
@@ -92,10 +92,10 @@ Dependency wiring:
 **Implementation invariants**
 
 - ES does not start serving until runtime-trust initialization succeeds.
+- ES does not start serving unless `runtime_config.workload_zone_vault_config_ref` validates at startup.
 - Readiness after startup depends on:
   - app `started`
   - trust model loaded
-  - ACS ready
   - ARS ready
 - Live EGS reachability is not treated as a post-start runtime readiness dependency in the current implementation.
 
@@ -114,15 +114,15 @@ What the app layer delegates:
 2. Read the currently loaded runtime-trust policy from memory.
 3. Read the artifact descriptor from ARS and follow it to the aggregate artifact-evidence blob.
 4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
-5. Fetch the workload-zone vault digest from ACS's dedicated discovery route.
-6. Fetch the workload-zone vault config blob from ARS.
-7. Resolve the workload-vault auth plan from workload-zone vault runtime fields plus ES `workload_vault_auth.default_mode`.
+5. Read the workload-zone Vault config reference captured from validated ES startup config.
+6. Fetch the workload-zone Vault config blob from ARS using that reference.
+7. Decode and validate the workload-zone Vault blob through `contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`.
 8. Assemble and return `PrepareResult`.
 
 What `Prepare` reads:
 
 - ARS descriptor discoverability plus aggregate artifact evidence from ARS
-- the dedicated workload-zone Vault digest discovery contract from ACS
+- the validated workload-zone Vault config reference from ES startup config
 - Runtime-trust state loaded from EGS at startup
 
 **Implementation invariants**
@@ -345,11 +345,11 @@ How Docker appears in the implementation:
 
 The most important implementation facts are backed by integration tests:
 
-- `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES returns current trust, provenance, workload, and workload-vault data after ACS/ARS/EGS composition.
+- `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES returns current trust, provenance, workload, and workload-vault data after startup-config/ARS/EGS composition.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/monolith/mounts/...` remains allowed.
-- `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ACS and ES -> ARS health checks.
+- `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
 
 ## 13. Current simplifications

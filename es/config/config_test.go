@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 )
 
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {
@@ -47,12 +49,36 @@ func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *te
 	}
 }
 
+func TestRuntimeConfigValidateRejectsMissingWorkloadZoneVaultConfigRef(t *testing.T) {
+	cfg := RuntimeConfigConfig{}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatalf("expected missing workload-zone vault config ref to fail validation")
+	}
+	if !strings.Contains(err.Error(), "runtime_config.workload_zone_vault_config_ref") {
+		t.Fatalf("expected runtime_config.workload_zone_vault_config_ref validation error, got %v", err)
+	}
+}
+
+func TestRuntimeConfigValidateAcceptsValidWorkloadZoneVaultConfigRef(t *testing.T) {
+	cfg := RuntimeConfigConfig{
+		WorkloadZoneVaultConfigRef: runtimeconfigv1.WorkloadZoneVaultConfigRef{
+			Digest: " sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ",
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected workload-zone vault config ref to validate, got %v", err)
+	}
+}
+
 func TestWorkloadVaultAuthResolveUsesVaultRuntimeFields(t *testing.T) {
 	cfg := WorkloadVaultAuthConfig{
 		DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
 	}
 
-	plan, err := cfg.Resolve(VaultRuntimeFields{
+	plan, err := cfg.Resolve(runtimeconfigv1.WorkloadZoneVaultConfig{
 		Address:     "https://vault.internal:8200",
 		AuthMount:   "jwt",
 		AuthRole:    "service_execution",
@@ -75,7 +101,7 @@ func TestWorkloadVaultAuthResolveRejectsMissingVaultRole(t *testing.T) {
 		DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
 	}
 
-	_, err := cfg.Resolve(VaultRuntimeFields{
+	_, err := cfg.Resolve(runtimeconfigv1.WorkloadZoneVaultConfig{
 		Address:     "https://vault.internal:8200",
 		AuthMount:   "jwt",
 		JWTAudience: "vault",

@@ -61,7 +61,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshot := s.service.Health(r.Context())
-	ready := started && snapshot.TrustModelLoaded && snapshot.ArtifactCatalogHealthy && snapshot.ArtifactRegistryHealthy
+	ready := started && snapshot.TrustModelLoaded && snapshot.ArtifactRegistryHealthy
 	status := "unhealthy"
 	if ready {
 		status = "healthy"
@@ -73,7 +73,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Service: serviceName,
 		AdditionalProperties: HealthAdditionalProperties{
 			Dependencies: HealthDependencies{
-				ArtifactCatalog:  label(snapshot.ArtifactCatalogHealthy, "healthy", "unhealthy"),
 				ArtifactRegistry: label(snapshot.ArtifactRegistryHealthy, "healthy", "unhealthy"),
 			},
 			Readiness: HealthReadiness{

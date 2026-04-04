@@ -23,15 +23,13 @@ import (
 	"testing"
 	"time"
 
-	acsapp "execution-platform/acs/app"
-	acscatalog "execution-platform/acs/catalog"
-	acsconfig "execution-platform/acs/config"
 	arsapi "execution-platform/ars/api"
 	arsapp "execution-platform/ars/app"
 	arsconfig "execution-platform/ars/config"
 	arsindex "execution-platform/ars/index"
 	arsstore "execution-platform/ars/store"
 	evidencev1 "execution-platform/contracts/evidence/v1"
+	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 	egsapp "execution-platform/egs/app"
 	egsconfig "execution-platform/egs/config"
 	egsmodel "execution-platform/egs/model"
@@ -115,12 +113,6 @@ func TestPrepareReturns403WhenArtifactIsRevoked(t *testing.T) {
 	assertPrepareError(t, stack, http.StatusForbidden, codeArtifactRevoked)
 }
 
-func TestPrepareReturns503WhenACSIsUnavailable(t *testing.T) {
-	stack := startStack(t, stackOptions{})
-	stack.shutdownACS(t)
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
-}
-
 func TestPrepareReturns503WhenVaultBlobIsMissing(t *testing.T) {
 	stack := startStack(t, stackOptions{MissingVaultBlob: true})
 	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
@@ -128,6 +120,11 @@ func TestPrepareReturns503WhenVaultBlobIsMissing(t *testing.T) {
 
 func TestPrepareReturns503WhenVaultBlobIsCorrupt(t *testing.T) {
 	stack := startStack(t, stackOptions{CorruptVaultBlob: true})
+	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+}
+
+func TestPrepareReturns503WhenVaultBlobShapeIsInvalid(t *testing.T) {
+	stack := startStack(t, stackOptions{InvalidVaultBlobShape: true})
 	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
 }
 
@@ -163,6 +160,34 @@ func TestStartFailsWhenTrustModelVerificationIsInvalid(t *testing.T) {
 
 	if _, err := service.Start(ctx); err == nil || !strings.Contains(err.Error(), "verify trust model") {
 		t.Fatalf("expected trust-model verification startup failure, got %v", err)
+	}
+}
+
+func TestNewFailsWhenWorkloadZoneVaultConfigRefIsMissing(t *testing.T) {
+	stack := startDependencyStack(t, stackOptions{})
+	defer stack.shutdownAll(t)
+
+	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
+		cfg.RuntimeConfig.WorkloadZoneVaultConfigRef = runtimeconfigv1.WorkloadZoneVaultConfigRef{}
+	})
+
+	if _, err := esapp.New(cfg); err == nil || !strings.Contains(err.Error(), "runtime_config.workload_zone_vault_config_ref") {
+		t.Fatalf("expected missing workload-zone vault config ref startup failure, got %v", err)
+	}
+}
+
+func TestNewFailsWhenWorkloadZoneVaultConfigRefIsInvalid(t *testing.T) {
+	stack := startDependencyStack(t, stackOptions{})
+	defer stack.shutdownAll(t)
+
+	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
+		cfg.RuntimeConfig.WorkloadZoneVaultConfigRef = runtimeconfigv1.WorkloadZoneVaultConfigRef{
+			Digest: "sha256:not-a-real-digest",
+		}
+	})
+
+	if _, err := esapp.New(cfg); err == nil || !strings.Contains(err.Error(), "runtime_config.workload_zone_vault_config_ref") {
+		t.Fatalf("expected invalid workload-zone vault config ref startup failure, got %v", err)
 	}
 }
 
@@ -260,27 +285,26 @@ const (
 )
 
 type stackOptions struct {
-	MissingManifest  bool
-	MissingEvidence  bool
-	MissingVaultBlob bool
-	CorruptVaultBlob bool
-	CorruptManifest  bool
-	CorruptEvidence  bool
-	DisallowedSigner bool
-	RevokedSigner    bool
-	RevokedArtifact  bool
-	DefaultAuthMode  esconfig.WorkloadVaultAuthMode
+	MissingManifest       bool
+	MissingEvidence       bool
+	MissingVaultBlob      bool
+	CorruptVaultBlob      bool
+	InvalidVaultBlobShape bool
+	CorruptManifest       bool
+	CorruptEvidence       bool
+	DisallowedSigner      bool
+	RevokedSigner         bool
+	RevokedArtifact       bool
+	DefaultAuthMode       esconfig.WorkloadVaultAuthMode
 }
 
 type testStack struct {
 	fixture *tlsFixture
 
-	acs *acsapp.App
 	ars *arsapp.App
 	egs *egsapp.App
 	es  *esapp.App
 
-	acsRunning bool
 	arsRunning bool
 	egsRunning bool
 	esRunning  bool
@@ -369,6 +393,15 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 			"jwt_audience": "vault",
 		},
 	})
+	if opts.InvalidVaultBlobShape {
+		workloadZoneVaultBytes = mustMarshalJSON(t, map[string]any{
+			"vault_config": map[string]any{
+				"address":      "https://vault.internal:8200",
+				"auth_mount":   "jwt",
+				"jwt_audience": "vault",
+			},
+		})
+	}
 	workloadZoneVaultDigest := writeBlobBytes(t, rootDir, workloadZoneVaultBytes)
 
 	if opts.MissingManifest {
@@ -433,37 +466,6 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	stack.ars = arsService
 	startService(t, arsService.Start, arsService.Addr, fixture.serverTLSConfig(t, fixture.arsServerName))
 	stack.arsRunning = true
-
-	acsCfg := acsconfig.Config{
-		HTTP: acsconfig.HTTPConfig{
-			BindAddress:            "127.0.0.1",
-			Port:                   0,
-			ReadTimeoutSeconds:     5,
-			WriteTimeoutSeconds:    5,
-			ShutdownTimeoutSeconds: 5,
-		},
-		TLS: acsconfig.TLSConfig{
-			CertFile:     fixture.acsServerCertPath,
-			KeyFile:      fixture.acsServerKeyPath,
-			ClientCAFile: fixture.clientCAPath,
-		},
-		Authorization: acsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"service/execution"},
-		},
-		Catalog: acsconfig.CatalogConfig{
-			SeedArtifactDigests: map[string]acscatalog.AssignmentKey{
-				workloadZoneVaultDigest: acscatalog.RequiredWorkloadZoneVault(),
-			},
-		},
-		Audit: acsconfig.AuditConfig{Mode: "noop"},
-	}
-	acsService, err := acsapp.New(acsCfg)
-	if err != nil {
-		t.Fatalf("build acs app: %v", err)
-	}
-	stack.acs = acsService
-	startService(t, acsService.Start, acsService.Addr, fixture.serverTLSConfig(t, fixture.acsServerName))
-	stack.acsRunning = true
 
 	allowedSigners := []string{fixture.agsKeyID}
 	revokedSigners := []string{}
@@ -553,14 +555,6 @@ func buildESConfig(stack *testStack, mutate func(*esconfig.Config)) esconfig.Con
 			BootstrapIssuerCommonName: stack.fixture.bootstrapCACN,
 		},
 		Dependencies: esconfig.DependenciesConfig{
-			ArtifactCatalog: esconfig.DependencyConfig{
-				BaseURL:        "https://" + stack.acs.Addr(),
-				ServerName:     stack.fixture.acsServerName,
-				ClientCertFile: stack.fixture.executionClientCertPath,
-				ClientKeyFile:  stack.fixture.executionClientKeyPath,
-				RootCAFile:     stack.fixture.runtimeCAPath,
-				TimeoutSeconds: 5,
-			},
 			ArtifactRegistry: esconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),
 				ServerName:     stack.fixture.arsServerName,
@@ -576,6 +570,11 @@ func buildESConfig(stack *testStack, mutate func(*esconfig.Config)) esconfig.Con
 				ClientKeyFile:  stack.fixture.executionClientKeyPath,
 				RootCAFile:     stack.fixture.runtimeCAPath,
 				TimeoutSeconds: 5,
+			},
+		},
+		RuntimeConfig: esconfig.RuntimeConfigConfig{
+			WorkloadZoneVaultConfigRef: runtimeconfigv1.WorkloadZoneVaultConfigRef{
+				Digest: stack.workloadZoneVaultDigest,
 			},
 		},
 		Verification: esconfig.VerificationConfig{
@@ -689,19 +688,6 @@ func assertPrepareErrorForBody(t *testing.T, stack *testStack, body []byte, expe
 	}
 }
 
-func (s *testStack) shutdownACS(t *testing.T) {
-	t.Helper()
-	if !s.acsRunning {
-		return
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.acs.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("shutdown acs: %v", err)
-	}
-	s.acsRunning = false
-}
-
 func (s *testStack) shutdownAll(t *testing.T) {
 	t.Helper()
 	for _, step := range []struct {
@@ -712,7 +698,6 @@ func (s *testStack) shutdownAll(t *testing.T) {
 		{&s.esRunning, "es", func(ctx context.Context) error { return s.es.Shutdown(ctx) }},
 		{&s.egsRunning, "egs", func(ctx context.Context) error { return s.egs.Shutdown(ctx) }},
 		{&s.arsRunning, "ars", func(ctx context.Context) error { return s.ars.Shutdown(ctx) }},
-		{&s.acsRunning, "acs", func(ctx context.Context) error { return s.acs.Shutdown(ctx) }},
 	} {
 		if step.running == nil || !*step.running {
 			continue
@@ -895,9 +880,6 @@ type tlsFixture struct {
 	clientCAPath  string
 	runtimeCAPath string
 
-	acsServerName     string
-	acsServerCertPath string
-	acsServerKeyPath  string
 	arsServerName     string
 	arsServerCertPath string
 	arsServerKeyPath  string
@@ -947,8 +929,6 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		t.Fatalf("write runtime ca: %v", err)
 	}
 
-	acsServerName := "server.artifact-catalog.internal"
-	acsCertPath, acsKeyPath := writeLeafCertificateFiles(t, dir, "acs", runtimeCA, runtimeCAKey, acsServerName, nil)
 	arsServerName := "server.artifact-registry.internal"
 	arsCertPath, arsKeyPath := writeLeafCertificateFiles(t, dir, "ars", runtimeCA, runtimeCAKey, arsServerName, nil)
 	egsServerName := "server.execution-governance.internal"
@@ -993,9 +973,6 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		bootstrapCAKey:          bootstrapCAKey,
 		clientCAPath:            clientCAPath,
 		runtimeCAPath:           runtimeCAPath,
-		acsServerName:           acsServerName,
-		acsServerCertPath:       acsCertPath,
-		acsServerKeyPath:        acsKeyPath,
 		arsServerName:           arsServerName,
 		arsServerCertPath:       arsCertPath,
 		arsServerKeyPath:        arsKeyPath,

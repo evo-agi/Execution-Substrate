@@ -2,7 +2,6 @@
 set -euo pipefail
 
 required_envs=(
-  ACS_URL
   ARS_URL
   EGS_URL
   AGS_URL
@@ -30,7 +29,6 @@ run_health() {
   printf '\n'
 }
 
-run_health "${ACS_URL}/health"
 run_health "${ARS_URL}/health"
 run_health "${EGS_URL}/health"
 run_health "${AGS_URL}/health"

@@ -27,7 +27,6 @@ When prose and code disagree, code and tests win.
 
 | Service | Observed current boundary | Current ownership summary |
 | --- | --- | --- |
-| ACS | Lookup and assignment indirection service | Governed lookup routes that resolve assignment-shaped keys to digests, plus a dedicated workload-zone Vault digest discovery path |
 | ARS | Storage and artifact discoverability service | Blob storage, integrity enforcement, evidence-centered artifact registration, and canonical artifact retrieval |
 | AGS | Artifact publication service | Evidence-first publication assembly, caller-bound publication claims, and publication into ARS |
 | EGS | Trust model publication service | Signed trust model publication for execution-time trust decisions |
@@ -44,58 +43,56 @@ Those absences are current facts, not design commitments.
 
 ## 4. Boundary interaction rules
 
-- ES is the main composition boundary. It consumes ACS lookup results, ARS artifact evidence/records and blobs, and EGS trust policy during admission and submission.
+- ES is the main composition boundary. It consumes startup-owned runtime-config references, ARS artifact evidence/records and blobs, and EGS trust policy during admission and submission.
 - AGS depends on ARS as the publication sink. AGS publishes through ARS rather than owning artifact storage or discoverability itself.
 - EGS publishes trust policy; ES consumes that policy. EGS does not sit in the runtime execution path after ES has loaded and verified the trust model.
 - CGS is a separate authorization boundary. It is active today, but it is not part of the current ES hot path.
-- ACS is a lookup authority, not a storage or execution authority. Its outputs influence ES decisions, but ACS does not own execution admission or runtime state.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
+- `contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
 - `contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
 
-## 5. ACS boundary
+## 5. Workload-zone Vault runtime-config surface
 
 **Purpose**
 
-Provide governed lookup routes that map assignment-shaped keys to digests, with a dedicated workload-zone Vault digest discovery path for the ES hot path.
+Provide the explicit shared reference and config schema ES uses to resolve workload-zone Vault runtime settings.
 
 **Current ownership**
 
-- Lookup routes under `/v1/configuration/...`
-- Request-to-assignment-key parsing for the ACS lookup family
-- Generic assignment lookup results containing `digest`, `assignment`, and `catalog_snapshot_digest`
-- Dedicated workload-zone Vault discovery results containing only `success`, `digest`, and `error`
-- Assignment taxonomy defined in `acs/catalog/assignment.go`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
+- ES startup validation that `runtime_config.workload_zone_vault_config_ref` exists before ES serves traffic
 
 **Explicit non-ownership**
 
-- Blob storage or blob integrity enforcement
+- Blob storage or blob integrity enforcement after a digest is known
+- Runtime lookup networking or a standalone service hop
 - Artifact publication
 - Execution admission or scheduler submission
 - Trust model publication or enforcement
 - Runtime identity minting or runtime credential delivery
-- General configuration authority beyond the current lookup surface
+- General configuration authority beyond the current workload-zone Vault reference/blob surface
 
 **Current consumers / collaborators**
 
-- ES currently consumes ACS for workload-zone Vault digest discovery during preparation
-- Other callers may use ACS if their SPIFFE path is allowed by configured prefixes
+- ES consumes the configured `WorkloadZoneVaultConfigRef` during preparation and submission
+- ARS serves the blob named by that reference
+- Test fixtures and startup config install the required reference
 
 **Boundary pressure points**
 
-- ACS route families encode assignment taxonomy directly into cross-service lookup paths.
-- ES currently depends on ACS to resolve workload-zone and vault-related configuration before submit.
-- The current generic assignment payload and digest indirection shape still influence downstream composition even though the workload-zone Vault hot path has been narrowed.
+- The repo now has an explicit shared runtime-config surface, but the long-term owner of that surface is still under review.
+- ES currently remains the only live consumer, so future changes must not let consumer-local convenience become de facto schema ownership again.
 
 **Temporary compatibility edges**
 
-- Generic lookup routes still return both `assignment` and `catalog_snapshot_digest` even though the workload-zone Vault hot path no longer needs them.
-- The broader assignment family remains active even though the execution path currently uses only a narrow subset.
+- The current runtime-config surface remains intentionally small and workload-zone-specific rather than becoming a generic config platform by drift.
 
 **Reopened seams**
 
-- Whether ACS should remain a first-class assignment/digest indirection boundary
-- Whether the current route family should continue to define cross-service configuration lookup shape
-- Whether ACS is strictly a lookup service or is drifting toward broader configuration authority
+- Whether the runtime-config surface should remain startup-configured or move behind a different narrow boundary later
+- Whether the current config-reference indirection should remain digest-based or evolve once a broader config owner is explicit
 
 ## 6. ARS boundary
 
@@ -203,7 +200,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
   - `/v1/executions/{run_id}/logs`
   - `/v1/executions/{run_id}:cancel`
 - Admission validation and execution request shaping
-- Composition across ACS, ARS, and EGS during prepare and submit
+- Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state
@@ -224,7 +221,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 **Current consumers / collaborators**
 
 - Deployment and operator callers invoke ES directly
-- ES consumes ACS lookup results, ARS evidence and payloads, and EGS trust policy
+- ES consumes ARS evidence and payloads, EGS trust policy, and the configured workload-zone Vault config reference
 - Nomad is the execution backend ES submits to and reads from
 
 **Boundary pressure points**
@@ -348,11 +345,11 @@ These layers can create coupling pressure without owning domain responsibilities
 ## 12. Boundary leaks and pressure points
 
 - `contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
-- ACS, ARS, and ES currently participate in a tight choreography around lookup, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
+- ES, ARS, and the runtime-config surface currently participate in a tight choreography around reference resolution, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
 - The ARS descriptor-centered registration record constrains both AGS publication and ES discoverability. That storage-facing model currently reaches further into service interaction than a pure storage boundary would.
 - ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions under `/monolith/...`. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
 - CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and workload vault configuration shapes.
-- ACS currently exposes a broader assignment taxonomy than the active ES path needs. That creates pressure between ACS as lookup authority and ACS as a potential broader configuration authority.
+- The workload-zone Vault config reference and blob schema are now explicit, but the long-term owner of that surface is still a redesign pressure point.
 
 ## 13. Temporary compatibility-heavy edges
 
@@ -363,7 +360,7 @@ These layers can create coupling pressure without owning domain responsibilities
 
 ## 14. Reopened redesign seams
 
-- ACS authority shape, especially the current assignment and digest indirection model
+- Workload-zone Vault runtime-config ownership, especially the long-term owner of the named config reference
 - ARS storage, registration, and discoverability shape, including the current descriptor and index contract
 - AGS publication responsibility shape and its relationship to shared signed fact assembly
 - ES admission surface and runtime package boundary, including prepare/submit partitioning and package-resolution assumptions

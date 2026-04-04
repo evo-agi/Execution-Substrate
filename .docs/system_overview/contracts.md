@@ -99,88 +99,53 @@ Describe the current shared kernel that multiple services use directly today.
 - The shared-kernel role of `contracts/evidence/v1` remains explicitly reopened by `PLANS.md`.
 - The new aggregate evidence record is active today, but it is still a first migration cut rather than the declared end-state kernel.
 
-## 4. ACS Contract
+## 4. Workload-Zone Vault Runtime-Config Contract
 
 ### Purpose
 
-Provide governed assignment-to-digest lookup, including a dedicated workload-zone Vault digest discovery path for the ES hot path.
+Define the shared reference and blob schema ES uses to resolve workload-zone Vault runtime settings.
 
 ### Current producers / consumers
 
-- `ACS` publishes digest lookups over HTTPS.
-- `ES` currently consumes ACS for `/v1/configuration/workload-zone/vault`.
-- Other callers may read ACS if their SPIFFE path matches configured allowed prefixes.
+- Startup config installs the required `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`.
+- `ES` consumes that reference directly from its validated startup config.
+- `ARS` serves the blob addressed by the reference digest.
 
 ### Public surface
 
 `Observed current contract`
 
-- `GET /v1/configuration/workload-zone/vault`
-- `GET /v1/configuration/deployment/stage/{stage}`
-- `GET /v1/configuration/deployment/dependency/{stage}`
-- `GET /v1/configuration/deployment/service/{stage}/{service}/{version}`
-- `GET /v1/configuration/service/{service}/{version}:instances`
-- `GET /v1/configuration/service/{service}/{version}/{instance}:docker`
-- `GET /v1/configuration/service/{service}/{version}/{instance}:application`
-- `GET /v1/configuration/sidecar/{service}/{version}:instances`
-- `GET /v1/configuration/sidecar/{service}/{version}/{instance}:docker`
-
-The workload-zone Vault route currently uses this dedicated discovery contract:
-
-- `success`
-- `digest` on success
-- `error` on failure
-
-The remaining generic lookup routes currently use this envelope:
-
-- `success`
-- `digest` on success
-- `assignment`
-- `catalog_snapshot_digest`
-- `error` on failure
-
-The current assignment taxonomy is encoded in `acs/catalog/assignment.go`:
-
-- `deployment_stage_config`
-- `deployment_service_config`
-- `deployment_stage_dependency`
-- `service_docker_config`
-- `service_application_config`
-- `service_instances`
-- `sidecar_docker_config`
-- `sidecar_instances`
-- `workload_zone_vault`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
 
 ### Current invariants
 
 `Current invariant`
 
-- ACS is a lookup boundary only. It maps validated assignment keys to digests.
-- Assignment shape validation is strict and tied to `identity_kind`.
-- `workload_zone_vault` is the only ACS lookup ES currently requires in its hot path.
-- Not-found lookups return structured JSON with `success=false`; they do not fall through to an undocumented alternate path.
-- ACS health and lookup responses include richer service-specific fields, but ES currently depends only on:
-  - top-level `status` and `ready` from `/health`
-  - `success` and `digest` from the dedicated workload-zone vault discovery route
+- The workload-zone Vault config reference is explicit and typed rather than being an anonymous digest string.
+- The workload-zone Vault blob schema is defined by `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`.
+- ES consumes the typed `WorkloadZoneVaultConfig` derived from that blob rather than owning ad hoc local parsing of the blob shape.
+- ARS remains the blob storage and read authority after the digest is known.
 
 ### Ownership boundary
 
-- ACS owns assignment validation and digest lookup.
-- ACS does not own blob storage, policy publication, artifact verification, or runtime execution logic.
+- `contracts/runtimeconfig/v1` owns the shared schema surface for the reference and blob meaning.
+- ES startup validation currently owns the guarantee that a workload-zone Vault config reference has been installed before ES serves traffic.
+- ARS owns blob storage and retrieval by digest.
 
 ### Temporary compatibility edges
 
 `Temporary compatibility edge`
 
-- Generic ACS lookup routes still return `assignment` and `catalog_snapshot_digest`, but the workload-zone Vault hot path no longer carries those advisory fields.
-- ACS route families reflect the current assignment taxonomy; they should not be treated as permanent solely because they already exist.
+- The current reference still identifies the blob by digest. That is an active bounded choice, not a statement that all future runtime-config discovery must remain digest-only.
 
 ### Reopened seams
 
 `Reopened redesign seam`
 
-- The ACS lookup family and assignment taxonomy are explicitly reopened in `PLANS.md`.
-- The assignment-to-digest indirection model is active today, but it is not a settled architectural endpoint.
+- The long-term owner of the workload-zone Vault runtime-config surface remains explicitly reopened in `PLANS.md`.
+- The current startup-configured replacement surface is active today, but it is not yet the declared end-state config ownership model.
 
 ## 5. AGS Publication Contract
 
@@ -349,7 +314,7 @@ Current registration record is descriptor-centered:
 
 ### Purpose
 
-Compose ACS, ARS, and EGS into governed admission and one bounded execution submit path, then project lifecycle state from Nomad.
+Compose startup-owned runtime-config references, ARS, and EGS into governed admission and one bounded execution submit path, then project lifecycle state from Nomad.
 
 ### Current producers / consumers
 
@@ -357,7 +322,7 @@ Compose ACS, ARS, and EGS into governed admission and one bounded execution subm
   - `spiffe://monolith.internal/service/deployment`
   - `spiffe://monolith.internal/operator`
 - ES consumes:
-  - ACS workload-zone vault lookup
+  - the configured workload-zone Vault config reference
   - ARS artifact evidence, manifest support data when needed, and payload/blob reads
   - EGS runtime-trust publication
   - Nomad job and allocation APIs
@@ -402,13 +367,12 @@ Current lifecycle mapping:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES admits only deployment and operator callers today.
-- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns admission facts only.
+- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns admission facts only.
 - `:prepare` does not create run IDs, scheduler metadata, or durable execution state.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact descriptor at `/v1/artifacts/{artifact_digest}/descriptor`
   - aggregate evidence blob referenced by that descriptor
   - payload bytes at `/v1/blobs/{payload_digest}:bytes`
-- ES currently depends on ACS only for `/v1/configuration/workload-zone/vault`.
 - ES currently interprets EGS `runtime_trust.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
 - ES verifies and enforces only the signed EGS runtime-trust payload and does not surface EGS publication metadata in `:prepare` results.
 - `:submit` reuses the full `:prepare` path first.
@@ -699,7 +663,7 @@ The following cross-service seams are active today and explicitly not fixed arch
 
 - The shared-kernel role of `contracts/evidence/v1`.
 - The ARS registration and index model.
-- The ACS assignment and digest indirection contract.
+- The workload-zone Vault runtime-config ownership surface.
 - The AGS publish grammar and fact-assembly model.
 - The ES request model, payload-resolution path, and scheduler handoff shape.
 - The EGS runtime-trust form and response wrapper.

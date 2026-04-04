@@ -39,7 +39,7 @@ Current slice summary:
 
 | Lifecycle stage | Primary authority | Role of other components |
 | --- | --- | --- |
-| Before submission | ES | ES validates the request, composes ACS, ARS, and EGS inputs, and returns a bounded preparation result. ARS is authoritative for artifact descriptor discoverability, evidence and payload blob reads, and workload-zone vault blob reads. ACS is authoritative for workload-zone vault lookup. EGS is authoritative for runtime-trust publication. |
+| Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preparation result. ARS is authoritative for artifact descriptor discoverability, evidence and payload blob reads, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
 | Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
@@ -56,7 +56,7 @@ At a design level, it currently does four things:
 - validates the incoming execution request and runtime constraints
 - requires the registered artifact descriptor from ARS and follows it to aggregate evidence for admission
 - verifies publish-time evidence and trust requirements using the active shared evidence kernel and the loaded EGS trust model
-- resolves workload-zone vault metadata through ACS and ARS, then returns a bounded preparation result
+- resolves workload-zone vault metadata through the configured runtime-config reference and ARS, then returns a bounded preparation result
 
 The result is intentionally bounded. It proves admission and preparation facts, but it does not create a run ID, scheduler record, or proto-execution state.
 

@@ -124,7 +124,7 @@ The response is an admission/preparation fact bundle. It includes current public
 - `:prepare` reads the registered artifact descriptor from ARS and follows it to the aggregate artifact-evidence blob.
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
-- `:prepare` resolves workload-zone vault information through ACS and ARS before success.
+- `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
 - `:prepare` does not surface EGS publication metadata as part of its preparation result.
 - Successful `:prepare` returns preparation facts only, not execution state.
 

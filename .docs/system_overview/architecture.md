@@ -24,7 +24,6 @@ The current Go system is a governed publication + storage + policy + admission +
 
 | Component | Observed current role |
 | --- | --- |
-| ACS | Lookup and assignment-to-digest indirection service, with a dedicated workload-zone Vault digest discovery path |
 | ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
 | AGS | Evidence-first artifact publication service |
 | EGS | Signed runtime-trust publication service |
@@ -42,8 +41,7 @@ This is a coherent architecture, but it is not presented here as the final decom
 ```text
 publish caller -> AGS -> ARS
 
-execution caller -> ES -> ACS
-                       -> ARS
+execution caller -> ES -> ARS
                        -> EGS
                     -> Nomad -> Docker
 
@@ -53,11 +51,12 @@ credential caller -> CGS
 Top-level interaction notes:
 
 - AGS is the write-time publication boundary. It publishes artifacts through ARS rather than owning storage itself.
-- ES is the main composition boundary. It consumes ACS, ARS, and EGS to admit and submit work.
+- ES is the main composition boundary. It consumes ARS, EGS, and startup-owned runtime-config inputs to admit and submit work.
 - CGS is active as a separate authorization surface, but it is intentionally outside the current ES hot path.
 - Nomad is the execution backend and lifecycle authority for submitted work.
 - Docker is the container runtime used underneath Nomad in the current slice.
 - `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
+- `contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
 - `observability` is cross-cutting support, not a system boundary.
 
 ## 5. Primary system flows
@@ -78,7 +77,7 @@ At a high level, ES:
 
 - accepts execution requests through `:prepare` and `:submit`
 - reads aggregate artifact evidence and payloads from ARS
-- reads the dedicated workload-zone Vault digest discovery result from ACS
+- reads the workload-zone Vault config blob from ARS using the startup-configured `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
 - loads and enforces the EGS trust model
 - stages payload and mount data locally
 - hands execution off to Nomad
@@ -131,7 +130,7 @@ The system stops short of making ES the owner of runtime token minting, runtime 
 - ES does not own a lifecycle-state store.
 - There is no general-purpose execution orchestrator above Nomad.
 - ES does not own runtime token minting.
-- There is no separate artifact-translation or read-indirection service beyond the current ACS and ARS roles.
+- There is no separate artifact-translation or read-indirection service beyond the current ARS role plus startup-configured runtime-config references.
 - The current Go repo does not define a separate lifecycle authority beyond ES projecting Nomad state.
 
 These are current architectural absences, not omissions to fill automatically.
@@ -141,7 +140,7 @@ These are current architectural absences, not omissions to fill automatically.
 **Reopened redesign seams under active pressure**
 
 - `contracts/evidence/v1` is now the only active shared artifact kernel for the AGS -> ARS -> ES path.
-- ACS currently expresses most assignment and digest indirection through a broad lookup family, while the workload-zone Vault hot path now uses a narrower digest-discovery contract whose long-term authority shape remains reopened.
+- The current named workload-zone Vault config reference and workload-zone Vault blob schema now live in `contracts/runtimeconfig/v1` rather than in ES-local ad hoc shapes.
 - ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
@@ -175,7 +174,7 @@ This file should stay architectural and top-level. It should not absorb detailed
 ## 11. Reopened redesign seams
 
 - The shared-kernel role and long-term scope of `contracts/evidence/v1`
-- The authority shape of ACS
+- The ownership shape of the workload-zone Vault runtime-config reference and blob schema
 - The storage and discoverability shape of ARS
 - The publication and fact-assembly shape of AGS
 - The admission, package-resolution, and runtime-handoff shape of ES

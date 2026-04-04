@@ -38,7 +38,6 @@ Optional helper scripts are available in `/Users/ds/Repositories/Execution-Platf
 Export absolute paths before starting anything:
 
 ```bash
-export ACS_CONFIG="/abs/path/acs.json"
 export ARS_CONFIG="/abs/path/ars.json"
 export EGS_CONFIG="/abs/path/egs.json"
 export AGS_CONFIG="/abs/path/ags.json"
@@ -50,7 +49,6 @@ This repository does not ship ready-to-run JSON config files. Build them explici
 All service configs used in this runbook must be built from that configuration matrix rather than inferred from older repos, ad-hoc examples, or implicit defaults.
 Example templates are available in `/Users/ds/Repositories/Execution-Platform/.examples/config/`:
 
-- `acs.json`
 - `ars.json`
 - `egs.json`
 - `ags.json`
@@ -79,7 +77,6 @@ export DEPLOY_KEY="/abs/path/deployment-client-key.pem"
 Adjust these to match your configs:
 
 ```bash
-export ACS_URL="https://127.0.0.1:8441"
 export ARS_URL="https://127.0.0.1:8442"
 export EGS_URL="https://127.0.0.1:8443"
 export AGS_URL="https://127.0.0.1:8444"
@@ -91,8 +88,8 @@ export NOMAD_ADDR="http://127.0.0.1:4646"
 
 The current bounded system assumes:
 
-- ACS is seeded with the required `workload-zone/vault` assignment
-- ARS already contains the workload-zone Vault JSON blob referenced by ACS
+- ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`
+- ARS already contains the workload-zone Vault JSON blob referenced by that digest
 - EGS TrustModel `allowed_signers` includes the AGS signer key ID
 - ES verification keys match EGS and AGS signing keys
 - ES `workload_vault_auth.default_mode` is `vault_identity_jwt`
@@ -133,21 +130,9 @@ Run all commands from the repository root:
 
 Use a separate terminal per long-running process.
 
-If you prefer wrappers instead of typing the commands manually, you may use the matching `scripts/01_start_*.sh` through `scripts/06_start_nomad.sh` helpers. They require the same explicit environment variables and run the same foreground commands shown below.
+If you prefer wrappers instead of typing the commands manually, you may use the matching `scripts/02_start_*.sh` through `scripts/06_start_nomad.sh` helpers. They require the same explicit environment variables and run the same foreground commands shown below.
 
-### Step 1 — Start ACS
-
-```bash
-go run ./cmd/acs -config "$ACS_CONFIG"
-```
-
-Expected output includes:
-
-```text
-artifact-catalog listening on ...
-```
-
-### Step 2 — Start ARS
+### Step 1 — Start ARS
 
 ```bash
 go run ./cmd/ars -config "$ARS_CONFIG"
@@ -159,7 +144,7 @@ Expected output includes:
 artifact-registry listening on ...
 ```
 
-### Step 3 — Start EGS
+### Step 2 — Start EGS
 
 ```bash
 go run ./cmd/egs -config "$EGS_CONFIG"
@@ -171,7 +156,7 @@ Expected output includes:
 execution-governance listening on ...
 ```
 
-### Step 4 — Start AGS
+### Step 3 — Start AGS
 
 ```bash
 go run ./cmd/ags -config "$AGS_CONFIG"
@@ -183,7 +168,7 @@ Expected output includes:
 artifact-governance listening on ...
 ```
 
-### Step 5 — Start ES
+### Step 4 — Start ES
 
 ```bash
 go run ./cmd/es -config "$ES_CONFIG"
@@ -197,7 +182,7 @@ execution listening on ...
 
 ES can start before Nomad in the current slice because ES `/health` remains admission-oriented and does not include Nomad readiness. `:submit` and lifecycle verification still require Nomad to be running before those checks begin.
 
-### Step 6 — Start Nomad
+### Step 5 — Start Nomad
 
 Use an explicit config file so Docker driver and bind-mount behavior are visible and repeatable:
 
@@ -218,10 +203,6 @@ If you want one bounded execution loop after the stack is already up, use `scrip
 ### Step 1 — Verify service health
 
 ```bash
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
-  "$ACS_URL/health" | python3 -m json.tool
-
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
   "$ARS_URL/health" | python3 -m json.tool
 
 curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
@@ -239,7 +220,7 @@ Expected result:
 - each service returns HTTP `200`
 - each response contains `"ready": true`
 
-For ES specifically, `"ready": true` confirms ACS, ARS, and TrustModel readiness only. It does not prove Nomad is reachable.
+For ES specifically, `"ready": true` confirms ARS and TrustModel readiness only. It does not prove Nomad is reachable.
 
 Verify Nomad and Docker:
 
@@ -541,7 +522,7 @@ curl --fail-with-body --silent --show-error \
   "$ES_URL/v1/executions/$RUN_ID:cancel" | python3 -m json.tool
 ```
 
-Verify observability at the same time by inspecting the ACS, ARS, and ES service terminals. Boundary-event logs should appear as JSON lines and include:
+Verify observability at the same time by inspecting the ARS and ES service terminals. Boundary-event logs should appear as JSON lines and include:
 
 - `trace_id`
 - `request_id`

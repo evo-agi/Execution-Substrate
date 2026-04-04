@@ -38,7 +38,6 @@ Runtime mounts are also bounded in this slice:
 
 The following services must already be running and reachable over HTTPS:
 
-- ACS
 - ARS
 - AGS
 - EGS
@@ -61,8 +60,8 @@ The environment must already satisfy these assumptions:
 - AGS is configured to write to ARS over the public ARS write boundary.
 - EGS TrustModel `allowed_signers` includes the AGS provenance signer key ID.
 - ES verification keys match the AGS and EGS public keys.
-- ACS already has the `workload-zone/vault` assignment seeded.
-- ARS already contains the workload-zone Vault JSON blob referenced by ACS.
+- ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`.
+- ARS already contains the workload-zone Vault JSON blob referenced by that digest.
 - ES is configured for the `vault_identity_jwt` path.
 - ES is configured with Nomad submission settings:
   - `nomad.base_url`
@@ -95,7 +94,6 @@ The examples below use a deployment caller.
 Adjust these paths and URLs for your environment before running the steps:
 
 ```bash
-export ACS_URL="https://127.0.0.1:8441"
 export ARS_URL="https://127.0.0.1:8442"
 export AGS_URL="https://127.0.0.1:8443"
 export EGS_URL="https://127.0.0.1:8444"
@@ -114,10 +112,6 @@ export DEPLOY_KEY="/path/to/deployment-client-key.pem"
 Check public health for each service:
 
 ```bash
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
-  "$ACS_URL/health" | python3 -m json.tool
-
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
   "$ARS_URL/health" | python3 -m json.tool
 
 curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
@@ -503,7 +497,7 @@ Common causes:
 
 - ES cannot validate the artifact facts from ARS
 - TrustModel rejects the AGS signer or artifact digest
-- ACS cannot resolve workload-zone Vault config
+- ES runtime config reference is missing or ARS cannot serve the workload-zone Vault config blob
 - ARS payload/fact retrieval failed
 - request mode is not `async`
 - artifact type is not `static-script`
@@ -515,7 +509,6 @@ How to debug:
 ```bash
 cat "$WORKDIR/submit.json" | python3 -m json.tool
 curl --silent --show-error --cacert "$CA_CERT" "$ES_URL/health" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$ACS_URL/health" | python3 -m json.tool
 curl --silent --show-error --cacert "$CA_CERT" "$ARS_URL/health" | python3 -m json.tool
 curl --silent --show-error --cacert "$CA_CERT" "$EGS_URL/health" | python3 -m json.tool
 ```
