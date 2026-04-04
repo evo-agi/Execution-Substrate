@@ -40,6 +40,7 @@ When later helpers fail, keep the bring-up check as the readiness source of trut
 
 - first re-run `scripts/01_bringup.sh check`
 - then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
+- if you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>` for the compact summary
 
 Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.
 

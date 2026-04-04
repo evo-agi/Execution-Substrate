@@ -242,6 +242,14 @@ Staging inspection guidance in this slice:
 - terminal success may remove `execution.staging_root_dir/<run_id>` best-effort once ES observes success through `status` or `logs`
 - if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step
 
+Companion diagnostics helper for the same matrix:
+
+- `scripts/70_diagnostics.sh --category auth|trust|runtime-config|readiness|substrate|execution|input`
+- `scripts/70_diagnostics.sh --run-id run-0123456789abcdef`
+- `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`
+
+The collector accepts either the short category aliases above or the surfaced failure labels from the operator-facing scripts. It gathers only the checks, logs, lifecycle output, and staging inspection signals already called out in this matrix. It prints both `bundle_dir=` and `bundle_json=` so the summary helper can render the collected bundle without re-running diagnostics.
+
 ## 6. First Execution Verification
 
 After bring-up succeeds, the preferred bounded end-to-end smoke test is:

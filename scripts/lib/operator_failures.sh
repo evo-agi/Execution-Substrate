@@ -32,6 +32,94 @@ operator_category_input() {
   printf '%s\n' "operator misuse / invalid input"
 }
 
+operator_normalize_category() {
+  local raw=$1
+  local normalized
+
+  normalized="$(printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  case "${normalized}" in
+    auth|authorization|credential|credentials|"caller authorization / credential failure")
+      operator_category_auth
+      ;;
+    trust|evidence|admission|"trust / evidence / admission failure")
+      operator_category_trust
+      ;;
+    runtime-config|runtime_config|config|runtime|"runtime-config reference or blob failure")
+      operator_category_runtime_config
+      ;;
+    readiness|health|"service health / readiness failure")
+      operator_category_readiness
+      ;;
+    substrate|runtime-availability|runtime_availability|"substrate failure (docker / nomad / runtime availability)")
+      operator_category_substrate
+      ;;
+    execution|lifecycle|"execution failure after successful submit")
+      operator_category_execution
+      ;;
+    input|invalid-input|invalid_input|misuse|"operator misuse / invalid input")
+      operator_category_input
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+operator_category_key() {
+  local canonical
+
+  canonical="$(operator_normalize_category "$1")" || return 1
+
+  case "${canonical}" in
+    "$(operator_category_auth)")
+      printf '%s\n' "auth"
+      ;;
+    "$(operator_category_trust)")
+      printf '%s\n' "trust"
+      ;;
+    "$(operator_category_runtime_config)")
+      printf '%s\n' "runtime-config"
+      ;;
+    "$(operator_category_readiness)")
+      printf '%s\n' "readiness"
+      ;;
+    "$(operator_category_substrate)")
+      printf '%s\n' "substrate"
+      ;;
+    "$(operator_category_execution)")
+      printf '%s\n' "execution"
+      ;;
+    "$(operator_category_input)")
+      printf '%s\n' "input"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+operator_diagnostics_command_for_category() {
+  local category_key
+
+  category_key="$(operator_category_key "$1")" || return 1
+  printf '%s\n' "scripts/70_diagnostics.sh --category ${category_key}"
+}
+
+operator_diagnostics_instruction_for_category() {
+  local canonical
+  local command
+
+  canonical="$(operator_normalize_category "$1")" || return 1
+  if [[ "${canonical}" == "$(operator_category_execution)" ]]; then
+    printf '%s\n' "Run scripts/70_diagnostics.sh --run-id <run_id> if you have the run_id, or scripts/70_diagnostics.sh --category execution otherwise, to collect the bounded diagnostics bundle."
+    return 0
+  fi
+
+  command="$(operator_diagnostics_command_for_category "${canonical}")" || return 1
+  printf '%s\n' "Run ${command} to collect the bounded diagnostics bundle."
+}
+
 operator_troubleshooting_reference() {
   printf '%s\n' "See ${OPERATOR_TROUBLESHOOTING_RUNBOOK} for the operator troubleshooting matrix."
 }
@@ -40,33 +128,35 @@ operator_next_step_for_category() {
   local category=$1
   local phase=${2:-}
   local reference
+  local diagnostics
 
   reference="$(operator_troubleshooting_reference)"
+  diagnostics="$(operator_diagnostics_instruction_for_category "${category}" 2>/dev/null || true)"
 
   case "${category}" in
     "$(operator_category_auth)")
-      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator, then retry ${phase}. ${reference}"
+      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator, then retry ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_trust)")
-      printf '%s\n' "Check the published artifact, aggregate evidence, and EGS trust inputs before retrying ${phase}. ${reference}"
+      printf '%s\n' "Check the published artifact, aggregate evidence, and EGS trust inputs before retrying ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_runtime_config)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check, then confirm ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest points at a readable ARS JSON blob. ${reference}"
+      printf '%s\n' "Re-run scripts/01_bringup.sh check, then confirm ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest points at a readable ARS JSON blob. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_readiness)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check and restore service health or prepare-ready state before retrying ${phase}. ${reference}"
+      printf '%s\n' "Re-run scripts/01_bringup.sh check and restore service health or prepare-ready state before retrying ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_substrate)")
-      printf '%s\n' "Re-run scripts/01_bringup.sh check, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying ${phase}. ${reference}"
+      printf '%s\n' "Re-run scripts/01_bringup.sh check, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_execution)")
-      printf '%s\n' "Inspect lifecycle status/logs for the run. Non-success runs retain host staging under execution.staging_root_dir/<run_id> for debugging in this slice. ${reference}"
+      printf '%s\n' "Inspect lifecycle status/logs for the run. Non-success runs retain host staging under execution.staging_root_dir/<run_id> for debugging in this slice. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_input)")
-      printf '%s\n' "Check request JSON, env vars, readable file paths, and run_id values before retrying ${phase}. ${reference}"
+      printf '%s\n' "Check request JSON, env vars, readable file paths, and run_id values before retrying ${phase}. ${diagnostics} ${reference}"
       ;;
     *)
-      printf '%s\n' "Inspect the response below and retry once the underlying issue is clear. ${reference}"
+      printf '%s\n' "Inspect the response below and retry once the underlying issue is clear. ${diagnostics} ${reference}"
       ;;
   esac
 }

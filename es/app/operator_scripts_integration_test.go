@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/url"
 	"os"
@@ -456,6 +457,10 @@ func TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories(t *tes
 		"Docker daemon logs are outside this repo",
 		"execution.staging_root_dir/<run_id>",
 		"if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step",
+		"scripts/70_diagnostics.sh --category auth|trust|runtime-config|readiness|substrate|execution|input",
+		"scripts/70_diagnostics.sh --run-id run-0123456789abcdef",
+		"scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>",
+		"bundle_json=",
 	}
 
 	for _, snippet := range requiredSnippets {
@@ -511,6 +516,310 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 	}
 	if !strings.Contains(text, "START-BANNER") {
 		t.Fatalf("expected workload logs in lifecycle output, got %s", text)
+	}
+}
+
+func TestDiagnosticsScriptRuntimeConfigCategoryBundleAcceptsSurfacedFailureLabel(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "70_diagnostics.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"diagnostics-runtime-config-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
+	if err != nil {
+		t.Fatalf("split ars addr: %v", err)
+	}
+	egsHost, egsPort, err := splitHostPort(t, stack.egs.Addr())
+	if err != nil {
+		t.Fatalf("split egs addr: %v", err)
+	}
+	agsHost, agsPort, err := splitHostPort(t, stack.ags.Addr())
+	if err != nil {
+		t.Fatalf("split ags addr: %v", err)
+	}
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	esConfigPath := writeJSONConfigFile(t, t.TempDir(), "es-runtime-config-diagnostics.json", map[string]any{
+		"runtime_config": map[string]any{
+			"workload_zone_vault_config_ref": map[string]any{
+				"digest": labeledDigest("99"),
+			},
+		},
+	})
+
+	bringupDir := t.TempDir()
+	logsDir := filepath.Join(bringupDir, "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir logs dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "ars.log"), []byte("ARS-RUNTIME-CONFIG-LOG\n"), 0o600); err != nil {
+		t.Fatalf("write ars log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "es.log"), []byte("ES-RUNTIME-CONFIG-LOG\n"), 0o600); err != nil {
+		t.Fatalf("write es log: %v", err)
+	}
+
+	bundleBase := t.TempDir()
+	cmd := exec.Command(scriptPath, "--category", "runtime-config reference or blob failure", "--output-dir", bundleBase)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"BRINGUP_DIR="+bringupDir,
+		"ARS_URL=https://"+stack.fixture.arsServerName+":"+arsPort,
+		"EGS_URL=https://"+stack.fixture.egsServerName+":"+egsPort,
+		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
+		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
+		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"ARS_READ_CERT="+stack.fixture.executionClientCertPath,
+		"ARS_READ_KEY="+stack.fixture.executionClientKeyPath,
+		"ES_CONFIG="+esConfigPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run diagnostics script: %v output=%s", err, string(output))
+	}
+
+	bundleDir := diagnosticsBundleDirFromOutput(t, string(output))
+	bundleJSONPath := diagnosticsBundleJSONPathFromOutput(t, string(output))
+	bundle := readDiagnosticsBundleJSON(t, bundleDir)
+	if bundle.CategoryKey != "runtime-config" || bundle.BundleStatus != "partial" {
+		t.Fatalf("expected runtime-config partial bundle, got %+v", bundle)
+	}
+	assertDiagnosticsBundleComponent(t, bundle, "check:runtime-config-health", "failed", "critical")
+	assertDiagnosticsBundleComponent(t, bundle, "check:runtime-config-ref", "collected", "critical")
+	assertDiagnosticsBundleComponent(t, bundle, "log:ars", "collected", "optional")
+	assertDiagnosticsBundleComponent(t, bundle, "log:es", "collected", "optional")
+	if got := filepath.Join(bundleDir, "bundle.json"); bundleJSONPath != got {
+		t.Fatalf("expected bundle_json path %s, got %s", got, bundleJSONPath)
+	}
+	runtimeCheck := readDiagnosticsBundleFile(t, bundleDir, "checks/runtime-config-health-check.txt")
+	if !strings.Contains(runtimeCheck, "workload-zone vault blob read failed") {
+		t.Fatalf("expected runtime-config failure in diagnostics bundle, got %s", runtimeCheck)
+	}
+	runtimeRef := readDiagnosticsBundleFile(t, bundleDir, "checks/runtime-config-ref.txt")
+	if !strings.Contains(runtimeRef, labeledDigest("99")) {
+		t.Fatalf("expected runtime-config digest in diagnostics bundle, got %s", runtimeRef)
+	}
+	if !strings.Contains(readDiagnosticsBundleFile(t, bundleDir, "logs/ars.log"), "ARS-RUNTIME-CONFIG-LOG") {
+		t.Fatalf("expected copied ars log in diagnostics bundle")
+	}
+	if !strings.Contains(readDiagnosticsBundleFile(t, bundleDir, "logs/es.log"), "ES-RUNTIME-CONFIG-LOG") {
+		t.Fatalf("expected copied es log in diagnostics bundle")
+	}
+	if _, err := os.Stat(filepath.Join(bundleDir, "run", "staging-summary.txt")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect staging diagnostics for runtime-config bundle, err=%v", err)
+	}
+}
+
+func TestDiagnosticsScriptRunIDBundleCollectsLifecycleSignalsAndStaging(t *testing.T) {
+	stack := startSubmitStack(t)
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo FAIL-BANNER
+echo "{\"status\":\"fail\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+exit 7
+`))
+	submitted := submitExecution(t, stack, 10, 128)
+	stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "70_diagnostics.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"diagnostics-run-id-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	esConfigPath := writeJSONConfigFile(t, t.TempDir(), "es-run-diagnostics.json", map[string]any{
+		"execution": map[string]any{
+			"staging_root_dir": filepath.Join(stack.rootDir, "es-stage"),
+		},
+	})
+
+	bundleBase := t.TempDir()
+	cmd := exec.Command(scriptPath, "--run-id", submitted.RunID, "--output-dir", bundleBase)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"ES_CONFIG="+esConfigPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run diagnostics script: %v output=%s", err, string(output))
+	}
+
+	bundleDir := diagnosticsBundleDirFromOutput(t, string(output))
+	bundleJSONPath := diagnosticsBundleJSONPathFromOutput(t, string(output))
+	bundle := readDiagnosticsBundleJSON(t, bundleDir)
+	if bundle.RunID != submitted.RunID || bundle.BundleStatus != "complete" {
+		t.Fatalf("expected complete run_id bundle, got %+v", bundle)
+	}
+	assertDiagnosticsBundleComponent(t, bundle, "run:status", "collected", "critical")
+	assertDiagnosticsBundleComponent(t, bundle, "run:logs", "collected", "critical")
+	assertDiagnosticsBundleComponent(t, bundle, "run:staging", "collected", "optional")
+	if got := filepath.Join(bundleDir, "bundle.json"); bundleJSONPath != got {
+		t.Fatalf("expected bundle_json path %s, got %s", got, bundleJSONPath)
+	}
+	var statusBody struct {
+		RunID    string `json:"run_id"`
+		ExitCode *int   `json:"exit_code"`
+	}
+	readJSONFile(t, filepath.Join(bundleDir, "run", "status.json"), &statusBody)
+	if statusBody.RunID != submitted.RunID || statusBody.ExitCode == nil || *statusBody.ExitCode != 7 {
+		t.Fatalf("expected status bundle to carry run_id and exit_code, got %+v", statusBody)
+	}
+	logsBody := readDiagnosticsBundleFile(t, bundleDir, "run/logs.txt")
+	if !strings.Contains(logsBody, "FAIL-BANNER") {
+		t.Fatalf("expected run logs in diagnostics bundle, got %s", logsBody)
+	}
+	stagingSummary := readDiagnosticsBundleFile(t, bundleDir, "run/staging-summary.txt")
+	if !strings.Contains(stagingSummary, "exists=true") {
+		t.Fatalf("expected retained staging in diagnostics bundle, got %s", stagingSummary)
+	}
+	stagingTree := readDiagnosticsBundleFile(t, bundleDir, "run/staging-tree.txt")
+	if !strings.Contains(stagingTree, submitted.RunID) {
+		t.Fatalf("expected staging tree for run_id in diagnostics bundle, got %s", stagingTree)
+	}
+}
+
+func TestDiagnosticsSummaryScriptPrintsCompactBundleSummary(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	collectorPath := filepath.Join(repoRoot, "scripts", "70_diagnostics.sh")
+	summaryPath := filepath.Join(repoRoot, "scripts", "71_diagnostics_summary.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"diagnostics-summary-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
+	if err != nil {
+		t.Fatalf("split ars addr: %v", err)
+	}
+	egsHost, egsPort, err := splitHostPort(t, stack.egs.Addr())
+	if err != nil {
+		t.Fatalf("split egs addr: %v", err)
+	}
+	agsHost, agsPort, err := splitHostPort(t, stack.ags.Addr())
+	if err != nil {
+		t.Fatalf("split ags addr: %v", err)
+	}
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	esConfigPath := writeJSONConfigFile(t, t.TempDir(), "es-summary-runtime-config.json", map[string]any{
+		"runtime_config": map[string]any{
+			"workload_zone_vault_config_ref": map[string]any{
+				"digest": labeledDigest("77"),
+			},
+		},
+	})
+
+	bringupDir := t.TempDir()
+	logsDir := filepath.Join(bringupDir, "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir logs dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "ars.log"), []byte("ARS-SUMMARY-LOG\n"), 0o600); err != nil {
+		t.Fatalf("write ars log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "es.log"), []byte("ES-SUMMARY-LOG\n"), 0o600); err != nil {
+		t.Fatalf("write es log: %v", err)
+	}
+
+	bundleBase := t.TempDir()
+	collectCmd := exec.Command(collectorPath, "--category", "runtime-config", "--output-dir", bundleBase)
+	collectCmd.Dir = repoRoot
+	collectCmd.Env = append(os.Environ(),
+		"BRINGUP_DIR="+bringupDir,
+		"ARS_URL=https://"+stack.fixture.arsServerName+":"+arsPort,
+		"EGS_URL=https://"+stack.fixture.egsServerName+":"+egsPort,
+		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
+		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
+		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"ARS_READ_CERT="+stack.fixture.executionClientCertPath,
+		"ARS_READ_KEY="+stack.fixture.executionClientKeyPath,
+		"ES_CONFIG="+esConfigPath,
+	)
+
+	collectOutput, err := collectCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run diagnostics collector: %v output=%s", err, string(collectOutput))
+	}
+
+	bundleJSONPath := diagnosticsBundleJSONPathFromOutput(t, string(collectOutput))
+	summaryCmd := exec.Command(summaryPath, bundleJSONPath)
+	summaryCmd.Dir = repoRoot
+
+	summaryOutput, err := summaryCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run diagnostics summary: %v output=%s", err, string(summaryOutput))
+	}
+
+	text := string(summaryOutput)
+	if !strings.Contains(text, "Diagnostics bundle summary") {
+		t.Fatalf("expected summary heading, got %s", text)
+	}
+	if !strings.Contains(text, "bundle_status=partial") {
+		t.Fatalf("expected partial bundle status, got %s", text)
+	}
+	if !strings.Contains(text, "category=runtime-config reference or blob failure") {
+		t.Fatalf("expected runtime-config category, got %s", text)
+	}
+	if !strings.Contains(text, "Critical items needing attention:") {
+		t.Fatalf("expected critical items section, got %s", text)
+	}
+	if !strings.Contains(text, "check:runtime-config-health [failed]") {
+		t.Fatalf("expected failed runtime-config health check, got %s", text)
+	}
+	if !strings.Contains(text, "Collected signals:") {
+		t.Fatalf("expected collected signals section, got %s", text)
 	}
 }
 
@@ -579,6 +888,9 @@ func TestPublishScriptCategorizesAuthorizationFailure(t *testing.T) {
 	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
 	}
+	if !strings.Contains(text, "scripts/70_diagnostics.sh --category auth") {
+		t.Fatalf("expected diagnostics helper reference, got %s", text)
+	}
 }
 
 func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
@@ -627,6 +939,9 @@ func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
+	}
+	if !strings.Contains(text, "scripts/70_diagnostics.sh --category runtime-config") {
+		t.Fatalf("expected diagnostics helper reference, got %s", text)
 	}
 }
 
@@ -677,6 +992,9 @@ func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
+	}
+	if !strings.Contains(text, "scripts/70_diagnostics.sh --category substrate") {
+		t.Fatalf("expected diagnostics helper reference, got %s", text)
 	}
 }
 
@@ -734,6 +1052,9 @@ exit 7
 	}
 	if !strings.Contains(text, ".runbooks/system/v1_bringup.md") {
 		t.Fatalf("expected troubleshooting matrix reference, got %s", text)
+	}
+	if !strings.Contains(text, "scripts/70_diagnostics.sh --run-id <run_id>") {
+		t.Fatalf("expected diagnostics helper reference, got %s", text)
 	}
 }
 
@@ -795,4 +1116,92 @@ func stopManagedBringupService(t *testing.T, bringupDir string, service string) 
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("%s pid %d did not stop", service, pid)
+}
+
+func diagnosticsBundleDirFromOutput(t *testing.T, output string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "bundle_dir=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "bundle_dir="))
+		}
+	}
+	t.Fatalf("expected bundle_dir in output, got %s", output)
+	return ""
+}
+
+func diagnosticsBundleJSONPathFromOutput(t *testing.T, output string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "bundle_json=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "bundle_json="))
+		}
+	}
+	t.Fatalf("expected bundle_json in output, got %s", output)
+	return ""
+}
+
+func readDiagnosticsBundleFile(t *testing.T, bundleDir string, rel string) string {
+	t.Helper()
+
+	body, err := os.ReadFile(filepath.Join(bundleDir, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("read diagnostics bundle file %s: %v", rel, err)
+	}
+	return string(body)
+}
+
+type diagnosticsBundle struct {
+	Category              string                       `json:"category"`
+	CategoryKey           string                       `json:"category_key"`
+	RunID                 string                       `json:"run_id"`
+	BundleStatus          string                       `json:"bundle_status"`
+	BundleDir             string                       `json:"bundle_dir"`
+	TroubleshootingMatrix string                       `json:"troubleshooting_matrix"`
+	SummaryPath           string                       `json:"summary_path"`
+	Components            []diagnosticsBundleComponent `json:"components"`
+}
+
+type diagnosticsBundleComponent struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Criticality string `json:"criticality"`
+	Detail      string `json:"detail"`
+}
+
+func readDiagnosticsBundleJSON(t *testing.T, bundleDir string) diagnosticsBundle {
+	t.Helper()
+
+	var bundle diagnosticsBundle
+	readJSONFile(t, filepath.Join(bundleDir, "bundle.json"), &bundle)
+	return bundle
+}
+
+func assertDiagnosticsBundleComponent(t *testing.T, bundle diagnosticsBundle, name string, status string, criticality string) diagnosticsBundleComponent {
+	t.Helper()
+
+	for _, component := range bundle.Components {
+		if component.Name != name {
+			continue
+		}
+		if component.Status != status || component.Criticality != criticality {
+			t.Fatalf("expected component %s to be %s/%s, got %+v", name, status, criticality, component)
+		}
+		return component
+	}
+	t.Fatalf("expected component %s in %+v", name, bundle.Components)
+	return diagnosticsBundleComponent{}
+}
+
+func readJSONFile(t *testing.T, path string, target any) {
+	t.Helper()
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json file %s: %v", path, err)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		t.Fatalf("decode json file %s: %v body=%s", path, err, string(body))
+	}
 }

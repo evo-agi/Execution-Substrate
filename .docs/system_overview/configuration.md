@@ -319,6 +319,8 @@ For operator diagnostics in the current bounded slice:
 
 - `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` remain the authoritative readiness baseline for service health, prepare-ready, and submit-ready
 - later helpers such as `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` must not redefine readiness; they should direct operators back to that baseline when they detect readiness or substrate trouble
+- `scripts/70_diagnostics.sh` is the bounded diagnostics companion for the same current slice; it collects only the logs/checks already named by the troubleshooting matrix, keyed by category or `run_id`
+- `scripts/71_diagnostics_summary.sh` is the tiny rendering companion for those bundles; it reads `bundle.json` from `scripts/70_diagnostics.sh` and prints a compact operator-facing summary without collecting extra data
 - the bounded operator failure classes are:
   - caller authorization / credential failure
   - trust / evidence / admission failure

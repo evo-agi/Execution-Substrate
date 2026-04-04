@@ -143,6 +143,9 @@ exit 7
 	if !strings.Contains(result.Summary.NextStep, ".runbooks/system/v1_bringup.md") {
 		t.Fatalf("expected troubleshooting matrix reference in next_step, got %+v", result.Summary)
 	}
+	if !strings.Contains(result.Summary.NextStep, "scripts/70_diagnostics.sh --run-id <run_id>") {
+		t.Fatalf("expected diagnostics helper reference in next_step, got %+v", result.Summary)
+	}
 	if !result.Summary.Terminal {
 		t.Fatalf("expected terminal failure summary, got %+v", result.Summary)
 	}
