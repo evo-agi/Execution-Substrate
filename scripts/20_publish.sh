@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/bringup.sh
+source "${SCRIPT_DIR}/lib/bringup.sh"
+
 required_envs=(
   AGS_URL
   CA_CERT
@@ -24,6 +28,11 @@ for path_name in CA_CERT DEPLOY_CERT DEPLOY_KEY PUBLISH_JSON; do
   fi
 done
 
+resolve_args=()
+if [[ -n "${AGS_RESOLVE:-}" ]]; then
+  resolve_args+=(--resolve "${AGS_RESOLVE}")
+fi
+
 tmp_response="$(mktemp)"
 trap 'rm -f "${tmp_response}"' EXIT
 
@@ -34,6 +43,7 @@ curl --fail-with-body --silent --show-error \
   --cacert "${CA_CERT}" \
   --cert "${DEPLOY_CERT}" \
   --key "${DEPLOY_KEY}" \
+  "${resolve_args[@]}" \
   -H 'Content-Type: application/json' \
   --data @"${PUBLISH_JSON}" \
   "${AGS_URL}/v1/artifacts:publish" | tee "${tmp_response}"

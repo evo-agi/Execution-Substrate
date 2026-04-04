@@ -356,11 +356,18 @@ The most important implementation facts are backed by integration tests:
 
 - `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
+- `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/monolith/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
+
+Operator helper ownership in the current slice:
+
+- `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
+- `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability, Nomad, and Docker.
+- `scripts/50_lifecycle.sh` now observes execution strictly through public ES lifecycle endpoints rather than through Nomad job/eval IDs.
 
 ## 13. Current simplifications
 

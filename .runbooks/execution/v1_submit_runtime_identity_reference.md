@@ -1,30 +1,23 @@
 # Runbook: Submit Runtime Identity Reference Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-02`
+- Last Updated: `2026-04-04`
 
 ## 1. Objective
 
-Submit the reference runtime-identity workload end to end through the existing governed execution path:
+Submit the reference runtime-identity workload through the current governed execution path:
 
-`AGS publish -> ARS store/register -> ES submit -> Nomad/Docker run -> workload creates a local identity bridge in /monolith/runtime-identity -> workload authenticates to Vault -> workload reads secret -> observable logs + exit code`
+`AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload discovers identity endpoint -> workload authenticates to Vault -> observable logs + exit code`
 
-This runbook does not change platform behavior. It uses the existing runtime identity contract:
+This runbook does not change platform behavior. It exercises the current bounded runtime-identity contract on top of the same static-script execution model documented in [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md).
 
-- ES passes non-secret Vault auth metadata only
-- ES reserves `/monolith/runtime-identity/` only
-- workload obtains identity externally
-- workload authenticates to Vault locally
-
-For a minimal local validation path using Vault dev mode plus a simple HTTP identity adapter, see:
-
-- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md`
+For a local non-production Vault dev path plus a simple HTTP identity adapter, see [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md).
 
 ## 2. Reference Workload
 
 The reference artifact lives at:
 
-- `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/entrypoint`
+- [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/entrypoint](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/entrypoint)
 
 Package it with:
 
@@ -32,34 +25,57 @@ Package it with:
 /Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/package.sh
 ```
 
-The packaged artifact is:
+The resulting archive is:
 
 - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 
-## 3. Environment Assumptions
+## 3. Runtime-Identity Contract In This Slice
 
-All prerequisites from `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md` still apply, plus:
+The current workload-visible contract is:
 
-- ES base image must include `python3`
-- the publish request must set `constraints.network_access = true`
-- the submit request must include `REFERENCE_IDENTITY_URL`
-- the workload-local identity bridge protocol is documented in:
-  - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md`
-- `VAULT_ADDR` must resolve to a Vault-compatible HTTP endpoint reachable from the workload container
-- the configured Vault endpoint must accept:
+- discover the endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
+- optionally tolerate `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as a temporary compatibility alias
+- use the non-secret Vault metadata ES injects:
+  - `MONOLITH_WORKLOAD_VAULT_AUTH_MODE`
   - `MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT`
   - `MONOLITH_WORKLOAD_VAULT_AUTH_ROLE`
   - `MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE`
 
-Optional local helpers are provided:
+The workload must **not** assume a fixed `/monolith/...` socket path. ES now chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
 
-- `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py`
-- `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py`
+## 4. Environment Assumptions
+
+All prerequisites from the static-script runbook still apply, plus:
+
+- ES base image includes `python3`
+- the publish request sets `admission.access.network_access = true`
+- the submit request includes `REFERENCE_IDENTITY_URL`
+- the workload-local bridge protocol is documented in [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md)
+- the workload-zone Vault config reachable by ES points at a Vault-compatible address reachable from the workload container
+
+Optional local helpers remain available:
+
+- [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py)
+- [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py)
 
 These helpers are reference tooling only. They are not platform components.
-`REFERENCE_IDENTITY_URL`, the local bridge protocol, and the helper response shapes are reference-workload inputs only. They are not part of the platform runtime-identity contract.
 
-## 4. Optional Local Reference Helpers
+## 5. Bring Up The Stack
+
+Use the primary full bring-up path:
+
+```bash
+export BRINGUP_PROFILE="full"
+scripts/01_bringup.sh up
+```
+
+Then re-check readiness:
+
+```bash
+VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
+```
+
+## 6. Optional Local Reference Helpers
 
 Start the reference identity endpoint:
 
@@ -83,9 +99,9 @@ python3 /Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_ref
   --secret-value runtime-identity-ok
 ```
 
-Ensure the workload-zone Vault config reachable by ES points `VAULT_ADDR` at a Vault-compatible address that the workload container can reach in your environment.
+Ensure the workload-zone Vault config reachable by ES points `VAULT_ADDR` at a Vault-compatible address the workload container can reach.
 
-## 5. Publish
+## 7. Publish
 
 Create a working directory:
 
@@ -94,7 +110,7 @@ WORKDIR="$(mktemp -d)"
 echo "Using WORKDIR=$WORKDIR"
 ```
 
-Prepare base64 payload and labeled digests:
+Prepare payload bytes and publish-time inputs:
 
 ```bash
 export ARTIFACT_PAYLOAD_B64="$(python3 - <<'PY' /Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz
@@ -107,11 +123,9 @@ export INTENT_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export DERIVATION_SPEC_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 export BUILD_LOG_DIGEST="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 export OUTPUT_ID="runtime-identity-reference"
-export POLICY_VERSION="2026-04-02"
-export WORKLOAD_IDENTITY_ID="spiffe://monolith.internal/service/execution"
 ```
 
-Create the AGS publish request:
+Create the current AGS publish request:
 
 ```bash
 python3 - <<'PY' > "$WORKDIR/publish.json"
@@ -119,73 +133,73 @@ import json, os
 
 payload = {
     "artifact_payload_b64": os.environ["ARTIFACT_PAYLOAD_B64"],
-    "manifest": {
+    "artifact": {
         "artifact_type": "static-script",
         "intent_digest": os.environ["INTENT_DIGEST"],
-        "runtime_interface": {
-            "parameters": [],
-            "environment_variables": ["REFERENCE_IDENTITY_URL", "REFERENCE_SECRET_PATH", "REFERENCE_VAULT_INSECURE_SKIP_VERIFY"],
-            "required_capabilities": []
-        }
     },
-    "provenance": {
-        "builder_service": "artifact-governance",
-        "invoker": {
-            "service": "deployment",
-            "principal": "spiffe://monolith.internal/service/deployment"
-        },
+    "publication": {
         "policy_decisions": [
             {"rule": "allow", "result": "applied"}
         ],
-        "build_log_digest": os.environ["BUILD_LOG_DIGEST"]
+        "build_log_digest": os.environ["BUILD_LOG_DIGEST"],
     },
-    "derivation_metadata": {
-        "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
-        "output_id": os.environ["OUTPUT_ID"],
-        "producer_run_id": "runtime-identity-reference-1"
-    },
-    "derivation_attestation": {
-        "constraints": {
-            "allowed_toolchains": [],
-            "forbidden_toolchains": [],
-            "os": "linux",
-            "arch": "amd64",
-            "network_access": True,
-            "writable_paths": [],
-            "forbidden_paths": [],
-            "determinism_expectation": "deterministic"
+    "admission": {
+        "runtime": {
+            "environment_variables": [
+                "REFERENCE_IDENTITY_URL",
+                "REFERENCE_SECRET_PATH",
+                "REFERENCE_VAULT_INSECURE_SKIP_VERIFY",
+            ],
+            "required_capabilities": [],
         },
-        "policy_version": os.environ["POLICY_VERSION"],
-        "expected_artifact_type": "static-script"
+        "access": {
+            "network_access": True,
+        },
+        "derivation": {
+            "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
+            "output_id": os.environ["OUTPUT_ID"],
+        },
+        "workload": {
+            "target_platform": "docker",
+        },
     },
-    "workload_identity_binding": {
-        "artifact_class": "service",
-        "workload_type": "service",
-        "module_path": "services.execution.ExecutionServer",
-        "policy_version": os.environ["POLICY_VERSION"],
-        "service_name": "execution",
-        "target_platform": "docker",
-        "description": "Runtime identity reference workload",
-        "workload_identity_id": os.environ["WORKLOAD_IDENTITY_ID"]
-    }
 }
 
 print(json.dumps(payload))
 PY
 ```
 
-Publish and extract the artifact digest exactly as in:
+Publish with the helper:
 
-- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md`
+```bash
+export PUBLISH_JSON="$WORKDIR/publish.json"
+export PUBLISH_RESPONSE="$WORKDIR/publish-response.json"
+scripts/20_publish.sh
+```
 
-## 6. Submit
+Extract the published artifact digest:
 
-Create the ES submit request:
+```bash
+export ARTIFACT_DIGEST="$(python3 - <<'PY' "$WORKDIR/publish-response.json"
+import json, pathlib, sys
+print(json.loads(pathlib.Path(sys.argv[1]).read_text())["artifact_digest"])
+PY
+)"
+echo "ARTIFACT_DIGEST=$ARTIFACT_DIGEST"
+```
+
+## 8. Submit
+
+Set the reference identity URL to something the workload container can actually reach:
 
 ```bash
 export REFERENCE_IDENTITY_URL_VALUE="http://<container-reachable-identity-host>:18081"
+```
 
-python3 - <<'PY' > "$WORKDIR/submit.json"
+Create the current ES execution request:
+
+```bash
+python3 - <<'PY' > "$WORKDIR/execution.json"
 import json, os
 
 payload = {
@@ -197,7 +211,7 @@ payload = {
         "output_id": os.environ["OUTPUT_ID"],
         "env": {
             "REFERENCE_IDENTITY_URL": os.environ["REFERENCE_IDENTITY_URL_VALUE"],
-            "REFERENCE_SECRET_PATH": "secret/data/runtime-identity-reference"
+            "REFERENCE_SECRET_PATH": "secret/data/runtime-identity-reference",
         }
     },
     "mode": "async",
@@ -211,29 +225,53 @@ print(json.dumps(payload))
 PY
 ```
 
-Set `REFERENCE_IDENTITY_URL_VALUE` to any identity-service address the workload container can reach in your environment. `host.docker.internal` is only one possible runtime-specific example, not a platform default.
-
-Submit and extract `RUN_ID`, `NOMAD_JOB_ID`, and `NOMAD_EVAL_ID` exactly as in:
-
-- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md`
-
-## 7. Verify Success
-
-Inspect allocation logs:
+Optional bounded preflight:
 
 ```bash
-nomad alloc logs -stdout "$ALLOC_ID"
+export PREPARE_JSON="$WORKDIR/execution.json"
+export PREPARE_RESPONSE="$WORKDIR/prepare-response.json"
+scripts/30_prepare.sh
 ```
 
-Success requires all of:
+Submit:
+
+```bash
+export SUBMIT_JSON="$WORKDIR/execution.json"
+export SUBMIT_RESPONSE="$WORKDIR/submit-response.json"
+scripts/40_submit.sh
+```
+
+Extract the run ID:
+
+```bash
+export RUN_ID="$(python3 - <<'PY' "$WORKDIR/submit-response.json"
+import json, pathlib, sys
+print(json.loads(pathlib.Path(sys.argv[1]).read_text())["run_id"])
+PY
+)"
+echo "RUN_ID=$RUN_ID"
+```
+
+`host.docker.internal` is only one possible runtime-specific value for `REFERENCE_IDENTITY_URL_VALUE`; it is not a platform default.
+
+## 9. Verify Success
+
+Observe the workload through the public lifecycle helper:
+
+```bash
+export WAIT_FOR_TERMINAL=1
+scripts/50_lifecycle.sh
+```
+
+Success requires:
 
 - workload starts
 - identity JWT retrieval succeeds
 - Vault auth succeeds
 - secret read succeeds
-- task exit code is `0`
+- terminal exit code is `0`
 
-Expected log markers:
+Expected log markers include:
 
 ```text
 RUNTIME-IDENTITY-REFERENCE-START

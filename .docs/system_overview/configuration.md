@@ -292,3 +292,16 @@ For the current bounded governed execution path, the practical minimum is:
 - Docker
 
 CGS remains implemented but is not required for the current ES admission or execution path.
+
+For local operator bring-up against this practical minimum:
+
+- use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the primary bootstrap path
+- use `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh` to re-run readiness checks
+- use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad/Docker submit
+
+The current unified health check verifies:
+
+- ARS, EGS, AGS, and ES all report `ready=true`
+- Nomad has a leader and at least one ready node when `BRINGUP_PROFILE=full`
+- `docker info` succeeds when `BRINGUP_PROFILE=full`
+- the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution

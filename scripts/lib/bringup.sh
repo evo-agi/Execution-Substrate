@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+
+bringup_repo_root() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  printf '%s\n' "$script_dir"
+}
+
+bringup_profile() {
+  printf '%s\n' "${BRINGUP_PROFILE:-full}"
+}
+
+validate_bringup_profile() {
+  local profile
+  profile="$(bringup_profile)"
+  case "$profile" in
+    full|prepare-only)
+      ;;
+    *)
+      echo "BRINGUP_PROFILE must be full or prepare-only" >&2
+      return 1
+      ;;
+  esac
+}
+
+require_env() {
+  local name=$1
+  if [[ -z "${!name:-}" ]]; then
+    echo "${name} is required" >&2
+    return 1
+  fi
+}
+
+require_readable_path() {
+  local label=$1
+  local path=$2
+  if [[ ! -r "$path" ]]; then
+    echo "${label} must point to a readable file: ${path}" >&2
+    return 1
+  fi
+}
+
+require_readable_env() {
+  local name=$1
+  require_env "$name" || return 1
+  require_readable_path "$name" "${!name}" || return 1
+}
+
+require_command() {
+  local name=$1
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "${name} is required" >&2
+    return 1
+  fi
+}
+
+resolve_value() {
+  local name=$1
+  printf '%s\n' "${!name:-}"
+}
+
+curl_tls_get_to_file() {
+  local output_path=$1
+  local url=$2
+  local resolve="${3:-}"
+  shift 3
+
+  local -a args
+  args=(
+    --fail-with-body
+    --silent
+    --show-error
+    --cacert "${CA_CERT}"
+  )
+
+  if [[ -n "$resolve" ]]; then
+    args+=(--resolve "$resolve")
+  fi
+
+  while (($# > 0)); do
+    args+=("$1")
+    shift
+  done
+
+  args+=("$url")
+  curl "${args[@]}" >"$output_path"
+}
+
+service_health_summary() {
+  local payload_path=$1
+  local fallback_service=$2
+  python3 - <<'PY' "$payload_path" "$fallback_service"
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+service = payload.get("service") or sys.argv[2]
+status = payload.get("status", "")
+ready = payload.get("ready") is True
+print(f"{service}: status={status} ready={str(ready).lower()}")
+raise SystemExit(0 if ready else 1)
+PY
+}
+
+check_service_ready_once() {
+  local fallback_service=$1
+  local url=$2
+  local resolve="${3:-}"
+  local response_path
+  local summary
+  local status=0
+
+  response_path="$(mktemp)"
+
+  if ! curl_tls_get_to_file "${response_path}" "${url}/health" "${resolve}"; then
+    echo "${fallback_service}: health request failed for ${url}/health" >&2
+    status=1
+  elif ! summary="$(service_health_summary "${response_path}" "${fallback_service}")"; then
+    echo "${summary}" >&2
+    python3 -m json.tool "${response_path}" >&2 || cat "${response_path}" >&2
+    status=1
+  else
+    echo "${summary}"
+  fi
+
+  rm -f "${response_path}"
+  return "${status}"
+}
+
+wait_for_service_ready() {
+  local fallback_service=$1
+  local url=$2
+  local resolve="${3:-}"
+  local timeout_seconds=${4:-30}
+  local deadline=$((SECONDS + timeout_seconds))
+  local last_error=""
+
+  while ((SECONDS < deadline)); do
+    if last_error="$(check_service_ready_once "${fallback_service}" "${url}" "${resolve}" 2>&1)"; then
+      echo "${last_error}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "${last_error}" >&2
+  return 1
+}
+
+check_nomad_ready_once() {
+  local leader_path
+  local nodes_path
+  local summary
+  local status=0
+
+  leader_path="$(mktemp)"
+  nodes_path="$(mktemp)"
+
+  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
+    echo "nomad: leader request failed for ${NOMAD_ADDR}/v1/status/leader" >&2
+    status=1
+  elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/nodes" >"${nodes_path}"; then
+    echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
+    status=1
+  elif ! summary="$(python3 - <<'PY' "${leader_path}" "${nodes_path}"
+import json
+import pathlib
+import sys
+
+leader = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(leader, str) or not leader.strip():
+    print("nomad: leader missing", file=sys.stderr)
+    raise SystemExit(1)
+
+nodes = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+ready_nodes = [node for node in nodes if node.get("Status") == "ready"]
+if not ready_nodes:
+    print("nomad: no ready client nodes", file=sys.stderr)
+    raise SystemExit(1)
+
+print(f"nomad: leader={leader} ready_nodes={len(ready_nodes)}")
+PY
+)"; then
+    status=1
+  else
+    echo "${summary}"
+  fi
+
+  rm -f "${leader_path}" "${nodes_path}"
+  return "${status}"
+}
+
+wait_for_nomad_ready() {
+  local timeout_seconds=${1:-30}
+  local deadline=$((SECONDS + timeout_seconds))
+  local last_error=""
+
+  while ((SECONDS < deadline)); do
+    if last_error="$(check_nomad_ready_once 2>&1)"; then
+      echo "${last_error}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "${last_error}" >&2
+  return 1
+}
+
+check_docker_ready() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "docker: docker info failed" >&2
+    return 1
+  fi
+  echo "docker: ready"
+}
+
+verify_es_submit_config_enabled() {
+  local config_path=$1
+  python3 - <<'PY' "$config_path"
+import json
+import pathlib
+import sys
+
+cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+def require_non_empty(path):
+    cur = cfg
+    for segment in path:
+        if not isinstance(cur, dict) or segment not in cur:
+            raise SystemExit(f"ES submit config is incomplete: missing {'.'.join(path)}")
+        cur = cur[segment]
+    if not isinstance(cur, str) or not cur.strip():
+        raise SystemExit(f"ES submit config is incomplete: missing {'.'.join(path)}")
+
+for path in (
+    ("nomad", "base_url"),
+    ("nomad", "datacenter"),
+    ("execution", "staging_root_dir"),
+    ("execution", "base_image"),
+):
+    require_non_empty(path)
+PY
+}
+
+resolve_ars_read_credentials() {
+  local cert="${ARS_READ_CERT:-${DEPLOY_CERT:-}}"
+  local key="${ARS_READ_KEY:-${DEPLOY_KEY:-}}"
+
+  if [[ -z "${cert}" || -z "${key}" ]]; then
+    echo "ARS blob readiness verification requires ARS_READ_CERT/ARS_READ_KEY or DEPLOY_CERT/DEPLOY_KEY" >&2
+    return 1
+  fi
+  require_readable_path "ARS read client cert" "${cert}" || return 1
+  require_readable_path "ARS read client key" "${key}" || return 1
+
+  printf '%s\n%s\n' "${cert}" "${key}"
+}
+
+check_workload_zone_vault_blob() {
+  local config_path=$1
+  local resolve="${2:-}"
+  local cert_key
+  local cert
+  local key
+  local digest
+  local response_path
+  local summary
+  local status=0
+
+  cert_key="$(resolve_ars_read_credentials)" || return 1
+  cert="$(printf '%s\n' "${cert_key}" | sed -n '1p')"
+  key="$(printf '%s\n' "${cert_key}" | sed -n '2p')"
+
+  digest="$(python3 - <<'PY' "$config_path"
+import json
+import pathlib
+import sys
+
+cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+runtime_cfg = cfg.get("runtime_config") or {}
+vault_ref = runtime_cfg.get("workload_zone_vault_config_ref") or {}
+digest = (vault_ref.get("digest") or "").strip()
+if not digest:
+    raise SystemExit("runtime_config.workload_zone_vault_config_ref.digest is required for workload-zone Vault blob verification")
+print(digest)
+PY
+)" || return 1
+
+  response_path="$(mktemp)"
+
+  if ! curl_tls_get_to_file "${response_path}" "${ARS_URL}/v1/blobs/${digest}:json" "${resolve}" --cert "${cert}" --key "${key}"; then
+    echo "workload-zone vault blob read failed for digest ${digest}" >&2
+    status=1
+  elif ! summary="$(python3 - <<'PY' "${response_path}" "${digest}"
+import json
+import pathlib
+import sys
+from urllib.parse import urlparse
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+vault = payload.get("vault_config")
+if not isinstance(vault, dict):
+    print("workload-zone vault blob is missing vault_config", file=sys.stderr)
+    raise SystemExit(1)
+
+address = (vault.get("address") or "").strip()
+parsed = urlparse(address)
+if not address or parsed.scheme != "https" or not parsed.netloc:
+    print("workload-zone vault blob has invalid vault_config.address", file=sys.stderr)
+    raise SystemExit(1)
+
+for field in ("auth_mount", "auth_role", "jwt_audience"):
+    value = (vault.get(field) or "").strip()
+    if not value:
+        print(f"workload-zone vault blob is missing vault_config.{field}", file=sys.stderr)
+        raise SystemExit(1)
+
+print(f"workload-zone vault blob: digest={sys.argv[2]} ready=true")
+PY
+)"; then
+    status=1
+  else
+    echo "${summary}"
+  fi
+
+  rm -f "${response_path}"
+  return "${status}"
+}

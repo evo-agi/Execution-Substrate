@@ -26,7 +26,13 @@ That helper installs dependencies, pauses for GitHub SSH-key setup, clones the r
 
 ## 2. Prerequisites
 
-The current Go platform must already be up using the existing bring-up flow.
+The current Go platform must already be up using the primary full bring-up flow:
+
+```bash
+export BRINGUP_PROFILE="full"
+scripts/01_bringup.sh up
+VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
+```
 
 This runbook adds only:
 
@@ -248,7 +254,7 @@ Use these important values:
 - payload:
   - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 - publish request:
-  - `constraints.network_access = true`
+  - `admission.access.network_access = true`
 - submit env:
   - `REFERENCE_IDENTITY_URL=http://<container-reachable-identity-host>:18081`
   - `REFERENCE_SECRET_PATH=secret/data/runtime-identity-reference`
@@ -257,7 +263,7 @@ Set `REFERENCE_IDENTITY_URL` to any host or service address that the workload co
 
 The workload then runs this real local flow:
 
-1. create a local bridge at `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+1. read the discovered endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 2. obtain the static RS256 JWT through that bridge
 3. call `POST $VAULT_ADDR/v1/auth/jwt/login`
 4. receive a real Vault token from Vault dev mode
@@ -266,10 +272,11 @@ The workload then runs this real local flow:
 
 ## 7. Verification Steps
 
-Inspect allocation logs:
+Inspect the public lifecycle/logs path:
 
 ```bash
-nomad alloc logs -stdout "$ALLOC_ID"
+export WAIT_FOR_TERMINAL=1
+scripts/50_lifecycle.sh
 ```
 
 Success must include:
@@ -304,7 +311,7 @@ Common causes:
 
 - `REFERENCE_IDENTITY_URL` is missing or wrong
 - the local adapter is not running
-- the workload could not create `/monolith/runtime-identity/endpoint`
+- the workload could not use the discovered endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 
 ### JWT not returned
 

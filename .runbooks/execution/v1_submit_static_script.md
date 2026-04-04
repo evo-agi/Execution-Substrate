@@ -1,147 +1,40 @@
 # Runbook: Submit Static Script Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-02`
-- Compatible System Version: `Execution-Platform commit 1a74b208cf970299e295d4479d2f4e1444930216`
+- Last Updated: `2026-04-04`
+- Compatible System Version: `Execution-Platform current working tree`
 
 ## 1. Objective
 
-Submit one real workload end to end through the governed execution path:
+Submit one real workload end to end through the current governed execution path:
 
-`AGS publish -> ARS store/register -> ES submit -> Nomad batch job -> Docker container runs -> observable logs + exit code`
+`AGS publish -> ARS -> ES :prepare -> ES :submit -> Nomad -> Docker -> ES status/logs`
 
-This runbook proves the minimal real execution slice only. It does not cover durable run records, ES log/status APIs, cancel flows, sync waiting, or broader runtime orchestration.
+This runbook documents the current bounded static-script slice only. It does not define a richer execution model above Nomad.
 
-For a single-command bounded loop over the same public AGS and ES APIs, use `scripts/60_execute_loop.sh` with `.examples/execution_loop/static_script_success.input.json`. The detailed steps below remain the authoritative breakdown of what that helper does.
+For the preferred one-command smoke path over the same public APIs, use:
 
-For a reference workload that exercises the bounded runtime-identity contract on top of the same static-script execution model, see:
+```bash
+scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
+```
 
-- `/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md`
-
-In the current bounded slice, runtime networking is controlled only by signed derivation constraints:
-
-- `network_access=false` -> Docker `network_mode = none`
-- `network_access=true` -> Docker `network_mode = bridge`
-
-The slice still forbids host networking, port publishing, custom networks, and network-policy interpretation.
-
-Runtime mounts are also bounded in this slice:
-
-- mounts may reference only governed artifact digests
-- mounts must be read-only
-- mounts must target absolute cleaned paths under `/monolith/mounts/`
-- host-path mounts, writable mounts, identity injection, and secret injection remain unsupported
+The steps below remain the transparent manual breakdown for the same current slice.
 
 ## 2. Prerequisites
 
-### Required services
+- The stack is already up through [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md)
+- `BRINGUP_PROFILE=full`
+- `curl`, `python3`, `tar`, `gzip`, `nomad`, and `docker` are available
+- `CA_CERT`, `DEPLOY_CERT`, `DEPLOY_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
+- Optional `AGS_RESOLVE` and `ES_RESOLVE` are exported if your local URLs require `curl --resolve`
 
-The following services must already be running and reachable over HTTPS:
-
-- ARS
-- AGS
-- EGS
-- ES
-- Nomad server/client with Docker driver enabled
-
-### Required tools
-
-- `curl`
-- `python3`
-- `tar`
-- `gzip`
-- `nomad`
-- `docker`
-
-### Required environment state
-
-The environment must already satisfy these assumptions:
-
-- AGS is configured to write to ARS over the public ARS write boundary.
-- EGS TrustModel `allowed_signers` includes the AGS provenance signer key ID.
-- ES verification keys match the AGS and EGS public keys.
-- ES startup config includes `runtime_config.workload_zone_vault_config_ref.digest`.
-- ARS already contains the workload-zone Vault JSON blob referenced by that digest.
-- ES is configured for the `vault_identity_jwt` path.
-- ES is configured with Nomad submission settings:
-  - `nomad.base_url`
-  - `nomad.datacenter`
-  - `execution.staging_root_dir`
-  - `execution.base_image`
-- ES reserves `/monolith/runtime-identity/` inside the workload container for runtime identity plumbing.
-  - ES does not provide credentials there.
-  - the workload or workload-local helper may create `/monolith/runtime-identity/endpoint`.
-  - `/monolith/runtime-identity/vault-token` is reserved for a future slice only. The current workspace is tmpfs-backed and not persisted to host staging, but ES still does not populate or manage token material there.
-- The Nomad client has the Docker driver available and bind mounts enabled.
-  - The minimal ES slice depends on Docker bind mounts for staged payload execution.
-  - In Nomad client config this means `docker.volumes.enabled = true`.
-- The ES base image is available or pullable by the Nomad client.
-  - The current minimal slice expects something equivalent to `alpine:3.20`.
-- The artifact payload is a `tar.gz` archive whose root contains executable `./entrypoint`.
-- The current slice assumes `artifact_digest == payload_digest` when ES reads the payload from ARS.
-
-### Required TLS material
-
-You need a CA bundle and a client certificate/key that authenticates as either:
-
-- `spiffe://monolith.internal/service/deployment`
-- `spiffe://monolith.internal/operator`
-
-The examples below use a deployment caller.
-
-### Export environment variables
-
-Adjust these paths and URLs for your environment before running the steps:
+Before publishing or submitting, re-run the stack check:
 
 ```bash
-export ARS_URL="https://127.0.0.1:8442"
-export AGS_URL="https://127.0.0.1:8443"
-export EGS_URL="https://127.0.0.1:8444"
-export ES_URL="https://127.0.0.1:8445"
-export NOMAD_ADDR="http://127.0.0.1:4646"
-
-export CA_CERT="/path/to/runtime-ca.pem"
-export DEPLOY_CERT="/path/to/deployment-client.pem"
-export DEPLOY_KEY="/path/to/deployment-client-key.pem"
+VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh
 ```
 
-## 3. Steps
-
-### Step 1 — Verify system readiness
-
-Check public health for each service:
-
-```bash
-  "$ARS_URL/health" | python3 -m json.tool
-
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
-  "$AGS_URL/health" | python3 -m json.tool
-
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
-  "$EGS_URL/health" | python3 -m json.tool
-
-curl --fail-with-body --silent --show-error --cacert "$CA_CERT" \
-  "$ES_URL/health" | python3 -m json.tool
-```
-
-Expected result:
-
-- Each service returns HTTP `200`
-- Each response contains `"ready": true`
-
-Check Nomad and Docker:
-
-```bash
-nomad status
-docker info >/dev/null
-```
-
-Expected result:
-
-- `nomad status` succeeds
-- `docker info` succeeds
-
-### Step 2 — Create artifact payload
+## 3. Create The Artifact Payload
 
 Create a working directory:
 
@@ -150,7 +43,7 @@ WORKDIR="$(mktemp -d)"
 echo "Using WORKDIR=$WORKDIR"
 ```
 
-Create the entrypoint script:
+Create the entrypoint:
 
 ```bash
 cat > "$WORKDIR/entrypoint" <<'EOF'
@@ -164,15 +57,10 @@ done
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 EOF
 chmod +x "$WORKDIR/entrypoint"
-```
-
-Package it as `tar.gz` with `entrypoint` at archive root:
-
-```bash
 tar -C "$WORKDIR" -czf "$WORKDIR/artifact.tar.gz" entrypoint
 ```
 
-Prepare base64 payload and stable labeled digests for the publish request:
+Prepare the publish-time inputs:
 
 ```bash
 export ARTIFACT_PAYLOAD_B64="$(python3 - <<'PY' "$WORKDIR/artifact.tar.gz"
@@ -185,13 +73,11 @@ export INTENT_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export DERIVATION_SPEC_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 export BUILD_LOG_DIGEST="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 export OUTPUT_ID="runtime"
-export POLICY_VERSION="2026-03-31"
-export WORKLOAD_IDENTITY_ID="spiffe://monolith.internal/service/execution"
 ```
 
-### Step 3 — Publish via AGS
+## 4. Publish Through AGS
 
-Create the AGS publish request:
+Create the current AGS publish request using the live `artifact` / `publication` / `admission` grammar:
 
 ```bash
 python3 - <<'PY' > "$WORKDIR/publish.json"
@@ -199,71 +85,44 @@ import json, os
 
 payload = {
     "artifact_payload_b64": os.environ["ARTIFACT_PAYLOAD_B64"],
-    "manifest": {
+    "artifact": {
         "artifact_type": "static-script",
         "intent_digest": os.environ["INTENT_DIGEST"],
-        "runtime_interface": {
-            "parameters": [],
-            "environment_variables": ["APP_MODE"],
-            "required_capabilities": []
-        }
     },
-    "provenance": {
-        "builder_service": "artifact-governance",
-        "invoker": {
-            "service": "deployment",
-            "principal": "spiffe://monolith.internal/service/deployment"
-        },
+    "publication": {
         "policy_decisions": [
             {"rule": "allow", "result": "applied"}
         ],
-        "build_log_digest": os.environ["BUILD_LOG_DIGEST"]
+        "build_log_digest": os.environ["BUILD_LOG_DIGEST"],
     },
-    "derivation_metadata": {
-        "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
-        "output_id": os.environ["OUTPUT_ID"],
-        "producer_run_id": "runbook-publish-1"
-    },
-    "derivation_attestation": {
-        "constraints": {
-            "allowed_toolchains": [],
-            "forbidden_toolchains": [],
-            "os": "linux",
-            "arch": "amd64",
-            "network_access": False,
-            "writable_paths": [],
-            "forbidden_paths": [],
-            "determinism_expectation": "deterministic"
+    "admission": {
+        "runtime": {
+            "environment_variables": ["APP_MODE"],
+            "required_capabilities": [],
         },
-        "policy_version": os.environ["POLICY_VERSION"],
-        "expected_artifact_type": "static-script"
+        "access": {
+            "network_access": False,
+        },
+        "derivation": {
+            "derivation_spec_digest": os.environ["DERIVATION_SPEC_DIGEST"],
+            "output_id": os.environ["OUTPUT_ID"],
+        },
+        "workload": {
+            "target_platform": "docker",
+        },
     },
-    "workload_identity_binding": {
-        "artifact_class": "service",
-        "workload_type": "service",
-        "module_path": "services.execution.ExecutionServer",
-        "policy_version": os.environ["POLICY_VERSION"],
-        "service_name": "execution",
-        "target_platform": "docker",
-        "description": "Execution workload",
-        "workload_identity_id": os.environ["WORKLOAD_IDENTITY_ID"]
-    }
 }
 
 print(json.dumps(payload))
 PY
 ```
 
-Publish the artifact:
+Publish with the helper:
 
 ```bash
-curl --fail-with-body --silent --show-error \
-  --cacert "$CA_CERT" \
-  --cert "$DEPLOY_CERT" \
-  --key "$DEPLOY_KEY" \
-  -H 'Content-Type: application/json' \
-  --data @"$WORKDIR/publish.json" \
-  "$AGS_URL/v1/artifacts:publish" | tee "$WORKDIR/publish-response.json"
+export PUBLISH_JSON="$WORKDIR/publish.json"
+export PUBLISH_RESPONSE="$WORKDIR/publish-response.json"
+scripts/20_publish.sh
 ```
 
 Extract the published artifact digest:
@@ -274,24 +133,17 @@ import json, pathlib, sys
 print(json.loads(pathlib.Path(sys.argv[1]).read_text())["artifact_digest"])
 PY
 )"
-
 echo "ARTIFACT_DIGEST=$ARTIFACT_DIGEST"
 ```
 
-Expected response:
+The current runtime path no longer assumes `artifact_digest == payload_digest`. ES resolves payload bytes from ARS discovery and cross-checks them against aggregate evidence during prepare/submit.
 
-- HTTP `200`
-- JSON with:
-  - `"published": true`
-  - `"artifact_digest": "sha256:..."`
-  - the fact digests and payload digest
+## 5. Optional Preflight
 
-### Step 4 — Submit via ES
-
-Create the ES submit request:
+Create the current ES request body:
 
 ```bash
-python3 - <<'PY' > "$WORKDIR/submit.json"
+python3 - <<'PY' > "$WORKDIR/execution.json"
 import json, os
 
 payload = {
@@ -316,19 +168,33 @@ print(json.dumps(payload))
 PY
 ```
 
-Submit the execution:
+Run bounded preflight:
 
 ```bash
-curl --fail-with-body --silent --show-error \
-  --cacert "$CA_CERT" \
-  --cert "$DEPLOY_CERT" \
-  --key "$DEPLOY_KEY" \
-  -H 'Content-Type: application/json' \
-  --data @"$WORKDIR/submit.json" \
-  "$ES_URL/v1/executions:submit" | tee "$WORKDIR/submit-response.json"
+export PREPARE_JSON="$WORKDIR/execution.json"
+export PREPARE_RESPONSE="$WORKDIR/prepare-response.json"
+scripts/30_prepare.sh
 ```
 
-Extract Nomad identifiers:
+Success today is only:
+
+```json
+{"success": true}
+```
+
+`POST /v1/executions:prepare` is still active, but it remains a bounded auxiliary surface. It does not return a run ID or scheduler receipt.
+
+## 6. Submit Through ES
+
+Submit with the same request body:
+
+```bash
+export SUBMIT_JSON="$WORKDIR/execution.json"
+export SUBMIT_RESPONSE="$WORKDIR/submit-response.json"
+scripts/40_submit.sh
+```
+
+Extract the run ID:
 
 ```bash
 export RUN_ID="$(python3 - <<'PY' "$WORKDIR/submit-response.json"
@@ -336,241 +202,49 @@ import json, pathlib, sys
 print(json.loads(pathlib.Path(sys.argv[1]).read_text())["run_id"])
 PY
 )"
-
-export NOMAD_JOB_ID="$(python3 - <<'PY' "$WORKDIR/submit-response.json"
-import json, pathlib, sys
-print(json.loads(pathlib.Path(sys.argv[1]).read_text())["nomad_job_id"])
-PY
-)"
-
-export NOMAD_EVAL_ID="$(python3 - <<'PY' "$WORKDIR/submit-response.json"
-import json, pathlib, sys
-print(json.loads(pathlib.Path(sys.argv[1]).read_text())["nomad_eval_id"])
-PY
-)"
-
 echo "RUN_ID=$RUN_ID"
-echo "NOMAD_JOB_ID=$NOMAD_JOB_ID"
-echo "NOMAD_EVAL_ID=$NOMAD_EVAL_ID"
 ```
 
-Expected response:
+The public submission receipt is intentionally bounded. It now returns `run_id` and bounded status only; it does not return Nomad job or eval identifiers.
 
-- HTTP `202`
-- JSON with:
-  - `"success": true`
-  - `"submitted": true`
-  - `"run_id": "..."`
-  - `"nomad_job_id": "..."`
-  - `"nomad_eval_id": "..."`
-  - `"status": "submitted"`
+## 7. Observe Lifecycle
 
-### Step 5 — Verify execution in Nomad
-
-Confirm the job exists:
+Use the current public lifecycle helper:
 
 ```bash
-nomad job status "$NOMAD_JOB_ID"
-nomad eval status "$NOMAD_EVAL_ID"
+export WAIT_FOR_TERMINAL=1
+scripts/50_lifecycle.sh
 ```
 
-Find the allocation:
+This helper now drives only the public ES contract:
 
-```bash
-export ALLOC_ID="$(nomad job allocs -json "$NOMAD_JOB_ID" | python3 - <<'PY'
-import json, sys
-allocs = json.load(sys.stdin)
-if not allocs:
-    raise SystemExit("no allocations found")
-print(allocs[0]["ID"])
-PY
-)"
+- `GET /v1/executions/{run_id}/status`
+- `GET /v1/executions/{run_id}/logs`
+- optional `POST /v1/executions/{run_id}:cancel`
 
-echo "ALLOC_ID=$ALLOC_ID"
-```
+It no longer requires Nomad job or eval IDs.
 
-Wait for the allocation to reach a terminal state:
+Success indicators:
 
-```bash
-while true; do
-  STATUS="$(nomad alloc status -json "$ALLOC_ID" | python3 - <<'PY'
-import json, sys
-print(json.load(sys.stdin)["ClientStatus"])
-PY
-)"
-  echo "allocation status: $STATUS"
-  case "$STATUS" in
-    complete|failed|lost) break ;;
-  esac
-  sleep 2
-done
-```
-
-Inspect the allocation and logs:
-
-```bash
-nomad alloc status "$ALLOC_ID"
-nomad alloc logs -stdout "$ALLOC_ID"
-```
-
-Extract the task exit code:
-
-```bash
-nomad alloc status -json "$ALLOC_ID" | python3 - <<'PY'
-import json, sys
-payload = json.load(sys.stdin)
-events = payload["TaskStates"]["task"]["Events"]
-exit_code = None
-for event in reversed(events):
-    if event.get("Type") == "Terminated":
-        exit_code = event.get("ExitCode")
-        break
-print(f"task exit code: {exit_code}")
-if exit_code != 0:
-    raise SystemExit(1)
-PY
-```
-
-## 4. Expected Output
-
-Success looks like all of the following:
-
-- AGS publish returns HTTP `200` with `"published": true`
-- ES submit returns HTTP `202` with `"status": "submitted"`
-- `nomad job status "$NOMAD_JOB_ID"` shows a real batch job
-- `nomad alloc status "$ALLOC_ID"` reaches `complete`
-- task exit code is `0`
-- task logs contain:
+- status becomes `"terminal"`
+- `terminal` becomes `true`
+- `exit_code` is `0`
+- logs contain:
   - `START-BANNER`
   - `HEARTBEAT:1`
   - `HEARTBEAT:2`
   - `HEARTBEAT:3`
-  - final JSON line containing `"status":"ok"` and the artifact digest
+  - a final JSON line containing the published artifact digest
 
-Example log output:
+## 8. Notes
 
-```text
-START-BANNER
-HEARTBEAT:1
-HEARTBEAT:2
-HEARTBEAT:3
-{"status":"ok","artifact_digest":"sha256:..."}
-```
-
-## 5. Failure Modes
-
-### AGS publish failure
-
-What it means:
-
-- The artifact was not published into ARS.
-- ES cannot submit it because it is not discoverable.
-
-Common causes:
-
-- malformed JSON
-- invalid base64 in `artifact_payload_b64`
-- invalid labeled SHA-256 digests
-- missing required publish fields
-- AGS cannot write to ARS
-
-How to debug:
-
-```bash
-cat "$WORKDIR/publish.json" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$AGS_URL/health" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$ARS_URL/health" | python3 -m json.tool
-```
-
-Interpretation hints:
-
-- HTTP `400` usually means request-shape or digest-format error
-- HTTP `503` usually means ARS write/register is unavailable
-
-### ES rejection
-
-What it means:
-
-- ES refused the workload before Nomad submission.
-
-Common causes:
-
-- ES cannot validate the artifact facts from ARS
-- TrustModel rejects the AGS signer or artifact digest
-- ES runtime config reference is missing or ARS cannot serve the workload-zone Vault config blob
-- ARS payload/fact retrieval failed
-- request mode is not `async`
-- artifact type is not `static-script`
-- `required_capabilities` is not empty
-- runtime-identity workspace reservation conflicted with caller mounts or runtime path assumptions
-
-How to debug:
-
-```bash
-cat "$WORKDIR/submit.json" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$ES_URL/health" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$ARS_URL/health" | python3 -m json.tool
-curl --silent --show-error --cacert "$CA_CERT" "$EGS_URL/health" | python3 -m json.tool
-```
-
-Interpretation hints:
-
-- HTTP `400` means request or artifact-type constraints failed
-- HTTP `403` means caller certificate is not authorized
-- HTTP `503` means an upstream dependency or payload/fact read failed
-
-### Nomad job not created
-
-What it means:
-
-- ES accepted the request far enough to attempt submission, but Nomad did not accept or materialize the job.
-
-Common causes:
-
-- ES Nomad config is wrong
-- Nomad is not reachable from ES
-- Docker driver is unavailable on the Nomad client
-- bind mounts are disabled on the Nomad client
-- the configured ES base image cannot be pulled
-
-How to debug:
-
-```bash
-nomad status
-nomad eval status "$NOMAD_EVAL_ID"
-docker info >/dev/null
-```
-
-Interpretation hints:
-
-- If `nomad job status "$NOMAD_JOB_ID"` fails, focus on ES submit response and Nomad connectivity
-- If the eval exists but no allocation starts, inspect Nomad eval output for placement or driver errors
-
-### Container exits non-zero
-
-What it means:
-
-- Nomad scheduled the job, but the containerized workload failed at runtime.
-
-Common causes:
-
-- `entrypoint` missing from archive root
-- `entrypoint` not executable
-- malformed `tar.gz`
-- script exits non-zero
-- the task timed out
-- the base image is missing required utilities such as `tar` or `/bin/sh`
-
-How to debug:
-
-```bash
-nomad alloc status "$ALLOC_ID"
-nomad alloc logs -stdout "$ALLOC_ID"
-nomad alloc logs -stderr "$ALLOC_ID"
-```
-
-Interpretation hints:
-
-- If logs never show `START-BANNER`, the wrapper likely failed before running `./entrypoint`
-- If logs show some heartbeats and then stop, check timeout or script failure
-- If the final JSON marker is missing, the script did not finish cleanly
+- `:submit` remains the primary public execution handoff in the current slice.
+- The current execution slice remains:
+  - async-only
+  - `static-script` only
+  - Nomad-backed for lifecycle
+  - Docker-backed for runtime
+- Runtime networking still comes only from the signed `network_access` input:
+  - `false` -> Docker `network_mode = none`
+  - `true` -> Docker `network_mode = bridge`
+- Runtime mounts remain bounded to governed artifact digests mounted read-only under `/monolith/mounts/...`
