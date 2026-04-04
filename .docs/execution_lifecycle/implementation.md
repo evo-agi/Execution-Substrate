@@ -114,7 +114,7 @@ What the app layer delegates:
 2. Read the currently loaded runtime-trust policy from memory.
 3. Read the artifact descriptor from ARS and follow it to the aggregate artifact-evidence blob.
 4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
-5. Fetch the workload-zone vault digest from ACS.
+5. Fetch the workload-zone vault digest from ACS's dedicated discovery route.
 6. Fetch the workload-zone vault config blob from ARS.
 7. Resolve the workload-vault auth plan from workload-zone vault runtime fields plus ES `workload_vault_auth.default_mode`.
 8. Assemble and return `PrepareResult`.
@@ -122,7 +122,7 @@ What the app layer delegates:
 What `Prepare` reads:
 
 - ARS descriptor discoverability plus aggregate artifact evidence from ARS
-- lookup indirection from ACS
+- the dedicated workload-zone Vault digest discovery contract from ACS
 - Runtime-trust state loaded from EGS at startup
 
 **Implementation invariants**

@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	// part of the ACS contract and should not be relied upon. Ignore for the
 	// frozen ACS slice unless a critical bug requires explicit normalization later.
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /v1/configuration/workload-zone/vault", s.handleWorkloadZoneVaultLookup)
 	mux.HandleFunc("GET /v1/configuration/", s.handleConfigurationLookup)
 	return observability.WrapHandler(serviceName, mux)
 }
@@ -122,6 +123,33 @@ func (s *Server) handleConfigurationLookup(w http.ResponseWriter, r *http.Reques
 		Digest:                &digest,
 		Assignment:            &assignment,
 		CatalogSnapshotDigest: stringPtr(snapshotDigest),
+	})
+}
+
+func (s *Server) handleWorkloadZoneVaultLookup(w http.ResponseWriter, r *http.Request) {
+	if handled := s.requireAuthorizedCaller(w, r); handled {
+		return
+	}
+
+	assignment := catalog.RequiredWorkloadZoneVault()
+	digest, found, err := s.store.Lookup(assignment)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !found {
+		errorMessage := "Required workload-zone vault digest mapping is unavailable"
+		writeJSON(w, http.StatusNotFound, WorkloadZoneVaultDiscoveryResponse{
+			Success: false,
+			Error:   &errorMessage,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, WorkloadZoneVaultDiscoveryResponse{
+		Success: true,
+		Digest:  &digest,
 	})
 }
 

@@ -136,17 +136,15 @@ type signedRuntimeTrustResponse struct {
 	Publication   json.RawMessage             `json:"publication,omitempty"`
 }
 
-// acsLookupResponse intentionally models only the frozen ACS fields that ES
-// currently needs on the admission path.
-// TODO: assignment and catalog_snapshot_digest are advisory for this slice and
-// must not become hidden execution inputs unless the ACS->ES boundary is
-// explicitly expanded and documented.
-type acsLookupResponse struct {
-	Success               bool            `json:"success"`
-	Digest                *string         `json:"digest"`
-	Assignment            json.RawMessage `json:"assignment,omitempty"`
-	CatalogSnapshotDigest *string         `json:"catalog_snapshot_digest,omitempty"`
-	Error                 *string         `json:"error,omitempty"`
+// workloadZoneVaultDiscoveryResponse models the dedicated ACS discovery
+// contract for the workload-zone vault path. ES intentionally depends only on
+// the resolved reference it needs from ACS and must not absorb generic ACS
+// assignment or snapshot envelope fields on the runtime path unless that
+// boundary is explicitly expanded again.
+type workloadZoneVaultDiscoveryResponse struct {
+	Success bool    `json:"success"`
+	Digest  *string `json:"digest"`
+	Error   *string `json:"error,omitempty"`
 }
 
 type workloadZoneVaultBlob struct {
@@ -671,7 +669,7 @@ func (s *Service) fetchWorkloadZoneVaultDigest(ctx context.Context) (string, *Er
 		}
 	}
 
-	var payload acsLookupResponse
+	var payload workloadZoneVaultDiscoveryResponse
 	if err := decodeJSON(response.Body, &payload); err != nil {
 		return "", &Error{
 			Status:  http.StatusServiceUnavailable,

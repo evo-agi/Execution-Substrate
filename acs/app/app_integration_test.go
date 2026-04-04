@@ -297,13 +297,6 @@ func TestAllLookupRoutesReturnExpectedResponses(t *testing.T) {
 				Version:      "1.0.0",
 			},
 		},
-		{
-			name:       "workload zone vault",
-			path:       "/v1/configuration/workload-zone/vault",
-			clientID:   "service/credential-governance",
-			digest:     "sha256:vault",
-			assignment: catalog.RequiredWorkloadZoneVault(),
-		},
 	}
 
 	for _, tc := range cases {
@@ -342,6 +335,50 @@ func TestAllLookupRoutesReturnExpectedResponses(t *testing.T) {
 				t.Fatalf("expected empty error, got %q", payload.Error)
 			}
 		})
+	}
+}
+
+func TestWorkloadZoneVaultLookupUsesDedicatedDiscoveryContract(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service := startTestApp(t, fixture, fullSeedAssignments())
+
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/configuration/workload-zone/vault", fixture.clientTLSConfig(t, "service/credential-governance"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	body := mustReadBody(t, response.Body)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+
+	if _, ok := raw["assignment"]; ok {
+		t.Fatalf("did not expect assignment in dedicated workload-zone vault discovery response: %s", strings.TrimSpace(string(body)))
+	}
+	if _, ok := raw["catalog_snapshot_digest"]; ok {
+		t.Fatalf("did not expect catalog_snapshot_digest in dedicated workload-zone vault discovery response: %s", strings.TrimSpace(string(body)))
+	}
+
+	var payload struct {
+		Success bool   `json:"success"`
+		Digest  string `json:"digest"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode typed response: %v", err)
+	}
+
+	if !payload.Success {
+		t.Fatalf("expected success response, got %+v", payload)
+	}
+	if payload.Digest != "sha256:vault" {
+		t.Fatalf("expected digest %q, got %q", "sha256:vault", payload.Digest)
+	}
+	if payload.Error != "" {
+		t.Fatalf("expected empty error, got %q", payload.Error)
 	}
 }
 

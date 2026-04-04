@@ -49,7 +49,7 @@ This repository does not ship ready-to-run service config examples. Operators mu
 
 - `audit.mode` must be `noop`
 - `authorization.allowed_spiffe_path_prefixes` must contain at least one non-empty SPIFFE path prefix
-- for the governed execution system, `catalog.seed_artifact_digests` must include the required workload-zone Vault assignment
+- for the governed execution system, `catalog.seed_artifact_digests` must include the required workload-zone Vault assignment that backs ACS's dedicated workload-zone Vault discovery route
 
 Minimal seed example:
 
@@ -201,7 +201,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - EGS over HTTPS
 - Nomad for real execution submit
 - Docker under Nomad for container runtime
-- workload-zone Vault config available through ACS -> ARS
+- workload-zone Vault config reference available through ACS's dedicated discovery route, with the blob available through ARS
 
 ### Minimal valid configuration
 

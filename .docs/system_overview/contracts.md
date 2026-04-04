@@ -103,7 +103,7 @@ Describe the current shared kernel that multiple services use directly today.
 
 ### Purpose
 
-Provide governed assignment-to-digest lookup.
+Provide governed assignment-to-digest lookup, including a dedicated workload-zone Vault digest discovery path for the ES hot path.
 
 ### Current producers / consumers
 
@@ -125,7 +125,13 @@ Provide governed assignment-to-digest lookup.
 - `GET /v1/configuration/sidecar/{service}/{version}:instances`
 - `GET /v1/configuration/sidecar/{service}/{version}/{instance}:docker`
 
-Lookup responses currently use this envelope:
+The workload-zone Vault route currently uses this dedicated discovery contract:
+
+- `success`
+- `digest` on success
+- `error` on failure
+
+The remaining generic lookup routes currently use this envelope:
 
 - `success`
 - `digest` on success
@@ -155,7 +161,7 @@ The current assignment taxonomy is encoded in `acs/catalog/assignment.go`:
 - Not-found lookups return structured JSON with `success=false`; they do not fall through to an undocumented alternate path.
 - ACS health and lookup responses include richer service-specific fields, but ES currently depends only on:
   - top-level `status` and `ready` from `/health`
-  - `success` and `digest` from the workload-zone vault lookup
+  - `success` and `digest` from the dedicated workload-zone vault discovery route
 
 ### Ownership boundary
 
@@ -166,7 +172,7 @@ The current assignment taxonomy is encoded in `acs/catalog/assignment.go`:
 
 `Temporary compatibility edge`
 
-- `assignment` and `catalog_snapshot_digest` are returned to callers today, but ES treats them as advisory rather than as execution inputs.
+- Generic ACS lookup routes still return `assignment` and `catalog_snapshot_digest`, but the workload-zone Vault hot path no longer carries those advisory fields.
 - ACS route families reflect the current assignment taxonomy; they should not be treated as permanent solely because they already exist.
 
 ### Reopened seams

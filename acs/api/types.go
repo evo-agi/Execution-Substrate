@@ -10,6 +10,12 @@ type LookupResponse struct {
 	Error                 *string                `json:"error,omitempty"`
 }
 
+type WorkloadZoneVaultDiscoveryResponse struct {
+	Success bool    `json:"success"`
+	Digest  *string `json:"digest,omitempty"`
+	Error   *string `json:"error,omitempty"`
+}
+
 type HealthResponse struct {
 	Status                string                     `json:"status"`
 	Ready                 bool                       `json:"ready"`

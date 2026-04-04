@@ -24,7 +24,7 @@ The current Go system is a governed publication + storage + policy + admission +
 
 | Component | Observed current role |
 | --- | --- |
-| ACS | Lookup and assignment-to-digest indirection service |
+| ACS | Lookup and assignment-to-digest indirection service, with a dedicated workload-zone Vault digest discovery path |
 | ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
 | AGS | Evidence-first artifact publication service |
 | EGS | Signed runtime-trust publication service |
@@ -78,7 +78,7 @@ At a high level, ES:
 
 - accepts execution requests through `:prepare` and `:submit`
 - reads aggregate artifact evidence and payloads from ARS
-- reads workload-zone and vault-related lookup data from ACS
+- reads the dedicated workload-zone Vault digest discovery result from ACS
 - loads and enforces the EGS trust model
 - stages payload and mount data locally
 - hands execution off to Nomad
@@ -141,7 +141,7 @@ These are current architectural absences, not omissions to fill automatically.
 **Reopened redesign seams under active pressure**
 
 - `contracts/evidence/v1` is now the only active shared artifact kernel for the AGS -> ARS -> ES path.
-- ACS currently expresses assignment and digest indirection through a broad lookup family whose long-term authority shape is reopened.
+- ACS currently expresses most assignment and digest indirection through a broad lookup family, while the workload-zone Vault hot path now uses a narrower digest-discovery contract whose long-term authority shape remains reopened.
 - ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.

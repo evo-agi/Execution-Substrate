@@ -27,7 +27,7 @@ When prose and code disagree, code and tests win.
 
 | Service | Observed current boundary | Current ownership summary |
 | --- | --- | --- |
-| ACS | Lookup and assignment indirection service | Governed lookup routes that resolve assignment-shaped keys to digests and assignment payloads |
+| ACS | Lookup and assignment indirection service | Governed lookup routes that resolve assignment-shaped keys to digests, plus a dedicated workload-zone Vault digest discovery path |
 | ARS | Storage and artifact discoverability service | Blob storage, integrity enforcement, evidence-centered artifact registration, and canonical artifact retrieval |
 | AGS | Artifact publication service | Evidence-first publication assembly, caller-bound publication claims, and publication into ARS |
 | EGS | Trust model publication service | Signed trust model publication for execution-time trust decisions |
@@ -56,13 +56,14 @@ Those absences are current facts, not design commitments.
 
 **Purpose**
 
-Provide governed lookup routes that map assignment-shaped keys to digests and assignment payloads.
+Provide governed lookup routes that map assignment-shaped keys to digests, with a dedicated workload-zone Vault digest discovery path for the ES hot path.
 
 **Current ownership**
 
 - Lookup routes under `/v1/configuration/...`
 - Request-to-assignment-key parsing for the ACS lookup family
-- Assignment lookup results containing `digest`, `assignment`, and `catalog_snapshot_digest`
+- Generic assignment lookup results containing `digest`, `assignment`, and `catalog_snapshot_digest`
+- Dedicated workload-zone Vault discovery results containing only `success`, `digest`, and `error`
 - Assignment taxonomy defined in `acs/catalog/assignment.go`
 
 **Explicit non-ownership**
@@ -76,18 +77,18 @@ Provide governed lookup routes that map assignment-shaped keys to digests and as
 
 **Current consumers / collaborators**
 
-- ES currently consumes ACS for workload-zone and vault lookup during preparation
+- ES currently consumes ACS for workload-zone Vault digest discovery during preparation
 - Other callers may use ACS if their SPIFFE path is allowed by configured prefixes
 
 **Boundary pressure points**
 
 - ACS route families encode assignment taxonomy directly into cross-service lookup paths.
 - ES currently depends on ACS to resolve workload-zone and vault-related configuration before submit.
-- The current assignment payload and digest indirection shape influence downstream composition even when only a small subset of assignments is in the ES hot path.
+- The current generic assignment payload and digest indirection shape still influence downstream composition even though the workload-zone Vault hot path has been narrowed.
 
 **Temporary compatibility edges**
 
-- Returning both `assignment` and `catalog_snapshot_digest` on lookup keeps more context available to consumers than ES currently requires.
+- Generic lookup routes still return both `assignment` and `catalog_snapshot_digest` even though the workload-zone Vault hot path no longer needs them.
 - The broader assignment family remains active even though the execution path currently uses only a narrow subset.
 
 **Reopened seams**
