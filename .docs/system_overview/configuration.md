@@ -314,3 +314,16 @@ The current unified health check verifies:
 - Nomad has a leader and at least one ready node when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
+
+For operator diagnostics in the current bounded slice:
+
+- `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` remain the authoritative readiness baseline for service health, prepare-ready, and submit-ready
+- later helpers such as `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` must not redefine readiness; they should direct operators back to that baseline when they detect readiness or substrate trouble
+- the bounded operator failure classes are:
+  - caller authorization / credential failure
+  - trust / evidence / admission failure
+  - runtime-config reference or blob failure
+  - service health / readiness failure
+  - substrate failure (Docker / Nomad / runtime availability)
+  - execution failure after successful submit
+  - operator misuse / invalid input

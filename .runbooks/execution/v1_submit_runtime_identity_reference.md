@@ -76,6 +76,16 @@ scripts/01_bringup.sh check
 
 For this full-profile runbook, do not continue unless the check reports `submit-ready: true`.
 
+If the later publish / prepare / submit / lifecycle helpers fail, treat `scripts/01_bringup.sh check` as the readiness baseline and then use the bounded failure categories:
+
+- caller authorization / credential failure
+- trust / evidence / admission failure
+- runtime-config reference or blob failure
+- service health / readiness failure
+- substrate failure (Docker / Nomad / runtime availability)
+- execution failure after successful submit
+- operator misuse / invalid input
+
 ## 6. Optional Local Reference Helpers
 
 Start the reference identity endpoint:

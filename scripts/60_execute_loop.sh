@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANONICALIZE_JSON="${SCRIPT_DIR}/canonicalize_json.py"
+# shellcheck source=scripts/lib/operator_failures.sh
+source "${SCRIPT_DIR}/lib/operator_failures.sh"
 
 DEFAULT_TIMEOUT_SECONDS=120
 POLL_INTERVAL_SECONDS=2
@@ -36,6 +38,8 @@ FAILED_PHASE=""
 MESSAGE=""
 ERROR_CODE=""
 HTTP_STATUS=""
+FAILURE_CATEGORY=""
+NEXT_STEP=""
 STATE=""
 EXIT_CODE_JSON="null"
 TERMINAL="false"
@@ -70,9 +74,11 @@ write_summary() {
     "${SUMMARY_PATH}" \
     "${OK}" \
     "${FAILED_PHASE}" \
+    "${FAILURE_CATEGORY}" \
     "${MESSAGE}" \
     "${ERROR_CODE}" \
     "${HTTP_STATUS}" \
+    "${NEXT_STEP}" \
     "${SPEC_PATH}" \
     "${WORKDIR}" \
     "${ARTIFACT_DIGEST}" \
@@ -90,25 +96,27 @@ import pathlib
 import sys
 
 summary_path = pathlib.Path(sys.argv[1])
-http_status = sys.argv[6]
+http_status = sys.argv[7]
 payload = {
     "ok": sys.argv[2] == "true",
     "failed_phase": sys.argv[3],
-    "message": sys.argv[4],
-    "error_code": sys.argv[5],
+    "failure_category": sys.argv[4],
+    "message": sys.argv[5],
+    "error_code": sys.argv[6],
     "http_status": int(http_status) if http_status else None,
-    "spec_path": sys.argv[7],
-    "workdir": sys.argv[8],
-    "artifact_digest": sys.argv[9],
-    "intent_digest": sys.argv[10],
-    "derivation_spec_digest": sys.argv[11],
-    "build_log_digest": sys.argv[12],
-    "run_id": sys.argv[13],
-    "state": sys.argv[14],
-    "terminal": sys.argv[15] == "true",
-    "exit_code": None if sys.argv[16] == "null" else json.loads(sys.argv[16]),
-    "logs_path": sys.argv[17],
-    "logs_available": sys.argv[18] == "true",
+    "next_step": sys.argv[8],
+    "spec_path": sys.argv[9],
+    "workdir": sys.argv[10],
+    "artifact_digest": sys.argv[11],
+    "intent_digest": sys.argv[12],
+    "derivation_spec_digest": sys.argv[13],
+    "build_log_digest": sys.argv[14],
+    "run_id": sys.argv[15],
+    "state": sys.argv[16],
+    "terminal": sys.argv[17] == "true",
+    "exit_code": None if sys.argv[18] == "null" else json.loads(sys.argv[18]),
+    "logs_path": sys.argv[19],
+    "logs_available": sys.argv[20] == "true",
 }
 summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -124,8 +132,14 @@ finalize() {
   if [[ "${OK}" != "true" && -z "${FAILED_PHASE}" ]]; then
     FAILED_PHASE="internal"
   fi
+  if [[ "${OK}" != "true" && -z "${FAILURE_CATEGORY}" ]]; then
+    FAILURE_CATEGORY="$(operator_category_input)"
+  fi
   if [[ "${OK}" != "true" && -z "${MESSAGE}" ]]; then
     MESSAGE="execution loop failed"
+  fi
+  if [[ "${OK}" != "true" && -z "${NEXT_STEP}" ]]; then
+    NEXT_STEP="$(operator_next_step_for_category "${FAILURE_CATEGORY}" "${FAILED_PHASE}")"
   fi
 
   write_summary
@@ -139,11 +153,15 @@ fail_phase() {
   local message=$2
   local error_code=${3:-}
   local http_status=${4:-}
+  local failure_category=${5:-}
+  local next_step=${6:-}
 
   FAILED_PHASE="${phase}"
   MESSAGE="${message}"
   ERROR_CODE="${error_code}"
   HTTP_STATUS="${http_status}"
+  FAILURE_CATEGORY="${failure_category}"
+  NEXT_STEP="${next_step}"
   OK="false"
   exit 1
 }
@@ -151,7 +169,8 @@ fail_phase() {
 require_env() {
   local name=$1
   if [[ -z "${!name:-}" ]]; then
-    fail_phase "internal" "${name} is required"
+    operator_report_local_failure "internal" "$(operator_category_input)" "${name} is required"
+    fail_phase "internal" "${name} is required" "" "" "$(operator_category_input)" "$(operator_next_step_for_category "$(operator_category_input)" "internal")"
   fi
 }
 
@@ -159,7 +178,8 @@ require_readable() {
   local path=$1
   local label=$2
   if [[ ! -r "${path}" ]]; then
-    fail_phase "internal" "${label} must point to a readable file: ${path}"
+    operator_report_local_failure "internal" "$(operator_category_input)" "${label} must point to a readable file: ${path}"
+    fail_phase "internal" "${label} must point to a readable file: ${path}" "" "" "$(operator_category_input)" "$(operator_next_step_for_category "$(operator_category_input)" "internal")"
   fi
 }
 
@@ -208,40 +228,10 @@ curl_json() {
   local body_path=$3
   local response_path=$4
   local resolve_value=$5
-  local status_var=$6
+  local stderr_path=$6
+  local status_var=$7
 
-  local -a args
-  args=(
-    --silent
-    --show-error
-    --cacert "${CA_CERT}"
-    --cert "${OPERATOR_CERT}"
-    --key "${OPERATOR_KEY}"
-    --output "${response_path}"
-    --write-out "%{http_code}"
-    -X "${method}"
-  )
-
-  if [[ -n "${resolve_value}" ]]; then
-    args+=(--resolve "${resolve_value}")
-  fi
-
-  if [[ -n "${body_path}" ]]; then
-    args+=(-H 'Content-Type: application/json' --data @"${body_path}")
-  fi
-
-  local status=""
-  local curl_exit=0
-  set +e
-  status="$(curl "${args[@]}" "${url}")"
-  curl_exit=$?
-  set -e
-
-  if [[ ${curl_exit} -ne 0 ]]; then
-    return "${curl_exit}"
-  fi
-
-  printf -v "${status_var}" '%s' "${status}"
+  operator_run_request "${method}" "${url}" "${body_path}" "${response_path}" "${resolve_value}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" "${stderr_path}" "${status_var}"
 }
 
 write_phase_http_error() {
@@ -250,18 +240,62 @@ write_phase_http_error() {
   local response_path=$3
   local fallback=$4
 
-  local parsed
-  parsed="$(json_error_fields "${response_path}")"
   local code
   local message
-  code="$(printf '%s\n' "${parsed}" | sed -n '1p')"
-  message="$(printf '%s\n' "${parsed}" | sed -n '2p')"
+  local category
+  local next_step
+  local body
 
+  code="$(operator_response_error_code "${response_path}")"
+  message="$(operator_response_error_message "${response_path}")"
+  body="$(operator_trimmed_file "${response_path}")"
   if [[ -z "${message}" ]]; then
     message="${fallback}"
   fi
 
-  fail_phase "${phase}" "${message}" "${code}" "${status}"
+  category="$(operator_category_for_http_failure "${phase}" "${status}" "${code}" "${body}")"
+  next_step="$(operator_next_step_for_category "${category}" "${phase}")"
+  operator_print_failure_report "${phase}" "${category}" "${message}" "${next_step}" "${status}" "${code}"
+  printf 'response:\n' >&2
+  operator_print_payload "${response_path}" >&2
+  fail_phase "${phase}" "${message}" "${code}" "${status}" "${category}" "${next_step}"
+}
+
+write_phase_transport_error() {
+  local phase=$1
+  local curl_exit=$2
+  local stderr_path=$3
+  local url=$4
+  local category
+  local next_step
+  local detail
+
+  category="$(operator_category_for_transport_failure "${curl_exit}" "${stderr_path}")"
+  next_step="$(operator_next_step_for_category "${category}" "${phase}")"
+  detail="$(operator_trimmed_file "${stderr_path}")"
+  if [[ -z "${detail}" ]]; then
+    detail="curl failed for ${url}"
+  fi
+
+  operator_print_failure_report "${phase}" "${category}" "${detail}" "${next_step}"
+  if [[ -s "${stderr_path}" ]]; then
+    printf 'curl stderr:\n' >&2
+    cat "${stderr_path}" >&2
+  fi
+  fail_phase "${phase}" "${detail}" "curl_error" "" "${category}" "${next_step}"
+}
+
+fail_local_phase() {
+  local phase=$1
+  local category=$2
+  local message=$3
+  local error_code=${4:-}
+  local http_status=${5:-}
+  local next_step
+
+  next_step="$(operator_next_step_for_category "${category}" "${phase}")"
+  operator_print_failure_report "${phase}" "${category}" "${message}" "${next_step}" "${http_status}" "${error_code}"
+  fail_phase "${phase}" "${message}" "${error_code}" "${http_status}" "${category}" "${next_step}"
 }
 
 parse_status_snapshot() {
@@ -314,6 +348,7 @@ require_readable "${OPERATOR_CERT}" "OPERATOR_CERT"
 require_readable "${OPERATOR_KEY}" "OPERATOR_KEY"
 require_readable "${SPEC_PATH}" "input spec"
 require_readable "${CANONICALIZE_JSON}" "canonicalize_json.py"
+operator_require_json_file_or_die "internal" "input spec" "${SPEC_PATH}"
 
 SPEC_PATH="$(python3 - <<'PY' "${SPEC_PATH}"
 import pathlib
@@ -546,8 +581,12 @@ PY
 echo "workdir=${WORKDIR}"
 
 publish_status=""
-if ! curl_json POST "${AGS_URL}/v1/artifacts:publish" "${PUBLISH_JSON_PATH}" "${PUBLISH_RESPONSE_PATH}" "${AGS_RESOLVE:-}" publish_status; then
-  fail_phase "publish" "curl failed for POST ${AGS_URL}/v1/artifacts:publish" "curl_error"
+publish_stderr="${WORKDIR}/publish.stderr"
+if curl_json POST "${AGS_URL}/v1/artifacts:publish" "${PUBLISH_JSON_PATH}" "${PUBLISH_RESPONSE_PATH}" "${AGS_RESOLVE:-}" "${publish_stderr}" publish_status; then
+  :
+else
+  curl_exit=$?
+  write_phase_transport_error "publish" "${curl_exit}" "${publish_stderr}" "${AGS_URL}/v1/artifacts:publish"
 fi
 HTTP_STATUS="${publish_status}"
 if [[ "${publish_status}" != "200" ]]; then
@@ -556,8 +595,9 @@ fi
 
 ARTIFACT_DIGEST="$(json_get "${PUBLISH_RESPONSE_PATH}" 'payload.get("artifact_digest", "")')"
 if [[ -z "${ARTIFACT_DIGEST}" ]]; then
-  fail_phase "publish" "publish response did not include artifact_digest" "invalid_publish_response" "${publish_status}"
+  fail_local_phase "publish" "$(operator_category_readiness)" "publish response did not include artifact_digest" "invalid_publish_response" "${publish_status}"
 fi
+echo "publish: success artifact_digest=${ARTIFACT_DIGEST}"
 
 python3 - <<'PY' "${PREPARE_JSON_PATH}" "${SUBMIT_JSON_PATH}" "${ARTIFACT_DIGEST}"
 import json
@@ -575,8 +615,12 @@ for path in (prepare_path, submit_path):
 PY
 
 prepare_status=""
-if ! curl_json POST "${ES_URL}/v1/executions:prepare" "${PREPARE_JSON_PATH}" "${PREPARE_RESPONSE_PATH}" "${ES_RESOLVE:-}" prepare_status; then
-  fail_phase "prepare" "curl failed for POST ${ES_URL}/v1/executions:prepare" "curl_error"
+prepare_stderr="${WORKDIR}/prepare.stderr"
+if curl_json POST "${ES_URL}/v1/executions:prepare" "${PREPARE_JSON_PATH}" "${PREPARE_RESPONSE_PATH}" "${ES_RESOLVE:-}" "${prepare_stderr}" prepare_status; then
+  :
+else
+  curl_exit=$?
+  write_phase_transport_error "prepare" "${curl_exit}" "${prepare_stderr}" "${ES_URL}/v1/executions:prepare"
 fi
 HTTP_STATUS="${prepare_status}"
 if [[ "${prepare_status}" != "200" ]]; then
@@ -585,12 +629,17 @@ fi
 
 prepare_success="$(json_get "${PREPARE_RESPONSE_PATH}" 'payload.get("success", False)')"
 if [[ "${prepare_success}" != "True" ]]; then
-  fail_phase "prepare" "prepare response was not successful" "prepare_unsuccessful" "${prepare_status}"
+  fail_local_phase "prepare" "$(operator_category_readiness)" "prepare response was not successful" "prepare_unsuccessful" "${prepare_status}"
 fi
+echo "prepare: success"
 
 submit_status=""
-if ! curl_json POST "${ES_URL}/v1/executions:submit" "${SUBMIT_JSON_PATH}" "${SUBMIT_RESPONSE_PATH}" "${ES_RESOLVE:-}" submit_status; then
-  fail_phase "submit" "curl failed for POST ${ES_URL}/v1/executions:submit" "curl_error"
+submit_stderr="${WORKDIR}/submit.stderr"
+if curl_json POST "${ES_URL}/v1/executions:submit" "${SUBMIT_JSON_PATH}" "${SUBMIT_RESPONSE_PATH}" "${ES_RESOLVE:-}" "${submit_stderr}" submit_status; then
+  :
+else
+  curl_exit=$?
+  write_phase_transport_error "submit" "${curl_exit}" "${submit_stderr}" "${ES_URL}/v1/executions:submit"
 fi
 HTTP_STATUS="${submit_status}"
 if [[ "${submit_status}" != "202" ]]; then
@@ -600,8 +649,9 @@ fi
 RUN_ID="$(json_get "${SUBMIT_RESPONSE_PATH}" 'payload.get("run_id", "")')"
 
 if [[ -z "${RUN_ID}" ]]; then
-  fail_phase "submit" "submit response omitted run_id" "invalid_submit_response" "${submit_status}"
+  fail_local_phase "submit" "$(operator_category_readiness)" "submit response omitted run_id" "invalid_submit_response" "${submit_status}"
 fi
+echo "submit: accepted run_id=${RUN_ID}"
 
 deadline_seconds="$(python3 - <<'PY' "${SUBMIT_JSON_PATH}" "${DEFAULT_TIMEOUT_SECONDS}"
 import json
@@ -620,12 +670,16 @@ deadline_at=$(( $(date +%s) + deadline_seconds ))
 while true; do
   now="$(date +%s)"
   if (( now > deadline_at )); then
-    fail_phase "execution" "execution status polling timed out" "execution_timeout"
+    fail_local_phase "execution" "$(operator_category_execution)" "execution status polling timed out" "execution_timeout"
   fi
 
   status_http=""
-  if ! curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/status" "" "${STATUS_PATH}" "${ES_RESOLVE:-}" status_http; then
-    fail_phase "execution" "curl failed for GET ${ES_URL}/v1/executions/${RUN_ID}/status" "curl_error"
+  status_stderr="${WORKDIR}/status.stderr"
+  if curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/status" "" "${STATUS_PATH}" "${ES_RESOLVE:-}" "${status_stderr}" status_http; then
+    :
+  else
+    curl_exit=$?
+    write_phase_transport_error "execution" "${curl_exit}" "${status_stderr}" "${ES_URL}/v1/executions/${RUN_ID}/status"
   fi
   HTTP_STATUS="${status_http}"
 
@@ -654,8 +708,12 @@ while true; do
   fi
 
   logs_http=""
-  if ! curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/logs" "" "${LOGS_PATH}" "${ES_RESOLVE:-}" logs_http; then
-    fail_phase "logs" "curl failed for GET ${ES_URL}/v1/executions/${RUN_ID}/logs" "curl_error"
+  logs_stderr="${WORKDIR}/logs.stderr"
+  if curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/logs" "" "${LOGS_PATH}" "${ES_RESOLVE:-}" "${logs_stderr}" logs_http; then
+    :
+  else
+    curl_exit=$?
+    write_phase_transport_error "logs" "${curl_exit}" "${logs_stderr}" "${ES_URL}/v1/executions/${RUN_ID}/logs"
   fi
   HTTP_STATUS="${logs_http}"
 
@@ -686,7 +744,7 @@ while true; do
       LOGS_AVAILABLE="true"
       ;;
     409)
-      fail_phase "logs" "execution reached terminal state before logs became available" "logs_unavailable" "${logs_http}"
+      fail_local_phase "logs" "$(operator_category_readiness)" "execution reached terminal state before logs became available" "logs_unavailable" "${logs_http}"
       ;;
     404)
       write_phase_http_error "logs" "${logs_http}" "${LOGS_PATH}" "execution logs not found"
@@ -700,17 +758,20 @@ while true; do
   esac
 
   if [[ "${EXIT_CODE_JSON}" == "null" ]]; then
-    fail_phase "execution" "terminal execution did not report an exit code" "execution_failed" "${status_http}"
+    fail_local_phase "execution" "$(operator_category_execution)" "terminal execution did not report an exit code" "execution_failed" "${status_http}"
   fi
   if [[ "${EXIT_CODE_JSON}" != "0" ]]; then
-    fail_phase "execution" "terminal exit code is ${EXIT_CODE_JSON}" "execution_failed" "${status_http}"
+    fail_local_phase "execution" "$(operator_category_execution)" "terminal exit code is ${EXIT_CODE_JSON}" "execution_failed" "${status_http}"
   fi
 
   OK="true"
   FAILED_PHASE=""
+  FAILURE_CATEGORY=""
   MESSAGE="execution completed successfully"
   ERROR_CODE=""
   HTTP_STATUS="${status_http}"
+  NEXT_STEP=""
+  echo "execution: success run_id=${RUN_ID} exit_code=0"
   break
 done
 

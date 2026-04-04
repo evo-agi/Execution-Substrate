@@ -372,6 +372,16 @@ Operator helper ownership in the current slice:
 
 - `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability, Nomad, and Docker.
+- `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
+- those later helpers treat `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` as the readiness source of truth for service health, prepare-ready, and submit-ready.
+- the bounded operator failure categories are:
+  - caller authorization / credential failure
+  - trust / evidence / admission failure
+  - runtime-config reference or blob failure
+  - service health / readiness failure
+  - substrate failure (Docker / Nomad / runtime availability)
+  - execution failure after successful submit
+  - operator misuse / invalid input
 - `scripts/50_lifecycle.sh` now observes execution strictly through public ES lifecycle endpoints rather than through Nomad job/eval IDs.
 
 ## 13. Current simplifications

@@ -205,7 +205,33 @@ For `prepare-only`, success still means:
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
 - `submit-ready` is reported as skipped for that profile
 
-## 5. First Execution Verification
+## 5. Failure Guidance
+
+Use the current bounded failure classes when operator-facing helpers fail:
+
+- caller authorization / credential failure
+  - check `OPERATOR_CERT` and `OPERATOR_KEY`
+  - confirm the client identity is `spiffe://execution.internal/operator`
+- trust / evidence / admission failure
+  - check the published artifact, aggregate evidence, and EGS trust model inputs
+- runtime-config reference or blob failure
+  - re-run `scripts/01_bringup.sh check`
+  - confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` points at a readable ARS blob with the expected JSON shape
+- service health / readiness failure
+  - re-run `scripts/01_bringup.sh check`
+  - restore service health or prepare-ready before retrying publish / prepare / submit
+- substrate failure (Docker / Nomad / runtime availability)
+  - re-run `scripts/01_bringup.sh check`
+  - confirm Docker is reachable and Nomad has a leader plus a ready client
+- execution failure after successful submit
+  - inspect `scripts/50_lifecycle.sh` output and workload logs
+  - in this slice, failed, canceled, lost, or otherwise ambiguous runs retain host staging under `execution.staging_root_dir/<run_id>` for debugging
+- operator misuse / invalid input
+  - validate request JSON, env vars, readable file paths, and `run_id`
+
+Later helpers still rely on this bring-up/check path as the readiness source of truth. They should not be treated as a replacement readiness probe.
+
+## 6. First Execution Verification
 
 After bring-up succeeds, the preferred bounded end-to-end smoke test is:
 
@@ -230,7 +256,7 @@ If you want the manual publish/prepare/submit breakdown instead, use:
 - [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md)
 - [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md)
 
-## 6. Shutdown
+## 7. Shutdown
 
 Stop all managed processes with:
 
@@ -246,7 +272,7 @@ This stops, in order:
 - EGS
 - ARS
 
-## 7. Manual Fallback
+## 8. Manual Fallback
 
 If you need foreground manual startup for one service at a time, the direct wrappers remain available:
 

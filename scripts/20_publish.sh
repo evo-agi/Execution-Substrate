@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/bringup.sh
 source "${SCRIPT_DIR}/lib/bringup.sh"
+# shellcheck source=scripts/lib/operator_failures.sh
+source "${SCRIPT_DIR}/lib/operator_failures.sh"
+
+PHASE="publish"
+PUBLISH_URL="${AGS_URL:-}/v1/artifacts:publish"
 
 required_envs=(
   AGS_URL
@@ -14,45 +19,45 @@ required_envs=(
 )
 
 for name in "${required_envs[@]}"; do
-  if [[ -z "${!name:-}" ]]; then
-    echo "${name} is required" >&2
-    exit 1
-  fi
+  operator_require_env_or_die "${PHASE}" "${name}"
 done
 
-for path_name in CA_CERT OPERATOR_CERT OPERATOR_KEY PUBLISH_JSON; do
-  path_value="${!path_name}"
-  if [[ ! -r "${path_value}" ]]; then
-    echo "${path_name} must point to a readable file: ${path_value}" >&2
-    exit 1
-  fi
-done
-
-resolve_args=()
-if [[ -n "${AGS_RESOLVE:-}" ]]; then
-  resolve_args+=(--resolve "${AGS_RESOLVE}")
-fi
+operator_require_readable_file_or_die "${PHASE}" "CA_CERT" "${CA_CERT}"
+operator_require_readable_file_or_die "${PHASE}" "OPERATOR_CERT" "${OPERATOR_CERT}"
+operator_require_readable_file_or_die "${PHASE}" "OPERATOR_KEY" "${OPERATOR_KEY}"
+operator_require_json_file_or_die "${PHASE}" "PUBLISH_JSON" "${PUBLISH_JSON}"
 
 tmp_response="$(mktemp)"
-trap 'rm -f "${tmp_response}"' EXIT
+tmp_stderr="$(mktemp)"
+trap 'rm -f "${tmp_response}" "${tmp_stderr}"' EXIT
 
-printf '+ curl --fail-with-body --silent --show-error --cacert %q --cert %q --key %q -H %q --data @%q %q | tee %q\n' \
-  "${CA_CERT}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" 'Content-Type: application/json' "${PUBLISH_JSON}" \
-  "${AGS_URL}/v1/artifacts:publish" "${tmp_response}"
-curl --fail-with-body --silent --show-error \
-  --cacert "${CA_CERT}" \
-  --cert "${OPERATOR_CERT}" \
-  --key "${OPERATOR_KEY}" \
-  "${resolve_args[@]}" \
-  -H 'Content-Type: application/json' \
-  --data @"${PUBLISH_JSON}" \
-  "${AGS_URL}/v1/artifacts:publish" | tee "${tmp_response}"
-printf '\n'
+operator_print_request_line POST "${PUBLISH_URL}" "${PUBLISH_JSON}" "${AGS_RESOLVE:-}" "${OPERATOR_CERT}" "${OPERATOR_KEY}"
+
+publish_status=""
+if operator_run_request POST "${PUBLISH_URL}" "${PUBLISH_JSON}" "${tmp_response}" "${AGS_RESOLVE:-}" "${OPERATOR_CERT}" "${OPERATOR_KEY}" "${tmp_stderr}" publish_status; then
+  :
+else
+  curl_exit=$?
+  if [[ -n "${PUBLISH_RESPONSE:-}" ]]; then
+    cp "${tmp_response}" "${PUBLISH_RESPONSE}" 2>/dev/null || true
+  fi
+  operator_report_transport_failure "${PHASE}" "${curl_exit}" "${tmp_stderr}" "${PUBLISH_URL}"
+  exit "${curl_exit}"
+fi
 
 if [[ -n "${PUBLISH_RESPONSE:-}" ]]; then
   cp "${tmp_response}" "${PUBLISH_RESPONSE}"
   echo "saved publish response to ${PUBLISH_RESPONSE}"
 fi
+
+if [[ "${publish_status}" != "200" ]]; then
+  operator_report_http_failure "${PHASE}" "${publish_status}" "${tmp_response}"
+  exit 22
+fi
+
+echo "publish: success"
+operator_print_payload "${tmp_response}"
+printf '\n'
 
 artifact_digest="$(python3 - <<'PY' "${tmp_response}"
 import json, pathlib, sys

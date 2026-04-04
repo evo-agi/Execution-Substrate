@@ -16,9 +16,11 @@ import (
 type executionLoopSummary struct {
 	OK                   bool   `json:"ok"`
 	FailedPhase          string `json:"failed_phase"`
+	FailureCategory      string `json:"failure_category"`
 	Message              string `json:"message"`
 	ErrorCode            string `json:"error_code"`
 	HTTPStatus           *int   `json:"http_status"`
+	NextStep             string `json:"next_step"`
 	ArtifactDigest       string `json:"artifact_digest"`
 	IntentDigest         string `json:"intent_digest"`
 	DerivationSpecDigest string `json:"derivation_spec_digest"`
@@ -129,8 +131,14 @@ exit 7
 	if result.Summary.FailedPhase != "execution" {
 		t.Fatalf("expected execution failure, got %+v", result.Summary)
 	}
+	if result.Summary.FailureCategory != "execution failure after successful submit" {
+		t.Fatalf("expected execution failure category, got %+v", result.Summary)
+	}
 	if result.Summary.ExitCode == nil || *result.Summary.ExitCode != 7 {
 		t.Fatalf("expected exit code 7, got %+v", result.Summary)
+	}
+	if strings.TrimSpace(result.Summary.NextStep) == "" {
+		t.Fatalf("expected next_step guidance, got %+v", result.Summary)
 	}
 	if !result.Summary.Terminal {
 		t.Fatalf("expected terminal failure summary, got %+v", result.Summary)

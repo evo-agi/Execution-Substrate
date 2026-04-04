@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"encoding/base64"
 	"net"
 	"net/url"
 	"os"
@@ -476,11 +477,232 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 	}
 }
 
+func TestPublishScriptCategorizesAuthorizationFailure(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "20_publish.sh")
+	publishJSONPath := writeBytesFile(t, t.TempDir(), "publish.json", mustMarshalJSON(t, map[string]any{
+		"artifact_payload_b64": base64.StdEncoding.EncodeToString(buildStaticScriptArchive(t)),
+		"artifact": map[string]any{
+			"artifact_type": "static-script",
+			"intent_digest": stack.intentDigest,
+		},
+		"publication": map[string]any{
+			"policy_decisions": []map[string]any{
+				{"rule": "allow", "result": "applied"},
+			},
+			"build_log_digest": labeledDigest("ff"),
+		},
+		"admission": map[string]any{
+			"runtime": map[string]any{
+				"environment_variables": []string{"APP_MODE"},
+				"required_capabilities": []string{},
+			},
+			"access": map[string]any{
+				"network_access": false,
+			},
+			"derivation": map[string]any{
+				"derivation_spec_digest": stack.derivationSpecDigest,
+				"output_id":              stack.outputID,
+			},
+			"workload": map[string]any{
+				"target_platform": "docker",
+			},
+		},
+	}))
+
+	agsHost, agsPort, err := splitHostPort(t, stack.ags.Addr())
+	if err != nil {
+		t.Fatalf("split ags addr: %v", err)
+	}
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
+		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+stack.fixture.executionClientCertPath,
+		"OPERATOR_KEY="+stack.fixture.executionClientKeyPath,
+		"PUBLISH_JSON="+publishJSONPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected publish script to fail, output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "failure category: caller authorization / credential failure") {
+		t.Fatalf("expected authorization failure category, got %s", text)
+	}
+	if !strings.Contains(text, "Caller not authorized for this operation") {
+		t.Fatalf("expected caller authorization message, got %s", text)
+	}
+}
+
+func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
+	stack := startStack(t, stackOptions{MissingVaultBlob: true})
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "30_prepare.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"prepare-runtime-config-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	prepareJSONPath := writeBytesFile(t, t.TempDir(), "prepare.json", buildPrepareRequestBody(t, stack))
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"PREPARE_JSON="+prepareJSONPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected prepare script to fail, output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "failure category: runtime-config reference or blob failure") {
+		t.Fatalf("expected runtime-config failure category, got %s", text)
+	}
+	if !strings.Contains(text, "service code: workload_zone_vault_unavailable") {
+		t.Fatalf("expected workload-zone vault error code, got %s", text)
+	}
+}
+
+func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
+	stack := startSubmitStack(t)
+	stack.nomad.shutdown(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "40_submit.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"submit-substrate-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	submitJSONPath := writeBytesFile(t, t.TempDir(), "submit.json", buildSubmitRequestBody(t, stack))
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+		"SUBMIT_JSON="+submitJSONPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected submit script to fail, output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "failure category: substrate failure (Docker / Nomad / runtime availability)") {
+		t.Fatalf("expected substrate failure category, got %s", text)
+	}
+	if !strings.Contains(text, "service code: execution_runtime_unavailable") && !strings.Contains(text, "service code: submission_failed") {
+		t.Fatalf("expected runtime availability or submission failure code, got %s", text)
+	}
+}
+
+func TestLifecycleScriptCategorizesExecutionFailure(t *testing.T) {
+	stack := startSubmitStack(t)
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo FAIL-BANNER
+echo "{\"status\":\"fail\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+exit 7
+`))
+	submitted := submitExecution(t, stack, 10, 128)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "50_lifecycle.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"lifecycle-failure-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"RUN_ID="+submitted.RunID,
+		"WAIT_FOR_TERMINAL=1",
+		"TIMEOUT_SECONDS=60",
+		"POLL_INTERVAL_SECONDS=1",
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected lifecycle script to fail for unsuccessful execution, output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "failure category: execution failure after successful submit") {
+		t.Fatalf("expected execution failure category, got %s", text)
+	}
+	if !strings.Contains(text, "exit_code=7") {
+		t.Fatalf("expected exit code guidance in lifecycle output, got %s", text)
+	}
+}
+
 func writeJSONConfigFile(t *testing.T, dir string, name string, value any) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, mustMarshalJSON(t, value), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+func writeBytesFile(t *testing.T, dir string, name string, contents []byte) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
