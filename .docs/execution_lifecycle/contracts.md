@@ -111,12 +111,11 @@ Successful response is `200` JSON with these contract fields:
 - `output_id`
 - `intent_digest`
 - `artifact_type`
-- `trust_model`
 - `provenance`
 - `workload`
 - `workload_vault`
 
-The response is an admission/preparation fact bundle. It includes current trust-model info, current publication signer info, workload identity info, and resolved workload-vault info.
+The response is an admission/preparation fact bundle. It includes current publication signer info, workload identity info, and resolved workload-vault info.
 
 ### Current invariants
 
@@ -124,8 +123,9 @@ The response is an admission/preparation fact bundle. It includes current trust-
 
 - `:prepare` reads the registered artifact descriptor from ARS and follows it to the aggregate artifact-evidence blob.
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
-- `:prepare` verifies publish-time evidence and TrustModel constraints before success.
+- `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` resolves workload-zone vault information through ACS and ARS before success.
+- `:prepare` does not surface EGS publication metadata as part of its preparation result.
 - Successful `:prepare` returns preparation facts only, not execution state.
 
 ### Explicit non-effects

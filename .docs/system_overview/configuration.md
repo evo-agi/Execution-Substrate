@@ -140,7 +140,8 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
 - `tls`
 - `security`
 - `signer`
-- `trust_model`
+- `runtime_trust`
+- `publication`
 
 ### Required fields
 
@@ -149,29 +150,22 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
 - `signer.key_id`
 - `signer.private_key_hex`
 - `signer.public_key_hex`
-- `trust_model.version`
-- `trust_model.update_revision`
-
-### Optional fields
-
-- `signer.source_digest`
-  - optional labeled SHA-256 digest
-  - affects EGS readiness detail and advisory `source_digest` in the trust-model response
-  - does not affect trust decisions
+- `publication.version`
+- `publication.update_revision`
 
 ### Required external dependencies
 
 - none for runtime calls
-- signer key material for TrustModel signing
+- signer key material for runtime-trust signing
 
 ### Minimal valid configuration
 
 - `signer.algorithm` must be `ed25519`
-- `trust_model.update_revision` must be greater than `0`
-- `trust_model.signer_policy.allowed_signers` and `revoked_signers` must not contain duplicates or empty values
-- `trust_model.artifact_policy.revoked_artifacts`, if present, must contain labeled SHA-256 digests
+- `publication.update_revision` must be greater than `0`
+- `runtime_trust.signer_policy.allowed_signers` and `revoked_signers` must not contain duplicates or empty values
+- `runtime_trust.artifact_policy.revoked_artifacts`, if present, must contain labeled SHA-256 digests
 
-For a minimal active system, `trust_model.signer_policy.allowed_signers` must include the AGS signer key ID used for provenance.
+For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must include the AGS signer key ID used for provenance.
 
 ## ES
 

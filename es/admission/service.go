@@ -102,7 +102,7 @@ type Service struct {
 	nomadClient        *nomadClient
 
 	mu         sync.RWMutex
-	trustModel *egsmodel.TrustModel
+	trustModel *egsmodel.RuntimeTrustPolicy
 }
 
 type dependencyClient struct {
@@ -127,13 +127,13 @@ type healthResponse struct {
 	Ready  bool   `json:"ready"`
 }
 
-type signedTrustModelResponse struct {
-	TrustModel    egsmodel.TrustModel `json:"trust_model"`
-	Algorithm     string              `json:"algorithm"`
-	KeyID         string              `json:"key_id"`
-	PayloadDigest string              `json:"payload_digest"`
-	Signature     string              `json:"signature"`
-	SourceDigest  *string             `json:"source_digest,omitempty"`
+type signedRuntimeTrustResponse struct {
+	RuntimeTrust  egsmodel.RuntimeTrustPolicy `json:"runtime_trust"`
+	Algorithm     string                      `json:"algorithm"`
+	KeyID         string                      `json:"key_id"`
+	PayloadDigest string                      `json:"payload_digest"`
+	Signature     string                      `json:"signature"`
+	Publication   json.RawMessage             `json:"publication,omitempty"`
 }
 
 // acsLookupResponse intentionally models only the frozen ACS fields that ES
@@ -209,7 +209,7 @@ type preparedArtifact struct {
 type preparedAdmission struct {
 	result     PrepareResult
 	artifact   preparedArtifact
-	trustModel egsmodel.TrustModel
+	trustModel egsmodel.RuntimeTrustPolicy
 }
 
 func NewService(cfg esconfig.Config) (*Service, error) {
@@ -281,15 +281,15 @@ func (s *Service) Initialize(ctx context.Context) error {
 		return fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
 	}
 
-	var payload signedTrustModelResponse
+	var payload signedRuntimeTrustResponse
 	if err := decodeJSON(response.Body, &payload); err != nil {
 		return fmt.Errorf("decode trust model response: %w", err)
 	}
-	if err := payload.TrustModel.Validate(); err != nil {
+	if err := payload.RuntimeTrust.Validate(); err != nil {
 		return fmt.Errorf("validate trust model: %w", err)
 	}
 
-	canonical, err := payload.TrustModel.CanonicalBytes()
+	canonical, err := payload.RuntimeTrust.CanonicalBytes()
 	if err != nil {
 		return fmt.Errorf("canonicalize trust model: %w", err)
 	}
@@ -297,7 +297,7 @@ func (s *Service) Initialize(ctx context.Context) error {
 		return fmt.Errorf("verify trust model: %w", err)
 	}
 
-	normalized := payload.TrustModel.Normalized()
+	normalized := payload.RuntimeTrust.Normalized()
 
 	s.mu.Lock()
 	s.trustModel = &normalized
@@ -401,10 +401,6 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 			OutputID:             req.Invocation.OutputID,
 			IntentDigest:         artifact.manifest.IntentDigest,
 			ArtifactType:         artifact.manifest.ArtifactType,
-			TrustModel: TrustModelInfo{
-				Version:        trustModel.Version,
-				UpdateRevision: trustModel.UpdateRevision,
-			},
 			Provenance: ProvenanceInfo{
 				SignerKeyID: artifact.signerKeyID,
 			},
@@ -423,7 +419,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 	}, nil
 }
 
-func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trustModel egsmodel.TrustModel) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy) (preparedArtifact, *Error) {
 	discovery, err := s.fetchArtifactDiscovery(ctx, req.Invocation.ArtifactDigest)
 	if err != nil {
 		return preparedArtifact{}, err
@@ -431,7 +427,7 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 	return s.prepareArtifactFromDiscovery(req, trustModel, discovery)
 }
 
-func (s *Service) currentTrustModel() *egsmodel.TrustModel {
+func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.trustModel == nil {
@@ -541,7 +537,7 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 	}
 }
 
-func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.TrustModel, discovery discoveredArtifact) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy, discovery discoveredArtifact) (preparedArtifact, *Error) {
 	descriptor := discovery.descriptor
 	evidence := discovery.evidence
 	authorization := evidence.Claims.Admission.Authorization
@@ -583,7 +579,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 	return artifact, nil
 }
 
-func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustModel, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
+func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeTrustPolicy, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
 	artifactDigest := strings.TrimSpace(descriptor.Artifact.ArtifactDigest)
 	execution := evidence.Claims.Admission.Execution
 	if evidence.Claims.Package.Identity.ArtifactDigest != artifactDigest {
@@ -740,7 +736,7 @@ func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, digest strin
 	return payload, nil
 }
 
-func (s *Service) verifyTrustModelEnvelope(payload signedTrustModelResponse, canonical []byte) error {
+func (s *Service) verifyTrustModelEnvelope(payload signedRuntimeTrustResponse, canonical []byte) error {
 	if strings.TrimSpace(payload.Algorithm) != s.trustModelVerifier.algorithm {
 		return fmt.Errorf("trust model algorithm mismatch")
 	}
@@ -751,16 +747,15 @@ func (s *Service) verifyTrustModelEnvelope(payload signedTrustModelResponse, can
 	if payload.PayloadDigest != expectedDigest {
 		return fmt.Errorf("trust model payload digest mismatch")
 	}
-	// source_digest is advisory metadata in EGS v1 and is intentionally ignored
-	// for trust decisions here. Only payload_digest and signature are
-	// authoritative in the current versioned contract.
+	// publication metadata is intentionally outside the signed runtime trust
+	// payload and is ignored for trust decisions here.
 	if err := s.trustModelVerifier.verifyDetached(canonical, payload.KeyID, payload.Algorithm, payload.Signature); err != nil {
 		return err
 	}
 	return nil
 }
 
-func enforceTrustModel(trustModel egsmodel.TrustModel, signerKeyID string, artifactDigest string) *Error {
+func enforceTrustModel(trustModel egsmodel.RuntimeTrustPolicy, signerKeyID string, artifactDigest string) *Error {
 	for _, allowed := range trustModel.SignerPolicy.AllowedSigners {
 		if allowed == signerKeyID {
 			goto allowed

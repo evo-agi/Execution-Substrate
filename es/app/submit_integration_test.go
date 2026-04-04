@@ -705,9 +705,8 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			KeyID:         fixture.egsKeyID,
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
-			SourceDigest:  labeledDigest("dd"),
 		},
-		TrustModel: egsmodel.TrustModel{
+		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
 			SignerPolicy: egsmodel.SignerPolicy{
 				AllowedSigners: []string{fixture.agsKeyID},
 				RevokedSigners: []string{},
@@ -715,6 +714,8 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			ArtifactPolicy: egsmodel.ArtifactPolicy{
 				RevokedArtifacts: []string{},
 			},
+		},
+		Publication: egsmodel.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},

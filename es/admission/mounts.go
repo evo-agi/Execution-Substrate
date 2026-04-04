@@ -124,7 +124,7 @@ func stagedRuntimeMountTargets(mounts []stagedRuntimeMount) []string {
 	return targets
 }
 
-func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.TrustModel, stageRoot string, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
+func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, stageRoot string, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
 	if len(mounts) == 0 {
 		return nil, nil
 	}
@@ -200,7 +200,7 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Tr
 	return staged, nil
 }
 
-func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.TrustModel, artifactDigest string) ([]byte, *Error) {
+func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string) ([]byte, *Error) {
 	trimmedDigest := strings.TrimSpace(artifactDigest)
 	prepared, err := s.prepareMountArtifact(ctx, trustModel, trimmedDigest)
 	if err != nil {
@@ -214,7 +214,7 @@ func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egs
 	return payloadBytes, nil
 }
 
-func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.TrustModel, artifactDigest string) (preparedArtifact, *Error) {
+func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string) (preparedArtifact, *Error) {
 	discovery, err := s.fetchArtifactDiscovery(ctx, artifactDigest)
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)

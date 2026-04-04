@@ -46,7 +46,7 @@ Describe the current shared kernel that multiple services use directly today.
 - `AGS` produces aggregate artifact evidence using `contracts/evidence/v1` for the publish path.
 - `ES` treats the `contracts/evidence/v1` artifact record as the canonical admission input.
 - `ARS` stores and serves the evidence record as the first-class artifact representation, and ARS does not interpret signing semantics.
-- `EGS` does not use either package; it has its own TrustModel signing surface.
+- `EGS` does not use either package; it has its own runtime-trust signing surface.
 
 ### Public surface
 
@@ -79,7 +79,7 @@ Describe the current shared kernel that multiple services use directly today.
 - The aggregate evidence canonicalization is typed and normalizes current set-like collections such as:
   - publication `policy_decisions`
   - runtime allowlists and capability lists
-- EGS TrustModel signing is a separate contract and must not be conflated with either artifact kernel.
+- EGS runtime-trust signing is a separate contract and must not be conflated with either artifact kernel.
 
 ### Ownership boundary
 
@@ -245,7 +245,7 @@ Current response shape:
 ### Ownership boundary
 
 - AGS owns artifact-fact assembly, signing, upload, and registration.
-- AGS does not own TrustModel publication, runtime admission, scheduler behavior, or runtime credential delivery.
+- AGS does not own EGS runtime-trust publication, runtime admission, scheduler behavior, or runtime credential delivery.
 
 ### Temporary compatibility edges
 
@@ -353,7 +353,7 @@ Compose ACS, ARS, and EGS into governed admission and one bounded execution subm
 - ES consumes:
   - ACS workload-zone vault lookup
   - ARS artifact evidence, manifest support data when needed, and payload/blob reads
-  - EGS TrustModel publication
+  - EGS runtime-trust publication
   - Nomad job and allocation APIs
 
 ### Public surface
@@ -396,15 +396,15 @@ Current lifecycle mapping:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES admits only deployment and operator callers today.
-- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS TrustModel against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
+- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, resolves the ACS workload-zone vault digest, reads the corresponding vault blob from ARS, and returns admission facts only.
 - `:prepare` does not create run IDs, scheduler metadata, or durable execution state.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact descriptor at `/v1/artifacts/{artifact_digest}/descriptor`
   - aggregate evidence blob referenced by that descriptor
   - payload bytes at `/v1/blobs/{payload_digest}:bytes`
 - ES currently depends on ACS only for `/v1/configuration/workload-zone/vault`.
-- ES currently interprets EGS `trust_model.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
-- ES treats EGS `source_digest` as advisory and ignores it for trust decisions.
+- ES currently interprets EGS `runtime_trust.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
+- ES verifies and enforces only the signed EGS runtime-trust payload and does not surface EGS publication metadata in `:prepare` results.
 - `:submit` reuses the full `:prepare` path first.
 - `:submit` is async-only in the current execution slice.
 - `:submit` currently supports only:
@@ -421,7 +421,7 @@ Current lifecycle mapping:
   - already cleaned
   - under `/monolith/mounts`
   - non-overlapping
-- Each runtime mount artifact is revalidated through ARS and TrustModel enforcement before staging.
+- Each runtime mount artifact is revalidated through ARS and runtime-trust enforcement before staging.
 - Failed submit staging is cleaned immediately.
 - Successful submit payload and run staging may remain under `execution.staging_root_dir/<run_id>/`.
 - Lifecycle is Nomad-backed only:
@@ -459,11 +459,11 @@ Current lifecycle mapping:
 
 ### Purpose
 
-Publish the signed TrustModel that ES enforces at admission time.
+Publish the signed runtime-trust payload that ES enforces at admission time.
 
 ### Current producers / consumers
 
-- `EGS` publishes the TrustModel.
+- `EGS` publishes the runtime-trust payload plus separate publication metadata.
 - Current allowed callers are:
   - `spiffe://monolith.internal/service/execution`
   - `spiffe://monolith.internal/operator`
@@ -477,32 +477,33 @@ Publish the signed TrustModel that ES enforces at admission time.
 
 Current response shape:
 
-- `trust_model`
+- `runtime_trust`
 - `algorithm`
 - `key_id`
 - `payload_digest`
 - `signature`
-- optional `source_digest`
+- `publication`
 
-Current `trust_model` payload shape:
+Current `runtime_trust` payload shape:
 
 - `signer_policy.allowed_signers`
 - `signer_policy.revoked_signers`
 - `artifact_policy.revoked_artifacts`
-- `update_revision`
+
+Current `publication` metadata shape:
+
 - `version`
+- `update_revision`
 
 ### Current invariants
 
 `Current invariant`
 
-- EGS signs the canonical TrustModel payload, not artifact facts.
-- Current canonical TrustModel signing covers:
+- EGS signs the canonical runtime-trust payload, not artifact facts.
+- Current canonical runtime-trust signing covers:
   - `signer_policy`
   - `artifact_policy`
-  - `update_revision`
-  - `version`
-- TrustModel list fields are normalized deterministically before digest and signature generation.
+- Runtime-trust list fields are normalized deterministically before digest and signature generation.
 - `payload_digest` and `signature` are the authoritative trust signals in the current contract.
 - ES verifies the EGS signature and then enforces:
   - provenance signer allow-list
@@ -511,20 +512,20 @@ Current `trust_model` payload shape:
 
 ### Ownership boundary
 
-- EGS owns TrustModel publication and signing.
+- EGS owns runtime-trust publication and signing.
 - EGS does not own artifact signing, artifact retrieval, runtime execution, or lifecycle state.
 
 ### Temporary compatibility edges
 
 `Temporary compatibility edge`
 
-- `source_digest` is returned today as advisory metadata only. It is active in the wire contract but explicitly excluded from trust decisions.
+- The route remains `GET /v1/trust-model` even though the shared runtime contract is now the narrower `runtime_trust` payload plus separate EGS-owned publication metadata.
 
 ### Reopened seams
 
 `Reopened redesign seam`
 
-- The current TrustModel form and response wrapper are explicitly reopened in `PLANS.md`.
+- The current runtime-trust form and response wrapper are explicitly reopened in `PLANS.md`.
 - The current EGS surface is live, but its exact payload and wrapper shape must not be treated as frozen architecture.
 
 ## 9. CGS Authorization Contract
@@ -593,7 +594,7 @@ Current response shape:
 ### Ownership boundary
 
 - CGS owns the current authorization decision surface only.
-- CGS does not own artifact publication, TrustModel publication, scheduler state, or the current ES admission path.
+- CGS does not own artifact publication, EGS runtime-trust publication, scheduler state, or the current ES admission path.
 
 ### Temporary compatibility edges
 
@@ -680,7 +681,6 @@ Current runtime rules:
 
 The following active edges are compatibility-heavy enough to keep in one place:
 
-- `EGS` currently returns `source_digest`, but it is advisory only and excluded from trust decisions.
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
 - `ES` currently uses `/monolith/staged`, `/monolith/run`, `/monolith/runtime-identity/`, and `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as active runtime conventions.
@@ -695,7 +695,7 @@ The following cross-service seams are active today and explicitly not fixed arch
 - The ACS assignment and digest indirection contract.
 - The AGS publish grammar and fact-assembly model.
 - The ES request model, payload-resolution path, and scheduler handoff shape.
-- The EGS TrustModel form and response wrapper.
+- The EGS runtime-trust form and response wrapper.
 - The CGS authorize DTO and `id.conf` policy-input model.
 - The ES/runtime identity handoff surface, including reserved path conventions.
 

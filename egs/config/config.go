@@ -13,11 +13,12 @@ import (
 )
 
 type Config struct {
-	HTTP       HTTPConfig       `json:"http"`
-	TLS        TLSConfig        `json:"tls"`
-	Security   SecurityConfig   `json:"security"`
-	Signer     SignerConfig     `json:"signer"`
-	TrustModel model.TrustModel `json:"trust_model"`
+	HTTP         HTTPConfig                `json:"http"`
+	TLS          TLSConfig                 `json:"tls"`
+	Security     SecurityConfig            `json:"security"`
+	Signer       SignerConfig              `json:"signer"`
+	RuntimeTrust model.RuntimeTrustPolicy  `json:"runtime_trust"`
+	Publication  model.PublicationMetadata `json:"publication"`
 }
 
 type HTTPConfig struct {
@@ -43,7 +44,6 @@ type SignerConfig struct {
 	KeyID         string `json:"key_id"`
 	PrivateKeyHex string `json:"private_key_hex"`
 	PublicKeyHex  string `json:"public_key_hex"`
-	SourceDigest  string `json:"source_digest,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -109,7 +109,10 @@ func (c Config) Validate() error {
 	if err := c.Signer.Validate(); err != nil {
 		return err
 	}
-	if err := c.TrustModel.Validate(); err != nil {
+	if err := c.RuntimeTrust.Validate(); err != nil {
+		return err
+	}
+	if err := c.Publication.Validate(); err != nil {
 		return err
 	}
 
@@ -139,9 +142,6 @@ func (s SignerConfig) Validate() error {
 	if _, err := hex.DecodeString(strings.TrimSpace(s.PublicKeyHex)); err != nil {
 		return fmt.Errorf("signer.public_key_hex must be valid hex")
 	}
-	if trimmed := strings.TrimSpace(s.SourceDigest); trimmed != "" && !isLabeledSHA256Digest(trimmed) {
-		return fmt.Errorf("signer.source_digest must be a labeled sha256 digest")
-	}
 	return nil
 }
 
@@ -155,16 +155,4 @@ func (c Config) WriteTimeout() time.Duration {
 
 func (c Config) ShutdownTimeout() time.Duration {
 	return time.Duration(c.HTTP.ShutdownTimeoutSeconds) * time.Second
-}
-
-func isLabeledSHA256Digest(value string) bool {
-	if !strings.HasPrefix(value, "sha256:") {
-		return false
-	}
-	hexPart := strings.TrimPrefix(value, "sha256:")
-	if len(hexPart) != 64 {
-		return false
-	}
-	_, err := hex.DecodeString(hexPart)
-	return err == nil
 }

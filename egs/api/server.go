@@ -14,26 +14,26 @@ import (
 const serviceName = "execution-governance"
 
 type Server struct {
-	trustModel          model.TrustModel
-	signer              sign.Signer
-	bootstrapIssuerCN   string
-	sourceDigestPresent bool
-	isStarted           func() bool
+	runtimeTrust      model.RuntimeTrustPolicy
+	publication       model.PublicationMetadata
+	signer            sign.Signer
+	bootstrapIssuerCN string
+	isStarted         func() bool
 }
 
 func NewServer(
-	trustModel model.TrustModel,
+	runtimeTrust model.RuntimeTrustPolicy,
+	publication model.PublicationMetadata,
 	signer sign.Signer,
 	bootstrapIssuerCN string,
-	sourceDigestPresent bool,
 	isStarted func() bool,
 ) *Server {
 	return &Server{
-		trustModel:          trustModel.Normalized(),
-		signer:              signer,
-		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
-		sourceDigestPresent: sourceDigestPresent,
-		isStarted:           isStarted,
+		runtimeTrust:      runtimeTrust.Normalized(),
+		publication:       publication.Normalized(),
+		signer:            signer,
+		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
+		isStarted:         isStarted,
 	}
 }
 
@@ -52,7 +52,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		started = s.isStarted()
 	}
 	signerReady := s.signer != nil
-	trustModelReady := s.trustModel.Version != ""
+	trustModelReady := s.runtimeTrust.Validate() == nil
 	ready := started && signerReady && trustModelReady
 
 	status := "unhealthy"
@@ -66,9 +66,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Service: serviceName,
 		AdditionalProperties: HealthAdditionalProperties{
 			Readiness: HealthReadiness{
-				Signer:       readinessLabel(signerReady, "initialized", "missing"),
-				TrustModel:   readinessLabel(trustModelReady, "loaded", "missing"),
-				SourceDigest: readinessLabel(s.sourceDigestPresent, "configured", "omitted"),
+				Signer:     readinessLabel(signerReady, "initialized", "missing"),
+				TrustModel: readinessLabel(trustModelReady, "loaded", "missing"),
 			},
 		},
 	})
@@ -89,7 +88,7 @@ func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.signer.Sign(s.trustModel)
+	result, err := s.signer.Sign(s.runtimeTrust)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{
 			Error: "failed to sign trust model",
@@ -97,16 +96,13 @@ func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only payload_digest and signature are authoritative trust signals in the
-	// current EGS v1 contract. source_digest is returned as advisory metadata
-	// only and consumers must ignore it for trust decisions.
-	writeJSON(w, http.StatusOK, SignedTrustModelResponse{
-		TrustModel:    result.TrustModel,
+	writeJSON(w, http.StatusOK, SignedRuntimeTrustResponse{
+		RuntimeTrust:  result.RuntimeTrust,
 		Algorithm:     result.Algorithm,
 		KeyID:         result.KeyID,
 		PayloadDigest: result.PayloadDigest,
 		Signature:     result.Signature,
-		SourceDigest:  result.SourceDigest,
+		Publication:   s.publication,
 	})
 }
 

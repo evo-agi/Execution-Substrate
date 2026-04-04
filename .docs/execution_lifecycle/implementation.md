@@ -24,7 +24,7 @@ These labels matter because implementation shape and public contract are related
 | --- | --- | --- | --- |
 | `es/api/server.go` | HTTP route registration, caller authorization, request decoding, lifecycle path parsing, HTTP error shaping, handler-to-service dispatch | Admission logic, Nomad interaction, lifecycle state | This is where public lifecycle requests first enter ES |
 | `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
-| `es/admission/service.go` | Core service construction, dependency clients, verifier setup, trust-model initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
+| `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
 | `es/admission/submit.go` | `Submit`, run/job ID creation, payload staging, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
 | `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, `run_id` resolution, Nomad lookup helpers, latest-allocation selection | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
 | `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env constant, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
@@ -75,8 +75,8 @@ Observability placement:
 
 - `app.New` validates config, constructs `admission.Service`, constructs the API server, and builds the TLS HTTP server.
 - `App.Start` calls `service.Initialize(ctx)` before the HTTP listener starts serving.
-- `service.Initialize` fetches the TrustModel from EGS, canonicalizes it, verifies its signature, normalizes it, and caches it in memory.
-- `service.Health` checks ACS and ARS readiness concurrently and combines those checks with the cached trust-model-loaded state.
+- `service.Initialize` fetches the signed runtime-trust payload from EGS, canonicalizes it, verifies its signature, normalizes it, and caches it in memory.
+- `service.Health` checks ACS and ARS readiness concurrently and combines those checks with the cached trust-policy-loaded state.
 
 Dependency wiring:
 
@@ -91,7 +91,7 @@ Dependency wiring:
 
 **Implementation invariants**
 
-- ES does not start serving until trust-model initialization succeeds.
+- ES does not start serving until runtime-trust initialization succeeds.
 - Readiness after startup depends on:
   - app `started`
   - trust model loaded
@@ -111,9 +111,9 @@ What the app layer delegates:
 **Observed current implementation path**
 
 1. Validate the request with `validatePrepareRequest`.
-2. Read the currently loaded TrustModel from memory.
+2. Read the currently loaded runtime-trust policy from memory.
 3. Read the artifact descriptor from ARS and follow it to the aggregate artifact-evidence blob.
-4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce TrustModel signer policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
+4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
 5. Fetch the workload-zone vault digest from ACS.
 6. Fetch the workload-zone vault config blob from ARS.
 7. Resolve the workload-vault auth plan through ES config selectors.
@@ -123,7 +123,7 @@ What `Prepare` reads:
 
 - ARS descriptor discoverability plus aggregate artifact evidence from ARS
 - lookup indirection from ACS
-- TrustModel state loaded from EGS at startup
+- Runtime-trust state loaded from EGS at startup
 
 **Implementation invariants**
 
@@ -364,7 +364,7 @@ The most important implementation facts are backed by integration tests:
 - Log retrieval is a minimal latest-allocation stdout path.
 - There is no retry or reschedule machinery in ES.
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
-- TrustModel loading is startup-time initialization rather than a live refresh path in the current slice.
+- Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
 - Aggregate evidence is the only first-class admission input for the published artifact path.
 
 These are active implementation choices, not automatically permanent design commitments.

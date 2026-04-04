@@ -50,8 +50,17 @@ func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
 	}
 
+	body := mustReadBody(t, response.Body)
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode raw prepare response: %v", err)
+	}
+	if _, ok := raw["trust_model"]; ok {
+		t.Fatalf("did not expect trust_model metadata in prepare response: %s", strings.TrimSpace(string(body)))
+	}
+
 	var payload admission.PrepareResult
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode prepare response: %v", err)
 	}
 
@@ -63,9 +72,6 @@ func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
 	}
 	if payload.IntentDigest != stack.intentDigest {
 		t.Fatalf("unexpected intent digest: %q", payload.IntentDigest)
-	}
-	if payload.TrustModel.Version != "1.0.0" || payload.TrustModel.UpdateRevision != 7 {
-		t.Fatalf("unexpected trust model info: %+v", payload.TrustModel)
 	}
 	if payload.Provenance.SignerKeyID != stack.fixture.agsKeyID {
 		t.Fatalf("unexpected provenance signer: %q", payload.Provenance.SignerKeyID)
@@ -493,9 +499,8 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 			KeyID:         fixture.egsKeyID,
 			PrivateKeyHex: fixture.egsPrivateKeyHex,
 			PublicKeyHex:  fixture.egsPublicKeyHex,
-			SourceDigest:  labeledDigest("dd"),
 		},
-		TrustModel: egsmodel.TrustModel{
+		RuntimeTrust: egsmodel.RuntimeTrustPolicy{
 			SignerPolicy: egsmodel.SignerPolicy{
 				AllowedSigners: allowedSigners,
 				RevokedSigners: revokedSigners,
@@ -503,6 +508,8 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 			ArtifactPolicy: egsmodel.ArtifactPolicy{
 				RevokedArtifacts: revokedArtifacts,
 			},
+		},
+		Publication: egsmodel.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},

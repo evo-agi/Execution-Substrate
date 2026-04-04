@@ -108,7 +108,7 @@ func TestValidTrustModelFetchReturnsVerifiableSignedPayload(t *testing.T) {
 	}
 
 	var payload struct {
-		TrustModel struct {
+		RuntimeTrust struct {
 			SignerPolicy struct {
 				AllowedSigners []string `json:"allowed_signers"`
 				RevokedSigners []string `json:"revoked_signers"`
@@ -116,14 +116,15 @@ func TestValidTrustModelFetchReturnsVerifiableSignedPayload(t *testing.T) {
 			ArtifactPolicy struct {
 				RevokedArtifacts []string `json:"revoked_artifacts"`
 			} `json:"artifact_policy"`
-			UpdateRevision int    `json:"update_revision"`
+		} `json:"runtime_trust"`
+		Algorithm     string `json:"algorithm"`
+		KeyID         string `json:"key_id"`
+		PayloadDigest string `json:"payload_digest"`
+		Signature     string `json:"signature"`
+		Publication   struct {
 			Version        string `json:"version"`
-		} `json:"trust_model"`
-		Algorithm     string  `json:"algorithm"`
-		KeyID         string  `json:"key_id"`
-		PayloadDigest string  `json:"payload_digest"`
-		Signature     string  `json:"signature"`
-		SourceDigest  *string `json:"source_digest"`
+			UpdateRevision int    `json:"update_revision"`
+		} `json:"publication"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -135,11 +136,11 @@ func TestValidTrustModelFetchReturnsVerifiableSignedPayload(t *testing.T) {
 	if payload.KeyID != fixture.keyID {
 		t.Fatalf("unexpected key id: %q", payload.KeyID)
 	}
-	if payload.SourceDigest == nil || *payload.SourceDigest != fixture.sourceDigest {
-		t.Fatalf("unexpected source digest: %#v", payload.SourceDigest)
+	if payload.Publication.Version != "1.0.0" || payload.Publication.UpdateRevision != 7 {
+		t.Fatalf("unexpected publication metadata: %+v", payload.Publication)
 	}
 
-	canonical := canonicalTrustModelBytes(payload.TrustModel)
+	canonical := canonicalRuntimeTrustBytes(payload.RuntimeTrust)
 	expectedSum := sha256.Sum256(canonical)
 	expectedDigest := "sha256:" + hex.EncodeToString(expectedSum[:])
 	if payload.PayloadDigest != expectedDigest {
@@ -205,10 +206,10 @@ func TestPayloadDigestIsDeterministicAcrossSignerOrdering(t *testing.T) {
 
 	cfgA := buildConfig(fixture)
 	cfgB := buildConfig(fixture)
-	cfgB.TrustModel.SignerPolicy.AllowedSigners = []string{"ags-artifact-fact-signer-b", "ags-artifact-fact-signer-a"}
-	cfgB.TrustModel.SignerPolicy.RevokedSigners = []string{"ags-signing-key-compromised", "ags-signing-key-old"}
-	cfgA.TrustModel.SignerPolicy.RevokedSigners = []string{"ags-signing-key-old", "ags-signing-key-compromised"}
-	cfgB.TrustModel.ArtifactPolicy.RevokedArtifacts = []string{cfgA.TrustModel.ArtifactPolicy.RevokedArtifacts[1], cfgA.TrustModel.ArtifactPolicy.RevokedArtifacts[0]}
+	cfgB.RuntimeTrust.SignerPolicy.AllowedSigners = []string{"ags-artifact-fact-signer-b", "ags-artifact-fact-signer-a"}
+	cfgB.RuntimeTrust.SignerPolicy.RevokedSigners = []string{"ags-signing-key-compromised", "ags-signing-key-old"}
+	cfgA.RuntimeTrust.SignerPolicy.RevokedSigners = []string{"ags-signing-key-old", "ags-signing-key-compromised"}
+	cfgB.RuntimeTrust.ArtifactPolicy.RevokedArtifacts = []string{cfgA.RuntimeTrust.ArtifactPolicy.RevokedArtifacts[1], cfgA.RuntimeTrust.ArtifactPolicy.RevokedArtifacts[0]}
 
 	serviceA := startTestApp(t, fixture, cfgA)
 	serviceB := startTestApp(t, fixture, cfgB)
@@ -221,6 +222,28 @@ func TestPayloadDigestIsDeterministicAcrossSignerOrdering(t *testing.T) {
 	}
 	if signatureA != signatureB {
 		t.Fatalf("expected deterministic signatures, got %q vs %q", signatureA, signatureB)
+	}
+}
+
+func TestPayloadDigestIgnoresPublicationMetadata(t *testing.T) {
+	fixture := newTLSFixture(t)
+
+	cfgA := buildConfig(fixture)
+	cfgB := buildConfig(fixture)
+	cfgB.Publication.Version = "2.4.0"
+	cfgB.Publication.UpdateRevision = 99
+
+	serviceA := startTestApp(t, fixture, cfgA)
+	serviceB := startTestApp(t, fixture, cfgB)
+
+	digestA, signatureA := fetchTrustModelDigestAndSignature(t, fixture, serviceA.Addr())
+	digestB, signatureB := fetchTrustModelDigestAndSignature(t, fixture, serviceB.Addr())
+
+	if digestA != digestB {
+		t.Fatalf("expected equal payload digests, got %q vs %q", digestA, digestB)
+	}
+	if signatureA != signatureB {
+		t.Fatalf("expected identical signatures, got %q vs %q", signatureA, signatureB)
 	}
 }
 
@@ -241,9 +264,8 @@ func TestHealthReturnsExpectedShape(t *testing.T) {
 		Service              string `json:"service"`
 		AdditionalProperties struct {
 			Readiness struct {
-				Signer       string `json:"signer"`
-				TrustModel   string `json:"trust_model"`
-				SourceDigest string `json:"source_digest"`
+				Signer     string `json:"signer"`
+				TrustModel string `json:"trust_model"`
 			} `json:"readiness"`
 		} `json:"additional_properties"`
 	}
@@ -262,9 +284,6 @@ func TestHealthReturnsExpectedShape(t *testing.T) {
 	}
 	if payload.AdditionalProperties.Readiness.TrustModel != "loaded" {
 		t.Fatalf("unexpected trust model readiness: %q", payload.AdditionalProperties.Readiness.TrustModel)
-	}
-	if payload.AdditionalProperties.Readiness.SourceDigest != "configured" {
-		t.Fatalf("unexpected source digest readiness: %q", payload.AdditionalProperties.Readiness.SourceDigest)
 	}
 }
 
@@ -413,9 +432,8 @@ func buildConfig(fixture *tlsFixture) config.Config {
 			KeyID:         fixture.keyID,
 			PrivateKeyHex: fixture.privateKeyHex,
 			PublicKeyHex:  fixture.publicKeyHex,
-			SourceDigest:  fixture.sourceDigest,
 		},
-		TrustModel: model.TrustModel{
+		RuntimeTrust: model.RuntimeTrustPolicy{
 			SignerPolicy: model.SignerPolicy{
 				AllowedSigners: []string{
 					"ags-artifact-fact-signer-a",
@@ -432,6 +450,8 @@ func buildConfig(fixture *tlsFixture) config.Config {
 					"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 				},
 			},
+		},
+		Publication: model.PublicationMetadata{
 			UpdateRevision: 7,
 			Version:        "1.0.0",
 		},
@@ -450,7 +470,6 @@ type tlsFixture struct {
 	privateKeyHex  string
 	publicKeyHex   string
 	keyID          string
-	sourceDigest   string
 	bootstrapCACN  string
 }
 
@@ -493,7 +512,6 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		privateKeyHex:  hex.EncodeToString(privateKey),
 		publicKeyHex:   hex.EncodeToString(publicKey),
 		keyID:          "egs-trust-model-signer",
-		sourceDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		bootstrapCACN:  "bootstrap-ca",
 	}
 }
@@ -629,7 +647,7 @@ func mustSPIFFEURL(t *testing.T, raw string) *url.URL {
 	return parsed
 }
 
-func canonicalTrustModelBytes(payload struct {
+func canonicalRuntimeTrustBytes(payload struct {
 	SignerPolicy struct {
 		AllowedSigners []string `json:"allowed_signers"`
 		RevokedSigners []string `json:"revoked_signers"`
@@ -637,10 +655,8 @@ func canonicalTrustModelBytes(payload struct {
 	ArtifactPolicy struct {
 		RevokedArtifacts []string `json:"revoked_artifacts"`
 	} `json:"artifact_policy"`
-	UpdateRevision int    `json:"update_revision"`
-	Version        string `json:"version"`
 }) []byte {
-	encoded, err := model.TrustModel{
+	encoded, err := model.RuntimeTrustPolicy{
 		SignerPolicy: model.SignerPolicy{
 			AllowedSigners: append([]string(nil), payload.SignerPolicy.AllowedSigners...),
 			RevokedSigners: append([]string(nil), payload.SignerPolicy.RevokedSigners...),
@@ -648,8 +664,6 @@ func canonicalTrustModelBytes(payload struct {
 		ArtifactPolicy: model.ArtifactPolicy{
 			RevokedArtifacts: append([]string(nil), payload.ArtifactPolicy.RevokedArtifacts...),
 		},
-		UpdateRevision: payload.UpdateRevision,
-		Version:        payload.Version,
 	}.CanonicalBytes()
 	if err != nil {
 		panic(err)

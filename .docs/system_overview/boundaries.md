@@ -256,9 +256,10 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 **Current ownership**
 
 - `GET /v1/trust-model`
-- Current trust model shape in `egs/model/trustmodel.go`
-- Signing the trust-model payload returned to consumers
-- Publication of allowed signers, revoked signers, revoked artifacts, version, and update revision
+- Current runtime-trust and publication-metadata shape in `egs/model/trustmodel.go`
+- Signing the runtime-trust payload returned to consumers
+- Publication of allowed signers, revoked signers, and revoked artifacts as the signed runtime-trust payload
+- Publication of version and update revision as separate EGS-owned metadata
 
 **Explicit non-ownership**
 
@@ -275,11 +276,11 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 **Boundary pressure points**
 
 - The current trust model form directly shapes what ES can enforce without further interpretation.
-- EGS signs its own payload format rather than reusing the AGS/ES shared signing kernel, which keeps the boundary narrow but makes the trust-model surface its own contract family.
+- EGS signs its own runtime-trust payload format rather than reusing the AGS/ES shared signing kernel, which keeps the boundary narrow but makes the EGS contract family distinct.
 
 **Temporary compatibility edges**
 
-- `source_digest` may be returned to help consumers correlate source material, but it is explicitly not part of the signed payload.
+- The route remains `GET /v1/trust-model` even though the signed shared payload is now the narrower `runtime_trust` contract plus separate publication metadata.
 
 **Reopened seams**
 

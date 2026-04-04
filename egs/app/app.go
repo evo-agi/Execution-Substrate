@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 
 	"execution-platform/egs/api"
@@ -20,10 +19,11 @@ import (
 )
 
 type App struct {
-	cfg        config.Config
-	trustModel model.TrustModel
-	signer     sign.Signer
-	httpServer *http.Server
+	cfg          config.Config
+	runtimeTrust model.RuntimeTrustPolicy
+	publication  model.PublicationMetadata
+	signer       sign.Signer
+	httpServer   *http.Server
 
 	mu       sync.RWMutex
 	started  bool
@@ -35,28 +35,29 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	trustModel := cfg.TrustModel.Normalized()
+	runtimeTrust := cfg.RuntimeTrust.Normalized()
+	publication := cfg.Publication.Normalized()
 	signer, err := sign.NewEd25519Signer(
 		cfg.Signer.KeyID,
 		cfg.Signer.PrivateKeyHex,
 		cfg.Signer.PublicKeyHex,
-		cfg.Signer.SourceDigest,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	app := &App{
-		cfg:        cfg,
-		trustModel: trustModel,
-		signer:     signer,
+		cfg:          cfg,
+		runtimeTrust: runtimeTrust,
+		publication:  publication,
+		signer:       signer,
 	}
 
 	server := api.NewServer(
-		trustModel,
+		runtimeTrust,
+		publication,
 		signer,
 		cfg.Security.BootstrapIssuerCommonName,
-		strings.TrimSpace(cfg.Signer.SourceDigest) != "",
 		app.Started,
 	)
 	app.httpServer = &http.Server{

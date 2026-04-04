@@ -52,7 +52,6 @@ type PrepareResult struct {
 	OutputID             string            `json:"output_id"`
 	IntentDigest         string            `json:"intent_digest"`
 	ArtifactType         string            `json:"artifact_type"`
-	TrustModel           TrustModelInfo    `json:"trust_model"`
 	Provenance           ProvenanceInfo    `json:"provenance"`
 	Workload             WorkloadInfo      `json:"workload"`
 	WorkloadVault        WorkloadVaultInfo `json:"workload_vault"`
@@ -95,11 +94,6 @@ type ExecutionCancelResult struct {
 	RunID      string `json:"run_id"`
 	NomadJobID string `json:"nomad_job_id"`
 	Status     string `json:"status"`
-}
-
-type TrustModelInfo struct {
-	Version        string `json:"version"`
-	UpdateRevision int    `json:"update_revision"`
 }
 
 type ProvenanceInfo struct {

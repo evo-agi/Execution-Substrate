@@ -27,7 +27,7 @@ The current Go system is a governed publication + storage + policy + admission +
 | ACS | Lookup and assignment-to-digest indirection service |
 | ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
 | AGS | Evidence-first artifact publication service |
-| EGS | Signed trust-model publication service |
+| EGS | Signed runtime-trust publication service |
 | CGS | Separate authorize-only policy service |
 | ES | Admission, submission, and Nomad-backed lifecycle projection service |
 | Nomad | Scheduler and authoritative submitted-execution lifecycle source |
@@ -97,7 +97,7 @@ ES exposes lifecycle and log endpoints, but it does so by deriving state from No
 
 EGS and CGS occupy different roles today.
 
-- EGS publishes signed trust policy that ES verifies and enforces during admission.
+- EGS publishes signed runtime trust policy that ES verifies and enforces during admission, plus separate EGS-owned publication metadata.
 - CGS provides a separate authorize-only surface backed by authenticated caller interpretation and explicit `id.conf` subject records.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
@@ -145,7 +145,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
-- EGS currently publishes a specific trust-model form that directly shapes execution-time enforcement.
+- EGS currently publishes a specific runtime-trust form that directly shapes execution-time enforcement.
 - CGS currently exposes an authorize and policy-input shape closely tied to explicit `id.conf` subject records and caller/workload identity interpretation.
 - Runtime identity handoff currently depends on reserved runtime workspace and path conventions that are active but not settled.
 

@@ -9,11 +9,19 @@ import (
 	"strings"
 )
 
-type TrustModel struct {
+// RuntimeTrustPolicy is the signed runtime trust payload that EGS publishes
+// and ES enforces. It intentionally carries only signer and artifact trust
+// policy, not broader publication metadata.
+type RuntimeTrustPolicy struct {
 	SignerPolicy   SignerPolicy   `json:"signer_policy"`
 	ArtifactPolicy ArtifactPolicy `json:"artifact_policy"`
-	UpdateRevision int            `json:"update_revision"`
-	Version        string         `json:"version"`
+}
+
+// PublicationMetadata is EGS-owned control-plane metadata published alongside
+// runtime trust. It is intentionally outside the signed runtime trust payload.
+type PublicationMetadata struct {
+	Version        string `json:"version"`
+	UpdateRevision int    `json:"update_revision"`
 }
 
 type SignerPolicy struct {
@@ -25,34 +33,26 @@ type ArtifactPolicy struct {
 	RevokedArtifacts []string `json:"revoked_artifacts"`
 }
 
-func (m TrustModel) Validate() error {
-	if strings.TrimSpace(m.Version) == "" {
-		return fmt.Errorf("trust_model.version is required")
-	}
-	if m.UpdateRevision <= 0 {
-		return fmt.Errorf("trust_model.update_revision must be greater than 0")
-	}
-	if err := validateUniqueStrings("trust_model.signer_policy.allowed_signers", m.SignerPolicy.AllowedSigners); err != nil {
+func (m RuntimeTrustPolicy) Validate() error {
+	if err := validateUniqueStrings("runtime_trust.signer_policy.allowed_signers", m.SignerPolicy.AllowedSigners); err != nil {
 		return err
 	}
-	if err := validateUniqueStrings("trust_model.signer_policy.revoked_signers", m.SignerPolicy.RevokedSigners); err != nil {
+	if err := validateUniqueStrings("runtime_trust.signer_policy.revoked_signers", m.SignerPolicy.RevokedSigners); err != nil {
 		return err
 	}
-	if err := validateUniqueStrings("trust_model.artifact_policy.revoked_artifacts", m.ArtifactPolicy.RevokedArtifacts); err != nil {
+	if err := validateUniqueStrings("runtime_trust.artifact_policy.revoked_artifacts", m.ArtifactPolicy.RevokedArtifacts); err != nil {
 		return err
 	}
 	for _, digest := range m.ArtifactPolicy.RevokedArtifacts {
 		if !isLabeledSHA256Digest(digest) {
-			return fmt.Errorf("trust_model.artifact_policy.revoked_artifacts must contain labeled sha256 digests")
+			return fmt.Errorf("runtime_trust.artifact_policy.revoked_artifacts must contain labeled sha256 digests")
 		}
 	}
 	return nil
 }
 
-func (m TrustModel) Normalized() TrustModel {
-	normalized := TrustModel{
-		UpdateRevision: m.UpdateRevision,
-		Version:        strings.TrimSpace(m.Version),
+func (m RuntimeTrustPolicy) Normalized() RuntimeTrustPolicy {
+	return RuntimeTrustPolicy{
 		SignerPolicy: SignerPolicy{
 			AllowedSigners: normalizeStrings(m.SignerPolicy.AllowedSigners),
 			RevokedSigners: normalizeStrings(m.SignerPolicy.RevokedSigners),
@@ -61,17 +61,11 @@ func (m TrustModel) Normalized() TrustModel {
 			RevokedArtifacts: normalizeStrings(m.ArtifactPolicy.RevokedArtifacts),
 		},
 	}
-	return normalized
 }
 
-// CanonicalBytes returns the versioned signed payload for the TrustModel.
-//
-// trust_model.version is authoritative for signature semantics. In the current
-// EGS v1 contract, only canonical TrustModel fields are included here. Response
-// metadata such as source_digest is intentionally excluded and is not
-// authenticated in v1. ES and other consumers must ignore source_digest for
-// trust decisions in v1; only payload_digest and signature are authoritative.
-func (m TrustModel) CanonicalBytes() ([]byte, error) {
+// CanonicalBytes returns the signed runtime trust payload. EGS-owned
+// publication metadata is intentionally excluded.
+func (m RuntimeTrustPolicy) CanonicalBytes() ([]byte, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,12 +79,7 @@ func (m TrustModel) CanonicalBytes() ([]byte, error) {
 			AllowedSigners []string `json:"allowed_signers"`
 			RevokedSigners []string `json:"revoked_signers"`
 		} `json:"signer_policy"`
-		UpdateRevision int    `json:"update_revision"`
-		Version        string `json:"version"`
-	}{
-		UpdateRevision: normalized.UpdateRevision,
-		Version:        normalized.Version,
-	}
+	}{}
 	payload.ArtifactPolicy.RevokedArtifacts = append([]string(nil), normalized.ArtifactPolicy.RevokedArtifacts...)
 	payload.SignerPolicy.AllowedSigners = append([]string(nil), normalized.SignerPolicy.AllowedSigners...)
 	payload.SignerPolicy.RevokedSigners = append([]string(nil), normalized.SignerPolicy.RevokedSigners...)
@@ -98,13 +87,30 @@ func (m TrustModel) CanonicalBytes() ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func (m TrustModel) PayloadDigest() (string, error) {
+func (m RuntimeTrustPolicy) PayloadDigest() (string, error) {
 	canonical, err := m.CanonicalBytes()
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (m PublicationMetadata) Validate() error {
+	if strings.TrimSpace(m.Version) == "" {
+		return fmt.Errorf("publication.version is required")
+	}
+	if m.UpdateRevision <= 0 {
+		return fmt.Errorf("publication.update_revision must be greater than 0")
+	}
+	return nil
+}
+
+func (m PublicationMetadata) Normalized() PublicationMetadata {
+	return PublicationMetadata{
+		Version:        strings.TrimSpace(m.Version),
+		UpdateRevision: m.UpdateRevision,
+	}
 }
 
 func normalizeStrings(values []string) []string {
