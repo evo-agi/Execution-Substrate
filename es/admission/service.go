@@ -60,19 +60,19 @@ const (
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	reservedRuntimeEnvKeys     = map[string]struct{}{
-		"PROJECT_NAME":                        {},
-		"ENVIRONMENT":                         {},
-		"PLATFORM":                            {},
-		"GUID":                                {},
-		"SERVICE_ID":                          {},
-		"SESSION_ID":                          {},
-		"PARENT_SESSION_ID":                   {},
-		"traceparent":                         {},
-		"MONOLITH_SVID_PATH":                  {},
-		"VAULT_AGENT_TOKEN_PATH":              {},
-		"VAULT_ADDR":                          {},
-		"VAULT_NAMESPACE":                     {},
-		"MONOLITH_WORKLOAD_IDENTITY_ENDPOINT": {},
+		"PROJECT_NAME":                {},
+		"ENVIRONMENT":                 {},
+		"PLATFORM":                    {},
+		"GUID":                        {},
+		"SERVICE_ID":                  {},
+		"SESSION_ID":                  {},
+		"PARENT_SESSION_ID":           {},
+		"traceparent":                 {},
+		"MONOLITH_SVID_PATH":          {},
+		"VAULT_AGENT_TOKEN_PATH":      {},
+		"VAULT_ADDR":                  {},
+		"VAULT_NAMESPACE":             {},
+		runtimeIdentityEndpointEnvKey: {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",

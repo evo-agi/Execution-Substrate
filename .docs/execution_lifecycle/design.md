@@ -153,13 +153,12 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 
 - `/monolith/staged`
 - `/monolith/run`
-- `/monolith/runtime-identity`
-- `/monolith/runtime-identity/endpoint`
+- the current ES-owned runtime-identity subtree that backs the injected endpoint convention
 
 Design-level meaning:
 
-- ES reserves the runtime-identity workspace and injects the current endpoint environment convention.
-- Caller-provided runtime mounts must not overlap the reserved runtime paths.
+- ES injects the current endpoint environment convention and currently backs it with an ES-owned runtime subtree.
+- Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
 - ES does not implement the workload-side runtime identity endpoint.
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -40,10 +41,8 @@ import (
 )
 
 const (
-	workloadIdentityWorkspaceTargetDir = "/monolith/runtime-identity"
-	workloadIdentityEndpointEnvKey     = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	workloadIdentityEndpointEnvValue   = "unix:///monolith/runtime-identity/endpoint"
-	workloadIdentityEndpointTargetPath = "/monolith/runtime-identity/endpoint"
+	workloadIdentityEndpointEnvKey   = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
+	workloadIdentityEndpointEnvValue = "unix:///monolith/runtime-identity/endpoint"
 )
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
@@ -194,7 +193,12 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected network_mode=none, got %#v", networkMode)
 	}
 
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
+	taskConfig := job.task(t)
+	if got := taskConfig.Env[workloadIdentityEndpointEnvKey]; got != workloadIdentityEndpointEnvValue {
+		t.Fatalf("expected %s=%q, got %q", workloadIdentityEndpointEnvKey, workloadIdentityEndpointEnvValue, got)
+	}
+
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, taskConfig.Env[workloadIdentityEndpointEnvKey]))
 	if mountType := mountConfig["type"]; mountType != "tmpfs" {
 		t.Fatalf("expected tmpfs runtime identity workspace mount, got %#v", mountType)
 	}
@@ -210,11 +214,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 	if size := tmpfsOptions["size"]; size != float64(1<<20) && size != int64(1<<20) && size != int(1<<20) {
 		t.Fatalf("expected default tmpfs size 1048576, got %#v", size)
-	}
-
-	taskConfig := job.task(t)
-	if got := taskConfig.Env[workloadIdentityEndpointEnvKey]; got != workloadIdentityEndpointEnvValue {
-		t.Fatalf("expected %s=%q, got %q", workloadIdentityEndpointEnvKey, workloadIdentityEndpointEnvValue, got)
 	}
 
 	stack.nomad.waitForJob(t, payload.NomadJobID)
@@ -259,10 +258,11 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestWorkloadCanCreateAndUseLocalRuntimeIdentityEndpointFromTmpfsWorkspace(t *testing.T) {
+	const endpointEnvValue = "unix:///runtime-identity-smoke/endpoint"
 	command := exec.Command(
 		"docker", "run", "--rm",
-		"--tmpfs", workloadIdentityWorkspaceTargetDir+":rw,size=1048576",
-		"-e", workloadIdentityEndpointEnvKey+"="+workloadIdentityEndpointEnvValue,
+		"--tmpfs", runtimeIdentityWorkspaceFromEndpoint(t, endpointEnvValue)+":rw,size=1048576",
+		"-e", workloadIdentityEndpointEnvKey+"="+endpointEnvValue,
 		"python:3.13-alpine",
 		"sh", "-lc",
 		`python3 - <<'PY'
@@ -311,6 +311,19 @@ PY`,
 	}
 }
 
+func runtimeIdentityWorkspaceFromEndpoint(t *testing.T, endpointURI string) string {
+	t.Helper()
+
+	if !strings.HasPrefix(endpointURI, "unix://") {
+		t.Fatalf("expected unix endpoint URI, got %q", endpointURI)
+	}
+	endpointPath := strings.TrimPrefix(endpointURI, "unix://")
+	if strings.TrimSpace(endpointPath) == "" {
+		t.Fatalf("expected endpoint path in %q", endpointURI)
+	}
+	return path.Dir(endpointPath)
+}
+
 func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
 		runtimeIdentityTmpfsSize: 2 << 20,
@@ -329,7 +342,8 @@ func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	}
 
 	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], workloadIdentityWorkspaceTargetDir)
+	taskConfig := job.task(t)
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, taskConfig.Env[workloadIdentityEndpointEnvKey]))
 	tmpfsOptions, ok := mountConfig["tmpfs_options"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected tmpfs_options for runtime identity mount, got %#v", mountConfig["tmpfs_options"])

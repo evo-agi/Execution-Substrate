@@ -617,28 +617,29 @@ Describe the current ES-to-runtime identity boundary used during submission and 
 
 ### Current producers / consumers
 
-- `ES` provisions the runtime-identity workspace and environment marker at submit time.
-- The workload container consumes the resulting reserved workspace and endpoint path.
+- `ES` provisions the backing runtime-identity workspace and environment marker at submit time.
+- The workload container consumes the discovered endpoint and the resulting non-secret runtime inputs.
 - Nomad and Docker carry the mounts, but they do not own the handoff semantics.
 
 ### Public surface
 
 `Observed current contract`
 
-Current reserved workspace and paths:
-
-- `/monolith/runtime-identity/`
-- `/monolith/runtime-identity/endpoint`
-
-Current environment marker:
+Current workload-visible handoff:
 
 - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+- non-secret workload-vault environment inputs derived from the resolved `workload_vault` plan
+
+Current ES-owned implementation details behind that handoff:
+
+- ES currently backs the discovered endpoint with a writable tmpfs workspace under `/monolith/runtime-identity/`
+- ES currently protects the workspace subtree and the endpoint path from caller mount overlap
 
 Current runtime rules:
 
-- ES adds exactly one writable tmpfs-backed runtime-identity workspace mount.
-- The reserved runtime-identity workspace is not caller-controlled.
-- Caller mounts must not overlap reserved runtime paths.
+- ES adds exactly one writable tmpfs-backed workspace to back the discovered runtime-identity endpoint.
+- The backing workspace is not caller-controlled.
+- Caller mounts must not overlap the ES-owned runtime subtree that backs the discovered endpoint.
 - ES also injects non-secret Vault auth metadata through environment variables.
 - ES does not apply per-workload selector overrides when shaping that Vault auth metadata in the current slice.
 
@@ -647,7 +648,7 @@ Current runtime rules:
 `Current invariant`
 
 - ES reserves the runtime-identity workspace and validates that caller mount targets do not overlap it.
-- The runtime-identity workspace is tmpfs-backed, writable, and not persisted into host staging.
+- The workspace backing the discovered runtime-identity endpoint is tmpfs-backed, writable, and not persisted into host staging.
 - ES does not fetch, mint, or store identity material.
 - ES derives `workload_vault` from workload-zone vault runtime fields plus the locally configured default auth mode.
 - ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
@@ -656,7 +657,7 @@ Current runtime rules:
 ### Ownership boundary
 
 - ES owns workspace reservation and boundary enforcement.
-- The workload owns use of the endpoint inside the container.
+- The workload owns use of the discovered endpoint inside the container.
 - ES does not own:
   - token minting
   - Vault token storage
@@ -667,7 +668,8 @@ Current runtime rules:
 
 `Temporary compatibility edge`
 
-- The specific `/monolith/...` path conventions are active today but are still conventions, not a declared permanent architecture.
+- The specific `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint` convention is active today, but it remains a bounded compatibility-heavy handoff rather than declared permanent architecture.
+- The `/monolith/runtime-identity/...` backing layout is current ES implementation, not a broader workload contract.
 
 ### Reopened seams
 
@@ -682,7 +684,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
-- `ES` currently uses `/monolith/staged`, `/monolith/run`, `/monolith/runtime-identity/`, and `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as active runtime conventions.
+- `ES` currently uses `/monolith/staged`, `/monolith/run`, `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`, and the current ES-owned runtime-identity backing layout as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 
 ## 12. Reopened Redesign Seams

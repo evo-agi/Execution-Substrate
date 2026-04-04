@@ -497,18 +497,14 @@ Successful response is `200` JSON with these fields:
 
 **Observed current contract-adjacent conventions**
 
-- ES currently reserves:
-  - `/monolith/staged`
-  - `/monolith/run`
-  - `/monolith/runtime-identity`
-  - `/monolith/runtime-identity/endpoint`
 - ES injects the current endpoint environment convention:
   - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+- ES also injects the current non-secret workload-vault runtime inputs derived from `workload_vault`.
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 
 **Current contract invariants**
 
-- Caller runtime mounts must not overlap reserved runtime paths.
+- Caller runtime mounts must not overlap the ES-owned subtree that backs the discovered endpoint.
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
 

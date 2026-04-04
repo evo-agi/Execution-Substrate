@@ -221,16 +221,17 @@ Cancel path:
 - Defines reserved runtime paths:
   - `/monolith/staged`
   - `/monolith/run`
-  - `/monolith/runtime-identity`
-  - `/monolith/runtime-identity/endpoint`
-- Defines the current endpoint environment key/value:
+  - the current workspace path derived from the endpoint convention
+  - the current endpoint path derived from the endpoint convention
+- Defines the current workload-visible endpoint environment key/value:
   - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
   - `unix:///monolith/runtime-identity/endpoint`
+- Derives the backing workspace path from the endpoint convention instead of treating it as a separate workload contract.
 - Enforces overlap checks with `ValidateReservedRuntimePaths`.
 
 **Implementation invariant**
 
-- ES currently protects the reserved runtime paths from caller mount overlap.
+- ES currently protects the reserved runtime paths backing the discovered endpoint from caller mount overlap.
 
 **Deliberate absence**
 

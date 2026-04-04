@@ -206,7 +206,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state
-- Reserved runtime workspace and runtime-identity path protection
+- Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
 
 **Explicit non-ownership**
@@ -232,14 +232,14 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - `:prepare` and `:submit` are intentionally bounded current surfaces, not statements that this request shape is settled architecture.
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
-- Runtime staging, mount validation, and reserved `/monolith/...` path handling are part ownership and part current convention.
+- Runtime staging, mount validation, and the internal `/monolith/...` subtree that backs runtime handoff are part ownership and part current convention.
 - ES returns and relies on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`.
 
 **Temporary compatibility edges**
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
-- Current runtime mount conventions use `/monolith/staged`, `/monolith/run`, and `/monolith/runtime-identity`.
-- The environment contract currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
+- Current runtime mount conventions use `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing layout.
+- The workload-visible runtime identity convention currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 
 **Reopened seams**

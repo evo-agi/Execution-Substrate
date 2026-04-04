@@ -104,7 +104,7 @@ CGS is active, but it is intentionally not part of the current ES hot path.
 
 ### Runtime identity / execution handoff flow
 
-ES reserves a bounded runtime workspace and runtime-identity area, stages execution inputs, injects the current workload identity endpoint environment variable, protects reserved runtime paths from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode.
+ES stages execution inputs, injects the current workload identity endpoint environment variable as the bounded workload-visible handoff, protects the ES-owned runtime subtree that backs that endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode.
 
 The system stops short of making ES the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES currently owns the handoff boundary, not the full runtime identity system.
 

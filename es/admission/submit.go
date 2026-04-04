@@ -237,6 +237,8 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 }
 
 func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
+	handoff := currentRuntimeIdentityHandoff()
+
 	env := make(map[string]string, len(invocationEnv)+11)
 	for key, value := range invocationEnv {
 		env[key] = value
@@ -248,7 +250,7 @@ func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv
 	env["EXEC_WORK_DIR"] = "/monolith/run/work"
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = prepared.WorkloadVault.Address
-	env[runtimeIdentityEndpointEnvKey] = runtimeIdentityEndpointEnvValue
+	env[handoff.endpointEnvKey] = handoff.endpointURI
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = prepared.WorkloadVault.AuthMode
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = prepared.WorkloadVault.AuthMount
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = prepared.WorkloadVault.AuthRole
@@ -269,11 +271,13 @@ func buildNomadJobSpec(
 	taskMemoryMB int,
 	env map[string]string,
 ) map[string]any {
+	handoff := currentRuntimeIdentityHandoff()
+
 	// TODO: Do not mention "monolith"
 	wrapper := strings.Join([]string{
 		"set -eu",
 		"mkdir -p /monolith/run/work",
-		"mkdir -p " + runtimeIdentityWorkspaceTargetDir,
+		"mkdir -p " + handoff.workspaceDir(),
 		"tar -xzf /monolith/staged/artifact.tar.gz -C /monolith/run/work",
 		"chmod +x /monolith/run/work/entrypoint",
 		"if [ \"$EXEC_TIMEOUT_SECONDS\" -gt 0 ]; then",
@@ -307,7 +311,7 @@ func buildNomadJobSpec(
 		},
 		map[string]any{
 			"type":     "tmpfs",
-			"target":   runtimeIdentityWorkspaceTargetDir,
+			"target":   handoff.workspaceDir(),
 			"readonly": false,
 			"tmpfs_options": map[string]any{
 				"size": cfg.Execution.EffectiveRuntimeIdentityTmpfsSize(),
