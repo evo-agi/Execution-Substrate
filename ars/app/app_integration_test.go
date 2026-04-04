@@ -210,7 +210,7 @@ func TestArtifactNotVisibleBeforeRegister(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service, seeded := startTestApp(t, fixture, seedUnregisteredStorageFixture(t))
 
-	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusNotFound {
@@ -237,7 +237,7 @@ func TestPartialUploadDoesNotMakeArtifactVisible(t *testing.T) {
 		digest string
 		body   []byte
 	}{
-		{digest: seeded.ManifestDigest, body: seeded.ManifestJSON},
+		{digest: seeded.DiscoveryDigest, body: seeded.DiscoveryJSON},
 		{digest: seeded.EvidenceDigest, body: seeded.EvidenceJSON},
 		{digest: seeded.PayloadDigest, body: seeded.PayloadBytes},
 	}
@@ -249,7 +249,7 @@ func TestPartialUploadDoesNotMakeArtifactVisible(t *testing.T) {
 		}
 	}
 
-	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
@@ -268,21 +268,27 @@ func TestArtifactRegistrationMakesArtifactVisible(t *testing.T) {
 	}
 
 	var payload struct {
-		Registered     bool   `json:"registered"`
-		Created        bool   `json:"created"`
-		ArtifactDigest string `json:"artifact_digest"`
+		Registered       bool   `json:"registered"`
+		Created          bool   `json:"created"`
+		ArtifactDigest   string `json:"artifact_digest"`
+		DiscoveryDigest  string `json:"discovery_digest"`
+		DescriptorDigest string `json:"descriptor_digest"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !payload.Registered || !payload.Created || payload.ArtifactDigest != seeded.ArtifactDigest {
+	if !payload.Registered ||
+		!payload.Created ||
+		payload.ArtifactDigest != seeded.ArtifactDigest ||
+		payload.DiscoveryDigest != seeded.DiscoveryDigest ||
+		payload.DescriptorDigest != seeded.DescriptorDigest {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 	if seeded.ArtifactDigest == seeded.PayloadDigest {
 		t.Fatalf("expected distinct artifact and payload digests in seeded registration fixture, both were %q", seeded.ArtifactDigest)
 	}
 
-	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
@@ -358,7 +364,7 @@ func TestArtifactRegistrationRejectsMissingReferencedBlobAndKeepsArtifactHidden(
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 
-	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
@@ -398,7 +404,7 @@ func TestArtifactRegistrationRejectsReferencedBlobIntegrityFailureAndKeepsArtifa
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 
-	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", readResponse.StatusCode)
@@ -474,13 +480,13 @@ func TestArtifactRegistrationRejectsDifferentTuple(t *testing.T) {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 
-	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	readResponse := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+seeded.ArtifactDigest+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer readResponse.Body.Close()
 	if readResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", readResponse.StatusCode)
 	}
-	if got := strings.TrimSpace(string(mustReadBody(t, readResponse.Body))); got != string(seeded.ManifestJSON) {
-		t.Fatalf("unexpected manifest body: %q", got)
+	if got := strings.TrimSpace(string(mustReadBody(t, readResponse.Body))); got != string(seeded.DiscoveryJSON) {
+		t.Fatalf("unexpected discovery body: %q", got)
 	}
 }
 
@@ -569,6 +575,12 @@ func TestArtifactEndpointsReturnExpectedResponses(t *testing.T) {
 		body   string
 	}{
 		{
+			name:   "discovery",
+			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/discovery",
+			digest: seeded.DiscoveryDigest,
+			body:   string(seeded.DiscoveryJSON),
+		},
+		{
 			name:   "descriptor",
 			path:   "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor",
 			digest: seeded.DescriptorDigest,
@@ -638,7 +650,7 @@ func TestArtifactNotFoundReturnsExpectedResponse(t *testing.T) {
 	service, _ := startTestApp(t, fixture, seedStorageFixture(t))
 
 	missingArtifact := store.DigestBytes([]byte("missing artifact"))
-	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+missingArtifact+"/manifest", fixture.clientTLSConfig(t, "service/execution"))
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/artifacts/"+missingArtifact+"/discovery", fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusNotFound {
@@ -665,6 +677,11 @@ func TestArtifactEndpointsReturnNotFoundForMissingReferencedBlobs(t *testing.T) 
 		pathFn func(seededStorage) string
 		digest func(seededStorage) string
 	}{
+		{
+			name:   "discovery",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/discovery" },
+			digest: func(seeded seededStorage) string { return seeded.DiscoveryDigest },
+		},
 		{
 			name:   "descriptor",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor" },
@@ -793,6 +810,11 @@ func TestArtifactEndpointsReturnCorruptionForReferencedBlobs(t *testing.T) {
 		digest func(seededStorage) string
 	}{
 		{
+			name:   "discovery",
+			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/discovery" },
+			digest: func(seeded seededStorage) string { return seeded.DiscoveryDigest },
+		},
+		{
 			name:   "descriptor",
 			pathFn: func(seeded seededStorage) string { return "/v1/artifacts/" + seeded.ArtifactDigest + "/descriptor" },
 			digest: func(seeded seededStorage) string { return seeded.DescriptorDigest },
@@ -887,13 +909,13 @@ func TestInvalidDigestReturnsBadRequest(t *testing.T) {
 		{
 			name:   "artifact invalid digest",
 			method: http.MethodGet,
-			path:   "/v1/artifacts/sha256:not-a-digest/manifest",
+			path:   "/v1/artifacts/sha256:not-a-digest/discovery",
 			field:  "artifact_digest",
 		},
 		{
 			name:   "empty artifact digest segment",
 			method: http.MethodGet,
-			path:   "/v1/artifacts//manifest",
+			path:   "/v1/artifacts//discovery",
 			field:  "artifact_digest",
 		},
 	}
@@ -934,8 +956,8 @@ func TestInvalidDigestReturnsBadRequest(t *testing.T) {
 				if payload.Error != "invalid artifact digest" {
 					t.Fatalf("unexpected error: %+v", payload)
 				}
-				expectedArtifactDigest := strings.TrimPrefix(strings.TrimSuffix(tc.path, "/manifest"), "/v1/artifacts/")
-				if tc.path == "/v1/artifacts//manifest" {
+				expectedArtifactDigest := strings.TrimPrefix(strings.TrimSuffix(tc.path, "/discovery"), "/v1/artifacts/")
+				if tc.path == "/v1/artifacts//discovery" {
 					expectedArtifactDigest = ""
 				}
 				if payload.ArtifactDigest != expectedArtifactDigest {
@@ -1016,7 +1038,7 @@ func TestWrongMethodsReturnMethodNotAllowed(t *testing.T) {
 		{
 			name:        "post artifact route",
 			method:      http.MethodPost,
-			path:        "/v1/artifacts/" + seeded.ArtifactDigest + "/manifest",
+			path:        "/v1/artifacts/" + seeded.ArtifactDigest + "/discovery",
 			allowHeader: http.MethodGet,
 			config:      fixture.clientTLSConfig(t, "service/execution"),
 		},
@@ -1126,6 +1148,7 @@ type rawHTTPResponse struct {
 }
 
 type artifactRegisterRequest struct {
+	DiscoveryDigest  string `json:"discovery_digest"`
 	DescriptorDigest string `json:"descriptor_digest"`
 }
 
@@ -1140,6 +1163,8 @@ type seededStorage struct {
 	JSONBlob   []byte
 
 	ArtifactDigest   string
+	DiscoveryDigest  string
+	DiscoveryJSON    []byte
 	DescriptorDigest string
 	DescriptorJSON   []byte
 	EvidenceDigest   string
@@ -1298,6 +1323,23 @@ func seedStorageFixture(t *testing.T) seededStorage {
 		},
 	})
 	state.EvidenceDigest = store.DigestBytes(state.EvidenceJSON)
+	state.DiscoveryJSON = mustMarshalJSON(t, map[string]any{
+		"schema_version": "v1",
+		"artifact": map[string]any{
+			"artifact_digest": state.ArtifactDigest,
+			"artifact_type":   "static-script",
+			"intent_digest":   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		},
+		"evidence": map[string]any{
+			"digest":     state.EvidenceDigest,
+			"media_type": "application/json",
+		},
+		"payload": map[string]any{
+			"digest":     state.PayloadDigest,
+			"media_type": "application/octet-stream",
+		},
+	})
+	state.DiscoveryDigest = store.DigestBytes(state.DiscoveryJSON)
 	state.DescriptorJSON = mustMarshalJSON(t, map[string]any{
 		"schema_version": "v1",
 		"artifact": map[string]any{
@@ -1327,6 +1369,7 @@ func seedStorageFixture(t *testing.T) seededStorage {
 
 	writeBlobAtDigest(t, rootDir, state.BlobDigest, state.BlobContent)
 	writeBlobAtDigest(t, rootDir, state.JSONDigest, state.JSONBlob)
+	writeBlobAtDigest(t, rootDir, state.DiscoveryDigest, state.DiscoveryJSON)
 	writeBlobAtDigest(t, rootDir, state.DescriptorDigest, state.DescriptorJSON)
 	writeBlobAtDigest(t, rootDir, state.EvidenceDigest, state.EvidenceJSON)
 	writeBlobAtDigest(t, rootDir, state.ManifestDigest, state.ManifestJSON)
@@ -1336,6 +1379,7 @@ func seedStorageFixture(t *testing.T) seededStorage {
 	indexPayload, err := json.MarshalIndent(map[string]index.Entry{
 		state.ArtifactDigest: {
 			ArtifactDigest:   state.ArtifactDigest,
+			DiscoveryDigest:  state.DiscoveryDigest,
 			DescriptorDigest: state.DescriptorDigest,
 			CreatedAt:        "2026-03-31T00:00:00Z",
 		},
@@ -1371,6 +1415,7 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 	digests := []string{
 		state.BlobDigest,
 		state.JSONDigest,
+		state.DiscoveryDigest,
 		state.DescriptorDigest,
 		state.EvidenceDigest,
 		state.ManifestDigest,
@@ -1391,6 +1436,7 @@ func seedEmptyStorageFixture(t *testing.T) seededStorage {
 
 func artifactRegisterRequestFromSeeded(seeded seededStorage) artifactRegisterRequest {
 	return artifactRegisterRequest{
+		DiscoveryDigest:  seeded.DiscoveryDigest,
 		DescriptorDigest: seeded.DescriptorDigest,
 	}
 }

@@ -111,7 +111,7 @@ Successful response is `200` JSON with these contract fields:
 
 **Current contract invariants**
 
-- `:prepare` reads the registered artifact descriptor from ARS and follows it to the aggregate artifact-evidence blob.
+- `:prepare` reads the registered artifact discovery record from ARS and follows it to the aggregate artifact-evidence blob.
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
@@ -231,7 +231,7 @@ Successful response is `202` JSON with these fields:
 - `:submit` is the real execution surface, but it is intentionally narrow.
 - It is async-only.
 - Its response is a bounded receipt, not a durable run model.
-- It uses the explicit payload reference carried by the ARS descriptor and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
+- It uses the explicit payload reference carried by the ARS discovery record and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
 
 ### Reopened seams
 

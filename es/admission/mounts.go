@@ -220,7 +220,7 @@ func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)
 	}
 
-	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, discovery.descriptor, discovery.evidence)
+	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, discovery.discovery, discovery.evidence)
 	if err != nil {
 		return preparedArtifact{}, remapMountArtifactPreparationError(err)
 	}

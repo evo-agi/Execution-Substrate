@@ -178,6 +178,7 @@ Current response shape:
 
 - `published`
 - `artifact_digest`
+- `discovery_digest`
 - `descriptor_digest`
 - `evidence_digest`
 - `manifest_digest`
@@ -199,7 +200,8 @@ Current response shape:
   - payload bytes
   - aggregate artifact evidence
   - manifest
-  - artifact descriptor
+  - runtime-facing artifact discovery record
+  - artifact descriptor as secondary publication/support data
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
 - AGS derives publication caller binding from the authenticated caller and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS enforces bounded cross-field consistency before publishing, including:
@@ -211,7 +213,7 @@ Current response shape:
 - AGS publishes only through ARS:
   - `PUT /v1/blobs/{digest}`
   - `POST /v1/artifacts:register`
-  - registration is now descriptor-centered rather than tuple-centered
+  - registration is now discovery-centered rather than tuple-centered, with optional secondary descriptor support
 
 ### Ownership boundary
 
@@ -229,18 +231,18 @@ Current response shape:
 `Reopened redesign seam`
 
 - The AGS publish contract and fact-assembly model are explicitly reopened in `PLANS.md`.
-- The current descriptor record, manifest support data, and caller-binding model are live today, but they are not automatically the target end-state.
+- The current runtime-facing discovery record, secondary descriptor support data, and caller-binding model are live today, but they are not automatically the target end-state.
 
 ## 6. ARS Storage And Discoverability Contract
 
 ### Purpose
 
-Provide content-addressed blob storage, integrity enforcement, artifact registration, and descriptor-driven discoverability.
+Provide content-addressed blob storage, integrity enforcement, artifact registration, and runtime-facing artifact discoverability.
 
 ### Current producers / consumers
 
 - `AGS` is the fixed writer for the current ARS write boundary.
-- `ES` consumes ARS for descriptor discovery, evidence and payload blob reads, manifest reads when needed, and workload-zone vault blob reads.
+- `ES` consumes ARS for runtime-facing discovery, evidence and payload blob reads, manifest support reads when needed, and workload-zone vault blob reads.
 - Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes.
 
 ### Public surface
@@ -257,16 +259,19 @@ Read surface:
 - `HEAD /v1/blobs/{digest}`
 - `GET /v1/blobs/{digest}:bytes`
 - `GET /v1/blobs/{digest}:json`
+- `GET /v1/artifacts/{artifact_digest}/discovery`
 - `GET /v1/artifacts/{artifact_digest}/descriptor`
 - `GET /v1/artifacts/{artifact_digest}/evidence`
 - `GET /v1/artifacts/{artifact_digest}/manifest`
 
-Current registration record is descriptor-centered:
+Current registration record is discovery-centered:
 
 - `artifact_digest`
+- `discovery_digest`
 - `descriptor_digest`
-- descriptor `artifact` identity
-- descriptor `package` references for evidence, payload, and supporting data such as manifest
+- discovery `artifact` identity
+- discovery references for evidence and payload
+- optional secondary descriptor support data for publication-only reads such as manifest
 
 ### Current invariants
 
@@ -280,16 +285,17 @@ Current registration record is descriptor-centered:
 - `GET /v1/blobs/{digest}:bytes` and `GET /v1/blobs/{digest}:json` both re-read and re-verify blob integrity on the read path.
 - `GET /v1/blobs/{digest}:json` additionally requires the blob bytes to be valid JSON.
 - Artifact reads become visible only after successful registration.
-- ARS serves the registered descriptor as the first-class artifact discoverability surface at `/v1/artifacts/{artifact_digest}/descriptor`.
-- ARS requires `descriptor_digest` for artifact registration.
-- ARS resolves `/evidence` and `/manifest` reads through the registered descriptor rather than storing those digests as first-class index fields.
+- ARS serves the registered discovery record as the first-class artifact discoverability surface at `/v1/artifacts/{artifact_digest}/discovery`.
+- ARS requires `discovery_digest` for artifact registration.
+- `descriptor_digest` is optional secondary support data for descriptor and manifest reads.
+- ARS resolves `/evidence` reads through the registered discovery record and `/manifest` reads through the secondary descriptor support path when present.
 - Registration validates every referenced digest by:
   - checking digest syntax
-  - validating descriptor structure and identity fields
+  - validating discovery structure and identity fields
   - reading the referenced blob through the storage layer
   - rejecting missing or corrupted blobs
-  - requiring JSON validity for the descriptor, evidence, and manifest blobs
-- Registration is idempotent for the same descriptor reference and a conflict for a different descriptor under the same `artifact_digest`.
+  - requiring JSON validity for the discovery, evidence, and any secondary descriptor/manifest blobs the registration includes
+- Registration is idempotent for the same discovery/descriptor tuple and a conflict for a different tuple under the same `artifact_digest`.
 - ARS read paths treat referenced blob corruption as a storage failure, not as valid discoverability.
 
 ### Ownership boundary
@@ -308,7 +314,7 @@ Current registration record is descriptor-centered:
 `Reopened redesign seam`
 
 - The ARS registration and index model are explicitly reopened in `PLANS.md`.
-- The current descriptor record and discoverability shape are active, but must not be assumed long-term solely because ES currently consumes them.
+- The current runtime-facing discovery record and secondary descriptor support shape are active, but must not be assumed long-term solely because ES currently consumes them.
 
 ## 7. ES Admission And Execution Contract
 
@@ -388,11 +394,11 @@ Current successful response shapes:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES admits only deployment and operator callers today.
-- `:prepare` validates request shape, fetches the artifact descriptor from ARS, follows that descriptor to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
+- `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:
-  - artifact descriptor at `/v1/artifacts/{artifact_digest}/descriptor`
-  - aggregate evidence blob referenced by that descriptor
+  - artifact discovery record at `/v1/artifacts/{artifact_digest}/discovery`
+  - aggregate evidence blob referenced by that discovery record
   - payload bytes at `/v1/blobs/{payload_digest}:bytes`
 - ES currently interprets EGS `runtime_trust.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
 - ES verifies and enforces only the signed EGS runtime-trust payload and does not surface EGS publication metadata in `:prepare` results.
@@ -403,7 +409,7 @@ Current successful response shapes:
   - Docker target platform when a target platform is present
   - no required runtime capabilities
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
-- ES currently fetches payload bytes via the explicit payload reference carried in the ARS descriptor and cross-checks that reference against aggregate evidence.
+- ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`

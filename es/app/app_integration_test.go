@@ -375,6 +375,8 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	writeBlobBytes(t, rootDir, payloadBytes)
 	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, workloadIdentityID)
 	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
+	discoveryBytes := artifactDiscoveryJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest)
+	discoveryDigest := writeBlobBytes(t, rootDir, discoveryBytes)
 	descriptorBytes := artifactDescriptorJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest, manifestDigest)
 	descriptorDigest := writeBlobBytes(t, rootDir, descriptorBytes)
 
@@ -420,6 +422,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	indexPayload := map[string]arsindex.Entry{
 		artifactDigest: {
 			ArtifactDigest:   artifactDigest,
+			DiscoveryDigest:  discoveryDigest,
 			DescriptorDigest: descriptorDigest,
 			CreatedAt:        "2026-03-31T00:00:00Z",
 		},
@@ -1156,6 +1159,34 @@ func artifactDescriptorJSON(
 					MediaType: "application/json",
 				},
 			},
+		},
+	})
+}
+
+func artifactDiscoveryJSON(
+	t *testing.T,
+	artifactDigest string,
+	artifactType string,
+	intentDigest string,
+	evidenceDigest string,
+	payloadDigest string,
+) []byte {
+	t.Helper()
+
+	return mustMarshalJSON(t, arsapi.ArtifactDiscovery{
+		SchemaVersion: arsapi.ArtifactDiscoverySchemaVersion,
+		Artifact: arsapi.ArtifactIdentity{
+			ArtifactDigest: artifactDigest,
+			ArtifactType:   artifactType,
+			IntentDigest:   intentDigest,
+		},
+		Evidence: arsapi.ArtifactBlobRef{
+			Digest:    evidenceDigest,
+			MediaType: "application/json",
+		},
+		Payload: arsapi.ArtifactBlobRef{
+			Digest:    payloadDigest,
+			MediaType: "application/octet-stream",
 		},
 	})
 }

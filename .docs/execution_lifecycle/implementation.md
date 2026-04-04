@@ -112,8 +112,8 @@ What the app layer delegates:
 
 1. Validate the request with `validatePrepareRequest`.
 2. Read the currently loaded runtime-trust policy from memory.
-3. Read the artifact descriptor from ARS and follow it to the aggregate artifact-evidence blob.
-4. Validate the descriptor/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
+3. Read the artifact discovery record from ARS and follow it to the aggregate artifact-evidence blob.
+4. Validate the discovery/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive workload/runtime information from `claims.admission.execution`.
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
 6. Fetch the workload-zone Vault config blob from ARS using that reference.
 7. Decode and validate the workload-zone Vault blob through `contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`.
@@ -121,7 +121,7 @@ What the app layer delegates:
 
 What `Prepare` reads:
 
-- ARS descriptor discoverability plus aggregate artifact evidence from ARS
+- ARS runtime-facing discovery plus aggregate artifact evidence from ARS
 - the validated workload-zone Vault config reference from ES startup config
 - Runtime-trust state loaded from EGS at startup
 
@@ -144,7 +144,7 @@ What `Prepare` reads:
 3. Reject non-async mode.
 4. Reuse the shared admission helper that also powers `Prepare`.
 5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
-6. Fetch payload bytes from ARS using the payload reference carried by the descriptor and cross-checked against aggregate evidence.
+6. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
 7. Generate the current internal execution locator:
   - public `run_id`
   - internal `nomad_job_id = exec-<run_id>`
@@ -395,7 +395,7 @@ These are active implementation choices, not automatically permanent design comm
 - The current execution-locator policy still resolves `run_id -> exec-<run_id>`.
 - Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
 - Runtime identity handling depends on reserved `/monolith/...` path conventions.
-- Submit currently depends on descriptor-driven payload discoverability plus evidence-claim cross-checks between artifact identity and payload identity.
+- Submit currently depends on runtime-facing payload discoverability plus evidence-claim cross-checks between artifact identity and payload identity.
 - The implementation is coherent today as a thin composition and handoff layer, but several of its shortcuts are still under redesign pressure rather than being settled structure.
 
 ## 16. Relationship to other docs

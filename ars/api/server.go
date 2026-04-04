@@ -356,18 +356,31 @@ func (s *Server) handleArtifactRead(w http.ResponseWriter, rawArtifactDigest str
 		return
 	}
 
-	descriptor, descriptorDigest, data, response, status, ok := s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
+	discovery, discoveryDigest, data, response, status, ok := s.loadArtifactDiscovery(artifactDigest, entry.DiscoveryDigest)
 	if !ok {
 		writeJSON(w, status, response)
 		return
 	}
 
-	referencedDigest := descriptorDigest
+	referencedDigest := discoveryDigest
 	switch kind {
+		case index.KindDiscovery:
+			// The primary runtime-facing discoverability surface is the discovery record itself.
 		case index.KindDescriptor:
-			// The primary discoverability surface is the descriptor itself.
+			if strings.TrimSpace(entry.DescriptorDigest) == "" {
+				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+					Error:          "artifact data not registered",
+					ArtifactDigest: artifactDigest,
+				})
+				return
+			}
+			_, referencedDigest, data, response, status, ok = s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
+			if !ok {
+				writeJSON(w, status, response)
+				return
+			}
 		case index.KindEvidence:
-			referencedDigest = strings.TrimSpace(descriptor.Package.Evidence.Digest)
+			referencedDigest = strings.TrimSpace(discovery.Evidence.Digest)
 			if referencedDigest == "" {
 				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
 					Error:          "artifact data not registered",
@@ -381,6 +394,18 @@ func (s *Server) handleArtifactRead(w http.ResponseWriter, rawArtifactDigest str
 				return
 			}
 		case index.KindManifest:
+			if strings.TrimSpace(entry.DescriptorDigest) == "" {
+				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+					Error:          "artifact data not registered",
+					ArtifactDigest: artifactDigest,
+				})
+				return
+			}
+			descriptor, _, _, response, status, ok := s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
+			if !ok {
+				writeJSON(w, status, response)
+				return
+			}
 			referencedDigest, ok = descriptorSupportingDigest(descriptor, "manifest")
 			if !ok {
 				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
@@ -414,22 +439,43 @@ func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := store.ValidateDigest(request.DescriptorDigest); err != nil {
+	if err := store.ValidateDigest(request.DiscoveryDigest); err != nil {
 		writeJSON(w, http.StatusBadRequest, ArtifactErrorResponse{
 			Error:  "invalid referenced digest",
-			Digest: request.DescriptorDigest,
+			Digest: request.DiscoveryDigest,
 		})
 		return
 	}
+	if descriptorDigest := strings.TrimSpace(request.DescriptorDigest); descriptorDigest != "" {
+		if err := store.ValidateDigest(descriptorDigest); err != nil {
+			writeJSON(w, http.StatusBadRequest, ArtifactErrorResponse{
+				Error:  "invalid referenced digest",
+				Digest: descriptorDigest,
+			})
+			return
+		}
+	}
 
-	descriptor, _, response, status, ok := s.loadDescriptorForRegistration(request.DescriptorDigest)
+	discovery, _, response, status, ok := s.loadDiscoveryForRegistration(request.DiscoveryDigest)
 	if !ok {
 		writeJSON(w, status, response)
 		return
 	}
+	if descriptorDigest := strings.TrimSpace(request.DescriptorDigest); descriptorDigest != "" {
+		descriptor, _, response, status, ok := s.loadDescriptorForRegistration(descriptorDigest)
+		if !ok {
+			writeJSON(w, status, response)
+			return
+		}
+		if response, status, ok := validateDescriptorMatchesDiscovery(descriptorDigest, discovery, descriptor); !ok {
+			writeJSON(w, status, response)
+			return
+		}
+	}
 	entry := index.Entry{
-		ArtifactDigest:   descriptor.Artifact.ArtifactDigest,
-		DescriptorDigest: request.DescriptorDigest,
+		ArtifactDigest:   discovery.Artifact.ArtifactDigest,
+		DiscoveryDigest:  request.DiscoveryDigest,
+		DescriptorDigest: strings.TrimSpace(request.DescriptorDigest),
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -459,6 +505,7 @@ func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) 
 		Registered:       true,
 		Created:          created,
 		ArtifactDigest:   entry.ArtifactDigest,
+		DiscoveryDigest:  entry.DiscoveryDigest,
 		DescriptorDigest: entry.DescriptorDigest,
 	})
 }
@@ -628,6 +675,31 @@ func decodeStrictJSONBody(body io.Reader, target any) error {
 	return nil
 }
 
+func (s *Server) loadDiscoveryForRegistration(discoveryDigest string) (ArtifactDiscovery, []byte, ArtifactErrorResponse, int, bool) {
+	discovery, _, discoveryBytes, response, status, ok := s.loadArtifactDiscovery("", discoveryDigest)
+	if !ok {
+		return ArtifactDiscovery{}, nil, response, remapArtifactRegistrationStatus(response, status), false
+	}
+
+	referencedDigests := []struct {
+		digest     string
+		expectJSON bool
+	}{
+		{digest: discovery.Evidence.Digest, expectJSON: true},
+		{digest: discovery.Payload.Digest, expectJSON: false},
+	}
+	for _, referenced := range referencedDigests {
+		if strings.TrimSpace(referenced.digest) == "" {
+			continue
+		}
+		if _, response, status, ok := s.readArtifactBlob(discovery.Artifact.ArtifactDigest, referenced.digest, referenced.expectJSON); !ok {
+			return ArtifactDiscovery{}, nil, response, remapArtifactRegistrationStatus(response, status), false
+		}
+	}
+
+	return discovery, discoveryBytes, ArtifactErrorResponse{}, 0, true
+}
+
 func (s *Server) loadDescriptorForRegistration(descriptorDigest string) (ArtifactDescriptor, []byte, ArtifactErrorResponse, int, bool) {
 	descriptor, _, descriptorBytes, response, status, ok := s.loadArtifactDescriptor("", descriptorDigest)
 	if !ok {
@@ -677,11 +749,37 @@ func (s *Server) loadDescriptorForRegistration(descriptorDigest string) (Artifac
 
 func remapArtifactRegistrationStatus(response ArtifactErrorResponse, status int) int {
 	switch response.Error {
-		case "referenced blob not found", "stored blob digest mismatch", "referenced blob is not valid JSON":
-			return http.StatusConflict
-		default:
-			return status
+	case "referenced blob not found", "stored blob digest mismatch", "referenced blob is not valid JSON":
+		return http.StatusConflict
+	default:
+		return status
 	}
+}
+
+func (s *Server) loadArtifactDiscovery(artifactDigest string, discoveryDigest string) (ArtifactDiscovery, string, []byte, ArtifactErrorResponse, int, bool) {
+	if strings.TrimSpace(discoveryDigest) == "" {
+		return ArtifactDiscovery{}, "", nil, ArtifactErrorResponse{
+			Error:          "artifact data not registered",
+			ArtifactDigest: artifactDigest,
+		}, http.StatusNotFound, false
+	}
+	data, response, status, ok := s.readArtifactJSONBlob(artifactDigest, discoveryDigest)
+	if !ok {
+		return ArtifactDiscovery{}, "", nil, response, status, false
+	}
+
+	var discovery ArtifactDiscovery
+	if err := json.Unmarshal(data, &discovery); err != nil {
+		return ArtifactDiscovery{}, "", nil, ArtifactErrorResponse{
+			Error:          "referenced blob is not valid JSON",
+			ArtifactDigest: artifactDigest,
+			Digest:         discoveryDigest,
+		}, http.StatusInternalServerError, false
+	}
+	if response, status, ok := validateArtifactDiscovery(discoveryDigest, artifactDigest, discovery); !ok {
+		return ArtifactDiscovery{}, "", nil, response, status, false
+	}
+	return discovery, discoveryDigest, data, ArtifactErrorResponse{}, 0, true
 }
 
 func (s *Server) loadArtifactDescriptor(artifactDigest string, descriptorDigest string) (ArtifactDescriptor, string, []byte, ArtifactErrorResponse, int, bool) {
@@ -708,6 +806,58 @@ func (s *Server) loadArtifactDescriptor(artifactDigest string, descriptorDigest 
 		return ArtifactDescriptor{}, "", nil, response, status, false
 	}
 	return descriptor, descriptorDigest, data, ArtifactErrorResponse{}, 0, true
+}
+
+func validateArtifactDiscovery(discoveryDigest string, requestedArtifactDigest string, discovery ArtifactDiscovery) (ArtifactErrorResponse, int, bool) {
+	if strings.TrimSpace(discovery.SchemaVersion) != ArtifactDiscoverySchemaVersion {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: requestedArtifactDigest,
+			Digest:         discoveryDigest,
+		}, http.StatusBadRequest, false
+	}
+	artifactDigest := strings.TrimSpace(discovery.Artifact.ArtifactDigest)
+	if artifactDigest == "" {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: requestedArtifactDigest,
+			Digest:         discoveryDigest,
+		}, http.StatusBadRequest, false
+	}
+	if err := store.ValidateDigest(artifactDigest); err != nil {
+		return ArtifactErrorResponse{
+			Error:          "invalid artifact digest",
+			ArtifactDigest: artifactDigest,
+		}, http.StatusBadRequest, false
+	}
+	if requestedArtifactDigest != "" && artifactDigest != requestedArtifactDigest {
+		return ArtifactErrorResponse{
+			Error:          "artifact data not registered",
+			ArtifactDigest: requestedArtifactDigest,
+		}, http.StatusNotFound, false
+	}
+	if strings.TrimSpace(discovery.Artifact.ArtifactType) == "" {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         discoveryDigest,
+		}, http.StatusBadRequest, false
+	}
+	if err := store.ValidateDigest(strings.TrimSpace(discovery.Artifact.IntentDigest)); err != nil {
+		return ArtifactErrorResponse{
+			Error:          "invalid referenced digest",
+			ArtifactDigest: artifactDigest,
+			Digest:         strings.TrimSpace(discovery.Artifact.IntentDigest),
+		}, http.StatusBadRequest, false
+	}
+	if err := validateArtifactBlobRef(artifactDigest, discovery.Evidence, discoveryDigest); err != nil {
+		return err.response, err.status, false
+	}
+	if err := validateArtifactBlobRef(artifactDigest, discovery.Payload, discoveryDigest); err != nil {
+		return err.response, err.status, false
+	}
+
+	return ArtifactErrorResponse{}, 0, true
 }
 
 func validateArtifactDescriptor(descriptorDigest string, requestedArtifactDigest string, descriptor ArtifactDescriptor) (ArtifactErrorResponse, int, bool) {
@@ -785,6 +935,46 @@ func validateArtifactDescriptor(descriptorDigest string, requestedArtifactDigest
 		}
 	}
 
+	return ArtifactErrorResponse{}, 0, true
+}
+
+func validateDescriptorMatchesDiscovery(descriptorDigest string, discovery ArtifactDiscovery, descriptor ArtifactDescriptor) (ArtifactErrorResponse, int, bool) {
+	artifactDigest := strings.TrimSpace(discovery.Artifact.ArtifactDigest)
+	if strings.TrimSpace(descriptor.Artifact.ArtifactDigest) != artifactDigest {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         descriptorDigest,
+		}, http.StatusBadRequest, false
+	}
+	if strings.TrimSpace(descriptor.Artifact.ArtifactType) != strings.TrimSpace(discovery.Artifact.ArtifactType) {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         descriptorDigest,
+		}, http.StatusBadRequest, false
+	}
+	if strings.TrimSpace(descriptor.Artifact.IntentDigest) != strings.TrimSpace(discovery.Artifact.IntentDigest) {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         descriptorDigest,
+		}, http.StatusBadRequest, false
+	}
+	if strings.TrimSpace(descriptor.Package.Evidence.Digest) != strings.TrimSpace(discovery.Evidence.Digest) {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         descriptorDigest,
+		}, http.StatusBadRequest, false
+	}
+	if strings.TrimSpace(descriptor.Package.Payload.Digest) != strings.TrimSpace(discovery.Payload.Digest) {
+		return ArtifactErrorResponse{
+			Error:          "invalid registration request",
+			ArtifactDigest: artifactDigest,
+			Digest:         descriptorDigest,
+		}, http.StatusBadRequest, false
+	}
 	return ArtifactErrorResponse{}, 0, true
 }
 

@@ -5,6 +5,7 @@ import "fmt"
 type Kind string
 
 const (
+	KindDiscovery  Kind = "discovery"
 	KindDescriptor Kind = "descriptor"
 	KindEvidence   Kind = "evidence"
 	KindManifest   Kind = "manifest"
@@ -12,6 +13,7 @@ const (
 
 type Entry struct {
 	ArtifactDigest   string `json:"artifact_digest"`
+	DiscoveryDigest  string `json:"discovery_digest"`
 	DescriptorDigest string `json:"descriptor_digest"`
 	CreatedAt        string `json:"created_at"`
 }
@@ -25,7 +27,7 @@ type Lookup interface {
 
 func ParseKind(value string) (Kind, bool) {
 	switch Kind(value) {
-		case KindDescriptor, KindEvidence, KindManifest:
+		case KindDiscovery, KindDescriptor, KindEvidence, KindManifest:
 			return Kind(value), true
 		default:
 			return "", false

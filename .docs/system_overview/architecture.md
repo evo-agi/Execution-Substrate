@@ -24,7 +24,7 @@ The current Go system is a governed publication + storage + policy + admission +
 
 | Component | Observed current role |
 | --- | --- |
-| ARS | Blob storage, integrity verification, evidence-centered artifact registration, and canonical artifact retrieval service |
+| ARS | Blob storage, integrity verification, evidence-centered artifact registration, and runtime-facing artifact discoverability service |
 | AGS | Evidence-first artifact publication service |
 | EGS | Signed runtime-trust publication service |
 | CGS | Separate authorize-only policy service |
@@ -67,7 +67,7 @@ AGS accepts publish requests in the current evidence-native grammar, derives art
 
 ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 
-The aggregate evidence model in `contracts/evidence/v1` matters here because AGS emits the first-class publication record that ES later verifies.
+The aggregate evidence model in `contracts/evidence/v1` matters here because AGS emits the first-class publication record that ES later verifies. ARS then exposes a smaller runtime-facing discovery record for ES, while descriptor and manifest support data remain secondary publication discoverability rather than the primary hot-path object.
 
 ### Admission / preparation / submission flow
 
@@ -76,7 +76,7 @@ ES is the current admission and submission composition point.
 At a high level, ES:
 
 - accepts execution requests through bounded preflight `:prepare` and primary submission `:submit`
-- reads aggregate artifact evidence and payloads from ARS
+- reads aggregate artifact evidence and payloads from ARS through the primary runtime-facing discovery record
 - reads the workload-zone Vault config blob from ARS using the startup-configured `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
 - loads and enforces the EGS trust model
 - stages payload and mount data locally
@@ -157,7 +157,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the canonical workload-visible runtime identity contract and retains `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` only as a temporary compatibility alias.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
-- AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the descriptor payload reference and cross-checked against evidence claims.
+- AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the runtime-facing payload reference and cross-checked against evidence claims.
 - The current aggregate evidence grammar is intentionally split into package-facing identity/publication claims, narrow derivation request-binding authorization claims, and execution/runtime claims rather than one mixed claim bag.
 
 ## 10. Relationship to detailed docs

@@ -71,6 +71,7 @@ type WorkloadInput struct {
 type PublishResult struct {
 	Published        bool   `json:"published"`
 	ArtifactDigest   string `json:"artifact_digest"`
+	DiscoveryDigest  string `json:"discovery_digest"`
 	DescriptorDigest string `json:"descriptor_digest"`
 	EvidenceDigest   string `json:"evidence_digest"`
 	ManifestDigest   string `json:"manifest_digest,omitempty"`

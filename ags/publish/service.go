@@ -21,6 +21,7 @@ import (
 
 	"execution-platform/ags/config"
 	"execution-platform/ags/sign"
+	arsapi "execution-platform/ars/api"
 	evidencev1 "execution-platform/contracts/evidence/v1"
 	"execution-platform/observability"
 )
@@ -45,39 +46,6 @@ type Service struct {
 type dependencyClient struct {
 	baseURL *url.URL
 	client  *http.Client
-}
-
-type registerArtifactRequest struct {
-	DescriptorDigest string `json:"descriptor_digest"`
-}
-
-type artifactDescriptor struct {
-	SchemaVersion string           `json:"schema_version"`
-	Artifact      artifactIdentity `json:"artifact"`
-	Package       artifactPackage  `json:"package"`
-}
-
-type artifactIdentity struct {
-	ArtifactDigest string `json:"artifact_digest"`
-	ArtifactType   string `json:"artifact_type"`
-	IntentDigest   string `json:"intent_digest"`
-}
-
-type artifactPackage struct {
-	Evidence   artifactBlobRef      `json:"evidence"`
-	Payload    artifactBlobRef      `json:"payload"`
-	Supporting []artifactSupportRef `json:"supporting,omitempty"`
-}
-
-type artifactBlobRef struct {
-	Digest    string `json:"digest"`
-	MediaType string `json:"media_type,omitempty"`
-}
-
-type artifactSupportRef struct {
-	Name      string `json:"name"`
-	Digest    string `json:"digest"`
-	MediaType string `json:"media_type,omitempty"`
 }
 
 type dependencyHealthResponse struct {
@@ -163,23 +131,36 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 	evidenceDigest := digestBytes(evidenceBytes)
 	manifestDigest := digestBytes(manifestBytes)
-	descriptor := artifactDescriptor{
-		SchemaVersion: "v1",
-		Artifact: artifactIdentity{
-			ArtifactDigest: artifactDigest,
-			ArtifactType:   manifest.ArtifactType,
-			IntentDigest:   manifest.IntentDigest,
+	artifactRef := arsapi.ArtifactIdentity{
+		ArtifactDigest: artifactDigest,
+		ArtifactType:   manifest.ArtifactType,
+		IntentDigest:   manifest.IntentDigest,
+	}
+	discovery := arsapi.ArtifactDiscovery{
+		SchemaVersion: arsapi.ArtifactDiscoverySchemaVersion,
+		Artifact:      artifactRef,
+		Evidence: arsapi.ArtifactBlobRef{
+			Digest:    evidenceDigest,
+			MediaType: "application/json",
 		},
-		Package: artifactPackage{
-			Evidence: artifactBlobRef{
-				Digest:    evidenceDigest,
-				MediaType: "application/json",
-			},
-			Payload: artifactBlobRef{
-				Digest:    payloadDigest,
-				MediaType: "application/octet-stream",
-			},
-			Supporting: []artifactSupportRef{
+		Payload: arsapi.ArtifactBlobRef{
+			Digest:    payloadDigest,
+			MediaType: "application/octet-stream",
+		},
+	}
+	discoveryBytes, err := json.Marshal(discovery)
+	if err != nil {
+		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "marshal artifact discovery failed"}
+	}
+	discoveryDigest := digestBytes(discoveryBytes)
+
+	descriptor := arsapi.ArtifactDescriptor{
+		SchemaVersion: arsapi.ArtifactDescriptorSchemaVersion,
+		Artifact:      artifactRef,
+		Package: arsapi.ArtifactPackage{
+			Evidence: discovery.Evidence,
+			Payload:  discovery.Payload,
+			Supporting: []arsapi.ArtifactSupportRef{
 				{
 					Name:      "manifest",
 					Digest:    manifestDigest,
@@ -198,6 +179,7 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 		{digest: payloadDigest, data: validation.payloadBytes},
 		{digest: evidenceDigest, data: evidenceBytes},
 		{digest: manifestDigest, data: manifestBytes},
+		{digest: discoveryDigest, data: discoveryBytes},
 		{digest: descriptorDigest, data: descriptorBytes},
 	}
 
@@ -207,7 +189,8 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 		}
 	}
 
-	if err := s.arsClient.registerArtifact(ctx, registerArtifactRequest{
+	if err := s.arsClient.registerArtifact(ctx, arsapi.RegisterArtifactRequest{
+		DiscoveryDigest:  discoveryDigest,
 		DescriptorDigest: descriptorDigest,
 	}); err != nil {
 		return PublishResult{}, &Error{Status: http.StatusServiceUnavailable, Code: codeDependencyError, Message: err.Error()}
@@ -216,6 +199,7 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	return PublishResult{
 		Published:        true,
 		ArtifactDigest:   artifactDigest,
+		DiscoveryDigest:  discoveryDigest,
 		DescriptorDigest: descriptorDigest,
 		EvidenceDigest:   evidenceDigest,
 		ManifestDigest:   manifestDigest,
@@ -478,7 +462,7 @@ func (c *dependencyClient) putBlob(ctx context.Context, digest string, data []by
 	return nil
 }
 
-func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody registerArtifactRequest) error {
+func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody arsapi.RegisterArtifactRequest) error {
 	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return fmt.Errorf("marshal register request: %w", err)
@@ -493,13 +477,13 @@ func (c *dependencyClient) registerArtifact(ctx context.Context, requestBody reg
 
 	response, err := c.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("register descriptor %s: %w", requestBody.DescriptorDigest, err)
+		return fmt.Errorf("register discovery %s: %w", requestBody.DiscoveryDigest, err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("register descriptor %s: unexpected status %d body=%s", requestBody.DescriptorDigest, response.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("register discovery %s: unexpected status %d body=%s", requestBody.DiscoveryDigest, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }

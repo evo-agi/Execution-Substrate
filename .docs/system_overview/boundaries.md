@@ -123,9 +123,9 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 
 **Boundary pressure points**
 
-- The current descriptor-centered registration record shapes what AGS must publish and what ES can later discover through ARS.
-- Artifact discoverability is not independent of the registration/index model; downstream services inherit that model.
-- AGS now publishes distinct artifact and payload identities. ARS discoverability and ES consumption both depend on the descriptor payload reference plus evidence-claim cross-checks rather than on any hidden digest equality.
+- The current runtime-facing discovery record shapes what AGS must publish and what ES can later discover through ARS.
+- Artifact discoverability is not independent of the registration/index model; downstream services still inherit that model.
+- AGS now publishes distinct artifact and payload identities. ARS discoverability and ES consumption both depend on the runtime-facing payload reference plus evidence-claim cross-checks rather than on any hidden digest equality.
 
 **Temporary compatibility edges**
 
@@ -134,7 +134,7 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 **Reopened seams**
 
 - The long-term role of the current artifact registration/index model
-- Whether ARS should continue to expose the current descriptor-driven discoverability contract
+- Whether ARS should continue to expose the current runtime-facing discovery record and secondary descriptor support path
 - Whether current artifact read paths are the right ownership split between storage authority and broader choreography
 
 ## 7. AGS boundary
@@ -172,7 +172,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 
 - AGS currently sits at the seam between caller input and the canonical aggregate evidence record.
 - The publication material AGS assembles determines what ES can verify and admit later.
-- AGS and ARS are coupled through the current evidence-centered registration record.
+- AGS and ARS are coupled through the current evidence-centered registration record and the runtime-facing discovery object ARS now owns.
 - The shared evidence kernel is narrower than before, but AGS still sits at the split between package/publication claims, narrow derivation request-binding authorization, and execution/runtime claims.
 
 **Temporary compatibility edges**
@@ -348,7 +348,7 @@ These layers can create coupling pressure without owning domain responsibilities
 
 - `contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
 - ES, ARS, and the runtime-config surface currently participate in a tight choreography around reference resolution, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
-- The ARS descriptor-centered registration record constrains both AGS publication and ES discoverability. That storage-facing model currently reaches further into service interaction than a pure storage boundary would.
+- The ARS runtime-facing discovery record and secondary descriptor support path constrain both AGS publication and ES discoverability. That storage-facing model still reaches further into service interaction than a pure storage boundary would.
 - ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions, including a temporary legacy alias. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
 - CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and workload vault configuration shapes.
 - The workload-zone Vault config reference and blob schema are now explicit, but the long-term owner of that surface is still a redesign pressure point.
@@ -358,12 +358,12 @@ These layers can create coupling pressure without owning domain responsibilities
 - ES `:prepare` remains an active but bounded compatibility surface rather than the declared long-term execution API.
 - ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing root are active today but should be treated as conventions under review.
 - AGS retains request fields such as `builder_service` and `policy_decisions` in forms that help preserve the current publication slice without proving those fields belong in the long-term kernel.
-- ARS exposes a descriptor-centered registration record because that is the active bounded choreography, not because that specific surface is already frozen as the final storage boundary.
+- ARS exposes a smaller runtime-facing discovery record plus a secondary descriptor support path because that is the active bounded choreography, not because that specific split is already frozen as the final storage boundary.
 
 ## 14. Reopened redesign seams
 
 - Workload-zone Vault runtime-config ownership, especially the long-term owner of the named config reference
-- ARS storage, registration, and discoverability shape, including the current descriptor and index contract
+- ARS storage, registration, and discoverability shape, including the current runtime-facing discovery record, secondary descriptor support path, and index contract
 - AGS publication responsibility shape and its relationship to shared signed fact assembly
 - ES admission surface and runtime package boundary, including prepare/submit partitioning and package-resolution assumptions
 - EGS policy-publication shape, especially the current trust model form

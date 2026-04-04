@@ -456,8 +456,8 @@ func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
 		},
 	}), "runtime-mount")
 
-	descriptor := stack.loadDescriptor(t, mountArtifact.ArtifactDigest)
-	removeBlob(t, stack.arsRootDir, descriptor.Package.Evidence.Digest)
+	discovery := stack.loadDiscovery(t, mountArtifact.ArtifactDigest)
+	removeBlob(t, stack.arsRootDir, discovery.Evidence.Digest)
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
@@ -1148,23 +1148,23 @@ func (s *submitStack) loadIndexEntry(t *testing.T, artifactDigest string) arsind
 	return entry
 }
 
-func (s *submitStack) loadDescriptor(t *testing.T, artifactDigest string) arsapi.ArtifactDescriptor {
+func (s *submitStack) loadDiscovery(t *testing.T, artifactDigest string) arsapi.ArtifactDiscovery {
 	t.Helper()
 
 	entry := s.loadIndexEntry(t, artifactDigest)
-	descriptorPath, err := arsstore.ResolvePath(s.arsRootDir, entry.DescriptorDigest)
+	discoveryPath, err := arsstore.ResolvePath(s.arsRootDir, entry.DiscoveryDigest)
 	if err != nil {
-		t.Fatalf("resolve descriptor blob path: %v", err)
+		t.Fatalf("resolve discovery blob path: %v", err)
 	}
-	data, err := os.ReadFile(descriptorPath)
+	data, err := os.ReadFile(discoveryPath)
 	if err != nil {
-		t.Fatalf("read descriptor blob: %v", err)
+		t.Fatalf("read discovery blob: %v", err)
 	}
-	var descriptor arsapi.ArtifactDescriptor
-	if err := json.Unmarshal(data, &descriptor); err != nil {
-		t.Fatalf("decode descriptor blob: %v", err)
+	var discovery arsapi.ArtifactDiscovery
+	if err := json.Unmarshal(data, &discovery); err != nil {
+		t.Fatalf("decode discovery blob: %v", err)
 	}
-	return descriptor
+	return discovery
 }
 
 func findTaskMountByTarget(t *testing.T, rawMounts any, target string) map[string]any {

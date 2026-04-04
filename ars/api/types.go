@@ -11,7 +11,17 @@ type ArtifactErrorResponse struct {
 	Digest         string `json:"digest,omitempty"`
 }
 
-const ArtifactDescriptorSchemaVersion = "v1"
+const (
+	ArtifactDiscoverySchemaVersion  = "v1"
+	ArtifactDescriptorSchemaVersion = "v1"
+)
+
+type ArtifactDiscovery struct {
+	SchemaVersion string           `json:"schema_version"`
+	Artifact      ArtifactIdentity `json:"artifact"`
+	Evidence      ArtifactBlobRef  `json:"evidence"`
+	Payload       ArtifactBlobRef  `json:"payload"`
+}
 
 type ArtifactDescriptor struct {
 	SchemaVersion string           `json:"schema_version"`
@@ -43,13 +53,15 @@ type ArtifactSupportRef struct {
 }
 
 type RegisterArtifactRequest struct {
-	DescriptorDigest string `json:"descriptor_digest"`
+	DiscoveryDigest  string `json:"discovery_digest"`
+	DescriptorDigest string `json:"descriptor_digest,omitempty"`
 }
 
 type RegisterArtifactResponse struct {
 	Registered       bool   `json:"registered"`
 	Created          bool   `json:"created"`
 	ArtifactDigest   string `json:"artifact_digest"`
+	DiscoveryDigest  string `json:"discovery_digest"`
 	DescriptorDigest string `json:"descriptor_digest"`
 }
 

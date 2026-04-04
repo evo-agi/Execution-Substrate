@@ -123,10 +123,16 @@ func validateEntry(key string, entry Entry) error {
 	}
 
 	if strings.TrimSpace(entry.DescriptorDigest) == "" {
-		return fmt.Errorf("artifact index entry %s is missing descriptor_digest", key)
-	}
-	if err := store.ValidateDigest(entry.DescriptorDigest); err != nil {
+		entry.DescriptorDigest = ""
+	} else if err := store.ValidateDigest(entry.DescriptorDigest); err != nil {
 		return fmt.Errorf("artifact index entry %s has invalid descriptor_digest: %w", key, err)
+	}
+
+	if strings.TrimSpace(entry.DiscoveryDigest) == "" {
+		return fmt.Errorf("artifact index entry %s is missing discovery_digest", key)
+	}
+	if err := store.ValidateDigest(entry.DiscoveryDigest); err != nil {
+		return fmt.Errorf("artifact index entry %s has invalid discovery_digest: %w", key, err)
 	}
 
 	if strings.TrimSpace(entry.CreatedAt) == "" {
@@ -138,6 +144,7 @@ func validateEntry(key string, entry Entry) error {
 
 func sameDigestTuple(left Entry, right Entry) bool {
 	return left.ArtifactDigest == right.ArtifactDigest &&
+		left.DiscoveryDigest == right.DiscoveryDigest &&
 		left.DescriptorDigest == right.DescriptorDigest
 }
 

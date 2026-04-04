@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	arsapi "execution-platform/ars/api"
 	evidencev1 "execution-platform/contracts/evidence/v1"
 	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
 	egsmodel "execution-platform/egs/model"
@@ -143,38 +144,9 @@ type artifactRegistryErrorResponse struct {
 	Error string `json:"error"`
 }
 
-type artifactRegistryDescriptor struct {
-	SchemaVersion string                             `json:"schema_version"`
-	Artifact      artifactRegistryDescriptorIdentity `json:"artifact"`
-	Package       artifactRegistryDescriptorPackage  `json:"package"`
-}
-
-type artifactRegistryDescriptorIdentity struct {
-	ArtifactDigest string `json:"artifact_digest"`
-	ArtifactType   string `json:"artifact_type"`
-	IntentDigest   string `json:"intent_digest"`
-}
-
-type artifactRegistryDescriptorPackage struct {
-	Evidence   artifactRegistryBlobRef         `json:"evidence"`
-	Payload    artifactRegistryBlobRef         `json:"payload"`
-	Supporting []artifactRegistrySupportingRef `json:"supporting,omitempty"`
-}
-
-type artifactRegistryBlobRef struct {
-	Digest    string `json:"digest"`
-	MediaType string `json:"media_type,omitempty"`
-}
-
-type artifactRegistrySupportingRef struct {
-	Name      string `json:"name"`
-	Digest    string `json:"digest"`
-	MediaType string `json:"media_type,omitempty"`
-}
-
 type discoveredArtifact struct {
-	descriptor artifactRegistryDescriptor
-	evidence   evidencev1.ArtifactEvidence
+	discovery arsapi.ArtifactDiscovery
+	evidence  evidencev1.ArtifactEvidence
 }
 
 type preparedArtifact struct {
@@ -380,39 +352,39 @@ func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
 }
 
 func (s *Service) fetchArtifactDiscovery(ctx context.Context, artifactDigest string) (discoveredArtifact, *Error) {
-	descriptor, err := s.fetchArtifactDescriptor(ctx, artifactDigest)
+	discovery, err := s.fetchArtifactDiscoveryRecord(ctx, artifactDigest)
 	if err != nil {
 		return discoveredArtifact{}, err
 	}
-	evidence, err := s.fetchArtifactEvidenceBlob(ctx, artifactDigest, descriptor.Package.Evidence.Digest)
+	evidence, err := s.fetchArtifactEvidenceBlob(ctx, artifactDigest, discovery.Evidence.Digest)
 	if err != nil {
 		return discoveredArtifact{}, err
 	}
 	return discoveredArtifact{
-		descriptor: descriptor,
-		evidence:   evidence,
+		discovery: discovery,
+		evidence:  evidence,
 	}, nil
 }
 
-func (s *Service) fetchArtifactDescriptor(ctx context.Context, artifactDigest string) (artifactRegistryDescriptor, *Error) {
-	response, err := s.arsClient.get(ctx, "/v1/artifacts/"+artifactDigest+"/descriptor")
+func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDigest string) (arsapi.ArtifactDiscovery, *Error) {
+	response, err := s.arsClient.get(ctx, "/v1/artifacts/"+artifactDigest+"/discovery")
 	if err != nil {
-		return artifactRegistryDescriptor{}, &Error{
+		return arsapi.ArtifactDiscovery{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeArtifactEvidenceUnavailable,
-			Message: "artifact descriptor read failed",
+			Message: "artifact discovery read failed",
 		}
 	}
 	defer response.Body.Close()
 
 	switch response.StatusCode {
 		case http.StatusOK:
-			var payload artifactRegistryDescriptor
+			var payload arsapi.ArtifactDiscovery
 			if err := decodeJSON(response.Body, &payload); err != nil {
-				return artifactRegistryDescriptor{}, &Error{
+				return arsapi.ArtifactDiscovery{}, &Error{
 					Status:  http.StatusServiceUnavailable,
 					Code:    codeArtifactEvidenceUnavailable,
-					Message: "artifact descriptor payload was invalid",
+					Message: "artifact discovery payload was invalid",
 				}
 			}
 			return payload, nil
@@ -421,20 +393,20 @@ func (s *Service) fetchArtifactDescriptor(ctx context.Context, artifactDigest st
 			if err := json.NewDecoder(response.Body).Decode(&payload); err == nil {
 				switch strings.TrimSpace(payload.Error) {
 					case "artifact not found", "artifact data not registered":
-						return artifactRegistryDescriptor{}, &Error{
+						return arsapi.ArtifactDiscovery{}, &Error{
 							Status:  http.StatusNotFound,
 							Code:    codeArtifactEvidenceNotFound,
 							Message: "artifact evidence not found",
 						}
 				}
 			}
-			return artifactRegistryDescriptor{}, &Error{
+			return arsapi.ArtifactDiscovery{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
 				Message: "artifact evidence is unavailable",
 			}
 		default:
-			return artifactRegistryDescriptor{}, &Error{
+			return arsapi.ArtifactDiscovery{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
 				Message: "artifact evidence is unavailable",
@@ -480,14 +452,14 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 }
 
 func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.RuntimeTrustPolicy, discovery discoveredArtifact) (preparedArtifact, *Error) {
-	descriptor := discovery.descriptor
+	discoveryRecord := discovery.discovery
 	evidence := discovery.evidence
 	authorization := evidence.Claims.Admission.Authorization
-	if descriptor.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
+	if discoveryRecord.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
-			Message: "artifact digest mismatch between request and artifact descriptor",
+			Message: "artifact digest mismatch between request and artifact discovery",
 		}
 	}
 	if evidence.Claims.Package.Identity.ArtifactDigest != req.Invocation.ArtifactDigest {
@@ -511,7 +483,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 			Message: "output_id does not match artifact evidence",
 		}
 	}
-	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, descriptor, evidence)
+	artifact, err := s.prepareArtifactFromEvidenceRecord(trustModel, discoveryRecord, evidence)
 	if err != nil {
 		return preparedArtifact{}, err
 	}
@@ -521,8 +493,8 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 	return artifact, nil
 }
 
-func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeTrustPolicy, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
-	artifactDigest := strings.TrimSpace(descriptor.Artifact.ArtifactDigest)
+func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeTrustPolicy, discovery arsapi.ArtifactDiscovery, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
+	artifactDigest := strings.TrimSpace(discovery.Artifact.ArtifactDigest)
 	execution := evidence.Claims.Admission.Execution
 	if evidence.Claims.Package.Identity.ArtifactDigest != artifactDigest {
 		return preparedArtifact{}, &Error{
@@ -538,25 +510,25 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 			Message: "artifact evidence is structurally invalid",
 		}
 	}
-	if evidence.Claims.Package.Identity.PayloadDigest != strings.TrimSpace(descriptor.Package.Payload.Digest) {
+	if evidence.Claims.Package.Identity.PayloadDigest != strings.TrimSpace(discovery.Payload.Digest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
-			Message: "artifact descriptor payload reference does not match artifact evidence",
+			Message: "artifact discovery payload reference does not match artifact evidence",
 		}
 	}
-	if evidence.Claims.Package.Identity.ArtifactType != strings.TrimSpace(descriptor.Artifact.ArtifactType) {
+	if evidence.Claims.Package.Identity.ArtifactType != strings.TrimSpace(discovery.Artifact.ArtifactType) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
-			Message: "artifact descriptor artifact type does not match artifact evidence",
+			Message: "artifact discovery artifact type does not match artifact evidence",
 		}
 	}
-	if evidence.Claims.Package.Identity.IntentDigest != strings.TrimSpace(descriptor.Artifact.IntentDigest) {
+	if evidence.Claims.Package.Identity.IntentDigest != strings.TrimSpace(discovery.Artifact.IntentDigest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
-			Message: "artifact descriptor intent digest does not match artifact evidence",
+			Message: "artifact discovery intent digest does not match artifact evidence",
 		}
 	}
 	if err := evidencev1.Verify(evidence, s.provenanceVerifier.keyID, s.provenanceVerifier.algorithm, s.provenanceVerifier.publicKey); err != nil {
@@ -572,7 +544,7 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 
 	return preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
-		payloadDigest:  strings.TrimSpace(descriptor.Package.Payload.Digest),
+		payloadDigest:  strings.TrimSpace(discovery.Payload.Digest),
 		targetPlatform: execution.Workload.TargetPlatform,
 		networkAccess:  execution.Access.NetworkAccess,
 	}, nil
