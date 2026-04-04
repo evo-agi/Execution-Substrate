@@ -6,26 +6,34 @@ import (
 	"strings"
 )
 
-// TODO: Do not mention "monolith"
 const (
-	runtimeIdentityEndpointEnvKey = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	// runtimeIdentityEndpointEnvValue is the current bounded workload-visible
-	// endpoint discovery convention. ES derives its internal workspace layout
-	// from this endpoint instead of treating the workspace path as a separate
-	// workload contract.
-	runtimeIdentityEndpointEnvValue = "unix:///monolith/runtime-identity/endpoint"
+	runtimeIdentityEndpointEnvKey              = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
+	runtimeIdentityEndpointCompatibilityEnvKey = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
+	runtimeIdentityWorkspaceRoot               = "/run/es-runtime-identity"
+	runtimeIdentityEndpointFilename            = "endpoint"
 )
 
 type runtimeIdentityHandoff struct {
-	endpointEnvKey string
-	endpointURI    string
+	endpointEnvKey              string
+	compatibilityEndpointEnvKey string
+	endpointURI                 string
+}
+
+func runtimeIdentityHandoffForRun(runID string) runtimeIdentityHandoff {
+	normalizedRunID := strings.TrimSpace(runID)
+	if normalizedRunID == "" {
+		normalizedRunID = "current"
+	}
+	endpointPath := path.Join(runtimeIdentityWorkspaceRoot, normalizedRunID, runtimeIdentityEndpointFilename)
+	return runtimeIdentityHandoff{
+		endpointEnvKey:              runtimeIdentityEndpointEnvKey,
+		compatibilityEndpointEnvKey: runtimeIdentityEndpointCompatibilityEnvKey,
+		endpointURI:                 "unix://" + endpointPath,
+	}
 }
 
 func currentRuntimeIdentityHandoff() runtimeIdentityHandoff {
-	return runtimeIdentityHandoff{
-		endpointEnvKey: runtimeIdentityEndpointEnvKey,
-		endpointURI:    runtimeIdentityEndpointEnvValue,
-	}
+	return runtimeIdentityHandoffForRun("current")
 }
 
 func (h runtimeIdentityHandoff) endpointPath() string {
@@ -40,8 +48,7 @@ func (h runtimeIdentityHandoff) reservedRuntimePaths() []string {
 	return []string{
 		"/monolith/staged",
 		"/monolith/run",
-		h.workspaceDir(),
-		h.endpointPath(),
+		runtimeIdentityWorkspaceRoot,
 	}
 }
 

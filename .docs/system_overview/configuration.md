@@ -213,9 +213,11 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `/monolith/staged` and caller-visible `/monolith/mounts/...` remain host-backed copies of governed artifact content
   - ES does not semantically inspect payloads or mount contents for secrecy
 - the runtime identity contract no longer requires ES-local identity plumbing configuration
-- ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under `/monolith/runtime-identity/`
+- ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
   - this backing workspace is not persisted to host staging
   - `execution.runtime_identity_tmpfs_size` controls that ES-owned backing workspace and defaults to `1048576` bytes (`1 MiB`); it must not exceed `8388608` bytes (`8 MiB`)
+- workloads should rely on `EXEC_WORKLOAD_IDENTITY_ENDPOINT` for endpoint discovery rather than on any fixed socket path
+- `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` remains a temporary compatibility alias that currently carries the same discovered endpoint value
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 
 Minimal vault-auth example:

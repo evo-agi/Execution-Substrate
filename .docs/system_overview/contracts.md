@@ -597,12 +597,13 @@ Describe the current ES-to-runtime identity boundary used during submission and 
 
 Current workload-visible handoff:
 
-- `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+- canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
+- temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=<same value>`
 - non-secret workload-vault environment inputs derived from the resolved `workload_vault` plan
 
 Current ES-owned implementation details behind that handoff:
 
-- ES currently backs the discovered endpoint with a writable tmpfs workspace under `/monolith/runtime-identity/`
+- ES currently backs the discovered endpoint with a writable tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
 - ES currently protects the workspace subtree and the endpoint path from caller mount overlap
 
 Current runtime rules:
@@ -638,8 +639,9 @@ Current runtime rules:
 
 `Temporary compatibility edge`
 
-- The specific `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint` convention is active today, but it remains a bounded compatibility-heavy handoff rather than declared permanent architecture.
-- The `/monolith/runtime-identity/...` backing layout is current ES implementation, not a broader workload contract.
+- `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` remains active only as a compatibility alias while any compatibility consumers still rely on the legacy name.
+- The endpoint URI is ES-chosen and run-scoped rather than a fixed `/monolith/runtime-identity/endpoint` contract.
+- The `/run/es-runtime-identity/...` backing layout is current ES implementation, not a broader workload contract.
 
 ### Reopened seams
 
@@ -654,7 +656,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
-- `ES` currently uses `/monolith/staged`, `/monolith/run`, `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`, and the current ES-owned runtime-identity backing layout as active runtime conventions.
+- `ES` currently uses `/monolith/staged`, `/monolith/run`, `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, the temporary `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` alias, and the current ES-owned runtime-identity backing layout as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 
 ## 12. Reopened Redesign Seams

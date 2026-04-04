@@ -74,6 +74,7 @@ var (
 		"VAULT_ADDR":                  {},
 		"VAULT_NAMESPACE":             {},
 		runtimeIdentityEndpointEnvKey: {},
+		runtimeIdentityEndpointCompatibilityEnvKey: {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
@@ -119,8 +120,10 @@ type ed25519Verifier struct {
 }
 
 // TODO: ARS publishes richer health payloads today, but ES must not grow an
-// 		implicit shared health-schema dependency around those additional fields.
-// 		Revisit only if the platform adopts an explicit shared readiness contract.
+//
+//	implicit shared health-schema dependency around those additional fields.
+//	Revisit only if the platform adopts an explicit shared readiness contract.
+//
 // healthResponse is intentionally minimal. ES only depends on dependency
 type healthResponse struct {
 	Status string `json:"status"`

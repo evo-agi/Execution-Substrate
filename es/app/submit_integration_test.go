@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	workloadIdentityEndpointEnvKey   = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	workloadIdentityEndpointEnvValue = "unix:///monolith/runtime-identity/endpoint"
+	workloadIdentityEndpointEnvKey              = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
+	workloadIdentityEndpointCompatibilityEnvKey = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
 )
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
@@ -168,7 +168,12 @@ func TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks(t *test
 
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
+echo "${EXEC_WORKLOAD_IDENTITY_ENDPOINT}"
 echo "${MONOLITH_WORKLOAD_IDENTITY_ENDPOINT}"
+if [ "${EXEC_WORKLOAD_IDENTITY_ENDPOINT}" != "${MONOLITH_WORKLOAD_IDENTITY_ENDPOINT}" ]; then
+  echo "IDENTITY-ENDPOINT-ALIAS-MISMATCH"
+  exit 1
+fi
 echo "${MONOLITH_WORKLOAD_VAULT_AUTH_MODE}"
 echo "IDENTITY-ENDPOINT-ENV-OK"
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
@@ -192,11 +197,18 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 
 	taskConfig := job.task(t)
-	if got := taskConfig.Env[workloadIdentityEndpointEnvKey]; got != workloadIdentityEndpointEnvValue {
-		t.Fatalf("expected %s=%q, got %q", workloadIdentityEndpointEnvKey, workloadIdentityEndpointEnvValue, got)
+	endpointURI := taskConfig.Env[workloadIdentityEndpointEnvKey]
+	if !strings.HasPrefix(endpointURI, "unix://") {
+		t.Fatalf("expected canonical workload identity endpoint env to carry a unix URI, got %q", endpointURI)
+	}
+	if strings.Contains(endpointURI, "/monolith/") {
+		t.Fatalf("did not expect canonical workload identity endpoint env to expose legacy /monolith path conventions, got %q", endpointURI)
+	}
+	if legacy := taskConfig.Env[workloadIdentityEndpointCompatibilityEnvKey]; legacy != endpointURI {
+		t.Fatalf("expected compatibility workload identity endpoint env %s to match canonical %q, got %q", workloadIdentityEndpointCompatibilityEnvKey, endpointURI, legacy)
 	}
 
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, taskConfig.Env[workloadIdentityEndpointEnvKey]))
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, endpointURI))
 	if mountType := mountConfig["type"]; mountType != "tmpfs" {
 		t.Fatalf("expected tmpfs runtime identity workspace mount, got %#v", mountType)
 	}
@@ -247,8 +259,11 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 
 	logs := string(mustReadBody(t, logsResponse.Body))
-	if !strings.Contains(logs, workloadIdentityEndpointEnvValue) || !strings.Contains(logs, "IDENTITY-ENDPOINT-ENV-OK") {
+	if !strings.Contains(logs, endpointURI) || !strings.Contains(logs, "IDENTITY-ENDPOINT-ENV-OK") {
 		t.Fatalf("expected workload identity endpoint env markers in logs, got %q", logs)
+	}
+	if strings.Contains(logs, "unix:///monolith/runtime-identity/endpoint") {
+		t.Fatalf("did not expect logs to depend on the legacy fixed workload identity endpoint value, got %q", logs)
 	}
 	if !strings.Contains(logs, "vault_identity_jwt") {
 		t.Fatalf("expected bounded auth mode marker in logs, got %q", logs)
@@ -268,7 +283,7 @@ import os
 import socket
 import threading
 
-endpoint = os.environ["MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"]
+endpoint = os.environ["EXEC_WORKLOAD_IDENTITY_ENDPOINT"]
 if not endpoint.startswith("unix://"):
     raise SystemExit(f"unexpected endpoint: {endpoint}")
 path = endpoint[len("unix://"):]

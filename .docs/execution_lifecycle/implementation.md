@@ -27,7 +27,7 @@ These labels matter because implementation shape and public contract are related
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
 | `es/admission/submit.go` | `Submit`, run/job ID creation, payload staging, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
 | `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, `run_id` resolution, Nomad lookup helpers, latest-allocation selection | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
-| `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env constant, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
+| `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env conventions, run-scoped endpoint derivation, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
 | `es/admission/mounts.go` | Runtime mount request validation, mount artifact revalidation, mount staging and archive extraction | General artifact publication, lifecycle state | This is where mount side effects and mount-specific trust checks live |
 
 Related support files:
@@ -221,12 +221,11 @@ Cancel path:
 - Defines reserved runtime paths:
   - `/monolith/staged`
   - `/monolith/run`
-  - the current workspace path derived from the endpoint convention
-  - the current endpoint path derived from the endpoint convention
-- Defines the current workload-visible endpoint environment key/value:
-  - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
-  - `unix:///monolith/runtime-identity/endpoint`
-- Derives the backing workspace path from the endpoint convention instead of treating it as a separate workload contract.
+  - the current ES-owned runtime-identity workspace root
+- Defines the current workload-visible endpoint environment conventions:
+  - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
+  - temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+- Derives a run-scoped Unix endpoint URI and backing workspace path under the ES-owned runtime-identity root instead of treating a fixed endpoint path as workload contract.
 - Enforces overlap checks with `ValidateReservedRuntimePaths`.
 
 **Implementation invariant**
@@ -284,7 +283,7 @@ Runtime-path effects in the Nomad job spec:
 
 - Host `payloadDir` is bind-mounted to `/monolith/staged`
 - Host `runDir` is bind-mounted to `/monolith/run`
-- Runtime identity workspace is mounted as tmpfs at `/monolith/runtime-identity`
+- Runtime identity workspace is mounted as tmpfs at the run-scoped workspace derived from the discovered endpoint
 
 Cleanup behavior visible in code:
 

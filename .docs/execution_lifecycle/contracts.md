@@ -497,8 +497,9 @@ Successful response is `200` JSON with these fields:
 
 **Observed current contract-adjacent conventions**
 
-- ES injects the current endpoint environment convention:
-  - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`
+- ES injects the current endpoint-discovery environment conventions:
+  - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
+  - temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=<same value>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from `workload_vault`.
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 

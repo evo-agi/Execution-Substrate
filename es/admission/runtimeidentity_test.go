@@ -6,23 +6,33 @@ import (
 	"testing"
 )
 
-func TestCurrentRuntimeIdentityHandoffDerivesWorkspaceFromEndpointConvention(t *testing.T) {
-	handoff := currentRuntimeIdentityHandoff()
+func TestRuntimeIdentityHandoffUsesCanonicalEndpointDiscoveryAndCompatibilityAlias(t *testing.T) {
+	handoff := runtimeIdentityHandoffForRun("run-0123456789abcdef")
 
 	if handoff.endpointEnvKey != runtimeIdentityEndpointEnvKey {
 		t.Fatalf("expected endpoint env key %q, got %q", runtimeIdentityEndpointEnvKey, handoff.endpointEnvKey)
 	}
+	if handoff.compatibilityEndpointEnvKey != runtimeIdentityEndpointCompatibilityEnvKey {
+		t.Fatalf("expected compatibility endpoint env key %q, got %q", runtimeIdentityEndpointCompatibilityEnvKey, handoff.compatibilityEndpointEnvKey)
+	}
 	if !strings.HasPrefix(handoff.endpointURI, "unix://") {
 		t.Fatalf("expected unix endpoint URI, got %q", handoff.endpointURI)
+	}
+	if strings.Contains(handoff.endpointURI, "/monolith/") {
+		t.Fatalf("did not expect endpoint URI to expose legacy /monolith path conventions, got %q", handoff.endpointURI)
 	}
 	if workspaceDir := handoff.workspaceDir(); workspaceDir != path.Dir(strings.TrimPrefix(handoff.endpointURI, "unix://")) {
 		t.Fatalf("expected workspace dir to be derived from endpoint URI, got %q", workspaceDir)
 	}
+	if !strings.HasPrefix(handoff.workspaceDir(), runtimeIdentityWorkspaceRoot+"/") {
+		t.Fatalf("expected workspace dir to stay under %q, got %q", runtimeIdentityWorkspaceRoot, handoff.workspaceDir())
+	}
 }
 
 func TestValidateReservedRuntimePathsRejectsRuntimeIdentityWorkspaceOverlap(t *testing.T) {
-	handoff := currentRuntimeIdentityHandoff()
+	handoff := runtimeIdentityHandoffForRun("run-0123456789abcdef")
 	testCases := []string{
+		runtimeIdentityWorkspaceRoot,
 		handoff.workspaceDir(),
 		handoff.endpointPath(),
 		path.Join(handoff.workspaceDir(), "helper.sock"),

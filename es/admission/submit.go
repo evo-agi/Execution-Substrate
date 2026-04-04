@@ -237,9 +237,9 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 }
 
 func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
-	handoff := currentRuntimeIdentityHandoff()
+	handoff := runtimeIdentityHandoffForRun(runID)
 
-	env := make(map[string]string, len(invocationEnv)+11)
+	env := make(map[string]string, len(invocationEnv)+12)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
@@ -251,6 +251,7 @@ func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = prepared.WorkloadVault.Address
 	env[handoff.endpointEnvKey] = handoff.endpointURI
+	env[handoff.compatibilityEndpointEnvKey] = handoff.endpointURI
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = prepared.WorkloadVault.AuthMode
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = prepared.WorkloadVault.AuthMount
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = prepared.WorkloadVault.AuthRole
@@ -271,7 +272,7 @@ func buildNomadJobSpec(
 	taskMemoryMB int,
 	env map[string]string,
 ) map[string]any {
-	handoff := currentRuntimeIdentityHandoff()
+	handoff := runtimeIdentityHandoffForRun(runID)
 
 	// TODO: Do not mention "monolith"
 	wrapper := strings.Join([]string{

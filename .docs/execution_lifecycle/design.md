@@ -42,7 +42,7 @@ Current slice summary:
 | Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preparation result. ARS is authoritative for artifact descriptor discoverability, evidence and payload blob reads, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
-| Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
+| Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and injects endpoint-discovery environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
 | Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, derives the Nomad job ID, reads Nomad job and allocation state, reads task stdout, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
 
 ## 5. Phase model
@@ -157,7 +157,7 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 
 Design-level meaning:
 
-- ES injects the current endpoint environment convention and currently backs it with an ES-owned runtime subtree.
+- ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
 - ES does not implement the workload-side runtime identity endpoint.

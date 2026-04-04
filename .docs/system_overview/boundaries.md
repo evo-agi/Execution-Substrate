@@ -230,14 +230,14 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - `:prepare` and `:submit` are intentionally bounded current surfaces, not statements that this request shape is settled architecture.
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
-- Runtime staging, mount validation, and the internal `/monolith/...` subtree that backs runtime handoff are part ownership and part current convention.
+- Runtime staging, mount validation, and the internal ES-owned runtime subtree that backs runtime handoff are part ownership and part current convention.
 - ES returns and relies on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`.
 
 **Temporary compatibility edges**
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
 - Current runtime mount conventions use `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing layout.
-- The workload-visible runtime identity convention currently injects `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=unix:///monolith/runtime-identity/endpoint`.
+- The workload-visible runtime identity convention currently injects canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, with `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` retained only as a temporary compatibility alias.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 
 **Reopened seams**
@@ -347,14 +347,14 @@ These layers can create coupling pressure without owning domain responsibilities
 - `contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
 - ES, ARS, and the runtime-config surface currently participate in a tight choreography around reference resolution, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
 - The ARS descriptor-centered registration record constrains both AGS publication and ES discoverability. That storage-facing model currently reaches further into service interaction than a pure storage boundary would.
-- ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions under `/monolith/...`. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
+- ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions, including a temporary legacy alias. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
 - CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and workload vault configuration shapes.
 - The workload-zone Vault config reference and blob schema are now explicit, but the long-term owner of that surface is still a redesign pressure point.
 
 ## 13. Temporary compatibility-heavy edges
 
 - ES `:prepare` remains an active but bounded compatibility surface rather than the declared long-term execution API.
-- ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and `/monolith/runtime-identity` are active today but should be treated as conventions under review.
+- ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing root are active today but should be treated as conventions under review.
 - AGS retains request fields such as `builder_service` and `policy_decisions` in forms that help preserve the current publication slice without proving those fields belong in the long-term kernel.
 - ARS exposes a descriptor-centered registration record because that is the active bounded choreography, not because that specific surface is already frozen as the final storage boundary.
 
