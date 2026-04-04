@@ -64,7 +64,7 @@ Top-level interaction notes:
 
 ### Publication flow
 
-AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from a package-identity claim set anchored to the payload digest, assembles the current aggregate artifact-evidence claims plus seal, signs that evidence, and writes the canonical publication record through ARS.
+AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from package-facing identity inputs anchored to the payload digest, assembles the current aggregate artifact-evidence record with separate package and admission claim sections plus seal, signs that evidence, and writes the canonical publication record through ARS.
 
 ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 

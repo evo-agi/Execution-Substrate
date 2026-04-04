@@ -13,28 +13,34 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
+	identity, err := NewArtifactIdentity(
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"static-script",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	)
+	if err != nil {
+		t.Fatalf("new artifact identity: %v", err)
+	}
+
 	record := ArtifactEvidence{
 		Claims: Claims{
 			SchemaVersion: Version,
-			Artifact: Artifact{
-				ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-				ArtifactType:   "static-script",
-				IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			},
-			Publication: Publication{
-				BuilderService: "artifact-governance",
-				Invoker: Invoker{
-					Service:   "deployment",
-					Principal: "spiffe://monolith.internal/service/deployment",
+			Package: PackageClaims{
+				Identity: identity,
+				Publication: Publication{
+					BuilderService: "artifact-governance",
+					Invoker: Invoker{
+						Service:   "deployment",
+						Principal: "spiffe://monolith.internal/service/deployment",
+					},
+					PolicyDecisions: []PolicyDecision{
+						{Rule: "z-last", Result: "allow"},
+						{Rule: "a-first", Result: "allow"},
+					},
+					BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				},
-				PolicyDecisions: []PolicyDecision{
-					{Rule: "z-last", Result: "allow"},
-					{Rule: "a-first", Result: "allow"},
-				},
-				BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			},
-			Admission: Admission{
+			Admission: AdmissionClaims{
 				Runtime: Runtime{
 					Parameters:           []string{"z", "a"},
 					EnvironmentVariables: []string{"APP_MODE", "API_URL"},
@@ -93,24 +99,30 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 }
 
 func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
+	identity, err := NewArtifactIdentity(
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"static-script",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	)
+	if err != nil {
+		t.Fatalf("new artifact identity: %v", err)
+	}
+
 	record := ArtifactEvidence{
 		Claims: Claims{
 			SchemaVersion: Version,
-			Artifact: Artifact{
-				ArtifactDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				PayloadDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-				ArtifactType:   "static-script",
-				IntentDigest:   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			},
-			Publication: Publication{
-				BuilderService: "artifact-governance",
-				Invoker: Invoker{
-					Service:   "deployment",
-					Principal: "spiffe://monolith.internal/service/deployment",
+			Package: PackageClaims{
+				Identity: identity,
+				Publication: Publication{
+					BuilderService: "artifact-governance",
+					Invoker: Invoker{
+						Service:   "deployment",
+						Principal: "spiffe://monolith.internal/service/deployment",
+					},
+					BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				},
-				BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			},
-			Admission: Admission{
+			Admission: AdmissionClaims{
 				Derivation: Derivation{
 					DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 					OutputID:             "runtime",
@@ -141,5 +153,40 @@ func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
 
 	if err := record.Validate(); err == nil || !strings.Contains(err.Error(), "policy_version") {
 		t.Fatalf("expected policy version mismatch error, got %v", err)
+	}
+}
+
+func TestDeriveArtifactDigestUsesPackageIdentityOnly(t *testing.T) {
+	first, err := DeriveArtifactDigest(
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"static-script",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	)
+	if err != nil {
+		t.Fatalf("derive artifact digest: %v", err)
+	}
+
+	second, err := DeriveArtifactDigest(
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"static-script",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	)
+	if err != nil {
+		t.Fatalf("derive artifact digest again: %v", err)
+	}
+	if first != second {
+		t.Fatalf("expected identical package identity inputs to produce stable artifact digests, got %q and %q", first, second)
+	}
+
+	changedIntent, err := DeriveArtifactDigest(
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"static-script",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	)
+	if err != nil {
+		t.Fatalf("derive artifact digest with changed intent: %v", err)
+	}
+	if first == changedIntent {
+		t.Fatalf("expected intent digest to affect artifact identity, both were %q", first)
 	}
 }

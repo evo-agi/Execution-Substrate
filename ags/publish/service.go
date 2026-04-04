@@ -126,10 +126,15 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 	}
 
 	payloadDigest := digestBytes(validation.payloadBytes)
-	artifactDigest, err := deriveArtifactDigest(payloadDigest, req)
+	identity, err := evidencev1.NewArtifactIdentity(
+		payloadDigest,
+		strings.TrimSpace(req.Artifact.ArtifactType),
+		strings.TrimSpace(req.Artifact.IntentDigest),
+	)
 	if err != nil {
 		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: "derive artifact identity failed"}
 	}
+	artifactDigest := identity.ArtifactDigest
 
 	manifest := Manifest{
 		ArtifactDigest:   artifactDigest,
@@ -144,7 +149,7 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 		ProducerRunID:        strings.TrimSpace(req.Admission.Derivation.ProducerRunID),
 	}
 
-	evidence, err := s.buildArtifactEvidence(payloadDigest, manifest, metadata, req, validation.invoker)
+	evidence, err := s.buildArtifactEvidence(identity, manifest, metadata, req, validation.invoker)
 	if err != nil {
 		return PublishResult{}, &Error{Status: http.StatusInternalServerError, Code: codePublishFailed, Message: err.Error()}
 	}
@@ -220,7 +225,7 @@ func (s *Service) Publish(ctx context.Context, caller CallerIdentity, req Publis
 }
 
 func (s *Service) buildArtifactEvidence(
-	payloadDigest string,
+	identity evidencev1.ArtifactIdentity,
 	manifest Manifest,
 	metadata DerivationMetadata,
 	req PublishRequest,
@@ -229,22 +234,19 @@ func (s *Service) buildArtifactEvidence(
 	record := evidencev1.ArtifactEvidence{
 		Claims: evidencev1.Claims{
 			SchemaVersion: evidencev1.Version,
-			Artifact: evidencev1.Artifact{
-				ArtifactDigest: manifest.ArtifactDigest,
-				PayloadDigest:  payloadDigest,
-				ArtifactType:   manifest.ArtifactType,
-				IntentDigest:   manifest.IntentDigest,
-			},
-			Publication: evidencev1.Publication{
-				BuilderService: builderServiceName,
-				Invoker: evidencev1.Invoker{
-					Service:   invoker.Service,
-					Principal: invoker.Principal,
+			Package: evidencev1.PackageClaims{
+				Identity: identity,
+				Publication: evidencev1.Publication{
+					BuilderService: builderServiceName,
+					Invoker: evidencev1.Invoker{
+						Service:   invoker.Service,
+						Principal: invoker.Principal,
+					},
+					PolicyDecisions: toEvidencePolicyDecisions(normalizePolicyDecisions(req.Publication.PolicyDecisions)),
+					BuildLogDigest:  strings.TrimSpace(req.Publication.BuildLogDigest),
 				},
-				PolicyDecisions: toEvidencePolicyDecisions(normalizePolicyDecisions(req.Publication.PolicyDecisions)),
-				BuildLogDigest:  strings.TrimSpace(req.Publication.BuildLogDigest),
 			},
-			Admission: evidencev1.Admission{
+			Admission: evidencev1.AdmissionClaims{
 				Runtime: evidencev1.Runtime{
 					Parameters:           cloneStringsPreserveShape(manifest.RuntimeInterface.Parameters),
 					EnvironmentVariables: cloneStringsPreserveShape(manifest.RuntimeInterface.EnvironmentVariables),
@@ -552,95 +554,6 @@ func decodeJSON(reader io.Reader, target any) error {
 	return nil
 }
 
-func deriveArtifactDigest(payloadDigest string, req PublishRequest) (string, error) {
-	type identityArtifact struct {
-		PayloadDigest string `json:"payload_digest"`
-		ArtifactType  string `json:"artifact_type"`
-		IntentDigest  string `json:"intent_digest"`
-	}
-	type identityRuntime struct {
-		Parameters           []string `json:"parameters"`
-		EnvironmentVariables []string `json:"environment_variables"`
-		RequiredCapabilities []string `json:"required_capabilities"`
-	}
-	type identityConstraints struct {
-		AllowedToolchains      []string `json:"allowed_toolchains"`
-		ForbiddenToolchains    []string `json:"forbidden_toolchains"`
-		OS                     string   `json:"os"`
-		Arch                   string   `json:"arch"`
-		NetworkAccess          bool     `json:"network_access"`
-		WritablePaths          []string `json:"writable_paths"`
-		ForbiddenPaths         []string `json:"forbidden_paths"`
-		DeterminismExpectation string   `json:"determinism_expectation"`
-	}
-	type identityDerivation struct {
-		DerivationSpecDigest string              `json:"derivation_spec_digest"`
-		OutputID             string              `json:"output_id"`
-		ExpectedArtifactType string              `json:"expected_artifact_type,omitempty"`
-		Constraints          identityConstraints `json:"constraints"`
-	}
-	type identityWorkload struct {
-		ArtifactClass      string `json:"artifact_class"`
-		WorkloadType       string `json:"workload_type"`
-		ModulePath         string `json:"module_path"`
-		ServiceName        string `json:"service_name,omitempty"`
-		TargetPlatform     string `json:"target_platform,omitempty"`
-		Description        string `json:"description,omitempty"`
-		WorkloadIdentityID string `json:"workload_identity_id"`
-	}
-	type artifactIdentity struct {
-		SchemaVersion string             `json:"schema_version"`
-		Artifact      identityArtifact   `json:"artifact"`
-		Runtime       identityRuntime    `json:"runtime"`
-		Derivation    identityDerivation `json:"derivation"`
-		Workload      identityWorkload   `json:"workload"`
-	}
-
-	identity := artifactIdentity{
-		SchemaVersion: "v1",
-		Artifact: identityArtifact{
-			PayloadDigest: strings.TrimSpace(payloadDigest),
-			ArtifactType:  strings.TrimSpace(req.Artifact.ArtifactType),
-			IntentDigest:  strings.TrimSpace(req.Artifact.IntentDigest),
-		},
-		Runtime: identityRuntime{
-			Parameters:           normalizeStringSet(req.Admission.Runtime.Parameters),
-			EnvironmentVariables: normalizeStringSet(req.Admission.Runtime.EnvironmentVariables),
-			RequiredCapabilities: normalizeStringSet(req.Admission.Runtime.RequiredCapabilities),
-		},
-		Derivation: identityDerivation{
-			DerivationSpecDigest: strings.TrimSpace(req.Admission.Derivation.DerivationSpecDigest),
-			OutputID:             strings.TrimSpace(req.Admission.Derivation.OutputID),
-			ExpectedArtifactType: strings.TrimSpace(req.Admission.Derivation.ExpectedArtifactType),
-			Constraints: identityConstraints{
-				AllowedToolchains:      normalizeStringSet(req.Admission.Derivation.Constraints.AllowedToolchains),
-				ForbiddenToolchains:    normalizeStringSet(req.Admission.Derivation.Constraints.ForbiddenToolchains),
-				OS:                     strings.TrimSpace(req.Admission.Derivation.Constraints.OS),
-				Arch:                   strings.TrimSpace(req.Admission.Derivation.Constraints.Arch),
-				NetworkAccess:          req.Admission.Derivation.Constraints.NetworkAccess,
-				WritablePaths:          normalizeStringSet(req.Admission.Derivation.Constraints.WritablePaths),
-				ForbiddenPaths:         normalizeStringSet(req.Admission.Derivation.Constraints.ForbiddenPaths),
-				DeterminismExpectation: strings.TrimSpace(req.Admission.Derivation.Constraints.DeterminismExpectation),
-			},
-		},
-		Workload: identityWorkload{
-			ArtifactClass:      strings.TrimSpace(req.Admission.Workload.ArtifactClass),
-			WorkloadType:       strings.TrimSpace(req.Admission.Workload.WorkloadType),
-			ModulePath:         strings.TrimSpace(req.Admission.Workload.ModulePath),
-			ServiceName:        strings.TrimSpace(req.Admission.Workload.ServiceName),
-			TargetPlatform:     strings.TrimSpace(req.Admission.Workload.TargetPlatform),
-			Description:        strings.TrimSpace(req.Admission.Workload.Description),
-			WorkloadIdentityID: strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID),
-		},
-	}
-
-	canonical, err := json.Marshal(identity)
-	if err != nil {
-		return "", err
-	}
-	return digestBytes(canonical), nil
-}
-
 func normalizePolicyDecisions(decisions []PolicyDecision) []PolicyDecision {
 	normalized := append([]PolicyDecision(nil), decisions...)
 	sort.Slice(normalized, func(i, j int) bool {
@@ -649,18 +562,6 @@ func normalizePolicyDecisions(decisions []PolicyDecision) []PolicyDecision {
 		}
 		return normalized[i].Rule < normalized[j].Rule
 	})
-	return normalized
-}
-
-func normalizeStringSet(values []string) []string {
-	if len(values) == 0 {
-		return []string{}
-	}
-	normalized := append([]string(nil), values...)
-	for i := range normalized {
-		normalized[i] = strings.TrimSpace(normalized[i])
-	}
-	sort.Strings(normalized)
 	return normalized
 }
 

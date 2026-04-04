@@ -551,7 +551,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 			Message: "artifact digest mismatch between request and artifact descriptor",
 		}
 	}
-	if evidence.Claims.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
+	if evidence.Claims.Package.Identity.ArtifactDigest != req.Invocation.ArtifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
@@ -584,7 +584,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 
 func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustModel, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
 	artifactDigest := strings.TrimSpace(descriptor.Artifact.ArtifactDigest)
-	if evidence.Claims.Artifact.ArtifactDigest != artifactDigest {
+	if evidence.Claims.Package.Identity.ArtifactDigest != artifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
@@ -598,21 +598,21 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustMod
 			Message: "artifact evidence is structurally invalid",
 		}
 	}
-	if evidence.Claims.Artifact.PayloadDigest != strings.TrimSpace(descriptor.Package.Payload.Digest) {
+	if evidence.Claims.Package.Identity.PayloadDigest != strings.TrimSpace(descriptor.Package.Payload.Digest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
 			Message: "artifact descriptor payload reference does not match artifact evidence",
 		}
 	}
-	if evidence.Claims.Artifact.ArtifactType != strings.TrimSpace(descriptor.Artifact.ArtifactType) {
+	if evidence.Claims.Package.Identity.ArtifactType != strings.TrimSpace(descriptor.Artifact.ArtifactType) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
 			Message: "artifact descriptor artifact type does not match artifact evidence",
 		}
 	}
-	if evidence.Claims.Artifact.IntentDigest != strings.TrimSpace(descriptor.Artifact.IntentDigest) {
+	if evidence.Claims.Package.Identity.IntentDigest != strings.TrimSpace(descriptor.Artifact.IntentDigest) {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
 			Code:    codeArtifactEvidenceInvalid,
@@ -652,9 +652,9 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustMod
 
 func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 	return Manifest{
-		ArtifactDigest: evidence.Claims.Artifact.ArtifactDigest,
-		ArtifactType:   evidence.Claims.Artifact.ArtifactType,
-		IntentDigest:   evidence.Claims.Artifact.IntentDigest,
+		ArtifactDigest: evidence.Claims.Package.Identity.ArtifactDigest,
+		ArtifactType:   evidence.Claims.Package.Identity.ArtifactType,
+		IntentDigest:   evidence.Claims.Package.Identity.IntentDigest,
 		RuntimeInterface: RuntimeInterface{
 			Parameters:           append([]string(nil), evidence.Claims.Admission.Runtime.Parameters...),
 			EnvironmentVariables: append([]string(nil), evidence.Claims.Admission.Runtime.EnvironmentVariables...),

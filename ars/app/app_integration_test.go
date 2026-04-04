@@ -27,6 +27,7 @@ import (
 	"execution-platform/ars/config"
 	"execution-platform/ars/index"
 	"execution-platform/ars/store"
+	evidencev1 "execution-platform/contracts/evidence/v1"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {
@@ -1225,20 +1226,86 @@ func seedStorageFixture(t *testing.T) seededStorage {
 	state := seededStorage{
 		RootDir: rootDir,
 
-		BlobContent: []byte("Hello, Artifact Registry!"),
-		JSONBlob:    []byte(`{"kind":"blob","value":"json"}`),
-
-		EvidenceJSON: []byte(`{"claims":{"schema_version":"v1","artifact":{"artifact_digest":"artifact","payload_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_type":"static-script","intent_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"publication":{"builder_service":"artifact-governance","invoker":{"service":"deployment","principal":"spiffe://monolith.internal/service/deployment"},"policy_decisions":[],"build_log_digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"admission":{"runtime":{"parameters":[],"environment_variables":["APP_MODE"],"required_capabilities":[]},"derivation":{"derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","producer_run_id":"run-1","policy_version":"2026-03-31","expected_artifact_type":"static-script","constraints":{"allowed_toolchains":[],"forbidden_toolchains":[],"os":"linux","arch":"amd64","network_access":false,"writable_paths":[],"forbidden_paths":[],"determinism_expectation":"deterministic"}},"workload":{"artifact_class":"service","workload_type":"service","module_path":"services.execution.ExecutionServer","service_name":"execution","workload_identity_id":"spiffe://monolith.internal/service/execution","policy_version":"2026-03-31"}}},"seal":{"algorithm":"ed25519","key_id":"ags-artifact-fact-signer","content_digest":"sha256:4444444444444444444444444444444444444444444444444444444444444444","signature":"test-signature"}}`),
+		BlobContent:  []byte("Hello, Artifact Registry!"),
+		JSONBlob:     []byte(`{"kind":"blob","value":"json"}`),
 		ManifestJSON: []byte(`{"schema_version":"v1","name":"runtime"}`),
 		PayloadBytes: []byte("payload archive bytes"),
 	}
 
 	state.BlobDigest = store.DigestBytes(state.BlobContent)
 	state.JSONDigest = store.DigestBytes(state.JSONBlob)
-	state.EvidenceDigest = store.DigestBytes(state.EvidenceJSON)
 	state.ManifestDigest = store.DigestBytes(state.ManifestJSON)
 	state.PayloadDigest = store.DigestBytes(state.PayloadBytes)
-	state.ArtifactDigest = store.DigestBytes([]byte("artifact-1"))
+	identity, err := evidencev1.NewArtifactIdentity(
+		state.PayloadDigest,
+		"static-script",
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	)
+	if err != nil {
+		t.Fatalf("derive artifact identity: %v", err)
+	}
+	state.ArtifactDigest = identity.ArtifactDigest
+	state.EvidenceJSON = mustMarshalJSON(t, map[string]any{
+		"claims": map[string]any{
+			"schema_version": "v1",
+			"package": map[string]any{
+				"identity": map[string]any{
+					"artifact_digest": state.ArtifactDigest,
+					"payload_digest":  state.PayloadDigest,
+					"artifact_type":   "static-script",
+					"intent_digest":   "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+				},
+				"publication": map[string]any{
+					"builder_service": "artifact-governance",
+					"invoker": map[string]any{
+						"service":   "deployment",
+						"principal": "spiffe://monolith.internal/service/deployment",
+					},
+					"policy_decisions": []any{},
+					"build_log_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				},
+			},
+			"admission": map[string]any{
+				"runtime": map[string]any{
+					"parameters":            []any{},
+					"environment_variables": []string{"APP_MODE"},
+					"required_capabilities": []any{},
+				},
+				"derivation": map[string]any{
+					"derivation_spec_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					"output_id":              "runtime",
+					"producer_run_id":        "run-1",
+					"policy_version":         "2026-03-31",
+					"expected_artifact_type": "static-script",
+					"constraints": map[string]any{
+						"allowed_toolchains":      []any{},
+						"forbidden_toolchains":    []any{},
+						"os":                      "linux",
+						"arch":                    "amd64",
+						"network_access":          false,
+						"writable_paths":          []any{},
+						"forbidden_paths":         []any{},
+						"determinism_expectation": "deterministic",
+					},
+				},
+				"workload": map[string]any{
+					"artifact_class":       "service",
+					"workload_type":        "service",
+					"module_path":          "services.execution.ExecutionServer",
+					"service_name":         "execution",
+					"workload_identity_id": "spiffe://monolith.internal/service/execution",
+					"policy_version":       "2026-03-31",
+				},
+			},
+		},
+		"seal": map[string]any{
+			"algorithm":      "ed25519",
+			"key_id":         "ags-artifact-fact-signer",
+			"content_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+			"signature":      "test-signature",
+		},
+	})
+	state.EvidenceDigest = store.DigestBytes(state.EvidenceJSON)
 	state.DescriptorJSON = mustMarshalJSON(t, map[string]any{
 		"schema_version": "v1",
 		"artifact": map[string]any{

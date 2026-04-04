@@ -72,8 +72,8 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	}
 	var evidence evidencev1.ArtifactEvidence
 	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
-	if evidence.Claims.Artifact.ArtifactDigest != stack.publishResponse.ArtifactDigest {
-		t.Fatalf("unexpected evidence artifact digest: %q", evidence.Claims.Artifact.ArtifactDigest)
+	if evidence.Claims.Package.Identity.ArtifactDigest != stack.publishResponse.ArtifactDigest {
+		t.Fatalf("unexpected evidence artifact digest: %q", evidence.Claims.Package.Identity.ArtifactDigest)
 	}
 	if stack.publishResponse.ArtifactDigest == stack.publishResponse.PayloadDigest {
 		t.Fatalf("expected artifact and payload digests to differ, both were %q", stack.publishResponse.ArtifactDigest)
@@ -81,8 +81,8 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	if descriptor.Package.Payload.Digest != stack.publishResponse.PayloadDigest {
 		t.Fatalf("expected descriptor payload digest %q, got %q", stack.publishResponse.PayloadDigest, descriptor.Package.Payload.Digest)
 	}
-	if evidence.Claims.Artifact.PayloadDigest != stack.publishResponse.PayloadDigest {
-		t.Fatalf("expected evidence payload digest %q, got %q", stack.publishResponse.PayloadDigest, evidence.Claims.Artifact.PayloadDigest)
+	if evidence.Claims.Package.Identity.PayloadDigest != stack.publishResponse.PayloadDigest {
+		t.Fatalf("expected evidence payload digest %q, got %q", stack.publishResponse.PayloadDigest, evidence.Claims.Package.Identity.PayloadDigest)
 	}
 	if payload.Provenance.SignerKeyID != stack.fixture.agsKeyID {
 		t.Fatalf("unexpected provenance signer key: %q", payload.Provenance.SignerKeyID)
@@ -181,7 +181,8 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	var evidence map[string]any
 	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	claims := evidence["claims"].(map[string]any)
-	publication := claims["publication"].(map[string]any)
+	pkg := claims["package"].(map[string]any)
+	publication := pkg["publication"].(map[string]any)
 	if got := publication["builder_service"]; got != "artifact-governance" {
 		t.Fatalf("expected builder_service artifact-governance, got %v", got)
 	}
@@ -221,6 +222,41 @@ func TestPublishResponseAndIndexAreEvidenceOnly(t *testing.T) {
 	}
 	if !strings.Contains(string(indexBytes), `"descriptor_digest"`) {
 		t.Fatalf("expected artifact index to be descriptor-centered, got %s", strings.TrimSpace(string(indexBytes)))
+	}
+}
+
+func TestPublishArtifactIdentityIgnoresAdmissionOnlyChanges(t *testing.T) {
+	first := startPublishOnlyStack(t)
+	defer first.shutdownAll(t)
+
+	second := startDependencyStack(t)
+	defer second.shutdownAll(t)
+
+	response := publishArtifactRequest(t, second, "service/deployment", false, func(body map[string]any) {
+		admissionBody := body["admission"].(map[string]any)
+		runtime := admissionBody["runtime"].(map[string]any)
+		runtime["parameters"] = []string{"--verbose"}
+		runtime["environment_variables"] = []string{"APP_MODE", "EXTRA_FLAG"}
+
+		workload := admissionBody["workload"].(map[string]any)
+		workload["description"] = "runtime-mutated description"
+	})
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload publishResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+
+	if payload.ArtifactDigest != first.publishResponse.ArtifactDigest {
+		t.Fatalf("expected admission-only changes to preserve artifact identity: first=%q second=%q", first.publishResponse.ArtifactDigest, payload.ArtifactDigest)
+	}
+	if payload.DescriptorDigest == first.publishResponse.DescriptorDigest {
+		t.Fatalf("expected admission-only changes to alter descriptor discoverability, both were %q", payload.DescriptorDigest)
 	}
 }
 

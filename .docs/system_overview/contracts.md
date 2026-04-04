@@ -59,10 +59,12 @@ Describe the current shared kernel that multiple services use directly today.
   - `seal`
 - The `claims` section currently carries:
   - `schema_version`
-  - `artifact`
-  - `publication`
+  - `package`
   - `admission`
-- The aggregate evidence claims carry explicit `artifact_digest` and `payload_digest` fields.
+- The `package` section currently carries:
+  - `identity`
+  - `publication`
+- The aggregate evidence claims carry explicit `artifact_digest` and `payload_digest` fields inside `claims.package.identity`.
 ### Current invariants
 
 `Current invariant`
@@ -218,15 +220,17 @@ Current response shape:
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - AGS only allows publish callers from the deployment and operator identities above.
 - AGS computes `payload_digest` from payload bytes.
-- AGS derives `artifact_digest` separately from a deterministic package-identity claim set; artifact identity is no longer equal to payload identity by shortcut.
-- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section carries artifact identity, publication claims, runtime/admission data, and explicit payload identity.
+- AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
+- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
+  - `claims.package` for publication/discoverability-facing meaning
+  - `claims.admission` for admission/runtime-facing meaning
 - AGS assembles and uploads:
   - payload bytes
   - aggregate artifact evidence
   - manifest
   - artifact descriptor
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
-- AGS derives publication caller binding from the authenticated caller and always emits `claims.publication.builder_service = "artifact-governance"` in aggregate evidence.
+- AGS derives publication caller binding from the authenticated caller and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS enforces bounded cross-field consistency before publishing, including:
   - valid SPIFFE workload identity
   - `service_name` required for service workloads

@@ -326,10 +326,16 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 		fixture: fixture,
 	}
 
-	artifactDigest := labeledDigest("aa")
 	intentDigest := labeledDigest("bb")
 	derivationSpecDigest := labeledDigest("cc")
 	workloadIdentityID := "spiffe://monolith.internal/service/execution"
+	payloadBytes := []byte("artifact payload bytes")
+	payloadDigest := arsstore.DigestBytes(payloadBytes)
+	identity, err := evidencev1.NewArtifactIdentity(payloadDigest, "static-service", intentDigest)
+	if err != nil {
+		t.Fatalf("derive artifact identity: %v", err)
+	}
+	artifactDigest := identity.ArtifactDigest
 
 	manifestBytes := mustMarshalJSON(t, map[string]any{
 		"artifact_digest": artifactDigest,
@@ -343,7 +349,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	})
 	manifestDigest := writeBlobBytes(t, rootDir, manifestBytes)
 
-	payloadDigest := writeBlobBytes(t, rootDir, []byte("artifact payload bytes"))
+	writeBlobBytes(t, rootDir, payloadBytes)
 	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, workloadIdentityID)
 	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
 	descriptorBytes := artifactDescriptorJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest, manifestDigest)
@@ -1083,24 +1089,26 @@ func signedArtifactEvidenceJSON(
 	record := evidencev1.ArtifactEvidence{
 		Claims: evidencev1.Claims{
 			SchemaVersion: evidencev1.Version,
-			Artifact: evidencev1.Artifact{
-				ArtifactDigest: artifactDigest,
-				PayloadDigest:  payloadDigest,
-				ArtifactType:   "static-service",
-				IntentDigest:   intentDigest,
-			},
-			Publication: evidencev1.Publication{
-				BuilderService: "artifact-governance",
-				Invoker: evidencev1.Invoker{
-					Service:   "deployment",
-					Principal: "spiffe://monolith.internal/service/deployment",
+			Package: evidencev1.PackageClaims{
+				Identity: evidencev1.ArtifactIdentity{
+					ArtifactDigest: artifactDigest,
+					PayloadDigest:  payloadDigest,
+					ArtifactType:   "static-service",
+					IntentDigest:   intentDigest,
 				},
-				PolicyDecisions: []evidencev1.PolicyDecision{
-					{Rule: "allow", Result: "applied"},
+				Publication: evidencev1.Publication{
+					BuilderService: "artifact-governance",
+					Invoker: evidencev1.Invoker{
+						Service:   "deployment",
+						Principal: "spiffe://monolith.internal/service/deployment",
+					},
+					PolicyDecisions: []evidencev1.PolicyDecision{
+						{Rule: "allow", Result: "applied"},
+					},
+					BuildLogDigest: labeledDigest("ee"),
 				},
-				BuildLogDigest: labeledDigest("ee"),
 			},
-			Admission: evidencev1.Admission{
+			Admission: evidencev1.AdmissionClaims{
 				Runtime: evidencev1.Runtime{
 					Parameters:           []string{},
 					EnvironmentVariables: []string{"APP_MODE"},

@@ -148,7 +148,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 **Current ownership**
 
 - Publish API at `/v1/artifacts:publish`
-- Artifact digest derivation from payload bytes
+- Artifact digest derivation from package-facing identity inputs rooted in `payload_digest`, `artifact_type`, and `intent_digest`
 - Evidence-native publish request grammar with `artifact`, `publication`, and `admission` sections
 - Construction of the aggregate `contracts/evidence/v1` publication record
 - Construction of manifest as supporting publication data
@@ -175,6 +175,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - AGS currently sits at the seam between caller input and the canonical aggregate evidence record.
 - The publication material AGS assembles determines what ES can verify and admit later.
 - AGS and ARS are coupled through the current evidence-centered registration record.
+- The shared evidence kernel is narrower than before, but AGS still sits at the split between package/publication claims and admission/runtime claims.
 
 **Temporary compatibility edges**
 
