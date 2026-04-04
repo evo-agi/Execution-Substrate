@@ -122,9 +122,9 @@ func (c Config) Validate() error {
 func (s SignerConfig) Validate() error {
 	if strings.TrimSpace(s.Algorithm) != "ed25519" {
 		// TODO: EGS v1 supports only Ed25519 because that is the currently
-		// validated trust-model path. This is an explicit slice boundary, not a
-		// generic signing framework. Revisit only if a concrete second algorithm
-		// is required by a live contract.
+		// 		 validated trust-model path. This is an explicit slice boundary, not a
+		// 		 generic signing framework. Revisit only if a concrete second algorithm
+		// 		 is required by a live contract.
 		return fmt.Errorf("signer.algorithm must be ed25519")
 	}
 	if strings.TrimSpace(s.KeyID) == "" {

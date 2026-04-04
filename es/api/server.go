@@ -41,14 +41,16 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	// TODO: /v1/executions:prepare is a bounded milestone surface for the
-	// admission/preparation slice. It is not yet a permanent long-term public
-	// execution API and must not accumulate run IDs, scheduler metadata, or
-	// proto-execution state.
+	// 		 admission/preparation slice. It is not yet a permanent long-term public
+	// 		 execution API and must not accumulate run IDs, scheduler metadata, or
+	// 		 proto-execution state.
 	mux.HandleFunc("POST /v1/executions:prepare", s.handlePrepare)
+
 	// TODO: /v1/executions:submit is the minimal real execution surface for the
-	// first Nomad/Docker slice. It is intentionally async-only and returns a
-	// bounded submission receipt, not a durable execution lifecycle API.
+	// 		 first Nomad/Docker slice. It is intentionally async-only and returns a
+	// 		 bounded submission receipt, not a durable execution lifecycle API.
 	mux.HandleFunc("POST /v1/executions:submit", s.handleSubmit)
+
 	mux.HandleFunc("GET /v1/executions/", s.handleLifecycleGet)
 	mux.HandleFunc("POST /v1/executions/", s.handleLifecyclePost)
 	return observability.WrapHandler(serviceName, mux)

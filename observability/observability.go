@@ -88,10 +88,12 @@ func WrapHandler(service string, next http.Handler) http.Handler {
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 		}
+
 		startedAt := time.Now()
+
 		// TODO: inbound completion log is skipped on panic because this slice does
-		// not include panic recovery. Evaluate whether to add bounded panic
-		// recovery plus completion logging in a future slice.
+		// 		 not include panic recovery. Evaluate whether to add bounded panic
+		// 		 recovery plus completion logging in a future slice.
 		next.ServeHTTP(responseWriter, r.WithContext(ctx))
 
 		emit(requestCompleteEvent{
@@ -127,8 +129,8 @@ func (t *loggingRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	trace, ok := TraceContextFromContext(request.Context())
 	if !ok {
 		// TODO: a new root trace can be created here when no inbound request
-		// context exists. That can happen during startup-time or other
-		// request-unscoped dependency calls in this slice.
+		// 		 context exists. That can happen during startup-time or other
+		// 		 request-unscoped dependency calls in this slice.
 		trace = TraceContext{
 			TraceID:   newTraceID(),
 			RequestID: newRequestID(),
@@ -138,14 +140,14 @@ func (t *loggingRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	outboundRequestID := newRequestID()
 	if t.propagateTrace {
 		// TODO: external propagation is currently controlled manually by the
-		// caller through propagateTrace. Future external dependencies must make
-		// an explicit propagation decision instead of inheriting one silently.
+		// 		 caller through propagateTrace. Future external dependencies must make
+		// 		 an explicit propagation decision instead of inheriting one silently.
 		request = cloneRequestWithHeader(request, TraceParentHeader, formatTraceParent(trace.TraceID, outboundRequestID))
 	}
 
 	// TODO: outbound dependency logging begins at RoundTrip. Failures while
-	// constructing the request or before client.Do reaches this wrapper are not
-	// observed in this slice.
+	// 		 constructing the request or before client.Do reaches this wrapper are not
+	// 		 observed in this slice.
 	startedAt := time.Now()
 	response, err := t.baseRoundTripper.RoundTrip(request)
 	status := classifyDependencyStatus(response, err)
@@ -204,7 +206,7 @@ func newTraceID() string {
 
 func newRequestID() string {
 	// TODO: request_id uniqueness is probabilistic in this slice because it is
-	// derived from random bytes rather than a stronger uniqueness contract.
+	// 		 derived from random bytes rather than a stronger uniqueness contract.
 	return randomHex(8)
 }
 

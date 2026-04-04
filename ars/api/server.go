@@ -44,11 +44,11 @@ func NewServer(blobStore store.BlobStore, artifactIndex index.Lookup, allowedPat
 
 func (s *Server) Handler() http.Handler {
 	// TODO: ACS exposed an HTTP 307 for some empty-segment paths because Go's
-	// ServeMux canonicalizes paths before handler dispatch. That behavior is an
-	// infrastructure artifact, NOT part of the intended contract, and should not
-	// be relied upon. ARS keeps manual routing here so invalid paths remain an
-	// explicit service concern. Revisit only if a future shared router can do the
-	// same without reintroducing implicit redirects.
+	// 		 ServeMux canonicalizes paths before handler dispatch. That behavior is an
+	// 		 infrastructure artifact, NOT part of the intended contract, and should not
+	// 		 be relied upon. ARS keeps manual routing here so invalid paths remain an
+	// 		 explicit service concern. Revisit only if a future shared router can do the
+	// 		 same without reintroducing implicit redirects.
 	return observability.WrapHandler(serviceName, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 
@@ -195,10 +195,10 @@ func (s *Server) handleBlobExists(w http.ResponseWriter, rawDigest string) {
 	}
 
 	// TODO: HEAD now verifies blob integrity by reading and hashing the full
-	// blob before returning 200. That is part of the current ARS correctness
-	// contract because existence without integrity is misleading for a
-	// content-addressed registry. Revisit only when streaming verification or an
-	// explicit read-limit strategy is introduced.
+	// 		 blob before returning 200. That is part of the current ARS correctness
+	// 		 contract because existence without integrity is misleading for a
+	// 		 content-addressed registry. Revisit only when streaming verification or an
+	// 		 explicit read-limit strategy is introduced.
 	_, err := s.blobStore.Read(digest)
 	if err != nil {
 		if isInvalidDigest(err) {

@@ -61,10 +61,10 @@ func (s *FilesystemStore) Read(digest string) ([]byte, error) {
 	}
 
 	// TODO: This slice fully buffers blobs into memory and verifies integrity by
-	// hashing the entire byte stream on every read. That keeps the current
-	// read-only ARS contract correct for small blobs, but it is not the intended
-	// long-term scaling strategy. Revisit with streaming verification or explicit
-	// read limits before supporting larger runtime artifacts.
+	// 		 hashing the entire byte stream on every read. That keeps the current
+	// 		 read-only ARS contract correct for small blobs, but it is not the intended
+	// 		 long-term scaling strategy. Revisit with streaming verification or explicit
+	// 		 read limits before supporting larger runtime artifacts.
 	data, err := os.ReadFile(blobPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
