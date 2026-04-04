@@ -193,6 +193,21 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	if got := invoker["principal"]; got != "spiffe://monolith.internal/service/deployment" {
 		t.Fatalf("expected invoker principal derived from caller, got %v", got)
 	}
+	admission := claims["admission"].(map[string]any)
+	authorization := admission["authorization"].(map[string]any)
+	execution := admission["execution"].(map[string]any)
+	if _, ok := admission["runtime"]; ok {
+		t.Fatalf("expected evidence admission claims to omit the old mixed runtime field, got %v", admission["runtime"])
+	}
+	if got := authorization["workload_binding"].(map[string]any)["module_path"]; got != "services.execution.ExecutionServer" {
+		t.Fatalf("expected workload binding module_path in authorization claims, got %v", got)
+	}
+	if got := execution["access"].(map[string]any)["network_access"]; got != false {
+		t.Fatalf("expected execution access network_access false, got %v", got)
+	}
+	if got := execution["workload"].(map[string]any)["workload_identity_id"]; got != stack.workloadIdentityID {
+		t.Fatalf("expected execution workload identity %q, got %v", stack.workloadIdentityID, got)
+	}
 
 	startES(t, stack)
 	response = doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false), buildPrepareRequestBody(t, stack))
@@ -368,7 +383,8 @@ func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	readJSONBlob(t, stack.rootDir, descriptor.Package.Evidence.Digest, &evidence)
 	claims := evidence["claims"].(map[string]any)
 	admissionPayload := claims["admission"].(map[string]any)
-	derivation := admissionPayload["derivation"].(map[string]any)
+	authorization := admissionPayload["authorization"].(map[string]any)
+	derivation := authorization["derivation"].(map[string]any)
 	derivation["policy_version"] = "tampered"
 	stack.mutateDescriptorAndRestartARS(t, func(descriptor *arsapi.ArtifactDescriptor) {
 		descriptor.Package.Evidence.Digest = stack.writeJSONBlob(t, evidence)

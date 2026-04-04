@@ -150,7 +150,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - Publish API at `/v1/artifacts:publish`
 - Artifact digest derivation from package-facing identity inputs rooted in `payload_digest`, `artifact_type`, and `intent_digest`
 - Evidence-native publish request grammar with `artifact`, `publication`, and `admission` sections
-- Construction of the aggregate `contracts/evidence/v1` publication record
+- Construction of the aggregate `contracts/evidence/v1` publication record, with package identity/publication claims kept separate from admission authorization and execution claims
 - Construction of manifest as supporting publication data
 - Signing of the aggregate artifact-evidence record using `contracts/evidence/v1`
 - Bounded publish caller authorization for trusted deployment and operator identities

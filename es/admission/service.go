@@ -544,6 +544,7 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel egsmodel.TrustModel, discovery discoveredArtifact) (preparedArtifact, *Error) {
 	descriptor := discovery.descriptor
 	evidence := discovery.evidence
+	authorization := evidence.Claims.Admission.Authorization
 	if descriptor.Artifact.ArtifactDigest != req.Invocation.ArtifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
@@ -558,14 +559,14 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 			Message: "artifact digest mismatch between request and artifact evidence",
 		}
 	}
-	if evidence.Claims.Admission.Derivation.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
+	if authorization.Derivation.DerivationSpecDigest != req.Invocation.DerivationSpecDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
 			Message: "derivation_spec_digest does not match artifact evidence",
 		}
 	}
-	if evidence.Claims.Admission.Derivation.OutputID != req.Invocation.OutputID {
+	if authorization.Derivation.OutputID != req.Invocation.OutputID {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusBadRequest,
 			Code:    codeInvalidRequest,
@@ -584,6 +585,7 @@ func (s *Service) prepareArtifactFromDiscovery(req PrepareRequest, trustModel eg
 
 func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustModel, descriptor artifactRegistryDescriptor, evidence evidencev1.ArtifactEvidence) (preparedArtifact, *Error) {
 	artifactDigest := strings.TrimSpace(descriptor.Artifact.ArtifactDigest)
+	execution := evidence.Claims.Admission.Execution
 	if evidence.Claims.Package.Identity.ArtifactDigest != artifactDigest {
 		return preparedArtifact{}, &Error{
 			Status:  http.StatusForbidden,
@@ -635,30 +637,31 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.TrustMod
 		payloadDigest: strings.TrimSpace(descriptor.Package.Payload.Digest),
 		signerKeyID:   evidence.Seal.KeyID,
 		workload: WorkloadInfo{
-			Type:               evidence.Claims.Admission.Workload.WorkloadType,
-			ServiceName:        evidence.Claims.Admission.Workload.ServiceName,
-			WorkloadIdentityID: evidence.Claims.Admission.Workload.WorkloadIdentityID,
+			Type:               execution.Workload.WorkloadType,
+			ServiceName:        execution.Workload.ServiceName,
+			WorkloadIdentityID: execution.Workload.WorkloadIdentityID,
 		},
 		workloadAttrs: esconfig.WorkloadIdentityAttributes{
-			ArtifactClass:      evidence.Claims.Admission.Workload.ArtifactClass,
-			WorkloadType:       evidence.Claims.Admission.Workload.WorkloadType,
-			ServiceName:        evidence.Claims.Admission.Workload.ServiceName,
-			WorkloadIdentityID: evidence.Claims.Admission.Workload.WorkloadIdentityID,
+			ArtifactClass:      execution.Workload.ArtifactClass,
+			WorkloadType:       execution.Workload.WorkloadType,
+			ServiceName:        execution.Workload.ServiceName,
+			WorkloadIdentityID: execution.Workload.WorkloadIdentityID,
 		},
-		targetPlatform: evidence.Claims.Admission.Workload.TargetPlatform,
-		networkAccess:  evidence.Claims.Admission.Derivation.Constraints.NetworkAccess,
+		targetPlatform: execution.Workload.TargetPlatform,
+		networkAccess:  execution.Access.NetworkAccess,
 	}, nil
 }
 
 func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
+	runtime := evidence.Claims.Admission.Execution.Runtime
 	return Manifest{
 		ArtifactDigest: evidence.Claims.Package.Identity.ArtifactDigest,
 		ArtifactType:   evidence.Claims.Package.Identity.ArtifactType,
 		IntentDigest:   evidence.Claims.Package.Identity.IntentDigest,
 		RuntimeInterface: RuntimeInterface{
-			Parameters:           append([]string(nil), evidence.Claims.Admission.Runtime.Parameters...),
-			EnvironmentVariables: append([]string(nil), evidence.Claims.Admission.Runtime.EnvironmentVariables...),
-			RequiredCapabilities: append([]string(nil), evidence.Claims.Admission.Runtime.RequiredCapabilities...),
+			Parameters:           append([]string(nil), runtime.Parameters...),
+			EnvironmentVariables: append([]string(nil), runtime.EnvironmentVariables...),
+			RequiredCapabilities: append([]string(nil), runtime.RequiredCapabilities...),
 		},
 	}
 }

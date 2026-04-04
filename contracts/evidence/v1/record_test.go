@@ -41,37 +41,45 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 				},
 			},
 			Admission: AdmissionClaims{
-				Runtime: Runtime{
-					Parameters:           []string{"z", "a"},
-					EnvironmentVariables: []string{"APP_MODE", "API_URL"},
-					RequiredCapabilities: []string{"b", "a"},
-				},
-				Derivation: Derivation{
-					DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-					OutputID:             "runtime",
-					ProducerRunID:        "build-run-1",
-					PolicyVersion:        "2026-03-31",
-					ExpectedArtifactType: "static-script",
-					Constraints: Constraints{
-						AllowedToolchains:      []string{"go", "bash"},
-						ForbiddenToolchains:    []string{"python"},
-						OS:                     "linux",
-						Arch:                   "amd64",
-						NetworkAccess:          true,
-						WritablePaths:          []string{"/tmp", "/workspace"},
-						ForbiddenPaths:         []string{"/root"},
-						DeterminismExpectation: "deterministic",
+				Authorization: AuthorizationClaims{
+					Derivation: DerivationAuthorization{
+						DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+						OutputID:             "runtime",
+						ProducerRunID:        "build-run-1",
+						PolicyVersion:        "2026-03-31",
+						ExpectedArtifactType: "static-script",
+						Constraints: DerivationConstraints{
+							AllowedToolchains:      []string{"go", "bash"},
+							ForbiddenToolchains:    []string{"python"},
+							OS:                     "linux",
+							Arch:                   "amd64",
+							WritablePaths:          []string{"/tmp", "/workspace"},
+							ForbiddenPaths:         []string{"/root"},
+							DeterminismExpectation: "deterministic",
+						},
+					},
+					WorkloadBinding: WorkloadBinding{
+						ModulePath:    "services.execution.ExecutionServer",
+						PolicyVersion: "2026-03-31",
 					},
 				},
-				Workload: Workload{
-					ArtifactClass:      "service",
-					WorkloadType:       "service",
-					ModulePath:         "services.execution.ExecutionServer",
-					ServiceName:        "execution",
-					TargetPlatform:     "docker",
-					Description:        "Execution workload",
-					WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
-					PolicyVersion:      "2026-03-31",
+				Execution: ExecutionClaims{
+					Runtime: ExecutionRuntime{
+						Parameters:           []string{"z", "a"},
+						EnvironmentVariables: []string{"APP_MODE", "API_URL"},
+						RequiredCapabilities: []string{"b", "a"},
+					},
+					Workload: ExecutionWorkload{
+						ArtifactClass:      "service",
+						WorkloadType:       "service",
+						ServiceName:        "execution",
+						TargetPlatform:     "docker",
+						Description:        "Execution workload",
+						WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+					},
+					Access: ExecutionAccess{
+						NetworkAccess: true,
+					},
 				},
 			},
 		},
@@ -95,6 +103,15 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 	}
 	if strings.Index(canonicalString, `"required_capabilities":["a","b"]`) == -1 {
 		t.Fatalf("expected required_capabilities to be sorted in canonical bytes: %s", canonicalString)
+	}
+	if !strings.Contains(canonicalString, `"authorization":{"derivation"`) {
+		t.Fatalf("expected canonical bytes to encode admission authorization claims: %s", canonicalString)
+	}
+	if !strings.Contains(canonicalString, `"execution":{"runtime"`) {
+		t.Fatalf("expected canonical bytes to encode admission execution claims: %s", canonicalString)
+	}
+	if strings.Contains(canonicalString, `"admission":{"runtime"`) {
+		t.Fatalf("expected canonical bytes to omit the old mixed admission runtime shape: %s", canonicalString)
 	}
 }
 
@@ -123,23 +140,29 @@ func TestValidateRejectsPolicyVersionMismatch(t *testing.T) {
 				},
 			},
 			Admission: AdmissionClaims{
-				Derivation: Derivation{
-					DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-					OutputID:             "runtime",
-					ProducerRunID:        "build-run-1",
-					PolicyVersion:        "policy-a",
-					Constraints: Constraints{
-						OS:   "linux",
-						Arch: "amd64",
+				Authorization: AuthorizationClaims{
+					Derivation: DerivationAuthorization{
+						DerivationSpecDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+						OutputID:             "runtime",
+						ProducerRunID:        "build-run-1",
+						PolicyVersion:        "policy-a",
+						Constraints: DerivationConstraints{
+							OS:   "linux",
+							Arch: "amd64",
+						},
+					},
+					WorkloadBinding: WorkloadBinding{
+						ModulePath:    "services.execution.ExecutionServer",
+						PolicyVersion: "policy-b",
 					},
 				},
-				Workload: Workload{
-					ArtifactClass:      "service",
-					WorkloadType:       "service",
-					ModulePath:         "services.execution.ExecutionServer",
-					ServiceName:        "execution",
-					WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
-					PolicyVersion:      "policy-b",
+				Execution: ExecutionClaims{
+					Workload: ExecutionWorkload{
+						ArtifactClass:      "service",
+						WorkloadType:       "service",
+						ServiceName:        "execution",
+						WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+					},
 				},
 			},
 		},

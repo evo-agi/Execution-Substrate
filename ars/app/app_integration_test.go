@@ -1266,35 +1266,43 @@ func seedStorageFixture(t *testing.T) seededStorage {
 				},
 			},
 			"admission": map[string]any{
-				"runtime": map[string]any{
-					"parameters":            []any{},
-					"environment_variables": []string{"APP_MODE"},
-					"required_capabilities": []any{},
-				},
-				"derivation": map[string]any{
-					"derivation_spec_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-					"output_id":              "runtime",
-					"producer_run_id":        "run-1",
-					"policy_version":         "2026-03-31",
-					"expected_artifact_type": "static-script",
-					"constraints": map[string]any{
-						"allowed_toolchains":      []any{},
-						"forbidden_toolchains":    []any{},
-						"os":                      "linux",
-						"arch":                    "amd64",
-						"network_access":          false,
-						"writable_paths":          []any{},
-						"forbidden_paths":         []any{},
-						"determinism_expectation": "deterministic",
+				"authorization": map[string]any{
+					"derivation": map[string]any{
+						"derivation_spec_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						"output_id":              "runtime",
+						"producer_run_id":        "run-1",
+						"policy_version":         "2026-03-31",
+						"expected_artifact_type": "static-script",
+						"constraints": map[string]any{
+							"allowed_toolchains":      []any{},
+							"forbidden_toolchains":    []any{},
+							"os":                      "linux",
+							"arch":                    "amd64",
+							"writable_paths":          []any{},
+							"forbidden_paths":         []any{},
+							"determinism_expectation": "deterministic",
+						},
+					},
+					"workload_binding": map[string]any{
+						"module_path":    "services.execution.ExecutionServer",
+						"policy_version": "2026-03-31",
 					},
 				},
-				"workload": map[string]any{
-					"artifact_class":       "service",
-					"workload_type":        "service",
-					"module_path":          "services.execution.ExecutionServer",
-					"service_name":         "execution",
-					"workload_identity_id": "spiffe://monolith.internal/service/execution",
-					"policy_version":       "2026-03-31",
+				"execution": map[string]any{
+					"runtime": map[string]any{
+						"parameters":            []any{},
+						"environment_variables": []string{"APP_MODE"},
+						"required_capabilities": []any{},
+					},
+					"workload": map[string]any{
+						"artifact_class":       "service",
+						"workload_type":        "service",
+						"service_name":         "execution",
+						"workload_identity_id": "spiffe://monolith.internal/service/execution",
+					},
+					"access": map[string]any{
+						"network_access": false,
+					},
 				},
 			},
 		},

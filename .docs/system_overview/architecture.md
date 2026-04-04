@@ -159,6 +159,7 @@ These are current architectural absences, not omissions to fill automatically.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` and compatibility-heavy authorize inputs and outputs.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the descriptor payload reference and cross-checked against evidence claims.
+- The current aggregate evidence grammar is intentionally split into package-facing identity/publication claims, admission authorization claims, and execution/runtime claims rather than one mixed claim bag.
 
 ## 10. Relationship to detailed docs
 

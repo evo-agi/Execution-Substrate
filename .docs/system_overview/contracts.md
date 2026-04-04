@@ -223,7 +223,8 @@ Current response shape:
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
   - `claims.package` for publication/discoverability-facing meaning
-  - `claims.admission` for admission/runtime-facing meaning
+  - `claims.admission.authorization` for derivation and workload-binding authorization meaning
+  - `claims.admission.execution` for runtime interface, execution workload, and execution access meaning
 - AGS assembles and uploads:
   - payload bytes
   - aggregate artifact evidence
@@ -235,8 +236,8 @@ Current response shape:
   - valid SPIFFE workload identity
   - `service_name` required for service workloads
   - `service_name` must match the SPIFFE service name when present
-  - `admission.derivation.policy_version` must match `admission.workload.policy_version`
-  - `admission.derivation.expected_artifact_type`, when set, must match `artifact.artifact_type`
+  - `admission.authorization.derivation.policy_version` must match `admission.authorization.workload_binding.policy_version`
+  - `admission.authorization.derivation.expected_artifact_type`, when set, must match `artifact.artifact_type`
 - `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
 - AGS publishes only through ARS:
   - `PUT /v1/blobs/{digest}`
@@ -413,7 +414,7 @@ Current lifecycle mapping:
   - Docker target platform when a target platform is present
   - no required runtime capabilities
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS descriptor and cross-checks that reference against aggregate evidence.
-- Runtime network mode is derived directly from signed derivation constraints:
+- Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
 - Caller runtime mounts are currently limited to governed artifact-backed mounts that are:
