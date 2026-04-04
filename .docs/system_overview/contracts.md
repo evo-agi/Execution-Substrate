@@ -356,10 +356,11 @@ Current invocation shape:
 - `mounts`
 - `annotations`
 
-Current lifecycle mapping:
+Current lifecycle lookup policy:
 
 - `run_id` must match `run-[0-9a-f]{16}`
-- `nomad_job_id = exec-<run_id>`
+- ES owns one explicit internal execution-locator policy for lifecycle lookup
+- the current locator resolves `nomad_job_id = exec-<run_id>`
 
 Current successful response shapes:
 
@@ -420,7 +421,7 @@ Current successful response shapes:
   - ES resolves status, logs, and cancel through Nomad
   - ES derives the minimal public lifecycle `status` value from Nomad-backed state as `submitted`, `running`, or `terminal`
   - logs are stdout-only for task `task`
-  - ES chooses the latest allocation in the current no-retry, no-reschedule slice
+  - ES uses one explicit projected-allocation policy that currently chooses the latest allocation in the current no-retry, no-reschedule slice
 
 ### Ownership boundary
 
@@ -438,7 +439,7 @@ Current successful response shapes:
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
 - The current container path conventions under `/monolith/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
-- The current `run_id -> exec-<run_id>` mapping and single-allocation lifecycle model are current slice mechanics, not a general scheduler abstraction.
+- The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
 
 ### Reopened seams
 

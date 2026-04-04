@@ -8,14 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"regexp"
-	"sort"
 	"strings"
 )
 
 const nomadTaskName = "task"
-
-var runIDPattern = regexp.MustCompile(`^run-[0-9a-f]{16}$`)
 
 const (
 	executionLifecycleStatusSubmitted       = "submitted"
@@ -61,23 +57,23 @@ func (s nomadTaskState) exitCode() (int, bool) {
 }
 
 func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResult, *Error) {
-	jobID, err := resolveRunID(runID)
+	locator, err := resolveExecutionLocator(runID)
 	if err != nil {
 		return ExecutionStatusResult{}, err
 	}
 
-	job, err := s.nomadClient.fetchJob(ctx, jobID)
+	job, err := s.nomadClient.fetchJob(ctx, locator.JobID())
 	if err != nil {
 		return ExecutionStatusResult{}, err
 	}
 
 	result := ExecutionStatusResult{
 		Success: true,
-		RunID:   runID,
+		RunID:   locator.RunID,
 		Status:  executionLifecycleStatusSubmitted,
 	}
 
-	allocation, err := s.nomadClient.latestAllocation(ctx, jobID)
+	allocation, err := s.nomadClient.fetchProjectedAllocation(ctx, locator.JobID())
 	if err != nil {
 		return ExecutionStatusResult{}, err
 	}
@@ -113,16 +109,16 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 }
 
 func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
-	jobID, err := resolveRunID(runID)
+	locator, err := resolveExecutionLocator(runID)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := s.nomadClient.fetchJob(ctx, jobID); err != nil {
+	if _, err := s.nomadClient.fetchJob(ctx, locator.JobID()); err != nil {
 		return nil, err
 	}
 
-	allocation, err := s.nomadClient.latestAllocation(ctx, jobID)
+	allocation, err := s.nomadClient.fetchProjectedAllocation(ctx, locator.JobID())
 	if err != nil {
 		return nil, err
 	}
@@ -156,36 +152,24 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 }
 
 func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResult, *Error) {
-	jobID, err := resolveRunID(runID)
+	locator, err := resolveExecutionLocator(runID)
 	if err != nil {
 		return ExecutionCancelResult{}, err
 	}
 
-	if _, err := s.nomadClient.fetchJob(ctx, jobID); err != nil {
+	if _, err := s.nomadClient.fetchJob(ctx, locator.JobID()); err != nil {
 		return ExecutionCancelResult{}, err
 	}
 
-	if err := s.nomadClient.stopJob(ctx, jobID); err != nil {
+	if err := s.nomadClient.stopJob(ctx, locator.JobID()); err != nil {
 		return ExecutionCancelResult{}, err
 	}
 
 	return ExecutionCancelResult{
 		Success: true,
-		RunID:   runID,
+		RunID:   locator.RunID,
 		Status:  executionLifecycleStatusCancelRequested,
 	}, nil
-}
-
-func resolveRunID(runID string) (string, *Error) {
-	runID = strings.TrimSpace(runID)
-	if !runIDPattern.MatchString(runID) {
-		return "", &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeInvalidRunID,
-			Message: "run_id is invalid",
-		}
-	}
-	return "exec-" + runID, nil
 }
 
 func isTerminalAllocationStatus(status string) bool {
@@ -222,7 +206,7 @@ func (c *nomadClient) fetchJob(ctx context.Context, jobID string) (nomadJobSumma
 	}
 }
 
-func (c *nomadClient) latestAllocation(ctx context.Context, jobID string) (*nomadAllocationDetail, *Error) {
+func (c *nomadClient) fetchProjectedAllocation(ctx context.Context, jobID string) (*nomadAllocationDetail, *Error) {
 	response, err := c.get(ctx, "/v1/job/"+jobID+"/allocations", nil)
 	if err != nil {
 		return nil, nomadUnavailableError("execution runtime is unavailable")
@@ -237,15 +221,12 @@ func (c *nomadClient) latestAllocation(ctx context.Context, jobID string) (*noma
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return nil, nomadUnavailableError("execution runtime returned an invalid allocation response")
 	}
-	if len(payload) == 0 {
+	selected, ok := currentLifecycleProjectionPolicy{}.selectAllocation(payload)
+	if !ok {
 		return nil, nil
 	}
 
-	sort.SliceStable(payload, func(i, j int) bool {
-		return payload[i].ModifyIndex > payload[j].ModifyIndex
-	})
-
-	detail, errResult := c.fetchAllocation(ctx, strings.TrimSpace(payload[0].ID))
+	detail, errResult := c.fetchAllocation(ctx, strings.TrimSpace(selected.ID))
 	if errResult != nil {
 		return nil, errResult
 	}

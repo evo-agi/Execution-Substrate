@@ -2,8 +2,6 @@ package admission
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,8 +92,8 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		return SubmitResult{}, err
 	}
 
-	runID, jobID, runIDErr := newRunAndJobID()
-	if runIDErr != nil {
+	locator, locatorErr := newExecutionLocator()
+	if locatorErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
 			Code:    codeSubmissionFailed,
@@ -103,7 +101,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	stage, stageErr := s.stagePayload(runID, payloadBytes)
+	stage, stageErr := s.stagePayload(locator.RunID, payloadBytes)
 	if stageErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
@@ -136,12 +134,12 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(runID, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
+	env := buildRuntimeEnvironment(locator.RunID, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
-		jobID,
-		runID,
+		locator.JobID(),
+		locator.RunID,
 		stage,
 		req,
 		prepared.artifact.networkAccess,
@@ -163,7 +161,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	return SubmitResult{
 		Success:   true,
 		Submitted: true,
-		RunID:     runID,
+		RunID:     locator.RunID,
 		Status:    "submitted",
 	}, nil
 }
@@ -333,8 +331,11 @@ func buildNomadJobSpec(
 
 	return map[string]any{
 		"Job": map[string]any{
-			"ID":          jobID,
-			"Name":        jobID,
+			"ID":   jobID,
+			"Name": jobID,
+			"Meta": map[string]any{
+				"run_id": runID,
+			},
 			"Type":        "batch",
 			"Datacenters": []string{cfg.Nomad.Datacenter},
 			"TaskGroups": []any{
@@ -429,13 +430,4 @@ func (c *nomadClient) submitJob(ctx context.Context, jobSpec map[string]any) (st
 		return "", fmt.Errorf("submit nomad job: missing eval id")
 	}
 	return strings.TrimSpace(payload.EvalID), nil
-}
-
-func newRunAndJobID() (string, string, error) {
-	var random [8]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", "", err
-	}
-	runID := "run-" + hex.EncodeToString(random[:])
-	return runID, "exec-" + runID, nil
 }

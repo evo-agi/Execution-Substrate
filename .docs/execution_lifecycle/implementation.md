@@ -25,8 +25,8 @@ These labels matter because implementation shape and public contract are related
 | `es/api/server.go` | HTTP route registration, caller authorization, request decoding, lifecycle path parsing, HTTP error shaping, handler-to-service dispatch | Admission logic, Nomad interaction, lifecycle state | This is where public lifecycle requests first enter ES |
 | `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
-| `es/admission/submit.go` | `Submit`, run/job ID creation, payload staging, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
-| `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, `run_id` resolution, Nomad lookup helpers, latest-allocation selection | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
+| `es/admission/submit.go` | `Submit`, execution-locator creation, payload staging, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
+| `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
 | `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env conventions, run-scoped endpoint derivation, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
 | `es/admission/mounts.go` | Runtime mount request validation, mount artifact revalidation, mount staging and archive extraction | General artifact publication, lifecycle state | This is where mount side effects and mount-specific trust checks live |
 
@@ -145,9 +145,9 @@ What `Prepare` reads:
 4. Reuse the shared admission helper that also powers `Prepare`.
 5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
 6. Fetch payload bytes from ARS using the payload reference carried by the descriptor and cross-checked against aggregate evidence.
-7. Generate:
-  - `run_id` in `newRunAndJobID`
-  - `nomad_job_id = exec-<run_id>`
+7. Generate the current internal execution locator:
+  - public `run_id`
+  - internal `nomad_job_id = exec-<run_id>`
 8. Stage the payload locally with `stagePayload`.
 9. Stage runtime mounts with `stageRuntimeMounts` when mounts are requested.
 10. Validate staged mount targets against reserved runtime paths.
@@ -158,9 +158,10 @@ What `Prepare` reads:
 
 Where IDs are created:
 
-- `run_id` is created in `newRunAndJobID`.
-- The Nomad job ID is derived there as `exec-<run_id>`.
+- The current ES-owned execution locator is created in `newExecutionLocator`.
+- That locator currently derives Nomad job ID as `exec-<run_id>`.
 - The public `SubmitResult` now returns `run_id` and bounded receipt status only; Nomad IDs remain internal implementation detail.
+- The submitted Nomad job also carries `run_id` metadata so internal tooling and tests can resolve the current slice without treating the naming rule as public contract.
 
 Where ES stops and Nomad takes over:
 
@@ -179,17 +180,17 @@ Where ES stops and Nomad takes over:
 
 **Observed current implementation path**
 
-- `resolveRunID` trims and validates `run_id` against `^run-[0-9a-f]{16}$`.
-- `resolveRunID` derives `exec-<run_id>` directly.
+- `resolveExecutionLocator` trims and validates `run_id` against `^run-[0-9a-f]{16}$`.
+- `resolveExecutionLocator` resolves the current internal locator whose scheduler lookup is `exec-<run_id>`.
 - `fetchJob` reads the Nomad job summary.
-- `latestAllocation` reads the job's allocations, sorts by `ModifyIndex`, and selects the latest allocation.
+- `fetchProjectedAllocation` reads the job's allocations and applies the explicit current projected-allocation policy.
 - `fetchAllocation` retrieves the detailed allocation record.
 
 Status path:
 
 - Fetch job summary.
 - Build a minimal `ExecutionStatusResult`.
-- Resolve the latest allocation if present.
+- Resolve the currently projected allocation if present.
 - Map the current Nomad-backed path into public `status` values:
   - `submitted`
   - `running`
@@ -200,7 +201,7 @@ Status path:
 Logs path:
 
 - Fetch job summary.
-- Resolve the latest allocation.
+- Resolve the currently projected allocation.
 - Require task `task` to be in `running` or `dead`.
 - Fetch stdout via Nomad client FS logs endpoint.
 
@@ -363,8 +364,8 @@ The most important implementation facts are backed by integration tests:
 
 - `Prepare` is a bounded but live code path.
 - `Prepare` and `Submit` now share one internal admission helper instead of maintaining separate admission pipelines.
-- ES has no lifecycle store and uses direct `run_id -> exec-<run_id>` lookup.
-- Lifecycle uses latest-allocation selection instead of a broader allocation model.
+- ES has no lifecycle store and uses one explicit internal execution-locator policy whose current lookup is `run_id -> exec-<run_id>`.
+- Lifecycle uses one explicit projected-allocation policy instead of a broader allocation model.
 - Log retrieval is a minimal latest-allocation stdout path.
 - There is no retry or reschedule machinery in ES.
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
@@ -391,7 +392,7 @@ These are active implementation choices, not automatically permanent design comm
 
 - `Prepare` is live and important in code even though it is still described as bounded.
 - Admission logic now treats aggregate evidence as canonical with no remaining legacy fact fallback or side path.
-- `run_id -> exec-<run_id>` is hard-coded into the lifecycle lookup path.
+- The current execution-locator policy still resolves `run_id -> exec-<run_id>`.
 - Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
 - Runtime identity handling depends on reserved `/monolith/...` path conventions.
 - Submit currently depends on descriptor-driven payload discoverability plus evidence-claim cross-checks between artifact identity and payload identity.
@@ -413,7 +414,7 @@ This file should stay focused on code paths and side effects.
 
 - The implementation role of `Prepare`
 - The internal reuse of `Prepare` by `Submit`
-- `run_id -> exec-<run_id>` derivation
+- Internal execution-locator policy
 - Latest-allocation selection path
 - Runtime identity reserved-path handling
 - Current staging and package-resolution flow

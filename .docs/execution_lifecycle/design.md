@@ -43,7 +43,7 @@ Current slice summary:
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
 | Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and injects endpoint-discovery environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
-| Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, derives the Nomad job ID, reads Nomad job and allocation state, reads task stdout, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
+| Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, resolves the current internal execution locator, reads Nomad job and projected-allocation state, reads task stdout, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
 
 ## 5. Phase model
 
@@ -113,7 +113,7 @@ This is a bounded projection model, not rich execution tracking. ES does not mai
 - `POST /v1/executions:prepare` is active today as a bounded milestone/public slice surface.
 - Submission is currently async-only.
 - The current slice assumes one meaningful allocation per execution.
-- Lifecycle projection currently selects the latest allocation by `ModifyIndex`.
+- Lifecycle projection currently uses an explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex`.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
 - The current lifecycle model is intentionally minimal rather than a broad orchestration API.
 - Retries and reschedule behavior are not part of the current ES slice.
@@ -141,8 +141,8 @@ These absences are part of the current design shape, not missing implementation 
 
 - `:prepare` is both an active public surface and an explicitly bounded preflight surface, which creates ongoing design tension about its long-term role.
 - ES currently depends on aggregate evidence as the only first-class admission input, which means lifecycle admission now rises or falls with the evidence-native publish/store path.
-- Lifecycle lookup currently depends on the `run_id -> exec-<run_id>` mapping owned by ES.
-- Latest-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
+- Lifecycle lookup currently depends on an explicit ES-owned execution-locator policy whose current mapping is `run_id -> exec-<run_id>`.
+- Projected-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
 - Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
 - `:submit` currently carries staging and package-resolution assumptions, including aggregate-evidence payload resolution and evidence-driven mount validation.
 - ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
@@ -184,7 +184,7 @@ This file should remain the high-level lifecycle design map.
 ## 12. Reopened lifecycle seams
 
 - The role and future of `:prepare`
-- The `run_id -> nomad_job_id` lookup shape
+- The internal execution-locator policy behind `run_id` lookup
 - Latest-allocation lifecycle projection
 - Staging and package-resolution assumptions inside `:submit`
 - Runtime identity reserved-path and endpoint conventions

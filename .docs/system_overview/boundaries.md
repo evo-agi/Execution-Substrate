@@ -231,6 +231,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - `:submit` is now the primary public execution handoff, while `:prepare` is a much smaller preflight-success surface.
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
+- ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
 - Runtime staging, mount validation, and the internal ES-owned runtime subtree that backs runtime handoff are part ownership and part current convention.
 - ES still relies internally on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`, but it no longer returns that composition detail on the bounded `:prepare` surface.
 

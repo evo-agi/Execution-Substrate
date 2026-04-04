@@ -74,13 +74,12 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 		t.Fatalf("unexpected status: %q", payload.Status)
 	}
 
-	jobID := nomadJobIDForRunID(t, payload.RunID)
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
 		t.Fatalf("expected network_mode=none for network_access=false, got %#v", networkMode)
 	}
 
-	stack.nomad.waitForJob(t, jobID)
 	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if alloc.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
@@ -134,13 +133,12 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 		t.Fatalf("expected successful submission, got %+v", payload)
 	}
 
-	jobID := nomadJobIDForRunID(t, payload.RunID)
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "bridge" {
 		t.Fatalf("expected network_mode=bridge for network_access=true, got %#v", networkMode)
 	}
 
-	stack.nomad.waitForJob(t, jobID)
 	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if alloc.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
@@ -187,7 +185,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	jobID := nomadJobIDForRunID(t, payload.RunID)
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
 		t.Fatalf("expected network_mode=none, got %#v", networkMode)
@@ -223,7 +221,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected default tmpfs size 1048576, got %#v", size)
 	}
 
-	stack.nomad.waitForJob(t, jobID)
 	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
@@ -334,16 +331,6 @@ func runtimeIdentityWorkspaceFromEndpoint(t *testing.T, endpointURI string) stri
 	return path.Dir(endpointPath)
 }
 
-func nomadJobIDForRunID(t *testing.T, runID string) string {
-	t.Helper()
-
-	trimmed := strings.TrimSpace(runID)
-	if trimmed == "" {
-		t.Fatalf("expected non-empty run_id")
-	}
-	return "exec-" + trimmed
-}
-
 func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
 		runtimeIdentityTmpfsSize: 2 << 20,
@@ -361,7 +348,7 @@ func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, nomadJobIDForRunID(t, payload.RunID))
+	job := stack.nomad.fetchExecutionJobDetail(t, payload.RunID)
 	taskConfig := job.task(t)
 	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, taskConfig.Env[workloadIdentityEndpointEnvKey]))
 	tmpfsOptions, ok := mountConfig["tmpfs_options"].(map[string]any)
@@ -410,7 +397,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	jobID := nomadJobIDForRunID(t, payload.RunID)
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
 	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
@@ -421,7 +408,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected extracted runtime mount archive residue to be removed, got err=%v", err)
 	}
 
-	stack.nomad.waitForJob(t, jobID)
 	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
@@ -1215,7 +1201,13 @@ type nomadAllocationSummary struct {
 	TaskStates   map[string]nomadTaskState `json:"TaskStates"`
 }
 
+type nomadJobListEntry struct {
+	ID string `json:"ID"`
+}
+
 type nomadJobDetail struct {
+	ID         string                 `json:"ID"`
+	Meta       map[string]string      `json:"Meta"`
 	TaskGroups []nomadTaskGroupDetail `json:"TaskGroups"`
 }
 
@@ -1227,6 +1219,7 @@ type nomadTaskDetail struct {
 	Name   string            `json:"Name"`
 	Config map[string]any    `json:"Config"`
 	Env    map[string]string `json:"Env"`
+	Meta   map[string]string `json:"Meta"`
 }
 
 type nomadTaskState struct {
@@ -1365,6 +1358,25 @@ func (n *nomadHarness) waitForJob(t *testing.T, jobID string) {
 	t.Fatalf("nomad job %s did not appear", jobID)
 }
 
+func (n *nomadHarness) waitForExecutionJob(t *testing.T, runID string) string {
+	t.Helper()
+
+	trimmed := strings.TrimSpace(runID)
+	if trimmed == "" {
+		t.Fatalf("expected non-empty run_id")
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if jobID, ok := n.findExecutionJobID(trimmed); ok {
+			return jobID
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("nomad job for run_id %s did not appear", trimmed)
+	return ""
+}
+
 func (n *nomadHarness) fetchJobDetail(t *testing.T, jobID string) nomadJobDetail {
 	t.Helper()
 
@@ -1386,6 +1398,11 @@ func (n *nomadHarness) fetchJobDetail(t *testing.T, jobID string) nomadJobDetail
 	return payload
 }
 
+func (n *nomadHarness) fetchExecutionJobDetail(t *testing.T, runID string) nomadJobDetail {
+	t.Helper()
+	return n.fetchJobDetail(t, n.waitForExecutionJob(t, runID))
+}
+
 func (j nomadJobDetail) taskConfig(t *testing.T) map[string]any {
 	t.Helper()
 
@@ -1402,6 +1419,59 @@ func (j nomadJobDetail) task(t *testing.T) nomadTaskDetail {
 		t.Fatalf("expected at least one task in job")
 	}
 	return j.TaskGroups[0].Tasks[0]
+}
+
+func (j nomadJobDetail) runID() string {
+	if value := strings.TrimSpace(j.Meta["run_id"]); value != "" {
+		return value
+	}
+	if len(j.TaskGroups) == 0 || len(j.TaskGroups[0].Tasks) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(j.TaskGroups[0].Tasks[0].Meta["run_id"])
+}
+
+func (n *nomadHarness) findExecutionJobID(runID string) (string, bool) {
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/jobs")
+	if err != nil {
+		return "", false
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return "", false
+	}
+
+	var payload []nomadJobListEntry
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return "", false
+	}
+
+	for _, entry := range payload {
+		detail, ok := n.tryFetchJobDetail(strings.TrimSpace(entry.ID))
+		if ok && detail.runID() == runID {
+			return strings.TrimSpace(entry.ID), true
+		}
+	}
+	return "", false
+}
+
+func (n *nomadHarness) tryFetchJobDetail(jobID string) (nomadJobDetail, bool) {
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Get(n.addr + "/v1/job/" + jobID)
+	if err != nil {
+		return nomadJobDetail{}, false
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nomadJobDetail{}, false
+	}
+
+	var payload nomadJobDetail
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nomadJobDetail{}, false
+	}
+	return payload, true
 }
 
 func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nomadAllocationSummary {
@@ -1441,6 +1511,11 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 	}
 	t.Fatalf("nomad allocation for job %s did not reach a terminal state; logs=%s", jobID, strings.TrimSpace(string(output)))
 	return nomadAllocationSummary{}
+}
+
+func (n *nomadHarness) waitForTerminalExecutionAllocation(t *testing.T, runID string) nomadAllocationSummary {
+	t.Helper()
+	return n.waitForTerminalAllocation(t, n.waitForExecutionJob(t, runID))
 }
 
 func (n *nomadHarness) tryFetchAllocation(allocationID string) (nomadAllocationSummary, bool) {
@@ -1487,6 +1562,11 @@ func (n *nomadHarness) allocLogs(t *testing.T, allocationID string) string {
 		t.Fatalf("fetch allocation logs: %v output=%s", err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+func (n *nomadHarness) waitForExecutionJobTerminalStatus(t *testing.T, runID string) nomadJobSummary {
+	t.Helper()
+	return n.waitForJobTerminalStatus(t, n.waitForExecutionJob(t, runID))
 }
 
 func (n *nomadHarness) shutdown(t *testing.T) {

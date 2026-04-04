@@ -17,9 +17,7 @@ import (
 func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
-	jobID := nomadJobIDForRunID(t, submitted.RunID)
-
-	stack.nomad.waitForJob(t, jobID)
+	jobID := stack.nomad.waitForExecutionJob(t, submitted.RunID)
 
 	var status admission.ExecutionStatusResult
 	deadline := time.Now().Add(10 * time.Second)
@@ -95,10 +93,7 @@ func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
-	jobID := nomadJobIDForRunID(t, submitted.RunID)
-
-	stack.nomad.waitForJob(t, jobID)
-	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
+	allocation := stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
 	}
@@ -144,8 +139,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
 
 	submitted := submitExecution(t, stack, 10, 128)
-	jobID := nomadJobIDForRunID(t, submitted.RunID)
-	stack.nomad.waitForJob(t, jobID)
+	stack.nomad.waitForExecutionJob(t, submitted.RunID)
 
 	response := doJSONRequest(
 		t,
@@ -175,7 +169,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected cancel_requested status, got %+v", payload)
 	}
 
-	job := stack.nomad.waitForJobTerminalStatus(t, jobID)
+	job := stack.nomad.waitForExecutionJobTerminalStatus(t, submitted.RunID)
 	if job.Status != "dead" {
 		t.Fatalf("expected dead job after cancel, got %q", job.Status)
 	}
@@ -220,7 +214,7 @@ func TestExecutionLifecycleMissingJobReturns404(t *testing.T) {
 func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 999999, 999999)
-	stack.nomad.waitForJob(t, nomadJobIDForRunID(t, submitted.RunID))
+	stack.nomad.waitForExecutionJob(t, submitted.RunID)
 
 	response := doJSONRequest(
 		t,
@@ -240,7 +234,7 @@ func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 func TestExecutionStatusReturns503WhenNomadUnavailable(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
-	stack.nomad.waitForJob(t, nomadJobIDForRunID(t, submitted.RunID))
+	stack.nomad.waitForExecutionJob(t, submitted.RunID)
 	stack.nomad.shutdown(t)
 
 	response := doJSONRequest(
@@ -268,9 +262,8 @@ exit 7
 `))
 
 	submitted := submitExecution(t, stack, 10, 128)
-	jobID := nomadJobIDForRunID(t, submitted.RunID)
-	stack.nomad.waitForJob(t, jobID)
-	stack.nomad.waitForTerminalAllocation(t, jobID)
+	stack.nomad.waitForExecutionJob(t, submitted.RunID)
+	stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 
 	response := doJSONRequest(
 		t,

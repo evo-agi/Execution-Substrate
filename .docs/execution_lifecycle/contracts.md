@@ -253,7 +253,7 @@ Successful response is `202` JSON with these fields:
 
 - `run_id` is required in the path.
 - ES validates `run_id` before any runtime lookup.
-- ES derives `nomad_job_id` from `run_id` internally and uses that as the current lifecycle lookup path.
+- ES resolves `run_id` through an explicit internal execution-locator policy before reading Nomad.
 - Status is read from Nomad job and allocation state.
 
 ### Response contract
@@ -299,7 +299,7 @@ Successful response is `200` JSON with these current fields:
 
 **Reopened lifecycle seams**
 
-- The `run_id -> nomad_job_id` lookup rule
+- The internal execution-locator policy behind `run_id` lookup
 - The current status projection depth
 - The extent to which minimal status projection is durable versus slice-bounded
 
@@ -313,8 +313,8 @@ Successful response is `200` JSON with these current fields:
 
 **Observed current contract**
 
-- `run_id` validation and internal `nomad_job_id` derivation follow the same rules as `status`.
-- ES resolves logs through the latest selected allocation.
+- `run_id` validation and internal execution-locator resolution follow the same rules as `status`.
+- ES resolves logs through the currently projected allocation.
 
 ### Response contract
 
@@ -328,7 +328,7 @@ Successful response is:
 
 **Current contract invariants**
 
-- Logs are resolved from the latest allocation only.
+- Logs are resolved from the currently projected allocation only.
 - Task name is fixed to `task`.
 - Output source is stdout only.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
@@ -361,7 +361,7 @@ Successful response is:
 
 **Reopened lifecycle seams**
 
-- Latest-allocation-only log selection
+- The internal projected-allocation rule used for log selection
 - Current logs minimalism
 - The current single-task, stdout-only log contract
 
@@ -375,7 +375,7 @@ Successful response is:
 
 **Observed current contract**
 
-- `run_id` validation and internal `nomad_job_id` derivation follow the same rules as `status`.
+- `run_id` validation and internal execution-locator resolution follow the same rules as `status`.
 - ES confirms the job exists, then issues a stop request to Nomad.
 
 ### Response contract
@@ -421,12 +421,13 @@ Successful response is `200` JSON with these fields:
 **Observed current contract**
 
 - `run_id` must match `run-[0-9a-f]{16}`.
-- Current derived scheduler lookup is `nomad_job_id = exec-<run_id>`.
+- ES owns one explicit internal execution-locator policy for lifecycle lookup.
+- The current locator resolves scheduler lookup as `nomad_job_id = exec-<run_id>`.
 - Status, logs, and cancel all depend on this derivation today.
 
 **Current contract invariant**
 
-- This mapping is currently authoritative for lifecycle lookup because ES does not own a separate run registry or lifecycle store.
+- This internal locator policy is currently authoritative for lifecycle lookup because ES does not own a separate run registry or lifecycle store.
 
 **What this contract does not imply**
 
@@ -442,7 +443,7 @@ Successful response is `200` JSON with these fields:
 
 **Observed current contract**
 
-- ES selects the latest Nomad allocation by `ModifyIndex`.
+- ES uses one explicit internal projected-allocation policy that currently selects the latest Nomad allocation by `ModifyIndex`.
 
 **Current contract invariant**
 
@@ -531,7 +532,7 @@ These rules are active today, but they should not be preserved by inertia.
 
 - The public role of `:prepare`
 - The bounded receipt shape of `:submit`
-- The `run_id -> nomad_job_id` lookup rule
+- The internal execution-locator policy behind `run_id` lookup
 - Latest-allocation selection
 - Runtime identity reserved-path conventions
 - Current logs minimalism
