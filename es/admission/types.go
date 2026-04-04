@@ -46,15 +46,7 @@ type MountSource struct {
 // only, and intentionally does not create run IDs, scheduler metadata, or any
 // proto-execution state.
 type PrepareResult struct {
-	Success              bool              `json:"success"`
-	ArtifactDigest       string            `json:"artifact_digest"`
-	DerivationSpecDigest string            `json:"derivation_spec_digest"`
-	OutputID             string            `json:"output_id"`
-	IntentDigest         string            `json:"intent_digest"`
-	ArtifactType         string            `json:"artifact_type"`
-	Provenance           ProvenanceInfo    `json:"provenance"`
-	Workload             WorkloadInfo      `json:"workload"`
-	WorkloadVault        WorkloadVaultInfo `json:"workload_vault"`
+	Success bool `json:"success"`
 }
 
 // SubmitResult is the bounded async submission receipt for the first real
@@ -62,57 +54,30 @@ type PrepareResult struct {
 // and handed a real Nomad job to the scheduler, but it intentionally does not
 // create a durable execution record or broader lifecycle surface.
 type SubmitResult struct {
-	Success        bool   `json:"success"`
-	Submitted      bool   `json:"submitted"`
-	RunID          string `json:"run_id"`
-	NomadJobID     string `json:"nomad_job_id"`
-	NomadEvalID    string `json:"nomad_eval_id"`
-	ArtifactDigest string `json:"artifact_digest"`
-	Status         string `json:"status"`
+	Success   bool   `json:"success"`
+	Submitted bool   `json:"submitted"`
+	RunID     string `json:"run_id"`
+	Status    string `json:"status"`
 }
 
 // ExecutionStatusResult is the bounded Nomad-backed lifecycle view for a
 // submitted execution. It intentionally reflects only minimal mapped state and
 // does not imply a durable ES-owned lifecycle record.
 type ExecutionStatusResult struct {
-	Success                bool   `json:"success"`
-	RunID                  string `json:"run_id"`
-	NomadJobID             string `json:"nomad_job_id"`
-	JobStatus              string `json:"job_status"`
-	AllocationID           string `json:"allocation_id,omitempty"`
-	AllocationClientStatus string `json:"allocation_client_status,omitempty"`
-	TaskState              string `json:"task_state,omitempty"`
-	ExitCode               *int   `json:"exit_code,omitempty"`
-	Terminal               bool   `json:"terminal"`
+	Success  bool   `json:"success"`
+	RunID    string `json:"run_id"`
+	Status   string `json:"status"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Terminal bool   `json:"terminal"`
 }
 
 // ExecutionCancelResult is the bounded cancellation receipt for the Nomad-
 // backed lifecycle slice. It confirms that ES asked Nomad to stop the job,
 // but it does not create a durable execution record or wider lifecycle model.
 type ExecutionCancelResult struct {
-	Success    bool   `json:"success"`
-	RunID      string `json:"run_id"`
-	NomadJobID string `json:"nomad_job_id"`
-	Status     string `json:"status"`
-}
-
-type ProvenanceInfo struct {
-	SignerKeyID string `json:"signer_key_id"`
-}
-
-type WorkloadInfo struct {
-	Type               string `json:"type"`
-	ServiceName        string `json:"service_name,omitempty"`
-	WorkloadIdentityID string `json:"workload_identity_id"`
-}
-
-type WorkloadVaultInfo struct {
-	Digest      string `json:"digest"`
-	Address     string `json:"address"`
-	AuthMode    string `json:"auth_mode"`
-	AuthMount   string `json:"auth_mount"`
-	AuthRole    string `json:"auth_role"`
-	JWTAudience string `json:"jwt_audience"`
+	Success bool   `json:"success"`
+	RunID   string `json:"run_id"`
+	Status  string `json:"status"`
 }
 
 type ErrorResponse struct {

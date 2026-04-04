@@ -47,7 +47,7 @@ fi
 python3 - <<'PY' "${tmp_response}"
 import json, pathlib, sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
-for key in ("run_id", "nomad_job_id", "nomad_eval_id"):
+for key in ("run_id", "status"):
     value = payload.get(key, "")
     if value:
         print(f"{key.upper()}={value}")

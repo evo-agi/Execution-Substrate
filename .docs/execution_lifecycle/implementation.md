@@ -131,6 +131,7 @@ What `Prepare` reads:
 - `Prepare` does not build or submit a Nomad job.
 - `Prepare` does not create local staging directories.
 - `Prepare` returns a bounded result assembled in memory after verification and resolution steps complete.
+- The richer signer/workload/workload-vault composition data stays internal to the shared admission helper instead of leaking through the public `PrepareResult`.
 
 ## 7. Submit path implementation
 
@@ -159,6 +160,7 @@ Where IDs are created:
 
 - `run_id` is created in `newRunAndJobID`.
 - The Nomad job ID is derived there as `exec-<run_id>`.
+- The public `SubmitResult` now returns `run_id` and bounded receipt status only; Nomad IDs remain internal implementation detail.
 
 Where ES stops and Nomad takes over:
 
@@ -188,8 +190,12 @@ Status path:
 - Fetch job summary.
 - Build a minimal `ExecutionStatusResult`.
 - Resolve the latest allocation if present.
-- Fill allocation/task/exit-code fields when available.
-- Treat "job exists but no allocation yet" as a successful job-level status view.
+- Map the current Nomad-backed path into public `status` values:
+  - `submitted`
+  - `running`
+  - `terminal`
+- Fill `exit_code` when available.
+- Treat "job exists but no allocation yet" as a successful `submitted` view.
 
 Logs path:
 
@@ -202,7 +208,7 @@ Cancel path:
 
 - Fetch job summary.
 - Stop the job through Nomad with `purge=false`.
-- Return bounded cancel receipt.
+- Return bounded cancel receipt without exposing Nomad job identifiers publicly.
 
 **Implementation invariants**
 
@@ -344,9 +350,9 @@ How Docker appears in the implementation:
 
 The most important implementation facts are backed by integration tests:
 
-- `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES returns current trust, provenance, workload, and workload-vault data after startup-config/ARS/EGS composition.
+- `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
-- `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
+- `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/monolith/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.

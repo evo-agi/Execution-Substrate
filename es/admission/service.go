@@ -180,16 +180,15 @@ type discoveredArtifact struct {
 type preparedArtifact struct {
 	manifest       Manifest
 	payloadDigest  string
-	signerKeyID    string
-	workload       WorkloadInfo
 	targetPlatform string
 	networkAccess  bool
 }
 
 type preparedAdmission struct {
-	result     PrepareResult
-	artifact   preparedArtifact
-	trustModel egsmodel.RuntimeTrustPolicy
+	result            PrepareResult
+	artifact          preparedArtifact
+	workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan
+	trustModel        egsmodel.RuntimeTrustPolicy
 }
 
 func NewService(cfg esconfig.Config) (*Service, error) {
@@ -354,27 +353,11 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 
 	return preparedAdmission{
 		result: PrepareResult{
-			Success:              true,
-			ArtifactDigest:       req.Invocation.ArtifactDigest,
-			DerivationSpecDigest: req.Invocation.DerivationSpecDigest,
-			OutputID:             req.Invocation.OutputID,
-			IntentDigest:         artifact.manifest.IntentDigest,
-			ArtifactType:         artifact.manifest.ArtifactType,
-			Provenance: ProvenanceInfo{
-				SignerKeyID: artifact.signerKeyID,
-			},
-			Workload: artifact.workload,
-			WorkloadVault: WorkloadVaultInfo{
-				Digest:      workloadVaultRef.Digest,
-				Address:     plan.Address,
-				AuthMode:    string(plan.Mode),
-				AuthMount:   plan.AuthMount,
-				AuthRole:    plan.AuthRole,
-				JWTAudience: plan.JWTAudience,
-			},
+			Success: true,
 		},
-		artifact:   artifact,
-		trustModel: *trustModel,
+		artifact:          artifact,
+		workloadVaultPlan: plan,
+		trustModel:        *trustModel,
 	}, nil
 }
 
@@ -588,14 +571,8 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 	}
 
 	return preparedArtifact{
-		manifest:      manifestFromEvidence(evidence),
-		payloadDigest: strings.TrimSpace(descriptor.Package.Payload.Digest),
-		signerKeyID:   evidence.Seal.KeyID,
-		workload: WorkloadInfo{
-			Type:               execution.Workload.WorkloadType,
-			ServiceName:        execution.Workload.ServiceName,
-			WorkloadIdentityID: execution.Workload.WorkloadIdentityID,
-		},
+		manifest:       manifestFromEvidence(evidence),
+		payloadDigest:  strings.TrimSpace(descriptor.Package.Payload.Digest),
 		targetPlatform: execution.Workload.TargetPlatform,
 		networkAccess:  execution.Access.NetworkAccess,
 	}, nil

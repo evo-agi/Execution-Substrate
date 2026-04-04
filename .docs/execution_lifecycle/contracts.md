@@ -20,7 +20,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 | Endpoint | Purpose | Current status | Response type | High-level ownership note |
 | --- | --- | --- | --- | --- |
-| `POST /v1/executions:prepare` | Return admission and preparation facts without creating execution state | Active and bounded | `200` JSON `PrepareResult` | ES-owned admission composition surface |
+| `POST /v1/executions:prepare` | Return bounded preflight success without creating execution state | Active and bounded | `200` JSON `PrepareResult` | ES-owned admission composition surface |
 | `POST /v1/executions:submit` | Perform real execution submission | Active and bounded | `202` JSON `SubmitResult` | ES hands off to Nomad |
 | `GET /v1/executions/{run_id}/status` | Return current execution status view | Active | `200` JSON `ExecutionStatusResult` | Nomad-backed status projection through ES |
 | `GET /v1/executions/{run_id}/logs` | Return execution logs | Active and bounded | `200` `text/plain` | Nomad-backed stdout retrieval through ES |
@@ -59,7 +59,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 ### Purpose
 
-`POST /v1/executions:prepare` returns admission and preparation facts for a requested artifact execution without creating execution state.
+`POST /v1/executions:prepare` returns bounded preflight success for a requested artifact execution without creating execution state.
 
 ### Request contract
 
@@ -106,16 +106,6 @@ These labels are intentionally different. A contract may be live today, relied o
 Successful response is `200` JSON with these contract fields:
 
 - `success`
-- `artifact_digest`
-- `derivation_spec_digest`
-- `output_id`
-- `intent_digest`
-- `artifact_type`
-- `provenance`
-- `workload`
-- `workload_vault`
-
-The response is an admission/preparation fact bundle. It includes current publication signer info, workload identity info, and resolved workload-vault info.
 
 ### Current invariants
 
@@ -125,8 +115,8 @@ The response is an admission/preparation fact bundle. It includes current public
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
-- `:prepare` does not surface EGS publication metadata as part of its preparation result.
-- Successful `:prepare` returns preparation facts only, not execution state.
+- `:prepare` does not surface EGS publication metadata or internal composition detail as part of its preparation result.
+- Successful `:prepare` returns bounded preflight success only, not execution state.
 
 ### Explicit non-effects
 
@@ -134,6 +124,7 @@ The response is an admission/preparation fact bundle. It includes current public
 - No Nomad job or eval ID is returned.
 - No scheduler handoff occurs.
 - No proto-execution state or durable ES execution record is created.
+- No workload-vault plan, signer detail, or workload identity detail is returned.
 
 ### Error contract
 
@@ -157,7 +148,7 @@ The response is an admission/preparation fact bundle. It includes current public
 **Bounded slice contract**
 
 - `:prepare` is active today but intentionally bounded.
-- It proves admission and preparation facts only.
+- It proves preflight success only.
 - It does not create a long-lived execution object, scheduler record, or wider lifecycle surface.
 
 ### Reopened seams
@@ -166,7 +157,7 @@ The response is an admission/preparation fact bundle. It includes current public
 
 - The public role and future of `:prepare`
 - The long-term shape of the preparation result
-- The extent to which current preparation facts should remain part of a public execution contract
+- The extent to which preflight success should remain part of a public execution contract
 
 ## 6. Submit contract
 
@@ -201,15 +192,12 @@ Successful response is `202` JSON with these fields:
 - `success`
 - `submitted`
 - `run_id`
-- `nomad_job_id`
-- `nomad_eval_id`
-- `artifact_digest`
 - `status`
 
 **Current contract invariants**
 
 - Successful `:submit` returns a bounded submission receipt.
-- The receipt confirms Nomad handoff, not durable ES lifecycle ownership.
+- The receipt confirms execution handoff through `run_id`, not durable ES lifecycle ownership.
 - Current successful receipts use `status = "submitted"`.
 
 ### Explicit non-effects
@@ -265,7 +253,7 @@ Successful response is `202` JSON with these fields:
 
 - `run_id` is required in the path.
 - ES validates `run_id` before any runtime lookup.
-- ES derives `nomad_job_id` from `run_id` and uses that as the current lifecycle lookup path.
+- ES derives `nomad_job_id` from `run_id` internally and uses that as the current lifecycle lookup path.
 - Status is read from Nomad job and allocation state.
 
 ### Response contract
@@ -276,19 +264,17 @@ Successful response is `200` JSON with these current fields:
 
 - `success`
 - `run_id`
-- `nomad_job_id`
-- `job_status`
-- optional `allocation_id`
-- optional `allocation_client_status`
-- optional `task_state`
+- `status`
 - optional `exit_code`
 - `terminal`
 
 **Current contract invariants**
 
 - Status is a Nomad-backed projection.
-- If the job exists but no allocation is yet selected, status still succeeds with job-level data only.
-- Failed workloads still return `200`; failure is expressed through Nomad-derived fields such as allocation status, task state, exit code, and terminal state.
+- If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
+- Once an allocation is selected and not terminal, status returns `status = "running"`.
+- Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
+- Failed workloads still return `200`; failure is expressed through terminal state plus `exit_code` when available.
 - ES must not synthesize richer lifecycle phases than the current Nomad-backed projection exposes.
 
 ### Error contract
@@ -307,7 +293,7 @@ Successful response is `200` JSON with these current fields:
 
 - Status is intentionally minimal.
 - The contract is built around current Nomad projection rather than a richer ES-owned execution model.
-- Allocation detail is optional in the successful response.
+- The public response no longer carries scheduler job/allocation identifiers or task-state detail.
 
 ### Reopened seams
 
@@ -327,7 +313,7 @@ Successful response is `200` JSON with these current fields:
 
 **Observed current contract**
 
-- `run_id` validation and `nomad_job_id` derivation follow the same rules as `status`.
+- `run_id` validation and internal `nomad_job_id` derivation follow the same rules as `status`.
 - ES resolves logs through the latest selected allocation.
 
 ### Response contract
@@ -389,7 +375,7 @@ Successful response is:
 
 **Observed current contract**
 
-- `run_id` validation and `nomad_job_id` derivation follow the same rules as `status`.
+- `run_id` validation and internal `nomad_job_id` derivation follow the same rules as `status`.
 - ES confirms the job exists, then issues a stop request to Nomad.
 
 ### Response contract
@@ -400,7 +386,6 @@ Successful response is `200` JSON with these fields:
 
 - `success`
 - `run_id`
-- `nomad_job_id`
 - `status`
 
 **Current contract invariants**
@@ -500,7 +485,7 @@ Successful response is `200` JSON with these fields:
 - ES injects the current endpoint-discovery environment conventions:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
   - temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=<same value>`
-- ES also injects the current non-secret workload-vault runtime inputs derived from `workload_vault`.
+- ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 
 **Current contract invariants**

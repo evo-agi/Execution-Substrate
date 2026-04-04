@@ -17,8 +17,9 @@ import (
 func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
+	jobID := nomadJobIDForRunID(t, submitted.RunID)
 
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
 
 	var status admission.ExecutionStatusResult
 	deadline := time.Now().Add(10 * time.Second)
@@ -41,52 +42,63 @@ func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 			t.Fatalf("decode status response: %v", err)
 		}
 		response.Body.Close()
-		if strings.TrimSpace(status.AllocationID) != "" {
+		if status.Status != "submitted" {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if strings.TrimSpace(status.AllocationID) == "" {
-		t.Fatalf("expected allocation_id in status response: %+v", status)
+	if status.Status == "submitted" {
+		t.Fatalf("expected status to advance beyond submitted: %+v", status)
 	}
 
-	job := stack.nomad.fetchJob(t, submitted.NomadJobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
+	task, ok := allocation.TaskStates["task"]
+	if !ok {
+		t.Fatalf("expected task state for task")
+	}
+
+	response := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+submitted.RunID+"/status",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatalf("decode terminal status response: %v", err)
+	}
+
 	if !status.Success {
 		t.Fatalf("expected success status response: %+v", status)
 	}
 	if status.RunID != submitted.RunID {
 		t.Fatalf("expected run_id %q, got %q", submitted.RunID, status.RunID)
 	}
-	if status.NomadJobID != submitted.NomadJobID {
-		t.Fatalf("expected nomad_job_id %q, got %q", submitted.NomadJobID, status.NomadJobID)
+	if status.Status != "terminal" {
+		t.Fatalf("expected terminal status, got %+v", status)
 	}
-	if status.JobStatus != job.Status {
-		t.Fatalf("expected job_status %q, got %q", job.Status, status.JobStatus)
+	if !status.Terminal {
+		t.Fatalf("expected terminal=true once allocation is terminal: %+v", status)
 	}
-
-	allocation := stack.nomad.fetchAllocation(t, status.AllocationID)
-	if status.AllocationClientStatus != allocation.ClientStatus {
-		t.Fatalf("expected allocation_client_status %q, got %q", allocation.ClientStatus, status.AllocationClientStatus)
-	}
-	task, ok := allocation.TaskStates["task"]
-	if !ok {
-		if status.TaskState != "" {
-			t.Fatalf("expected empty task_state when Nomad task state is unavailable, got %q", status.TaskState)
-		}
-		return
-	}
-	if status.TaskState != task.State {
-		t.Fatalf("expected task_state %q, got %q", task.State, status.TaskState)
+	if exitCode := task.exitCode(); status.ExitCode == nil || *status.ExitCode != exitCode {
+		t.Fatalf("expected exit code %d, got %+v", exitCode, status)
 	}
 }
 
 func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
+	jobID := nomadJobIDForRunID(t, submitted.RunID)
 
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
-	allocation := stack.nomad.waitForTerminalAllocation(t, submitted.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
 	}
@@ -112,7 +124,7 @@ func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 	if !strings.Contains(logs, "HEARTBEAT:1") || !strings.Contains(logs, "HEARTBEAT:2") || !strings.Contains(logs, "HEARTBEAT:3") {
 		t.Fatalf("expected heartbeat lines in logs, got %q", logs)
 	}
-	if !strings.Contains(logs, `"status":"ok"`) || !strings.Contains(logs, submitted.ArtifactDigest) {
+	if !strings.Contains(logs, `"status":"ok"`) || !strings.Contains(logs, stack.publishResponse.ArtifactDigest) {
 		t.Fatalf("expected final json marker in logs, got %q", logs)
 	}
 }
@@ -132,7 +144,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
 
 	submitted := submitExecution(t, stack, 10, 128)
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
+	jobID := nomadJobIDForRunID(t, submitted.RunID)
+	stack.nomad.waitForJob(t, jobID)
 
 	response := doJSONRequest(
 		t,
@@ -155,11 +168,14 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	if !payload.Success {
 		t.Fatalf("expected successful cancel response: %+v", payload)
 	}
-	if payload.RunID != submitted.RunID || payload.NomadJobID != submitted.NomadJobID {
+	if payload.RunID != submitted.RunID {
 		t.Fatalf("unexpected cancel response: %+v", payload)
 	}
+	if payload.Status != "cancel_requested" {
+		t.Fatalf("expected cancel_requested status, got %+v", payload)
+	}
 
-	job := stack.nomad.waitForJobTerminalStatus(t, submitted.NomadJobID)
+	job := stack.nomad.waitForJobTerminalStatus(t, jobID)
 	if job.Status != "dead" {
 		t.Fatalf("expected dead job after cancel, got %q", job.Status)
 	}
@@ -204,7 +220,7 @@ func TestExecutionLifecycleMissingJobReturns404(t *testing.T) {
 func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 999999, 999999)
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
+	stack.nomad.waitForJob(t, nomadJobIDForRunID(t, submitted.RunID))
 
 	response := doJSONRequest(
 		t,
@@ -224,7 +240,7 @@ func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 func TestExecutionStatusReturns503WhenNomadUnavailable(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
+	stack.nomad.waitForJob(t, nomadJobIDForRunID(t, submitted.RunID))
 	stack.nomad.shutdown(t)
 
 	response := doJSONRequest(
@@ -252,8 +268,9 @@ exit 7
 `))
 
 	submitted := submitExecution(t, stack, 10, 128)
-	stack.nomad.waitForJob(t, submitted.NomadJobID)
-	stack.nomad.waitForTerminalAllocation(t, submitted.NomadJobID)
+	jobID := nomadJobIDForRunID(t, submitted.RunID)
+	stack.nomad.waitForJob(t, jobID)
+	stack.nomad.waitForTerminalAllocation(t, jobID)
 
 	response := doJSONRequest(
 		t,
@@ -276,11 +293,11 @@ exit 7
 	if !payload.Terminal {
 		t.Fatalf("expected terminal status for failed allocation: %+v", payload)
 	}
+	if payload.Status != "terminal" {
+		t.Fatalf("expected terminal status label, got %+v", payload)
+	}
 	if payload.ExitCode == nil || *payload.ExitCode != 7 {
 		t.Fatalf("expected exit code 7, got %+v", payload)
-	}
-	if payload.AllocationClientStatus != "failed" {
-		t.Fatalf("expected failed allocation status, got %+v", payload)
 	}
 }
 

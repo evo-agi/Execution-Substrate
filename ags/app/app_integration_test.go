@@ -58,9 +58,6 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	if !payload.Success {
 		t.Fatalf("expected successful prepare response")
 	}
-	if payload.ArtifactDigest != stack.publishResponse.ArtifactDigest {
-		t.Fatalf("unexpected artifact digest: %q", payload.ArtifactDigest)
-	}
 	if strings.TrimSpace(stack.publishResponse.DescriptorDigest) == "" {
 		t.Fatalf("expected descriptor digest in publish response")
 	}
@@ -81,9 +78,6 @@ func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {
 	}
 	if evidence.Claims.Package.Identity.PayloadDigest != stack.publishResponse.PayloadDigest {
 		t.Fatalf("expected evidence payload digest %q, got %q", stack.publishResponse.PayloadDigest, evidence.Claims.Package.Identity.PayloadDigest)
-	}
-	if payload.Provenance.SignerKeyID != stack.fixture.agsKeyID {
-		t.Fatalf("unexpected provenance signer key: %q", payload.Provenance.SignerKeyID)
 	}
 }
 

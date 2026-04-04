@@ -136,7 +136,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(runID, prepared.result, req.Invocation.Env, req.TimeoutSeconds)
+	env := buildRuntimeEnvironment(runID, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -144,14 +144,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		runID,
 		stage,
 		req,
-		prepared.result,
 		prepared.artifact.networkAccess,
 		taskCPU,
 		taskMemoryMB,
 		env,
 	)
 
-	evalID, submitErr := s.nomadClient.submitJob(ctx, jobSpec)
+	_, submitErr := s.nomadClient.submitJob(ctx, jobSpec)
 	if submitErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusServiceUnavailable,
@@ -162,13 +161,10 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	submitted = true
 
 	return SubmitResult{
-		Success:        true,
-		Submitted:      true,
-		RunID:          runID,
-		NomadJobID:     jobID,
-		NomadEvalID:    evalID,
-		ArtifactDigest: prepared.result.ArtifactDigest,
-		Status:         "submitted",
+		Success:   true,
+		Submitted: true,
+		RunID:     runID,
+		Status:    "submitted",
 	}, nil
 }
 
@@ -236,7 +232,7 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
+func buildRuntimeEnvironment(runID string, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
 	handoff := runtimeIdentityHandoffForRun(runID)
 
 	env := make(map[string]string, len(invocationEnv)+12)
@@ -246,16 +242,16 @@ func buildRuntimeEnvironment(runID string, prepared PrepareResult, invocationEnv
 
 	// TODO: Do not mention "monolith"
 	env["EXEC_RUN_ID"] = runID
-	env["EXEC_ARTIFACT_DIGEST"] = prepared.ArtifactDigest
+	env["EXEC_ARTIFACT_DIGEST"] = artifactDigest
 	env["EXEC_WORK_DIR"] = "/monolith/run/work"
 	env["SERVICE_ID"] = "execution"
-	env["VAULT_ADDR"] = prepared.WorkloadVault.Address
+	env["VAULT_ADDR"] = workloadVaultPlan.Address
 	env[handoff.endpointEnvKey] = handoff.endpointURI
 	env[handoff.compatibilityEndpointEnvKey] = handoff.endpointURI
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = prepared.WorkloadVault.AuthMode
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = prepared.WorkloadVault.AuthMount
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = prepared.WorkloadVault.AuthRole
-	env["MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE"] = prepared.WorkloadVault.JWTAudience
+	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = string(workloadVaultPlan.Mode)
+	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
+	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
+	env["MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE"] = workloadVaultPlan.JWTAudience
 	env["EXEC_TIMEOUT_SECONDS"] = strconv.Itoa(timeoutSeconds)
 	return env
 }
@@ -266,7 +262,6 @@ func buildNomadJobSpec(
 	runID string,
 	stage stagedPayload,
 	req PrepareRequest,
-	prepared PrepareResult,
 	networkAccess bool,
 	taskCPU int,
 	taskMemoryMB int,
@@ -371,9 +366,9 @@ func buildNomadJobSpec(
 							},
 							"Meta": map[string]any{
 								"run_id":                 runID,
-								"artifact_digest":        prepared.ArtifactDigest,
-								"derivation_spec_digest": prepared.DerivationSpecDigest,
-								"output_id":              prepared.OutputID,
+								"artifact_digest":        req.Invocation.ArtifactDigest,
+								"derivation_spec_digest": req.Invocation.DerivationSpecDigest,
+								"output_id":              req.Invocation.OutputID,
 							},
 						},
 					},

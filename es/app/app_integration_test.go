@@ -38,7 +38,7 @@ import (
 	esconfig "execution-platform/es/config"
 )
 
-func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
+func TestPrepareFlowReturnsBoundedPreflightSuccess(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
 	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/deployment", false), buildPrepareRequestBody(t, stack))
@@ -56,6 +56,20 @@ func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
 	if _, ok := raw["trust_model"]; ok {
 		t.Fatalf("did not expect trust_model metadata in prepare response: %s", strings.TrimSpace(string(body)))
 	}
+	for _, key := range []string{
+		"artifact_digest",
+		"derivation_spec_digest",
+		"output_id",
+		"intent_digest",
+		"artifact_type",
+		"provenance",
+		"workload",
+		"workload_vault",
+	} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("did not expect internal admission detail %q in bounded prepare response: %s", key, strings.TrimSpace(string(body)))
+		}
+	}
 
 	var payload admission.PrepareResult
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -64,27 +78,6 @@ func TestPrepareFlowReturnsAdmissionFacts(t *testing.T) {
 
 	if !payload.Success {
 		t.Fatalf("expected success response")
-	}
-	if payload.ArtifactDigest != stack.artifactDigest {
-		t.Fatalf("unexpected artifact digest: %q", payload.ArtifactDigest)
-	}
-	if payload.IntentDigest != stack.intentDigest {
-		t.Fatalf("unexpected intent digest: %q", payload.IntentDigest)
-	}
-	if payload.Provenance.SignerKeyID != stack.fixture.agsKeyID {
-		t.Fatalf("unexpected provenance signer: %q", payload.Provenance.SignerKeyID)
-	}
-	if payload.Workload.WorkloadIdentityID != stack.workloadIdentityID {
-		t.Fatalf("unexpected workload identity: %q", payload.Workload.WorkloadIdentityID)
-	}
-	if payload.WorkloadVault.Digest != stack.workloadZoneVaultDigest {
-		t.Fatalf("unexpected workload vault digest: %q", payload.WorkloadVault.Digest)
-	}
-	if payload.WorkloadVault.AuthMode != string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT) {
-		t.Fatalf("unexpected auth mode: %q", payload.WorkloadVault.AuthMode)
-	}
-	if payload.WorkloadVault.AuthMount != "jwt" || payload.WorkloadVault.AuthRole != "service_execution" || payload.WorkloadVault.JWTAudience != "vault" {
-		t.Fatalf("unexpected workload vault plan: %+v", payload.WorkloadVault)
 	}
 }
 

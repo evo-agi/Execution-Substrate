@@ -75,7 +75,7 @@ ES is the current admission and submission composition point.
 
 At a high level, ES:
 
-- accepts execution requests through `:prepare` and `:submit`
+- accepts execution requests through bounded preflight `:prepare` and primary submission `:submit`
 - reads aggregate artifact evidence and payloads from ARS
 - reads the workload-zone Vault config blob from ARS using the startup-configured `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
 - loads and enforces the EGS trust model
@@ -152,7 +152,7 @@ These are current architectural absences, not omissions to fill automatically.
 
 **Temporary compatibility-heavy conventions**
 
-- `POST /v1/executions:prepare` is active today but explicitly bounded rather than declared as the permanent execution API shape.
+- `POST /v1/executions:prepare` is active today but explicitly bounded as a small preflight-success surface rather than declared as the permanent execution API shape.
 - ES currently relies on `/monolith/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the canonical workload-visible runtime identity contract and retains `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` only as a temporary compatibility alias.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.

@@ -28,8 +28,6 @@ SPEC_NAME=""
 RESOLVED_PAYLOAD_PATH=""
 ARTIFACT_DIGEST=""
 RUN_ID=""
-NOMAD_JOB_ID=""
-NOMAD_EVAL_ID=""
 INTENT_DIGEST=""
 DERIVATION_SPEC_DIGEST=""
 BUILD_LOG_DIGEST=""
@@ -39,10 +37,6 @@ MESSAGE=""
 ERROR_CODE=""
 HTTP_STATUS=""
 STATE=""
-JOB_STATUS=""
-ALLOCATION_ID=""
-ALLOCATION_CLIENT_STATUS=""
-TASK_STATE=""
 EXIT_CODE_JSON="null"
 TERMINAL="false"
 LOGS_AVAILABLE="false"
@@ -86,14 +80,8 @@ write_summary() {
     "${DERIVATION_SPEC_DIGEST}" \
     "${BUILD_LOG_DIGEST}" \
     "${RUN_ID}" \
-    "${NOMAD_JOB_ID}" \
-    "${NOMAD_EVAL_ID}" \
     "${STATE}" \
     "${TERMINAL}" \
-    "${JOB_STATUS}" \
-    "${ALLOCATION_ID}" \
-    "${ALLOCATION_CLIENT_STATUS}" \
-    "${TASK_STATE}" \
     "${EXIT_CODE_JSON}" \
     "${LOGS_PATH}" \
     "${LOGS_AVAILABLE}"
@@ -116,17 +104,11 @@ payload = {
     "derivation_spec_digest": sys.argv[11],
     "build_log_digest": sys.argv[12],
     "run_id": sys.argv[13],
-    "nomad_job_id": sys.argv[14],
-    "nomad_eval_id": sys.argv[15],
-    "state": sys.argv[16],
-    "terminal": sys.argv[17] == "true",
-    "job_status": sys.argv[18],
-    "allocation_id": sys.argv[19],
-    "allocation_client_status": sys.argv[20],
-    "task_state": sys.argv[21],
-    "exit_code": None if sys.argv[22] == "null" else json.loads(sys.argv[22]),
-    "logs_path": sys.argv[23],
-    "logs_available": sys.argv[24] == "true",
+    "state": sys.argv[14],
+    "terminal": sys.argv[15] == "true",
+    "exit_code": None if sys.argv[16] == "null" else json.loads(sys.argv[16]),
+    "logs_path": sys.argv[17],
+    "logs_available": sys.argv[18] == "true",
 }
 summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -290,23 +272,11 @@ import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 
+abstract_state = payload.get("status", "")
 terminal = bool(payload.get("terminal"))
-allocation_id = payload.get("allocation_id", "")
-
-if terminal:
-    abstract_state = "terminal"
-elif allocation_id:
-    abstract_state = "running"
-else:
-    abstract_state = "submitted"
-
 exit_code = payload.get("exit_code", None)
 print(abstract_state)
 print("true" if terminal else "false")
-print(payload.get("job_status", ""))
-print(allocation_id)
-print(payload.get("allocation_client_status", ""))
-print(payload.get("task_state", ""))
 print("null" if exit_code is None else json.dumps(exit_code))
 PY
 }
@@ -642,11 +612,9 @@ if [[ "${submit_status}" != "202" ]]; then
 fi
 
 RUN_ID="$(json_get "${SUBMIT_RESPONSE_PATH}" 'payload.get("run_id", "")')"
-NOMAD_JOB_ID="$(json_get "${SUBMIT_RESPONSE_PATH}" 'payload.get("nomad_job_id", "")')"
-NOMAD_EVAL_ID="$(json_get "${SUBMIT_RESPONSE_PATH}" 'payload.get("nomad_eval_id", "")')"
 
-if [[ -z "${RUN_ID}" || -z "${NOMAD_JOB_ID}" || -z "${NOMAD_EVAL_ID}" ]]; then
-  fail_phase "submit" "submit response omitted run metadata" "invalid_submit_response" "${submit_status}"
+if [[ -z "${RUN_ID}" ]]; then
+  fail_phase "submit" "submit response omitted run_id" "invalid_submit_response" "${submit_status}"
 fi
 
 deadline_seconds="$(python3 - <<'PY' "${SUBMIT_JSON_PATH}" "${DEFAULT_TIMEOUT_SECONDS}"
@@ -692,11 +660,7 @@ while true; do
   parsed_status="$(parse_status_snapshot)"
   STATE="$(printf '%s\n' "${parsed_status}" | sed -n '1p')"
   TERMINAL="$(printf '%s\n' "${parsed_status}" | sed -n '2p')"
-  JOB_STATUS="$(printf '%s\n' "${parsed_status}" | sed -n '3p')"
-  ALLOCATION_ID="$(printf '%s\n' "${parsed_status}" | sed -n '4p')"
-  ALLOCATION_CLIENT_STATUS="$(printf '%s\n' "${parsed_status}" | sed -n '5p')"
-  TASK_STATE="$(printf '%s\n' "${parsed_status}" | sed -n '6p')"
-  EXIT_CODE_JSON="$(printf '%s\n' "${parsed_status}" | sed -n '7p')"
+  EXIT_CODE_JSON="$(printf '%s\n' "${parsed_status}" | sed -n '3p')"
 
   if [[ "${STATE}" == "submitted" ]]; then
     sleep "${POLL_INTERVAL_SECONDS}"
@@ -749,10 +713,10 @@ while true; do
       ;;
   esac
 
-  if [[ "${ALLOCATION_CLIENT_STATUS}" != "complete" ]]; then
-    fail_phase "execution" "terminal allocation status is ${ALLOCATION_CLIENT_STATUS}" "execution_failed" "${status_http}"
+  if [[ "${EXIT_CODE_JSON}" == "null" ]]; then
+    fail_phase "execution" "terminal execution did not report an exit code" "execution_failed" "${status_http}"
   fi
-  if [[ "${EXIT_CODE_JSON}" != "0" && "${EXIT_CODE_JSON}" != "null" ]]; then
+  if [[ "${EXIT_CODE_JSON}" != "0" ]]; then
     fail_phase "execution" "terminal exit code is ${EXIT_CODE_JSON}" "execution_failed" "${status_http}"
   fi
 

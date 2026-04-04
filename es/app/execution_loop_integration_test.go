@@ -14,29 +14,23 @@ import (
 )
 
 type executionLoopSummary struct {
-	OK                     bool   `json:"ok"`
-	FailedPhase            string `json:"failed_phase"`
-	Message                string `json:"message"`
-	ErrorCode              string `json:"error_code"`
-	HTTPStatus             *int   `json:"http_status"`
-	ArtifactDigest         string `json:"artifact_digest"`
-	IntentDigest           string `json:"intent_digest"`
-	DerivationSpecDigest   string `json:"derivation_spec_digest"`
-	BuildLogDigest         string `json:"build_log_digest"`
-	RunID                  string `json:"run_id"`
-	NomadJobID             string `json:"nomad_job_id"`
-	NomadEvalID            string `json:"nomad_eval_id"`
-	State                  string `json:"state"`
-	Terminal               bool   `json:"terminal"`
-	JobStatus              string `json:"job_status"`
-	AllocationID           string `json:"allocation_id"`
-	AllocationClientStatus string `json:"allocation_client_status"`
-	TaskState              string `json:"task_state"`
-	ExitCode               *int   `json:"exit_code"`
-	LogsPath               string `json:"logs_path"`
-	LogsAvailable          bool   `json:"logs_available"`
-	SpecPath               string `json:"spec_path"`
-	Workdir                string `json:"workdir"`
+	OK                   bool   `json:"ok"`
+	FailedPhase          string `json:"failed_phase"`
+	Message              string `json:"message"`
+	ErrorCode            string `json:"error_code"`
+	HTTPStatus           *int   `json:"http_status"`
+	ArtifactDigest       string `json:"artifact_digest"`
+	IntentDigest         string `json:"intent_digest"`
+	DerivationSpecDigest string `json:"derivation_spec_digest"`
+	BuildLogDigest       string `json:"build_log_digest"`
+	RunID                string `json:"run_id"`
+	State                string `json:"state"`
+	Terminal             bool   `json:"terminal"`
+	ExitCode             *int   `json:"exit_code"`
+	LogsPath             string `json:"logs_path"`
+	LogsAvailable        bool   `json:"logs_available"`
+	SpecPath             string `json:"spec_path"`
+	Workdir              string `json:"workdir"`
 }
 
 type executionLoopResult struct {
@@ -76,9 +70,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 	if first.Summary.State != "terminal" || !first.Summary.Terminal {
 		t.Fatalf("expected terminal summary state, got %+v", first.Summary)
-	}
-	if first.Summary.AllocationClientStatus != "complete" {
-		t.Fatalf("expected complete allocation, got %+v", first.Summary)
 	}
 	if first.Summary.ExitCode == nil || *first.Summary.ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %+v", first.Summary)

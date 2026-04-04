@@ -17,6 +17,13 @@ const nomadTaskName = "task"
 
 var runIDPattern = regexp.MustCompile(`^run-[0-9a-f]{16}$`)
 
+const (
+	executionLifecycleStatusSubmitted       = "submitted"
+	executionLifecycleStatusRunning         = "running"
+	executionLifecycleStatusTerminal        = "terminal"
+	executionLifecycleStatusCancelRequested = "cancel_requested"
+)
+
 type nomadJobSummary struct {
 	ID     string `json:"ID"`
 	Status string `json:"Status"`
@@ -65,10 +72,9 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	}
 
 	result := ExecutionStatusResult{
-		Success:    true,
-		RunID:      runID,
-		NomadJobID: jobID,
-		JobStatus:  strings.TrimSpace(job.Status),
+		Success: true,
+		RunID:   runID,
+		Status:  executionLifecycleStatusSubmitted,
 	}
 
 	allocation, err := s.nomadClient.latestAllocation(ctx, jobID)
@@ -76,21 +82,28 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		return ExecutionStatusResult{}, err
 	}
 	if allocation == nil {
-		result.Terminal = result.JobStatus == "dead"
+		result.Terminal = strings.TrimSpace(job.Status) == "dead"
+		if result.Terminal {
+			result.Status = executionLifecycleStatusTerminal
+		}
 		return result, nil
 	}
 
-	result.AllocationID = strings.TrimSpace(allocation.ID)
-	result.AllocationClientStatus = strings.TrimSpace(allocation.ClientStatus)
-	result.Terminal = isTerminalAllocationStatus(result.AllocationClientStatus)
+	result.Status = executionLifecycleStatusRunning
+	result.Terminal = isTerminalAllocationStatus(strings.TrimSpace(allocation.ClientStatus))
 
 	taskState, ok := allocation.TaskStates[nomadTaskName]
 	if !ok {
+		if result.Terminal {
+			result.Status = executionLifecycleStatusTerminal
+		}
 		return result, nil
 	}
-	result.TaskState = strings.TrimSpace(taskState.State)
-	if !result.Terminal && result.TaskState == "dead" {
+	if !result.Terminal && strings.TrimSpace(taskState.State) == "dead" {
 		result.Terminal = true
+	}
+	if result.Terminal {
+		result.Status = executionLifecycleStatusTerminal
 	}
 	if exitCode, ok := taskState.exitCode(); ok {
 		result.ExitCode = &exitCode
@@ -157,10 +170,9 @@ func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResu
 	}
 
 	return ExecutionCancelResult{
-		Success:    true,
-		RunID:      runID,
-		NomadJobID: jobID,
-		Status:     "cancel_requested",
+		Success: true,
+		RunID:   runID,
+		Status:  executionLifecycleStatusCancelRequested,
 	}, nil
 }
 

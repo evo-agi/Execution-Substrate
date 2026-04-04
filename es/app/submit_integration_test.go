@@ -70,23 +70,18 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	if strings.TrimSpace(payload.RunID) == "" {
 		t.Fatalf("expected run_id in submit response")
 	}
-	if strings.TrimSpace(payload.NomadJobID) == "" {
-		t.Fatalf("expected nomad_job_id in submit response")
-	}
-	if strings.TrimSpace(payload.NomadEvalID) == "" {
-		t.Fatalf("expected nomad_eval_id in submit response")
-	}
 	if payload.Status != "submitted" {
 		t.Fatalf("unexpected status: %q", payload.Status)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	jobID := nomadJobIDForRunID(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
 		t.Fatalf("expected network_mode=none for network_access=false, got %#v", networkMode)
 	}
 
-	stack.nomad.waitForJob(t, payload.NomadJobID)
-	alloc := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
+	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if alloc.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
 	}
@@ -139,13 +134,14 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 		t.Fatalf("expected successful submission, got %+v", payload)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	jobID := nomadJobIDForRunID(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "bridge" {
 		t.Fatalf("expected network_mode=bridge for network_access=true, got %#v", networkMode)
 	}
 
-	stack.nomad.waitForJob(t, payload.NomadJobID)
-	alloc := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
+	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if alloc.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
 	}
@@ -191,7 +187,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	jobID := nomadJobIDForRunID(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
 	if networkMode := job.taskConfig(t)["network_mode"]; networkMode != "none" {
 		t.Fatalf("expected network_mode=none, got %#v", networkMode)
 	}
@@ -226,8 +223,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected default tmpfs size 1048576, got %#v", size)
 	}
 
-	stack.nomad.waitForJob(t, payload.NomadJobID)
-	allocation := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
 	}
@@ -337,6 +334,16 @@ func runtimeIdentityWorkspaceFromEndpoint(t *testing.T, endpointURI string) stri
 	return path.Dir(endpointPath)
 }
 
+func nomadJobIDForRunID(t *testing.T, runID string) string {
+	t.Helper()
+
+	trimmed := strings.TrimSpace(runID)
+	if trimmed == "" {
+		t.Fatalf("expected non-empty run_id")
+	}
+	return "exec-" + trimmed
+}
+
 func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
 		runtimeIdentityTmpfsSize: 2 << 20,
@@ -354,7 +361,7 @@ func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	job := stack.nomad.fetchJobDetail(t, nomadJobIDForRunID(t, payload.RunID))
 	taskConfig := job.task(t)
 	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, taskConfig.Env[workloadIdentityEndpointEnvKey]))
 	tmpfsOptions, ok := mountConfig["tmpfs_options"].(map[string]any)
@@ -403,7 +410,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("decode submit response: %v", err)
 	}
 
-	job := stack.nomad.fetchJobDetail(t, payload.NomadJobID)
+	jobID := nomadJobIDForRunID(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
 	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
 		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
@@ -413,8 +421,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		t.Fatalf("expected extracted runtime mount archive residue to be removed, got err=%v", err)
 	}
 
-	stack.nomad.waitForJob(t, payload.NomadJobID)
-	allocation := stack.nomad.waitForTerminalAllocation(t, payload.NomadJobID)
+	stack.nomad.waitForJob(t, jobID)
+	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
 		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
 	}

@@ -30,7 +30,7 @@ These labels are intentionally separate. A rule can be real today, bounded in sc
 
 Current slice summary:
 
-- `:prepare` is active today, but it is explicitly a bounded milestone surface.
+- `:prepare` is active today, but it is explicitly a bounded preflight surface.
 - `:submit` is the real execution-submission surface in the current slice.
 - Lifecycle after submission is Nomad-backed.
 - ES is a composition and submission boundary, not a scheduler.
@@ -39,7 +39,7 @@ Current slice summary:
 
 | Lifecycle stage | Primary authority | Role of other components |
 | --- | --- | --- |
-| Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preparation result. ARS is authoritative for artifact descriptor discoverability, evidence and payload blob reads, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
+| Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preflight result. ARS is authoritative for artifact descriptor discoverability, evidence and payload blob reads, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
 | Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and injects endpoint-discovery environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
@@ -56,9 +56,9 @@ At a design level, it currently does four things:
 - validates the incoming execution request and runtime constraints
 - requires the registered artifact descriptor from ARS and follows it to aggregate evidence for admission
 - verifies publish-time evidence and trust requirements using the active shared evidence kernel and the loaded EGS trust model
-- resolves workload-zone vault metadata through the configured runtime-config reference and ARS, then returns a bounded preparation result
+- resolves workload-zone vault metadata through the configured runtime-config reference and ARS, then returns bounded preflight success
 
-The result is intentionally bounded. It proves admission and preparation facts, but it does not create a run ID, scheduler record, or proto-execution state.
+The result is intentionally bounded. It proves preflight success after admission composition, but it does not create a run ID, scheduler record, proto-execution state, or a public bundle of internal composition detail.
 
 This makes `:prepare` both active and bounded: it is part of the current design, but it is not presented here as the permanent long-term execution API shape.
 
@@ -88,7 +88,7 @@ After submission, lifecycle is projected from Nomad.
 
 At a design level:
 
-- `status` reads Nomad job and allocation state and returns a minimal mapped view
+- `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
 - `logs` reads stdout for the selected task from Nomad
 - `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
 
@@ -139,7 +139,7 @@ These absences are part of the current design shape, not missing implementation 
 
 **Reopened lifecycle seams under visible pressure**
 
-- `:prepare` is both an active public surface and an explicitly bounded milestone surface, which creates ongoing design tension about its long-term role.
+- `:prepare` is both an active public surface and an explicitly bounded preflight surface, which creates ongoing design tension about its long-term role.
 - ES currently depends on aggregate evidence as the only first-class admission input, which means lifecycle admission now rises or falls with the evidence-native publish/store path.
 - Lifecycle lookup currently depends on the `run_id -> exec-<run_id>` mapping owned by ES.
 - Latest-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
