@@ -153,7 +153,7 @@ func runExecutionLoopScript(t *testing.T, stack *submitStack, specPath string, w
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"loop-deployment-client",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/deployment")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
 	)
 
 	agsHost, agsPort, err := net.SplitHostPort(stack.ags.Addr())

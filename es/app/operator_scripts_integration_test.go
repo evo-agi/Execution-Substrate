@@ -31,7 +31,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		fixture.runtimeCA,
 		fixture.runtimeCAKey,
 		"client.service.deployment",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/deployment")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
 	)
 
 	arsPort := reserveTCPPort(t)
@@ -344,7 +344,7 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.service.deployment",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/deployment")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/deployment")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())

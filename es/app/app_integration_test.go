@@ -937,7 +937,7 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		runtimeCA,
 		runtimeCAKey,
 		"client.service.execution",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/execution")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/execution")},
 	)
 	agsClientCertPath, agsClientKeyPath := writeLeafCertificateFiles(
 		t,
@@ -946,7 +946,7 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 		runtimeCA,
 		runtimeCAKey,
 		"client.service.artifact-governance",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/artifact-governance")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/artifact-governance")},
 	)
 
 	egsPublicKey, egsPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -1028,7 +1028,7 @@ func (f *tlsFixture) clientTLSConfigForServer(t *testing.T, serverName string, s
 		issuer,
 		issuerKey,
 		"client."+strings.ReplaceAll(strings.Trim(spiffePath, "/"), "/", "."),
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/"+strings.Trim(spiffePath, "/"))},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/"+strings.Trim(spiffePath, "/"))},
 	)
 	certificate, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {
@@ -1075,7 +1075,7 @@ func signedArtifactEvidenceJSON(
 					BuilderService: "artifact-governance",
 					Invoker: evidencev1.Invoker{
 						Service:   "deployment",
-						Principal: "spiffe://monolith.internal/service/deployment",
+						Principal: "spiffe://execution.internal/service/deployment",
 					},
 					PolicyDecisions: []evidencev1.PolicyDecision{
 						{Rule: "allow", Result: "applied"},

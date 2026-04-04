@@ -59,7 +59,7 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	mounts := layout.runtimeMountSpecs(cfg, []stagedRuntimeMount{
 		{
 			sourceDir:  "/tmp/es-stage/run-0123456789abcdef/mounts/00/contents",
-			targetPath: "/monolith/mounts/config",
+			targetPath: "/execution/mounts/config",
 		},
 	})
 	if len(mounts) != 4 {

@@ -7,16 +7,14 @@ import (
 )
 
 const (
-	runtimeIdentityEndpointEnvKey              = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
-	runtimeIdentityEndpointCompatibilityEnvKey = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-	runtimeIdentityWorkspaceRoot               = "/run/es-runtime-identity"
-	runtimeIdentityEndpointFilename            = "endpoint"
+	runtimeIdentityEndpointEnvKey   = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
+	runtimeIdentityWorkspaceRoot    = "/run/es-runtime-identity"
+	runtimeIdentityEndpointFilename = "endpoint"
 )
 
 type runtimeIdentityHandoff struct {
-	endpointEnvKey              string
-	compatibilityEndpointEnvKey string
-	endpointURI                 string
+	endpointEnvKey string
+	endpointURI    string
 }
 
 func runtimeIdentityHandoffForRun(runID string) runtimeIdentityHandoff {
@@ -26,9 +24,8 @@ func runtimeIdentityHandoffForRun(runID string) runtimeIdentityHandoff {
 	}
 	endpointPath := path.Join(runtimeIdentityWorkspaceRoot, normalizedRunID, runtimeIdentityEndpointFilename)
 	return runtimeIdentityHandoff{
-		endpointEnvKey:              runtimeIdentityEndpointEnvKey,
-		compatibilityEndpointEnvKey: runtimeIdentityEndpointCompatibilityEnvKey,
-		endpointURI:                 "unix://" + endpointPath,
+		endpointEnvKey: runtimeIdentityEndpointEnvKey,
+		endpointURI:    "unix://" + endpointPath,
 	}
 }
 

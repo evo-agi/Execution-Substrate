@@ -214,11 +214,10 @@ func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest strin
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = workloadVaultPlan.Address
 	env[layout.runtimeIdentity.endpointEnvKey] = layout.runtimeIdentity.endpointURI
-	env[layout.runtimeIdentity.compatibilityEndpointEnvKey] = layout.runtimeIdentity.endpointURI
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = string(workloadVaultPlan.Mode)
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
-	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
-	env["MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE"] = workloadVaultPlan.JWTAudience
+	env["EXEC_WORKLOAD_VAULT_AUTH_MODE"] = string(workloadVaultPlan.Mode)
+	env["EXEC_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
+	env["EXEC_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
+	env["EXEC_WORKLOAD_VAULT_JWT_AUDIENCE"] = workloadVaultPlan.JWTAudience
 	env["EXEC_TIMEOUT_SECONDS"] = strconv.Itoa(timeoutSeconds)
 	return env
 }

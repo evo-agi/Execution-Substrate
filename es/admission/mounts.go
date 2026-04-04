@@ -17,9 +17,8 @@ import (
 	egsmodel "execution-platform/egs/model"
 )
 
-// TODO: Do not mention "monolith"
 const (
-	runtimeMountRoot          = "/monolith/mounts"
+	runtimeMountRoot          = "/execution/mounts"
 	maxRuntimeMounts          = 8
 	maxRuntimeMountBytes      = 8 << 20
 	maxRuntimeMountTotalBytes = 32 << 20

@@ -58,7 +58,6 @@ const (
 	codeMountArtifactInvalid            = "mount_artifact_invalid"
 )
 
-// TODO: Do not mention "monolith"
 var (
 	labeledSHA256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	reservedRuntimeEnvKeys     = map[string]struct{}{
@@ -70,16 +69,15 @@ var (
 		"SESSION_ID":                  {},
 		"PARENT_SESSION_ID":           {},
 		"traceparent":                 {},
-		"MONOLITH_SVID_PATH":          {},
+		"EXEC_SVID_PATH":              {},
 		"VAULT_AGENT_TOKEN_PATH":      {},
 		"VAULT_ADDR":                  {},
 		"VAULT_NAMESPACE":             {},
 		runtimeIdentityEndpointEnvKey: {},
-		runtimeIdentityEndpointCompatibilityEnvKey: {},
 	}
 	reservedRuntimeEnvPrefixes = []string{
 		"EXEC_",
-		"MONOLITH_WORKLOAD_VAULT_",
+		"EXEC_WORKLOAD_VAULT_",
 	}
 )
 

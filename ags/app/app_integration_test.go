@@ -182,7 +182,7 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	if got := invoker["service"]; got != "deployment" {
 		t.Fatalf("expected invoker service deployment, got %v", got)
 	}
-	if got := invoker["principal"]; got != "spiffe://monolith.internal/service/deployment" {
+	if got := invoker["principal"]; got != "spiffe://execution.internal/service/deployment" {
 		t.Fatalf("expected invoker principal derived from caller, got %v", got)
 	}
 	admission := claims["admission"].(map[string]any)
@@ -316,7 +316,7 @@ func TestPublishRejectsLegacyPublicationInvokerField(t *testing.T) {
 		publication := body["publication"].(map[string]any)
 		publication["invoker"] = map[string]any{
 			"service":   "deployment",
-			"principal": "spiffe://monolith.internal/service/deployment",
+			"principal": "spiffe://execution.internal/service/deployment",
 		}
 	})
 	defer response.Body.Close()
@@ -1180,11 +1180,11 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 
 	executionClientCertPath, executionClientKeyPath := writeLeafCertificateFiles(
 		t, dir, "execution-client", runtimeCA, runtimeCAKey, "client.service.execution",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/execution")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/execution")},
 	)
 	agsClientCertPath, agsClientKeyPath := writeLeafCertificateFiles(
 		t, dir, "ags-client", runtimeCA, runtimeCAKey, "client.service.artifact-governance",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/service/artifact-governance")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/service/artifact-governance")},
 	)
 
 	egsPublicKey, egsPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -1258,7 +1258,7 @@ func (f *tlsFixture) clientTLSConfigForServer(t *testing.T, serverName string, s
 		issuer,
 		issuerKey,
 		"client."+strings.ReplaceAll(strings.Trim(spiffePath, "/"), "/", "."),
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://monolith.internal/"+strings.Trim(spiffePath, "/"))},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/"+strings.Trim(spiffePath, "/"))},
 	)
 	certificate, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
 	if err != nil {

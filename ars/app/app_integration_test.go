@@ -1226,7 +1226,7 @@ func (f tlsFixture) clientTLSConfig(t *testing.T, spiffePath string) *tls.Config
 
 	certPEM, keyPEM := createLeafCertificate(t, f.caCert, f.caKey, certificateRequest{
 		commonName: "client",
-		uris:       []string{"spiffe://monolith.internal/" + spiffePath},
+		uris:       []string{"spiffe://execution.internal/" + spiffePath},
 		clientAuth: true,
 	})
 
@@ -1284,7 +1284,7 @@ func seedStorageFixture(t *testing.T) seededStorage {
 					"builder_service": "artifact-governance",
 					"invoker": map[string]any{
 						"service":   "deployment",
-						"principal": "spiffe://monolith.internal/service/deployment",
+						"principal": "spiffe://execution.internal/service/deployment",
 					},
 					"policy_decisions": []any{},
 					"build_log_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",

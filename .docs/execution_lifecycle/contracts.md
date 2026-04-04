@@ -35,8 +35,8 @@ These labels are intentionally different. A contract may be live today, relied o
 - All five lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Current accepted caller identities are:
-  - `spiffe://monolith.internal/service/deployment`
-  - `spiffe://monolith.internal/operator`
+  - `spiffe://execution.internal/service/deployment`
+  - `spiffe://execution.internal/operator`
 - These caller rules apply to:
   - `:prepare`
   - `:submit`
@@ -96,7 +96,7 @@ These labels are intentionally different. A contract may be live today, relied o
   - artifact-backed
   - read-only
   - absolute cleaned target paths
-  - target paths under `/monolith/mounts`
+  - target paths under `/execution/mounts`
   - no overlap between mount targets
 
 ### Response contract
@@ -486,7 +486,6 @@ Successful response is `200` JSON with these fields:
 
 - ES injects the current endpoint-discovery environment conventions:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
-  - temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=<same value>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 

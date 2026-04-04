@@ -15,8 +15,8 @@ const (
 	executionRunStageDirName       = "run"
 	executionMountsStageDirName    = "mounts"
 	executionPayloadArchiveName    = "artifact.tar.gz"
-	executionRuntimePayloadRoot    = "/monolith/staged"
-	executionRuntimeRunRoot        = "/monolith/run"
+	executionRuntimePayloadRoot    = "/execution/staged"
+	executionRuntimeRunRoot        = "/execution/run"
 	executionRuntimeWorkDir        = executionRuntimeRunRoot + "/work"
 	executionRuntimeEntrypointPath = executionRuntimeWorkDir + "/entrypoint"
 )

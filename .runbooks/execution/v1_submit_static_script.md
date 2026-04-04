@@ -247,4 +247,4 @@ Success indicators:
 - Runtime networking still comes only from the signed `network_access` input:
   - `false` -> Docker `network_mode = none`
   - `true` -> Docker `network_mode = bridge`
-- Runtime mounts remain bounded to governed artifact digests mounted read-only under `/monolith/mounts/...`
+- Runtime mounts remain bounded to governed artifact digests mounted read-only under `/execution/mounts/...`

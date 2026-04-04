@@ -127,8 +127,7 @@ func authenticatedCallerIdentity(r *http.Request) (caller publish.CallerIdentity
 }
 
 func callerIdentityFromCertificate(cert *x509.Certificate) (publish.CallerIdentity, bool) {
-	// TODO: Do not mention "monolith" or "internal"
-	const prefix = "spiffe://monolith.internal/"
+	const prefix = "spiffe://execution.internal/"
 
 	for _, uri := range cert.URIs {
 		value := uri.String()

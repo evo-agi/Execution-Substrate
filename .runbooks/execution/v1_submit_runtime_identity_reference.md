@@ -34,14 +34,13 @@ The resulting archive is:
 The current workload-visible contract is:
 
 - discover the endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
-- optionally tolerate `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` as a temporary compatibility alias
 - use the non-secret Vault metadata ES injects:
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_MODE`
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT`
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_ROLE`
-  - `MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MODE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
+  - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
+  - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
 
-The workload must **not** assume a fixed `/monolith/...` socket path. ES now chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
+The workload must **not** assume a fixed `/execution/...` socket path. ES now chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
 
 ## 4. Environment Assumptions
 

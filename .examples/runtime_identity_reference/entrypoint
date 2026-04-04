@@ -211,13 +211,13 @@ def read_secret(opener, vault_addr: str, client_token: str, secret_path: str):
 
 
 def main() -> int:
-    identity_endpoint = require_env("MONOLITH_WORKLOAD_IDENTITY_ENDPOINT")
+    identity_endpoint = require_env("EXEC_WORKLOAD_IDENTITY_ENDPOINT")
     identity_url = require_env("REFERENCE_IDENTITY_URL")
     vault_addr = require_env("VAULT_ADDR")
-    auth_mode = require_env("MONOLITH_WORKLOAD_VAULT_AUTH_MODE")
-    auth_mount = require_env("MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT")
-    auth_role = require_env("MONOLITH_WORKLOAD_VAULT_AUTH_ROLE")
-    jwt_audience = require_env("MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE")
+    auth_mode = require_env("EXEC_WORKLOAD_VAULT_AUTH_MODE")
+    auth_mount = require_env("EXEC_WORKLOAD_VAULT_AUTH_MOUNT")
+    auth_role = require_env("EXEC_WORKLOAD_VAULT_AUTH_ROLE")
+    jwt_audience = require_env("EXEC_WORKLOAD_VAULT_JWT_AUDIENCE")
     secret_path = os.environ.get("REFERENCE_SECRET_PATH", DEFAULT_SECRET_PATH).strip() or DEFAULT_SECRET_PATH
 
     if auth_mode != "vault_identity_jwt":

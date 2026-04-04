@@ -55,8 +55,8 @@ Build these from the current validators and the configuration matrix in [configu
 
 Export a CA bundle and a client cert/key that authenticate as either:
 
-- `spiffe://monolith.internal/service/deployment`
-- `spiffe://monolith.internal/operator`
+- `spiffe://execution.internal/service/deployment`
+- `spiffe://execution.internal/operator`
 
 ```bash
 export CA_CERT="/abs/path/runtime-ca.pem"

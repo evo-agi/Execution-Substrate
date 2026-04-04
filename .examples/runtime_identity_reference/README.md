@@ -8,7 +8,7 @@ Everything in this directory is example-level behavior. The platform contract is
 
 The workload:
 
-- reads `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+- reads `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - creates a local bridge at the reserved runtime identity path
 - reads bounded non-secret Vault auth metadata from the environment
 - obtains a JWT from `REFERENCE_IDENTITY_URL` through that local bridge
@@ -18,7 +18,7 @@ The workload:
 
 ## Reference Identity Protocols
 
-This workload creates a Unix-socket endpoint at `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`.
+This workload creates a Unix-socket endpoint at `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 
 The local endpoint speaks a small JSON-line protocol:
 
@@ -73,12 +73,12 @@ This produces:
 
 - ES base image must include `python3`
 - the workload must receive:
-  - `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+  - `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
   - `VAULT_ADDR`
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_MODE`
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT`
-  - `MONOLITH_WORKLOAD_VAULT_AUTH_ROLE`
-  - `MONOLITH_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MODE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
+  - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
+  - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
   - `REFERENCE_IDENTITY_URL`
 
 Optional:

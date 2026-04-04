@@ -231,12 +231,12 @@ func TestNewRejectsDuplicateSubject(t *testing.T) {
 	idConfPath := writeIDConf(t, `
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/execution"
+  principal: "spiffe://execution.internal/service/execution"
   role: "worker"
 }
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/execution"
+  principal: "spiffe://execution.internal/service/execution"
   role: "worker"
 }
 `)
@@ -260,7 +260,7 @@ func TestNewRejectsInvalidSubjectType(t *testing.T) {
 	idConfPath := writeIDConf(t, `
 subject "other" {
   type: "job"
-  principal: "spiffe://monolith.internal/service/other"
+  principal: "spiffe://execution.internal/service/other"
   role: "worker"
 }
 `)
@@ -284,7 +284,7 @@ func TestNewRejectsSubjectPrincipalMismatch(t *testing.T) {
 	idConfPath := writeIDConf(t, `
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/deployment"
+  principal: "spiffe://execution.internal/service/deployment"
   role: "worker"
 }
 `)
@@ -308,7 +308,7 @@ func TestNewRejectsUnsupportedSubjectField(t *testing.T) {
 	idConfPath := writeIDConf(t, `
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/execution"
+  principal: "spiffe://execution.internal/service/execution"
   module_path: "services.execution.ExecutionServer"
   role: "worker"
 }
@@ -333,7 +333,7 @@ func TestAuthorizeAllowsValidServiceWorkload(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -398,7 +398,7 @@ func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "script",
-			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
+			"workload_identity_id": "spiffe://execution.internal/script/bot_test_privileged",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -436,7 +436,7 @@ func TestAuthorizeRejectsRemovedRequestedByField(t *testing.T) {
 		},
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -457,7 +457,7 @@ func TestAuthorizeRejectsUnsupportedRequestedCapabilities(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:write"},
 	}
@@ -479,7 +479,7 @@ func TestAuthorizeDeniesUnknownServiceWithStructuredResponse(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/unknown",
+			"workload_identity_id": "spiffe://execution.internal/service/unknown",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -547,7 +547,7 @@ func TestAuthorizeRejectsRemovedDescriptorConvenienceFields(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
+			"workload_identity_id": "spiffe://execution.internal/service/deployment",
 			"module_path":          "services.execution.ExecutionServer",
 			"service_name":         "deployment",
 		},
@@ -571,7 +571,7 @@ func TestAuthorizeRejectsTypeMismatchWithWorkloadPrincipal(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
+			"workload_identity_id": "spiffe://execution.internal/script/bot_test_privileged",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -622,7 +622,7 @@ func TestAuthorizeRejectsCallerMismatch(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -645,7 +645,7 @@ func TestAuthorizeDeniesUnknownPolicySubjectAfterPrincipalMatch(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/deployment",
+			"workload_identity_id": "spiffe://execution.internal/service/deployment",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -679,7 +679,7 @@ func TestAuthorizeRejectsRemovedServiceNameField(t *testing.T) {
 		"workload": map[string]any{
 			"type":                 "service",
 			"service_name":         "execution",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -700,7 +700,7 @@ func TestAuthorizeRejectsRemovedFilePathField(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "script",
-			"workload_identity_id": "spiffe://monolith.internal/script/bot_test_privileged",
+			"workload_identity_id": "spiffe://execution.internal/script/bot_test_privileged",
 			"file_path":            "./scripts/vault/Run.py",
 		},
 		"requested_capabilities": []string{"vault:read"},
@@ -722,7 +722,7 @@ func TestAuthorizeRejectsBootstrapPKICaller(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 	}
@@ -745,7 +745,7 @@ func TestAuthorizeRejectsRemovedContextField(t *testing.T) {
 	body := map[string]any{
 		"workload": map[string]any{
 			"type":                 "service",
-			"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
 		},
 		"requested_capabilities": []string{"vault:read"},
 		"context":                map[string]any{},
@@ -770,7 +770,7 @@ func TestCheckedInIDConfBaselineParsesAndMapsCurrentSubjects(t *testing.T) {
 
 	serviceType, serviceID, ok := set.SubjectFromWorkload(policy.Workload{
 		Type:               "service",
-		WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+		WorkloadIdentityID: "spiffe://execution.internal/service/execution",
 	})
 	if !ok || serviceType != "service" || serviceID != "execution" {
 		t.Fatalf("unexpected service subject mapping: type=%q id=%q ok=%v", serviceType, serviceID, ok)
@@ -778,7 +778,7 @@ func TestCheckedInIDConfBaselineParsesAndMapsCurrentSubjects(t *testing.T) {
 
 	scriptType, scriptID, ok := set.SubjectFromWorkload(policy.Workload{
 		Type:               "script",
-		WorkloadIdentityID: "spiffe://monolith.internal/script/bot_test_privileged",
+		WorkloadIdentityID: "spiffe://execution.internal/script/bot_test_privileged",
 	})
 	if !ok || scriptType != "script" || scriptID != "bot_test_privileged" {
 		t.Fatalf("unexpected script subject mapping: type=%q id=%q ok=%v", scriptType, scriptID, ok)
@@ -978,7 +978,7 @@ func (f tlsFixture) clientTLSConfigWithCA(t *testing.T, spiffePath string, caCer
 
 	certPEM, keyPEM := createLeafCertificate(t, caCert, caKey, certificateRequest{
 		commonName: "client",
-		uris:       []string{"spiffe://monolith.internal/" + spiffePath},
+		uris:       []string{"spiffe://execution.internal/" + spiffePath},
 		clientAuth: true,
 	})
 

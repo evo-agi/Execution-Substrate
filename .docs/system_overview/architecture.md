@@ -103,7 +103,7 @@ CGS is active, but it is intentionally not part of the current ES hot path.
 
 ### Runtime identity / execution handoff flow
 
-ES stages execution inputs, injects the current canonical workload identity endpoint environment variable as the bounded workload-visible handoff, retains a temporary compatibility alias for the legacy env name, protects the ES-owned runtime subtree that backs the discovered endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode.
+ES stages execution inputs, injects the current workload identity endpoint environment variable as the bounded workload-visible handoff, protects the ES-owned runtime subtree that backs the discovered endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode.
 
 The system stops short of making ES the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES currently owns the handoff boundary, not the full runtime identity system.
 
@@ -153,8 +153,8 @@ These are current architectural absences, not omissions to fill automatically.
 **Temporary compatibility-heavy conventions**
 
 - `POST /v1/executions:prepare` is active today but explicitly bounded as a small preflight-success surface rather than declared as the permanent execution API shape.
-- ES currently relies on `/monolith/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
-- ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the canonical workload-visible runtime identity contract and retains `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` only as a temporary compatibility alias.
+- ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
+- ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the runtime-facing payload reference and cross-checked against evidence claims.

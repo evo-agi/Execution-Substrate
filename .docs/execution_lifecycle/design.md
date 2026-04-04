@@ -144,15 +144,15 @@ These absences are part of the current design shape, not missing implementation 
 - Lifecycle lookup currently depends on an explicit ES-owned execution-locator policy whose current mapping is `run_id -> exec-<run_id>`.
 - Projected-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
 - Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
-- `:submit` now localizes its current staging and package-resolution behavior behind one internal execution-package layout, but the current `/monolith/...` runtime path conventions and mount layout remain bounded slice rules rather than settled architecture.
+- `:submit` now localizes its current staging and package-resolution behavior behind one internal execution-package layout, but the current `/execution/...` runtime path conventions and mount layout remain bounded slice rules rather than settled architecture.
 - ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
 
 ## 10. Runtime identity and lifecycle interaction
 
 ES currently reserves and/or stages these runtime areas as part of submission:
 
-- `/monolith/staged`
-- `/monolith/run`
+- `/execution/staged`
+- `/execution/run`
 - the current ES-owned runtime-identity subtree that backs the injected endpoint convention
 
 Design-level meaning:
@@ -186,7 +186,7 @@ This file should remain the high-level lifecycle design map.
 - The role and future of `:prepare`
 - The internal execution-locator policy behind `run_id` lookup
 - Latest-allocation lifecycle projection
-- The current execution-package layout and `/monolith/...` runtime path conventions inside `:submit`
+- The current execution-package layout and `/execution/...` runtime path conventions inside `:submit`
 - Runtime identity reserved-path and endpoint conventions
 - The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
 

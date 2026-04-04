@@ -232,14 +232,14 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
-- ES now localizes payload staging, mount staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/monolith/...` runtime paths and runtime-identity backing subtree remain active conventions inside that layout.
+- ES now localizes payload staging, mount staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths and runtime-identity backing subtree remain active conventions inside that layout.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 
 **Temporary compatibility edges**
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
-- Current runtime mount conventions use `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing layout.
-- The workload-visible runtime identity convention currently injects canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, with `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` retained only as a temporary compatibility alias.
+- Current runtime mount conventions use `/execution/staged`, `/execution/run`, and the current ES-owned runtime-identity backing layout.
+- The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 
 **Reopened seams**
@@ -356,7 +356,7 @@ These layers can create coupling pressure without owning domain responsibilities
 ## 13. Temporary compatibility-heavy edges
 
 - ES `:prepare` remains an active but bounded compatibility surface rather than the declared long-term execution API.
-- ES runtime path conventions under `/monolith/staged`, `/monolith/run`, and the current ES-owned runtime-identity backing root are active today but should be treated as conventions under review.
+- ES runtime path conventions under `/execution/staged`, `/execution/run`, and the current ES-owned runtime-identity backing root are active today but should be treated as conventions under review.
 - AGS retains request fields such as `builder_service` and `policy_decisions` in forms that help preserve the current publication slice without proving those fields belong in the long-term kernel.
 - ARS exposes a smaller runtime-facing discovery record plus a secondary descriptor support path because that is the active bounded choreography, not because that specific split is already frozen as the final storage boundary.
 

@@ -229,12 +229,11 @@ Cancel path:
 **Observed current implementation path**
 
 - Defines reserved runtime paths:
-  - `/monolith/staged`
-  - `/monolith/run`
+  - `/execution/staged`
+  - `/execution/run`
   - the current ES-owned runtime-identity workspace root
 - Defines the current workload-visible endpoint environment conventions:
-  - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
-  - temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT`
+  - `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - Derives a run-scoped Unix endpoint URI and backing workspace path under the ES-owned runtime-identity root instead of treating a fixed endpoint path as workload contract.
 - Enforces overlap checks with `ValidateReservedRuntimePaths`.
 
@@ -255,7 +254,7 @@ Cancel path:
   - max mount count
   - read-only mounts only
   - absolute cleaned target paths
-  - target paths under `/monolith/mounts`
+  - target paths under `/execution/mounts`
   - no overlapping mount targets
 - `stageRuntimeMounts` runs during submit-time staging.
 - For each mount artifact it:
@@ -291,8 +290,8 @@ Submission has visible local side effects under the configured staging root.
 
 Runtime-path effects in the Nomad job spec are now assembled from that same internal layout:
 
-- Host `payloadDir` is bind-mounted to `/monolith/staged`
-- Host `runDir` is bind-mounted to `/monolith/run`
+- Host `payloadDir` is bind-mounted to `/execution/staged`
+- Host `runDir` is bind-mounted to `/execution/run`
 - Runtime identity workspace is mounted as tmpfs at the run-scoped workspace derived from the discovered endpoint
 
 Cleanup behavior visible in code:
@@ -318,12 +317,12 @@ Cleanup behavior visible in code:
   - one task named `task`
   - Docker driver
 - The wrapper shell command:
-  - creates `/monolith/run/work`
+  - creates `/execution/run/work`
   - creates the runtime-identity workspace path
   - untars the staged artifact into the work directory
   - `chmod +x` on `entrypoint`
   - optionally wraps execution in `timeout`
-  - execs `/monolith/run/work/entrypoint`
+  - execs `/execution/run/work/entrypoint`
 
 Current job-spec assumptions:
 
@@ -359,7 +358,7 @@ The most important implementation facts are backed by integration tests:
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
-- `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/monolith/mounts/...` remains allowed.
+- `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
 
@@ -405,7 +404,7 @@ These are active implementation choices, not automatically permanent design comm
 - Admission logic now treats aggregate evidence as canonical with no remaining legacy fact fallback or side path.
 - The current execution-locator policy still resolves `run_id -> exec-<run_id>`.
 - Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
-- Runtime identity handling depends on reserved `/monolith/...` path conventions.
+- Runtime identity handling depends on reserved `/execution/...` path conventions.
 - Submit currently depends on runtime-facing payload discoverability plus evidence-claim cross-checks between artifact identity and payload identity.
 - The implementation is coherent today as a thin composition and handoff layer, but several of its shortcuts are still under redesign pressure rather than being settled structure.
 

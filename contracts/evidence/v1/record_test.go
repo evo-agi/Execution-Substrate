@@ -31,7 +31,7 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 					BuilderService: "artifact-governance",
 					Invoker: Invoker{
 						Service:   "deployment",
-						Principal: "spiffe://monolith.internal/service/deployment",
+						Principal: "spiffe://execution.internal/service/deployment",
 					},
 					PolicyDecisions: []PolicyDecision{
 						{Rule: "z-last", Result: "allow"},
@@ -121,7 +121,7 @@ func TestValidateRejectsMissingAuthorizationOutputID(t *testing.T) {
 					BuilderService: "artifact-governance",
 					Invoker: Invoker{
 						Service:   "deployment",
-						Principal: "spiffe://monolith.internal/service/deployment",
+						Principal: "spiffe://execution.internal/service/deployment",
 					},
 					BuildLogDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				},

@@ -156,8 +156,8 @@ Accept bounded publication input, assemble the canonical aggregate evidence reco
 ### Current producers / consumers
 
 - Current allowed callers are:
-  - `spiffe://monolith.internal/service/deployment`
-  - `spiffe://monolith.internal/operator`
+  - `spiffe://execution.internal/service/deployment`
+  - `spiffe://execution.internal/operator`
 - `AGS` consumes the ARS write boundary.
 - `ES` later consumes AGS output indirectly through ARS reads.
 
@@ -327,8 +327,8 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 ### Current producers / consumers
 
 - Current allowed callers are:
-  - `spiffe://monolith.internal/service/deployment`
-  - `spiffe://monolith.internal/operator`
+  - `spiffe://execution.internal/service/deployment`
+  - `spiffe://execution.internal/operator`
 - ES consumes:
   - the configured workload-zone Vault config reference
   - ARS artifact evidence, manifest support data when needed, and payload/blob reads
@@ -420,7 +420,7 @@ Current successful response shapes:
   - read-only
   - absolute
   - already cleaned
-  - under `/monolith/mounts`
+  - under `/execution/mounts`
   - non-overlapping
 - Each runtime mount artifact is revalidated through ARS and runtime-trust enforcement before staging.
 - Failed submit staging is cleaned immediately.
@@ -447,7 +447,7 @@ Current successful response shapes:
 `Temporary compatibility edge`
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
-- The current container path conventions under `/monolith/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
+- The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
 
 ### Reopened seams
@@ -467,8 +467,8 @@ Publish the signed runtime-trust payload that ES enforces at admission time.
 
 - `EGS` publishes the runtime-trust payload plus separate publication metadata.
 - Current allowed callers are:
-  - `spiffe://monolith.internal/service/execution`
-  - `spiffe://monolith.internal/operator`
+  - `spiffe://execution.internal/service/execution`
+  - `spiffe://execution.internal/operator`
 - `ES` is the current runtime consumer.
 
 ### Public surface
@@ -630,7 +630,6 @@ Describe the current ES-to-runtime identity boundary used during submission and 
 Current workload-visible handoff:
 
 - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
-- temporary compatibility alias `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT=<same value>`
 - non-secret workload-vault environment inputs derived from the resolved workload-vault auth plan
 
 Current ES-owned implementation details behind that handoff:
@@ -671,8 +670,7 @@ Current runtime rules:
 
 `Temporary compatibility edge`
 
-- `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` remains active only as a compatibility alias while any compatibility consumers still rely on the legacy name.
-- The endpoint URI is ES-chosen and run-scoped rather than a fixed `/monolith/runtime-identity/endpoint` contract.
+- The endpoint URI is ES-chosen and run-scoped rather than a fixed `/execution/runtime-identity/endpoint` contract.
 - The `/run/es-runtime-identity/...` backing layout is current ES implementation, not a broader workload contract.
 
 ### Reopened seams
@@ -688,7 +686,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
-- `ES` currently uses `/monolith/staged`, `/monolith/run`, `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, the temporary `MONOLITH_WORKLOAD_IDENTITY_ENDPOINT` alias, and the current ES-owned runtime-identity backing layout as active runtime conventions.
+- `ES` currently uses `/execution/staged`, `/execution/run`, `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, and the current ES-owned runtime-identity backing layout as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 
 ## 12. Reopened Redesign Seams

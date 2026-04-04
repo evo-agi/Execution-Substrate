@@ -15,20 +15,20 @@ func TestLoadParsesExplicitSubjectGrammar(t *testing.T) {
 	set := loadPolicy(t, `
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/execution"
+  principal: "spiffe://execution.internal/service/execution"
   role: "worker"
 }
 
 subject "bot_test_privileged" {
   type: "script"
-  principal: "spiffe://monolith.internal/script/bot_test_privileged"
+  principal: "spiffe://execution.internal/script/bot_test_privileged"
   role: "worker"
 }
 `)
 
 	serviceType, serviceID, ok := set.SubjectFromWorkload(policy.Workload{
 		Type:               "service",
-		WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+		WorkloadIdentityID: "spiffe://execution.internal/service/execution",
 	})
 	if !ok || serviceType != "service" || serviceID != "execution" {
 		t.Fatalf("unexpected service subject mapping: type=%q id=%q ok=%v", serviceType, serviceID, ok)
@@ -36,7 +36,7 @@ subject "bot_test_privileged" {
 
 	scriptType, scriptID, ok := set.SubjectFromWorkload(policy.Workload{
 		Type:               "script",
-		WorkloadIdentityID: "spiffe://monolith.internal/script/bot_test_privileged",
+		WorkloadIdentityID: "spiffe://execution.internal/script/bot_test_privileged",
 	})
 	if !ok || scriptType != "script" || scriptID != "bot_test_privileged" {
 		t.Fatalf("unexpected script subject mapping: type=%q id=%q ok=%v", scriptType, scriptID, ok)
@@ -62,14 +62,14 @@ func TestValidateWorkloadRejectsTypePrincipalMismatch(t *testing.T) {
 	set := loadPolicy(t, `
 subject "execution" {
   type: "service"
-  principal: "spiffe://monolith.internal/service/execution"
+  principal: "spiffe://execution.internal/service/execution"
   role: "worker"
 }
 `)
 
 	err := set.ValidateWorkload(policy.Workload{
 		Type:               "script",
-		WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+		WorkloadIdentityID: "spiffe://execution.internal/service/execution",
 	})
 	if err == nil || !strings.Contains(err.Error(), "workload.type does not match workload.workload_identity_id") {
 		t.Fatalf("expected type mismatch error, got %v", err)

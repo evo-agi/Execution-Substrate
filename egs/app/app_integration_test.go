@@ -545,7 +545,7 @@ func (f *tlsFixture) clientTLSConfig(t *testing.T, spiffePath string, bootstrap 
 		issuerKey,
 		"client."+strings.ReplaceAll(strings.Trim(spiffePath, "/"), "/", "."),
 		[]*url.URL{
-			mustSPIFFEURL(t, "spiffe://monolith.internal/"+strings.Trim(spiffePath, "/")),
+			mustSPIFFEURL(t, "spiffe://execution.internal/"+strings.Trim(spiffePath, "/")),
 		},
 	)
 	certificate, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)

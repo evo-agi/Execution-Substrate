@@ -38,10 +38,7 @@ import (
 	esconfig "execution-platform/es/config"
 )
 
-const (
-	workloadIdentityEndpointEnvKey              = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
-	workloadIdentityEndpointCompatibilityEnvKey = "MONOLITH_WORKLOAD_IDENTITY_ENDPOINT"
-)
+const workloadIdentityEndpointEnvKey = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	stack := startSubmitStack(t)
@@ -163,12 +160,7 @@ func TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks(t *test
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo "${EXEC_WORKLOAD_IDENTITY_ENDPOINT}"
-echo "${MONOLITH_WORKLOAD_IDENTITY_ENDPOINT}"
-if [ "${EXEC_WORKLOAD_IDENTITY_ENDPOINT}" != "${MONOLITH_WORKLOAD_IDENTITY_ENDPOINT}" ]; then
-  echo "IDENTITY-ENDPOINT-ALIAS-MISMATCH"
-  exit 1
-fi
-echo "${MONOLITH_WORKLOAD_VAULT_AUTH_MODE}"
+echo "${EXEC_WORKLOAD_VAULT_AUTH_MODE}"
 echo "IDENTITY-ENDPOINT-ENV-OK"
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
@@ -196,11 +188,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	if !strings.HasPrefix(endpointURI, "unix://") {
 		t.Fatalf("expected canonical workload identity endpoint env to carry a unix URI, got %q", endpointURI)
 	}
-	if strings.Contains(endpointURI, "/monolith/") {
-		t.Fatalf("did not expect canonical workload identity endpoint env to expose legacy /monolith path conventions, got %q", endpointURI)
-	}
-	if legacy := taskConfig.Env[workloadIdentityEndpointCompatibilityEnvKey]; legacy != endpointURI {
-		t.Fatalf("expected compatibility workload identity endpoint env %s to match canonical %q, got %q", workloadIdentityEndpointCompatibilityEnvKey, endpointURI, legacy)
+	if strings.Contains(endpointURI, "/execution/") {
+		t.Fatalf("did not expect canonical workload identity endpoint env to expose container runtime path conventions, got %q", endpointURI)
 	}
 
 	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentityWorkspaceFromEndpoint(t, endpointURI))
@@ -256,7 +245,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	if !strings.Contains(logs, endpointURI) || !strings.Contains(logs, "IDENTITY-ENDPOINT-ENV-OK") {
 		t.Fatalf("expected workload identity endpoint env markers in logs, got %q", logs)
 	}
-	if strings.Contains(logs, "unix:///monolith/runtime-identity/endpoint") {
+	if strings.Contains(logs, "unix:///execution/runtime-identity/endpoint") {
 		t.Fatalf("did not expect logs to depend on the legacy fixed workload identity endpoint value, got %q", logs)
 	}
 	if !strings.Contains(logs, "vault_identity_jwt") {
@@ -365,7 +354,7 @@ func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
-cat /monolith/mounts/config/app.conf
+cat /execution/mounts/config/app.conf
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
 
@@ -382,7 +371,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 			Source: admission.MountSource{
 				ArtifactDigest: mountArtifact.ArtifactDigest,
 			},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -399,7 +388,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 
 	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/execution/mounts/config")
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
 		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
 	}
@@ -446,7 +435,7 @@ func TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction(t *testing.T
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
-cat /monolith/mounts/config/app.conf
+cat /execution/mounts/config/app.conf
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
 
@@ -463,7 +452,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 			Source: admission.MountSource{
 				ArtifactDigest: mountArtifact.ArtifactDigest,
 			},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -479,7 +468,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 
 	job := stack.nomad.fetchExecutionJobDetail(t, payload.RunID)
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/execution/mounts/config")
 	sourceDir, ok := mountConfig["source"].(string)
 	if !ok || strings.TrimSpace(sourceDir) == "" {
 		t.Fatalf("expected host source dir for staged runtime mount, got %#v", mountConfig["source"])
@@ -508,7 +497,7 @@ func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
 			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -531,7 +520,7 @@ func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
 			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -555,7 +544,7 @@ func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
 			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -578,7 +567,7 @@ func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
 			Source:     admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 	}))
@@ -593,12 +582,12 @@ func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
 			Source:     admission.MountSource{ArtifactDigest: stack.publishResponse.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config",
+			TargetPath: "/execution/mounts/config",
 			ReadOnly:   true,
 		},
 		{
 			Source:     admission.MountSource{ArtifactDigest: stack.publishResponse.ArtifactDigest},
-			TargetPath: "/monolith/mounts/config/sub",
+			TargetPath: "/execution/mounts/config/sub",
 			ReadOnly:   true,
 		},
 	}))
