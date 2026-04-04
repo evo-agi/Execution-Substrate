@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,13 +30,6 @@ type nomadClient struct {
 
 type nomadJobRegisterResponse struct {
 	EvalID string `json:"EvalID"`
-}
-
-type stagedPayload struct {
-	rootDir    string
-	payloadDir string
-	runDir     string
-	mounts     []stagedRuntimeMount
 }
 
 func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult, *Error) {
@@ -101,7 +93,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	stage, stageErr := s.stagePayload(locator.RunID, payloadBytes)
+	stage, stageErr := s.stageExecutionInputs(locator, payloadBytes)
 	if stageErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
@@ -113,7 +105,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	submitted := false
 	defer func() {
 		if !submitted {
-			_ = os.RemoveAll(stage.rootDir)
+			_ = os.RemoveAll(stage.layout.stageRootDir)
 		}
 	}()
 
@@ -122,7 +114,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	// externally, but the reserved runtime-identity workspace is provisioned as
 	// tmpfs and is no longer host-backed by the submit path.
 
-	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.rootDir, req.Invocation.Mounts)
+	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, req.Invocation.Mounts)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -134,7 +126,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(locator.RunID, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
+	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -203,26 +195,6 @@ func (s *Service) fetchPayloadBytes(ctx context.Context, payloadDigest string) (
 	}
 }
 
-func (s *Service) stagePayload(runID string, payloadBytes []byte) (stagedPayload, error) {
-	stageRoot := filepath.Join(s.cfg.Execution.StagingRootDir, runID)
-	payloadDir := filepath.Join(stageRoot, "payload")
-	runDir := filepath.Join(stageRoot, "run")
-	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
-		return stagedPayload{}, err
-	}
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return stagedPayload{}, err
-	}
-	if err := os.WriteFile(filepath.Join(payloadDir, "artifact.tar.gz"), payloadBytes, 0o600); err != nil {
-		return stagedPayload{}, err
-	}
-	return stagedPayload{
-		rootDir:    stageRoot,
-		payloadDir: payloadDir,
-		runDir:     runDir,
-	}, nil
-}
-
 func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int) {
 	if resources == nil {
 		return defaultSubmitCPU, defaultSubmitMemoryMB
@@ -230,22 +202,19 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(runID string, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
-	handoff := runtimeIdentityHandoffForRun(runID)
-
+func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
 	env := make(map[string]string, len(invocationEnv)+12)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
 
-	// TODO: Do not mention "monolith"
-	env["EXEC_RUN_ID"] = runID
+	env["EXEC_RUN_ID"] = layout.runID
 	env["EXEC_ARTIFACT_DIGEST"] = artifactDigest
-	env["EXEC_WORK_DIR"] = "/monolith/run/work"
+	env["EXEC_WORK_DIR"] = layout.runtimeWorkDir
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = workloadVaultPlan.Address
-	env[handoff.endpointEnvKey] = handoff.endpointURI
-	env[handoff.compatibilityEndpointEnvKey] = handoff.endpointURI
+	env[layout.runtimeIdentity.endpointEnvKey] = layout.runtimeIdentity.endpointURI
+	env[layout.runtimeIdentity.compatibilityEndpointEnvKey] = layout.runtimeIdentity.endpointURI
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MODE"] = string(workloadVaultPlan.Mode)
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
 	env["MONOLITH_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
@@ -258,27 +227,15 @@ func buildNomadJobSpec(
 	cfg esconfig.Config,
 	jobID string,
 	runID string,
-	stage stagedPayload,
+	stage stagedExecutionInputs,
 	req PrepareRequest,
 	networkAccess bool,
 	taskCPU int,
 	taskMemoryMB int,
 	env map[string]string,
 ) map[string]any {
-	handoff := runtimeIdentityHandoffForRun(runID)
-
-	// TODO: Do not mention "monolith"
-	wrapper := strings.Join([]string{
-		"set -eu",
-		"mkdir -p /monolith/run/work",
-		"mkdir -p " + handoff.workspaceDir(),
-		"tar -xzf /monolith/staged/artifact.tar.gz -C /monolith/run/work",
-		"chmod +x /monolith/run/work/entrypoint",
-		"if [ \"$EXEC_TIMEOUT_SECONDS\" -gt 0 ]; then",
-		"  exec timeout \"$EXEC_TIMEOUT_SECONDS\" /monolith/run/work/entrypoint \"$@\"",
-		"fi",
-		"exec /monolith/run/work/entrypoint \"$@\"",
-	}, "\n")
+	layout := stage.layout
+	wrapper := layout.runtimeWrapperScript()
 
 	shellArgs := []string{"-ec", wrapper, "entrypoint"}
 	shellArgs = append(shellArgs, req.Invocation.Argv...)
@@ -289,40 +246,7 @@ func buildNomadJobSpec(
 		"args":    shellArgs,
 	}
 
-	// TODO: Do not mention "monolith"
-	mounts := []any{
-		map[string]any{
-			"type":     "bind",
-			"source":   stage.payloadDir,
-			"target":   "/monolith/staged",
-			"readonly": true,
-		},
-		map[string]any{
-			"type":     "bind",
-			"source":   stage.runDir,
-			"target":   "/monolith/run",
-			"readonly": false,
-		},
-		map[string]any{
-			"type":     "tmpfs",
-			"target":   handoff.workspaceDir(),
-			"readonly": false,
-			"tmpfs_options": map[string]any{
-				"size": cfg.Execution.EffectiveRuntimeIdentityTmpfsSize(),
-			},
-		},
-	}
-
-	for _, mount := range stage.mounts {
-		mounts = append(mounts, map[string]any{
-			"type":     "bind",
-			"source":   mount.sourceDir,
-			"target":   mount.targetPath,
-			"readonly": true,
-		})
-	}
-
-	taskConfig["mounts"] = mounts
+	taskConfig["mounts"] = layout.runtimeMountSpecs(cfg, stage.mounts)
 	if networkAccess {
 		taskConfig["network_mode"] = "bridge"
 	} else {

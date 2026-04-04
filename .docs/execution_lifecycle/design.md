@@ -144,7 +144,7 @@ These absences are part of the current design shape, not missing implementation 
 - Lifecycle lookup currently depends on an explicit ES-owned execution-locator policy whose current mapping is `run_id -> exec-<run_id>`.
 - Projected-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
 - Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
-- `:submit` currently carries staging and package-resolution assumptions, including aggregate-evidence payload resolution and evidence-driven mount validation.
+- `:submit` now localizes its current staging and package-resolution behavior behind one internal execution-package layout, but the current `/monolith/...` runtime path conventions and mount layout remain bounded slice rules rather than settled architecture.
 - ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
 
 ## 10. Runtime identity and lifecycle interaction
@@ -186,7 +186,7 @@ This file should remain the high-level lifecycle design map.
 - The role and future of `:prepare`
 - The internal execution-locator policy behind `run_id` lookup
 - Latest-allocation lifecycle projection
-- Staging and package-resolution assumptions inside `:submit`
+- The current execution-package layout and `/monolith/...` runtime path conventions inside `:submit`
 - Runtime identity reserved-path and endpoint conventions
 - The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
 

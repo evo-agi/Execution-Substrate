@@ -63,7 +63,7 @@ Top-level interaction notes:
 
 ### Publication flow
 
-AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from package-facing identity inputs anchored to the payload digest, assembles the current aggregate artifact-evidence record with separate package claims, narrow derivation request-binding authorization claims, execution/runtime claims, and seal, signs that evidence, and writes the canonical publication record through ARS.
+AGS accepts publish requests in the current evidence-native grammar, derives artifact identity from package-facing identity inputs anchored to the payload digest, assembles the current aggregate artifact-evidence record with separate package claims, narrow derivation request-binding authorization claims, a smaller shared execution/runtime contract, and seal, signs that evidence, and writes the canonical publication record through ARS.
 
 ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 
@@ -143,7 +143,7 @@ These are current architectural absences, not omissions to fill automatically.
 - The current named workload-zone Vault config reference and workload-zone Vault blob schema now live in `contracts/runtimeconfig/v1` rather than in ES-local ad hoc shapes.
 - ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
-- ES currently carries the main request, package-resolution, staging, and runtime handoff composition burden.
+- ES currently carries the main request and runtime handoff composition burden, though its submit-side package resolution and staging conventions now live behind one explicit internal execution-package layout instead of drifting across helpers.
 - EGS currently publishes a specific runtime-trust form that directly shapes execution-time enforcement.
 - CGS currently exposes an authorize and policy-input shape closely tied to explicit `id.conf` subject records and caller/workload identity interpretation.
 - Runtime identity handoff currently depends on reserved runtime workspace and path conventions that are active but not settled.

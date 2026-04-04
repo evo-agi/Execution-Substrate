@@ -26,9 +26,8 @@ const (
 )
 
 type stagedRuntimeMount struct {
-	sourceArtifactDigest string
-	sourceDir            string
-	targetPath           string
+	sourceDir  string
+	targetPath string
 }
 
 func validateRuntimeMounts(mounts []RuntimeMount) *Error {
@@ -124,13 +123,12 @@ func stagedRuntimeMountTargets(mounts []stagedRuntimeMount) []string {
 	return targets
 }
 
-func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, stageRoot string, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
+func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, layout executionPackageLayout, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
 	if len(mounts) == 0 {
 		return nil, nil
 	}
 
-	stageMountRoot := filepath.Join(stageRoot, "mounts")
-	if err := os.MkdirAll(stageMountRoot, 0o755); err != nil {
+	if err := os.MkdirAll(layout.mountsStageRootDir, 0o755); err != nil {
 		return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging root failed")
 	}
 
@@ -162,9 +160,8 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Ru
 			}
 		}
 
-		mountStageDir := filepath.Join(stageMountRoot, fmt.Sprintf("%02d", index))
-		mountArchivePath := filepath.Join(mountStageDir, "artifact.tar.gz")
-		mountContentsDir := filepath.Join(mountStageDir, "contents")
+		mountArchivePath := layout.mountArchivePath(index)
+		mountContentsDir := layout.mountContentsDir(index)
 		if err := os.MkdirAll(mountContentsDir, 0o755); err != nil {
 			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging directory failed")
 		}
@@ -186,14 +183,13 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Ru
 		if realPathErr != nil {
 			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "runtime mount extraction path validation failed")
 		}
-		if !isWithinFilesystemRoot(stageMountRoot, realPath) {
+		if !isWithinFilesystemRoot(layout.mountsStageRootDir, realPath) {
 			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "runtime mount extraction escaped the staging root")
 		}
 
 		staged = append(staged, stagedRuntimeMount{
-			sourceArtifactDigest: strings.TrimSpace(mount.Source.ArtifactDigest),
-			sourceDir:            mountContentsDir,
-			targetPath:           targetPath,
+			sourceDir:  mountContentsDir,
+			targetPath: targetPath,
 		})
 	}
 

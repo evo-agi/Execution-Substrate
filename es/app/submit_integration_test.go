@@ -403,10 +403,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
 		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
 	}
-	mountArchivePath := filepath.Join(stack.rootDir, "es-stage", payload.RunID, "mounts", "00", "artifact.tar.gz")
-	if _, err := os.Stat(mountArchivePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected extracted runtime mount archive residue to be removed, got err=%v", err)
-	}
 
 	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
 	if allocation.ClientStatus != "complete" {
@@ -442,6 +438,56 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	logs := string(mustReadBody(t, logsResponse.Body))
 	if !strings.Contains(logs, "START-BANNER") || !strings.Contains(logs, "MOUNT-CONTENT") {
 		t.Fatalf("expected mounted content in logs, got %q", logs)
+	}
+}
+
+func TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction(t *testing.T) {
+	stack := startSubmitStack(t)
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo START-BANNER
+cat /monolith/mounts/config/app.conf
+echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+`))
+
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "app.conf",
+			Mode: 0o644,
+			Body: []byte("MOUNT-CONTENT\n"),
+		},
+	}), "runtime-mount")
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
+		{
+			Source: admission.MountSource{
+				ArtifactDigest: mountArtifact.ArtifactDigest,
+			},
+			TargetPath: "/monolith/mounts/config",
+			ReadOnly:   true,
+		},
+	}))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	job := stack.nomad.fetchExecutionJobDetail(t, payload.RunID)
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/monolith/mounts/config")
+	sourceDir, ok := mountConfig["source"].(string)
+	if !ok || strings.TrimSpace(sourceDir) == "" {
+		t.Fatalf("expected host source dir for staged runtime mount, got %#v", mountConfig["source"])
+	}
+
+	mountArchivePath := filepath.Join(filepath.Dir(sourceDir), "artifact.tar.gz")
+	if _, err := os.Stat(mountArchivePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected extracted runtime mount archive residue to be removed, got err=%v", err)
 	}
 }
 
@@ -583,7 +629,6 @@ type submitStack struct {
 	intentDigest            string
 	derivationSpecDigest    string
 	outputID                string
-	workloadIdentityID      string
 	workloadZoneVaultDigest string
 }
 
@@ -640,7 +685,6 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
 		outputID:                "runtime",
-		workloadIdentityID:      "spiffe://monolith.internal/service/execution",
 		workloadZoneVaultDigest: workloadZoneVaultDigest,
 	}
 
@@ -914,7 +958,6 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 		},
 		"admission": map[string]any{
 			"runtime": map[string]any{
-				"parameters":            []string{},
 				"environment_variables": []string{"APP_MODE"},
 				"required_capabilities": []string{},
 			},
@@ -926,12 +969,7 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 				"output_id":              stack.outputID,
 			},
 			"workload": map[string]any{
-				"artifact_class":       "service",
-				"workload_type":        "service",
-				"service_name":         "execution",
-				"target_platform":      "docker",
-				"description":          "Execution workload",
-				"workload_identity_id": stack.workloadIdentityID,
+				"target_platform": "docker",
 			},
 		},
 	})
@@ -1055,7 +1093,6 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 		},
 		"admission": map[string]any{
 			"runtime": map[string]any{
-				"parameters":            []string{},
 				"environment_variables": []string{},
 				"required_capabilities": []string{},
 			},
@@ -1067,12 +1104,7 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 				"output_id":              "mount-output",
 			},
 			"workload": map[string]any{
-				"artifact_class":       "service",
-				"workload_type":        "service",
-				"service_name":         "execution",
-				"target_platform":      "docker",
-				"description":          "Mounted runtime artifact",
-				"workload_identity_id": stack.workloadIdentityID,
+				"target_platform": "docker",
 			},
 		},
 	})

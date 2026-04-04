@@ -44,7 +44,6 @@ type AccessInput struct {
 }
 
 type RuntimeInterface struct {
-	Parameters           []string `json:"parameters"`
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
 }
@@ -60,12 +59,7 @@ type DerivationInput struct {
 }
 
 type WorkloadInput struct {
-	ArtifactClass      string `json:"artifact_class"`
-	WorkloadType       string `json:"workload_type"`
-	ServiceName        string `json:"service_name,omitempty"`
-	TargetPlatform     string `json:"target_platform,omitempty"`
-	Description        string `json:"description,omitempty"`
-	WorkloadIdentityID string `json:"workload_identity_id,omitempty"`
+	TargetPlatform string `json:"target_platform,omitempty"`
 }
 
 type PublishResult struct {

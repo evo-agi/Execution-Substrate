@@ -353,7 +353,6 @@ func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []by
 		},
 		"admission": map[string]any{
 			"runtime": map[string]any{
-				"parameters":            []string{},
 				"environment_variables": []string{"APP_MODE"},
 				"required_capabilities": []string{},
 			},
@@ -365,12 +364,7 @@ func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []by
 				"output_id":              stack.outputID,
 			},
 			"workload": map[string]any{
-				"artifact_class":       "service",
-				"workload_type":        "service",
-				"service_name":         "execution",
-				"target_platform":      "docker",
-				"description":          "Execution workload",
-				"workload_identity_id": stack.workloadIdentityID,
+				"target_platform": "docker",
 			},
 		},
 	})

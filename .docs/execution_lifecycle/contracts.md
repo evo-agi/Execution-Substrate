@@ -182,6 +182,7 @@ Successful response is `200` JSON with these contract fields:
   - `target_platform` unset or `docker`
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
+- Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
 
 ### Response contract
 
@@ -239,7 +240,7 @@ Successful response is `202` JSON with these fields:
 
 - The long-term receipt shape of `:submit`
 - The current async-only public contract
-- The current payload-resolution and staging assumptions behind submission
+- The current execution-package layout and container path conventions behind submission
 
 ## 7. Status contract
 

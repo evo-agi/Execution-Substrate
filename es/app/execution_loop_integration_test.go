@@ -271,7 +271,6 @@ func writeExecutionLoopSpec(t *testing.T, dir string, name string, script string
 			"artifact_type": "static-script",
 			"caller":        "deployment",
 			"runtime_interface": map[string]any{
-				"parameters":            []any{},
 				"environment_variables": []any{"APP_MODE"},
 				"required_capabilities": []any{},
 			},
@@ -286,13 +285,8 @@ func writeExecutionLoopSpec(t *testing.T, dir string, name string, script string
 			"access": map[string]any{
 				"network_access": false,
 			},
-			"workload_identity": map[string]any{
-				"artifact_class":       "service",
-				"workload_type":        "service",
-				"service_name":         "execution",
-				"target_platform":      "docker",
-				"description":          "Execution workload",
-				"workload_identity_id": "spiffe://monolith.internal/service/execution",
+			"workload": map[string]any{
+				"target_platform": "docker",
 			},
 		},
 		"prepare": map[string]any{

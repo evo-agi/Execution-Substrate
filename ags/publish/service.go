@@ -238,17 +238,11 @@ func (s *Service) buildArtifactEvidence(
 				},
 				Execution: evidencev1.ExecutionClaims{
 					Runtime: evidencev1.ExecutionRuntime{
-						Parameters:           cloneStringsPreserveShape(manifest.RuntimeInterface.Parameters),
 						EnvironmentVariables: cloneStringsPreserveShape(manifest.RuntimeInterface.EnvironmentVariables),
 						RequiredCapabilities: cloneStringsPreserveShape(manifest.RuntimeInterface.RequiredCapabilities),
 					},
 					Workload: evidencev1.ExecutionWorkload{
-						ArtifactClass:      strings.TrimSpace(req.Admission.Workload.ArtifactClass),
-						WorkloadType:       strings.TrimSpace(req.Admission.Workload.WorkloadType),
-						ServiceName:        strings.TrimSpace(req.Admission.Workload.ServiceName),
-						TargetPlatform:     strings.TrimSpace(req.Admission.Workload.TargetPlatform),
-						Description:        strings.TrimSpace(req.Admission.Workload.Description),
-						WorkloadIdentityID: strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID),
+						TargetPlatform: strings.TrimSpace(req.Admission.Workload.TargetPlatform),
 					},
 					Access: evidencev1.ExecutionAccess{
 						NetworkAccess: req.Admission.Access.NetworkAccess,
@@ -304,28 +298,8 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 	if strings.TrimSpace(req.Admission.Derivation.OutputID) == "" {
 		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.derivation.output_id is required"}
 	}
-	if strings.TrimSpace(req.Admission.Workload.ArtifactClass) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.artifact_class is required"}
-	}
-	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_type is required"}
-	}
-	if strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID) == "" {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_identity_id is required"}
-	}
-	workloadIdentityID := strings.TrimSpace(req.Admission.Workload.WorkloadIdentityID)
-	if !isValidSPIFFEURI(workloadIdentityID) {
-		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.workload_identity_id must be a valid SPIFFE URI"}
-	}
-	serviceName := strings.TrimSpace(req.Admission.Workload.ServiceName)
-	if strings.TrimSpace(req.Admission.Workload.WorkloadType) == "service" && serviceName == "" {
-		return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.workload.service_name is required for service workloads"}
-	}
-	if serviceName != "" {
-		derivedServiceName, ok := spiffeServiceName(workloadIdentityID)
-		if !ok || derivedServiceName != serviceName {
-			return publishValidation{}, &Error{Status: http.StatusConflict, Code: codeArtifactConflict, Message: "admission.workload.service_name conflicts with admission.workload.workload_identity_id"}
-		}
+	if targetPlatform := strings.TrimSpace(req.Admission.Workload.TargetPlatform); targetPlatform != "" && targetPlatform != "docker" {
+		return publishValidation{}, &Error{Status: http.StatusBadRequest, Code: codeInvalidRequest, Message: "admission.workload.target_platform must be empty or docker"}
 	}
 
 	return publishValidation{
@@ -350,38 +324,6 @@ func expectedInvokerForCaller(caller CallerIdentity) (InvokerInfo, *Error) {
 		default:
 			return InvokerInfo{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "caller not authorized for artifact publication"}
 	}
-}
-
-func isValidSPIFFEURI(value string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil {
-		return false
-	}
-	if parsed.Scheme != "spiffe" || parsed.Host == "" {
-		return false
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return false
-	}
-	return strings.TrimSpace(parsed.Path) != ""
-}
-
-func spiffeServiceName(value string) (string, bool) {
-	if !isValidSPIFFEURI(value) {
-		return "", false
-	}
-
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil {
-		return "", false
-	}
-
-	trimmedPath := strings.Trim(parsed.Path, "/")
-	segments := strings.Split(trimmedPath, "/")
-	if len(segments) != 2 || segments[0] != "service" || strings.TrimSpace(segments[1]) == "" {
-		return "", false
-	}
-	return segments[1], true
 }
 
 func newDependencyClient(cfg config.DependencyConfig) (*dependencyClient, error) {

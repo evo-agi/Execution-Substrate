@@ -19,7 +19,6 @@
     "artifact_type": "static-script",
     "caller": "deployment",
     "runtime_interface": {
-      "parameters": [],
       "environment_variables": [
         "APP_MODE"
       ],
@@ -49,15 +48,8 @@
       "policy_version": "2026-03-31",
       "expected_artifact_type": "static-script"
     },
-    "workload_identity": {
-      "artifact_class": "service",
-      "workload_type": "service",
-      "module_path": "services.execution.ExecutionServer",
-      "policy_version": "2026-03-31",
-      "service_name": "execution",
-      "target_platform": "docker",
-      "description": "Execution workload",
-      "workload_identity_id": "spiffe://monolith.internal/service/execution"
+    "workload": {
+      "target_platform": "docker"
     }
   },
   "prepare": {

@@ -304,7 +304,6 @@ type testStack struct {
 
 	artifactDigest          string
 	intentDigest            string
-	workloadIdentityID      string
 	workloadZoneVaultDigest string
 }
 
@@ -351,7 +350,6 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 
 	intentDigest := labeledDigest("bb")
 	derivationSpecDigest := labeledDigest("cc")
-	workloadIdentityID := "spiffe://monolith.internal/service/execution"
 	payloadBytes := []byte("artifact payload bytes")
 	payloadDigest := arsstore.DigestBytes(payloadBytes)
 	identity, err := evidencev1.NewArtifactIdentity(payloadDigest, "static-service", intentDigest)
@@ -365,7 +363,6 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 		"artifact_type":   "static-service",
 		"intent_digest":   intentDigest,
 		"runtime_interface": map[string]any{
-			"parameters":            []string{},
 			"environment_variables": []string{"APP_MODE"},
 			"required_capabilities": []string{},
 		},
@@ -373,7 +370,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 	manifestDigest := writeBlobBytes(t, rootDir, manifestBytes)
 
 	writeBlobBytes(t, rootDir, payloadBytes)
-	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest, workloadIdentityID)
+	evidenceBytes := signedArtifactEvidenceJSON(t, fixture, artifactDigest, payloadDigest, intentDigest, derivationSpecDigest)
 	evidenceDigest := writeBlobBytes(t, rootDir, evidenceBytes)
 	discoveryBytes := artifactDiscoveryJSON(t, artifactDigest, "static-service", intentDigest, evidenceDigest, payloadDigest)
 	discoveryDigest := writeBlobBytes(t, rootDir, discoveryBytes)
@@ -522,7 +519,6 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 
 	stack.artifactDigest = artifactDigest
 	stack.intentDigest = intentDigest
-	stack.workloadIdentityID = workloadIdentityID
 	stack.workloadZoneVaultDigest = workloadZoneVaultDigest
 
 	return stack
@@ -1062,7 +1058,6 @@ func signedArtifactEvidenceJSON(
 	payloadDigest string,
 	intentDigest string,
 	derivationSpecDigest string,
-	workloadIdentityID string,
 ) []byte {
 	t.Helper()
 
@@ -1097,17 +1092,11 @@ func signedArtifactEvidenceJSON(
 				},
 				Execution: evidencev1.ExecutionClaims{
 					Runtime: evidencev1.ExecutionRuntime{
-						Parameters:           []string{},
 						EnvironmentVariables: []string{"APP_MODE"},
 						RequiredCapabilities: []string{},
 					},
 					Workload: evidencev1.ExecutionWorkload{
-						ArtifactClass:      "service",
-						WorkloadType:       "service",
-						ServiceName:        "execution",
-						TargetPlatform:     "docker",
-						Description:        "Execution workload",
-						WorkloadIdentityID: workloadIdentityID,
+						TargetPlatform: "docker",
 					},
 					Access: evidencev1.ExecutionAccess{
 						NetworkAccess: false,

@@ -232,8 +232,8 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
-- Runtime staging, mount validation, and the internal ES-owned runtime subtree that backs runtime handoff are part ownership and part current convention.
-- ES still relies internally on the current workload identity triad: `type`, `service_name`, and `workload_identity_id`, but it no longer returns that composition detail on the bounded `:prepare` surface.
+- ES now localizes payload staging, mount staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/monolith/...` runtime paths and runtime-identity backing subtree remain active conventions inside that layout.
+- ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 
 **Temporary compatibility edges**
 
@@ -246,8 +246,8 @@ Own admission, compose upstream contract checks into an execution decision, subm
 
 - The long-term ES request model and package-resolution shape
 - The current division between prepare-time composition and submit-time execution
-- The current runtime package staging and reserved path conventions
-- The role of the workload identity triad in the public admission contract
+- The current execution-package layout and reserved path conventions
+- The final owner and vocabulary for the remaining shared execution/runtime inputs
 
 ## 9. EGS boundary
 

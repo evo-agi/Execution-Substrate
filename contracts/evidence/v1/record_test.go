@@ -49,17 +49,11 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 				},
 				Execution: ExecutionClaims{
 					Runtime: ExecutionRuntime{
-						Parameters:           []string{"z", "a"},
 						EnvironmentVariables: []string{"APP_MODE", "API_URL"},
 						RequiredCapabilities: []string{"b", "a"},
 					},
 					Workload: ExecutionWorkload{
-						ArtifactClass:      "service",
-						WorkloadType:       "service",
-						ServiceName:        "execution",
-						TargetPlatform:     "docker",
-						Description:        "Execution workload",
-						WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+						TargetPlatform: "docker",
 					},
 					Access: ExecutionAccess{
 						NetworkAccess: true,
@@ -100,6 +94,9 @@ func TestCanonicalBytesNormalizeSlicesAndVerifySeal(t *testing.T) {
 	if !strings.Contains(canonicalString, `"execution":{"runtime"`) {
 		t.Fatalf("expected canonical bytes to encode admission execution claims: %s", canonicalString)
 	}
+	if strings.Contains(canonicalString, `"parameters"`) || strings.Contains(canonicalString, `"workload_identity_id"`) || strings.Contains(canonicalString, `"service_name"`) || strings.Contains(canonicalString, `"artifact_class"`) || strings.Contains(canonicalString, `"workload_type"`) || strings.Contains(canonicalString, `"description"`) {
+		t.Fatalf("expected canonical bytes to omit removed execution metadata: %s", canonicalString)
+	}
 	if strings.Contains(canonicalString, `"admission":{"runtime"`) {
 		t.Fatalf("expected canonical bytes to omit the old mixed admission runtime shape: %s", canonicalString)
 	}
@@ -137,10 +134,7 @@ func TestValidateRejectsMissingAuthorizationOutputID(t *testing.T) {
 				},
 				Execution: ExecutionClaims{
 					Workload: ExecutionWorkload{
-						ArtifactClass:      "service",
-						WorkloadType:       "service",
-						ServiceName:        "execution",
-						WorkloadIdentityID: "spiffe://monolith.internal/service/execution",
+						TargetPlatform: "docker",
 					},
 				},
 			},

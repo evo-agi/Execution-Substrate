@@ -1299,15 +1299,11 @@ func seedStorageFixture(t *testing.T) seededStorage {
 				},
 				"execution": map[string]any{
 					"runtime": map[string]any{
-						"parameters":            []any{},
 						"environment_variables": []string{"APP_MODE"},
 						"required_capabilities": []any{},
 					},
 					"workload": map[string]any{
-						"artifact_class":       "service",
-						"workload_type":        "service",
-						"service_name":         "execution",
-						"workload_identity_id": "spiffe://monolith.internal/service/execution",
+						"target_platform": "docker",
 					},
 					"access": map[string]any{
 						"network_access": false,

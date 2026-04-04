@@ -195,7 +195,11 @@ Current response shape:
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
   - `claims.package` for publication/discoverability-facing meaning
   - `claims.admission.authorization` for derivation request-binding meaning only
-  - `claims.admission.execution` for runtime interface, execution workload, and execution access meaning
+  - `claims.admission.execution` for the smaller shared runtime contract ES currently consumes:
+    - runtime env allowlist
+    - required runtime capabilities
+    - `target_platform`
+    - `network_access`
 - AGS assembles and uploads:
   - payload bytes
   - aggregate artifact evidence
@@ -204,11 +208,9 @@ Current response shape:
   - artifact descriptor as secondary publication/support data
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
 - AGS derives publication caller binding from the authenticated caller and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
-- AGS enforces bounded cross-field consistency before publishing, including:
-  - valid SPIFFE workload identity
-  - `service_name` required for service workloads
-  - `service_name` must match the SPIFFE service name when present
+- AGS now rejects non-docker `admission.workload.target_platform` values at publish time because the active shared runtime contract only admits empty or `docker` target platforms.
 - AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
+- Non-runtime workload metadata such as `artifact_class`, `workload_type`, `service_name`, `workload_identity_id`, and `description` no longer live inside the shared execution/runtime evidence claims.
 - `policy_decisions` are caller-supplied and are normalized structurally for signing, but AGS does not semantically evaluate them.
 - AGS publishes only through ARS:
   - `PUT /v1/blobs/{digest}`
@@ -410,6 +412,7 @@ Current successful response shapes:
   - no required runtime capabilities
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
+- ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`

@@ -557,7 +557,6 @@ func manifestFromEvidence(evidence evidencev1.ArtifactEvidence) Manifest {
 		ArtifactType:   evidence.Claims.Package.Identity.ArtifactType,
 		IntentDigest:   evidence.Claims.Package.Identity.IntentDigest,
 		RuntimeInterface: RuntimeInterface{
-			Parameters:           append([]string(nil), runtime.Parameters...),
 			EnvironmentVariables: append([]string(nil), runtime.EnvironmentVariables...),
 			RequiredCapabilities: append([]string(nil), runtime.RequiredCapabilities...),
 		},

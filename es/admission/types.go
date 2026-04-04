@@ -92,7 +92,6 @@ type HealthSnapshot struct {
 }
 
 type RuntimeInterface struct {
-	Parameters           []string `json:"parameters"`
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`
 }

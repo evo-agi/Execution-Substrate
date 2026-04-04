@@ -216,8 +216,18 @@ func TestPublishDerivesBuilderServiceAndCallerBindingInEvidence(t *testing.T) {
 	if got := execution["access"].(map[string]any)["network_access"]; got != false {
 		t.Fatalf("expected execution access network_access false, got %v", got)
 	}
-	if got := execution["workload"].(map[string]any)["workload_identity_id"]; got != stack.workloadIdentityID {
-		t.Fatalf("expected execution workload identity %q, got %v", stack.workloadIdentityID, got)
+	workload := execution["workload"].(map[string]any)
+	if got := workload["target_platform"]; got != "docker" {
+		t.Fatalf("expected execution workload target_platform docker, got %v", got)
+	}
+	for _, removed := range []string{"artifact_class", "workload_type", "service_name", "workload_identity_id", "description"} {
+		if _, ok := workload[removed]; ok {
+			t.Fatalf("did not expect removed execution workload field %q in evidence, got %v", removed, workload)
+		}
+	}
+	runtime := execution["runtime"].(map[string]any)
+	if _, ok := runtime["parameters"]; ok {
+		t.Fatalf("did not expect removed execution runtime field parameters in evidence, got %v", runtime)
 	}
 
 	startES(t, stack)
@@ -261,11 +271,10 @@ func TestPublishArtifactIdentityIgnoresAdmissionOnlyChanges(t *testing.T) {
 	response := publishArtifactRequest(t, second, "service/deployment", false, func(body map[string]any) {
 		admissionBody := body["admission"].(map[string]any)
 		runtime := admissionBody["runtime"].(map[string]any)
-		runtime["parameters"] = []string{"--verbose"}
 		runtime["environment_variables"] = []string{"APP_MODE", "EXTRA_FLAG"}
 
 		workload := admissionBody["workload"].(map[string]any)
-		workload["description"] = "runtime-mutated description"
+		workload["target_platform"] = "docker"
 	})
 	defer response.Body.Close()
 
@@ -315,7 +324,7 @@ func TestPublishRejectsLegacyPublicationInvokerField(t *testing.T) {
 	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func TestPublishRejectsInvalidWorkloadIdentityID(t *testing.T) {
+func TestPublishRejectsRemovedWorkloadIdentityIDField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
@@ -329,7 +338,7 @@ func TestPublishRejectsInvalidWorkloadIdentityID(t *testing.T) {
 	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func TestPublishRejectsWorkloadIdentityIDServiceNameConflict(t *testing.T) {
+func TestPublishRejectsRemovedServiceNameField(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
 
@@ -340,7 +349,7 @@ func TestPublishRejectsWorkloadIdentityIDServiceNameConflict(t *testing.T) {
 	})
 	defer response.Body.Close()
 
-	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
+	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
 func TestPublishRejectsRemovedDerivationPolicyVersionField(t *testing.T) {
@@ -372,21 +381,7 @@ func TestPublishRejectsRemovedWorkloadBindingFields(t *testing.T) {
 	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func TestPublishRejectsServiceWorkloadMissingServiceName(t *testing.T) {
-	stack := startDependencyStack(t)
-	defer stack.shutdownAll(t)
-
-	response := publishArtifactRequest(t, stack, "service/deployment", false, func(body map[string]any) {
-		admissionBody := body["admission"].(map[string]any)
-		binding := admissionBody["workload"].(map[string]any)
-		delete(binding, "service_name")
-	})
-	defer response.Body.Close()
-
-	assertPublishError(t, response, http.StatusConflict, "artifact_fact_conflict")
-}
-
-func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
+func TestPrepareRejectsTamperedEvidenceAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)
 
@@ -397,7 +392,7 @@ func TestPrepareRejectsTamperedPayloadAfterPublish(t *testing.T) {
 	admissionPayload := claims["admission"].(map[string]any)
 	execution := admissionPayload["execution"].(map[string]any)
 	workload := execution["workload"].(map[string]any)
-	workload["description"] = "tampered"
+	workload["target_platform"] = "not-docker"
 	stack.mutateDiscoveryAndRestartARS(t, func(discovery *arsapi.ArtifactDiscovery) {
 		discovery.Evidence.Digest = stack.writeJSONBlob(t, evidence)
 	})
@@ -440,7 +435,6 @@ type publishedStack struct {
 	intentDigest            string
 	derivationSpecDigest    string
 	outputID                string
-	workloadIdentityID      string
 	workloadZoneVaultDigest string
 }
 
@@ -500,7 +494,6 @@ func startDependencyStack(t *testing.T) *publishedStack {
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
 		outputID:                "runtime",
-		workloadIdentityID:      "spiffe://monolith.internal/service/execution",
 		workloadZoneVaultDigest: workloadZoneVaultDigest,
 	}
 
@@ -732,7 +725,6 @@ func buildPublishRequestBody(t *testing.T, stack *publishedStack) map[string]any
 		},
 		"admission": map[string]any{
 			"runtime": map[string]any{
-				"parameters":            []string{},
 				"environment_variables": []string{"APP_MODE"},
 				"required_capabilities": []string{},
 			},
@@ -744,12 +736,7 @@ func buildPublishRequestBody(t *testing.T, stack *publishedStack) map[string]any
 				"output_id":              stack.outputID,
 			},
 			"workload": map[string]any{
-				"artifact_class":       "service",
-				"workload_type":        "service",
-				"service_name":         "execution",
-				"target_platform":      "docker",
-				"description":          "Execution workload",
-				"workload_identity_id": stack.workloadIdentityID,
+				"target_platform": "docker",
 			},
 		},
 	}

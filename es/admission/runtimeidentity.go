@@ -45,11 +45,7 @@ func (h runtimeIdentityHandoff) workspaceDir() string {
 }
 
 func (h runtimeIdentityHandoff) reservedRuntimePaths() []string {
-	return []string{
-		"/monolith/staged",
-		"/monolith/run",
-		runtimeIdentityWorkspaceRoot,
-	}
+	return reservedExecutionRuntimePaths()
 }
 
 func ValidateReservedRuntimePaths(targetPaths []string) error {

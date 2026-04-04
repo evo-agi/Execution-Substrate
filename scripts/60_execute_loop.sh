@@ -503,22 +503,10 @@ publish_request = {
             "output_id": publish["derivation"]["output_id"],
         },
         "workload": {
-            "artifact_class": publish["workload_identity"]["artifact_class"],
-            "workload_type": publish["workload_identity"]["workload_type"],
+            "target_platform": publish.get("workload", {}).get("target_platform", ""),
         },
     },
 }
-
-optional_binding_fields = (
-    "service_name",
-    "target_platform",
-    "description",
-    "workload_identity_id",
-)
-for field in optional_binding_fields:
-    value = publish["workload_identity"].get(field)
-    if value not in (None, ""):
-        publish_request["admission"]["workload"][field] = value
 
 invocation = {
     "schema_version": "v1",
