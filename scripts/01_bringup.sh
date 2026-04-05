@@ -41,6 +41,11 @@ Required additionally for full profile:
 Optional resolve helpers for local hostnames:
   ARS_RESOLVE EGS_RESOLVE AGS_RESOLVE ES_RESOLVE
 
+Optional bounded Nomad proof override:
+  NOMAD_CLIENT_CPU_TOTAL_COMPUTE=<positive integer>
+    temporary slice-0 troubleshooting override for hosts that report cpu.totalcompute=0
+    operator output will surface this as bounded-override mode rather than natural schedulability
+
 Notes:
   check reports service health, prepare-ready state, and submit-ready state
   prepare-only proves bounded preflight readiness only; it intentionally skips submit readiness

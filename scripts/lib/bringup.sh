@@ -2,7 +2,7 @@
 
 bringup_repo_root() {
   local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   printf '%s\n' "$script_dir"
 }
 
@@ -38,6 +38,47 @@ validate_bringup_profile() {
       return 1
       ;;
   esac
+}
+
+nomad_client_override_path() {
+  local base_dir="${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}"
+  printf '%s/nomad-client-overrides.hcl\n' "${base_dir}"
+}
+
+nomad_cpu_total_compute_override_value() {
+  local override_path
+  override_path="$(nomad_client_override_path)"
+
+  if [[ -r "${override_path}" ]]; then
+    python3 - <<'PY' "${override_path}"
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"cpu_total_compute\s*=\s*([0-9]+)", text)
+if not match:
+    raise SystemExit(1)
+print(match.group(1))
+PY
+    return
+  fi
+
+  if [[ -n "${NOMAD_CLIENT_CPU_TOTAL_COMPUTE:-}" ]]; then
+    printf '%s\n' "${NOMAD_CLIENT_CPU_TOTAL_COMPUTE}"
+    return
+  fi
+
+  return 1
+}
+
+nomad_schedulability_mode_line() {
+  local override_value
+  if override_value="$(nomad_cpu_total_compute_override_value 2>/dev/null)"; then
+    printf 'submit-ready-mode: bounded-override (cpu_total_compute=%s; this host is not naturally self-schedulable)\n' "${override_value}"
+  else
+    printf 'submit-ready-mode: natural\n'
+  fi
 }
 
 require_env() {
@@ -201,28 +242,80 @@ check_nomad_ready_once() {
   elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/nodes" >"${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${leader_path}" "${nodes_path}"
+  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}"
 import json
 import pathlib
 import sys
+import urllib.error
+import urllib.request
 
-leader = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+base_url = sys.argv[1].rstrip("/")
+leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 if not isinstance(leader, str) or not leader.strip():
     print("nomad: leader missing", file=sys.stderr)
     raise SystemExit(1)
 
-nodes = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+nodes = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 ready_nodes = [node for node in nodes if node.get("Status") == "ready"]
 if not ready_nodes:
     print("nomad: no ready client nodes", file=sys.stderr)
     raise SystemExit(1)
 
-print(f"nomad: leader={leader} ready_nodes={len(ready_nodes)}")
+def parse_int(value):
+    try:
+        return int(str(value).strip() or "0")
+    except Exception:
+        return 0
+
+schedulable = []
+reasons = []
+
+for node in ready_nodes:
+    node_id = (node.get("ID") or "").strip()
+    node_name = (node.get("Name") or node_id or "unknown").strip()
+    if not node_id:
+        reasons.append(f"{node_name}=missing-id")
+        continue
+    try:
+        with urllib.request.urlopen(f"{base_url}/v1/node/{node_id}") as response:
+            detail = json.load(response)
+    except urllib.error.URLError as exc:
+        reasons.append(f"{node_name}=detail-unavailable:{exc.reason}")
+        continue
+
+    attrs = detail.get("Attributes") or {}
+    drivers = detail.get("Drivers") or {}
+    docker = drivers.get("docker") or {}
+    cpu_total_compute = parse_int(attrs.get("cpu.totalcompute"))
+
+    if cpu_total_compute <= 0:
+        reasons.append(f"{node_name}=cpu.totalcompute:{cpu_total_compute}")
+        continue
+    if docker.get("Healthy") is not True:
+        reasons.append(f"{node_name}=docker:{docker.get('HealthDescription') or 'unhealthy'}")
+        continue
+
+    schedulable.append((node_name, cpu_total_compute))
+
+if not schedulable:
+    print("nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver", file=sys.stderr)
+    if reasons:
+        print("nomad: " + ", ".join(reasons), file=sys.stderr)
+        if all("=cpu.totalcompute:0" in reason for reason in reasons):
+            print(
+                "nomad: this host is not naturally self-schedulable for slice-0 bring-up; rerun only with explicit NOMAD_CLIENT_CPU_TOTAL_COMPUTE as a bounded troubleshooting override",
+                file=sys.stderr,
+            )
+    raise SystemExit(1)
+
+details = ", ".join(f"{name}:cpu.totalcompute={cpu}" for name, cpu in schedulable)
+print(f"nomad: leader={leader} ready_nodes={len(ready_nodes)} schedulable_nodes={len(schedulable)} {details}")
 PY
 )"; then
     status=1
   else
     echo "${summary}"
+    nomad_schedulability_mode_line
   fi
 
   rm -f "${leader_path}" "${nodes_path}"

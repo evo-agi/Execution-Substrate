@@ -1295,7 +1295,12 @@ ports {
   rpc  = %d
   serf = %d
 }
-`, dataDir, httpPort, rpcPort, serfPort)
+advertise {
+  http = "127.0.0.1:%d"
+  rpc  = "127.0.0.1:%d"
+  serf = "127.0.0.1:%d"
+}
+`, dataDir, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write nomad config: %v", err)
 	}
@@ -1651,9 +1656,13 @@ func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 	if err != nil {
 		t.Fatalf("create workspace temp dir: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(dir)
-	})
+	if os.Getenv("EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE") != "1" {
+		t.Cleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+	} else {
+		t.Logf("keeping workspace temp dir: %s", dir)
+	}
 	return dir
 }
 

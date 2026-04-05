@@ -12,6 +12,31 @@ control_plane_image_build_mode() {
   printf '%s\n' "${CONTROL_PLANE_IMAGE_BUILD:-always}"
 }
 
+control_plane_target_arch() {
+  if [[ -n "${CONTROL_PLANE_TARGETARCH:-}" ]]; then
+    printf '%s\n' "${CONTROL_PLANE_TARGETARCH}"
+    return 0
+  fi
+
+  if command -v go >/dev/null 2>&1; then
+    go env GOARCH
+    return 0
+  fi
+
+  case "$(uname -m)" in
+    x86_64|amd64)
+      printf 'amd64\n'
+      ;;
+    aarch64|arm64)
+      printf 'arm64\n'
+      ;;
+    *)
+      echo "unable to determine control-plane image target architecture for $(uname -m)" >&2
+      return 1
+      ;;
+  esac
+}
+
 control_plane_binary_path() {
   local service=$1
   case "${service}" in
@@ -46,11 +71,13 @@ ensure_control_plane_image() {
   local dockerfile
   local mode
   local repo_root
+  local target_arch
 
   image="$(control_plane_image_ref)"
   dockerfile="$(control_plane_dockerfile_path)"
   mode="$(control_plane_image_build_mode)"
   repo_root="$(bringup_repo_root)"
+  target_arch="$(control_plane_target_arch)" || return 1
 
   require_readable_path "control-plane Dockerfile" "${dockerfile}" || return 1
 
@@ -82,7 +109,7 @@ ensure_control_plane_image() {
   fi
 
   mkdir -p "$(dirname "${log_file}")"
-  if ! docker build -t "${image}" -f "${dockerfile}" "${repo_root}" >"${log_file}" 2>&1; then
+  if ! docker build --build-arg "TARGETARCH=${target_arch}" -t "${image}" -f "${dockerfile}" "${repo_root}" >"${log_file}" 2>&1; then
     echo "control-plane image build failed; see ${log_file}" >&2
     return 1
   fi
@@ -189,6 +216,9 @@ PY
     return 1
   fi
   if [[ ! -d "${staging_root}" ]]; then
+    mkdir -p "${staging_root}"
+  fi
+  if [[ ! -d "${staging_root}" ]]; then
     echo "ES staging invariant failed: staging root does not exist: ${staging_root}" >&2
     return 1
   fi
@@ -227,17 +257,21 @@ PY
 }
 
 probe_control_plane_host_loopback() {
-  local temp_dir
-  local probe_path
+  local temp_dir=""
+  local probe_path=""
   local port
-  local server_pid
+  local server_pid=""
   local output
   local image
 
   cleanup_probe_control_plane_host_loopback() {
-    kill "${server_pid}" >/dev/null 2>&1 || true
-    wait "${server_pid}" >/dev/null 2>&1 || true
-    rm -rf "${temp_dir}"
+    if [[ -n "${server_pid:-}" ]]; then
+      kill "${server_pid}" >/dev/null 2>&1 || true
+      wait "${server_pid}" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${temp_dir:-}" ]]; then
+      rm -rf "${temp_dir}"
+    fi
   }
 
   temp_dir="$(mktemp -d)"
@@ -268,4 +302,7 @@ PY
     echo "slice-0 requires Docker host networking that preserves host loopback semantics; probe returned unexpected output" >&2
     return 1
   fi
+
+  trap - RETURN
+  cleanup_probe_control_plane_host_loopback
 }

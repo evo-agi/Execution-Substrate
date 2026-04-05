@@ -1,6 +1,6 @@
 FROM golang:1.22-alpine AS build
 
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -14,7 +14,8 @@ COPY egs ./egs
 COPY es ./es
 COPY observability ./observability
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ars ./cmd/ars && \
+RUN test -n "${TARGETARCH}" && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ars ./cmd/ars && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ags ./cmd/ags && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/egs ./cmd/egs && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/es ./cmd/es && \

@@ -23,7 +23,7 @@ The readiness vocabulary for that primary path is now:
 
 - `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
 - `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS
-- `submit-ready`: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node
+- `submit-ready`: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
 
 ## 2. Prerequisites
 
@@ -59,6 +59,19 @@ export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
 Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution-Platform/.examples/config](/Users/ds/Repositories/Execution-Platform/.examples/config), but they are templates only.
+
+Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
+
+```bash
+export NOMAD_CLIENT_CPU_TOTAL_COMPUTE="2000"
+```
+
+Use this only when Nomad otherwise reports `cpu.totalcompute=0` on the proof node. `scripts/06_start_nomad.sh` converts it into a transient client override for the current bring-up run; it is deployment troubleshooting, not a new platform contract.
+
+When this override is active, the current operator path surfaces that explicitly:
+
+- `scripts/01_bringup.sh up` and `scripts/01_bringup.sh check` report `submit-ready-mode: bounded-override (...)`
+- successful execution in that mode is still a bounded slice-0 proof, not evidence that the host is naturally schedulable without the override
 
 ### Required TLS material for API calls and bring-up verification
 
@@ -113,6 +126,7 @@ The current bounded system still assumes:
 - ES `workload_vault_auth.default_mode` is `vault_identity_jwt`
 - ES `nomad` and `execution` sections are configured for real `:submit`
 - Nomad Docker bind mounts are enabled
+- single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
 - the configured ES base image is available or pullable
 
 CGS is not required for this bring-up runbook because it is not part of the current ES hot path.
@@ -141,8 +155,13 @@ What this does:
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
-- starts Nomad in config-driven single-node mode and waits for a leader plus at least one ready node
+- starts Nomad in config-driven single-node mode and waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
+
+Note:
+
+- in the current slice, `submit-ready` now rejects zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every later placement constraint; a job can still fail on memory, device, or other scheduler limits after bring-up is green
+- on hosts where Nomad reports `cpu.totalcompute=0`, the natural bring-up path now fails explicitly with a bounded troubleshooting message instead of claiming submit-ready and leaving the first workload stuck in `submitted`
 
 Successful output ends with:
 
@@ -195,11 +214,16 @@ For the full profile, `submit-ready: true` means:
 
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
 - those health checks succeeded with a valid client certificate at the TLS boundary
-- Nomad has a leader and at least one ready node
+- Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, and `execution.base_image`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
 - the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
+
+Current limitation:
+
+- this readiness result now rejects `cpu.totalcompute=0` and Docker-unhealthy nodes, but it still does not guarantee successful placement for every workload shape; later memory, device, or other constraint failures remain possible
+- if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains a bounded fallback for the current proof host/startup mode rather than clean evidence of natural substrate support
 
 For ES specifically, `/health` still confirms:
 

@@ -231,7 +231,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
   - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS
-  - submit-ready: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node
+  - submit-ready: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
 
 Minimal vault-auth example:
 
@@ -286,6 +286,10 @@ These are not configured through the Go service config files, but they are requi
 - Docker driver available
 - client bind mounts enabled through `client.options["docker.volumes.enabled"] = "true"`
 - explicit local data directory for repeatable manual bring-up
+- when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
+- if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
+  - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
+  - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
 
 ### Docker requirements
 
@@ -323,9 +327,14 @@ The current unified health check verifies:
 
 - ARS, EGS, AGS, and ES all report `ready=true`
 - those health checks succeeded with a real client certificate at the TLS boundary
-- Nomad has a leader and at least one ready node when `BRINGUP_PROFILE=full`
+- Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
+
+Current limitation:
+
+- `submit-ready` is now honest about zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every workload/resource shape can place successfully; later memory, device, or placement-constraint failures remain possible
+- a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
 
 This slice still does **not** prove strong workload identity for runtime workloads. The workload identity milestone remains separate and later.
 

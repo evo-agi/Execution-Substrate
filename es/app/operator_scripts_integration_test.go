@@ -26,6 +26,7 @@ import (
 
 func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	requireSlice0BringupCapabilities(t)
+	keepWorkspace := os.Getenv("EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE") == "1"
 
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := newExecutionWorkspaceTempDir(t, "bringup-script-")
@@ -261,6 +262,11 @@ ports {
   rpc  = `+itoa(t, nomadRPCPort)+`
   serf = `+itoa(t, nomadSerfPort)+`
 }
+advertise {
+  http = "127.0.0.1:`+itoa(t, nomadHTTPPort)+`"
+  rpc  = "127.0.0.1:`+itoa(t, nomadRPCPort)+`"
+  serf = "127.0.0.1:`+itoa(t, nomadSerfPort)+`"
+}
 `) + "\n")
 	if err := os.WriteFile(nomadConfigPath, nomadConfig, 0o600); err != nil {
 		t.Fatalf("write nomad config: %v", err)
@@ -313,7 +319,11 @@ ports {
 			t.Fatalf("bringup down failed: %v output=%s", err, string(output))
 		}
 	}
-	t.Cleanup(down)
+	if !keepWorkspace {
+		t.Cleanup(down)
+	} else {
+		t.Logf("keeping bring-up state for inspection under %s", rootDir)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

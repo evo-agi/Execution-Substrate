@@ -47,6 +47,9 @@
       "policy_version": "2026-03-31",
       "expected_artifact_type": "static-script"
     },
+    "access": {
+      "network_access": false
+    },
     "workload": {
       "target_platform": "docker"
     }

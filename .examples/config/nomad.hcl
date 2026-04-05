@@ -12,3 +12,9 @@ client {
     "docker.volumes.enabled" = "true"
   }
 }
+
+advertise {
+  http = "127.0.0.1:4646"
+  rpc  = "127.0.0.1:4647"
+  serf = "127.0.0.1:4648"
+}
