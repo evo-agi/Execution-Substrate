@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=scripts/lib/bringup.sh
-source "${SCRIPT_DIR}/lib/bringup.sh"
-# shellcheck source=scripts/lib/operator_failures.sh
-source "${SCRIPT_DIR}/lib/operator_failures.sh"
+# shellcheck source=scripts/internal/bringup.sh
+source "${SCRIPT_DIR}/internal/bringup.sh"
+# shellcheck source=scripts/internal/operator_failures.sh
+source "${SCRIPT_DIR}/internal/operator_failures.sh"
 
 OUTPUT_DIR_BASE="${DIAGNOSTICS_OUTPUT_DIR:-${TMPDIR:-/tmp}/operator-diagnostics}"
 BRINGUP_DIR="${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}"

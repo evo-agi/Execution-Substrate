@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=scripts/lib/bringup.sh
-source "${SCRIPT_DIR}/lib/bringup.sh"
-# shellcheck source=scripts/lib/control_plane.sh
-source "${SCRIPT_DIR}/lib/control_plane.sh"
+# shellcheck source=scripts/internal/bringup.sh
+source "${SCRIPT_DIR}/internal/bringup.sh"
+# shellcheck source=scripts/internal/control_plane.sh
+source "${SCRIPT_DIR}/internal/control_plane.sh"
 
 ACTION="${1:-up}"
 PROFILE="$(bringup_profile)"

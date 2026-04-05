@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib/bringup.sh
-source "${SCRIPT_DIR}/lib/bringup.sh"
+# shellcheck source=scripts/internal/bringup.sh
+source "${SCRIPT_DIR}/internal/bringup.sh"
 
 PROFILE="$(bringup_profile)"
 WAIT_FOR_READY="${WAIT_FOR_READY:-0}"

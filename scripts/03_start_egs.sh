@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib/bringup.sh
-source "${SCRIPT_DIR}/lib/bringup.sh"
-# shellcheck source=scripts/lib/control_plane.sh
-source "${SCRIPT_DIR}/lib/control_plane.sh"
+# shellcheck source=scripts/internal/bringup.sh
+source "${SCRIPT_DIR}/internal/bringup.sh"
+# shellcheck source=scripts/internal/control_plane.sh
+source "${SCRIPT_DIR}/internal/control_plane.sh"
 
 if [[ -z "${EGS_CONFIG:-}" ]]; then
   echo "EGS_CONFIG is required" >&2

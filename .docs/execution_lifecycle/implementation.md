@@ -371,10 +371,12 @@ The most important implementation facts are backed by integration tests:
 Operator helper ownership in the current slice:
 
 - `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
+- `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile at `.out/Dockerfile`; bring-up regenerates that file before building.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability, Nomad, and Docker.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
 - `scripts/70_diagnostics.sh` is the bounded diagnostics collector for that same operator slice; category bundles gather only the logs/checks already named by the troubleshooting matrix, and `run_id` bundles use the public ES lifecycle endpoints plus local staging inspection when relevant.
 - `scripts/71_diagnostics_summary.sh` is the tiny bundle consumer for that same slice; it reads `bundle.json` from `scripts/70_diagnostics.sh` and prints a compact summary of the collected signals.
+- `scripts/internal/*.sh` are sourced-only implementation helpers for those top-level commands; they are not separate operator-facing entrypoints in the current slice.
 - those later helpers treat `scripts/01_bringup.sh check` and `scripts/10_health_check.sh` as the readiness source of truth for service health, prepare-ready, and submit-ready.
 - the bounded operator failure categories are:
   - caller authorization / credential failure

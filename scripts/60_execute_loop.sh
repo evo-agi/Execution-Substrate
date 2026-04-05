@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANONICALIZE_JSON="${SCRIPT_DIR}/canonicalize_json.py"
-# shellcheck source=scripts/lib/operator_failures.sh
-source "${SCRIPT_DIR}/lib/operator_failures.sh"
+# shellcheck source=scripts/internal/operator_failures.sh
+source "${SCRIPT_DIR}/internal/operator_failures.sh"
 
 DEFAULT_TIMEOUT_SECONDS=120
 POLL_INTERVAL_SECONDS=2
