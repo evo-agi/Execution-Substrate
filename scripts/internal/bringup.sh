@@ -40,6 +40,37 @@ validate_bringup_profile() {
   esac
 }
 
+nomad_managed_locally() {
+  local pid_file
+  local pid
+
+  pid_file="${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}/pids/nomad.pid"
+  if [[ ! -r "${pid_file}" ]]; then
+    return 1
+  fi
+
+  pid="$(tr -d '[:space:]' <"${pid_file}")"
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+nomad_startup_mode_line() {
+  if [[ "$(bringup_profile)" != "full" ]]; then
+    return 0
+  fi
+
+  if ! nomad_managed_locally; then
+    printf 'nomad-startup-mode: pre-managed (this bring-up/check path is using an already-running Nomad endpoint via NOMAD_ADDR)\n'
+    return 0
+  fi
+
+  if [[ "$(id -u)" == "0" ]]; then
+    printf 'nomad-startup-mode: managed-local (current full-profile bring-up started Nomad itself as root; still treat this as bounded fallback/troubleshooting)\n'
+    return 0
+  fi
+
+  printf 'nomad-startup-mode: managed-local (current full-profile bring-up starts Nomad itself as uid=%s; this is bounded fallback/troubleshooting, not the supported Linux environment)\n' "$(id -u)"
+}
+
 nomad_client_override_path() {
   local base_dir="${BRINGUP_DIR:-$(bringup_repo_root)/.tmp/bringup}"
   printf '%s/nomad-client-overrides.hcl\n' "${base_dir}"
@@ -79,6 +110,21 @@ nomad_schedulability_mode_line() {
   else
     printf 'submit-ready-mode: natural\n'
   fi
+}
+
+supported_environment_line() {
+  local override_value
+  if override_value="$(nomad_cpu_total_compute_override_value 2>/dev/null)"; then
+    printf 'supported-environment: bounded-fallback (explicit cpu_total_compute=%s override is active)\n' "${override_value}"
+    return 0
+  fi
+
+  if nomad_managed_locally; then
+    printf 'supported-environment: bounded-fallback (current full-profile bring-up manages a local Nomad process; the supported Linux environment remains a pre-managed naturally schedulable Nomad service)\n'
+    return 0
+  fi
+
+  printf 'supported-environment: supported (Nomad is not managed by this bring-up and no cpu_total_compute override is active)\n'
 }
 
 require_env() {
@@ -230,20 +276,27 @@ wait_for_service_ready() {
 check_nomad_ready_once() {
   local leader_path
   local nodes_path
+  local agent_path
   local summary
   local status=0
 
   leader_path="$(mktemp)"
   nodes_path="$(mktemp)"
+  agent_path="$(mktemp)"
 
   if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/status/leader" >"${leader_path}"; then
     echo "nomad: leader request failed for ${NOMAD_ADDR}/v1/status/leader" >&2
     status=1
+  elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/agent/self" >"${agent_path}"; then
+    echo "nomad: agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
+    status=1
   elif ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/nodes" >"${nodes_path}"; then
     echo "nomad: node request failed for ${NOMAD_ADDR}/v1/nodes" >&2
     status=1
-  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}"
+  elif ! summary="$(python3 - <<'PY' "${NOMAD_ADDR}" "${leader_path}" "${nodes_path}" "${agent_path}"
+import glob
 import json
+import os
 import pathlib
 import sys
 import urllib.error
@@ -253,6 +306,15 @@ base_url = sys.argv[1].rstrip("/")
 leader = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
 if not isinstance(leader, str) or not leader.strip():
     print("nomad: leader missing", file=sys.stderr)
+    raise SystemExit(1)
+
+agent_self = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
+config = agent_self.get("config") or {}
+if config.get("DevMode") is True:
+    print(
+        "nomad: agent is running in -dev mode; this is unsupported for the slice-0 supported environment",
+        file=sys.stderr,
+    )
     raise SystemExit(1)
 
 nodes = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
@@ -306,10 +368,36 @@ if not schedulable:
                 "nomad: this host is not naturally self-schedulable for slice-0 bring-up; rerun only with explicit NOMAD_CLIENT_CPU_TOTAL_COMPUTE as a bounded troubleshooting override",
                 file=sys.stderr,
             )
+            cpuinfo_text = pathlib.Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
+            freq_candidates = []
+            for pattern in (
+                "/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq",
+                "/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq",
+                "/sys/devices/system/cpu/cpu*/cpufreq/base_frequency",
+            ):
+                freq_candidates.extend(glob.glob(pattern))
+            readable_freq_paths = []
+            for candidate in freq_candidates:
+                try:
+                    text = pathlib.Path(candidate).read_text(encoding="utf-8", errors="ignore").strip()
+                except OSError:
+                    continue
+                if text:
+                    readable_freq_paths.append(candidate)
+            if not readable_freq_paths and "cpu mhz" not in cpuinfo_text.lower():
+                print(
+                    "nomad: host exposes no CPU frequency data via cpufreq or /proc/cpuinfo; Nomad CPU fingerprinting can remain at cpu.totalcompute=0 on this VM/startup profile",
+                    file=sys.stderr,
+                )
+            if os.geteuid() != 0:
+                print(
+                    f"nomad: current bring-up starts Nomad as non-root uid={os.geteuid()}; Nomad's Docker driver docs treat this as bounded fallback for CPU-core/NUMA behavior",
+                    file=sys.stderr,
+                )
     raise SystemExit(1)
 
 details = ", ".join(f"{name}:cpu.totalcompute={cpu}" for name, cpu in schedulable)
-print(f"nomad: leader={leader} ready_nodes={len(ready_nodes)} schedulable_nodes={len(schedulable)} {details}")
+print(f"nomad: leader={leader} mode=non-dev ready_nodes={len(ready_nodes)} schedulable_nodes={len(schedulable)} {details}")
 PY
 )"; then
     status=1
@@ -318,7 +406,7 @@ PY
     nomad_schedulability_mode_line
   fi
 
-  rm -f "${leader_path}" "${nodes_path}"
+  rm -f "${leader_path}" "${nodes_path}" "${agent_path}"
   return "${status}"
 }
 

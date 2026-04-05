@@ -49,6 +49,8 @@ Optional bounded Nomad proof override:
 Notes:
   check reports service health, prepare-ready state, and submit-ready state
   prepare-only proves bounded preflight readiness only; it intentionally skips submit readiness
+  full-profile up still starts Nomad itself from NOMAD_CONFIG as bounded fallback/troubleshooting
+  the supported Linux environment story is narrower: pre-managed non-dev Nomad plus natural schedulability without cpu_total_compute override
 EOF
 }
 

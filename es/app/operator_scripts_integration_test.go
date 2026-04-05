@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -356,6 +357,15 @@ advertise {
 	if !strings.Contains(string(upOutput), "prepare-ready: true") || !strings.Contains(string(upOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(upOutput))
 	}
+	if !strings.Contains(string(upOutput), "nomad-startup-mode: managed-local") {
+		t.Fatalf("expected managed-local nomad startup mode in bringup output, got %s", string(upOutput))
+	}
+	if !strings.Contains(string(upOutput), "supported-environment: bounded-fallback") {
+		t.Fatalf("expected bounded-fallback supported-environment output, got %s", string(upOutput))
+	}
+	if !strings.Contains(string(upOutput), "submit-ready-mode:") {
+		t.Fatalf("expected submit-ready mode output, got %s", string(upOutput))
+	}
 
 	checkCmd := exec.CommandContext(ctx, bringupScript, "check")
 	checkCmd.Dir = repoRoot
@@ -369,6 +379,15 @@ advertise {
 	}
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
+	}
+	if !strings.Contains(string(checkOutput), "nomad-startup-mode: managed-local") {
+		t.Fatalf("expected managed-local nomad startup mode in bringup check output, got %s", string(checkOutput))
+	}
+	if !strings.Contains(string(checkOutput), "supported-environment: bounded-fallback") {
+		t.Fatalf("expected bounded-fallback supported-environment in bringup check output, got %s", string(checkOutput))
+	}
+	if !strings.Contains(string(checkOutput), "submit-ready-mode:") {
+		t.Fatalf("expected submit-ready mode output in bringup check output, got %s", string(checkOutput))
 	}
 
 	packageCmd := exec.CommandContext(
@@ -554,6 +573,159 @@ func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "submit-ready: skipped (BRINGUP_PROFILE=prepare-only)") {
 		t.Fatalf("expected submit-ready skip output, got %s", string(output))
+	}
+}
+
+func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "10_health_check.sh")
+	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
+		t,
+		t.TempDir(),
+		"dev-nomad-health-check-operator",
+		stack.fixture.runtimeCA,
+		stack.fixture.runtimeCAKey,
+		"client.operator",
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+	)
+
+	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
+	if err != nil {
+		t.Fatalf("split ars addr: %v", err)
+	}
+	egsHost, egsPort, err := splitHostPort(t, stack.egs.Addr())
+	if err != nil {
+		t.Fatalf("split egs addr: %v", err)
+	}
+	agsHost, agsPort, err := splitHostPort(t, stack.ags.Addr())
+	if err != nil {
+		t.Fatalf("split ags addr: %v", err)
+	}
+	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
+	if err != nil {
+		t.Fatalf("split es addr: %v", err)
+	}
+
+	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/status/leader":
+			_ = json.NewEncoder(w).Encode("127.0.0.1:4647")
+		case "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"config": map[string]any{
+					"DevMode":    true,
+					"Datacenter": "dc1",
+					"Server":     map[string]any{"Enabled": true},
+					"Client":     map[string]any{"Enabled": true},
+				},
+			})
+		case "/v1/nodes":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"ID": "node-1", "Name": "fake-dev-node", "Status": "ready"},
+			})
+		case "/v1/node/node-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"Attributes": map[string]any{
+					"cpu.totalcompute": "4000",
+				},
+				"Drivers": map[string]any{
+					"docker": map[string]any{
+						"Healthy":           true,
+						"HealthDescription": "Healthy",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer nomadServer.Close()
+
+	rootDir := t.TempDir()
+	stagingRootDir := filepath.Join(rootDir, "staging")
+	if err := os.MkdirAll(stagingRootDir, 0o755); err != nil {
+		t.Fatalf("mkdir staging root: %v", err)
+	}
+	runtimeSupportPath := writeBytesFile(t, rootDir, "es-runtime-support", []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(runtimeSupportPath, 0o755); err != nil {
+		t.Fatalf("chmod runtime support stub: %v", err)
+	}
+	socketRoot, err := os.MkdirTemp(socketTestRootDir(t), "dev-nomad-")
+	if err != nil {
+		t.Fatalf("mkdir socket root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(socketRoot)
+	})
+	spireSocketPath := filepath.Join(socketRoot, "spire.sock")
+	spireListener, err := net.Listen("unix", spireSocketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer func() {
+		_ = spireListener.Close()
+	}()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-full-health.json", map[string]any{
+		"nomad": map[string]any{
+			"base_url":   nomadServer.URL,
+			"datacenter": "dc1",
+		},
+		"execution": map[string]any{
+			"staging_root_dir":               stagingRootDir,
+			"base_image":                     "python:3.13-alpine",
+			"runtime_support_binary":         runtimeSupportPath,
+			"spire_workload_api_socket_path": spireSocketPath,
+		},
+	})
+
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeDockerPath := writeBytesFile(t, fakeBinDir, "docker", []byte("#!/bin/sh\nif [ \"$1\" = info ]; then\n  exit 0\nfi\nprintf 'unexpected docker invocation: %s\\n' \"$*\" >&2\nexit 64\n"))
+	if err := os.Chmod(fakeDockerPath, 0o755); err != nil {
+		t.Fatalf("chmod fake docker: %v", err)
+	}
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BRINGUP_PROFILE=full",
+		"BRINGUP_DIR="+filepath.Join(rootDir, "bringup"),
+		"VERIFY_RUNTIME_CONFIG=0",
+		"ES_CONFIG="+esConfigPath,
+		"ARS_URL=https://"+stack.fixture.arsServerName+":"+arsPort,
+		"EGS_URL=https://"+stack.fixture.egsServerName+":"+egsPort,
+		"AGS_URL=https://"+stack.fixture.agsServerName+":"+agsPort,
+		"ES_URL=https://"+stack.fixture.esServerName+":"+esPort,
+		"NOMAD_ADDR="+nomadServer.URL,
+		"ARS_RESOLVE="+stack.fixture.arsServerName+":"+arsPort+":"+arsHost,
+		"EGS_RESOLVE="+stack.fixture.egsServerName+":"+egsPort+":"+egsHost,
+		"AGS_RESOLVE="+stack.fixture.agsServerName+":"+agsPort+":"+agsHost,
+		"ES_RESOLVE="+stack.fixture.esServerName+":"+esPort+":"+esHost,
+		"CA_CERT="+stack.fixture.runtimeCAPath,
+		"OPERATOR_CERT="+operatorCertPath,
+		"OPERATOR_KEY="+operatorKeyPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected full health check to reject pre-managed dev nomad, got output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "nomad-startup-mode: pre-managed") {
+		t.Fatalf("expected pre-managed nomad startup mode, got %s", text)
+	}
+	if !strings.Contains(text, "nomad: agent is running in -dev mode; this is unsupported for the slice-0 supported environment") {
+		t.Fatalf("expected explicit dev-mode rejection, got %s", text)
+	}
+	if strings.Contains(text, "supported-environment: supported") {
+		t.Fatalf("did not expect supported-environment output for dev nomad, got %s", text)
 	}
 }
 

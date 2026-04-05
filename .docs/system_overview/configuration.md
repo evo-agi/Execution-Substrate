@@ -300,6 +300,9 @@ These are not configured through the Go service config files, but they are requi
 - client bind mounts enabled through `client.options["docker.volumes.enabled"] = "true"`
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
+- for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
+- the operator readiness path now inspects `GET /v1/agent/self` and rejects `config.DevMode=true`; `nomad agent -dev` is unsupported for the slice-0 supported-environment claim even if it reports healthy Docker and positive compute
+- when Nomad uses the Docker driver on Linux, HashiCorp's Docker driver guidance treats root-managed Nomad as the compatible mode for CPU-core / NUMA-aware behavior; user-managed Nomad startup may still be useful for bounded proof and troubleshooting, but it is not the supported-environment baseline
 - if a Linux proof host exposes `cpu.totalcompute=0` because Nomad CPU fingerprinting fails, the bounded slice-0 operator path can provide `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as a temporary client override for that host; this is deployment troubleshooting, not a new cross-service contract
   - when this override is active, the operator path must surface that host as `submit-ready-mode: bounded-override (...)` rather than implying natural schedulability
   - if the override is absent and the host remains at `cpu.totalcompute=0`, the current bring-up path now fails explicitly instead of claiming submit-ready
@@ -326,6 +329,7 @@ CGS remains implemented but is not required for the current ES admission or exec
 For local operator bring-up against this practical minimum:
 
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the primary bootstrap path
+- for `BRINGUP_PROFILE=full`, the current script-managed Nomad startup path remains bounded fallback/troubleshooting even when submit-ready passes; the supported-environment path for this slice is a pre-managed non-dev Nomad client/server already running at `NOMAD_ADDR`
 - use `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh` to re-run readiness checks
 - use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad submit
 - the current slice-0 bootstrap path targets one Linux host/VM and fails fast unless Docker host networking can actually reach host loopback from a container
@@ -348,18 +352,24 @@ The current unified health check verifies:
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
+- the operator path now also surfaces Nomad bring-up mode and the current environment-support classification so a green submit-ready result cannot be misread as the same support claim in pre-managed-supported and managed-local/override fallback modes
+- the operator path also rejects Nomad `-dev` mode as unsupported rather than letting it appear as a supported pre-managed environment
 
 Current limitation:
 
 - `submit-ready` is now honest about zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every workload/resource shape can place successfully; later memory, device, or placement-constraint failures remain possible
 - a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
+- the script-managed local Nomad path also remains bounded fallback even when it is schedulable; the supported-environment story for this slice is a pre-managed non-dev Nomad service with natural schedulability
+- a pre-managed Nomad `-dev` agent is unsupported even if it reports positive `cpu.totalcompute`
 - that bounded fallback should be read as an environment/startup caveat for the current proof host, not as evidence that Linux or Docker/Nomad are the wrong long-term direction for the workload zone in this phase
 
 Readiness still does **not** prove useful downstream credential use by itself. The workload-identity boundary now exists, but bounded workload-vault login and secret-read proof remains a separate slice from green service/submit readiness.
 
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
-The next bounded proof on top of that slice is useful credential flow completion: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a Vault-compatible HTTPS endpoint, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
+Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a Vault-compatible HTTPS endpoint, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
+
+The next bounded substrate-facing milestone is supported-environment qualification and deployment honesty: determine whether the current Linux proof host can be made naturally schedulable in bounded scope, and otherwise keep supported vs bounded-fallback vs unsupported states explicit in bring-up/readiness output.
 
 For operator diagnostics in the current bounded slice:
 

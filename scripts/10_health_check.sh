@@ -69,12 +69,14 @@ fi
 print_check_section "submit readiness"
 if [[ "${PROFILE}" == "full" ]]; then
   check_es_submit_config_once "${ES_CONFIG}"
+  nomad_startup_mode_line
   if [[ "${WAIT_FOR_READY}" == "1" ]]; then
     wait_for_nomad_ready "${READY_TIMEOUT_SECONDS}"
   else
     check_nomad_ready_once
   fi
   check_docker_ready
+  supported_environment_line
   if [[ "${prepare_ready_verified}" == "1" ]]; then
     echo "submit-ready: true (prepare-ready, ES submit config, Docker, and Nomad client/leader checks all passed)"
   else

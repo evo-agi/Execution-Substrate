@@ -59,6 +59,7 @@ Top-level interaction notes:
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
 - That one-host Linux topology has now been functionally proved through the real ES -> Nomad -> Docker path on a real Linux VM, but the current proof VM/startup mode is not yet naturally self-schedulable and may require explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override handling.
 - That schedulability caveat is currently treated as a proof-host environment/startup qualification, not as evidence that Linux or Docker/Nomad are the wrong platform direction for this bounded phase.
+- The supported-environment story for that topology is narrower than the original all-in-one local bring-up convenience path: the intended supported slice-0 environment is a Linux host/VM with a pre-managed non-dev Nomad client/server that is naturally schedulable without `cpu_total_compute` override, while the script-managed local Nomad startup path remains bounded fallback/troubleshooting scaffolding.
 - `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
 - `contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
 - `observability` is cross-cutting support, not a system boundary.
@@ -111,7 +112,7 @@ ES stages execution inputs, injects the current workload identity endpoint envir
 
 The current bounded slice now proves platform-owned runtime identity delivery behind that discovery contract through a same-container supervisor/helper: the helper is the only SPIRE-facing runtime component, the raw SPIRE channel remains helper-private, the workload runs as fixed non-root `10000:10000`, and helper death is task-fatal. ES still stops short of becoming the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES owns the handoff boundary, not the full runtime credential system.
 
-The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The next bounded milestone is useful credential flow completion through the existing discovery contract: prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible endpoint and read one secret.
+The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The current bounded runtime-identity slice now also proves useful credential flow through the existing discovery contract: one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible endpoint and read one secret without making ES a Vault token broker. The next bounded milestone on top of that proof is supported-environment qualification and deployment honesty for the Linux Nomad/Docker substrate.
 
 ## 6. Architectural invariants
 

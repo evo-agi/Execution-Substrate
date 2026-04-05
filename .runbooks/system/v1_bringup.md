@@ -1,7 +1,7 @@
 # Runbook: Governed System Bring-up (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-04`
+- Last Updated: `2026-04-05`
 - Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
@@ -59,6 +59,8 @@ export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
 Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution Substrate/.examples/config](/Users/ds/Repositories/Execution Substrate/.examples/config), but they are templates only.
+
+For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
 
 Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
 
@@ -155,13 +157,14 @@ What this does:
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
-- starts Nomad in config-driven single-node mode and waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
+- starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
 
 Note:
 
 - in the current slice, `submit-ready` now rejects zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every later placement constraint; a job can still fail on memory, device, or other scheduler limits after bring-up is green
 - on hosts where Nomad reports `cpu.totalcompute=0`, the natural bring-up path now fails explicitly with a bounded troubleshooting message instead of claiming submit-ready and leaving the first workload stuck in `submitted`
+- a green `submit-ready` result is not the whole support claim by itself; the operator output also reports `nomad-startup-mode`, `supported-environment`, and `submit-ready-mode`
 
 Successful output ends with:
 
@@ -210,10 +213,17 @@ For the full profile, `scripts/01_bringup.sh check` now reports three layers:
 - prepare-ready
 - submit-ready
 
+It also reports:
+
+- `nomad-startup-mode`
+- `supported-environment`
+- `submit-ready-mode`
+
 For the full profile, `submit-ready: true` means:
 
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
 - those health checks succeeded with a valid client certificate at the TLS boundary
+- Nomad `GET /v1/agent/self` does not report `config.DevMode=true`
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, and `execution.base_image`
@@ -224,6 +234,8 @@ Current limitation:
 
 - this readiness result now rejects `cpu.totalcompute=0` and Docker-unhealthy nodes, but it still does not guarantee successful placement for every workload shape; later memory, device, or other constraint failures remain possible
 - if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains a bounded fallback for the current proof host/startup mode rather than clean evidence of natural substrate support
+- the current script-managed local Nomad path also remains bounded fallback/troubleshooting even when Nomad is schedulable; the supported-environment story for this slice is still a pre-managed non-`-dev` Nomad service on the Linux host/VM plus natural schedulability
+- a pre-managed `nomad agent -dev` environment is unsupported for that support claim even if it looks healthy and exposes positive compute
 
 For ES specifically, `/health` still confirms:
 
@@ -296,9 +308,15 @@ scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.
 
 This slice proves the one-host Linux substrate and same-path staging contract directly. The first platform-owned runtime identity boundary has now also been exercised separately through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-The next bounded operator proof after the static smoke is useful credential flow completion. Use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) to prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible HTTPS endpoint and read one secret without reintroducing a workload-authored identity bridge.
+The bounded useful credential flow proof now already exists. Use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) to prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible HTTPS endpoint and read one secret without reintroducing a workload-authored identity bridge.
 
-That bounded proof has now been exercised on a real Linux VM through the real ES -> Nomad -> Docker path. On the current proof VM/startup mode, natural schedulability is still not proved and may require the explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override described above. Treat that as an environment/startup caveat for the proof host, not as evidence that Linux or Docker/Nomad are the wrong direction for this phase.
+That bounded proof has now been exercised on a real Linux VM through the real ES -> Nomad -> Docker path. The next bounded milestone after that credential-flow proof is supported-environment qualification / deployment honesty. On the current proof VM/startup mode, natural schedulability is still not proved and may require the explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override described above. Treat that as an environment/startup caveat for the proof host, not as evidence that Linux or Docker/Nomad are the wrong direction for this phase.
+
+On Linux, keep the supported-environment story narrow and explicit:
+
+- `supported`: pre-managed non-`-dev` Nomad already running on the host/VM, Docker healthy, and at least one ready node exposes positive `cpu.totalcompute` without override
+- `bounded-fallback`: the current script-managed local Nomad path, or any run that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
+- `unsupported`: Docker unhealthy, Nomad `DevMode=true`, no Nomad leader, no ready Docker-capable node, or `cpu.totalcompute=0` without explicit bounded override
 
 That helper drives:
 
