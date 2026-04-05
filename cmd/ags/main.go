@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"execution-platform/ags/app"
-	"execution-platform/ags/config"
+	"execution-substrate/ags/app"
+	"execution-substrate/ags/config"
 )
 
 func main() {

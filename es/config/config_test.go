@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
+	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
 )
 
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {

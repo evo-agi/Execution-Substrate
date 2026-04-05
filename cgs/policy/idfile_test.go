@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"execution-platform/cgs/policy"
+	"execution-substrate/cgs/policy"
 )
 
 func TestLoadParsesExplicitSubjectGrammar(t *testing.T) {

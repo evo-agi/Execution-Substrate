@@ -23,11 +23,11 @@ import (
 	"testing"
 	"time"
 
-	"execution-platform/ars/app"
-	"execution-platform/ars/config"
-	"execution-platform/ars/index"
-	"execution-platform/ars/store"
-	evidencev1 "execution-platform/contracts/evidence/v1"
+	"execution-substrate/ars/app"
+	"execution-substrate/ars/config"
+	"execution-substrate/ars/index"
+	"execution-substrate/ars/store"
+	evidencev1 "execution-substrate/contracts/evidence/v1"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {

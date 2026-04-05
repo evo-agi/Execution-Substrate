@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"execution-platform/egs/app"
-	"execution-platform/egs/config"
-	"execution-platform/egs/model"
+	"execution-substrate/egs/app"
+	"execution-substrate/egs/config"
+	"execution-substrate/egs/model"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {

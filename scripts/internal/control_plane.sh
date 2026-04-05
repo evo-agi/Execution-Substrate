@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 control_plane_image_ref() {
-  printf '%s\n' "${CONTROL_PLANE_IMAGE:-execution-platform/control-plane:local}"
+  printf '%s\n' "${CONTROL_PLANE_IMAGE:-execution-substrate/control-plane:local}"
 }
 
 control_plane_dockerfile_path() {
@@ -82,7 +82,7 @@ import sys
 service = sys.argv[1]
 seed = sys.argv[2]
 digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
-name = f"execution-platform-{digest}-{service}"
+name = f"execution-substrate-{digest}-{service}"
 print(re.sub(r"[^A-Za-z0-9_.-]+", "-", name))
 PY
 }

@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"execution-platform/es/admission"
-	"execution-platform/observability"
+	"execution-substrate/es/admission"
+	"execution-substrate/observability"
 )
 
 const serviceName = "execution"

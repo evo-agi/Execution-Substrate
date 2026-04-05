@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"execution-platform/ags/publish"
-	"execution-platform/observability"
+	"execution-substrate/ags/publish"
+	"execution-substrate/observability"
 )
 
 const serviceName = "artifact-governance"

@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"sync"
 
-	"execution-platform/egs/api"
-	"execution-platform/egs/config"
-	"execution-platform/egs/model"
-	"execution-platform/egs/sign"
+	"execution-substrate/egs/api"
+	"execution-substrate/egs/config"
+	"execution-substrate/egs/model"
+	"execution-substrate/egs/sign"
 )
 
 type App struct {

@@ -369,4 +369,4 @@ For operator diagnostics in the current bounded slice:
   - substrate failure (Docker / Nomad / runtime availability)
   - execution failure after successful submit
   - operator misuse / invalid input
-- the compact operator troubleshooting matrix for those classes now lives in `/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md`; it maps each surfaced category to the authoritative check, the most relevant service logs, when retained staging is actually useful, and the next operator action
+- the compact operator troubleshooting matrix for those classes now lives in `/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md`; it maps each surfaced category to the authoritative check, the most relevant service logs, when retained staging is actually useful, and the next operator action

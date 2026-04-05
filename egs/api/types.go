@@ -1,6 +1,6 @@
 package api
 
-import "execution-platform/egs/model"
+import "execution-substrate/egs/model"
 
 type SignedRuntimeTrustResponse struct {
 	RuntimeTrust  model.RuntimeTrustPolicy  `json:"runtime_trust"`

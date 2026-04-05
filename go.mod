@@ -1,4 +1,4 @@
-module execution-platform
+module execution-substrate
 
 go 1.22
 

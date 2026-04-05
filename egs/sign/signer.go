@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"execution-platform/egs/model"
+	"execution-substrate/egs/model"
 )
 
 type Result struct {

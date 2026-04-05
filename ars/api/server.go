@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"execution-platform/ars/index"
-	"execution-platform/ars/store"
-	"execution-platform/observability"
+	"execution-substrate/ars/index"
+	"execution-substrate/ars/store"
+	"execution-substrate/observability"
 )
 
 const (

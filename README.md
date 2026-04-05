@@ -1,4 +1,4 @@
-# Execution-Platform
+# Execution Substrate
 
 This repository contains the current Go implementation of the platform's governed publication, storage, policy, admission, and bounded execution system.
 
@@ -22,27 +22,27 @@ The current system is coherent and implemented, but some architecture-defining s
 
 Read these in order:
 
-1. [AGENTS.md](/Users/ds/Repositories/Execution-Platform/AGENTS.md) for repository operating rules
-2. [PLANS.md](/Users/ds/Repositories/Execution-Platform/PLANS.md) for current work, redesign scope, and reopened seams
-3. [.docs/system_overview/architecture.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/architecture.md) for the top-level system map
-4. [.docs/system_overview/contracts.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/contracts.md) for cross-service contracts
-5. [.docs/system_overview/boundaries.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/boundaries.md) for ownership and non-ownership
-6. [.docs/system_overview/evolution.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/evolution.md) for change-governance rules
-7. [.docs/execution_lifecycle/design.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/design.md) for lifecycle design
-8. [.docs/execution_lifecycle/contracts.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/contracts.md) for lifecycle public contract
-9. [.docs/execution_lifecycle/implementation.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/implementation.md) for lifecycle implementation paths
+1. [AGENTS.md](/Users/ds/Repositories/Execution Substrate/AGENTS.md) for repository operating rules
+2. [PLANS.md](/Users/ds/Repositories/Execution Substrate/PLANS.md) for current work, redesign scope, and reopened seams
+3. [.docs/system_overview/architecture.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/architecture.md) for the top-level system map
+4. [.docs/system_overview/contracts.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/contracts.md) for cross-service contracts
+5. [.docs/system_overview/boundaries.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/boundaries.md) for ownership and non-ownership
+6. [.docs/system_overview/evolution.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/evolution.md) for change-governance rules
+7. [.docs/execution_lifecycle/design.md](/Users/ds/Repositories/Execution Substrate/.docs/execution_lifecycle/design.md) for lifecycle design
+8. [.docs/execution_lifecycle/contracts.md](/Users/ds/Repositories/Execution Substrate/.docs/execution_lifecycle/contracts.md) for lifecycle public contract
+9. [.docs/execution_lifecycle/implementation.md](/Users/ds/Repositories/Execution Substrate/.docs/execution_lifecycle/implementation.md) for lifecycle implementation paths
 
 Supporting references:
 
-- [.docs/system_overview/configuration.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/configuration.md) for current config requirements
-- [.docs/system_overview/observability.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/observability.md) for observability rules
-- [.docs/system_overview/capability_probing.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/capability_probing.md) for capability-sensitive validation rules
+- [.docs/system_overview/configuration.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/configuration.md) for current config requirements
+- [.docs/system_overview/observability.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/observability.md) for observability rules
+- [.docs/system_overview/capability_probing.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/capability_probing.md) for capability-sensitive validation rules
 
 ## Operator Quick Start
 
 For the current bounded execution slice, the preferred operator path is:
 
-1. Follow [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md)
+1. Follow [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md)
 2. Use `scripts/01_bringup.sh up` for the cohesive local bring-up path
 3. Use `scripts/01_bringup.sh check` to re-check service health, prepare-ready state, and submit-ready state
 4. Use `scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json` for the bounded end-to-end smoke path
@@ -50,7 +50,7 @@ For the current bounded execution slice, the preferred operator path is:
 
 The lower-level readiness helper remains `scripts/10_health_check.sh`. In the current slice, ES `/health` proves only admission-oriented service health; the operator path now layers workload-zone Vault runtime-config validation plus Nomad/Docker checks on top before claiming submit readiness.
 For those operator-facing helpers, the current caller credentials are `OPERATOR_CERT` and `OPERATOR_KEY`; `service/deployment` is no longer a co-equal hot-path caller identity for AGS or ES in this bounded slice.
-The operator-facing publish / prepare / submit / lifecycle helpers now classify failures into bounded categories and point back to the compact troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md). That matrix is the current operator reference for:
+The operator-facing publish / prepare / submit / lifecycle helpers now classify failures into bounded categories and point back to the compact troubleshooting matrix in [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md). That matrix is the current operator reference for:
 
 - which readiness check is authoritative
 - which service logs matter most

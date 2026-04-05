@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	agsconfig "execution-platform/ags/config"
-	arsconfig "execution-platform/ars/config"
-	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
-	egsconfig "execution-platform/egs/config"
-	egsmodel "execution-platform/egs/model"
-	esconfig "execution-platform/es/config"
+	agsconfig "execution-substrate/ags/config"
+	arsconfig "execution-substrate/ars/config"
+	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
+	egsconfig "execution-substrate/egs/config"
+	egsmodel "execution-substrate/egs/model"
+	esconfig "execution-substrate/es/config"
 )
 
 func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
@@ -288,7 +288,7 @@ advertise {
 		"BRINGUP_PROFILE=full",
 		"BRINGUP_DIR="+bringupDir,
 		"READY_TIMEOUT_SECONDS=60",
-		"CONTROL_PLANE_IMAGE=execution-platform/control-plane:test-"+itoa(t, nomadHTTPPort),
+		"CONTROL_PLANE_IMAGE=execution-substrate/control-plane:test-"+itoa(t, nomadHTTPPort),
 		"ARS_CONFIG="+arsConfigPath,
 		"EGS_CONFIG="+egsConfigPath,
 		"AGS_CONFIG="+agsConfigPath,

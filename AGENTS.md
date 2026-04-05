@@ -1,10 +1,10 @@
-# Execution-Platform Agent Rules
+# Execution Substrate Agent Rules
 
 ## 1. Scope
 
 These rules apply to the entire repository:
 
-- `/Users/ds/Repositories/Execution-Platform`
+- `/Users/ds/Repositories/Execution Substrate`
 
 ## 2. Purpose
 
@@ -154,7 +154,7 @@ Do not work around a conflict by adding more hidden behavior.
 
 ## 12. Capability probing rules
 
-- ALWAYS consult `/Users/ds/Repositories/Execution-Platform/.docs/system_overview/capability_probing.md` when adding or changing capability-sensitive validation.
+- ALWAYS consult `/Users/ds/Repositories/Execution Substrate/.docs/system_overview/capability_probing.md` when adding or changing capability-sensitive validation.
 - NEVER introduce OS-based branching for capability-sensitive behavior.
 - ALWAYS validate capability by behavior or static resource checks, not by platform labels.
 - ENFORCE capability only at validation boundaries.

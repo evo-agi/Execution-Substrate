@@ -33,20 +33,20 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	agsapp "execution-platform/ags/app"
-	agsconfig "execution-platform/ags/config"
-	arsapi "execution-platform/ars/api"
-	arsapp "execution-platform/ars/app"
-	arsconfig "execution-platform/ars/config"
-	arsindex "execution-platform/ars/index"
-	arsstore "execution-platform/ars/store"
-	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
-	egsapp "execution-platform/egs/app"
-	egsconfig "execution-platform/egs/config"
-	egsmodel "execution-platform/egs/model"
-	"execution-platform/es/admission"
-	esapp "execution-platform/es/app"
-	esconfig "execution-platform/es/config"
+	agsapp "execution-substrate/ags/app"
+	agsconfig "execution-substrate/ags/config"
+	arsapi "execution-substrate/ars/api"
+	arsapp "execution-substrate/ars/app"
+	arsconfig "execution-substrate/ars/config"
+	arsindex "execution-substrate/ars/index"
+	arsstore "execution-substrate/ars/store"
+	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
+	egsapp "execution-substrate/egs/app"
+	egsconfig "execution-substrate/egs/config"
+	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission"
+	esapp "execution-substrate/es/app"
+	esconfig "execution-substrate/es/config"
 )
 
 const (
@@ -1323,7 +1323,7 @@ func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 			return
 		}
 
-		socketDir, err := os.MkdirTemp("/tmp", "execution-platform-socket-probe-")
+		socketDir, err := os.MkdirTemp("/tmp", "execution-substrate-socket-probe-")
 		if err != nil {
 			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe dir: %v", err)
 			return
@@ -2333,7 +2333,7 @@ func startMockWorkloadAPIServer(t *testing.T, rootDir string, opts mockWorkloadA
 		t.Fatalf("build mock workload api signer: %v", err)
 	}
 
-	socketDir, err := os.MkdirTemp("/tmp", "execution-platform-spire-")
+	socketDir, err := os.MkdirTemp("/tmp", "execution-substrate-spire-")
 	if err != nil {
 		t.Fatalf("create mock workload api socket dir: %v", err)
 	}

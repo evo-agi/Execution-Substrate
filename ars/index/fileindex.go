@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"execution-platform/ars/store"
+	"execution-substrate/ars/store"
 )
 
 type FileIndex struct {

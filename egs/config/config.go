@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"execution-platform/egs/model"
+	"execution-substrate/egs/model"
 )
 
 type Config struct {

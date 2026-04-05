@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
-	"execution-platform/ags/config"
-	"execution-platform/ags/sign"
-	arsapi "execution-platform/ars/api"
-	evidencev1 "execution-platform/contracts/evidence/v1"
-	"execution-platform/observability"
+	"execution-substrate/ags/config"
+	"execution-substrate/ags/sign"
+	arsapi "execution-substrate/ars/api"
+	evidencev1 "execution-substrate/contracts/evidence/v1"
+	"execution-substrate/observability"
 )
 
 const (

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"execution-platform/es/admission"
+	"execution-substrate/es/admission"
 )
 
 func TestExecutionStatusReflectsNomadJobState(t *testing.T) {

@@ -21,12 +21,12 @@ import (
 	"sync"
 	"time"
 
-	arsapi "execution-platform/ars/api"
-	evidencev1 "execution-platform/contracts/evidence/v1"
-	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
-	egsmodel "execution-platform/egs/model"
-	esconfig "execution-platform/es/config"
-	"execution-platform/observability"
+	arsapi "execution-substrate/ars/api"
+	evidencev1 "execution-substrate/contracts/evidence/v1"
+	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
+	egsmodel "execution-substrate/egs/model"
+	esconfig "execution-substrate/es/config"
+	"execution-substrate/observability"
 )
 
 const (

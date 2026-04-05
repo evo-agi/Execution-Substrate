@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	egsmodel "execution-platform/egs/model"
+	egsmodel "execution-substrate/egs/model"
 )
 
 const (

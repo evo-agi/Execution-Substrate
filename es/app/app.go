@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"sync"
 
-	"execution-platform/es/admission"
-	"execution-platform/es/api"
-	"execution-platform/es/config"
+	"execution-substrate/es/admission"
+	"execution-substrate/es/api"
+	"execution-substrate/es/config"
 )
 
 type App struct {

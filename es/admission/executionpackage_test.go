@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	esconfig "execution-platform/es/config"
+	esconfig "execution-substrate/es/config"
 )
 
 func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {

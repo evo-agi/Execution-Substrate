@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	runtimeconfigv1 "execution-platform/contracts/runtimeconfig/v1"
+	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
 )
 
 type Config struct {

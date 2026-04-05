@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"execution-platform/cgs/policy"
-	"execution-platform/observability"
+	"execution-substrate/cgs/policy"
+	"execution-substrate/observability"
 )
 
 const serviceName = "credential-governance"

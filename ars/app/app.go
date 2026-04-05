@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"sync"
 
-	"execution-platform/ars/api"
-	"execution-platform/ars/config"
-	"execution-platform/ars/index"
-	"execution-platform/ars/store"
+	"execution-substrate/ars/api"
+	"execution-substrate/ars/config"
+	"execution-substrate/ars/index"
+	"execution-substrate/ars/store"
 )
 
 type App struct {

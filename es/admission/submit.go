@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	esconfig "execution-platform/es/config"
-	"execution-platform/observability"
+	esconfig "execution-substrate/es/config"
+	"execution-substrate/observability"
 )
 
 const (

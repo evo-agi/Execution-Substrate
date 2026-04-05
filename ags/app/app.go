@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"sync"
 
-	"execution-platform/ags/api"
-	"execution-platform/ags/config"
-	"execution-platform/ags/publish"
+	"execution-substrate/ags/api"
+	"execution-substrate/ags/config"
+	"execution-substrate/ags/publish"
 )
 
 type App struct {

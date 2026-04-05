@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"execution-platform/egs/app"
-	"execution-platform/egs/config"
+	"execution-substrate/egs/app"
+	"execution-substrate/egs/config"
 )
 
 func main() {

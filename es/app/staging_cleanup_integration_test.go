@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"execution-platform/es/admission"
+	"execution-substrate/es/admission"
 )
 
 func TestExecutionStatusCleansSuccessfulStageRootAndLogsStillWork(t *testing.T) {

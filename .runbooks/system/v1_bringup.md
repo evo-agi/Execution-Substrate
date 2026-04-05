@@ -2,7 +2,7 @@
 
 - Version: `v1`
 - Last Updated: `2026-04-04`
-- Compatible System Version: `Execution-Platform current working tree`
+- Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
 
@@ -58,7 +58,7 @@ export ES_CONFIG="/abs/path/es.json"
 export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
-Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution-Platform/.examples/config](/Users/ds/Repositories/Execution-Platform/.examples/config), but they are templates only.
+Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution Substrate/.examples/config](/Users/ds/Repositories/Execution Substrate/.examples/config), but they are templates only.
 
 Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
 
@@ -135,7 +135,7 @@ CGS is not required for this bring-up runbook because it is not part of the curr
 
 Run all commands from:
 
-`/Users/ds/Repositories/Execution-Platform`
+`/Users/ds/Repositories/Execution Substrate`
 
 ### Full execution profile
 
@@ -172,7 +172,7 @@ bring-up complete
 The script writes PID files and logs under:
 
 ```bash
-${BRINGUP_DIR:-/Users/ds/Repositories/Execution-Platform/.tmp/bringup}
+"${BRINGUP_DIR:-/Users/ds/Repositories/Execution Substrate/.tmp/bringup}"
 ```
 
 ### Prepare-only profile
@@ -246,7 +246,7 @@ Use this matrix after an operator-facing helper already surfaced one of the boun
 Managed bring-up logs live under:
 
 ```bash
-${BRINGUP_DIR:-/Users/ds/Repositories/Execution-Platform/.tmp/bringup}/logs
+"${BRINGUP_DIR:-/Users/ds/Repositories/Execution Substrate/.tmp/bringup}/logs"
 ```
 
 The current one-path bring-up writes:
@@ -314,8 +314,8 @@ Because that helper waits for terminal status and then reads logs, it also exerc
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 
-- [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md)
-- [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_runtime_identity_reference.md)
+- [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md)
+- [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_reference.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_reference.md)
 
 ## 7. Shutdown
 

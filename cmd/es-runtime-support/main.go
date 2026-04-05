@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"execution-platform/es/runtimehelper"
+	"execution-substrate/es/runtimehelper"
 )
 
 func main() {

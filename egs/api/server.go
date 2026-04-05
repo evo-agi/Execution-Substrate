@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"execution-platform/egs/model"
-	"execution-platform/egs/sign"
-	"execution-platform/observability"
+	"execution-substrate/egs/model"
+	"execution-substrate/egs/sign"
+	"execution-substrate/observability"
 )
 
 const serviceName = "execution-governance"

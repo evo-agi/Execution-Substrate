@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"execution-platform/cgs/app"
-	"execution-platform/cgs/config"
-	"execution-platform/cgs/policy"
+	"execution-substrate/cgs/app"
+	"execution-substrate/cgs/config"
+	"execution-substrate/cgs/policy"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {

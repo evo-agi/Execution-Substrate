@@ -68,9 +68,9 @@ if ! command -v sudo >/dev/null 2>&1; then
   exit 1
 fi
 
-REPO_URL="${REPO_URL:-git@github.com:SeritArbores/Execution-Platform.git}"
+REPO_URL="${REPO_URL:-git@github.com:SeritArbores/Execution-Substrate.git}"
 CLONE_PARENT="${CLONE_PARENT:-$HOME/Repositories}"
-CLONE_DIR="${CLONE_DIR:-$CLONE_PARENT/Execution-Platform}"
+CLONE_DIR="${CLONE_DIR:-$CLONE_PARENT/Execution Substrate}"
 HASHICORP_KEYRING="/usr/share/keyrings/hashicorp-archive-keyring.gpg"
 HASHICORP_LIST="/etc/apt/sources.list.d/hashicorp.list"
 

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	esconfig "execution-platform/es/config"
+	esconfig "execution-substrate/es/config"
 )
 
 const (

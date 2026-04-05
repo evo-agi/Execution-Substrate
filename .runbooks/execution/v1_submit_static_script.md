@@ -2,7 +2,7 @@
 
 - Version: `v1`
 - Last Updated: `2026-04-04`
-- Compatible System Version: `Execution-Platform current working tree`
+- Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
 
@@ -22,7 +22,7 @@ The steps below remain the transparent manual breakdown for the same current sli
 
 ## 2. Prerequisites
 
-- The stack is already up through [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md)
+- The stack is already up through [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md)
 - `BRINGUP_PROFILE=full`
 - `curl`, `python3`, `tar`, `gzip`, `nomad`, and `docker` are available
 - `CA_CERT`, `OPERATOR_CERT`, `OPERATOR_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
@@ -39,7 +39,7 @@ For this full-profile runbook, do not continue unless the check reports `submit-
 When later helpers fail, keep the bring-up check as the readiness source of truth:
 
 - first re-run `scripts/01_bringup.sh check`
-- then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
+- then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
 - if you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>` for the compact summary
 
 Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.

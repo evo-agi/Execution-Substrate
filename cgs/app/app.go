@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"sync"
 
-	"execution-platform/cgs/api"
-	"execution-platform/cgs/config"
-	"execution-platform/cgs/policy"
+	"execution-substrate/cgs/api"
+	"execution-substrate/cgs/config"
+	"execution-substrate/cgs/policy"
 )
 
 type App struct {
