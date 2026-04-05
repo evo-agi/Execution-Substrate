@@ -5,7 +5,29 @@ control_plane_image_ref() {
 }
 
 control_plane_dockerfile_path() {
-  printf '%s\n' "${CONTROL_PLANE_DOCKERFILE:-$(bringup_repo_root)/deployments/control-plane/Dockerfile}"
+  printf '%s\n' "${CONTROL_PLANE_DOCKERFILE:-$(bringup_repo_root)/.out/Dockerfile}"
+}
+
+control_plane_dockerfile_generator_path() {
+  printf '%s\n' "$(bringup_repo_root)/scripts/generate_control_plane_dockerfile.sh"
+}
+
+ensure_default_control_plane_dockerfile() {
+  local dockerfile_path=$1
+  local generator
+
+  if [[ -n "${CONTROL_PLANE_DOCKERFILE:-}" ]]; then
+    return 0
+  fi
+
+  generator="$(control_plane_dockerfile_generator_path)"
+  require_readable_path "control-plane Dockerfile generator" "${generator}" || return 1
+
+  mkdir -p "$(dirname "${dockerfile_path}")"
+  if ! bash "${generator}" "${dockerfile_path}" >/dev/null; then
+    echo "control-plane Dockerfile generation failed for ${dockerfile_path}" >&2
+    return 1
+  fi
 }
 
 control_plane_image_build_mode() {
@@ -79,6 +101,7 @@ ensure_control_plane_image() {
   repo_root="$(bringup_repo_root)"
   target_arch="$(control_plane_target_arch)" || return 1
 
+  ensure_default_control_plane_dockerfile "${dockerfile}" || return 1
   require_readable_path "control-plane Dockerfile" "${dockerfile}" || return 1
 
   case "${mode}" in

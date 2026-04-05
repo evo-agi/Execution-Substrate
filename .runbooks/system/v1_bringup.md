@@ -148,7 +148,7 @@ scripts/01_bringup.sh up
 
 What this does:
 
-- rebuilds the shared control-plane image for ARS, EGS, AGS, and ES
+- regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path; that image currently bundles `ars`, `ags`, `egs`, `es`, and `cgs` even though the minimal operator path starts only ARS, EGS, AGS, and ES
 - proves that Docker host networking can actually reach host loopback from a container before continuing
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`

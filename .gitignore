@@ -13,6 +13,8 @@
 
 # Code coverage profiles and other test artifacts
 *.out
+!.out/
+!.out/Dockerfile
 coverage.*
 *.coverprofile
 profile.cov
