@@ -494,7 +494,7 @@ func startDependencyStack(t *testing.T) *publishedStack {
 		t.Fatalf("build ars app: %v", err)
 	}
 	stack.ars = arsService
-	startService(t, arsService.Start, arsService.Addr, fixture.serverTLSConfig(t, fixture.arsServerName))
+	startService(t, arsService.Start, arsService.Addr, fixture.clientTLSConfigForServer(t, fixture.arsServerName, "service/execution", false))
 	stack.arsRunning = true
 
 	egsCfg := egsconfig.Config{
@@ -538,7 +538,7 @@ func startDependencyStack(t *testing.T) *publishedStack {
 		t.Fatalf("build egs app: %v", err)
 	}
 	stack.egs = egsService
-	startService(t, egsService.Start, egsService.Addr, fixture.serverTLSConfig(t, fixture.egsServerName))
+	startService(t, egsService.Start, egsService.Addr, fixture.clientTLSConfigForServer(t, fixture.egsServerName, "service/execution", false))
 	stack.egsRunning = true
 
 	agsCfg := agsconfig.Config{
@@ -579,7 +579,7 @@ func startDependencyStack(t *testing.T) *publishedStack {
 		t.Fatalf("build ags app: %v", err)
 	}
 	stack.ags = agsService
-	startService(t, agsService.Start, agsService.Addr, fixture.serverTLSConfig(t, fixture.agsServerName))
+	startService(t, agsService.Start, agsService.Addr, fixture.clientTLSConfigForServer(t, fixture.agsServerName, "operator", false))
 	stack.agsRunning = true
 
 	return stack
@@ -659,7 +659,7 @@ func startES(t *testing.T, stack *publishedStack) {
 		t.Fatalf("build es app: %v", err)
 	}
 	stack.es = service
-	startService(t, service.Start, service.Addr, stack.fixture.serverTLSConfig(t, stack.fixture.esServerName))
+	startService(t, service.Start, service.Addr, stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false))
 	stack.esRunning = true
 }
 
@@ -769,6 +769,9 @@ func buildARSConfig(stack *publishedStack) arsconfig.Config {
 			KeyFile:      stack.fixture.arsServerKeyPath,
 			ClientCAFile: stack.fixture.clientCAPath,
 		},
+		Security: arsconfig.SecurityConfig{
+			BootstrapIssuerCommonName: stack.fixture.bootstrapCACN,
+		},
 		Authorization: arsconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"service/execution"},
 		},
@@ -868,7 +871,7 @@ func (s *publishedStack) restartARS(t *testing.T) {
 		t.Fatalf("rebuild ars app: %v", err)
 	}
 	s.ars = arsService
-	startService(t, arsService.Start, arsService.Addr, s.fixture.serverTLSConfig(t, s.fixture.arsServerName))
+	startService(t, arsService.Start, arsService.Addr, s.fixture.clientTLSConfigForServer(t, s.fixture.arsServerName, "service/execution", false))
 	s.arsRunning = true
 }
 

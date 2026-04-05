@@ -126,6 +126,6 @@ func (a *App) loadTLSConfig() (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{certificate},
 		ClientCAs:    clientCAs,
-		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
 	}, nil
 }

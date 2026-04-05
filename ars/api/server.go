@@ -30,14 +30,16 @@ type Server struct {
 	blobStore           store.BlobStore
 	artifactIndex       index.Lookup
 	allowedPathPrefixes []string
+	bootstrapIssuerCN   string
 	isStarted           func() bool
 }
 
-func NewServer(blobStore store.BlobStore, artifactIndex index.Lookup, allowedPathPrefixes []string, isStarted func() bool) *Server {
+func NewServer(blobStore store.BlobStore, artifactIndex index.Lookup, allowedPathPrefixes []string, bootstrapIssuerCN string, isStarted func() bool) *Server {
 	return &Server{
 		blobStore:           blobStore,
 		artifactIndex:       artifactIndex,
 		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
+		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
 		isStarted:           isStarted,
 	}
 }
@@ -537,9 +539,13 @@ func (s *Server) writeBlobReadError(w http.ResponseWriter, digest string, err er
 }
 
 func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request) bool {
-	path, ok := callerSPIFFEPath(r)
+	path, issuerCommonName, ok := callerSPIFFEPath(r)
 	if !ok {
 		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return true
+	}
+	if issuerCommonName == s.bootstrapIssuerCN {
+		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return true
 	}
 
@@ -554,9 +560,13 @@ func (s *Server) requireAuthorizedCaller(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) requireWriterCaller(w http.ResponseWriter, r *http.Request) bool {
-	path, ok := callerSPIFFEPath(r)
+	path, issuerCommonName, ok := callerSPIFFEPath(r)
 	if !ok {
 		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return true
+	}
+	if issuerCommonName == s.bootstrapIssuerCN {
+		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return true
 	}
 
@@ -568,17 +578,21 @@ func (s *Server) requireWriterCaller(w http.ResponseWriter, r *http.Request) boo
 	return true
 }
 
-func callerSPIFFEPath(r *http.Request) (string, bool) {
+func callerSPIFFEPath(r *http.Request) (path string, issuerCommonName string, ok bool) {
 	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
-		return "", false
+		return "", "", false
 	}
 
 	cert := r.TLS.VerifiedChains[0][0]
 	if cert == nil {
-		return "", false
+		return "", "", false
 	}
 
-	return spiffePathFromCertificate(cert)
+	path, ok = spiffePathFromCertificate(cert)
+	if !ok {
+		return "", "", false
+	}
+	return path, cert.Issuer.CommonName, true
 }
 
 func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {

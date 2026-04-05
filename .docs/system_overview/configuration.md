@@ -23,6 +23,10 @@ All current services require:
 
 All path values are expected to be explicit local filesystem paths.
 
+For the current slice-0 operator path, ARS, EGS, AGS, and ES run as containers. Their config files, referenced TLS files, and any writable host state are mounted into those containers at the same absolute paths named in config. Relative paths are therefore not valid for the primary bring-up path.
+
+All hot-path control-plane listeners now require a verified client certificate at the TLS boundary, including `/health`. Bring-up and readiness checks must present a runtime-issued client certificate rather than relying on handler-only rejection.
+
 This repository does not ship ready-to-run service config examples. Operators must provide explicit JSON config files that satisfy the current validators.
 
 ## Workload-Zone Vault Runtime Config
@@ -63,11 +67,13 @@ Minimal reference example:
 
 - `http`
 - `tls`
+- `security`
 - `authorization`
 - `storage`
 
 ### Required fields
 
+- `security.bootstrap_issuer_common_name`
 - `authorization.allowed_spiffe_path_prefixes`
 - `storage.root_dir`
 - `storage.index_file`
@@ -81,6 +87,7 @@ Minimal reference example:
 
 - `storage.root_dir` must point to a writable directory
 - `storage.index_file` must point to a writable file path
+- `security.bootstrap_issuer_common_name` must name the legacy/bootstrap issuer that ARS rejects on both read and write paths
 - `authorization.allowed_spiffe_path_prefixes` must allow ES and other intended readers
 - AGS writes use the dedicated `service/artifact-governance` writer identity
 
@@ -208,6 +215,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `execution.base_image`
   - optionally `execution.runtime_identity_tmpfs_size`
 - `execution.staging_root_dir` is a writable host-local staging root
+  - the current slice-0 operator path requires that host path to be mounted into the ES container at the exact same absolute path with no translation
   - it backs run-scoped payload, run, and mount staging while the workload may still depend on those bind mounts
   - ES best-effort removes `<staging_root>/<run_id>` after it observes terminal success for that run through the current lifecycle path
   - failed, canceled, lost, or otherwise ambiguous outcomes retain `<staging_root>/<run_id>` for debugging in the current slice
@@ -302,7 +310,10 @@ For local operator bring-up against this practical minimum:
 
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the primary bootstrap path
 - use `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh` to re-run readiness checks
-- use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad/Docker submit
+- use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad submit
+- the current slice-0 bootstrap path targets one Linux host/VM and fails fast unless Docker host networking can actually reach host loopback from a container
+- `scripts/01_bringup.sh up` rebuilds the shared control-plane image by default and records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
+- Docker host networking in that path is temporary slice-0 compatibility scaffolding, not the final control-plane network model
 - use an operator SPIFFE client cert/key for AGS and ES operator-facing helpers:
   - `CA_CERT`
   - `OPERATOR_CERT`
@@ -311,9 +322,12 @@ For local operator bring-up against this practical minimum:
 The current unified health check verifies:
 
 - ARS, EGS, AGS, and ES all report `ready=true`
+- those health checks succeeded with a real client certificate at the TLS boundary
 - Nomad has a leader and at least one ready node when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
+
+This slice still does **not** prove strong workload identity for runtime workloads. The workload identity milestone remains separate and later.
 
 For operator diagnostics in the current bounded slice:
 

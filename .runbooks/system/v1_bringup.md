@@ -29,7 +29,6 @@ The readiness vocabulary for that primary path is now:
 
 ### Required software
 
-- Go `1.22.x`
 - `curl`
 - `python3`
 - `tar`
@@ -39,9 +38,13 @@ The readiness vocabulary for that primary path is now:
 
 ### Required environment
 
+- one Linux host/VM for the actual slice-0 topology proof
 - Docker daemon running
 - runtime CA, service certificates, and client certificates already provisioned
 - service config files prepared as JSON
+- Docker host networking must be able to reach host loopback from a container
+  - `scripts/01_bringup.sh up` probes this behavior before starting services
+  - this host networking use is temporary slice-0 compatibility scaffolding only, not the final control-plane network model
 
 ### Required config files
 
@@ -76,7 +79,7 @@ export ARS_READ_CERT="/abs/path/execution-client.pem"
 export ARS_READ_KEY="/abs/path/execution-client-key.pem"
 ```
 
-`scripts/01_bringup.sh` and `scripts/10_health_check.sh` use the ARS read client only to verify the configured workload-zone Vault blob exists and has the expected JSON shape before first execution. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `OPERATOR_CERT` and `OPERATOR_KEY`.
+`scripts/01_bringup.sh` and `scripts/10_health_check.sh` use a runtime-issued client certificate for all service health checks because `/health` is now behind strict mTLS. They use the ARS read client only for the workload-zone Vault blob read when the operator identity is not sufficient. If `ARS_READ_CERT` and `ARS_READ_KEY` are omitted, those checks fall back to `OPERATOR_CERT` and `OPERATOR_KEY`.
 
 ### Required service URLs
 
@@ -131,11 +134,14 @@ scripts/01_bringup.sh up
 
 What this does:
 
+- rebuilds the shared control-plane image for ARS, EGS, AGS, and ES
+- proves that Docker host networking can actually reach host loopback from a container before continuing
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`
+- records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
-- starts Nomad and waits for a leader plus at least one ready node
+- starts Nomad in config-driven single-node mode and waits for a leader plus at least one ready node
 - runs the unified readiness check once more before reporting success as both prepare-ready and submit-ready
 
 Successful output ends with:
@@ -160,6 +166,8 @@ scripts/01_bringup.sh up
 ```
 
 This still starts ARS, EGS, AGS, and ES, and it still verifies the workload-zone Vault blob. It intentionally skips Nomad and Docker readiness.
+
+Prepare-only still requires Docker because the hot-path control plane now runs in containers.
 
 In this profile, successful bring-up proves `prepare-ready` only. `submit-ready` is intentionally skipped because `:submit` and lifecycle are out of scope for `prepare-only`.
 
@@ -186,10 +194,12 @@ For the full profile, `scripts/01_bringup.sh check` now reports three layers:
 For the full profile, `submit-ready: true` means:
 
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
+- those health checks succeeded with a valid client certificate at the TLS boundary
 - Nomad has a leader and at least one ready node
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, and `execution.base_image`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
+- the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
 
 For ES specifically, `/health` still confirms:
 
@@ -222,6 +232,8 @@ The current one-path bring-up writes:
 - `ags.log`
 - `es.log`
 - `nomad.log` for `BRINGUP_PROFILE=full`
+- `control-plane-image-build.log`
+- `staging-invariant.json`
 
 Docker daemon logs are outside this repo and are only a useful next step for substrate trouble.
 
@@ -257,6 +269,8 @@ After bring-up succeeds, the preferred bounded end-to-end smoke test is:
 ```bash
 scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
 ```
+
+This slice proves the one-host Linux substrate and same-path staging contract only. It does **not** prove strong workload identity for runtime workloads yet.
 
 That helper drives:
 

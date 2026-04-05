@@ -12,6 +12,7 @@ import (
 type Config struct {
 	HTTP          HTTPConfig          `json:"http"`
 	TLS           TLSConfig           `json:"tls"`
+	Security      SecurityConfig      `json:"security"`
 	Authorization AuthorizationConfig `json:"authorization"`
 	Storage       StorageConfig       `json:"storage"`
 }
@@ -28,6 +29,10 @@ type TLSConfig struct {
 	CertFile     string `json:"cert_file"`
 	KeyFile      string `json:"key_file"`
 	ClientCAFile string `json:"client_ca_file"`
+}
+
+type SecurityConfig struct {
+	BootstrapIssuerCommonName string `json:"bootstrap_issuer_common_name"`
 }
 
 type AuthorizationConfig struct {
@@ -93,6 +98,10 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.TLS.ClientCAFile) == "" {
 		return fmt.Errorf("tls.client_ca_file is required")
+	}
+
+	if strings.TrimSpace(c.Security.BootstrapIssuerCommonName) == "" {
+		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
 	}
 
 	if len(c.Authorization.AllowedSPIFFEPathPrefixes) == 0 {

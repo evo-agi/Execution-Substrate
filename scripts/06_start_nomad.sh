@@ -11,7 +11,7 @@ if [[ ! -r "${NOMAD_CONFIG}" ]]; then
 fi
 
 printf '+ '
-printf '%q ' nomad agent -dev "-config=${NOMAD_CONFIG}"
+printf '%q ' nomad agent "-config=${NOMAD_CONFIG}"
 printf '\n'
 
-exec nomad agent -dev "-config=${NOMAD_CONFIG}"
+exec nomad agent "-config=${NOMAD_CONFIG}"

@@ -11,6 +11,9 @@
     "key_file": "/abs/path/tls/ars-server-key.pem",
     "client_ca_file": "/abs/path/tls/runtime-ca.pem"
   },
+  "security": {
+    "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
+  },
   "authorization": {
     "allowed_spiffe_path_prefixes": [
       "service/execution",

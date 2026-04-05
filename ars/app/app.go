@@ -50,7 +50,13 @@ func New(cfg config.Config) (*App, error) {
 		artifactIndex: artifactIndex,
 	}
 
-	server := api.NewServer(blobStore, artifactIndex, cfg.Authorization.AllowedSPIFFEPathPrefixes, app.Started)
+	server := api.NewServer(
+		blobStore,
+		artifactIndex,
+		cfg.Authorization.AllowedSPIFFEPathPrefixes,
+		cfg.Security.BootstrapIssuerCommonName,
+		app.Started,
+	)
 	app.httpServer = &http.Server{
 		Addr:         net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTP.Port)),
 		Handler:      server.Handler(),
@@ -135,6 +141,6 @@ func (a *App) loadTLSConfig() (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{certificate},
 		ClientCAs:    clientCAs,
-		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
 	}, nil
 }

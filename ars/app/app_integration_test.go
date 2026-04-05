@@ -1026,7 +1026,7 @@ func TestWrongMethodsReturnMethodNotAllowed(t *testing.T) {
 			method:      http.MethodPost,
 			path:        "/health",
 			allowHeader: http.MethodGet,
-			config:      fixture.baseClientTLSConfig(t),
+			config:      fixture.clientTLSConfig(t, "service/execution"),
 		},
 		{
 			name:        "get head-only blob route",
@@ -1059,18 +1059,13 @@ func TestWrongMethodsReturnMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestProtectedRouteWithoutClientCertReturnsUnauthorizedWithExactBody(t *testing.T) {
+func TestProtectedRouteWithoutClientCertFailsTLSHandshake(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service, _ := startTestApp(t, fixture, seedStorageFixture(t))
 
-	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/blobs/"+store.DigestBytes([]byte("hello"))+":bytes", fixture.baseClientTLSConfig(t))
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", response.StatusCode)
-	}
-	if body := string(mustReadBody(t, response.Body)); body != "Authenticated caller identity required" {
-		t.Fatalf("unexpected 401 body: %q", body)
+	_, err := doRequestWithError(service.Addr(), http.MethodGet, "/v1/blobs/"+store.DigestBytes([]byte("hello"))+":bytes", fixture.baseClientTLSConfig(t))
+	if err == nil {
+		t.Fatalf("expected tls handshake failure without client certificate")
 	}
 }
 
@@ -1089,11 +1084,26 @@ func TestProtectedRouteWithUnauthorizedClientReturnsForbiddenWithExactBody(t *te
 	}
 }
 
+func TestBootstrapPKIReadCallerReturnsForbiddenWithExactBody(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
+
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/blobs/"+seeded.BlobDigest+":bytes", fixture.bootstrapClientTLSConfig(t, "service/execution"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+	if body := string(mustReadBody(t, response.Body)); body != "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity" {
+		t.Fatalf("unexpected 403 body: %q", body)
+	}
+}
+
 func TestHealthReturnsHealthyWhenStarted(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service, _ := startTestApp(t, fixture, seedStorageFixture(t))
 
-	response := doRequest(t, service.Addr(), http.MethodGet, "/health", fixture.baseClientTLSConfig(t))
+	response := doRequest(t, service.Addr(), http.MethodGet, "/health", fixture.clientTLSConfig(t, "service/execution"))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -1134,11 +1144,15 @@ func TestHealthReturnsHealthyWhenStarted(t *testing.T) {
 }
 
 type tlsFixture struct {
-	caPath         string
+	clientCAPath   string
+	runtimeCAPath  string
 	serverCertPath string
 	serverKeyPath  string
-	caCert         *x509.Certificate
-	caKey          *rsa.PrivateKey
+	runtimeCA      *x509.Certificate
+	runtimeCAKey   *rsa.PrivateKey
+	bootstrapCA    *x509.Certificate
+	bootstrapCAKey *rsa.PrivateKey
+	bootstrapCACN  string
 }
 
 type rawHTTPResponse struct {
@@ -1180,22 +1194,28 @@ func newTLSFixture(t *testing.T) tlsFixture {
 
 	dir := t.TempDir()
 
-	caCert, caKey, caCertPEM := createCertificateAuthority(t)
-	serverCertPEM, serverKeyPEM := createLeafCertificate(t, caCert, caKey, certificateRequest{
+	runtimeCA, runtimeCAKey, runtimeCAPEM := createCertificateAuthority(t, "runtime-ca")
+	bootstrapCA, bootstrapCAKey, bootstrapCAPEM := createCertificateAuthority(t, "bootstrap-ca")
+	serverCertPEM, serverKeyPEM := createLeafCertificate(t, runtimeCA, runtimeCAKey, certificateRequest{
 		commonName: "artifact-registry.internal",
 		dnsNames:   []string{"localhost"},
 		ipAddrs:    []net.IP{net.ParseIP("127.0.0.1")},
 	})
 
 	fixture := tlsFixture{
-		caPath:         filepath.Join(dir, "ca.pem"),
+		clientCAPath:   filepath.Join(dir, "client-ca.pem"),
+		runtimeCAPath:  filepath.Join(dir, "runtime-ca.pem"),
 		serverCertPath: filepath.Join(dir, "server.pem"),
 		serverKeyPath:  filepath.Join(dir, "server.key"),
-		caCert:         caCert,
-		caKey:          caKey,
+		runtimeCA:      runtimeCA,
+		runtimeCAKey:   runtimeCAKey,
+		bootstrapCA:    bootstrapCA,
+		bootstrapCAKey: bootstrapCAKey,
+		bootstrapCACN:  "bootstrap-ca",
 	}
 
-	writePEMFile(t, fixture.caPath, caCertPEM)
+	writePEMFile(t, fixture.clientCAPath, append(append([]byte(nil), runtimeCAPEM...), bootstrapCAPEM...))
+	writePEMFile(t, fixture.runtimeCAPath, runtimeCAPEM)
 	writePEMFile(t, fixture.serverCertPath, serverCertPEM)
 	writePEMFile(t, fixture.serverKeyPath, serverKeyPEM)
 
@@ -1206,7 +1226,7 @@ func (f tlsFixture) baseClientTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()
 
 	pool := x509.NewCertPool()
-	pemBytes, err := os.ReadFile(f.caPath)
+	pemBytes, err := os.ReadFile(f.runtimeCAPath)
 	if err != nil {
 		t.Fatalf("read ca pem: %v", err)
 	}
@@ -1224,7 +1244,19 @@ func (f tlsFixture) baseClientTLSConfig(t *testing.T) *tls.Config {
 func (f tlsFixture) clientTLSConfig(t *testing.T, spiffePath string) *tls.Config {
 	t.Helper()
 
-	certPEM, keyPEM := createLeafCertificate(t, f.caCert, f.caKey, certificateRequest{
+	return f.clientTLSConfigWithCA(t, spiffePath, f.runtimeCA, f.runtimeCAKey)
+}
+
+func (f tlsFixture) bootstrapClientTLSConfig(t *testing.T, spiffePath string) *tls.Config {
+	t.Helper()
+
+	return f.clientTLSConfigWithCA(t, spiffePath, f.bootstrapCA, f.bootstrapCAKey)
+}
+
+func (f tlsFixture) clientTLSConfigWithCA(t *testing.T, spiffePath string, caCert *x509.Certificate, caKey *rsa.PrivateKey) *tls.Config {
+	t.Helper()
+
+	certPEM, keyPEM := createLeafCertificate(t, caCert, caKey, certificateRequest{
 		commonName: "client",
 		uris:       []string{"spiffe://execution.internal/" + spiffePath},
 		clientAuth: true,
@@ -1480,7 +1512,7 @@ func startTestApp(t *testing.T, fixture tlsFixture, seeded seededStorage) (*app.
 		t.Fatalf("start app: %v", err)
 	}
 
-	waitForHealth(t, service.Addr(), fixture.baseClientTLSConfig(t))
+	waitForHealth(t, service.Addr(), fixture.clientTLSConfig(t, "service/execution"))
 
 	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1617,7 +1649,10 @@ func buildConfig(fixture tlsFixture, rootDir string, indexPath string) config.Co
 		TLS: config.TLSConfig{
 			CertFile:     fixture.serverCertPath,
 			KeyFile:      fixture.serverKeyPath,
-			ClientCAFile: fixture.caPath,
+			ClientCAFile: fixture.clientCAPath,
+		},
+		Security: config.SecurityConfig{
+			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: config.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{
@@ -1650,6 +1685,14 @@ func writeConfig(t *testing.T, fixture tlsFixture, rootDir string, indexPath str
 	return path
 }
 
+func doRequestWithError(addr string, method string, path string, tlsConfig *tls.Config) (*http.Response, error) {
+	request, err := http.NewRequest(method, "https://"+addr+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return makeClient(tlsConfig).Do(request)
+}
+
 func mustReadBody(t *testing.T, reader io.Reader) []byte {
 	t.Helper()
 
@@ -1669,7 +1712,7 @@ type certificateRequest struct {
 	clientAuth bool
 }
 
-func createCertificateAuthority(t *testing.T) (*x509.Certificate, *rsa.PrivateKey, []byte) {
+func createCertificateAuthority(t *testing.T, commonName string) (*x509.Certificate, *rsa.PrivateKey, []byte) {
 	t.Helper()
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1684,7 +1727,7 @@ func createCertificateAuthority(t *testing.T) (*x509.Certificate, *rsa.PrivateKe
 
 	template := &x509.Certificate{
 		SerialNumber:          serialNumber,
-		Subject:               pkix.Name{CommonName: "ARS Test CA"},
+		Subject:               pkix.Name{CommonName: commonName},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		IsCA:                  true,

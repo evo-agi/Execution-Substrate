@@ -690,6 +690,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			KeyFile:      fixture.arsServerKeyPath,
 			ClientCAFile: fixture.clientCAPath,
 		},
+		Security: arsconfig.SecurityConfig{
+			BootstrapIssuerCommonName: fixture.bootstrapCACN,
+		},
 		Authorization: arsconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"service/execution"},
 		},
@@ -703,7 +706,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build ars app: %v", err)
 	}
 	stack.ars = arsService
-	startService(t, arsService.Start, arsService.Addr, fixture.serverTLSConfig(t, fixture.arsServerName))
+	startService(t, arsService.Start, arsService.Addr, fixture.clientTLSConfigForServer(t, fixture.arsServerName, "service/execution", false))
 	stack.arsRunning = true
 
 	egsCfg := egsconfig.Config{
@@ -747,7 +750,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build egs app: %v", err)
 	}
 	stack.egs = egsService
-	startService(t, egsService.Start, egsService.Addr, fixture.serverTLSConfig(t, fixture.egsServerName))
+	startService(t, egsService.Start, egsService.Addr, fixture.clientTLSConfigForServer(t, fixture.egsServerName, "service/execution", false))
 	stack.egsRunning = true
 
 	agsCfg := agsconfig.Config{
@@ -788,7 +791,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build ags app: %v", err)
 	}
 	stack.ags = agsService
-	startService(t, agsService.Start, agsService.Addr, fixture.serverTLSConfig(t, fixture.agsServerName))
+	startService(t, agsService.Start, agsService.Addr, fixture.clientTLSConfigForServer(t, fixture.agsServerName, "operator", false))
 	stack.agsRunning = true
 
 	esCfg := esconfig.Config{
@@ -871,7 +874,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build es app: %v", err)
 	}
 	stack.es = esService
-	startService(t, esService.Start, esService.Addr, fixture.serverTLSConfig(t, fixture.esServerName))
+	startService(t, esService.Start, esService.Addr, fixture.clientTLSConfigForServer(t, fixture.esServerName, "operator", false))
 	stack.esRunning = true
 
 	publishSubmitArtifact(t, stack, opts.networkAccess)

@@ -184,17 +184,12 @@ func TestNewFailsWhenWorkloadZoneVaultConfigRefIsInvalid(t *testing.T) {
 	}
 }
 
-func TestPrepareReturns401WhenCallerIdentityIsMissing(t *testing.T) {
+func TestPrepareWithoutClientCertFailsTLSHandshake(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "", false), buildPrepareRequestBody(t, stack))
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", response.StatusCode)
-	}
-	if got := strings.TrimSpace(string(mustReadBody(t, response.Body))); got != "Authenticated caller identity required" {
-		t.Fatalf("unexpected body: %q", got)
+	_, err := doJSONRequestWithError(stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "", false), buildPrepareRequestBody(t, stack))
+	if err == nil {
+		t.Fatalf("expected tls handshake failure without client certificate")
 	}
 }
 
@@ -345,7 +340,7 @@ func startStack(t *testing.T, opts stackOptions) *testStack {
 	stack.esRunning = true
 	t.Cleanup(func() { stack.shutdownAll(t) })
 
-	waitForHealthy(t, service.Addr(), stack.fixture.clientTLSConfig(t, "", false))
+	waitForHealthy(t, service.Addr(), stack.fixture.clientTLSConfig(t, "operator", false))
 	return stack
 }
 
@@ -458,6 +453,9 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 			KeyFile:      fixture.arsServerKeyPath,
 			ClientCAFile: fixture.clientCAPath,
 		},
+		Security: arsconfig.SecurityConfig{
+			BootstrapIssuerCommonName: fixture.bootstrapCACN,
+		},
 		Authorization: arsconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"service/execution"},
 		},
@@ -471,7 +469,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 		t.Fatalf("build ars app: %v", err)
 	}
 	stack.ars = arsService
-	startService(t, arsService.Start, arsService.Addr, fixture.serverTLSConfig(t, fixture.arsServerName))
+	startService(t, arsService.Start, arsService.Addr, fixture.clientTLSConfigForServer(t, fixture.arsServerName, "service/execution", false))
 	stack.arsRunning = true
 
 	allowedSigners := []string{fixture.agsKeyID}
@@ -528,7 +526,7 @@ func startDependencyStack(t *testing.T, opts stackOptions) *testStack {
 		t.Fatalf("build egs app: %v", err)
 	}
 	stack.egs = egsService
-	startService(t, egsService.Start, egsService.Addr, fixture.serverTLSConfig(t, fixture.egsServerName))
+	startService(t, egsService.Start, egsService.Addr, fixture.clientTLSConfigForServer(t, fixture.egsServerName, "service/execution", false))
 	stack.egsRunning = true
 
 	stack.artifactDigest = artifactDigest
@@ -783,6 +781,23 @@ func doJSONRequest(t *testing.T, addr string, method string, requestPath string,
 		t.Fatalf("do request: %v", err)
 	}
 	return response
+}
+
+func doJSONRequestWithError(addr string, method string, requestPath string, tlsConfig *tls.Config, body []byte) (*http.Response, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	request, err := http.NewRequest(method, "https://"+addr+requestPath, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	return client.Do(request)
 }
 
 func mustReadBody(t *testing.T, body io.ReadCloser) []byte {

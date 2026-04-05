@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -24,6 +25,8 @@ import (
 )
 
 func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
+	requireSlice0BringupCapabilities(t)
+
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := newExecutionWorkspaceTempDir(t, "bringup-script-")
 	fixture := newTLSFixture(t)
@@ -76,6 +79,9 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			CertFile:     fixture.arsServerCertPath,
 			KeyFile:      fixture.arsServerKeyPath,
 			ClientCAFile: fixture.clientCAPath,
+		},
+		Security: arsconfig.SecurityConfig{
+			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: arsconfig.AuthorizationConfig{
 			AllowedSPIFFEPathPrefixes: []string{"service/execution", "operator"},
@@ -276,6 +282,7 @@ ports {
 		"BRINGUP_PROFILE=full",
 		"BRINGUP_DIR="+bringupDir,
 		"READY_TIMEOUT_SECONDS=60",
+		"CONTROL_PLANE_IMAGE=execution-platform/control-plane:test-"+itoa(t, nomadHTTPPort),
 		"ARS_CONFIG="+arsConfigPath,
 		"EGS_CONFIG="+egsConfigPath,
 		"AGS_CONFIG="+agsConfigPath,
@@ -308,7 +315,7 @@ ports {
 	}
 	t.Cleanup(down)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	upCmd := exec.CommandContext(ctx, bringupScript, "up")
@@ -338,6 +345,23 @@ ports {
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
 	}
+
+	executeLoopCmd := exec.CommandContext(
+		ctx,
+		filepath.Join(repoRoot, "scripts", "60_execute_loop.sh"),
+		filepath.Join(repoRoot, ".examples", "execution_loop", "static_script_success.input.json"),
+	)
+	executeLoopCmd.Dir = repoRoot
+	executeLoopCmd.Env = append(baseEnv,
+		"WORKDIR_BASE="+filepath.Join(rootDir, "execute-loop"),
+	)
+	executeLoopOutput, err := executeLoopCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute loop failed: %v output=%s", err, string(executeLoopOutput))
+	}
+	runID := executionLoopRunIDFromOutput(t, string(executeLoopOutput))
+	assertNomadBindSourcesUnderStagingRoot(t, "http://127.0.0.1:"+itoa(t, nomadHTTPPort), runID, esCfg.Execution.StagingRootDir)
+	assertStagingInvariantProof(t, filepath.Join(bringupDir, "staging-invariant.json"), esCfg.Execution.StagingRootDir)
 
 	stopManagedBringupService(t, bringupDir, "nomad")
 
@@ -1091,6 +1115,134 @@ func splitHostPort(t *testing.T, addr string) (string, string, error) {
 func itoa(t *testing.T, value int) string {
 	t.Helper()
 	return strconv.Itoa(value)
+}
+
+func requireSlice0BringupCapabilities(t *testing.T) {
+	t.Helper()
+
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skipf("slice 0 bringup requires docker: %v", err)
+	}
+	if _, err := exec.LookPath("nomad"); err != nil {
+		t.Skipf("slice 0 bringup requires nomad: %v", err)
+	}
+	if output, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
+		t.Skipf("slice 0 bringup requires a reachable docker daemon: %v output=%s", err, string(output))
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("slice 0 bringup requires a host loopback listener: %v", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("slice0-host-loopback-ok\n"))
+		}),
+	}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	address := "http://" + listener.Addr().String()
+	output, err := exec.Command("docker", "run", "--rm", "--network", "host", "alpine:3.20", "wget", "-q", "-O", "-", address).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "slice0-host-loopback-ok" {
+		t.Skipf("slice 0 bringup requires Docker host networking that preserves host loopback; err=%v output=%s", err, string(output))
+	}
+}
+
+func executionLoopRunIDFromOutput(t *testing.T, output string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "execution: success run_id=") {
+			pieces := strings.Split(line, "run_id=")
+			if len(pieces) < 2 {
+				continue
+			}
+			return strings.Fields(pieces[1])[0]
+		}
+	}
+	t.Fatalf("expected execute-loop run_id in output, got %s", output)
+	return ""
+}
+
+func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runID string, stagingRoot string) {
+	t.Helper()
+
+	cmd := exec.Command("nomad", "job", "inspect", "-json", "exec-"+runID)
+	cmd.Env = append(os.Environ(), "NOMAD_ADDR="+nomadAddr)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect nomad job: %v output=%s", err, string(output))
+	}
+
+	var job struct {
+		TaskGroups []struct {
+			Tasks []struct {
+				Config map[string]any `json:"Config"`
+			} `json:"Tasks"`
+		} `json:"TaskGroups"`
+	}
+	if err := json.Unmarshal(output, &job); err != nil {
+		t.Fatalf("decode nomad job: %v", err)
+	}
+	if len(job.TaskGroups) == 0 || len(job.TaskGroups[0].Tasks) == 0 {
+		t.Fatalf("expected task groups in nomad job, got %s", string(output))
+	}
+
+	mounts, ok := job.TaskGroups[0].Tasks[0].Config["mounts"].([]any)
+	if !ok || len(mounts) == 0 {
+		t.Fatalf("expected docker mounts in nomad job config, got %s", string(output))
+	}
+
+	expectedPrefix := filepath.Join(stagingRoot, runID)
+	bindCount := 0
+	for _, raw := range mounts {
+		mount, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if mount["type"] != "bind" {
+			continue
+		}
+		source, _ := mount["source"].(string)
+		if source == "" {
+			t.Fatalf("expected bind mount source in nomad job, got %v", mount)
+		}
+		if !strings.HasPrefix(source, expectedPrefix) {
+			t.Fatalf("expected bind mount source under %s, got %s", expectedPrefix, source)
+		}
+		bindCount++
+	}
+	if bindCount < 2 {
+		t.Fatalf("expected staged payload/run bind mounts under %s, got %d", expectedPrefix, bindCount)
+	}
+}
+
+func assertStagingInvariantProof(t *testing.T, proofPath string, stagingRoot string) {
+	t.Helper()
+
+	var payload struct {
+		HostStagingPath      string `json:"host_staging_path"`
+		ESContainerMountPath string `json:"es_container_mount_path"`
+		PathTranslation      bool   `json:"path_translation"`
+	}
+	data, err := os.ReadFile(proofPath)
+	if err != nil {
+		t.Fatalf("read staging invariant proof: %v", err)
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("decode staging invariant proof: %v", err)
+	}
+	if payload.HostStagingPath != stagingRoot || payload.ESContainerMountPath != stagingRoot {
+		t.Fatalf("expected same-path staging proof for %s, got %+v", stagingRoot, payload)
+	}
+	if payload.PathTranslation {
+		t.Fatalf("expected staging invariant to forbid path translation, got %+v", payload)
+	}
 }
 
 func stopManagedBringupService(t *testing.T, bringupDir string, service string) {

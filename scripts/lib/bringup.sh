@@ -10,6 +10,18 @@ bringup_profile() {
   printf '%s\n' "${BRINGUP_PROFILE:-full}"
 }
 
+managed_service_uses_container() {
+  local service=$1
+  case "${service}" in
+    ars|ags|egs|es|cgs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 print_check_section() {
   local title=$1
   printf '\n==> %s\n' "${title}"
@@ -91,6 +103,20 @@ curl_tls_get_to_file() {
   curl "${args[@]}" >"$output_path"
 }
 
+resolve_health_check_credentials() {
+  local cert="${OPERATOR_CERT:-${ARS_READ_CERT:-}}"
+  local key="${OPERATOR_KEY:-${ARS_READ_KEY:-}}"
+
+  if [[ -z "${cert}" || -z "${key}" ]]; then
+    echo "service health verification requires OPERATOR_CERT/OPERATOR_KEY or ARS_READ_CERT/ARS_READ_KEY" >&2
+    return 1
+  fi
+  require_readable_path "health-check client cert" "${cert}" || return 1
+  require_readable_path "health-check client key" "${key}" || return 1
+
+  printf '%s\n%s\n' "${cert}" "${key}"
+}
+
 service_health_summary() {
   local payload_path=$1
   local fallback_service=$2
@@ -112,13 +138,20 @@ check_service_ready_once() {
   local fallback_service=$1
   local url=$2
   local resolve="${3:-}"
+  local cert_key
+  local cert
+  local key
   local response_path
   local summary
   local status=0
 
+  cert_key="$(resolve_health_check_credentials)" || return 1
+  cert="$(printf '%s\n' "${cert_key}" | sed -n '1p')"
+  key="$(printf '%s\n' "${cert_key}" | sed -n '2p')"
+
   response_path="$(mktemp)"
 
-  if ! curl_tls_get_to_file "${response_path}" "${url}/health" "${resolve}"; then
+  if ! curl_tls_get_to_file "${response_path}" "${url}/health" "${resolve}" --cert "${cert}" --key "${key}"; then
     echo "${fallback_service}: health request failed for ${url}/health" >&2
     status=1
   elif ! summary="$(service_health_summary "${response_path}" "${fallback_service}")"; then

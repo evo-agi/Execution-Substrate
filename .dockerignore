@@ -1,0 +1,8 @@
+.git
+.tmp
+.out
+bringup-script-*
+es-submit-*
+*.test
+coverage.*
+profile.cov

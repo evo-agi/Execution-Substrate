@@ -600,18 +600,16 @@ func TestAuthorizeRejectsMalformedJSON(t *testing.T) {
 	assertErrorPayload(t, response, "malformed JSON request body")
 }
 
-func TestAuthorizeWithoutClientCertReturnsUnauthorized(t *testing.T) {
+func TestAuthorizeWithoutClientCertFailsTLSHandshake(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))
 
-	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", map[string]any{}, fixture.baseClientTLSConfig(t))
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", response.StatusCode)
-	}
-	if body := string(mustReadBody(t, response.Body)); body != "Authenticated caller identity required" {
-		t.Fatalf("unexpected 401 body: %q", body)
+	response, err := doRequestRaw(service.Addr(), http.MethodPost, "/v1/credential/authorize", []byte("{}"), fixture.baseClientTLSConfig(t), "application/json")
+	if err == nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatalf("expected tls handshake failure without client certificate")
 	}
 }
 

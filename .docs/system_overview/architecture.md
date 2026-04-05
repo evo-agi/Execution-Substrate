@@ -55,6 +55,8 @@ Top-level interaction notes:
 - CGS is active as a separate authorization surface, but it is intentionally outside the current ES hot path.
 - Nomad is the execution backend and lifecycle authority for submitted work.
 - Docker is the container runtime used underneath Nomad in the current slice.
+- The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
+- Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
 - `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
 - `contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
 - `observability` is cross-cutting support, not a system boundary.
@@ -155,6 +157,7 @@ These are current architectural absences, not omissions to fill automatically.
 - `POST /v1/executions:prepare` is active today but explicitly bounded as a small preflight-success surface rather than declared as the permanent execution API shape.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
+- The containerized hot path currently relies on Docker host networking for control-plane reachability during slice 0; that is a temporary compatibility-heavy deployment convention, not the final control-plane network model.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the runtime-facing payload reference and cross-checked against evidence claims.

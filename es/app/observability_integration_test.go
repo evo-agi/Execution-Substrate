@@ -21,7 +21,7 @@ func TestObservabilityPropagatesTraceparentAcrossServices(t *testing.T) {
 	capture.Reset()
 
 	const traceParent = "00-0123456789abcdef0123456789abcdef-1111111111111111-01"
-	response := doRequestWithHeaders(t, stack.es.Addr(), http.MethodGet, "/health", stack.fixture.serverTLSConfig(t, stack.fixture.esServerName), nil, map[string]string{
+	response := doRequestWithHeaders(t, stack.es.Addr(), http.MethodGet, "/health", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false), nil, map[string]string{
 		"traceparent": traceParent,
 	})
 	defer response.Body.Close()

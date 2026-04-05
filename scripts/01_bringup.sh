@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=scripts/lib/bringup.sh
 source "${SCRIPT_DIR}/lib/bringup.sh"
+# shellcheck source=scripts/lib/control_plane.sh
+source "${SCRIPT_DIR}/lib/control_plane.sh"
 
 ACTION="${1:-up}"
 PROFILE="$(bringup_profile)"
@@ -72,8 +74,8 @@ require_bringup_common_env() {
   local name
 
   validate_bringup_profile
-  require_command go
   require_command curl
+  require_command docker
   require_command python3
 
   for name in ARS_CONFIG EGS_CONFIG AGS_CONFIG ES_CONFIG; do
@@ -84,10 +86,10 @@ require_bringup_common_env() {
   done
   require_readable_env CA_CERT
   resolve_ars_read_credentials >/dev/null
+  resolve_health_check_credentials >/dev/null
 
   if [[ "${profile}" == "full" ]]; then
     require_command nomad
-    require_command docker
     require_readable_env NOMAD_CONFIG
     require_env NOMAD_ADDR
     verify_es_submit_config_enabled "${ES_CONFIG}"
@@ -99,6 +101,7 @@ require_bringup_check_env() {
 
   validate_bringup_profile
   require_command curl
+  require_command docker
   require_command python3
 
   require_env ARS_URL
@@ -108,9 +111,9 @@ require_bringup_check_env() {
   require_readable_env CA_CERT
   require_readable_env ES_CONFIG
   resolve_ars_read_credentials >/dev/null
+  resolve_health_check_credentials >/dev/null
 
   if [[ "${profile}" == "full" ]]; then
-    require_command docker
     require_env NOMAD_ADDR
     verify_es_submit_config_enabled "${ES_CONFIG}"
   fi
@@ -151,10 +154,17 @@ stop_managed_service() {
   local pid_file
   local pid
   local waited=0
+  local container_name=""
 
   pid_file="$(pid_file_for "${service}")"
   pid="$(managed_pid "${service}")"
+  if managed_service_uses_container "${service}" && declare -f control_plane_container_name >/dev/null 2>&1; then
+    container_name="$(control_plane_container_name "${service}")"
+  fi
   if ! pid_is_running "${pid}"; then
+    if [[ -n "${container_name}" ]]; then
+      docker rm -f "${container_name}" >/dev/null 2>&1 || true
+    fi
     rm -f "${pid_file}"
     return 0
   fi
@@ -173,6 +183,9 @@ stop_managed_service() {
       pkill -KILL -P "${pid}" >/dev/null 2>&1 || true
     fi
     kill -KILL "${pid}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${container_name}" ]]; then
+    docker rm -f "${container_name}" >/dev/null 2>&1 || true
   fi
   rm -f "${pid_file}"
 }
@@ -198,6 +211,10 @@ cmd_up() {
   trap handle_failure EXIT
 
   mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
+  check_docker_ready
+  ensure_control_plane_image "${LOGS_DIR}/control-plane-image-build.log"
+  probe_control_plane_host_loopback
+  verify_es_staging_invariant "${ES_CONFIG}"
 
   start_managed_service "ars" "${SCRIPT_DIR}/02_start_ars.sh"
   wait_for_service_ready "artifact-registry" "${ARS_URL}" "$(resolve_value ARS_RESOLVE)" "${READY_TIMEOUT_SECONDS}"
@@ -218,7 +235,6 @@ cmd_up() {
   fi
 
   if [[ "${PROFILE}" == "full" ]]; then
-    check_docker_ready
     start_managed_service "nomad" "${SCRIPT_DIR}/06_start_nomad.sh"
     wait_for_nomad_ready "${READY_TIMEOUT_SECONDS}"
   fi

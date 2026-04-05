@@ -156,18 +156,13 @@ func TestValidTrustModelFetchReturnsVerifiableSignedPayload(t *testing.T) {
 	}
 }
 
-func TestUnauthorizedCallerReturns401(t *testing.T) {
+func TestUnauthorizedCallerFailsTLSHandshake(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, buildConfig(fixture))
 
-	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/trust-model", fixture.clientTLSConfig(t, "", false))
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", response.StatusCode)
-	}
-	if got := strings.TrimSpace(string(mustReadBody(t, response.Body))); got != "Authenticated caller identity required" {
-		t.Fatalf("unexpected body: %q", got)
+	_, err := doRequestWithError(service.Addr(), http.MethodGet, "/v1/trust-model", fixture.clientTLSConfig(t, "", false))
+	if err == nil {
+		t.Fatalf("expected tls handshake failure without client certificate")
 	}
 }
 
@@ -251,7 +246,7 @@ func TestHealthReturnsExpectedShape(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, buildConfig(fixture))
 
-	response := doRequest(t, service.Addr(), http.MethodGet, "/health", fixture.clientTLSConfig(t, "", false))
+	response := doRequest(t, service.Addr(), http.MethodGet, "/health", fixture.clientTLSConfig(t, "service/execution", false))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -331,7 +326,7 @@ func startTestApp(t *testing.T, fixture *tlsFixture, cfg config.Config) *app.App
 		}
 	})
 
-	waitForHealthy(t, service.Addr(), fixture.clientTLSConfig(t, "", false))
+	waitForHealthy(t, service.Addr(), fixture.clientTLSConfig(t, "service/execution", false))
 	return service
 }
 
@@ -383,6 +378,22 @@ func doRequest(t *testing.T, addr string, method string, path string, tlsConfig 
 		t.Fatalf("do request: %v", err)
 	}
 	return response
+}
+
+func doRequestWithError(addr string, method string, path string, tlsConfig *tls.Config) (*http.Response, error) {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
+
+	request, err := http.NewRequest(method, "https://"+addr+path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.Do(request)
 }
 
 func mustReadBody(t *testing.T, body io.ReadCloser) []byte {
