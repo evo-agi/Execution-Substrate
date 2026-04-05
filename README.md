@@ -1,0 +1,77 @@
+# Execution-Platform
+
+This repository contains the current Go implementation of the platform's governed publication, storage, policy, admission, and bounded execution system.
+
+The current system includes these active service boundaries:
+
+- ARS
+- AGS
+- EGS
+- CGS
+- ES
+
+Nomad and Docker remain part of the current execution slice, with ES submitting to Nomad and Docker running tasks under Nomad.
+
+## Redesign Phase
+
+The repository is in an active architecture redesign phase.
+
+The current system is coherent and implemented, but some architecture-defining seams are intentionally reopened. Authoritative design intent lives in `PLANS.md` and `.docs/`, not in the README.
+
+## Where To Start
+
+Read these in order:
+
+1. [AGENTS.md](/Users/ds/Repositories/Execution-Platform/AGENTS.md) for repository operating rules
+2. [PLANS.md](/Users/ds/Repositories/Execution-Platform/PLANS.md) for current work, redesign scope, and reopened seams
+3. [.docs/system_overview/architecture.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/architecture.md) for the top-level system map
+4. [.docs/system_overview/contracts.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/contracts.md) for cross-service contracts
+5. [.docs/system_overview/boundaries.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/boundaries.md) for ownership and non-ownership
+6. [.docs/system_overview/evolution.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/evolution.md) for change-governance rules
+7. [.docs/execution_lifecycle/design.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/design.md) for lifecycle design
+8. [.docs/execution_lifecycle/contracts.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/contracts.md) for lifecycle public contract
+9. [.docs/execution_lifecycle/implementation.md](/Users/ds/Repositories/Execution-Platform/.docs/execution_lifecycle/implementation.md) for lifecycle implementation paths
+
+Supporting references:
+
+- [.docs/system_overview/configuration.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/configuration.md) for current config requirements
+- [.docs/system_overview/observability.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/observability.md) for observability rules
+- [.docs/system_overview/capability_probing.md](/Users/ds/Repositories/Execution-Platform/.docs/system_overview/capability_probing.md) for capability-sensitive validation rules
+
+## Operator Quick Start
+
+For the current bounded execution slice, the preferred operator path is:
+
+1. Follow [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md)
+2. Use `scripts/01_bringup.sh up` for the cohesive local bring-up path
+3. Use `scripts/01_bringup.sh check` to re-check service health, prepare-ready state, and submit-ready state
+4. Use `scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json` for the bounded end-to-end smoke path
+5. Use `scripts/01_bringup.sh down` to stop the managed stack
+
+The lower-level readiness helper remains `scripts/10_health_check.sh`. In the current slice, ES `/health` proves only admission-oriented service health; the operator path now layers workload-zone Vault runtime-config validation plus Nomad/Docker checks on top before claiming submit readiness.
+For those operator-facing helpers, the current caller credentials are `OPERATOR_CERT` and `OPERATOR_KEY`; `service/deployment` is no longer a co-equal hot-path caller identity for AGS or ES in this bounded slice.
+The operator-facing publish / prepare / submit / lifecycle helpers now classify failures into bounded categories and point back to the compact troubleshooting matrix in [/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution-Platform/.runbooks/system/v1_bringup.md). That matrix is the current operator reference for:
+
+- which readiness check is authoritative
+- which service logs matter most
+- when retained staging is useful
+- what next action to take
+
+The bounded diagnostics collector is `scripts/70_diagnostics.sh`. Use `--category auth|trust|runtime-config|readiness|substrate|execution|input` or `--run-id run-...` to gather the exact logs/check outputs already named by that troubleshooting matrix. Then use `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>` to print a compact summary of the collected bundle.
+
+When a later helper reports a readiness or substrate problem, re-run `scripts/01_bringup.sh check` first instead of inferring readiness from a single endpoint call, then use that troubleshooting matrix or `scripts/70_diagnostics.sh`.
+
+In the current bounded execution slice, successful runs keep `execution.staging_root_dir/<run_id>` only until ES observes terminal success through the lifecycle path. Failed, canceled, lost, or otherwise ambiguous outcomes retain staging for debugging.
+
+## Repo Structure
+
+High-level layout:
+
+- `ars/`, `ags/`, `egs/`, `cgs/`, `es/` for the active Go services
+- `contracts/` for shared cross-service packages
+- `observability/` for cross-cutting support code
+- `.docs/` for authoritative design, contract, boundary, lifecycle, and governance docs
+- `.runbooks/` for operator-facing bring-up and verification steps
+- `scripts/` and `.examples/` for local verification helpers and inputs
+
+Use the README as a navigation entrypoint only. For architecture, contracts, boundaries, lifecycle semantics, and redesign intent, defer to the authoritative docs above.
