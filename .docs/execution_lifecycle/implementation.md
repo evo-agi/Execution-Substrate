@@ -239,14 +239,19 @@ Cancel path:
   - `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - Derives a run-scoped Unix endpoint URI and backing workspace path under the ES-owned runtime-identity root instead of treating a fixed endpoint path as workload contract.
 - Enforces overlap checks with `ValidateReservedRuntimePaths`.
+- The current slice-1 implementation target extends this boundary by reserving:
+  - helper-private SPIRE path under `/run/es-runtime-identity/<run_id>/internal/`
+  - platform-owned runtime assets under `/execution/run/platform/`
+  - workload-owned content under `/execution/run/work`
 
 **Implementation invariant**
 
 - ES currently protects the reserved runtime paths backing the discovered endpoint from caller mount overlap.
+- The first platform-owned runtime-identity slice must preserve a helper-private raw SPIRE channel and fixed non-root workload launch semantics before any JWT retrieval is considered complete.
 
 **Deliberate absence**
 
-- ES does not implement the endpoint behind the reserved path.
+- ES does not become the long-lived runtime credential owner behind the reserved path; runtime-side delivery remains owned by the platform helper launched with the workload.
 
 ### `mounts.go`
 
@@ -362,6 +367,7 @@ The most important implementation facts are backed by integration tests:
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
 - The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` as sufficient on its own.
+- Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
@@ -372,6 +378,7 @@ Operator helper ownership in the current slice:
 
 - `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
 - `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile at `.out/Dockerfile`; bring-up regenerates that file before building.
+- `.out/` is the repo-local generated-artifact sink in the current slice; tracked source-of-truth inputs remain explicit exceptions such as `.out/Dockerfile`, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability, Nomad, and Docker.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
 - `scripts/70_diagnostics.sh` is the bounded diagnostics collector for that same operator slice; category bundles gather only the logs/checks already named by the troubleshooting matrix, and `run_id` bundles use the public ES lifecycle endpoints plus local staging inspection when relevant.

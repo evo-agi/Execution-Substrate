@@ -24,6 +24,12 @@ func TestRuntimeIdentityHandoffUsesCanonicalEndpointDiscovery(t *testing.T) {
 	if !strings.HasPrefix(handoff.workspaceDir(), runtimeIdentityWorkspaceRoot+"/") {
 		t.Fatalf("expected workspace dir to stay under %q, got %q", runtimeIdentityWorkspaceRoot, handoff.workspaceDir())
 	}
+	if handoff.internalDir() != path.Join(handoff.workspaceDir(), runtimeIdentityInternalDirName) {
+		t.Fatalf("expected internal dir under workspace dir, got %q", handoff.internalDir())
+	}
+	if handoff.spireSocketPath() != path.Join(handoff.internalDir(), runtimeIdentitySPIRESocketName) {
+		t.Fatalf("expected helper-private SPIRE socket path under internal dir, got %q", handoff.spireSocketPath())
+	}
 }
 
 func TestValidateReservedRuntimePathsRejectsRuntimeIdentityWorkspaceOverlap(t *testing.T) {
@@ -32,7 +38,8 @@ func TestValidateReservedRuntimePathsRejectsRuntimeIdentityWorkspaceOverlap(t *t
 		runtimeIdentityWorkspaceRoot,
 		handoff.workspaceDir(),
 		handoff.endpointPath(),
-		path.Join(handoff.workspaceDir(), "helper.sock"),
+		handoff.internalDir(),
+		handoff.spireSocketPath(),
 	}
 
 	for _, targetPath := range testCases {

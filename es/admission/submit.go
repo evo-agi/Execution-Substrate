@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -127,7 +126,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env, req.TimeoutSeconds)
+	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -203,8 +202,8 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string, timeoutSeconds int) map[string]string {
-	env := make(map[string]string, len(invocationEnv)+12)
+func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(invocationEnv)+11)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
@@ -219,7 +218,6 @@ func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest strin
 	env["EXEC_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
 	env["EXEC_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
 	env["EXEC_WORKLOAD_VAULT_JWT_AUDIENCE"] = workloadVaultPlan.JWTAudience
-	env["EXEC_TIMEOUT_SECONDS"] = strconv.Itoa(timeoutSeconds)
 	return env
 }
 
@@ -235,15 +233,14 @@ func buildNomadJobSpec(
 	env map[string]string,
 ) map[string]any {
 	layout := stage.layout
-	wrapper := layout.runtimeWrapperScript()
-
-	shellArgs := []string{"-ec", wrapper, "entrypoint"}
-	shellArgs = append(shellArgs, req.Invocation.Argv...)
+	supervisorArgs := layout.runtimeSupervisorArgs(req.Invocation.Argv, req.TimeoutSeconds)
 
 	taskConfig := map[string]any{
-		"image":   cfg.Execution.BaseImage,
-		"command": "/bin/sh",
-		"args":    shellArgs,
+		"image":        cfg.Execution.BaseImage,
+		"command":      executionRuntimeSupportPath,
+		"args":         supervisorArgs,
+		"privileged":   false,
+		"security_opt": []string{"no-new-privileges"},
 	}
 
 	taskConfig["mounts"] = layout.runtimeMountSpecs(cfg, stage.mounts)
@@ -283,6 +280,7 @@ func buildNomadJobSpec(
 						map[string]any{
 							"Name":   "task",
 							"Driver": "docker",
+							"User":   "0:0",
 							"Config": taskConfig,
 							"Env":    env,
 							"Resources": map[string]any{

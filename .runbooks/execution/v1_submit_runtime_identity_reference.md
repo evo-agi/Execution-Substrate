@@ -1,15 +1,15 @@
 # Runbook: Submit Runtime Identity Reference Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-04`
+- Last Updated: `2026-04-05`
 
 ## 1. Objective
 
-Submit the reference runtime-identity workload through the current governed execution path:
+Submit the legacy reference runtime-identity workload through the governed execution path:
 
 `AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload discovers identity endpoint -> workload authenticates to Vault -> observable logs + exit code`
 
-This runbook does not change platform behavior. It exercises the current bounded runtime-identity contract on top of the same static-script execution model documented in [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md).
+This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_submit_static_script.md). It is not the slice-1 platform-owned runtime identity proof path.
 
 For a local non-production Vault dev path plus a simple HTTP identity adapter, see [/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md](/Users/ds/Repositories/Execution-Platform/.runbooks/execution/v1_runtime_identity_local_validation.md).
 
@@ -29,9 +29,9 @@ The resulting archive is:
 
 - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 
-## 3. Runtime-Identity Contract In This Slice
+## 3. Runtime-Identity Contract In This Legacy Reference Path
 
-The current workload-visible contract is:
+The workload-visible contract shared with the current platform-owned path is:
 
 - discover the endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - use the non-secret Vault metadata ES injects:
@@ -40,7 +40,9 @@ The current workload-visible contract is:
   - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
   - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
 
-The workload must **not** assume a fixed `/execution/...` socket path. ES now chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
+This legacy reference runbook then adds workload-authored bridge behavior on top of that contract. The workload must **not** assume a fixed `/execution/...` socket path. ES chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
+
+Slice 1 changes the ownership behind that endpoint: the platform-owned helper serves the bounded endpoint and the workload no longer authors the bridge itself.
 
 ## 4. Environment Assumptions
 
@@ -49,7 +51,7 @@ All prerequisites from the static-script runbook still apply, plus:
 - ES base image includes `python3`
 - the publish request sets `admission.access.network_access = true`
 - the submit request includes `REFERENCE_IDENTITY_URL`
-- the workload-local bridge protocol is documented in [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md)
+- the legacy workload-local bridge protocol is documented in [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/README.md)
 - the workload-zone Vault config reachable by ES points at a Vault-compatible address reachable from the workload container
 
 Optional local helpers remain available:
@@ -57,7 +59,7 @@ Optional local helpers remain available:
 - [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py)
 - [/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py](/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/helpers/mock_vault.py)
 
-These helpers are reference tooling only. They are not platform components.
+These helpers are reference tooling only. They are not platform components and they are not the slice-1 helper implementation.
 
 ## 5. Bring Up The Stack
 
@@ -275,6 +277,8 @@ Success requires:
 - Vault auth succeeds
 - secret read succeeds
 - terminal exit code is `0`
+
+This proves only the legacy reference path. It does not prove the slice-1 platform-owned runtime identity model.
 
 Expected log markers include:
 

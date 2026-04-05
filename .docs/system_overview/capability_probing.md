@@ -113,10 +113,16 @@ Probes do not define new behavior on their own and must not silently widen a ser
 
 ## Example: Runtime Identity
 
-For the bounded runtime-identity plumbing slice:
+For the bounded slice-1 runtime-identity delivery slice:
 
-- static validation proves that caller mounts do not overlap the reserved runtime-identity workspace and paths
-- no dedicated runtime capability probe is required in the current slice because ES no longer depends on topology-specific host plumbing
-- if a future plumbing slice adds topology-specific behavior again, it must probe the reserved runtime interface by behavior rather than branch on OS labels
+- static validation must prove:
+  - caller mounts do not overlap the reserved runtime-identity workspace and paths
+  - the configured runtime-support binary path is absolute and readable
+  - the configured SPIRE Workload API socket path is absolute and refers to a local Unix socket
+- startup-only runtime capability probes may prove:
+  - the platform-owned helper can bind and serve the public endpoint inside the reserved runtime workspace
+  - the helper-private SPIRE socket remains reachable to the helper and not workload-readable after the runtime boundary is established
+  - the workload launch model can drop to the fixed non-root UID/GID with no supplemental groups and no privilege-escalation path
+- these checks belong at startup only; if the slice cannot prove those runtime conditions, it must fail closed instead of degrading to workload-owned SPIRE access
 
 This keeps the slice behavior-based, deterministic, and consistent across environments without introducing OS-based branching.

@@ -1,24 +1,26 @@
 # Runtime Identity Reference Workload
 
-This directory contains a reference `static-script` workload that exercises the current runtime identity contract without changing platform behavior.
+This directory contains a legacy reference `static-script` workload that exercises the older workload-authored runtime-identity bridge shape.
 
-Everything in this directory is example-level behavior. The platform contract is limited to the reserved runtime-identity workspace, the reserved endpoint path, and the non-secret Vault auth environment variables.
+Everything in this directory is example-level scaffolding only. It is not the slice-1 platform-owned runtime identity implementation. The platform contract is limited to the reserved runtime-identity workspace, the discovered `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, and the non-secret Vault auth environment variables.
 
 ## What It Demonstrates
 
-The workload:
+The reference workload:
 
 - reads `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
-- creates a local bridge at the reserved runtime identity path
+- creates its own local bridge at the reserved runtime identity path
 - reads bounded non-secret Vault auth metadata from the environment
 - obtains a JWT from `REFERENCE_IDENTITY_URL` through that local bridge
 - authenticates to Vault locally
 - reads one test secret from Vault
 - prints success markers and the secret message to stdout
 
+That workload-authored bridge is retained only as example scaffolding. Slice 1 replaces this ownership model with a platform-owned helper launched by the platform supervisor inside the workload task.
+
 ## Reference Identity Protocols
 
-This workload creates a Unix-socket endpoint at `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
+This reference workload creates a Unix-socket endpoint at `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 
 The local endpoint speaks a small JSON-line protocol:
 
@@ -34,7 +36,7 @@ Response:
 {"jwt":"reference-runtime-identity-jwt"}
 ```
 
-The platform contract remains generic. This protocol exists only for the reference workload and its helper scripts.
+The platform contract does not require this protocol. This request shape exists only for the legacy reference workload and its helper scripts.
 
 The upstream identity URL in `REFERENCE_IDENTITY_URL` is expected to accept:
 
@@ -48,9 +50,9 @@ and respond with:
 {"jwt":"reference-runtime-identity-jwt"}
 ```
 
-`REFERENCE_IDENTITY_URL`, the upstream helper protocol, and the local bridge protocol are all reference-workload choices. They are not platform requirements.
+`REFERENCE_IDENTITY_URL`, the upstream helper protocol, and the local bridge protocol are all reference-workload choices. They are not platform requirements and they are not the slice-1 platform-owned endpoint shape.
 
-The current entrypoint also uses permissive local socket permissions as a validation convenience. That is not part of the platform contract or a production recommendation.
+The current reference entrypoint also uses permissive local socket permissions as a validation convenience. That is not part of the platform contract, not a production recommendation, and not the slice-1 platform-owned runtime boundary.
 
 ## Files
 

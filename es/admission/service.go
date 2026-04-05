@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -119,8 +120,9 @@ type ed25519Verifier struct {
 }
 
 // TODO: ARS publishes richer health payloads today, but ES must not grow an
-//		 implicit shared health-schema dependency around those additional fields.
-//		 Revisit only if the platform adopts an explicit shared readiness contract.
+//
+//	implicit shared health-schema dependency around those additional fields.
+//	Revisit only if the platform adopts an explicit shared readiness contract.
 //
 // healthResponse is intentionally minimal. ES only depends on dependency
 type healthResponse struct {
@@ -195,6 +197,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create execution staging root: %w", err)
 		}
+		if err := validateExecutionRuntimeInputs(cfg.Execution); err != nil {
+			return nil, err
+		}
 		nomadClient, err = newNomadClient(cfg.Nomad)
 		if err != nil {
 			return nil, fmt.Errorf("build nomad client: %w", err)
@@ -210,6 +215,29 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
 	}, nil
+}
+
+func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
+	resolvedBinaryPath, err := filepath.EvalSymlinks(filepath.Clean(cfg.RuntimeSupportBinary))
+	if err != nil {
+		return fmt.Errorf("validate execution.runtime_support_binary: %w", err)
+	}
+	binaryInfo, err := os.Stat(resolvedBinaryPath)
+	if err != nil {
+		return fmt.Errorf("validate execution.runtime_support_binary: %w", err)
+	}
+	if !binaryInfo.Mode().IsRegular() {
+		return fmt.Errorf("validate execution.runtime_support_binary: path must resolve to a regular file")
+	}
+
+	socketInfo, err := os.Stat(filepath.Clean(cfg.SPIREWorkloadAPISocketPath))
+	if err != nil {
+		return fmt.Errorf("validate execution.spire_workload_api_socket_path: %w", err)
+	}
+	if socketInfo.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("validate execution.spire_workload_api_socket_path: path must be a unix socket")
+	}
+	return nil
 }
 
 func (s *Service) Initialize(ctx context.Context) error {

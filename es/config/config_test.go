@@ -9,8 +9,10 @@ import (
 
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {
 	cfg := ExecutionConfig{
-		StagingRootDir: "/tmp/es-stage",
-		BaseImage:      "alpine:3.20",
+		StagingRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
 	}
 
 	if err := cfg.Validate("execution"); err != nil {
@@ -23,9 +25,11 @@ func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing
 
 func TestExecutionConfigValidateRejectsTmpfsSizeAboveMax(t *testing.T) {
 	cfg := ExecutionConfig{
-		StagingRootDir:           "/tmp/es-stage",
-		BaseImage:                "alpine:3.20",
-		RuntimeIdentityTmpfsSize: maxRuntimeIdentityTmpfsSizeBytes + 1,
+		StagingRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RuntimeIdentityTmpfsSize:   maxRuntimeIdentityTmpfsSizeBytes + 1,
 	}
 
 	err := cfg.Validate("execution")
@@ -39,13 +43,47 @@ func TestExecutionConfigValidateRejectsTmpfsSizeAboveMax(t *testing.T) {
 
 func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *testing.T) {
 	cfg := ExecutionConfig{
-		StagingRootDir:           "/tmp/es-stage",
-		BaseImage:                "alpine:3.20",
-		RuntimeIdentityTmpfsSize: 2 << 20,
+		StagingRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RuntimeIdentityTmpfsSize:   2 << 20,
 	}
 
 	if got := cfg.EffectiveRuntimeIdentityTmpfsSize(); got != 2<<20 {
 		t.Fatalf("expected explicit tmpfs size to be preserved, got %d", got)
+	}
+}
+
+func TestExecutionConfigValidateRejectsMissingRuntimeSupportBinary(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for missing runtime support binary")
+	}
+	if !strings.Contains(err.Error(), "runtime_support_binary") {
+		t.Fatalf("expected runtime_support_binary validation error, got %v", err)
+	}
+}
+
+func TestExecutionConfigValidateRejectsMissingSPIRESocketPath(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:       "/tmp/es-stage",
+		BaseImage:            "alpine:3.20",
+		RuntimeSupportBinary: "/usr/local/bin/es-runtime-support",
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for missing spire workload api socket path")
+	}
+	if !strings.Contains(err.Error(), "spire_workload_api_socket_path") {
+		t.Fatalf("expected spire_workload_api_socket_path validation error, got %v", err)
 	}
 }
 

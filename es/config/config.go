@@ -70,9 +70,11 @@ type NomadConfig struct {
 }
 
 type ExecutionConfig struct {
-	StagingRootDir           string `json:"staging_root_dir"`
-	BaseImage                string `json:"base_image"`
-	RuntimeIdentityTmpfsSize int64  `json:"runtime_identity_tmpfs_size,omitempty"`
+	StagingRootDir             string `json:"staging_root_dir"`
+	BaseImage                  string `json:"base_image"`
+	RuntimeIdentityTmpfsSize   int64  `json:"runtime_identity_tmpfs_size,omitempty"`
+	RuntimeSupportBinary       string `json:"runtime_support_binary,omitempty"`
+	SPIREWorkloadAPISocketPath string `json:"spire_workload_api_socket_path,omitempty"`
 }
 
 const (
@@ -272,6 +274,18 @@ func (c ExecutionConfig) Validate(field string) error {
 	if !filepath.IsAbs(strings.TrimSpace(c.StagingRootDir)) {
 		return fmt.Errorf("%s.staging_root_dir must be an absolute path", field)
 	}
+	if strings.TrimSpace(c.RuntimeSupportBinary) == "" {
+		return fmt.Errorf("%s.runtime_support_binary is required", field)
+	}
+	if !filepath.IsAbs(strings.TrimSpace(c.RuntimeSupportBinary)) {
+		return fmt.Errorf("%s.runtime_support_binary must be an absolute path", field)
+	}
+	if strings.TrimSpace(c.SPIREWorkloadAPISocketPath) == "" {
+		return fmt.Errorf("%s.spire_workload_api_socket_path is required", field)
+	}
+	if !filepath.IsAbs(strings.TrimSpace(c.SPIREWorkloadAPISocketPath)) {
+		return fmt.Errorf("%s.spire_workload_api_socket_path must be an absolute path", field)
+	}
 	if c.RuntimeIdentityTmpfsSize < 0 {
 		return fmt.Errorf("%s.runtime_identity_tmpfs_size must be greater than or equal to 0", field)
 	}
@@ -356,5 +370,7 @@ func (c Config) SubmitConfigured() bool {
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
 		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
-		strings.TrimSpace(c.Execution.BaseImage) != ""
+		strings.TrimSpace(c.Execution.BaseImage) != "" ||
+		strings.TrimSpace(c.Execution.RuntimeSupportBinary) != "" ||
+		strings.TrimSpace(c.Execution.SPIREWorkloadAPISocketPath) != ""
 }

@@ -1,22 +1,22 @@
 # Runbook: Local Runtime Identity Validation (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-02`
+- Last Updated: `2026-04-05`
 
 ## 1. Objective
 
-Validate the current runtime identity plumbing end to end using the existing Go platform plus minimal local infrastructure:
+Validate the legacy runtime-identity reference plumbing end to end using the existing Go platform plus minimal local infrastructure:
 
 `ES -> runtime-identity workspace -> reference workload local bridge -> local identity adapter -> Vault dev mode -> secret read`
 
-This runbook is intentionally local and non-production:
+This runbook is intentionally local, non-production, and legacy:
 
 - no SPIRE
 - no production Vault
 - no TLS added for Vault or the identity adapter
-- no platform code changes
+- no platform-owned runtime identity helper
 
-It proves plumbing and contract compatibility only.
+It proves only legacy plumbing and contract compatibility for the workload-authored reference path. It does not prove the slice-1 platform-owned runtime identity model.
 
 For a fresh Linux VM, an optional explicit bootstrap helper is available at:
 
@@ -49,7 +49,7 @@ You also need:
 - `curl`
 - `nomad`
 
-Use the existing runtime identity reference workload:
+Use the existing legacy runtime identity reference workload:
 
 - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/entrypoint`
 - `/Users/ds/Repositories/Execution-Platform/.examples/runtime_identity_reference/package.sh`
@@ -199,7 +199,7 @@ It:
 - returns the configured JWT
 - stays stateless request -> response only
 
-This HTTP request/response shape is reference-helper behavior only. It is not part of the platform runtime-identity contract.
+This HTTP request/response shape is reference-helper behavior only. It is not part of the slice-1 platform-owned runtime-identity contract.
 
 Start it on the local host:
 
@@ -217,7 +217,7 @@ Leave that running in its own terminal.
 
 ## 5. ES Config Snippet
 
-The only local runtime identity plumbing requirement in ES config is a base image with `python3`.
+The only local runtime identity plumbing requirement in ES config for this legacy validation path is a base image with `python3`.
 
 Example execution snippet:
 
@@ -261,7 +261,7 @@ Use these important values:
 
 Set `REFERENCE_IDENTITY_URL` to any host or service address that the workload container can reach without changing platform code. `host.docker.internal` may work in some runtimes, but it is not the default assumption for this runbook.
 
-The workload then runs this real local flow:
+The workload then runs this legacy local flow:
 
 1. read the discovered endpoint from `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 2. obtain the static RS256 JWT through that bridge
@@ -291,13 +291,15 @@ Expected final JSON line:
 {"artifact_digest":"sha256:...","secret_message":"runtime-identity-ok","status":"ok"}
 ```
 
-This proves:
+This proves only the legacy reference flow:
 
 - the runtime identity workspace was usable
-- the workload created and reached the reserved local endpoint
+- the workload-authored bridge created and reached the reserved local endpoint
 - the adapter returned a JWT
 - Vault auth worked
 - the secret read worked
+
+It does not prove the slice-1 platform-owned runtime identity helper, the helper-private SPIRE boundary, or the non-root runtime identity enforcement used by the bounded platform-owned path.
 
 ## 8. Failure Guide
 

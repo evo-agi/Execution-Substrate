@@ -161,7 +161,8 @@ Design-level meaning:
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
-- ES does not implement the workload-side runtime identity endpoint.
+- ES does not become the long-lived runtime identity owner. The bounded slice-1 implementation target is a platform-owned helper launched by a platform-owned supervisor inside the workload task.
+- The first runtime-identity slice deliberately narrows workload runtime compatibility to a fixed non-root workload process while the helper remains root-owned and helper-private access to the raw SPIRE channel is preserved.
 
 Lifecycle implication:
 

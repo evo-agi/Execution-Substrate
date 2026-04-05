@@ -213,6 +213,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.base_image`
+  - `execution.runtime_support_binary`
+  - `execution.spire_workload_api_socket_path`
   - optionally `execution.runtime_identity_tmpfs_size`
 - `execution.staging_root_dir` is a writable host-local staging root
   - the current slice-0 operator path requires that host path to be mounted into the ES container at the exact same absolute path with no translation
@@ -226,6 +228,14 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
   - this backing workspace is not persisted to host staging
   - `execution.runtime_identity_tmpfs_size` controls that ES-owned backing workspace and defaults to `1048576` bytes (`1 MiB`); it must not exceed `8388608` bytes (`8 MiB`)
+- slice `1A` and `1B` additionally require:
+  - `execution.runtime_support_binary`: absolute path to the platform-owned runtime supervisor/helper binary staged into the workload task
+  - `execution.spire_workload_api_socket_path`: absolute path to the local SPIRE Workload API Unix socket that ES bind-mounts into the helper-private runtime path
+- slice `1A` and `1B` intentionally narrow workload compatibility:
+  - the helper runs as `0:0`
+  - the workload runs as fixed UID:GID `10000:10000`
+  - the workload gets no supplemental groups and no privilege-escalation path
+  - root workloads and arbitrary image-user execution are out of scope for this slice
 - workloads should rely on `EXEC_WORKLOAD_IDENTITY_ENDPOINT` for endpoint discovery rather than on any fixed socket path
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 - The primary bring-up/check path distinguishes:
@@ -316,7 +326,11 @@ For local operator bring-up against this practical minimum:
 - use `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh` to re-run readiness checks
 - use `BRINGUP_PROFILE=prepare-only` only when you intentionally want ARS + EGS + AGS + ES preflight without Nomad submit
 - the current slice-0 bootstrap path targets one Linux host/VM and fails fast unless Docker host networking can actually reach host loopback from a container
-- `scripts/01_bringup.sh up` rebuilds the shared control-plane image by default and records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
+- that bounded path has now been functionally proved on Linux through the real ES -> Nomad -> Docker flow, but the current proof VM/startup mode is not yet naturally self-schedulable and may require explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override handling
+- `scripts/01_bringup.sh up` regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path (currently bundling `ars`, `ags`, `egs`, `es`, and `cgs`) and records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
+- `CONTROL_PLANE_DOCKERFILE` remains an explicit operator override, but the default bring-up source of truth is the generated `.out/Dockerfile`
+- `.out/` is the current repo-local generated-artifact area: `.out/Dockerfile` remains the tracked control-plane image input, while kept integration harness workspaces such as `es-submit-*` are created under `.out/` instead of at the repository root
+- top-level `scripts/*.sh` remain the operator-facing entrypoints and manual fallback commands; `scripts/internal/*.sh` is the sourced-only helper layer behind those entrypoints
 - Docker host networking in that path is temporary slice-0 compatibility scaffolding, not the final control-plane network model
 - use an operator SPIFFE client cert/key for AGS and ES operator-facing helpers:
   - `CA_CERT`
@@ -335,8 +349,11 @@ Current limitation:
 
 - `submit-ready` is now honest about zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every workload/resource shape can place successfully; later memory, device, or placement-constraint failures remain possible
 - a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
+- that bounded fallback should be read as an environment/startup caveat for the current proof host, not as evidence that Linux or Docker/Nomad are the wrong long-term direction for the workload zone in this phase
 
 This slice still does **not** prove strong workload identity for runtime workloads. The workload identity milestone remains separate and later.
+
+Slice 1 first proves platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
 For operator diagnostics in the current bounded slice:
 

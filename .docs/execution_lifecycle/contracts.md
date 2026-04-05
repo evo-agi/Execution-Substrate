@@ -491,12 +491,15 @@ Successful response is `200` JSON with these fields:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
+- The bounded slice-1 implementation target keeps the workload-visible endpoint but changes the runtime-side owner behind it to a platform-owned helper launched by a platform-owned supervisor.
 
 **Current contract invariants**
 
 - Caller runtime mounts must not overlap the ES-owned subtree that backs the discovered endpoint.
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
+- The first platform-owned runtime-identity slice is intentionally limited to platform-controlled non-root workloads with no privilege-escalation path.
+- The public runtime identity endpoint must remain a bounded platform endpoint, not a raw SPIRE proxy.
 
 **Reopened lifecycle seams**
 

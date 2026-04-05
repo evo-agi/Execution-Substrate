@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,9 +20,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+	workloadpb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	agsapp "execution-platform/ags/app"
 	agsconfig "execution-platform/ags/config"
@@ -38,7 +49,17 @@ import (
 	esconfig "execution-platform/es/config"
 )
 
-const workloadIdentityEndpointEnvKey = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
+const (
+	workloadIdentityEndpointEnvKey = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
+	helperReadyLogMarker           = "RUNTIME-HELPER-READY"
+	helperCapsLogPrefix            = "RUNTIME-HELPER-CAPS"
+	workloadBoundaryLogPrefix      = "RUNTIME-WORKLOAD-BOUNDARY"
+)
+
+var slice1RuntimeIdentityCapabilityProbe struct {
+	once   sync.Once
+	reason string
+}
 
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	stack := startSubmitStack(t)
@@ -102,6 +123,18 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	}
 	if !strings.Contains(logs, `"status":"ok"`) || !strings.Contains(logs, stack.publishResponse.ArtifactDigest) {
 		t.Fatalf("expected final json marker in logs, got %q", logs)
+	}
+}
+
+func TestExecutionWorkspaceTempDirUsesDotOut(t *testing.T) {
+	dir := newExecutionWorkspaceTempDir(t, "es-submit-")
+	outputRoot := filepath.Join(repoRootFromTestFile(t), ".out")
+
+	if filepath.Dir(dir) != outputRoot {
+		t.Fatalf("expected workspace temp dir parent %q, got %q", outputRoot, filepath.Dir(dir))
+	}
+	if !strings.HasPrefix(filepath.Base(dir), "es-submit-") {
+		t.Fatalf("expected workspace temp dir base to start with %q, got %q", "es-submit-", filepath.Base(dir))
 	}
 }
 
@@ -346,6 +379,371 @@ func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	}
 	if size := tmpfsOptions["size"]; size != float64(2<<20) && size != int64(2<<20) && size != int(2<<20) {
 		t.Fatalf("expected configured tmpfs size %d, got %#v", 2<<20, size)
+	}
+}
+
+func TestSubmitFlowProvidesPlatformOwnedRuntimeIdentityThroughBoundedEndpoint(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage:       "python:3.13-alpine",
+		mockSPIREJWTTTL: 20 * time.Second,
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "entrypoint",
+			Mode: 0o755,
+			Body: []byte(`#!/usr/bin/env python3
+import json
+import os
+import socket
+import stat
+import urllib.parse
+
+print("WORKLOAD-START", flush=True)
+endpoint = os.environ["EXEC_WORKLOAD_IDENTITY_ENDPOINT"]
+parsed = urllib.parse.urlparse(endpoint)
+if parsed.scheme != "unix":
+    raise SystemExit("unexpected endpoint scheme")
+socket_path = parsed.path
+if not socket_path:
+    raise SystemExit("missing endpoint path")
+
+if os.getuid() != 10000 or os.getgid() != 10000:
+    raise SystemExit(f"unexpected uid/gid: {os.getuid()}:{os.getgid()}")
+if os.getgroups():
+    raise SystemExit(f"unexpected supplemental groups: {os.getgroups()}")
+if os.stat("/execution/run/work/modeprobe").st_mode & 0o6000:
+    raise SystemExit("setuid/setgid bits survived sanitization")
+print("MODEPROBE-SANITIZED", flush=True)
+
+status = {}
+with open("/proc/self/status", "r", encoding="utf-8") as handle:
+    for line in handle:
+        if ":" in line:
+            key, value = line.split(":", 1)
+            status[key.strip()] = value.strip()
+if status.get("NoNewPrivs") != "1":
+    raise SystemExit(f"NoNewPrivs not set: {status.get('NoNewPrivs')}")
+for key in ("CapEff", "CapPrm", "CapAmb", "CapBnd"):
+    if status.get(key) != "0000000000000000":
+        raise SystemExit(f"{key} not cleared: {status.get(key)}")
+
+env_dump = "\n".join(f"{k}={v}" for k, v in os.environ.items())
+if "spire-agent.sock" in env_dump:
+    raise SystemExit("raw spire path leaked into workload env")
+
+raw_spire = os.path.join(os.path.dirname(socket_path), "internal", "spire-agent.sock")
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(1)
+try:
+    client.connect(raw_spire)
+    raise SystemExit("raw spire socket unexpectedly reachable")
+except OSError:
+    print("RAW-SPIRE-DENIED", flush=True)
+finally:
+    client.close()
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(socket_path)
+client.sendall((json.dumps({"kind": "jwt_svid", "target": "workload_vault"}) + "\n").encode("utf-8"))
+response = b""
+while b"\n" not in response:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    response += chunk
+client.close()
+payload = json.loads(response.decode("utf-8").strip())
+jwt_value = str(payload.get("jwt", "")).strip()
+if not jwt_value:
+    raise SystemExit(f"missing jwt in response: {payload}")
+print("JWT-RECEIVED", flush=True)
+print(json.dumps({"status": "ok", "artifact_digest": os.environ.get("EXEC_ARTIFACT_DIGEST", "")}, sort_keys=True), flush=True)
+`),
+		},
+		{
+			Name: "modeprobe",
+			Mode: 0o6755,
+			Body: []byte("modeprobe\n"),
+		},
+	}))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
+	taskConfig := job.task(t)
+	if got := taskConfig.User; got != "0:0" {
+		t.Fatalf("expected task to start as platform-owned root supervisor, got %#v", got)
+	}
+	if got := taskConfig.Config["privileged"]; got != false {
+		t.Fatalf("expected privileged=false, got %#v", got)
+	}
+	securityOpt, ok := taskConfig.Config["security_opt"].([]any)
+	if !ok || len(securityOpt) != 1 || securityOpt[0] != "no-new-privileges" {
+		t.Fatalf("expected no-new-privileges docker security_opt, got %#v", taskConfig.Config["security_opt"])
+	}
+	assertNoRawSPIREEnvLeak(t, taskConfig.Env, stack.mockSPIRE.socketPath)
+
+	endpointURI := taskConfig.Env[workloadIdentityEndpointEnvKey]
+	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], path.Join(runtimeIdentityWorkspaceFromEndpoint(t, endpointURI), "internal", "spire-agent.sock"))
+	if spireMount["source"] != stack.mockSPIRE.socketPath {
+		t.Fatalf("expected helper-private SPIRE mount source %q, got %#v", stack.mockSPIRE.socketPath, spireMount["source"])
+	}
+
+	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
+	if alloc.ClientStatus != "complete" {
+		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
+	}
+	taskState := alloc.TaskStates["task"]
+	if taskState.Failed || taskState.exitCode() != 0 {
+		t.Fatalf("expected successful task state, got %+v", taskState)
+	}
+
+	logs := stack.nomad.allocLogs(t, alloc.ID)
+	if !strings.Contains(logs, helperReadyLogMarker) {
+		t.Fatalf("expected helper readiness marker in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, helperCapsLogPrefix+" cap_eff=0000000000000000") ||
+		!strings.Contains(logs, "cap_prm=0000000000000000") ||
+		!strings.Contains(logs, "cap_amb=0000000000000000") {
+		t.Fatalf("expected helper capability drop markers in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, workloadBoundaryLogPrefix+" uid=10000 gid=10000 groups=[]") || !strings.Contains(logs, "no_new_privs=true") {
+		t.Fatalf("expected workload boundary marker in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, "MODEPROBE-SANITIZED") || !strings.Contains(logs, "RAW-SPIRE-DENIED") || !strings.Contains(logs, "JWT-RECEIVED") {
+		t.Fatalf("expected workload runtime identity markers in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, `"status":"ok"`) && !strings.Contains(logs, `"status": "ok"`) {
+		t.Fatalf("expected final success marker in logs, got %q", logs)
+	}
+	helperReadyIndex := strings.Index(logs, helperReadyLogMarker)
+	workloadStartIndex := strings.Index(logs, "WORKLOAD-START")
+	if helperReadyIndex < 0 || workloadStartIndex < 0 || helperReadyIndex > workloadStartIndex {
+		t.Fatalf("expected helper readiness before workload start, got logs=%q", logs)
+	}
+}
+
+func TestSubmitFlowRejectsRuntimeIdentityPassthroughRequests(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage: "python:3.13-alpine",
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/usr/bin/env python3
+import json
+import os
+import socket
+import urllib.parse
+
+parsed = urllib.parse.urlparse(os.environ["EXEC_WORKLOAD_IDENTITY_ENDPOINT"])
+socket_path = parsed.path
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(socket_path)
+client.sendall(b'{"kind":"jwt_request","audience":"vault"}\n')
+response = b""
+while b"\n" not in response:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    response += chunk
+client.close()
+payload = json.loads(response.decode("utf-8").strip())
+if payload.get("error") != "unsupported_request":
+    raise SystemExit(f"unexpected passthrough response: {payload}")
+print("PASSTHROUGH-REJECTED", flush=True)
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(socket_path)
+client.sendall((json.dumps({"kind": "jwt_svid", "target": "workload_vault"}) + "\n").encode("utf-8"))
+response = b""
+while b"\n" not in response:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    response += chunk
+client.close()
+payload = json.loads(response.decode("utf-8").strip())
+if not payload.get("jwt"):
+    raise SystemExit(f"missing bounded jwt response: {payload}")
+print("VALID-JWT-RECEIVED", flush=True)
+print(json.dumps({"status": "ok", "artifact_digest": os.environ.get("EXEC_ARTIFACT_DIGEST", "")}, sort_keys=True), flush=True)
+`))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	alloc := stack.nomad.waitForTerminalExecutionAllocation(t, payload.RunID)
+	if alloc.ClientStatus != "complete" {
+		t.Fatalf("expected complete allocation, got %q", alloc.ClientStatus)
+	}
+	logs := stack.nomad.allocLogs(t, alloc.ID)
+	if !strings.Contains(logs, "PASSTHROUGH-REJECTED") || !strings.Contains(logs, "VALID-JWT-RECEIVED") {
+		t.Fatalf("expected bounded helper endpoint markers in logs, got %q", logs)
+	}
+}
+
+func TestSubmitFlowDoesNotStartWorkloadBeforeHelperReadiness(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage:           "python:3.13-alpine",
+		mockSPIREFetchError: true,
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/usr/bin/env python3
+print("WORKLOAD-STARTED", flush=True)
+`))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	alloc := stack.nomad.waitForTerminalExecutionAllocation(t, payload.RunID)
+	if alloc.ClientStatus != "failed" {
+		t.Fatalf("expected failed allocation when helper cannot prove readiness, got %q", alloc.ClientStatus)
+	}
+	taskState := alloc.TaskStates["task"]
+	if !taskState.Failed {
+		t.Fatalf("expected failed task state when helper readiness fails, got %+v", taskState)
+	}
+	logs := stack.nomad.allocLogs(t, alloc.ID)
+	if strings.Contains(logs, "WORKLOAD-STARTED") {
+		t.Fatalf("did not expect workload to start before helper readiness, got %q", logs)
+	}
+}
+
+func TestSubmitFlowHelperDeathIsTaskFatal(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage:       "python:3.13-alpine",
+		mockSPIREJWTTTL: 4 * time.Second,
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/usr/bin/env python3
+import json
+import os
+import socket
+import time
+import urllib.parse
+
+parsed = urllib.parse.urlparse(os.environ["EXEC_WORKLOAD_IDENTITY_ENDPOINT"])
+socket_path = parsed.path
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(socket_path)
+client.sendall((json.dumps({"kind": "jwt_svid", "target": "workload_vault"}) + "\n").encode("utf-8"))
+response = b""
+while b"\n" not in response:
+    chunk = client.recv(4096)
+    if not chunk:
+        break
+    response += chunk
+client.close()
+payload = json.loads(response.decode("utf-8").strip())
+if not payload.get("jwt"):
+    raise SystemExit("missing jwt")
+print("WORKLOAD-STARTED", flush=True)
+for i in range(30):
+    print(f"WORKLOAD-HEARTBEAT:{i}", flush=True)
+    time.sleep(1)
+print("WORKLOAD-COMPLETE", flush=True)
+`))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
+	alloc := stack.nomad.waitForLatestAllocation(t, jobID)
+	stack.nomad.waitForAllocationLogsContaining(t, alloc.ID, "WORKLOAD-STARTED", 15*time.Second)
+	stack.mockSPIRE.setFailFetch(true)
+
+	terminalAlloc := stack.nomad.waitForTerminalAllocation(t, jobID)
+	if terminalAlloc.ClientStatus != "failed" {
+		t.Fatalf("expected helper death to fail the task, got %q", terminalAlloc.ClientStatus)
+	}
+	taskState := terminalAlloc.TaskStates["task"]
+	if !taskState.Failed {
+		t.Fatalf("expected task failure after helper death, got %+v", taskState)
+	}
+	logs := stack.nomad.allocLogs(t, terminalAlloc.ID)
+	if !strings.Contains(logs, "WORKLOAD-STARTED") {
+		t.Fatalf("expected workload to reach steady state before helper death, got %q", logs)
+	}
+	if strings.Contains(logs, "WORKLOAD-COMPLETE") {
+		t.Fatalf("did not expect workload to continue after helper death, got %q", logs)
+	}
+}
+
+func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		baseImage: "python:3.13-alpine",
+	})
+
+	publishSubmitArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
+		{
+			Name: "entrypoint",
+			Mode: 0o755,
+			Body: []byte("#!/bin/sh\necho WORKLOAD-STARTED\n"),
+		},
+		{
+			Name:     "escape",
+			Typeflag: tar.TypeSymlink,
+			Linkname: "/etc/passwd",
+			Mode:     0o777,
+		},
+	}))
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+
+	alloc := stack.nomad.waitForTerminalExecutionAllocation(t, payload.RunID)
+	if alloc.ClientStatus != "failed" {
+		t.Fatalf("expected failed allocation for symlink workload archive, got %q", alloc.ClientStatus)
+	}
+	logs := stack.nomad.allocLogs(t, alloc.ID)
+	if strings.Contains(logs, "WORKLOAD-STARTED") {
+		t.Fatalf("did not expect workload start when workload archive contains a symlink entry, got %q", logs)
 	}
 }
 
@@ -602,7 +1000,8 @@ type submitStack struct {
 	arsRootDir string
 	indexPath  string
 
-	nomad *nomadHarness
+	nomad     *nomadHarness
+	mockSPIRE *mockWorkloadAPIServer
 
 	ars *arsapp.App
 	egs *egsapp.App
@@ -630,6 +1029,8 @@ type submitStackOptions struct {
 	networkAccess            bool
 	baseImage                string
 	runtimeIdentityTmpfsSize int64
+	mockSPIREJWTTTL          time.Duration
+	mockSPIREFetchError      bool
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -645,6 +1046,11 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	fixture := newTLSFixture(t)
 	nomad := startNomadHarness(t, rootDir)
+	runtimeSupportBinary := buildRuntimeSupportBinary(t, rootDir)
+	mockSPIRE := startMockWorkloadAPIServer(t, rootDir, mockWorkloadAPIServerOptions{
+		jwtTTL:    firstNonZeroDuration(opts.mockSPIREJWTTTL, 20*time.Second),
+		failFetch: opts.mockSPIREFetchError,
+	})
 
 	arsRootDir := filepath.Join(rootDir, "ars-storage")
 	if err := os.MkdirAll(arsRootDir, 0o755); err != nil {
@@ -671,6 +1077,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		arsRootDir:              arsRootDir,
 		indexPath:               indexPath,
 		nomad:                   nomad,
+		mockSPIRE:               mockSPIRE,
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
 		outputID:                "runtime",
@@ -864,9 +1271,11 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir:           filepath.Join(rootDir, "es-stage"),
-			BaseImage:                firstNonEmpty(opts.baseImage, "alpine:3.20"),
-			RuntimeIdentityTmpfsSize: opts.runtimeIdentityTmpfsSize,
+			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
+			BaseImage:                  firstNonEmpty(opts.baseImage, "alpine:3.20"),
+			RuntimeIdentityTmpfsSize:   opts.runtimeIdentityTmpfsSize,
+			RuntimeSupportBinary:       runtimeSupportBinary,
+			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
 		},
 	}
 	esService, err := esapp.New(esCfg)
@@ -888,6 +1297,61 @@ func firstNonEmpty(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstNonZeroDuration(value time.Duration, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
+	t.Helper()
+
+	slice1RuntimeIdentityCapabilityProbe.once.Do(func() {
+		if _, err := exec.LookPath("docker"); err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires docker: %v", err)
+			return
+		}
+		if _, err := exec.LookPath("nomad"); err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires nomad: %v", err)
+			return
+		}
+		if output, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires a reachable docker daemon: %v output=%s", err, strings.TrimSpace(string(output)))
+			return
+		}
+
+		socketDir, err := os.MkdirTemp("/tmp", "execution-platform-socket-probe-")
+		if err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe dir: %v", err)
+			return
+		}
+		defer os.RemoveAll(socketDir)
+
+		socketPath := filepath.Join(socketDir, "spire-agent.sock")
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("listen on socket probe path: %v", err)
+			return
+		}
+		defer listener.Close()
+
+		command := exec.Command("docker", "run", "--rm",
+			"-v", socketPath+":/probe/spire-agent.sock",
+			"alpine:3.20",
+			"sh", "-ceu", "test -S /probe/spire-agent.sock",
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires Docker bind-mounting a unix socket file into the workload container: %v output=%s", err, strings.TrimSpace(string(output)))
+		}
+	})
+
+	if slice1RuntimeIdentityCapabilityProbe.reason != "" {
+		t.Skip(slice1RuntimeIdentityCapabilityProbe.reason)
+	}
 }
 
 func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
@@ -1211,6 +1675,19 @@ func findTaskMountByTarget(t *testing.T, rawMounts any, target string) map[strin
 	return nil
 }
 
+func assertNoRawSPIREEnvLeak(t *testing.T, env map[string]string, rawSPIREPath string) {
+	t.Helper()
+
+	for key, value := range env {
+		if strings.Contains(strings.TrimSpace(value), "spire-agent.sock") {
+			t.Fatalf("did not expect workload env %q to expose helper-private SPIRE socket path: %q", key, value)
+		}
+		if strings.TrimSpace(rawSPIREPath) != "" && strings.Contains(strings.TrimSpace(value), strings.TrimSpace(rawSPIREPath)) {
+			t.Fatalf("did not expect workload env %q to expose raw SPIRE source path: %q", key, value)
+		}
+	}
+}
+
 type nomadHarness struct {
 	addr       string
 	configPath string
@@ -1241,6 +1718,7 @@ type nomadTaskGroupDetail struct {
 
 type nomadTaskDetail struct {
 	Name   string            `json:"Name"`
+	User   string            `json:"User"`
 	Config map[string]any    `json:"Config"`
 	Env    map[string]string `json:"Env"`
 	Meta   map[string]string `json:"Meta"`
@@ -1272,6 +1750,14 @@ func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
 	httpPort := reserveTCPPort(t)
 	rpcPort := reserveTCPPort(t)
 	serfPort := reserveTCPPort(t)
+	clientCPUOverride := ""
+	if raw := strings.TrimSpace(os.Getenv("NOMAD_CLIENT_CPU_TOTAL_COMPUTE")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value <= 0 {
+			t.Fatalf("NOMAD_CLIENT_CPU_TOTAL_COMPUTE must be a positive integer, got %q", raw)
+		}
+		clientCPUOverride = fmt.Sprintf("\n  cpu_total_compute = %d", value)
+	}
 
 	configPath := filepath.Join(rootDir, "nomad.hcl")
 	dataDir := filepath.Join(rootDir, "nomad-data")
@@ -1286,6 +1772,7 @@ server {
 }
 client {
   enabled = true
+%s
   options = {
     "docker.volumes.enabled" = "true"
   }
@@ -1300,7 +1787,7 @@ advertise {
   rpc  = "127.0.0.1:%d"
   serf = "127.0.0.1:%d"
 }
-`, dataDir, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
+`, dataDir, clientCPUOverride, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write nomad config: %v", err)
 	}
@@ -1341,6 +1828,7 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(15 * time.Second)
+	lastReason := "nomad node did not become schedulable"
 	for time.Now().Before(deadline) {
 		leaderResponse, leaderErr := client.Get(n.addr + "/v1/status/leader")
 		if leaderErr == nil {
@@ -1351,12 +1839,20 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 				nodesResponse, nodesErr := client.Get(n.addr + "/v1/nodes")
 				if nodesErr == nil {
 					var nodes []struct {
-						Status string `json:"status"`
+						ID     string `json:"ID"`
+						Name   string `json:"Name"`
+						Status string `json:"Status"`
 					}
 					decodeNodesErr := json.NewDecoder(nodesResponse.Body).Decode(&nodes)
 					nodesResponse.Body.Close()
-					if decodeNodesErr == nil && len(nodes) > 0 && nodes[0].Status == "ready" {
-						return
+					if decodeNodesErr == nil {
+						schedulable, reason := n.readySchedulableNode(client, nodes)
+						if schedulable {
+							return
+						}
+						if reason != "" {
+							lastReason = reason
+						}
 					}
 				}
 			}
@@ -1365,7 +1861,122 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 	}
 
 	output, _ := os.ReadFile(n.outputPath)
-	t.Fatalf("nomad agent did not become ready; logs=%s", strings.TrimSpace(string(output)))
+	t.Fatalf("%s; logs=%s", lastReason, strings.TrimSpace(string(output)))
+}
+
+func (n *nomadHarness) readySchedulableNode(client *http.Client, nodes []struct {
+	ID     string `json:"ID"`
+	Name   string `json:"Name"`
+	Status string `json:"Status"`
+}) (bool, string) {
+	readyNodes := make([]struct {
+		ID     string `json:"ID"`
+		Name   string `json:"Name"`
+		Status string `json:"Status"`
+	}, 0, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Status) == "ready" {
+			readyNodes = append(readyNodes, node)
+		}
+	}
+	if len(readyNodes) == 0 {
+		return false, "nomad: no ready client nodes"
+	}
+
+	reasons := make([]string, 0, len(readyNodes))
+	for _, node := range readyNodes {
+		nodeID := strings.TrimSpace(node.ID)
+		nodeName := strings.TrimSpace(node.Name)
+		if nodeName == "" {
+			nodeName = nodeID
+		}
+		if nodeName == "" {
+			nodeName = "unknown"
+		}
+		if nodeID == "" {
+			reasons = append(reasons, nodeName+"=missing-id")
+			continue
+		}
+
+		response, err := client.Get(n.addr + "/v1/node/" + nodeID)
+		if err != nil {
+			reasons = append(reasons, nodeName+"=detail-unavailable:"+err.Error())
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			reasons = append(reasons, fmt.Sprintf("%s=detail-status:%d", nodeName, response.StatusCode))
+			continue
+		}
+
+		var detail struct {
+			Attributes map[string]any `json:"Attributes"`
+			Drivers    map[string]struct {
+				Healthy           bool   `json:"Healthy"`
+				HealthDescription string `json:"HealthDescription"`
+			} `json:"Drivers"`
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&detail)
+		response.Body.Close()
+		if decodeErr != nil {
+			reasons = append(reasons, nodeName+"=detail-decode:"+decodeErr.Error())
+			continue
+		}
+
+		cpuTotalCompute := parseNomadAttributeInt(detail.Attributes["cpu.totalcompute"])
+		if cpuTotalCompute <= 0 {
+			reasons = append(reasons, fmt.Sprintf("%s=cpu.totalcompute:%d", nodeName, cpuTotalCompute))
+			continue
+		}
+
+		docker := detail.Drivers["docker"]
+		if !docker.Healthy {
+			description := strings.TrimSpace(docker.HealthDescription)
+			if description == "" {
+				description = "unhealthy"
+			}
+			reasons = append(reasons, nodeName+"=docker:"+description)
+			continue
+		}
+
+		return true, ""
+	}
+
+	reason := "nomad: no ready client nodes with positive cpu.totalcompute and healthy docker driver"
+	if len(reasons) > 0 {
+		reason += "; " + strings.Join(reasons, ", ")
+		if allReasonsHaveZeroCPU(reasons) {
+			reason += "; rerun only with explicit NOMAD_CLIENT_CPU_TOTAL_COMPUTE as a bounded troubleshooting override"
+		}
+	}
+	return false, reason
+}
+
+func parseNomadAttributeInt(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func allReasonsHaveZeroCPU(reasons []string) bool {
+	if len(reasons) == 0 {
+		return false
+	}
+	for _, reason := range reasons {
+		if !strings.Contains(reason, "=cpu.totalcompute:0") {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *nomadHarness) waitForJob(t *testing.T, jobID string) {
@@ -1542,6 +2153,32 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 	return nomadAllocationSummary{}
 }
 
+func (n *nomadHarness) waitForLatestAllocation(t *testing.T, jobID string) nomadAllocationSummary {
+	t.Helper()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := client.Get(n.addr + "/v1/job/" + jobID + "/allocations")
+		if err == nil {
+			var allocations []nomadAllocationSummary
+			decodeErr := json.NewDecoder(response.Body).Decode(&allocations)
+			response.Body.Close()
+			if decodeErr == nil && len(allocations) > 0 {
+				sort.SliceStable(allocations, func(i, j int) bool {
+					return allocations[i].ModifyIndex > allocations[j].ModifyIndex
+				})
+				if allocation, ok := n.tryFetchAllocation(allocations[0].ID); ok {
+					return allocation
+				}
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("nomad allocation for job %s did not appear", jobID)
+	return nomadAllocationSummary{}
+}
+
 func (n *nomadHarness) waitForTerminalExecutionAllocation(t *testing.T, runID string) nomadAllocationSummary {
 	t.Helper()
 	return n.waitForTerminalAllocation(t, n.waitForExecutionJob(t, runID))
@@ -1593,6 +2230,21 @@ func (n *nomadHarness) allocLogs(t *testing.T, allocationID string) string {
 	return string(output)
 }
 
+func (n *nomadHarness) waitForAllocationLogsContaining(t *testing.T, allocationID string, substring string, timeout time.Duration) string {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		logs := n.allocLogs(t, allocationID)
+		if strings.Contains(logs, substring) {
+			return logs
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("allocation %s logs did not contain %q within %s", allocationID, substring, timeout)
+	return ""
+}
+
 func (n *nomadHarness) waitForExecutionJobTerminalStatus(t *testing.T, runID string) nomadJobSummary {
 	t.Helper()
 	return n.waitForJobTerminalStatus(t, n.waitForExecutionJob(t, runID))
@@ -1640,17 +2292,164 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 		}
 		*step.running = false
 	}
+	if s.mockSPIRE != nil {
+		s.mockSPIRE.stop()
+	}
 	s.nomad.shutdown(t)
+}
+
+type mockWorkloadAPIServerOptions struct {
+	jwtTTL    time.Duration
+	failFetch bool
+}
+
+type mockWorkloadAPIServer struct {
+	workloadpb.UnimplementedSpiffeWorkloadAPIServer
+
+	socketDir  string
+	socketPath string
+	listener   net.Listener
+	server     *grpc.Server
+	signer     jose.Signer
+	subject    string
+
+	mu        sync.RWMutex
+	jwtTTL    time.Duration
+	failFetch bool
+}
+
+func startMockWorkloadAPIServer(t *testing.T, rootDir string, opts mockWorkloadAPIServerOptions) *mockWorkloadAPIServer {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate mock workload api signing key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "mock-workload-api"),
+	)
+	if err != nil {
+		t.Fatalf("build mock workload api signer: %v", err)
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "execution-platform-spire-")
+	if err != nil {
+		t.Fatalf("create mock workload api socket dir: %v", err)
+	}
+	socketPath := filepath.Join(socketDir, "spire-agent.sock")
+	_ = os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		_ = os.RemoveAll(socketDir)
+		t.Fatalf("listen on mock workload api socket: %v", err)
+	}
+
+	server := &mockWorkloadAPIServer{
+		socketDir:  socketDir,
+		socketPath: socketPath,
+		listener:   listener,
+		server:     grpc.NewServer(),
+		signer:     signer,
+		subject:    "spiffe://execution.internal/workload",
+		jwtTTL:     firstNonZeroDuration(opts.jwtTTL, 20*time.Second),
+		failFetch:  opts.failFetch,
+	}
+	workloadpb.RegisterSpiffeWorkloadAPIServer(server.server, server)
+
+	go func() {
+		_ = server.server.Serve(listener)
+	}()
+
+	return server
+}
+
+func (s *mockWorkloadAPIServer) stop() {
+	if s == nil {
+		return
+	}
+	s.server.Stop()
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+	if strings.TrimSpace(s.socketPath) != "" {
+		_ = os.Remove(s.socketPath)
+	}
+	if strings.TrimSpace(s.socketDir) != "" {
+		_ = os.RemoveAll(s.socketDir)
+	}
+}
+
+func (s *mockWorkloadAPIServer) setFailFetch(value bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failFetch = value
+}
+
+func (s *mockWorkloadAPIServer) FetchJWTSVID(ctx context.Context, request *workloadpb.JWTSVIDRequest) (*workloadpb.JWTSVIDResponse, error) {
+	s.mu.RLock()
+	failFetch := s.failFetch
+	jwtTTL := s.jwtTTL
+	s.mu.RUnlock()
+
+	if failFetch {
+		return nil, status.Error(codes.Unavailable, "mock workload api is configured to fail fetches")
+	}
+	if len(request.Audience) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "audience is required")
+	}
+	if strings.TrimSpace(request.SpiffeId) != "" && strings.TrimSpace(request.SpiffeId) != s.subject {
+		return nil, status.Error(codes.NotFound, "unknown spiffe id")
+	}
+
+	claims := jwt.Claims{
+		Subject:  s.subject,
+		Audience: jwt.Audience(request.Audience),
+		IssuedAt: jwt.NewNumericDate(time.Now().UTC()),
+		Expiry:   jwt.NewNumericDate(time.Now().UTC().Add(jwtTTL)),
+	}
+
+	token, err := jwt.Signed(s.signer).Claims(claims).Serialize()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "mint jwt-svid: %v", err)
+	}
+
+	return &workloadpb.JWTSVIDResponse{
+		Svids: []*workloadpb.JWTSVID{
+			{
+				SpiffeId: s.subject,
+				Svid:     token,
+				Hint:     "default",
+			},
+		},
+	}, nil
+}
+
+func buildRuntimeSupportBinary(t *testing.T, rootDir string) string {
+	t.Helper()
+
+	outputPath := filepath.Join(rootDir, "es-runtime-support")
+	command := exec.Command("go", "build", "-o", outputPath, "./cmd/es-runtime-support")
+	command.Dir = repoRootFromTestFile(t)
+	command.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH="+runtime.GOARCH,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build runtime support binary: %v output=%s", err, strings.TrimSpace(string(output)))
+	}
+	return outputPath
 }
 
 func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 	t.Helper()
 
-	_, filePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatalf("resolve test file path: runtime caller unavailable")
+	workspaceRoot := filepath.Join(repoRootFromTestFile(t), ".out")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("create workspace output root: %v", err)
 	}
-	workspaceRoot := filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", ".."))
 
 	dir, err := os.MkdirTemp(workspaceRoot, prefix)
 	if err != nil {
@@ -1664,6 +2463,16 @@ func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 		t.Logf("keeping workspace temp dir: %s", dir)
 	}
 	return dir
+}
+
+func repoRootFromTestFile(t *testing.T) string {
+	t.Helper()
+
+	_, filePath, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("resolve test file path: runtime caller unavailable")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", ".."))
 }
 
 func reserveTCPPort(t *testing.T) int {

@@ -2,10 +2,10 @@ package admission
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
+	"strconv"
 
 	esconfig "execution-platform/es/config"
 )
@@ -17,8 +17,11 @@ const (
 	executionPayloadArchiveName    = "artifact.tar.gz"
 	executionRuntimePayloadRoot    = "/execution/staged"
 	executionRuntimeRunRoot        = "/execution/run"
+	executionRuntimePlatformDir    = executionRuntimeRunRoot + "/platform"
 	executionRuntimeWorkDir        = executionRuntimeRunRoot + "/work"
 	executionRuntimeEntrypointPath = executionRuntimeWorkDir + "/entrypoint"
+	executionRuntimeSupportName    = "es-runtime-support"
+	executionRuntimeSupportPath    = executionRuntimePlatformDir + "/" + executionRuntimeSupportName
 )
 
 // executionPackageLayout localizes the current ES-owned mapping between a
@@ -30,9 +33,12 @@ type executionPackageLayout struct {
 	payloadStageDir    string
 	payloadArchivePath string
 	runStageDir        string
+	platformStageDir   string
+	runtimeSupportPath string
 	mountsStageRootDir string
 	runtimePayloadRoot string
 	runtimeRunRoot     string
+	runtimePlatformDir string
 	runtimeWorkDir     string
 	runtimeEntrypoint  string
 	runtimeIdentity    runtimeIdentityHandoff
@@ -51,9 +57,12 @@ func newExecutionPackageLayout(cfg esconfig.Config, locator executionLocator) ex
 		payloadStageDir:    filepath.Join(stageRootDir, executionPayloadStageDirName),
 		payloadArchivePath: filepath.Join(stageRootDir, executionPayloadStageDirName, executionPayloadArchiveName),
 		runStageDir:        filepath.Join(stageRootDir, executionRunStageDirName),
+		platformStageDir:   filepath.Join(stageRootDir, executionRunStageDirName, "platform"),
+		runtimeSupportPath: filepath.Join(stageRootDir, executionRunStageDirName, "platform", executionRuntimeSupportName),
 		mountsStageRootDir: filepath.Join(stageRootDir, executionMountsStageDirName),
 		runtimePayloadRoot: executionRuntimePayloadRoot,
 		runtimeRunRoot:     executionRuntimeRunRoot,
+		runtimePlatformDir: executionRuntimePlatformDir,
 		runtimeWorkDir:     executionRuntimeWorkDir,
 		runtimeEntrypoint:  executionRuntimeEntrypointPath,
 		runtimeIdentity:    runtimeIdentityHandoffForRun(locator.RunID),
@@ -75,6 +84,9 @@ func (l executionPackageLayout) stagePayload(payloadBytes []byte) error {
 	if err := os.MkdirAll(l.runStageDir, 0o755); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(l.platformStageDir, 0o755); err != nil {
+		return err
+	}
 	if err := os.WriteFile(l.payloadArchivePath, payloadBytes, 0o600); err != nil {
 		return err
 	}
@@ -93,18 +105,39 @@ func (l executionPackageLayout) mountContentsDir(index int) string {
 	return filepath.Join(l.mountStageDir(index), "contents")
 }
 
-func (l executionPackageLayout) runtimeWrapperScript() string {
-	return strings.Join([]string{
-		"set -eu",
-		"mkdir -p " + l.runtimeWorkDir,
-		"mkdir -p " + l.runtimeIdentity.workspaceDir(),
-		"tar -xzf " + path.Join(l.runtimePayloadRoot, executionPayloadArchiveName) + " -C " + l.runtimeWorkDir,
-		"chmod +x " + l.runtimeEntrypoint,
-		"if [ \"$EXEC_TIMEOUT_SECONDS\" -gt 0 ]; then",
-		"  exec timeout \"$EXEC_TIMEOUT_SECONDS\" " + l.runtimeEntrypoint + " \"$@\"",
-		"fi",
-		"exec " + l.runtimeEntrypoint + " \"$@\"",
-	}, "\n")
+func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, timeoutSeconds int) []string {
+	args := []string{
+		"supervisor",
+		"--payload-archive", filepath.ToSlash(pathJoin(l.runtimePayloadRoot, executionPayloadArchiveName)),
+		"--work-dir", l.runtimeWorkDir,
+		"--entrypoint", l.runtimeEntrypoint,
+		"--timeout-seconds", strconv.Itoa(timeoutSeconds),
+		"--",
+	}
+	return append(args, workloadArgv...)
+}
+
+func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string) error {
+	sourceFile, err := os.Open(filepath.Clean(sourcePath))
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destinationFile, err := os.OpenFile(l.runtimeSupportPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	defer destinationFile.Close()
+
+	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
+		return err
+	}
+	return destinationFile.Close()
+}
+
+func pathJoin(elements ...string) string {
+	return filepath.ToSlash(filepath.Join(elements...))
 }
 
 func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMounts []stagedRuntimeMount) []any {
@@ -129,6 +162,12 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 				"size": cfg.Execution.EffectiveRuntimeIdentityTmpfsSize(),
 			},
 		},
+		map[string]any{
+			"type":     "bind",
+			"source":   cfg.Execution.SPIREWorkloadAPISocketPath,
+			"target":   l.runtimeIdentity.spireSocketPath(),
+			"readonly": false,
+		},
 	}
 
 	for _, mount := range stagedMounts {
@@ -145,6 +184,9 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 func (s *Service) stageExecutionInputs(locator executionLocator, payloadBytes []byte) (stagedExecutionInputs, error) {
 	layout := newExecutionPackageLayout(s.cfg, locator)
 	if err := layout.stagePayload(payloadBytes); err != nil {
+		return stagedExecutionInputs{}, err
+	}
+	if err := layout.stageRuntimeSupportBinary(s.cfg.Execution.RuntimeSupportBinary); err != nil {
 		return stagedExecutionInputs{}, err
 	}
 	return stagedExecutionInputs{

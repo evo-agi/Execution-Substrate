@@ -57,6 +57,8 @@ Top-level interaction notes:
 - Docker is the container runtime used underneath Nomad in the current slice.
 - The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
+- That one-host Linux topology has now been functionally proved through the real ES -> Nomad -> Docker path on a real Linux VM, but the current proof VM/startup mode is not yet naturally self-schedulable and may require explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override handling.
+- That schedulability caveat is currently treated as a proof-host environment/startup qualification, not as evidence that Linux or Docker/Nomad are the wrong platform direction for this bounded phase.
 - `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
 - `contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
 - `observability` is cross-cutting support, not a system boundary.
@@ -109,6 +111,8 @@ ES stages execution inputs, injects the current workload identity endpoint envir
 
 The system stops short of making ES the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES currently owns the handoff boundary, not the full runtime identity system.
 
+The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises the current contract without settling final ownership. The next bounded milestone is to prove platform-owned workload identity delivery behind the existing discovery contract rather than leaving the runtime bridge owned by workload authors.
+
 ## 6. Architectural invariants
 
 **Current architectural invariants**
@@ -158,6 +162,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
 - The containerized hot path currently relies on Docker host networking for control-plane reachability during slice 0; that is a temporary compatibility-heavy deployment convention, not the final control-plane network model.
+- Slice 0 proves the Linux substrate and governed execution handoff only. It does not yet prove strong workload identity or SPIFFE/SPIRE-backed runtime workload identity.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the runtime-facing payload reference and cross-checked against evidence claims.

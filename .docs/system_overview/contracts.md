@@ -636,6 +636,7 @@ Current ES-owned implementation details behind that handoff:
 
 - ES currently backs the discovered endpoint with a writable tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
 - ES currently protects the workspace subtree and the endpoint path from caller mount overlap
+- the bounded slice-1 implementation target stages platform-owned runtime support assets under `/execution/run/platform/` and keeps workload content under `/execution/run/work`
 
 Current runtime rules:
 
@@ -644,6 +645,13 @@ Current runtime rules:
 - Caller mounts must not overlap the ES-owned runtime subtree that backs the discovered endpoint.
 - ES also injects non-secret Vault auth metadata through environment variables.
 - ES does not apply per-workload selector overrides when shaping that Vault auth metadata in the current slice.
+- the slice-1 first implementation slice narrows workload runtime compatibility to platform-controlled non-root workloads:
+  - helper runs as `0:0`
+  - workload runs as fixed `10000:10000`
+  - workload receives no supplemental groups and no privilege-escalation path
+- the helper-private SPIRE channel is bounded to `/run/es-runtime-identity/<run_id>/internal/spire-agent.sock`
+- the public workload-visible endpoint remains `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix:///run/es-runtime-identity/<run_id>/endpoint`
+- the public endpoint is platform-bounded and must not become a raw SPIRE passthrough
 
 ### Current invariants
 
@@ -655,11 +663,19 @@ Current runtime rules:
 - ES derives the workload-vault auth plan from workload-zone vault runtime fields plus the locally configured default auth mode.
 - ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
 - Capability-sensitive behavior in this area must not rely on OS-based branching or fallback behavior.
+- The first platform-owned runtime-identity slice must fail closed unless the workload can be launched as fixed non-root `10000:10000` with no supplemental groups and no privilege-escalation path.
+- The raw SPIRE channel must remain helper-private and must not be exposed to workload env, workload mounts, or workload-authored code.
 
 ### Ownership boundary
 
 - ES owns workspace reservation and boundary enforcement.
-- The workload owns use of the discovered endpoint inside the container.
+- The workload owns use of the discovered endpoint inside the container and remains only a client of that endpoint.
+- The checked-in workload-authored reference bridge is example scaffolding only and does not define final ownership of runtime identity delivery.
+- The platform-owned runtime helper owns:
+  - raw SPIRE access
+  - endpoint serving
+  - JWT-SVID retrieval and refresh
+  - endpoint-local runtime failure
 - ES does not own:
   - token minting
   - Vault token storage
@@ -679,6 +695,8 @@ Current runtime rules:
 
 - The runtime identity handoff surface is explicitly reopened in `PLANS.md`.
 - The current reserved paths, env var, and ES/runtime division of responsibility are active now, but must not be preserved automatically.
+- The current bounded planning target is to keep the workload-visible discovery contract explicit while moving the implementation behind it into a platform-owned injected runtime companion/bridge rather than a workload-authored shim.
+- The accepted bounded runtime shape for slice `1A` and `1B` is now the same-container helper launched by a platform-owned supervisor; reconsider sidecar/task only if that shape cannot keep the raw SPIRE channel helper-private or cannot enforce the non-root workload boundary without compromise.
 
 ## 11. Temporary Compatibility Edges
 

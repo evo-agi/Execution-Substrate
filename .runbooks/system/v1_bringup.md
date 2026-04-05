@@ -296,6 +296,10 @@ scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.
 
 This slice proves the one-host Linux substrate and same-path staging contract only. It does **not** prove strong workload identity for runtime workloads yet.
 
+The next bounded milestone, slice 1, first proves platform-owned runtime identity delivery for platform-controlled non-root workloads. In that slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for that first workload-identity slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
+
+That bounded proof has now been exercised on a real Linux VM through the real ES -> Nomad -> Docker path. On the current proof VM/startup mode, natural schedulability is still not proved and may require the explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override described above. Treat that as an environment/startup caveat for the proof host, not as evidence that Linux or Docker/Nomad are the wrong direction for this phase.
+
 That helper drives:
 
 - AGS publish

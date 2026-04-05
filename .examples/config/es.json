@@ -69,6 +69,8 @@
   },
   "execution": {
     "staging_root_dir": "/abs/path/es-staging",
-    "base_image": "alpine:3.20"
+    "base_image": "alpine:3.20",
+    "runtime_support_binary": "/usr/local/bin/es-runtime-support",
+    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock"
   }
 }
