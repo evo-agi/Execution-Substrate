@@ -148,7 +148,7 @@ scripts/01_bringup.sh up
 
 What this does:
 
-- regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path; that image currently bundles `ars`, `ags`, `egs`, `es`, and `cgs` even though the minimal operator path starts only ARS, EGS, AGS, and ES
+- regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path; that image currently bundles `ars`, `ags`, `egs`, `es`, `es-runtime-support`, and `cgs` even though the minimal operator path starts only ARS, EGS, AGS, and ES
 - proves that Docker host networking can actually reach host loopback from a container before continuing
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
@@ -294,9 +294,9 @@ After bring-up succeeds, the preferred bounded end-to-end smoke test is:
 scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
 ```
 
-This slice proves the one-host Linux substrate and same-path staging contract only. It does **not** prove strong workload identity for runtime workloads yet.
+This slice proves the one-host Linux substrate and same-path staging contract directly. The first platform-owned runtime identity boundary has now also been exercised separately through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-The next bounded milestone, slice 1, first proves platform-owned runtime identity delivery for platform-controlled non-root workloads. In that slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for that first workload-identity slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
+The next bounded operator proof after the static smoke is useful credential flow completion. Use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) to prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible HTTPS endpoint and read one secret without reintroducing a workload-authored identity bridge.
 
 That bounded proof has now been exercised on a real Linux VM through the real ES -> Nomad -> Docker path. On the current proof VM/startup mode, natural schedulability is still not proved and may require the explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override described above. Treat that as an environment/startup caveat for the proof host, not as evidence that Linux or Docker/Nomad are the wrong direction for this phase.
 

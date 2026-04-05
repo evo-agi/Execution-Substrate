@@ -1031,6 +1031,7 @@ type submitStackOptions struct {
 	runtimeIdentityTmpfsSize int64
 	mockSPIREJWTTTL          time.Duration
 	mockSPIREFetchError      bool
+	workloadVaultAddress     string
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -1063,7 +1064,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 
 	workloadZoneVaultBytes := mustMarshalJSON(t, map[string]any{
 		"vault_config": map[string]any{
-			"address":      "https://vault.internal:8200",
+			"address":      firstNonEmpty(opts.workloadVaultAddress, "https://vault.internal:8200"),
 			"auth_mount":   "jwt",
 			"auth_role":    "service_execution",
 			"jwt_audience": "vault",
@@ -1323,7 +1324,12 @@ func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 			return
 		}
 
-		socketDir, err := os.MkdirTemp("/tmp", "execution-substrate-socket-probe-")
+		probeRoot := socketTestRootDir(t)
+		if err := os.MkdirAll(probeRoot, 0o755); err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe root: %v", err)
+			return
+		}
+		socketDir, err := os.MkdirTemp(probeRoot, "execution-substrate-socket-probe-")
 		if err != nil {
 			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe dir: %v", err)
 			return
@@ -1356,6 +1362,13 @@ func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 
 func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
 	t.Helper()
+	return buildSubmitRequestBodyWithEnv(t, stack, map[string]string{
+		"APP_MODE": "test",
+	})
+}
+
+func buildSubmitRequestBodyWithEnv(t *testing.T, stack *submitStack, env map[string]string) []byte {
+	t.Helper()
 	return mustMarshalJSON(t, admission.PrepareRequest{
 		SchemaVersion: "v1",
 		Invocation: admission.ArtifactInvocation{
@@ -1363,9 +1376,7 @@ func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
 			ArtifactDigest:       stack.publishResponse.ArtifactDigest,
 			DerivationSpecDigest: stack.derivationSpecDigest,
 			OutputID:             stack.outputID,
-			Env: map[string]string{
-				"APP_MODE": "test",
-			},
+			Env:                  env,
 		},
 		Mode: admission.ExecutionModeAsync,
 		Resources: &admission.ExecutionResources{
@@ -1731,8 +1742,10 @@ type nomadTaskState struct {
 }
 
 type nomadTaskEvent struct {
-	Type     string `json:"Type"`
-	ExitCode int    `json:"ExitCode"`
+	Type           string `json:"Type"`
+	ExitCode       int    `json:"ExitCode"`
+	DisplayMessage string `json:"DisplayMessage"`
+	Message        string `json:"Message"`
 }
 
 func (s nomadTaskState) exitCode() int {
@@ -2353,7 +2366,7 @@ func startMockWorkloadAPIServer(t *testing.T, rootDir string, opts mockWorkloadA
 		t.Fatalf("build mock workload api signer: %v", err)
 	}
 
-	socketDir, err := os.MkdirTemp("/tmp", "execution-substrate-spire-")
+	socketDir, err := os.MkdirTemp(socketTestRootDir(t), "execution-substrate-spire-")
 	if err != nil {
 		t.Fatalf("create mock workload api socket dir: %v", err)
 	}
@@ -2493,6 +2506,20 @@ func repoRootFromTestFile(t *testing.T) string {
 		t.Fatalf("resolve test file path: runtime caller unavailable")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", ".."))
+}
+
+func socketTestRootDir(t *testing.T) string {
+	t.Helper()
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home dir for socket tests: %v", err)
+	}
+	root := filepath.Join(homeDir, ".ess")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create socket test root: %v", err)
+	}
+	return root
 }
 
 func reserveTCPPort(t *testing.T) int {

@@ -26,11 +26,24 @@ import (
 
 func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	requireSlice0BringupCapabilities(t)
+	requireSlice1RuntimeIdentityCapabilities(t)
 	keepWorkspace := os.Getenv("EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE") == "1"
 
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := newExecutionWorkspaceTempDir(t, "bringup-script-")
 	fixture := newTLSFixture(t)
+	dockerGateway := dockerBridgeGateway(t)
+	mockSPIRE := startMockWorkloadAPIServer(t, rootDir, mockWorkloadAPIServerOptions{})
+	t.Cleanup(func() { mockSPIRE.stop() })
+	mockVault := startMockVaultCompatServer(t, rootDir, mockVaultCompatServerOptions{
+		bindAddress: "0.0.0.0",
+		authMount:   "jwt",
+		role:        "service_execution",
+		audience:    "vault",
+		subject:     "spiffe://execution.internal/workload",
+		secretPath:  "secret/data/runtime-identity-vault-login",
+		secretValue: "runtime-identity-ok",
+	})
 	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(
 		t,
 		rootDir,
@@ -60,7 +73,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 
 	workloadZoneVaultBytes := mustMarshalJSON(t, runtimeconfigv1.WorkloadZoneVaultConfigBlob{
 		VaultConfig: runtimeconfigv1.WorkloadZoneVaultConfig{
-			Address:     "https://vault.internal:8200",
+			Address:     "https://" + net.JoinHostPort(dockerGateway, strconv.Itoa(mockVault.port(t))),
 			AuthMount:   "jwt",
 			AuthRole:    "service_execution",
 			JWTAudience: "vault",
@@ -234,8 +247,10 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir: filepath.Join(rootDir, "es-stage"),
-			BaseImage:      "alpine:3.20",
+			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
+			BaseImage:                  "python:3.13-alpine",
+			RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
 		},
 	}
 
@@ -356,22 +371,63 @@ advertise {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
 	}
 
-	executeLoopCmd := exec.CommandContext(
+	packageCmd := exec.CommandContext(
+		ctx,
+		filepath.Join(repoRoot, ".examples", "runtime_identity_vault_login", "package.sh"),
+	)
+	packageCmd.Dir = repoRoot
+	packageOutput, err := packageCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("package runtime identity vault example failed: %v output=%s", err, string(packageOutput))
+	}
+
+	runtimeIdentityWorkdirBase := filepath.Join(rootDir, "execute-loop-runtime-identity")
+	runtimeIdentityCmd := exec.CommandContext(
 		ctx,
 		filepath.Join(repoRoot, "scripts", "60_execute_loop.sh"),
-		filepath.Join(repoRoot, ".examples", "execution_loop", "static_script_success.input.json"),
+		filepath.Join(repoRoot, ".examples", "execution_loop", "runtime_identity_vault_success.input.json"),
 	)
-	executeLoopCmd.Dir = repoRoot
-	executeLoopCmd.Env = append(baseEnv,
-		"WORKDIR_BASE="+filepath.Join(rootDir, "execute-loop"),
+	runtimeIdentityCmd.Dir = repoRoot
+	runtimeIdentityCmd.Env = append(baseEnv,
+		"WORKDIR_BASE="+runtimeIdentityWorkdirBase,
 	)
-	executeLoopOutput, err := executeLoopCmd.CombinedOutput()
+	runtimeIdentityOutput, err := runtimeIdentityCmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("execute loop failed: %v output=%s", err, string(executeLoopOutput))
+		t.Fatalf("runtime identity execute loop failed: %v output=%s", err, string(runtimeIdentityOutput))
 	}
-	runID := executionLoopRunIDFromOutput(t, string(executeLoopOutput))
-	assertNomadBindSourcesUnderStagingRoot(t, "http://127.0.0.1:"+itoa(t, nomadHTTPPort), runID, esCfg.Execution.StagingRootDir)
+
+	runtimeIdentityResult := readExecutionLoopResultFromWorkdirBase(t, runtimeIdentityWorkdirBase)
+	if !runtimeIdentityResult.Summary.OK {
+		t.Fatalf("expected runtime identity execution loop success, got %+v output=%s", runtimeIdentityResult.Summary, string(runtimeIdentityOutput))
+	}
+	if strings.TrimSpace(runtimeIdentityResult.Summary.RunID) == "" {
+		t.Fatalf("expected runtime identity execution loop run_id, got %+v output=%s", runtimeIdentityResult.Summary, string(runtimeIdentityOutput))
+	}
+	assertNomadBindSourcesUnderStagingRoot(
+		t,
+		"http://127.0.0.1:"+itoa(t, nomadHTTPPort),
+		runtimeIdentityResult.Summary.RunID,
+		esCfg.Execution.StagingRootDir,
+		esCfg.Execution.SPIREWorkloadAPISocketPath,
+	)
 	assertStagingInvariantProof(t, filepath.Join(bringupDir, "staging-invariant.json"), esCfg.Execution.StagingRootDir)
+	for _, marker := range []string{
+		"PLATFORM-ENDPOINT-USED",
+		"RAW-SPIRE-DENIED",
+		"IDENTITY-JWT-RECEIVED",
+		"VAULT-LOGIN-SUCCESS",
+		"SECRET-READ-SUCCESS:runtime-identity-ok",
+	} {
+		if !strings.Contains(runtimeIdentityResult.Logs, marker) {
+			t.Fatalf("expected %q in runtime identity logs, got %q", marker, runtimeIdentityResult.Logs)
+		}
+	}
+	if attempts := mockVault.loginAttempts(); attempts != 1 {
+		t.Fatalf("expected exactly one mock vault login during operator-path proof, got %d", attempts)
+	}
+	if reads := mockVault.secretReads(); reads != 1 {
+		t.Fatalf("expected exactly one mock vault secret read during operator-path proof, got %d", reads)
+	}
 
 	stopManagedBringupService(t, bringupDir, "nomad")
 
@@ -414,10 +470,13 @@ func TestGenerateControlPlaneDockerfile(t *testing.T) {
 	dockerfile := string(dockerfileBytes)
 	for _, want := range []string{
 		"# Code generated by scripts/generate_control_plane_dockerfile.sh; DO NOT EDIT.",
+		"COPY go.sum ./",
 		"COPY cgs ./cgs",
 		"CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ars ./cmd/ars",
 		"CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/cgs ./cmd/cgs",
+		"CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/es-runtime-support ./cmd/es-runtime-support",
 		"COPY --from=build /out/es /usr/local/bin/es",
+		"COPY --from=build /out/es-runtime-support /usr/local/bin/es-runtime-support",
 	} {
 		if !strings.Contains(dockerfile, want) {
 			t.Fatalf("generated Dockerfile missing %q", want)
@@ -1193,7 +1252,7 @@ func requireSlice0BringupCapabilities(t *testing.T) {
 
 	address := "http://" + listener.Addr().String()
 	output, err := exec.Command("docker", "run", "--rm", "--network", "host", "alpine:3.20", "wget", "-q", "-O", "-", address).CombinedOutput()
-	if err != nil || strings.TrimSpace(string(output)) != "slice0-host-loopback-ok" {
+	if err != nil || !strings.Contains(string(output), "slice0-host-loopback-ok") {
 		t.Skipf("slice 0 bringup requires Docker host networking that preserves host loopback; err=%v output=%s", err, string(output))
 	}
 }
@@ -1214,7 +1273,42 @@ func executionLoopRunIDFromOutput(t *testing.T, output string) string {
 	return ""
 }
 
-func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runID string, stagingRoot string) {
+func readExecutionLoopResultFromWorkdirBase(t *testing.T, workdirBase string) executionLoopResult {
+	t.Helper()
+
+	subdirs, err := os.ReadDir(workdirBase)
+	if err != nil {
+		t.Fatalf("read execution loop workdir base: %v", err)
+	}
+	if len(subdirs) != 1 {
+		t.Fatalf("expected exactly one execution loop workdir in %s, found %d", workdirBase, len(subdirs))
+	}
+
+	workdir := filepath.Join(workdirBase, subdirs[0].Name())
+	summaryPath := filepath.Join(workdir, "summary.json")
+	logsPath := filepath.Join(workdir, "logs.txt")
+
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read execution loop summary: %v", err)
+	}
+	var summary executionLoopSummary
+	if err := json.Unmarshal(summaryBytes, &summary); err != nil {
+		t.Fatalf("decode execution loop summary: %v body=%s", err, string(summaryBytes))
+	}
+
+	logsBytes, err := os.ReadFile(logsPath)
+	if err != nil {
+		t.Fatalf("read execution loop logs: %v", err)
+	}
+
+	return executionLoopResult{
+		Summary: summary,
+		Logs:    string(logsBytes),
+	}
+}
+
+func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runID string, stagingRoot string, allowedExternalSources ...string) {
 	t.Helper()
 
 	cmd := exec.Command("nomad", "job", "inspect", "-json", "exec-"+runID)
@@ -1245,6 +1339,15 @@ func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runI
 
 	expectedPrefix := filepath.Join(stagingRoot, runID)
 	bindCount := 0
+	allowedExternal := make(map[string]struct{}, len(allowedExternalSources))
+	for _, source := range allowedExternalSources {
+		trimmed := strings.TrimSpace(source)
+		if trimmed == "" {
+			continue
+		}
+		allowedExternal[filepath.Clean(trimmed)] = struct{}{}
+	}
+	seenExternal := make(map[string]struct{}, len(allowedExternal))
 	for _, raw := range mounts {
 		mount, ok := raw.(map[string]any)
 		if !ok {
@@ -1257,13 +1360,28 @@ func assertNomadBindSourcesUnderStagingRoot(t *testing.T, nomadAddr string, runI
 		if source == "" {
 			t.Fatalf("expected bind mount source in nomad job, got %v", mount)
 		}
-		if !strings.HasPrefix(source, expectedPrefix) {
+		cleanSource := filepath.Clean(source)
+		if !strings.HasPrefix(cleanSource, expectedPrefix) {
+			if _, ok := allowedExternal[cleanSource]; ok {
+				seenExternal[cleanSource] = struct{}{}
+				continue
+			}
 			t.Fatalf("expected bind mount source under %s, got %s", expectedPrefix, source)
 		}
 		bindCount++
 	}
 	if bindCount < 2 {
 		t.Fatalf("expected staged payload/run bind mounts under %s, got %d", expectedPrefix, bindCount)
+	}
+	for _, source := range allowedExternalSources {
+		trimmed := strings.TrimSpace(source)
+		if trimmed == "" {
+			continue
+		}
+		cleanSource := filepath.Clean(trimmed)
+		if _, ok := seenExternal[cleanSource]; !ok {
+			t.Fatalf("expected allowed external bind mount source %s in nomad job", cleanSource)
+		}
 	}
 }
 

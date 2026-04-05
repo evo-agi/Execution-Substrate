@@ -231,6 +231,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - slice `1A` and `1B` additionally require:
   - `execution.runtime_support_binary`: absolute path to the platform-owned runtime supervisor/helper binary staged into the workload task
   - `execution.spire_workload_api_socket_path`: absolute path to the local SPIRE Workload API Unix socket that ES bind-mounts into the helper-private runtime path
+- for the containerized operator bring-up path:
+  - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
+  - the bring-up path must mount `execution.spire_workload_api_socket_path` into the ES container at that same absolute path so ES can validate the socket before serving and later hand the same host path to Nomad
 - slice `1A` and `1B` intentionally narrow workload compatibility:
   - the helper runs as `0:0`
   - the workload runs as fixed UID:GID `10000:10000`
@@ -343,6 +346,7 @@ The current unified health check verifies:
 - those health checks succeeded with a real client certificate at the TLS boundary
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
+- ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
 
 Current limitation:
@@ -351,9 +355,11 @@ Current limitation:
 - a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
 - that bounded fallback should be read as an environment/startup caveat for the current proof host, not as evidence that Linux or Docker/Nomad are the wrong long-term direction for the workload zone in this phase
 
-This slice still does **not** prove strong workload identity for runtime workloads. The workload identity milestone remains separate and later.
+Readiness still does **not** prove useful downstream credential use by itself. The workload-identity boundary now exists, but bounded workload-vault login and secret-read proof remains a separate slice from green service/submit readiness.
 
-Slice 1 first proves platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
+Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
+
+The next bounded proof on top of that slice is useful credential flow completion: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a Vault-compatible HTTPS endpoint, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 
 For operator diagnostics in the current bounded slice:
 

@@ -339,6 +339,22 @@ func submitExecution(t *testing.T, stack *submitStack, cpu int, memoryMB int) ad
 func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []byte) {
 	t.Helper()
 
+	publishSubmitArtifactArchiveWithOptions(t, stack, archive, publishSubmitArtifactOptions{})
+}
+
+type publishSubmitArtifactOptions struct {
+	environmentVariables []string
+	networkAccess        bool
+}
+
+func publishSubmitArtifactArchiveWithOptions(t *testing.T, stack *submitStack, archive []byte, opts publishSubmitArtifactOptions) {
+	t.Helper()
+
+	environmentVariables := opts.environmentVariables
+	if environmentVariables == nil {
+		environmentVariables = []string{"APP_MODE"}
+	}
+
 	requestBody := mustMarshalJSON(t, map[string]any{
 		"artifact_payload_b64": base64.StdEncoding.EncodeToString(archive),
 		"artifact": map[string]any{
@@ -353,11 +369,11 @@ func publishSubmitArtifactArchive(t *testing.T, stack *submitStack, archive []by
 		},
 		"admission": map[string]any{
 			"runtime": map[string]any{
-				"environment_variables": []string{"APP_MODE"},
+				"environment_variables": environmentVariables,
 				"required_capabilities": []string{},
 			},
 			"access": map[string]any{
-				"network_access": false,
+				"network_access": opts.networkAccess,
 			},
 			"derivation": map[string]any{
 				"derivation_spec_digest": stack.derivationSpecDigest,

@@ -21,6 +21,7 @@ service_bins=(
   ags
   egs
   es
+  es-runtime-support
   cgs
 )
 
@@ -36,6 +37,7 @@ mkdir -p "$(dirname "${OUTPUT_PATH}")"
   printf '%s\n' 'WORKDIR /src'
   printf '\n'
   printf '%s\n' 'COPY go.mod ./'
+  printf '%s\n' 'COPY go.sum ./'
   for dir in "${source_dirs[@]}"; do
     printf 'COPY %s ./%s\n' "${dir}" "${dir}"
   done

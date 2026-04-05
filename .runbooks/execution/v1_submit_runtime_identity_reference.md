@@ -11,6 +11,8 @@ Submit the legacy reference runtime-identity workload through the governed execu
 
 This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md). It is not the slice-1 platform-owned runtime identity proof path.
 
+For the current bounded platform-owned proof path, use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) instead.
+
 For a local non-production Vault dev path plus a simple HTTP identity adapter, see [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_runtime_identity_local_validation.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_runtime_identity_local_validation.md).
 
 ## 2. Reference Workload

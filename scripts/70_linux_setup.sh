@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script prepares a Linux VM for the existing runtime identity validation
+# This script prepares a Linux VM for the current bounded governed-execution
+# proof path and its runtime identity validation slices
 # flow. It stays explicit on purpose:
 # - no retry loops
 # - no polling
@@ -110,7 +111,7 @@ sudo apt-get install -y nomad vault
 echo "==> Enabling Docker"
 sudo systemctl enable --now docker
 
-# The runtime identity validation flow uses SSH cloning. Generate the default
+# The current runtime identity validation flow uses SSH cloning. Generate the default
 # key only if the user does not already have one.
 SSH_KEY_PATH="$HOME/.ssh/id_ed25519"
 SSH_PUB_PATH="$SSH_KEY_PATH.pub"
@@ -171,16 +172,18 @@ printf 'docker: '; docker --version
 
 echo
 echo "==> Next steps"
-echo "1. Review the runtime identity validation runbook:"
-echo "   $CLONE_DIR/.runbooks/execution/v1_runtime_identity_local_validation.md"
-echo "2. Review the governed submit runbook:"
+echo "1. Review the governed submit bring-up runbook:"
+echo "   $CLONE_DIR/.runbooks/system/v1_bringup.md"
+echo "2. Review the bounded useful credential flow runbook:"
+echo "   $CLONE_DIR/.runbooks/execution/v1_submit_runtime_identity_vault_login.md"
+echo "3. Keep the legacy compatibility runbook only for older reference-bridge validation:"
 echo "   $CLONE_DIR/.runbooks/execution/v1_submit_runtime_identity_reference.md"
-echo "3. Start the Go platform with explicit configs and TLS material."
-echo "4. Start Nomad with docker.volumes.enabled = true."
-echo "5. Start Vault dev mode and the local identity adapter."
-echo "6. Run the publish -> submit -> log verification flow from the runbooks."
+echo "4. Start the Go platform with explicit configs and TLS material."
+echo "5. Start Nomad with docker.volumes.enabled = true."
+echo "6. Start the bounded Vault-compatible HTTPS endpoint used by the runbook."
+echo "7. Run the publish -> submit -> log verification flow from the runbooks."
 echo
 echo "Environment notes:"
 echo "- This script assumes an apt-based Linux VM."
-echo "- The runtime identity validation flow is currently easiest on Linux amd64."
+echo "- The bounded useful credential flow is currently easiest on Linux amd64."
 echo "- The workload-visible Vault address must be reachable from bridge-networked containers."

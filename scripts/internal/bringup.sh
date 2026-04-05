@@ -351,7 +351,9 @@ verify_es_submit_config_enabled() {
   local config_path=$1
   python3 - <<'PY' "$config_path"
 import json
+import os
 import pathlib
+import stat
 import sys
 
 cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -370,6 +372,8 @@ for path in (
     ("nomad", "datacenter"),
     ("execution", "staging_root_dir"),
     ("execution", "base_image"),
+    ("execution", "runtime_support_binary"),
+    ("execution", "spire_workload_api_socket_path"),
 ):
     require_non_empty(path)
 PY
@@ -383,6 +387,7 @@ check_es_submit_config_once() {
 import json
 import os
 import pathlib
+import stat
 import sys
 from urllib.parse import urlparse
 
@@ -402,6 +407,8 @@ base_url = require_non_empty(("nomad", "base_url"))
 datacenter = require_non_empty(("nomad", "datacenter"))
 staging_root_dir = require_non_empty(("execution", "staging_root_dir"))
 base_image = require_non_empty(("execution", "base_image"))
+runtime_support_binary = require_non_empty(("execution", "runtime_support_binary"))
+spire_socket_path = require_non_empty(("execution", "spire_workload_api_socket_path"))
 
 parsed = urlparse(base_url)
 if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -416,6 +423,16 @@ if not staging_root.is_dir():
     raise SystemExit(f"es submit config: execution.staging_root_dir is not a directory: {staging_root_dir}")
 if not os.access(staging_root_dir, os.W_OK):
     raise SystemExit(f"es submit config: execution.staging_root_dir is not writable: {staging_root_dir}")
+if not pathlib.Path(runtime_support_binary).is_absolute():
+    raise SystemExit("es submit config: execution.runtime_support_binary must be an absolute path")
+spire_socket = pathlib.Path(spire_socket_path)
+if not spire_socket.is_absolute():
+    raise SystemExit("es submit config: execution.spire_workload_api_socket_path must be an absolute path")
+if not spire_socket.exists():
+    raise SystemExit(f"es submit config: execution.spire_workload_api_socket_path does not exist: {spire_socket_path}")
+mode = spire_socket.stat().st_mode
+if not stat.S_ISSOCK(mode):
+    raise SystemExit(f"es submit config: execution.spire_workload_api_socket_path is not a Unix socket: {spire_socket_path}")
 
 print(
     "es submit config: "
@@ -423,6 +440,8 @@ print(
     f"datacenter={datacenter} "
     f"staging_root_dir={staging_root_dir} "
     f"base_image={base_image} "
+    f"runtime_support_binary={runtime_support_binary} "
+    f"spire_workload_api_socket_path={spire_socket_path} "
     "ready=true"
 )
 PY

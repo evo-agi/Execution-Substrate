@@ -7,6 +7,7 @@ ARG TARGETARCH
 WORKDIR /src
 
 COPY go.mod ./
+COPY go.sum ./
 COPY ags ./ags
 COPY ars ./ars
 COPY cgs ./cgs
@@ -21,6 +22,7 @@ RUN test -n "${TARGETARCH}" && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ags ./cmd/ags && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/egs ./cmd/egs && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/es ./cmd/es && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/es-runtime-support ./cmd/es-runtime-support && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/cgs ./cmd/cgs
 
 FROM alpine:3.20
@@ -31,4 +33,5 @@ COPY --from=build /out/ars /usr/local/bin/ars
 COPY --from=build /out/ags /usr/local/bin/ags
 COPY --from=build /out/egs /usr/local/bin/egs
 COPY --from=build /out/es /usr/local/bin/es
+COPY --from=build /out/es-runtime-support /usr/local/bin/es-runtime-support
 COPY --from=build /out/cgs /usr/local/bin/cgs

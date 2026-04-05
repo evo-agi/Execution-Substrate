@@ -8,7 +8,6 @@ source "${SCRIPT_DIR}/internal/operator_failures.sh"
 
 DEFAULT_TIMEOUT_SECONDS=120
 POLL_INTERVAL_SECONDS=2
-
 WORKDIR=""
 SUMMARY_PATH=""
 INPUT_COPY_PATH=""
@@ -709,7 +708,8 @@ while true; do
 
   logs_http=""
   logs_stderr="${WORKDIR}/logs.stderr"
-  if curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/logs" "" "${LOGS_PATH}" "${ES_RESOLVE:-}" "${logs_stderr}" logs_http; then
+  logs_response_path="${WORKDIR}/logs.response"
+  if curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/logs" "" "${logs_response_path}" "${ES_RESOLVE:-}" "${logs_stderr}" logs_http; then
     :
   else
     curl_exit=$?
@@ -720,6 +720,7 @@ while true; do
   if [[ "${STATE}" == "running" ]]; then
     case "${logs_http}" in
       200)
+        mv -f "${logs_response_path}" "${LOGS_PATH}"
         LOGS_AVAILABLE="true"
         ;;
       409)
@@ -741,10 +742,14 @@ while true; do
 
   case "${logs_http}" in
     200)
+      mv -f "${logs_response_path}" "${LOGS_PATH}"
       LOGS_AVAILABLE="true"
       ;;
     409)
-      fail_local_phase "logs" "$(operator_category_readiness)" "execution reached terminal state before logs became available" "logs_unavailable" "${logs_http}"
+      if [[ "${LOGS_AVAILABLE}" != "true" ]]; then
+        sleep "${POLL_INTERVAL_SECONDS}"
+        continue
+      fi
       ;;
     404)
       write_phase_http_error "logs" "${logs_http}" "${LOGS_PATH}" "execution logs not found"

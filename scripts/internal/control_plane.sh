@@ -185,8 +185,11 @@ if service == "ars":
         rw_dirs.add(os.path.normpath(str(pathlib.Path(index_file).parent)))
 elif service == "es":
     staging_root = get_path("execution", "staging_root_dir")
+    spire_socket = get_path("execution", "spire_workload_api_socket_path")
     if staging_root and os.path.isabs(staging_root):
         rw_dirs.add(os.path.normpath(staging_root))
+    if spire_socket and os.path.isabs(spire_socket):
+        ro_files.add(os.path.normpath(spire_socket))
 
 def is_ancestor(parent, child):
     if parent == child:

@@ -1,7 +1,6 @@
 .git
 .tmp
-.out
-!.out
+.out/*
 !.out/Dockerfile
 bringup-script-*
 es-submit-*

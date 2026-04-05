@@ -4,6 +4,8 @@ This directory contains a legacy reference `static-script` workload that exercis
 
 Everything in this directory is example-level scaffolding only. It is not the slice-1 platform-owned runtime identity implementation. The platform contract is limited to the reserved runtime-identity workspace, the discovered `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, and the non-secret Vault auth environment variables.
 
+For the current bounded platform-owned proof path, prefer [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/README.md](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/README.md).
+
 ## What It Demonstrates
 
 The reference workload:
