@@ -24,6 +24,8 @@ For a fresh Linux VM, an optional explicit bootstrap helper is available at:
 
 That helper installs dependencies, pauses for GitHub SSH-key setup, clones the repository once, verifies the required tools, and then hands control back to this runbook.
 
+It now also writes the current single-node `nomad.service` config baseline and tries to qualify the narrow supported Linux substrate profile before finishing. If it exits nonzero, treat the VM as not yet supported rather than as a clean Linux proof host.
+
 ## 2. Prerequisites
 
 The current Go platform must already be up using the primary full bring-up flow:

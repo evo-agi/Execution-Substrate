@@ -46,6 +46,28 @@ The readiness vocabulary for that primary path is now:
   - `scripts/01_bringup.sh up` probes this behavior before starting services
   - this host networking use is temporary slice-0 compatibility scaffolding only, not the final control-plane network model
 
+For a fresh Linux workload-zone VM, use `/Users/ds/Repositories/Execution Substrate/scripts/70_linux_setup.sh` as the bounded bootstrap helper.
+
+Before treating any Linux host or VM as the repo's clean `supported` environment, apply the host qualification boundary in [supported_linux_host_qualification.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md).
+
+That helper currently:
+
+- installs the base packages used by the operator path
+- writes the single-node `/etc/nomad.d/nomad.hcl` used for the one-host workload-zone baseline
+- enables Docker
+- tries to enable and start the root-managed non-`-dev` `nomad.service`
+- exits nonzero if the VM still cannot qualify the supported substrate baseline
+
+That helper does **not** override host-admin reality:
+
+- it still relies on `sudo` for package and service management
+- it does not silently accept leftover user-started Nomad processes as equivalent to a supported pre-managed service
+- it does not normalize `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` as part of the supported profile
+- if it had to add the current user to the `docker` group, log out and back in before treating the host as ready for repo scripts
+- if `nomad.service` still cannot start cleanly or natural `cpu.totalcompute` remains `0`, treat the VM as not yet supported and investigate at the host/service layer before using the main operator path
+- if the root-managed non-`-dev` service is up but the node still reports `cpu.totalcompute=0`, inspect host capability by behavior: no readable `cpufreq` sysfs files, no `/proc/cpuinfo` `cpu MHz`, and SMBIOS processor `Current Speed: Unknown` means the guest is not exposing the CPU-frequency data Nomad needs for natural schedulability
+- on the current Ubuntu 24.04 VMware/aarch64 proof VM, `dmidecode` and `cpufrequtils` were diagnostic only and did not change the zero-compute result under the real `nomad.service` path
+
 ### Required config files
 
 Export absolute paths:
@@ -236,6 +258,7 @@ Current limitation:
 - if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains a bounded fallback for the current proof host/startup mode rather than clean evidence of natural substrate support
 - the current script-managed local Nomad path also remains bounded fallback/troubleshooting even when Nomad is schedulable; the supported-environment story for this slice is still a pre-managed non-`-dev` Nomad service on the Linux host/VM plus natural schedulability
 - a pre-managed `nomad agent -dev` environment is unsupported for that support claim even if it looks healthy and exposes positive compute
+- the current Ubuntu 24.04 VMware/aarch64 proof VM is now ruled out for the supported-profile claim in bounded scope because the real root-managed non-`-dev` service still reports `cpu.totalcompute=0` and the guest does not expose the CPU-frequency inputs Nomad needs
 
 For ES specifically, `/health` still confirms:
 

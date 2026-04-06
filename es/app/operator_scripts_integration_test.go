@@ -770,6 +770,37 @@ func TestBringupRunbookTroubleshootingMatrixListsCurrentFailureCategories(t *tes
 	}
 }
 
+func TestLinuxSetupScriptDocumentsSupportedProfileGuardrails(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	scriptPath := filepath.Join(repoRoot, "scripts", "70_linux_setup.sh")
+
+	body, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read linux setup script: %v", err)
+	}
+
+	text := string(body)
+	requiredSnippets := []string{
+		"tries to qualify the repo's narrow supported Linux profile",
+		"systemd is required for the supported Linux profile",
+		"Installing supported single-node Nomad service config",
+		"root-managed nomad.service",
+		"ready node(s) still report cpu.totalcompute=0 under the root-managed non-dev service",
+		"SMBIOS processor Current Speed is not usable on this host",
+		"current login shell still needs re-login before repo scripts can call docker without sudo",
+		"supported-substrate: not yet qualified",
+		"This VM still needs manual root investigation before it matches the repo's supported profile.",
+		"Supported substrate baseline: not yet qualified from this script run.",
+		"do not treat this VM as supported yet",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("expected %q in linux setup script, got %s", snippet, text)
+		}
+	}
+}
+
 func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 	stack := startSubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)

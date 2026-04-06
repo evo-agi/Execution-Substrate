@@ -234,6 +234,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - for the containerized operator bring-up path:
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
   - the bring-up path must mount `execution.spire_workload_api_socket_path` into the ES container at that same absolute path so ES can validate the socket before serving and later hand the same host path to Nomad
+- for fresh Linux workload-zone VMs, `scripts/70_linux_setup.sh` now installs Docker, Nomad, Vault, and Go, writes the current single-node `/etc/nomad.d/nomad.hcl`, and then tries to qualify the root-managed `nomad.service` baseline
+  - that helper does not silently claim success if the host still needs manual root investigation, cannot start `nomad.service`, reports `DevMode=true`, or still leaves `cpu.totalcompute=0`
+  - if the helper had to add the current operator user to the `docker` group, the user must log out and back in before treating the VM as qualified for repo scripts
+  - a nonzero exit from that helper means the VM is not yet a supported substrate baseline for this slice
+  - if that helper reaches a root-managed non-`-dev` Nomad service but the ready node still reports `cpu.totalcompute=0`, qualify the host by behavior rather than by platform label: inspect whether the guest actually exposes CPU-frequency data through `cpufreq` sysfs, `/proc/cpuinfo` `cpu MHz`, or SMBIOS processor `Current Speed`
+  - on the current Ubuntu 24.04 VMware/aarch64 proof VM, those sources are all absent or unusable under the real `nomad.service` path; `dmidecode` and `cpufrequtils` only confirm that gap and do not make the host supported
 - slice `1A` and `1B` intentionally narrow workload compatibility:
   - the helper runs as `0:0`
   - the workload runs as fixed UID:GID `10000:10000`
@@ -293,6 +299,8 @@ CGS is not required for the current ES hot path and is not part of the minimal g
 These are not configured through the Go service config files, but they are required for the current bounded execution slice.
 
 ### Nomad requirements
+
+The current host-qualification boundary for the supported Linux environment is defined in [supported_linux_host_qualification.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md).
 
 - reachable at the `es.nomad.base_url`
 - configured for the target datacenter in `es.nomad.datacenter`
@@ -361,6 +369,7 @@ Current limitation:
 - a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
 - the script-managed local Nomad path also remains bounded fallback even when it is schedulable; the supported-environment story for this slice is a pre-managed non-dev Nomad service with natural schedulability
 - a pre-managed Nomad `-dev` agent is unsupported even if it reports positive `cpu.totalcompute`
+- a host profile that still reports `cpu.totalcompute=0` under the root-managed non-`-dev` service and also exposes no usable CPU-frequency data through `cpufreq` sysfs, `/proc/cpuinfo`, or SMBIOS `Current Speed` should currently be treated as unsupported for the slice-0 supported-environment claim rather than as a script/service-mode mistake
 - that bounded fallback should be read as an environment/startup caveat for the current proof host, not as evidence that Linux or Docker/Nomad are the wrong long-term direction for the workload zone in this phase
 
 Readiness still does **not** prove useful downstream credential use by itself. The workload-identity boundary now exists, but bounded workload-vault login and secret-read proof remains a separate slice from green service/submit readiness.
