@@ -1,7 +1,7 @@
 # Runbook: Submit Runtime Identity Vault Login Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-06`
+- Last Updated: `2026-04-07`
 
 ## 1. Objective
 
@@ -12,6 +12,14 @@ Prove the current bounded useful credential flow through the governed execution 
 This runbook is the current platform-owned proof path for useful credential flow completion. It does **not** use the legacy workload-authored bridge.
 
 The downstream target in this runbook is a bounded Vault-compatible HTTPS mock endpoint, not a claim of full Vault integration.
+
+On the current supported local reference host on this Mac, the canonical repo-owned path for this proof is now:
+
+```bash
+scripts/73_supported_local_proof.sh run
+```
+
+That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
 
 ## 2. Proof Asset
 
@@ -69,19 +77,25 @@ For this proof, set that workload-zone Vault blob so `vault_config.address` poin
 
 ## 5. Bring Up The Stack
 
-Use the normal full bring-up path:
+For the current supported local reference host on this Mac, prefer the canonical wrapper above instead of this lower-level sequence.
+
+For lower-level debugging or non-wrapper environments, use the normal bring-up/readiness path that preserves the supported-host truth:
 
 ```bash
-export BRINGUP_PROFILE="full"
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+export BRINGUP_PROFILE="prepare-only"
 scripts/01_bringup.sh up
-scripts/01_bringup.sh check
+BRINGUP_PROFILE=full scripts/01_bringup.sh check
 ```
 
 Do not continue unless the check reports `submit-ready: true`.
 
 ## 6. Start The Vault-Compatible HTTPS Mock
 
-Generate a bounded local certificate for the HTTPS mock:
+On the current supported local reference host on this Mac, the canonical wrapper already generates the bounded mock target, writes the generated bootstrap material to `managed-secrets.conf`, and aligns the workload-zone Vault blob for this proof.
+
+For lower-level debugging or non-wrapper environments, generate a bounded local certificate for the HTTPS mock:
 
 ```bash
 WORKDIR="$(mktemp -d)"
@@ -131,7 +145,7 @@ Before submitting the workload, ensure the workload-zone Vault blob referenced b
 }
 ```
 
-This runbook assumes that referenced ARS blob has already been updated through the same configuration path your environment normally uses. Do not bypass the configured runtime-config reference with workload-owned overrides.
+The canonical supported-local wrapper now performs that alignment through the same repo-owned proof setup path. Do not bypass the configured runtime-config reference with workload-owned overrides.
 
 ## 8. Execute The Proof Through The Normal Operator Path
 

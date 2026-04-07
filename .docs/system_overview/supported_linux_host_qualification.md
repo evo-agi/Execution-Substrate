@@ -288,7 +288,9 @@ If the output instead shows `managed-local`, `bounded-override`, or a failed sub
 
 Do not use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the supported proof path. That path manages Nomad locally and remains `bounded-fallback` by definition.
 
-On the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the repo-owned replacement for the earlier out-of-repo experiment harnesses. It prepares the ephemeral TLS/config/blob/mock-socket state needed for the proof path, but it does not qualify the host by itself.
+On the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned replacement for the earlier out-of-repo experiment harnesses. It prepares the bounded supported-local proof environment, including the bounded Vault-compatible proof target used by the higher-value runtime-identity credential-flow proof, but it still does not qualify the host by itself.
+
+Because Lima mounts the host repo tree read-only inside the current `qemu` guest on this Mac, the canonical supported-local proof record now lives on the host under `.out/es-proof-<id>/`. Any guest `/tmp/es-proof-<id>` workspace used by the repo-owned supported-local wrapper is an internal implementation detail, not the canonical proof workspace.
 
 ## 7. Evidence Collection Checklist
 
@@ -331,24 +333,20 @@ The current primary proof path is documented in:
 
 - [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md)
 
-The preferred command path there is:
+The preferred command path there is now:
 
 ```bash
-scripts/72_supported_local_setup.sh setup
-source /tmp/execution-substrate-supported-local-proof/env.sh
-export BRINGUP_PROFILE="prepare-only"
-scripts/01_bringup.sh up
-BRINGUP_PROFILE=full scripts/01_bringup.sh check
-scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
+scripts/73_supported_local_proof.sh run
 ```
 
 That order keeps host qualification and smoke execution separate:
 
-- `scripts/72_supported_local_setup.sh setup` creates the repo-owned proof environment for the supported local path and replaces the earlier `/tmp` experiment harnesses
-- the `prepare-only` bring-up plus full-profile `check` proves the supported host boundary
-- the later execute-loop run proves one clean governed workload execution on that already-qualified host
+- `scripts/73_supported_local_proof.sh run` creates one canonical proof workspace under `.out/es-proof-<id>/` and records both qualification and execution evidence there
+- inside that wrapper, the `prepare-only` bring-up plus full-profile `check` still proves the supported host boundary before any workload proof is accepted
+- the later execute-loop run now uses the bounded runtime-identity Vault-login workload as the canonical higher-value governed execution proof on that already-qualified host
+- the wrapper may still use guest `/tmp/es-proof-<id>` internally on this Mac because the Lima-mounted repo tree is read-only inside the guest, but that scratch path is not the canonical proof workspace
 
-The bounded useful credential flow runbook remains the next proof on top of that qualified host, not a replacement for host qualification.
+The bounded useful credential flow runbook remains the higher-value proof on top of that qualified host, not a replacement for host qualification.
 
 ## 9. Non-Goals And Deferred Items
 

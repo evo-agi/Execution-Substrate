@@ -336,8 +336,9 @@ CGS remains implemented but is not required for the current ES admission or exec
 
 For local operator bring-up against this practical minimum:
 
-- on the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the repo-owned proof-environment helper; it writes the current Dockerfile/TLS/config/blob assets under the guest-writable default path `/tmp/execution-substrate-supported-local-proof`, starts the repo-owned `cmd/es-workload-api-mock`, writes `env.sh`, and replaces the earlier out-of-repo `/tmp` harnesses
-- that helper intentionally writes only a structurally valid workload-zone Vault blob by default; it is sufficient for supported-host qualification and the static-script smoke proof, but the bounded useful credential-flow proof still follows the dedicated Vault-login runbook
+- on the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned proof-environment helper; it writes the current Dockerfile/TLS/config/blob assets, starts the repo-owned `cmd/es-workload-api-mock`, starts the bounded Vault-compatible HTTPS proof target, writes `managed-secrets.conf`, writes `env.sh`, and replaces the earlier out-of-repo `/tmp` harnesses
+- `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac; it records proof workspaces under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, runs the supported-host qualification path, runs the higher-value useful credential-flow proof, and copies the resulting guest evidence back into that canonical workspace
+- on this Mac, the wrapper may still use guest `/tmp/es-proof-<id>` internally because the Lima-mounted repo tree is read-only inside the `qemu` guest; that guest scratch is an implementation detail, not the canonical proof workspace
 - use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`, as the clean supported-host proof path when Nomad is already running as a pre-managed non-dev service at `NOMAD_ADDR`
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` when you intentionally want the repo to manage a local Nomad process as bounded bootstrap/troubleshooting scaffolding
 - for `BRINGUP_PROFILE=full`, the current script-managed Nomad startup path remains bounded fallback/troubleshooting even when submit-ready passes; the supported-environment path for this slice is a pre-managed non-dev Nomad client/server already running at `NOMAD_ADDR`
@@ -347,7 +348,7 @@ For local operator bring-up against this practical minimum:
 - that bounded path has now been functionally proved on Linux through the real ES -> Nomad -> Docker flow, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-dev Nomad and positive natural `cpu.totalcompute`
 - `scripts/01_bringup.sh up` regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path (currently bundling `ars`, `ags`, `egs`, `es`, and `cgs`) and records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - `CONTROL_PLANE_DOCKERFILE` remains an explicit operator override, but the default bring-up source of truth is the generated `.out/Dockerfile`
-- `.out/` is the current repo-local generated-artifact area: `.out/Dockerfile` remains the tracked control-plane image input, while kept integration harness workspaces such as `es-submit-*` are created under `.out/` instead of at the repository root
+- `.out/` is the current repo-local generated-artifact area: `.out/Dockerfile` remains the tracked control-plane image input, kept integration harness workspaces such as `es-submit-*` are created under `.out/`, and the canonical supported-local proof workspaces on this Mac now live under `.out/es-proof-<id>/`
 - top-level `scripts/*.sh` remain the operator-facing entrypoints and manual fallback commands; `scripts/internal/*.sh` is the sourced-only helper layer behind those entrypoints
 - Docker host networking in that path is temporary slice-0 compatibility scaffolding, not the final control-plane network model
 - use an operator SPIFFE client cert/key for AGS and ES operator-facing helpers:
@@ -375,13 +376,13 @@ Current limitation:
 - a host profile that still reports `cpu.totalcompute=0` under the root-managed non-`-dev` service and also exposes no usable CPU-frequency data through `cpufreq` sysfs, `/proc/cpuinfo`, or SMBIOS `Current Speed` should currently be treated as unsupported for the slice-0 supported-environment claim rather than as a script/service-mode mistake
 - on the current Apple Silicon Mac, the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain in that unsupported bucket because natural `cpu.totalcompute` still stays `0`
 
-Readiness still does **not** prove useful downstream credential use by itself. The workload-identity boundary now exists, but bounded workload-vault login and secret-read proof remains a separate slice from green service/submit readiness.
+Readiness still does **not** prove useful downstream credential use by itself. The workload-identity boundary now exists, and the bounded workload-vault login plus secret-read proof now sits directly on top of the supported-local qualification path as the canonical higher-value proof on this Mac.
 
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a Vault-compatible HTTPS endpoint, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 
-Supported-host qualification is now achieved on the current local reference host, and the current supported local smoke path is now repo-owned through `scripts/72_supported_local_setup.sh` plus the existing bring-up and execute-loop helpers. Supported vs bounded-fallback vs unsupported states must remain explicit in bring-up/readiness output.
+Supported-host qualification is now achieved on the current local reference host, and the current supported local proof path is now repo-owned through `scripts/72_supported_local_setup.sh`, `scripts/73_supported_local_proof.sh run`, and the existing bring-up and execute-loop helpers. Supported vs bounded-fallback vs unsupported states must remain explicit in bring-up/readiness output.
 
 For operator diagnostics in the current bounded slice:
 

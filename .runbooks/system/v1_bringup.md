@@ -1,7 +1,7 @@
 # Runbook: Governed System Bring-up (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-06`
+- Last Updated: `2026-04-07`
 - Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
@@ -12,9 +12,10 @@ Bring up the current bounded governed system through one operator path and verif
 
 The preferred operator path is now:
 
-- repo-owned supported-local proof environment setup: `scripts/72_supported_local_setup.sh setup`, then `source /tmp/execution-substrate-supported-local-proof/env.sh`
-- clean supported-host qualification: `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`
-- clean smoke execution on that already-qualified host: `scripts/60_execute_loop.sh`
+- repo-owned supported-local proof environment setup inside the guest: `scripts/72_supported_local_setup.sh setup`
+- canonical supported-local proof wrapper on this Mac: `scripts/73_supported_local_proof.sh run`
+- inside that wrapper, clean supported-host qualification still happens first: `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`
+- inside that wrapper, the canonical higher-value proof workload is now the bounded runtime-identity Vault-login path through `scripts/60_execute_loop.sh`
 - bounded local fallback bootstrap when the repo must manage Nomad itself: `BRINGUP_PROFILE=full scripts/01_bringup.sh up`
 - teardown of repo-managed services: `scripts/01_bringup.sh down`
 
@@ -85,14 +86,15 @@ Build these from the current validators and the configuration matrix in [configu
 
 For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
 
-On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses to obtain those env vars and config files. Instead, run:
+On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses. The canonical supported-local proof path is now:
 
 ```bash
-scripts/72_supported_local_setup.sh setup
-source /tmp/execution-substrate-supported-local-proof/env.sh
+scripts/73_supported_local_proof.sh run
 ```
 
-That repo-owned helper writes the current proof Dockerfile, config, TLS material, workload-zone Vault blob, and operator env file under the guest-writable default path `/tmp/execution-substrate-supported-local-proof`, and it starts the repo-owned mock SPIFFE Workload API socket used by the supported local proof path.
+That repo-owned wrapper creates the canonical proof workspace under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, invokes the guest-side `scripts/72_supported_local_setup.sh setup`, runs the supported-host qualification sequence, runs the higher-value useful credential-flow proof, and collects the resulting guest evidence back into that canonical workspace.
+
+On this Mac, the wrapper still uses a guest `/tmp/es-proof-<id>` workspace internally because Lima mounts the repo tree read-only inside the current `qemu` guest. That guest scratch is an implementation detail; the canonical proof workspace is the host-side `.out/es-proof-<id>/`.
 
 For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
 
@@ -194,11 +196,11 @@ Pass only if the check reports:
 
 On the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile for this path. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
 
-The current repo-owned helper is intentionally narrow:
+The current guest-side helper is intentionally narrow:
 
-- it prepares only the ephemeral proof environment for supported-host qualification and the static-script smoke path
-- it seeds only a structurally valid workload-zone Vault blob by default
-- it does not replace the dedicated useful credential-flow runbook when you want the runtime-identity Vault proof
+- it prepares the bounded supported-local proof environment used by both qualification and the canonical useful credential-flow proof
+- it seeds the bounded workload-zone Vault runtime fields used by ES, including the proof mock target for the current runtime-identity Vault-login workload
+- it does not broaden the slice beyond the bounded workload-vault login and one-secret-read proof
 
 ### Full execution profile
 
@@ -363,20 +365,15 @@ The collector accepts either the short category aliases above or the surfaced fa
 
 ## 6. First Execution Verification
 
-After bring-up succeeds, the preferred bounded end-to-end smoke test is:
+After bring-up succeeds, the preferred bounded end-to-end proof on the current supported local reference host on this Mac is:
 
 ```bash
-scripts/72_supported_local_setup.sh setup
-source /tmp/execution-substrate-supported-local-proof/env.sh
-export BRINGUP_PROFILE="prepare-only"
-scripts/01_bringup.sh up
-BRINGUP_PROFILE=full scripts/01_bringup.sh check
-scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
+scripts/73_supported_local_proof.sh run
 ```
 
-This slice proves the one-host Linux substrate and same-path staging contract directly. The first platform-owned runtime identity boundary has now also been exercised separately through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
+This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-The bounded useful credential flow proof now already exists. Use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) to prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible HTTPS endpoint and read one secret without reintroducing a workload-authored identity bridge.
+For the underlying credential-flow details, use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md).
 
 That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 
@@ -402,7 +399,7 @@ Keep host qualification and smoke proof distinct:
 
 - if `scripts/60_execute_loop.sh` fails but `BRINGUP_PROFILE=full scripts/01_bringup.sh check` still reports `supported-environment: supported`, treat that first as workload/runtime troubleshooting rather than as proof that the host lost qualification
 - only relabel the host itself if the supported-host checks regress
-- the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or static-script smoke sequence
+- the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or the canonical useful credential-flow proof sequence
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 
