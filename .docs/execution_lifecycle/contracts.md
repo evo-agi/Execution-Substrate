@@ -2,7 +2,7 @@
 
 ## 1. Purpose and status
 
-This document defines the current ES lifecycle and public execution contract during an active redesign phase.
+This document defines the current ES lifecycle and public execution contract in the repository's bounded platform phase.
 
 Some lifecycle endpoints are live today but intentionally bounded. This file is authoritative for current endpoint, response, error, and lookup semantics. `.docs/execution_lifecycle/design.md` is the higher-level lifecycle design map, and `.docs/execution_lifecycle/implementation.md` records lower-level implementation behavior.
 

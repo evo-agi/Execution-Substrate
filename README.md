@@ -12,11 +12,11 @@ The current system includes these active service boundaries:
 
 Nomad and Docker remain part of the current execution slice, with ES submitting to Nomad and Docker running tasks under Nomad.
 
-## Redesign Phase
+## Current Mode
 
-The repository is in an active architecture redesign phase.
+The repository is operating as a bounded platform with explicit reopened seams.
 
-The current system is coherent and implemented, but some architecture-defining seams are intentionally reopened. Authoritative design intent lives in `PLANS.md` and `.docs/`, not in the README.
+The current system is coherent and implemented. Some architecture-defining seams remain intentionally reopened in `PLANS.md`, but rewrite-by-default is no longer the operating stance. Authoritative design intent lives in `PLANS.md` and `.docs/`, not in the README.
 
 ## Where To Start
 

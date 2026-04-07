@@ -7,11 +7,11 @@
 
 Prove the current bounded useful credential flow through the governed execution path:
 
-`AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload uses EXEC_WORKLOAD_IDENTITY_ENDPOINT -> workload performs Vault-compatible auth/jwt/login -> workload reads one secret`
+`AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload uses EXEC_WORKLOAD_IDENTITY_ENDPOINT -> workload performs Vault auth/jwt/login -> workload reads one secret`
 
 This runbook is the current platform-owned proof path for useful credential flow completion. It does **not** use the legacy workload-authored bridge.
 
-The downstream target in this runbook is a bounded Vault-compatible HTTPS mock endpoint, not a claim of full Vault integration.
+The downstream target in this runbook is a proof-scoped real Vault dev/test server. That is a realism upgrade for the bounded proof path, not a claim of full production Vault integration.
 
 On the current supported local reference host on this Mac, the canonical repo-owned path for this proof is now:
 
@@ -73,7 +73,7 @@ In particular, before continuing:
   - `vault_config.auth_role`
   - `vault_config.jwt_audience`
 
-For this proof, set that workload-zone Vault blob so `vault_config.address` points at the HTTPS mock endpoint you start below. Do not replace the bounded auth fields with broader or custom ones for this slice.
+For this proof, set that workload-zone Vault blob so `vault_config.address` points at the proof-scoped Vault dev/test target you start below. Do not replace the bounded auth fields with broader or custom ones for this slice.
 
 ## 5. Bring Up The Stack
 
@@ -91,44 +91,35 @@ BRINGUP_PROFILE=full scripts/01_bringup.sh check
 
 Do not continue unless the check reports `submit-ready: true`.
 
-## 6. Start The Vault-Compatible HTTPS Mock
+## 6. Proof-Scoped Vault Dev/Test Bootstrap
 
-On the current supported local reference host on this Mac, the canonical wrapper already generates the bounded mock target, writes the generated bootstrap material to `managed-secrets.conf`, and aligns the workload-zone Vault blob for this proof.
+On the current supported local reference host on this Mac, the canonical wrapper already starts and configures the proof-scoped Vault dev/test target through `scripts/72_supported_local_setup.sh setup`, writes the generated bootstrap material to `managed-secrets.conf`, and aligns the workload-zone Vault blob for this proof.
 
-For lower-level debugging or non-wrapper environments, generate a bounded local certificate for the HTTPS mock:
-
-```bash
-WORKDIR="$(mktemp -d)"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -keyout "$WORKDIR/mock-vault-key.pem" \
-  -out "$WORKDIR/mock-vault-cert.pem" \
-  -subj "/CN=mock-vault.internal"
-```
-
-Choose a host address reachable from bridge-networked workload containers. On a standard Docker bridge host, this is usually the bridge gateway:
+For lower-level debugging or non-wrapper environments, use that same repo-owned bootstrap layer rather than an ad hoc mock:
 
 ```bash
-export VAULT_HOST="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
-export VAULT_PORT="18200"
-export VAULT_ADDR_VALUE="https://${VAULT_HOST}:${VAULT_PORT}"
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+source /tmp/execution-substrate-supported-local-proof/managed-secrets.conf
 ```
 
-Start the bounded Vault-compatible HTTPS mock:
+That setup script is the authoritative proof bootstrap for this runbook. It:
+
+- starts `vault server -dev -dev-tls` as a proof-scoped process
+- configures JWT auth at `auth/<mount>/login` using the repo-owned mock SPIFFE Workload API signing public key
+- writes the proof secret used by the workload
+- records the generated root token, CA cert path, and JWT validation material in `managed-secrets.conf`
+
+For example, after setup you can inspect the real Vault dev/test target directly:
 
 ```bash
-python3 "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/helpers/mock_vault.py" \
-  --bind 0.0.0.0 \
-  --port "${VAULT_PORT}" \
-  --auth-mount jwt \
-  --role service_execution \
-  --bound-audience vault \
-  --secret-path secret/data/runtime-identity-vault-login \
-  --secret-value runtime-identity-ok \
-  --cert-file "$WORKDIR/mock-vault-cert.pem" \
-  --key-file "$WORKDIR/mock-vault-key.pem"
+VAULT_ADDR="$PROOF_VAULT_LOCAL_ADDR" \
+VAULT_CACERT="$PROOF_VAULT_CA_CERT_FILE" \
+VAULT_TOKEN="$PROOF_VAULT_ROOT_TOKEN" \
+vault status
 ```
 
-This target is deliberately only a compatibility/mock endpoint. It validates the bounded JWT claims shape enough for this proof, returns one client token, and serves one secret path.
+This target is deliberately proof-scoped and dev/test only. It is real Vault, but it does **not** make Execution Substrate a production Vault integrator, a long-lived token broker, or a general infra manager.
 
 ## 7. Align The Workload-Zone Vault Blob
 

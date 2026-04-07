@@ -4,7 +4,7 @@
 
 This document is the top-level architecture map for the Go repository.
 
-It describes the current system during an active redesign phase. The architecture documented here is real and implemented, but several major seams are intentionally reopened in `PLANS.md` and must not be treated as settled merely because they are active today.
+It describes the current system in the repository's bounded platform phase. The architecture documented here is real and implemented, but several major seams are intentionally reopened in `PLANS.md` and must not be treated as settled merely because they are active today.
 
 This file stays high-level. Detailed cross-service contract rules belong in `.docs/system_overview/contracts.md`. Detailed ownership and non-ownership rules belong in `.docs/system_overview/boundaries.md`.
 
@@ -113,7 +113,7 @@ ES stages execution inputs, injects the current workload identity endpoint envir
 
 The current bounded slice now proves platform-owned runtime identity delivery behind that discovery contract through a same-container supervisor/helper: the helper is the only SPIRE-facing runtime component, the raw SPIRE channel remains helper-private, the workload runs as fixed non-root `10000:10000`, and helper death is task-fatal. ES still stops short of becoming the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES owns the handoff boundary, not the full runtime credential system.
 
-The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The current bounded runtime-identity slice now also proves useful credential flow through the existing discovery contract: one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible endpoint and read one secret without making ES a Vault token broker. Supported-host qualification for the Linux Nomad/Docker substrate is now also proved on the current local reference host; the next bounded follow-through is keeping clean smoke-execution proof and supported-vs-fallback honesty aligned with that reality.
+The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The current bounded runtime-identity slice now also proves useful credential flow through the existing discovery contract: one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a proof-scoped real Vault dev/test target and read one secret without making ES a Vault token broker. Supported-host qualification for the Linux Nomad/Docker substrate is now also proved on the current local reference host, and the canonical repo-owned proof path now records the resulting evidence under `.out/es-proof-<id>/`.
 
 ## 6. Architectural invariants
 

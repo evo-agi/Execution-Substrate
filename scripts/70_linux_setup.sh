@@ -482,7 +482,7 @@ echo "   $CLONE_DIR/.runbooks/execution/v1_submit_runtime_identity_reference.md"
 echo "4. Start the Go platform with explicit configs and TLS material."
 echo "5. Verify the VM still reports nomad-startup-mode: pre-managed, submit-ready-mode: natural, and supported-environment: supported through scripts/01_bringup.sh check."
 echo "6. Treat script-managed local Nomad startup and any compute override as bounded fallback/troubleshooting, not the supported Linux environment story."
-echo "7. Start the bounded Vault-compatible HTTPS endpoint used by the runbook."
+echo "7. Use the repo-owned proof bootstrap to start the proof-scoped Vault dev/test target used by the runbook."
 echo "8. Run the publish -> submit -> log verification flow from the runbooks."
 echo
 echo "Environment notes:"

@@ -2,7 +2,7 @@
 
 ## 1. Purpose and status
 
-This document describes the current ES lifecycle design in the Go repository during an active redesign phase.
+This document describes the current ES lifecycle design in the repository's bounded platform phase.
 
 The lifecycle slice documented here is real and implemented today. At the same time, some lifecycle rules are intentionally bounded and must not be mistaken for long-term architecture simply because they are active in the current slice.
 

@@ -15,6 +15,9 @@ PROOF_ID="${SUPPORTED_LOCAL_PROOF_ID:-supported-local}"
 PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 RUNTIME_SUPPORT_INSTALL_PATH="${SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY:-/usr/local/bin/es-runtime-support}"
 WORKLOAD_SPIFFE_ID="${SUPPORTED_LOCAL_WORKLOAD_SPIFFE_ID:-spiffe://execution.internal/workload}"
+WORKLOAD_JWT_ISSUER="${SUPPORTED_LOCAL_WORKLOAD_JWT_ISSUER:-spiffe://execution.internal/mock-workload-api}"
+PREBUILT_RUNTIME_SUPPORT_BINARY="${SUPPORTED_LOCAL_PREBUILT_RUNTIME_SUPPORT_BINARY:-}"
+PREBUILT_WORKLOAD_API_BINARY="${SUPPORTED_LOCAL_PREBUILT_WORKLOAD_API_BINARY:-}"
 VAULT_ADDRESS="${SUPPORTED_LOCAL_VAULT_ADDRESS:-}"
 VAULT_BIND_ADDRESS="${SUPPORTED_LOCAL_VAULT_BIND_ADDRESS:-0.0.0.0}"
 VAULT_PUBLIC_HOST="${SUPPORTED_LOCAL_VAULT_PUBLIC_HOST:-}"
@@ -23,7 +26,7 @@ VAULT_AUTH_MOUNT="${SUPPORTED_LOCAL_VAULT_AUTH_MOUNT:-jwt}"
 VAULT_AUTH_ROLE="${SUPPORTED_LOCAL_VAULT_AUTH_ROLE:-service_execution}"
 VAULT_JWT_AUDIENCE="${SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE:-vault}"
 VAULT_SECRET_PATH="${SUPPORTED_LOCAL_VAULT_SECRET_PATH:-secret/data/runtime-identity-vault-login}"
-VAULT_TOKEN="${SUPPORTED_LOCAL_VAULT_TOKEN:-}"
+VAULT_ROOT_TOKEN="${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-${SUPPORTED_LOCAL_VAULT_TOKEN:-}}"
 VAULT_SECRET_VALUE="${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -48,12 +51,13 @@ packaged pre-managed non-dev nomad.service, natural cpu.totalcompute).
 What it writes under /tmp/execution-substrate-supported-local-proof by default:
   - generated control-plane Dockerfile for guest-writable image builds
   - runtime CA and leaf certs
+  - JWT signing material for the repo-owned mock SPIFFE Workload API
   - ARS/EGS/AGS/ES JSON configs
   - ARS storage root plus workload-zone Vault blob
   - managed-secrets.conf for generated proof bootstrap material
   - operator env.sh for scripts/01_bringup.sh and scripts/60_execute_loop.sh
   - a repo-owned mock SPIFFE Workload API Unix socket
-  - a bounded Vault-compatible HTTPS proof target for the useful credential flow
+  - a proof-scoped real Vault dev/test target for the useful credential flow
 
 This helper is the guest-side setup layer for the supported-local proof path.
 On the current Apple Silicon Mac, the canonical proof record lives on the host
@@ -63,7 +67,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_PROOF_DIR=/abs/path
   SUPPORTED_LOCAL_PROOF_ID=<proof-id>
   SUPPORTED_LOCAL_PORT_BASE=18440
-  SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY=/usr/local/bin/es-runtime-support
+  SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY=/abs/path/to/es-runtime-support
   SUPPORTED_LOCAL_VAULT_ADDRESS=https://<container-reachable-host>:<port>
   SUPPORTED_LOCAL_VAULT_BIND_ADDRESS=0.0.0.0
   SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=<container-reachable-host>
@@ -72,6 +76,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_VAULT_AUTH_ROLE=service_execution
   SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE=vault
   SUPPORTED_LOCAL_VAULT_SECRET_PATH=secret/data/runtime-identity-vault-login
+  SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=<proof-root-token>
 EOF
 }
 
@@ -96,7 +101,7 @@ stop_background_process() {
   fi
 }
 
-stop_mock_vault_listener() {
+stop_vault_dev_listener() {
   local port=$1
   local pid=""
   local args=""
@@ -109,14 +114,14 @@ stop_mock_vault_listener() {
     ss -ltnp "( sport = :${port} )" 2>/dev/null \
       | grep -o 'pid=[0-9]*' \
       | head -n 1 \
-      | cut -d= -f2
+      | cut -d= -f2 || true
   )"
   if [[ -z "${pid}" ]]; then
     return 0
   fi
 
   args="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
-  if [[ "${args}" == *"mock_vault.py"* ]]; then
+  if [[ "${args}" == *"vault server"* ]] && [[ "${args}" == *"-dev"* ]]; then
     kill "${pid}" >/dev/null 2>&1 || true
     wait "${pid}" >/dev/null 2>&1 || true
   fi
@@ -157,15 +162,15 @@ EOF
     -extfile "${tls_dir}/${prefix}.ext" >/dev/null 2>&1
 }
 
-install_runtime_support_binary() {
-  local output_path=$1
+build_runtime_support_binary() {
+  local output_path="${PROOF_DIR}/bin/es-runtime-support"
 
-  echo "==> building es-runtime-support"
+  echo "==> building es-runtime-support to ${output_path}"
+  mkdir -p "$(dirname "${output_path}")"
   (
     cd "${REPO_ROOT}"
     env CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" go build -o "${output_path}" ./cmd/es-runtime-support
   )
-
   echo "==> installing es-runtime-support to ${RUNTIME_SUPPORT_INSTALL_PATH}"
   if install -m 0755 "${output_path}" "${RUNTIME_SUPPORT_INSTALL_PATH}" 2>/dev/null; then
     return 0
@@ -174,14 +179,63 @@ install_runtime_support_binary() {
   sudo install -m 0755 "${output_path}" "${RUNTIME_SUPPORT_INSTALL_PATH}"
 }
 
+install_prebuilt_binary() {
+  local source_path=$1
+  local destination_path=$2
+  local label=$3
+
+  if [[ ! -r "${source_path}" ]]; then
+    echo "${label} prebuilt binary is not readable: ${source_path}" >&2
+    exit 1
+  fi
+
+  echo "==> using prebuilt ${label} binary from ${source_path}"
+  mkdir -p "$(dirname "${destination_path}")"
+  if install -m 0755 "${source_path}" "${destination_path}" 2>/dev/null; then
+    return 0
+  fi
+  require_command sudo
+  sudo install -m 0755 "${source_path}" "${destination_path}"
+}
+
+prepare_runtime_support_binary() {
+  if [[ -n "${PREBUILT_RUNTIME_SUPPORT_BINARY}" ]]; then
+    install_prebuilt_binary "${PREBUILT_RUNTIME_SUPPORT_BINARY}" "${RUNTIME_SUPPORT_INSTALL_PATH}" "es-runtime-support"
+    return 0
+  fi
+  build_runtime_support_binary
+}
+
+prepare_workload_api_binary() {
+  local output_path=$1
+
+  if [[ -n "${PREBUILT_WORKLOAD_API_BINARY}" ]]; then
+    install_prebuilt_binary "${PREBUILT_WORKLOAD_API_BINARY}" "${output_path}" "es-workload-api-mock"
+    return 0
+  fi
+
+  echo "==> building repo-owned mock SPIFFE Workload API"
+  mkdir -p "$(dirname "${output_path}")"
+  (
+    cd "${REPO_ROOT}"
+    env CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" go build -o "${output_path}" ./cmd/es-workload-api-mock
+  )
+  chmod 0755 "${output_path}"
+}
+
 start_mock_workload_api() {
   local binary_path=$1
   local socket_path=$2
   local log_path=$3
   local pid_path=$4
+  local signing_key_path=$5
 
   echo "==> starting repo-owned mock SPIFFE Workload API"
-  nohup "${binary_path}" -socket "${socket_path}" -subject "${WORKLOAD_SPIFFE_ID}" >"${log_path}" 2>&1 &
+  nohup "${binary_path}" \
+    -socket "${socket_path}" \
+    -subject "${WORKLOAD_SPIFFE_ID}" \
+    -issuer "${WORKLOAD_JWT_ISSUER}" \
+    -signing-key-file "${signing_key_path}" >"${log_path}" 2>&1 &
   echo "$!" > "${pid_path}"
 
   for _ in $(seq 1 50); do
@@ -201,62 +255,29 @@ detect_docker_bridge_gateway() {
   gateway="${gateway//$'\r'/}"
   gateway="${gateway//$'\n'/}"
   if [[ -z "${gateway}" ]]; then
-    echo "failed to determine Docker bridge gateway for supported-local mock Vault reachability" >&2
+    echo "failed to determine Docker bridge gateway for supported-local Vault dev/test reachability" >&2
     exit 1
   fi
   printf '%s\n' "${gateway}"
 }
 
-write_managed_secrets_file() {
-  local path=$1
-  local vault_address=$2
-  local vault_public_host=$3
-  local vault_port=$4
-  local vault_token=$5
-  local vault_secret_value=$6
+generate_workload_jwt_signing_material() {
+  local tls_dir=$1
+  local private_key_path="${tls_dir}/workload-jwt-signing-key.pem"
+  local public_key_path="${tls_dir}/workload-jwt-validation-pub.pem"
 
-  cat > "${path}" <<EOF
-SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
-MOCK_VAULT_BIND_ADDRESS="${VAULT_BIND_ADDRESS}"
-MOCK_VAULT_PUBLIC_HOST="${vault_public_host}"
-MOCK_VAULT_PORT="${vault_port}"
-MOCK_VAULT_ADDR="${vault_address}"
-MOCK_VAULT_AUTH_MOUNT="${VAULT_AUTH_MOUNT}"
-MOCK_VAULT_AUTH_ROLE="${VAULT_AUTH_ROLE}"
-MOCK_VAULT_BOUND_AUDIENCE="${VAULT_JWT_AUDIENCE}"
-MOCK_VAULT_BOUND_SUBJECT="${WORKLOAD_SPIFFE_ID}"
-MOCK_VAULT_SECRET_PATH="${VAULT_SECRET_PATH}"
-MOCK_VAULT_SECRET_VALUE="${vault_secret_value}"
-MOCK_VAULT_TOKEN="${vault_token}"
-MOCK_VAULT_CERT_FILE="${PROOF_DIR}/tls/mock-vault-cert.pem"
-MOCK_VAULT_KEY_FILE="${PROOF_DIR}/tls/mock-vault-key.pem"
-EOF
-  chmod 600 "${path}"
+  echo "==> generating workload JWT signing material for Vault validation"
+  openssl genrsa -traditional -out "${private_key_path}" 2048 >/dev/null 2>&1
+  openssl rsa -in "${private_key_path}" -pubout -out "${public_key_path}" >/dev/null 2>&1
+  chmod 600 "${private_key_path}"
 }
 
-start_mock_vault() {
-  local log_path=$1
-  local pid_path=$2
-  local vault_token=$3
-  local vault_secret_value=$4
-
-  echo "==> starting bounded Vault-compatible HTTPS proof target"
-  nohup python3 "${REPO_ROOT}/.examples/runtime_identity_vault_login/helpers/mock_vault.py" \
-    --bind "${VAULT_BIND_ADDRESS}" \
-    --port "${VAULT_PORT}" \
-    --auth-mount "${VAULT_AUTH_MOUNT}" \
-    --role "${VAULT_AUTH_ROLE}" \
-    --bound-audience "${VAULT_JWT_AUDIENCE}" \
-    --bound-subject "${WORKLOAD_SPIFFE_ID}" \
-    --token "${vault_token}" \
-    --secret-path "${VAULT_SECRET_PATH}" \
-    --secret-value "${vault_secret_value}" \
-    --cert-file "${PROOF_DIR}/tls/mock-vault-cert.pem" \
-    --key-file "${PROOF_DIR}/tls/mock-vault-key.pem" >"${log_path}" 2>&1 &
-  echo "$!" > "${pid_path}"
+wait_for_local_tcp_listener() {
+  local port=$1
+  local description=$2
 
   for _ in $(seq 1 50); do
-    if python3 - <<'PY' "${VAULT_PORT}"
+    if python3 - <<'PY' "${port}"
 import socket
 import sys
 
@@ -275,8 +296,129 @@ PY
     sleep 0.1
   done
 
-  echo "mock Vault HTTPS listener did not appear on port ${VAULT_PORT}" >&2
+  echo "${description} did not appear on port ${port}" >&2
   return 1
+}
+
+normalize_kv_v2_logical_path() {
+  local api_path="${1#/}"
+  if [[ "${api_path}" != */data/* ]]; then
+    echo "SUPPORTED_LOCAL_VAULT_SECRET_PATH must be a KV v2 API path containing /data/: ${1}" >&2
+    exit 1
+  fi
+  printf '%s/%s\n' "${api_path%%/data/*}" "${api_path#*/data/}"
+}
+
+write_managed_secrets_file() {
+  local path=$1
+  local vault_address=$2
+  local vault_local_address=$3
+  local vault_public_host=$4
+  local vault_port=$5
+  local vault_root_token=$6
+  local vault_secret_value=$7
+  local vault_secret_logical_path=$8
+
+  cat > "${path}" <<EOF
+SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
+PROOF_RUNTIME_SUPPORT_BINARY="${RUNTIME_SUPPORT_INSTALL_PATH}"
+PROOF_VAULT_BIND_ADDRESS="${VAULT_BIND_ADDRESS}"
+PROOF_VAULT_PUBLIC_HOST="${vault_public_host}"
+PROOF_VAULT_PORT="${vault_port}"
+PROOF_VAULT_ADDR="${vault_address}"
+PROOF_VAULT_LOCAL_ADDR="${vault_local_address}"
+PROOF_VAULT_AUTH_MOUNT="${VAULT_AUTH_MOUNT}"
+PROOF_VAULT_AUTH_ROLE="${VAULT_AUTH_ROLE}"
+PROOF_VAULT_BOUND_AUDIENCE="${VAULT_JWT_AUDIENCE}"
+PROOF_VAULT_BOUND_SUBJECT="${WORKLOAD_SPIFFE_ID}"
+PROOF_VAULT_BOUND_ISSUER="${WORKLOAD_JWT_ISSUER}"
+PROOF_VAULT_SECRET_PATH="${VAULT_SECRET_PATH}"
+PROOF_VAULT_SECRET_LOGICAL_PATH="${vault_secret_logical_path}"
+PROOF_VAULT_SECRET_VALUE="${vault_secret_value}"
+PROOF_VAULT_ROOT_TOKEN="${vault_root_token}"
+PROOF_VAULT_CA_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-ca.pem"
+PROOF_VAULT_SERVER_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-cert.pem"
+PROOF_VAULT_SERVER_KEY_FILE="${PROOF_DIR}/tls/vault-dev/vault-key.pem"
+PROOF_WORKLOAD_JWT_SIGNING_KEY_FILE="${PROOF_DIR}/tls/workload-jwt-signing-key.pem"
+PROOF_WORKLOAD_JWT_VALIDATION_PUB_FILE="${PROOF_DIR}/tls/workload-jwt-validation-pub.pem"
+EOF
+  chmod 600 "${path}"
+}
+
+start_vault_dev_server() {
+  local log_path=$1
+  local pid_path=$2
+  local vault_root_token=$3
+  local vault_public_host=$4
+  local cert_dir="${PROOF_DIR}/tls/vault-dev"
+
+  mkdir -p "${cert_dir}"
+  : > "${log_path}"
+  chmod 600 "${log_path}"
+
+  echo "==> starting proof-scoped Vault dev/test target"
+  nohup vault server \
+    -dev \
+    -dev-tls \
+    -dev-no-store-token \
+    -dev-root-token-id="${vault_root_token}" \
+    -dev-listen-address="${VAULT_BIND_ADDRESS}:${VAULT_PORT}" \
+    -dev-tls-cert-dir="${cert_dir}" \
+    -dev-tls-san="${vault_public_host}" \
+    -dev-cluster-json="${PROOF_DIR}/vault-dev-cluster.json" >"${log_path}" 2>&1 &
+  echo "$!" > "${pid_path}"
+
+  wait_for_local_tcp_listener "${VAULT_PORT}" "Vault dev/test HTTPS listener"
+}
+
+configure_vault_dev_target() {
+  local proof_dir=$1
+  local vault_local_address=$2
+  local vault_root_token=$3
+  local vault_secret_value=$4
+  local policy_path="${proof_dir}/vault/runtime-identity-proof.hcl"
+  local vault_secret_logical_path
+
+  vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
+  mkdir -p "$(dirname "${policy_path}")"
+  cat > "${policy_path}" <<EOF
+path "${VAULT_SECRET_PATH#/}" {
+  capabilities = ["read"]
+}
+EOF
+
+  echo "==> configuring proof-scoped Vault JWT auth and secret"
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault policy write runtime-identity-proof "${policy_path}" >/dev/null
+
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault auth enable -path="${VAULT_AUTH_MOUNT}" jwt >/dev/null
+
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault write "auth/${VAULT_AUTH_MOUNT}/config" \
+    jwt_validation_pubkeys=@"${proof_dir}/tls/workload-jwt-validation-pub.pem" \
+    bound_issuer="${WORKLOAD_JWT_ISSUER}" >/dev/null
+
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault write "auth/${VAULT_AUTH_MOUNT}/role/${VAULT_AUTH_ROLE}" \
+    role_type=jwt \
+    user_claim=sub \
+    bound_audiences="${VAULT_JWT_AUDIENCE}" \
+    bound_subject="${WORKLOAD_SPIFFE_ID}" \
+    token_policies=runtime-identity-proof >/dev/null
+
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault kv put "${vault_secret_logical_path}" message="${vault_secret_value}" >/dev/null
 }
 
 write_runtime_blob_and_configs() {
@@ -502,6 +644,7 @@ setup() {
   require_command go
   require_command openssl
   require_command python3
+  require_command vault
   require_command docker
   require_command nomad
 
@@ -516,8 +659,10 @@ setup() {
 
   local vault_public_host
   local vault_address
-  local vault_token
+  local vault_local_address
+  local vault_root_token
   local vault_secret_value
+  local vault_secret_logical_path
 
   vault_public_host="${VAULT_PUBLIC_HOST}"
   if [[ -z "${vault_public_host}" ]]; then
@@ -527,28 +672,25 @@ setup() {
   if [[ -z "${vault_address}" ]]; then
     vault_address="https://${vault_public_host}:${VAULT_PORT}"
   fi
-  vault_token="${VAULT_TOKEN}"
-  if [[ -z "${vault_token}" ]]; then
-    vault_token="$(generate_random_hex)"
+  vault_local_address="https://127.0.0.1:${VAULT_PORT}"
+  vault_root_token="${VAULT_ROOT_TOKEN}"
+  if [[ -z "${vault_root_token}" ]]; then
+    vault_root_token="$(generate_random_hex)"
   fi
   vault_secret_value="${VAULT_SECRET_VALUE}"
   if [[ -z "${vault_secret_value}" ]]; then
     vault_secret_value="runtime-identity-ok-${PROOF_ID}"
   fi
+  vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
 
   stop_background_process "${PROOF_DIR}/mock-spire.pid"
-  stop_background_process "${PROOF_DIR}/mock-vault.pid"
-  stop_mock_vault_listener "${VAULT_PORT}"
+  stop_background_process "${PROOF_DIR}/vault-dev.pid"
+  stop_vault_dev_listener "${VAULT_PORT}"
   rm -rf "${PROOF_DIR}"
   mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/es-staging" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs"
 
-  install_runtime_support_binary "${PROOF_DIR}/bin/es-runtime-support"
-
-  echo "==> building repo-owned mock SPIFFE Workload API"
-  (
-    cd "${REPO_ROOT}"
-    env CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" go build -o "${PROOF_DIR}/bin/es-workload-api-mock" ./cmd/es-workload-api-mock
-  )
+  prepare_runtime_support_binary
+  prepare_workload_api_binary "${PROOF_DIR}/bin/es-workload-api-mock"
 
   echo "==> generating guest-writable control-plane Dockerfile"
   bash "${REPO_ROOT}/scripts/generate_control_plane_dockerfile.sh" "${PROOF_DIR}/Dockerfile" >/dev/null
@@ -567,16 +709,26 @@ setup() {
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "execution-client" "client.execution" "DNS:client.execution,URI:spiffe://execution.internal/service/execution"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "ags-client" "client.artifact-governance" "DNS:client.artifact-governance,URI:spiffe://execution.internal/service/artifact-governance"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "operator-client" "client.operator" "DNS:client.operator,URI:spiffe://execution.internal/operator"
-  openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout "${PROOF_DIR}/tls/mock-vault-key.pem" \
-    -out "${PROOF_DIR}/tls/mock-vault-cert.pem" \
-    -subj '/CN=mock-vault.internal' \
-    -days 2 >/dev/null 2>&1
-  chmod 600 "${PROOF_DIR}/tls/runtime-ca-key.pem" "${PROOF_DIR}/tls/mock-vault-key.pem"
+  chmod 600 "${PROOF_DIR}/tls/runtime-ca-key.pem"
+  generate_workload_jwt_signing_material "${PROOF_DIR}/tls"
 
-  start_mock_workload_api "${PROOF_DIR}/bin/es-workload-api-mock" "${PROOF_DIR}/mock-spire.sock" "${PROOF_DIR}/logs/mock-spire.log" "${PROOF_DIR}/mock-spire.pid"
-  write_managed_secrets_file "${PROOF_DIR}/managed-secrets.conf" "${vault_address}" "${vault_public_host}" "${VAULT_PORT}" "${vault_token}" "${vault_secret_value}"
-  start_mock_vault "${PROOF_DIR}/logs/mock-vault.log" "${PROOF_DIR}/mock-vault.pid" "${vault_token}" "${vault_secret_value}"
+  start_mock_workload_api \
+    "${PROOF_DIR}/bin/es-workload-api-mock" \
+    "${PROOF_DIR}/mock-spire.sock" \
+    "${PROOF_DIR}/logs/mock-spire.log" \
+    "${PROOF_DIR}/mock-spire.pid" \
+    "${PROOF_DIR}/tls/workload-jwt-signing-key.pem"
+  start_vault_dev_server "${PROOF_DIR}/logs/vault-dev.log" "${PROOF_DIR}/vault-dev.pid" "${vault_root_token}" "${vault_public_host}"
+  configure_vault_dev_target "${PROOF_DIR}" "${vault_local_address}" "${vault_root_token}" "${vault_secret_value}"
+  write_managed_secrets_file \
+    "${PROOF_DIR}/managed-secrets.conf" \
+    "${vault_address}" \
+    "${vault_local_address}" \
+    "${vault_public_host}" \
+    "${VAULT_PORT}" \
+    "${vault_root_token}" \
+    "${vault_secret_value}" \
+    "${vault_secret_logical_path}"
 
   echo "==> writing proof configs and workload-zone Vault blob"
   write_runtime_blob_and_configs "${PROOF_DIR}" "${vault_address}" "${VAULT_AUTH_MOUNT}" "${VAULT_AUTH_ROLE}" "${VAULT_JWT_AUDIENCE}"
@@ -589,6 +741,7 @@ supported local proof environment is ready under:
 next steps:
   cd "${REPO_ROOT}"
   source "${PROOF_DIR}/env.sh"
+  source "${PROOF_DIR}/managed-secrets.conf"
   "${REPO_ROOT}/.examples/runtime_identity_vault_login/package.sh"
   export BRINGUP_PROFILE=prepare-only
   scripts/01_bringup.sh up

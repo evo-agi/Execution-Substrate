@@ -10,6 +10,7 @@ SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST="${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST:-/Users
 SUPPORTED_LOCAL_PROOF_ID="${SUPPORTED_LOCAL_PROOF_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 SUPPORTED_LOCAL_HOST_PROOF_DIR="${SUPPORTED_LOCAL_HOST_PROOF_DIR:-${REPO_ROOT}/.out/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
 SUPPORTED_LOCAL_GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR:-/tmp/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
+SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR:-${SUPPORTED_LOCAL_GUEST_PROOF_DIR}.bootstrap}"
 SUPPORTED_LOCAL_PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 SUPPORTED_LOCAL_INPUT_SPEC="${SUPPORTED_LOCAL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/runtime_identity_vault_success.input.json}"
 SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz}"
@@ -25,8 +26,10 @@ This is the canonical supported-local proof wrapper for the current Apple
 Silicon Mac + Lima qemu reference path. It:
   - creates the canonical proof workspace under .out/es-proof-<id>/
   - packages the bounded runtime-identity Vault-login workload
+  - cross-compiles the current Linux proof binaries from this working tree
   - invokes scripts/72_supported_local_setup.sh inside the Linux guest
   - runs supported-host qualification without cpu_total_compute override
+  - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
   - copies resulting guest evidence back into the canonical .out workspace
 
@@ -53,6 +56,7 @@ run_guest_stdin() {
     env \
       GUEST_REPO_ROOT="${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
       GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+      GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -seuo pipefail
 }
 
@@ -89,8 +93,9 @@ stop_pid_file() {
   fi
 }
 
-stop_pid_file "$GUEST_PROOF_DIR/mock-vault.pid"
+stop_pid_file "$GUEST_PROOF_DIR/vault-dev.pid"
 stop_pid_file "$GUEST_PROOF_DIR/mock-spire.pid"
+rm -rf "$GUEST_BOOTSTRAP_DIR"
 EOF
   CONTROL_PLANE_STARTED="false"
 }
@@ -149,6 +154,43 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(spec, indent=2, sort_keys=True) 
 PY
 }
 
+prepare_host_tooling() {
+  mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin"
+
+  (
+    cd "${REPO_ROOT}"
+    env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support" \
+      ./cmd/es-runtime-support
+  )
+  (
+    cd "${REPO_ROOT}"
+    env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-workload-api-mock" \
+      ./cmd/es-workload-api-mock
+  )
+}
+
+copy_tooling_to_guest() {
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    bash -lc 'rm -rf "${GUEST_BOOTSTRAP_DIR}" && mkdir -p "${GUEST_BOOTSTRAP_DIR}"'
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/es-runtime-support"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support"
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-workload-api-mock"
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    bash -lc 'chmod 0755 "${GUEST_BOOTSTRAP_DIR}/es-runtime-support" "${GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"'
+}
+
 setup_guest_environment() {
   local -a cmd=(
     limactl shell "${SUPPORTED_LOCAL_INSTANCE}" --
@@ -157,6 +199,8 @@ setup_guest_environment() {
     "SUPPORTED_LOCAL_PROOF_DIR=${SUPPORTED_LOCAL_GUEST_PROOF_DIR}"
     "SUPPORTED_LOCAL_PROOF_ID=${SUPPORTED_LOCAL_PROOF_ID}"
     "SUPPORTED_LOCAL_PORT_BASE=${SUPPORTED_LOCAL_PORT_BASE}"
+    "SUPPORTED_LOCAL_PREBUILT_RUNTIME_SUPPORT_BINARY=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/es-runtime-support"
+    "SUPPORTED_LOCAL_PREBUILT_WORKLOAD_API_BINARY=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"
   )
 
   if [[ -n "${SUPPORTED_LOCAL_VAULT_ADDRESS:-}" ]]; then
@@ -171,7 +215,9 @@ setup_guest_environment() {
   if [[ -n "${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_VAULT_SECRET_VALUE=${SUPPORTED_LOCAL_VAULT_SECRET_VALUE}")
   fi
-  if [[ -n "${SUPPORTED_LOCAL_VAULT_TOKEN:-}" ]]; then
+  if [[ -n "${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN}")
+  elif [[ -n "${SUPPORTED_LOCAL_VAULT_TOKEN:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_VAULT_TOKEN=${SUPPORTED_LOCAL_VAULT_TOKEN}")
   fi
 
@@ -301,6 +347,7 @@ EOF
 
 run() {
   require_command limactl
+  require_command go
   require_command python3
   require_command tar
 
@@ -314,6 +361,8 @@ run() {
   trap finalize EXIT
 
   prepare_host_inputs
+  prepare_host_tooling
+  copy_tooling_to_guest
   setup_guest_environment
   copy_inputs_to_guest
   collect_guest_workspace

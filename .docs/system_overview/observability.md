@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the bounded observability model for the Go rewrite.
+This document defines the bounded observability model for the current repository.
 
 It exists to make observability explicit without introducing hidden state, cross-service trace reconstruction, or lifecycle drift.
 

@@ -13,7 +13,7 @@ Authoritative sources, in order, are:
 3. `.docs/execution_lifecycle/`
 4. current Go code and tests
 
-This document describes the Go repo's active cross-service behavior during an architecture-reset phase. A contract may be active today without being treated as a permanent endpoint.
+This document describes the repo's active cross-service behavior in the current bounded platform phase. A contract may be active today without being treated as a permanent endpoint.
 
 When existing prose disagrees with code or tests, prefer code and tests.
 

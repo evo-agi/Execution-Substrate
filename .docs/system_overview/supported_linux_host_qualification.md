@@ -18,7 +18,7 @@ This spec is:
 
 This spec is not:
 
-- an architecture reset
+- a rewrite or reopen-by-default architecture exercise
 - a proposal to move the control plane onto the host as the final model
 - a workload compatibility broadening document
 - permission to normalize `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
@@ -288,7 +288,7 @@ If the output instead shows `managed-local`, `bounded-override`, or a failed sub
 
 Do not use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the supported proof path. That path manages Nomad locally and remains `bounded-fallback` by definition.
 
-On the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned replacement for the earlier out-of-repo experiment harnesses. It prepares the bounded supported-local proof environment, including the bounded Vault-compatible proof target used by the higher-value runtime-identity credential-flow proof, but it still does not qualify the host by itself.
+On the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned replacement for the earlier out-of-repo experiment harnesses. It prepares the bounded supported-local proof environment, including the proof-scoped real Vault dev/test target used by the higher-value runtime-identity credential-flow proof, but it still does not qualify the host by itself.
 
 Because Lima mounts the host repo tree read-only inside the current `qemu` guest on this Mac, the canonical supported-local proof record now lives on the host under `.out/es-proof-<id>/`. Any guest `/tmp/es-proof-<id>` workspace used by the repo-owned supported-local wrapper is an internal implementation detail, not the canonical proof workspace.
 

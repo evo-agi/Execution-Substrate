@@ -2,7 +2,7 @@
 
 ## 1. Purpose and status
 
-This document defines change governance for the Go repository during the architecture-reset phase.
+This document defines change governance for the repository during the current bounded platform phase.
 
 Doc-first discipline still applies: code must not be the first place a system contract, boundary, lifecycle rule, or shared-kernel decision appears.
 

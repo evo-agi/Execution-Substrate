@@ -2,7 +2,7 @@
 
 ## 1. Purpose and status
 
-This document describes the current ES lifecycle implementation during an active redesign phase.
+This document describes the current ES lifecycle implementation in the repository's bounded platform phase.
 
 The current implementation slice is real, exercised by integration tests, and visible directly in the ES Go packages. Public contract semantics live in `.docs/execution_lifecycle/contracts.md`. Lifecycle design and authority boundaries live in `.docs/execution_lifecycle/design.md` and the system overview docs.
 

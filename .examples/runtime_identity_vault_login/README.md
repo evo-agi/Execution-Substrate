@@ -11,7 +11,7 @@ The workload:
 - discovers `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - proves the raw SPIRE socket remains helper-private
 - requests a bounded JWT-SVID for the `workload_vault` target
-- performs `auth/jwt/login` itself against a Vault-compatible HTTPS endpoint
+- performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target
 - uses the returned Vault token to read one secret
 - prints explicit success markers and a final JSON status line
 - stays alive briefly after printing success so the operator proof path can capture workload logs before Nomad client log state disappears on this fast-completing example
@@ -22,7 +22,7 @@ This is the current bounded usefulness proof for slice `1A` and slice `1B`. It k
 
 - `entrypoint`: executable Python 3 workload entrypoint
 - `package.sh`: packages the workload as `dist/runtime_identity_vault_login.tar.gz`
-- `helpers/mock_vault.py`: optional Vault-compatible HTTPS helper for local proof runs
+- repo-owned proof bootstrap now lives in `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh`
 
 ## Packaging
 

@@ -4,7 +4,7 @@
 
 A boundary in this repository is an ownership line: which service is authoritative for a behavior, which other services consume that behavior, and which responsibilities remain explicitly outside that service.
 
-This document records the Go repository's current service ownership during the architecture-reset phase described in `PLANS.md`. The boundaries below are real and active today, but they are not automatically permanent architecture. Where the current split is serving a bounded slice, compatibility need, or inherited choreography, that is called out explicitly.
+This document records the repository's current service ownership in the bounded platform phase described in `PLANS.md`. The boundaries below are real and active today, but they are not automatically permanent architecture. Where the current split is serving a bounded slice, compatibility need, or inherited choreography, that is called out explicitly.
 
 Authoritative sources for this document are, in order:
 
