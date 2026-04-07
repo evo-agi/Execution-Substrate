@@ -1,7 +1,7 @@
 # Runbook: Governed System Bring-up (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-05`
+- Last Updated: `2026-04-06`
 - Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
@@ -12,10 +12,11 @@ Bring up the current bounded governed system through one operator path and verif
 
 The preferred operator path is now:
 
-- `scripts/01_bringup.sh up`
-- `scripts/01_bringup.sh check`
-- `scripts/60_execute_loop.sh`
-- `scripts/01_bringup.sh down`
+- repo-owned supported-local proof environment setup: `scripts/72_supported_local_setup.sh setup`, then `source /tmp/execution-substrate-supported-local-proof/env.sh`
+- clean supported-host qualification: `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`
+- clean smoke execution on that already-qualified host: `scripts/60_execute_loop.sh`
+- bounded local fallback bootstrap when the repo must manage Nomad itself: `BRINGUP_PROFILE=full scripts/01_bringup.sh up`
+- teardown of repo-managed services: `scripts/01_bringup.sh down`
 
 The lower-level `scripts/02_start_*.sh` through `scripts/06_start_nomad.sh` helpers remain available as manual fallback, but they are no longer the primary documented bring-up flow.
 
@@ -66,7 +67,7 @@ That helper does **not** override host-admin reality:
 - if it had to add the current user to the `docker` group, log out and back in before treating the host as ready for repo scripts
 - if `nomad.service` still cannot start cleanly or natural `cpu.totalcompute` remains `0`, treat the VM as not yet supported and investigate at the host/service layer before using the main operator path
 - if the root-managed non-`-dev` service is up but the node still reports `cpu.totalcompute=0`, inspect host capability by behavior: no readable `cpufreq` sysfs files, no `/proc/cpuinfo` `cpu MHz`, and SMBIOS processor `Current Speed: Unknown` means the guest is not exposing the CPU-frequency data Nomad needs for natural schedulability
-- on the current Ubuntu 24.04 VMware/aarch64 proof VM, `dmidecode` and `cpufrequtils` were diagnostic only and did not change the zero-compute result under the real `nomad.service` path
+- on the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 now qualifies under the real `nomad.service` path without override, while the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported because natural `cpu.totalcompute` stays `0`
 
 ### Required config files
 
@@ -81,6 +82,17 @@ export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
 Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution Substrate/.examples/config](/Users/ds/Repositories/Execution Substrate/.examples/config), but they are templates only.
+
+For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
+
+On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses to obtain those env vars and config files. Instead, run:
+
+```bash
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+```
+
+That repo-owned helper writes the current proof Dockerfile, config, TLS material, workload-zone Vault blob, and operator env file under the guest-writable default path `/tmp/execution-substrate-supported-local-proof`, and it starts the repo-owned mock SPIFFE Workload API socket used by the supported local proof path.
 
 For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
 
@@ -161,9 +173,36 @@ Run all commands from:
 
 `/Users/ds/Repositories/Execution Substrate`
 
+### Supported-host qualification path
+
+Use this when Nomad is already running as the packaged pre-managed non-`-dev` service and you want the repo proof path to preserve that fact:
+
+```bash
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+export BRINGUP_PROFILE="prepare-only"
+scripts/01_bringup.sh up
+BRINGUP_PROFILE=full scripts/01_bringup.sh check
+```
+
+Pass only if the check reports:
+
+- `nomad-startup-mode: pre-managed`
+- `submit-ready-mode: natural`
+- `supported-environment: supported`
+- `submit-ready: true`
+
+On the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile for this path. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
+
+The current repo-owned helper is intentionally narrow:
+
+- it prepares only the ephemeral proof environment for supported-host qualification and the static-script smoke path
+- it seeds only a structurally valid workload-zone Vault blob by default
+- it does not replace the dedicated useful credential-flow runbook when you want the runtime-identity Vault proof
+
 ### Full execution profile
 
-Use this for the current real execution slice:
+Use this when you intentionally want the repo to manage a local Nomad process for the current real execution slice:
 
 ```bash
 export BRINGUP_PROFILE="full"
@@ -187,6 +226,7 @@ Note:
 - in the current slice, `submit-ready` now rejects zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every later placement constraint; a job can still fail on memory, device, or other scheduler limits after bring-up is green
 - on hosts where Nomad reports `cpu.totalcompute=0`, the natural bring-up path now fails explicitly with a bounded troubleshooting message instead of claiming submit-ready and leaving the first workload stuck in `submitted`
 - a green `submit-ready` result is not the whole support claim by itself; the operator output also reports `nomad-startup-mode`, `supported-environment`, and `submit-ready-mode`
+- because this profile starts Nomad itself, it remains bounded fallback even when it becomes submit-ready
 
 Successful output ends with:
 
@@ -255,10 +295,10 @@ For the full profile, `submit-ready: true` means:
 Current limitation:
 
 - this readiness result now rejects `cpu.totalcompute=0` and Docker-unhealthy nodes, but it still does not guarantee successful placement for every workload shape; later memory, device, or other constraint failures remain possible
-- if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains a bounded fallback for the current proof host/startup mode rather than clean evidence of natural substrate support
+- if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains bounded fallback rather than clean evidence of natural substrate support
 - the current script-managed local Nomad path also remains bounded fallback/troubleshooting even when Nomad is schedulable; the supported-environment story for this slice is still a pre-managed non-`-dev` Nomad service on the Linux host/VM plus natural schedulability
 - a pre-managed `nomad agent -dev` environment is unsupported for that support claim even if it looks healthy and exposes positive compute
-- the current Ubuntu 24.04 VMware/aarch64 proof VM is now ruled out for the supported-profile claim in bounded scope because the real root-managed non-`-dev` service still reports `cpu.totalcompute=0` and the guest does not expose the CPU-frequency inputs Nomad needs
+- on the current Apple Silicon Mac, the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain ruled out for the supported-profile claim because the real root-managed non-`-dev` service still reports `cpu.totalcompute=0`
 
 For ES specifically, `/health` still confirms:
 
@@ -326,6 +366,11 @@ The collector accepts either the short category aliases above or the surfaced fa
 After bring-up succeeds, the preferred bounded end-to-end smoke test is:
 
 ```bash
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+export BRINGUP_PROFILE="prepare-only"
+scripts/01_bringup.sh up
+BRINGUP_PROFILE=full scripts/01_bringup.sh check
 scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
 ```
 
@@ -333,13 +378,13 @@ This slice proves the one-host Linux substrate and same-path staging contract di
 
 The bounded useful credential flow proof now already exists. Use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) to prove one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a Vault-compatible HTTPS endpoint and read one secret without reintroducing a workload-authored identity bridge.
 
-That bounded proof has now been exercised on a real Linux VM through the real ES -> Nomad -> Docker path. The next bounded milestone after that credential-flow proof is supported-environment qualification / deployment honesty. On the current proof VM/startup mode, natural schedulability is still not proved and may require the explicit bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` override described above. Treat that as an environment/startup caveat for the proof host, not as evidence that Linux or Docker/Nomad are the wrong direction for this phase.
+That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 
 On Linux, keep the supported-environment story narrow and explicit:
 
-- `supported`: pre-managed non-`-dev` Nomad already running on the host/VM, Docker healthy, and at least one ready node exposes positive `cpu.totalcompute` without override
+- `supported`: pre-managed non-`-dev` Nomad already running on the host/VM, Docker healthy, and at least one ready node exposes positive `cpu.totalcompute` without override; on this Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile
 - `bounded-fallback`: the current script-managed local Nomad path, or any run that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
-- `unsupported`: Docker unhealthy, Nomad `DevMode=true`, no Nomad leader, no ready Docker-capable node, or `cpu.totalcompute=0` without explicit bounded override
+- `unsupported`: Docker unhealthy, Nomad `DevMode=true`, no Nomad leader, no ready Docker-capable node, or `cpu.totalcompute=0` without explicit bounded override; on this Mac, the investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles are currently in this bucket
 
 That helper drives:
 
@@ -352,6 +397,12 @@ That helper drives:
 and writes a structured summary plus captured logs to a per-run work directory.
 
 Because that helper waits for terminal status and then reads logs, it also exercises the current successful-submit staging cleanup policy: ES keeps `execution.staging_root_dir/<run_id>` while the workload may still depend on it, then best-effort removes that staging root after terminal success is observed. Failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain staging for debugging.
+
+Keep host qualification and smoke proof distinct:
+
+- if `scripts/60_execute_loop.sh` fails but `BRINGUP_PROFILE=full scripts/01_bringup.sh check` still reports `supported-environment: supported`, treat that first as workload/runtime troubleshooting rather than as proof that the host lost qualification
+- only relabel the host itself if the supported-host checks regress
+- the current supported local proof path is repo-owned; no out-of-repo `/tmp` harness is required for the qualification or static-script smoke sequence
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 

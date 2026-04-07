@@ -1,7 +1,7 @@
 # Runbook: Submit Runtime Identity Vault Login Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-05`
+- Last Updated: `2026-04-06`
 
 ## 1. Objective
 
@@ -167,7 +167,7 @@ The final log line is a JSON status object containing:
 
 This runbook does **not** prove:
 
-- natural schedulability without the bounded `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` workaround on the current proof VM
+- host qualification by itself; use [/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md) and [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) to distinguish `supported` from `bounded-fallback`
 - arbitrary or root workload compatibility
 - X.509 SVID delivery
 - multi-host topology

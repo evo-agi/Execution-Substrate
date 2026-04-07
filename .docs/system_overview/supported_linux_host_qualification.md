@@ -121,11 +121,30 @@ The following conditions disqualify a host from `supported`.
 
 For the current slice, package installation alone is not qualification. A host that has Docker and Nomad installed but still cannot expose positive natural `cpu.totalcompute` remains unsupported.
 
-## 5. Current Known Unsupported Example
+## 5. Known Local Qualification Results On This Mac
 
-The currently investigated Ubuntu 24.04 VMware/aarch64 guest is unsupported for the current `supported` profile.
+These observed qualification results are for the current Apple Silicon Mac and the specific local guest profiles investigated here. They are host/profile-specific facts, not global platform claims.
 
-Observed facts from the real root-managed path:
+### Current supported local reference profile on this Mac
+
+The current supported local reference profile on this Mac is:
+
+- Lima `qemu`
+- Ubuntu 24.04 arm64
+- Docker healthy
+- packaged pre-managed non-`-dev` `nomad.service`
+- positive natural `cpu.totalcompute`
+- no `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
+- operator/readiness reports `nomad-startup-mode: pre-managed`, `submit-ready-mode: natural`, and `supported-environment: supported`
+
+### Current known unsupported local profiles on this Mac
+
+The following investigated local guest profiles are currently unsupported for the natural `supported` claim on this Mac.
+
+- Ubuntu 24.04 VMware/aarch64 guest
+- Lima `vz` guest running Ubuntu 24.04 arm64
+
+Observed facts from the real root-managed path for those unsupported local profiles:
 
 - packaged `nomad.service` was enabled and started successfully
 - the active Nomad endpoint was root-managed and non-`-dev`
@@ -134,17 +153,20 @@ Observed facts from the real root-managed path:
 - the ready node still reported `cpu.totalcompute=0`
 - `/proc/cpuinfo` exposed no usable `cpu MHz`
 - `/sys/devices/system/cpu/cpu*/cpufreq/*` exposed no readable CPU-frequency data
-- SMBIOS processor information reported `Current Speed: Unknown`
+- SMBIOS processor information reported unusable or unknown processor speed
 - installing `dmidecode` or `cpufrequtils` confirmed the missing inputs but did not make natural Nomad CPU fingerprinting succeed
 
-The narrow current conclusion is:
+The narrow current conclusions are:
 
-- this current VMware/aarch64 guest profile is unsupported for the natural supported-host claim today
+- on this Mac, Lima `qemu` + Ubuntu 24.04 arm64 currently qualifies as the real supported local profile
+- on this Mac, the investigated VMware/aarch64 and Lima `vz` local guest profiles are unsupported for the natural supported-host claim today because the real service path still leaves natural `cpu.totalcompute=0`
 
 This does not prove:
 
 - Ubuntu is unsupported in general
+- Apple Silicon local Linux guests are unsupported in general
 - VMware/aarch64 is impossible in general
+- Lima `vz` is impossible in general
 - Nomad is the wrong bounded substrate
 - architecture should be reopened
 
@@ -245,10 +267,14 @@ Installing `dmidecode` or `cpufrequtils` is diagnostic only. Those packages do n
 
 ### Step 5: verify the operator labels
 
-After the control plane is started with the normal repo configs and TLS material, run:
+After the control plane is started with the normal repo configs and TLS material, use the repo-owned path that preserves pre-managed Nomad truth:
 
 ```bash
-scripts/01_bringup.sh check
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+export BRINGUP_PROFILE="prepare-only"
+scripts/01_bringup.sh up
+BRINGUP_PROFILE=full scripts/01_bringup.sh check
 ```
 
 Pass only if the output includes:
@@ -259,6 +285,10 @@ Pass only if the output includes:
 - `submit-ready: true`
 
 If the output instead shows `managed-local`, `bounded-override`, or a failed submit-readiness result, the host is not supported.
+
+Do not use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` as the supported proof path. That path manages Nomad locally and remains `bounded-fallback` by definition.
+
+On the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the repo-owned replacement for the earlier out-of-repo experiment harnesses. It prepares the ephemeral TLS/config/blob/mock-socket state needed for the proof path, but it does not qualify the host by itself.
 
 ## 7. Evidence Collection Checklist
 
@@ -304,10 +334,19 @@ The current primary proof path is documented in:
 The preferred command path there is:
 
 ```bash
+scripts/72_supported_local_setup.sh setup
+source /tmp/execution-substrate-supported-local-proof/env.sh
+export BRINGUP_PROFILE="prepare-only"
 scripts/01_bringup.sh up
-scripts/01_bringup.sh check
+BRINGUP_PROFILE=full scripts/01_bringup.sh check
 scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
 ```
+
+That order keeps host qualification and smoke execution separate:
+
+- `scripts/72_supported_local_setup.sh setup` creates the repo-owned proof environment for the supported local path and replaces the earlier `/tmp` experiment harnesses
+- the `prepare-only` bring-up plus full-profile `check` proves the supported host boundary
+- the later execute-loop run proves one clean governed workload execution on that already-qualified host
 
 The bounded useful credential flow runbook remains the next proof on top of that qualified host, not a replacement for host qualification.
 
