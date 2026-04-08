@@ -19,7 +19,7 @@ On the current supported local reference host on this Mac, the canonical repo-ow
 scripts/73_supported_local_proof.sh run
 ```
 
-That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
+That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. Before bootstrap it explicitly removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, while preserving the host `.out/es-proof-<id>/` evidence record as the canonical proof output. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
 
 The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but on this Mac the wrapper remains the canonical supported-local validation path because it stages the current host working tree into the guest and records the proof evidence under `.out/es-proof-<id>/`.
 
@@ -97,7 +97,7 @@ Do not continue unless the check reports `submit-ready: true`.
 
 ## 6. Proof-Scoped Vault Dev/Test Bootstrap
 
-On the current supported local reference host on this Mac, the canonical wrapper already starts and configures the proof-scoped Vault dev/test target through `scripts/72_supported_local_setup.sh setup`, writes the generated bootstrap material to `managed-secrets.conf`, and aligns the workload-zone Vault blob for this proof.
+On the current supported local reference host on this Mac, the canonical wrapper already starts and configures the proof-scoped Vault dev/test target through `scripts/72_supported_local_setup.sh setup`, writes the generated bootstrap material to `managed-secrets.conf`, aligns the workload-zone Vault blob for this proof, and treats guest `/tmp/es-proof-*` as transient proof-owned scratch rather than as canonical evidence.
 
 For lower-level debugging or non-wrapper environments, use that same repo-owned bootstrap layer rather than an ad hoc mock:
 
@@ -125,6 +125,13 @@ vault status
 ```
 
 This target is deliberately proof-scoped and dev/test only. It is real Vault, but it does **not** make Execution Substrate a production Vault integrator, a long-lived token broker, or a general infra manager.
+
+For the canonical wrapper on this Mac:
+
+- stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs is cleaned automatically before a new proof starts
+- the current run's guest `/tmp/es-proof-*` scratch is removed after a successful host evidence copy
+- host `.out/es-proof-<id>/` remains the preserved canonical proof record and is not auto-deleted
+- old Nomad `exec-*` job history is left alone because fresh `run_id` values isolate new proof submissions from that dead history
 
 ## 7. Align The Workload-Zone Vault Blob
 

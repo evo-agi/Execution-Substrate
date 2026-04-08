@@ -92,9 +92,9 @@ On the current supported local reference host on this Mac, you do not need the e
 scripts/73_supported_local_proof.sh run
 ```
 
-That repo-owned wrapper creates the canonical proof workspace under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, invokes the guest-side `scripts/72_supported_local_setup.sh setup`, runs the supported-host qualification sequence, runs the higher-value useful credential-flow proof, and collects the resulting guest evidence back into that canonical workspace.
+That repo-owned wrapper creates the canonical proof workspace under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, invokes the guest-side `scripts/72_supported_local_setup.sh setup`, runs the supported-host qualification sequence, runs the higher-value useful credential-flow proof, and collects the resulting guest evidence back into that canonical workspace.
 
-On this Mac, the wrapper still uses a guest `/tmp/es-proof-<id>` workspace internally because Lima mounts the repo tree read-only inside the current `qemu` guest. That guest scratch is an implementation detail; the canonical proof workspace is the host-side `.out/es-proof-<id>/`.
+On this Mac, the wrapper still uses a guest `/tmp/es-proof-<id>` workspace internally because Lima mounts the repo tree read-only inside the current `qemu` guest. That guest scratch is proof-owned transient implementation detail: the wrapper cleans stale proof-owned guest scratch before a new run and removes the current guest scratch after a successful host evidence copy. The canonical proof workspace is the host-side `.out/es-proof-<id>/`.
 
 The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but that test is not the canonical supported-local validation path on this Mac. The supported-local closure proof here is the wrapper run above because it stages the current host working tree into the guest and records the canonical evidence under `.out/es-proof-<id>/`.
 

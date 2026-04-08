@@ -29,6 +29,7 @@ Usage:
 This is the canonical supported-local proof wrapper for the current Apple
 Silicon Mac + Lima qemu reference path. It:
   - creates the canonical proof workspace under .out/es-proof-<id>/
+  - cleans stale proof-owned guest /tmp/es-proof-* scratch before bootstrap
   - packages the bounded runtime-identity Vault-login workload
   - cross-compiles the current Linux runtime-support binary from this working tree
   - stages a proof-scoped real SPIRE server/agent distribution into the guest
@@ -38,6 +39,7 @@ Silicon Mac + Lima qemu reference path. It:
   - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
   - copies resulting guest evidence back into the canonical .out workspace
+  - removes successful guest /tmp/es-proof-* scratch after host evidence is preserved
 
 Optional environment variables:
   SUPPORTED_LOCAL_INSTANCE=es-lima-qemu-arm64
@@ -78,6 +80,15 @@ collect_guest_workspace() {
   fi
 }
 
+cleanup_stale_guest_proof_scratch() {
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env \
+      "EXECUTION_SUBSTRATE_REPO_ROOT=${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
+      "SUPPORTED_LOCAL_PROOF_PARENT=/tmp" \
+      "SUPPORTED_LOCAL_PROOF_DIR=${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    bash -s -- cleanup-stale < "${REPO_ROOT}/scripts/internal/supported_local_proof_cleanup.sh"
+}
+
 cleanup_control_plane() {
   if [[ "${CONTROL_PLANE_STARTED}" == "true" ]]; then
     run_guest_stdin <<'EOF' >/dev/null 2>&1 || true
@@ -107,6 +118,27 @@ stop_pid_file "$GUEST_PROOF_DIR/spire-server.pid"
 rm -rf "$GUEST_BOOTSTRAP_DIR"
 EOF
   CONTROL_PLANE_STARTED="false"
+}
+
+remove_current_guest_scratch() {
+  run_guest_stdin <<'EOF' >/dev/null 2>&1 || true
+remove_path() {
+  local path=$1
+
+  if [[ ! -e "${path}" ]]; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo -n rm -rf "${path}"
+    return 0
+  fi
+
+  rm -rf "${path}"
+}
+
+remove_path "$GUEST_PROOF_DIR"
+remove_path "$GUEST_BOOTSTRAP_DIR"
+EOF
 }
 
 finalize() {
@@ -373,6 +405,8 @@ run() {
   write_proof_metadata
   trap finalize EXIT
 
+  cleanup_stale_guest_proof_scratch | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/cleanup-guest-scratch.txt"
+
   prepare_host_inputs
   prepare_host_tooling
   copy_tooling_to_guest
@@ -412,6 +446,7 @@ EOF
 
   cleanup_control_plane
   collect_guest_workspace
+  remove_current_guest_scratch
   trap - EXIT
 }
 
