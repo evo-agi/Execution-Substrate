@@ -164,7 +164,7 @@ These are current architectural absences, not omissions to fill automatically.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
 - The containerized hot path currently relies on Docker host networking for control-plane reachability during slice 0; that is a temporary compatibility-heavy deployment convention, not the final control-plane network model.
-- Slice 0 proves the Linux substrate and governed execution handoff only. It does not yet prove strong workload identity or SPIFFE/SPIRE-backed runtime workload identity.
+- Slice 0 by itself proves the Linux substrate and governed execution handoff only. The current bounded slice reaches strong workload identity through slice `1A` and slice `1B`, and the canonical supported-local proof path now exercises that runtime identity through a real SPIRE-backed JWT-SVID plus bounded Vault dev/test login.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
 - CGS remains tied to `id.conf` as the current explicit subject-policy grammar.
 - AGS no longer treats artifact identity as raw payload identity. The current bounded rule is instead: `artifact_digest` is a deterministic package identity derived by AGS, while payload bytes remain explicitly discoverable through the runtime-facing payload reference and cross-checked against evidence claims.

@@ -199,6 +199,7 @@ On the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known 
 The current guest-side helper is intentionally narrow:
 
 - it prepares the bounded supported-local proof environment used by both qualification and the canonical useful credential-flow proof
+- it boots the proof-scoped real SPIRE server/agent path that backs the helper-private Workload API socket used by ES submit config
 - it seeds the bounded workload-zone Vault runtime fields used by ES, including the proof-scoped real Vault dev/test target for the current runtime-identity Vault-login workload
 - it does not broaden the slice beyond the bounded workload-vault login and one-secret-read proof
 

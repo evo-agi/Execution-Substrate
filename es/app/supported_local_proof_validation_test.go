@@ -2,13 +2,11 @@ package app_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,18 +16,14 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	workloadpb "github.com/spiffe/go-spiffe/v2/proto/spiffe/workload"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
-func TestSupportedLocalSetupScriptBootstrapsRealVaultDevTarget(t *testing.T) {
+func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("supported-local setup validation requires Linux")
 	}
 
-	for _, name := range []string{"go", "openssl", "python3", "vault"} {
+	for _, name := range []string{"go", "openssl", "python3", "vault", "curl", "tar"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skipf("supported-local setup validation requires %s: %v", name, err)
 		}
@@ -58,6 +52,9 @@ func TestSupportedLocalSetupScriptBootstrapsRealVaultDevTarget(t *testing.T) {
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PORT="+strconv.Itoa(vaultPort),
 	)
+	if spireTarball := strings.TrimSpace(os.Getenv("SUPPORTED_LOCAL_TEST_SPIRE_TARBALL")); spireTarball != "" {
+		command.Env = append(command.Env, "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="+spireTarball)
+	}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run supported-local setup: %v output=%s", err, string(output))
@@ -65,7 +62,8 @@ func TestSupportedLocalSetupScriptBootstrapsRealVaultDevTarget(t *testing.T) {
 
 	t.Cleanup(func() {
 		stopProcessFromPIDFile(t, filepath.Join(proofDir, "vault-dev.pid"))
-		stopProcessFromPIDFile(t, filepath.Join(proofDir, "mock-spire.pid"))
+		stopProcessFromPIDFile(t, filepath.Join(proofDir, "spire-agent.pid"))
+		stopProcessFromPIDFile(t, filepath.Join(proofDir, "spire-server.pid"))
 	})
 
 	managedSecretsPath := filepath.Join(proofDir, "managed-secrets.conf")
@@ -92,15 +90,75 @@ func TestSupportedLocalSetupScriptBootstrapsRealVaultDevTarget(t *testing.T) {
 		"PROOF_VAULT_SECRET_VALUE",
 		"PROOF_VAULT_ROOT_TOKEN",
 		"PROOF_VAULT_CA_CERT_FILE",
-		"PROOF_WORKLOAD_JWT_SIGNING_KEY_FILE",
-		"PROOF_WORKLOAD_JWT_VALIDATION_PUB_FILE",
+		"PROOF_SPIRE_VERSION",
+		"PROOF_SPIRE_TRUST_DOMAIN",
+		"PROOF_SPIRE_JWT_ISSUER",
+		"PROOF_SPIRE_AGENT_SPIFFE_ID",
+		"PROOF_SPIRE_SERVER_SOCKET_PATH",
+		"PROOF_SPIRE_AGENT_SOCKET_PATH",
+		"PROOF_SPIRE_BUNDLE_FILE",
+		"PROOF_SPIRE_JWT_VALIDATION_PUB_FILE",
 	} {
 		if strings.TrimSpace(managed[key]) == "" {
 			t.Fatalf("expected %s in managed-secrets.conf", key)
 		}
 	}
 
-	jwtValue := fetchJWTSVIDFromSocket(t, filepath.Join(proofDir, "mock-spire.sock"), managed["PROOF_VAULT_BOUND_AUDIENCE"])
+	if _, err := os.Stat(filepath.Join(proofDir, "mock-spire.sock")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect canonical proof setup to leave mock-spire.sock behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(proofDir, "bin", "es-workload-api-mock")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect canonical proof setup to stage es-workload-api-mock in proof bin: %v", err)
+	}
+
+	assertPathIsUnixSocket(t, managed["PROOF_SPIRE_SERVER_SOCKET_PATH"])
+	assertPathIsUnixSocket(t, managed["PROOF_SPIRE_AGENT_SOCKET_PATH"])
+
+	serverHealth := runCommand(t, proofDir, filepath.Join(proofDir, "bin", "spire-server"), "healthcheck", "-socketPath", managed["PROOF_SPIRE_SERVER_SOCKET_PATH"])
+	if !strings.Contains(serverHealth, "healthy") {
+		t.Fatalf("expected healthy spire-server output, got %q", serverHealth)
+	}
+	agentHealth := runCommand(t, proofDir, filepath.Join(proofDir, "bin", "spire-agent"), "healthcheck", "-socketPath", managed["PROOF_SPIRE_AGENT_SOCKET_PATH"])
+	if !strings.Contains(agentHealth, "healthy") {
+		t.Fatalf("expected healthy spire-agent output, got %q", agentHealth)
+	}
+
+	entryShow := runCommand(
+		t,
+		proofDir,
+		filepath.Join(proofDir, "bin", "spire-server"),
+		"entry",
+		"show",
+		"-socketPath", managed["PROOF_SPIRE_SERVER_SOCKET_PATH"],
+		"-spiffeID", managed["PROOF_VAULT_BOUND_SUBJECT"],
+	)
+	for _, want := range []string{
+		managed["PROOF_VAULT_BOUND_SUBJECT"],
+		managed["PROOF_SPIRE_AGENT_SPIFFE_ID"],
+		"unix:uid:0",
+		"unix:gid:0",
+	} {
+		if !strings.Contains(entryShow, want) {
+			t.Fatalf("expected %q in SPIRE workload entry output, got %q", want, entryShow)
+		}
+	}
+
+	bundleBytes, err := os.ReadFile(managed["PROOF_SPIRE_BUNDLE_FILE"])
+	if err != nil {
+		t.Fatalf("read SPIRE bundle file: %v", err)
+	}
+	if !strings.Contains(string(bundleBytes), "\"jwt-svid\"") {
+		t.Fatalf("expected SPIRE bundle to carry a jwt-svid authority, got %s", string(bundleBytes))
+	}
+
+	jwtValue := mintJWTFromSpireServer(
+		t,
+		proofDir,
+		filepath.Join(proofDir, "bin", "spire-server"),
+		managed["PROOF_SPIRE_SERVER_SOCKET_PATH"],
+		managed["PROOF_VAULT_BOUND_SUBJECT"],
+		managed["PROOF_VAULT_BOUND_AUDIENCE"],
+	)
 	claims := decodeJWTClaimsUnverifiedForTest(t, jwtValue)
 	if got := strings.TrimSpace(claims["iss"]); got != managed["PROOF_VAULT_BOUND_ISSUER"] {
 		t.Fatalf("expected issuer %q, got %q", managed["PROOF_VAULT_BOUND_ISSUER"], got)
@@ -136,6 +194,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealVaultDevTarget(t *testing.T) {
 	}
 
 	assertSupportedLocalVaultBlobAlignment(t, proofDir, managed)
+	assertSupportedLocalSPIRERuntimeAlignment(t, proofDir, managed)
 }
 
 func writeFakeCommand(t *testing.T, path string) {
@@ -193,38 +252,50 @@ func readShellAssignments(t *testing.T, path string) map[string]string {
 	return values
 }
 
-func fetchJWTSVIDFromSocket(t *testing.T, socketPath string, audience string) string {
+func runCommand(t *testing.T, workDir string, name string, args ...string) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "unix", socketPath)
+	command := exec.Command(name, args...)
+	command.Dir = workDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %v: %v output=%s", name, args, err, string(output))
 	}
-	conn, err := grpc.DialContext(
-		ctx,
-		"unix://"+socketPath,
-		grpc.WithContextDialer(dialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+	return strings.TrimSpace(string(output))
+}
+
+func assertPathIsUnixSocket(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat socket path %s: %v", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("expected %s to be a unix socket, got mode %v", path, info.Mode())
+	}
+}
+
+func mintJWTFromSpireServer(t *testing.T, workDir string, binaryPath string, socketPath string, spiffeID string, audience string) string {
+	t.Helper()
+
+	outputPath := filepath.Join(workDir, "minted-workload.jwt")
+	command := exec.Command(binaryPath, "jwt", "mint",
+		"-socketPath", socketPath,
+		"-spiffeID", spiffeID,
+		"-audience", audience,
+		"-write", outputPath,
 	)
+	command.Dir = workDir
+	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("dial mock spire socket: %v", err)
+		t.Fatalf("mint SPIRE jwt-svid: %v output=%s", err, string(output))
 	}
-	defer conn.Close()
-
-	response, err := workloadpb.NewSpiffeWorkloadAPIClient(conn).FetchJWTSVID(ctx, &workloadpb.JWTSVIDRequest{
-		Audience: []string{audience},
-	})
+	tokenBytes, err := os.ReadFile(outputPath)
 	if err != nil {
-		t.Fatalf("fetch jwt svid: %v", err)
+		t.Fatalf("read minted SPIRE jwt-svid %s: %v", outputPath, err)
 	}
-	if len(response.Svids) != 1 {
-		t.Fatalf("expected one jwt svid, got %d", len(response.Svids))
-	}
-	return strings.TrimSpace(response.Svids[0].Svid)
+	return strings.TrimSpace(string(tokenBytes))
 }
 
 func decodeJWTClaimsUnverifiedForTest(t *testing.T, token string) map[string]string {
@@ -405,5 +476,31 @@ func assertSupportedLocalVaultBlobAlignment(t *testing.T, proofDir string, manag
 	}
 	if payload.VaultConfig.JWTAudience != managed["PROOF_VAULT_BOUND_AUDIENCE"] {
 		t.Fatalf("expected blob jwt audience %q, got %q", managed["PROOF_VAULT_BOUND_AUDIENCE"], payload.VaultConfig.JWTAudience)
+	}
+}
+
+func assertSupportedLocalSPIRERuntimeAlignment(t *testing.T, proofDir string, managed map[string]string) {
+	t.Helper()
+
+	configBytes, err := os.ReadFile(filepath.Join(proofDir, "es.json"))
+	if err != nil {
+		t.Fatalf("read es config: %v", err)
+	}
+
+	var payload struct {
+		Execution struct {
+			RuntimeSupportBinary   string `json:"runtime_support_binary"`
+			SPIREWorkloadAPISocket string `json:"spire_workload_api_socket_path"`
+		} `json:"execution"`
+	}
+	if err := json.Unmarshal(configBytes, &payload); err != nil {
+		t.Fatalf("decode es config: %v", err)
+	}
+
+	if payload.Execution.RuntimeSupportBinary != managed["PROOF_RUNTIME_SUPPORT_BINARY"] {
+		t.Fatalf("expected runtime support binary %q, got %q", managed["PROOF_RUNTIME_SUPPORT_BINARY"], payload.Execution.RuntimeSupportBinary)
+	}
+	if payload.Execution.SPIREWorkloadAPISocket != managed["PROOF_SPIRE_AGENT_SOCKET_PATH"] {
+		t.Fatalf("expected ES SPIRE socket path %q, got %q", managed["PROOF_SPIRE_AGENT_SOCKET_PATH"], payload.Execution.SPIREWorkloadAPISocket)
 	}
 }

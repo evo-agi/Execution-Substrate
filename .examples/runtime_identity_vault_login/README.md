@@ -10,7 +10,7 @@ The workload:
 
 - discovers `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
 - proves the raw SPIRE socket remains helper-private
-- requests a bounded JWT-SVID for the `workload_vault` target
+- requests a bounded real SPIRE-backed JWT-SVID for the `workload_vault` target
 - performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target
 - uses the returned Vault token to read one secret
 - prints explicit success markers and a final JSON status line

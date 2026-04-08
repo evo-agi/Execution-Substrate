@@ -15,9 +15,12 @@ PROOF_ID="${SUPPORTED_LOCAL_PROOF_ID:-supported-local}"
 PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 RUNTIME_SUPPORT_INSTALL_PATH="${SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY:-/usr/local/bin/es-runtime-support}"
 WORKLOAD_SPIFFE_ID="${SUPPORTED_LOCAL_WORKLOAD_SPIFFE_ID:-spiffe://execution.internal/workload}"
-WORKLOAD_JWT_ISSUER="${SUPPORTED_LOCAL_WORKLOAD_JWT_ISSUER:-spiffe://execution.internal/mock-workload-api}"
+SPIRE_VERSION="${SUPPORTED_LOCAL_SPIRE_VERSION:-1.14.4}"
+SPIRE_TRUST_DOMAIN="${SUPPORTED_LOCAL_SPIRE_TRUST_DOMAIN:-execution.internal}"
+SPIRE_JWT_ISSUER="${SUPPORTED_LOCAL_SPIRE_JWT_ISSUER:-spiffe://execution.internal}"
+SPIRE_AGENT_SPIFFE_ID="${SUPPORTED_LOCAL_SPIRE_AGENT_SPIFFE_ID:-spiffe://execution.internal/spire-agent}"
 PREBUILT_RUNTIME_SUPPORT_BINARY="${SUPPORTED_LOCAL_PREBUILT_RUNTIME_SUPPORT_BINARY:-}"
-PREBUILT_WORKLOAD_API_BINARY="${SUPPORTED_LOCAL_PREBUILT_WORKLOAD_API_BINARY:-}"
+PREBUILT_SPIRE_TARBALL="${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL:-}"
 VAULT_ADDRESS="${SUPPORTED_LOCAL_VAULT_ADDRESS:-}"
 VAULT_BIND_ADDRESS="${SUPPORTED_LOCAL_VAULT_BIND_ADDRESS:-0.0.0.0}"
 VAULT_PUBLIC_HOST="${SUPPORTED_LOCAL_VAULT_PUBLIC_HOST:-}"
@@ -33,6 +36,7 @@ ARS_PORT=$((PORT_BASE + 2))
 EGS_PORT=$((PORT_BASE + 3))
 AGS_PORT=$((PORT_BASE + 4))
 ES_PORT=$((PORT_BASE + 5))
+SPIRE_SERVER_PORT="${SUPPORTED_LOCAL_SPIRE_SERVER_PORT:-$((PORT_BASE + 30))}"
 
 ARS_HOST="server.artifact-registry.internal"
 EGS_HOST="server.execution-governance.internal"
@@ -51,12 +55,13 @@ packaged pre-managed non-dev nomad.service, natural cpu.totalcompute).
 What it writes under /tmp/execution-substrate-supported-local-proof by default:
   - generated control-plane Dockerfile for guest-writable image builds
   - runtime CA and leaf certs
-  - JWT signing material for the repo-owned mock SPIFFE Workload API
+  - proof-scoped real SPIRE server/agent binaries, config, data, and sockets
+  - SPIRE bundle-derived JWT validation material for Vault dev/test
   - ARS/EGS/AGS/ES JSON configs
   - ARS storage root plus workload-zone Vault blob
   - managed-secrets.conf for generated proof bootstrap material
   - operator env.sh for scripts/01_bringup.sh and scripts/60_execute_loop.sh
-  - a repo-owned mock SPIFFE Workload API Unix socket
+  - a proof-scoped real SPIRE Workload API Unix socket
   - a proof-scoped real Vault dev/test target for the useful credential flow
 
 This helper is the guest-side setup layer for the supported-local proof path.
@@ -68,6 +73,8 @@ Optional environment variables:
   SUPPORTED_LOCAL_PROOF_ID=<proof-id>
   SUPPORTED_LOCAL_PORT_BASE=18440
   SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY=/abs/path/to/es-runtime-support
+  SUPPORTED_LOCAL_SPIRE_VERSION=1.14.4
+  SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=/abs/path/to/spire-linux-arm64-musl.tar.gz
   SUPPORTED_LOCAL_VAULT_ADDRESS=https://<container-reachable-host>:<port>
   SUPPORTED_LOCAL_VAULT_BIND_ADDRESS=0.0.0.0
   SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=<container-reachable-host>
@@ -206,47 +213,70 @@ prepare_runtime_support_binary() {
   build_runtime_support_binary
 }
 
-prepare_workload_api_binary() {
-  local output_path=$1
+install_prebuilt_file() {
+  local source_path=$1
+  local destination_path=$2
+  local label=$3
 
-  if [[ -n "${PREBUILT_WORKLOAD_API_BINARY}" ]]; then
-    install_prebuilt_binary "${PREBUILT_WORKLOAD_API_BINARY}" "${output_path}" "es-workload-api-mock"
-    return 0
+  if [[ ! -r "${source_path}" ]]; then
+    echo "${label} prebuilt file is not readable: ${source_path}" >&2
+    exit 1
   fi
 
-  echo "==> building repo-owned mock SPIFFE Workload API"
-  mkdir -p "$(dirname "${output_path}")"
-  (
-    cd "${REPO_ROOT}"
-    env CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" go build -o "${output_path}" ./cmd/es-workload-api-mock
-  )
-  chmod 0755 "${output_path}"
+  echo "==> using prebuilt ${label} from ${source_path}"
+  mkdir -p "$(dirname "${destination_path}")"
+  cp "${source_path}" "${destination_path}"
 }
 
-start_mock_workload_api() {
-  local binary_path=$1
-  local socket_path=$2
-  local log_path=$3
-  local pid_path=$4
-  local signing_key_path=$5
+spire_release_arch() {
+  case "$(go env GOARCH)" in
+    amd64|arm64)
+      printf '%s\n' "$(go env GOARCH)"
+      ;;
+    *)
+      echo "unsupported SPIRE release architecture: $(go env GOARCH)" >&2
+      exit 1
+      ;;
+  esac
+}
 
-  echo "==> starting repo-owned mock SPIFFE Workload API"
-  nohup "${binary_path}" \
-    -socket "${socket_path}" \
-    -subject "${WORKLOAD_SPIFFE_ID}" \
-    -issuer "${WORKLOAD_JWT_ISSUER}" \
-    -signing-key-file "${signing_key_path}" >"${log_path}" 2>&1 &
-  echo "$!" > "${pid_path}"
+prepare_spire_distribution() {
+  local tarball_path=$1
+  local extract_root=$2
+  local asset_arch
+  local asset_name
+  local download_url
+  local extracted_dir
 
-  for _ in $(seq 1 50); do
-    if [[ -S "${socket_path}" ]]; then
-      return 0
-    fi
-    sleep 0.1
-  done
+  asset_arch="$(spire_release_arch)"
+  asset_name="spire-${SPIRE_VERSION}-linux-${asset_arch}-musl.tar.gz"
+  download_url="https://github.com/spiffe/spire/releases/download/v${SPIRE_VERSION}/${asset_name}"
 
-  echo "mock SPIFFE Workload API socket did not appear at ${socket_path}" >&2
-  return 1
+  mkdir -p "$(dirname "${tarball_path}")"
+  if [[ -n "${PREBUILT_SPIRE_TARBALL}" ]]; then
+    install_prebuilt_file "${PREBUILT_SPIRE_TARBALL}" "${tarball_path}" "SPIRE distribution"
+  else
+    echo "==> downloading official SPIRE distribution ${SPIRE_VERSION}"
+    curl -L --fail --silent --show-error -o "${tarball_path}" "${download_url}"
+  fi
+  chmod 600 "${tarball_path}"
+
+  rm -rf "${extract_root}"
+  mkdir -p "${extract_root}"
+  tar -xzf "${tarball_path}" -C "${extract_root}"
+
+  extracted_dir="$(find "${extract_root}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [[ -z "${extracted_dir}" ]]; then
+    echo "failed to unpack SPIRE distribution into ${extract_root}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${extracted_dir}/bin/spire-server" || ! -x "${extracted_dir}/bin/spire-agent" ]]; then
+    echo "SPIRE distribution did not contain spire-server and spire-agent binaries" >&2
+    exit 1
+  fi
+
+  install -m 0755 "${extracted_dir}/bin/spire-server" "${PROOF_DIR}/bin/spire-server"
+  install -m 0755 "${extracted_dir}/bin/spire-agent" "${PROOF_DIR}/bin/spire-agent"
 }
 
 detect_docker_bridge_gateway() {
@@ -261,15 +291,19 @@ detect_docker_bridge_gateway() {
   printf '%s\n' "${gateway}"
 }
 
-generate_workload_jwt_signing_material() {
-  local tls_dir=$1
-  local private_key_path="${tls_dir}/workload-jwt-signing-key.pem"
-  local public_key_path="${tls_dir}/workload-jwt-validation-pub.pem"
+wait_for_unix_socket() {
+  local socket_path=$1
+  local description=$2
 
-  echo "==> generating workload JWT signing material for Vault validation"
-  openssl genrsa -traditional -out "${private_key_path}" 2048 >/dev/null 2>&1
-  openssl rsa -in "${private_key_path}" -pubout -out "${public_key_path}" >/dev/null 2>&1
-  chmod 600 "${private_key_path}"
+  for _ in $(seq 1 50); do
+    if [[ -S "${socket_path}" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "${description} did not appear at ${socket_path}" >&2
+  return 1
 }
 
 wait_for_local_tcp_listener() {
@@ -309,6 +343,295 @@ normalize_kv_v2_logical_path() {
   printf '%s/%s\n' "${api_path%%/data/*}" "${api_path#*/data/}"
 }
 
+write_spire_configs() {
+  local proof_dir=$1
+  local server_config="${proof_dir}/spire/server/server.conf"
+  local agent_config="${proof_dir}/spire/agent/agent.conf"
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+  local agent_socket="${proof_dir}/spire-agent/public/api.sock"
+
+  mkdir -p \
+    "$(dirname "${server_config}")" \
+    "$(dirname "${agent_config}")" \
+    "$(dirname "${server_socket}")" \
+    "$(dirname "${agent_socket}")" \
+    "${proof_dir}/spire-data/server" \
+    "${proof_dir}/spire-data/agent"
+
+  cat > "${server_config}" <<EOF
+server {
+    bind_address = "127.0.0.1"
+    bind_port = "${SPIRE_SERVER_PORT}"
+    socket_path = "${server_socket}"
+    trust_domain = "${SPIRE_TRUST_DOMAIN}"
+    data_dir = "${proof_dir}/spire-data/server"
+    log_level = "DEBUG"
+    ca_ttl = "168h"
+    default_x509_svid_ttl = "48h"
+    default_jwt_svid_ttl = "15m"
+    jwt_key_type = "rsa-2048"
+    jwt_issuer = "${SPIRE_JWT_ISSUER}"
+}
+
+plugins {
+    DataStore "sql" {
+        plugin_data {
+            database_type = "sqlite3"
+            connection_string = "${proof_dir}/spire-data/server/datastore.sqlite3"
+        }
+    }
+
+    KeyManager "disk" {
+        plugin_data {
+            keys_path = "${proof_dir}/spire-data/server/keys.json"
+        }
+    }
+
+    NodeAttestor "join_token" {
+        plugin_data {}
+    }
+}
+EOF
+
+  cat > "${agent_config}" <<EOF
+agent {
+    data_dir = "${proof_dir}/spire-data/agent"
+    log_level = "DEBUG"
+    trust_domain = "${SPIRE_TRUST_DOMAIN}"
+    server_address = "127.0.0.1"
+    server_port = "${SPIRE_SERVER_PORT}"
+    socket_path = "${agent_socket}"
+    insecure_bootstrap = true
+}
+
+plugins {
+    KeyManager "disk" {
+        plugin_data {
+            directory = "${proof_dir}/spire-data/agent"
+        }
+    }
+
+    NodeAttestor "join_token" {
+        plugin_data {}
+    }
+
+    WorkloadAttestor "unix" {
+        plugin_data {}
+    }
+}
+EOF
+}
+
+start_spire_server() {
+  local proof_dir=$1
+  local log_path=$2
+  local pid_path=$3
+  local server_config="${proof_dir}/spire/server/server.conf"
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+
+  : > "${log_path}"
+  chmod 600 "${log_path}"
+
+  echo "==> starting proof-scoped SPIRE server"
+  nohup "${proof_dir}/bin/spire-server" run -config "${server_config}" >"${log_path}" 2>&1 &
+  echo "$!" > "${pid_path}"
+
+  wait_for_unix_socket "${server_socket}" "SPIRE server admin socket"
+  "${proof_dir}/bin/spire-server" healthcheck -socketPath "${server_socket}" > "${proof_dir}/spire-server-health.txt"
+}
+
+generate_spire_join_token() {
+  local proof_dir=$1
+  local token_output
+  local join_token
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+
+  token_output="$("${proof_dir}/bin/spire-server" token generate -socketPath "${server_socket}" -spiffeID "${SPIRE_AGENT_SPIFFE_ID}")"
+  printf '%s\n' "${token_output}" > "${proof_dir}/spire-join-token.txt"
+  join_token="$(printf '%s\n' "${token_output}" | awk '/^Token:/ {print $2; exit}')"
+  if [[ -z "${join_token}" ]]; then
+    echo "failed to parse SPIRE join token output" >&2
+    exit 1
+  fi
+  printf '%s\n' "${join_token}"
+}
+
+start_spire_agent() {
+  local proof_dir=$1
+  local join_token=$2
+  local log_path=$3
+  local pid_path=$4
+  local agent_config="${proof_dir}/spire/agent/agent.conf"
+  local agent_socket="${proof_dir}/spire-agent/public/api.sock"
+
+  : > "${log_path}"
+  chmod 600 "${log_path}"
+
+  echo "==> starting proof-scoped SPIRE agent"
+  nohup "${proof_dir}/bin/spire-agent" run -config "${agent_config}" -joinToken "${join_token}" >"${log_path}" 2>&1 &
+  echo "$!" > "${pid_path}"
+
+  wait_for_unix_socket "${agent_socket}" "SPIRE Workload API socket"
+  "${proof_dir}/bin/spire-agent" healthcheck -socketPath "${agent_socket}" > "${proof_dir}/spire-agent-health.txt"
+}
+
+wait_for_attested_spire_agent() {
+  local proof_dir=$1
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+
+  for _ in $(seq 1 50); do
+    if "${proof_dir}/bin/spire-server" entry show -socketPath "${server_socket}" -spiffeID "${SPIRE_AGENT_SPIFFE_ID}" > "${proof_dir}/spire-agent-entry.txt" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "SPIRE agent registration entry did not appear for SPIFFE ID ${SPIRE_AGENT_SPIFFE_ID}" >&2
+  return 1
+}
+
+register_spire_workload_entry() {
+  local proof_dir=$1
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+
+  echo "==> registering proof-scoped SPIRE workload entry"
+  "${proof_dir}/bin/spire-server" entry create \
+    -socketPath "${server_socket}" \
+    -parentID "${SPIRE_AGENT_SPIFFE_ID}" \
+    -spiffeID "${WORKLOAD_SPIFFE_ID}" \
+    -selector unix:uid:0 \
+    -selector unix:gid:0 > "${proof_dir}/spire-workload-entry-create.txt"
+  "${proof_dir}/bin/spire-server" entry show \
+    -socketPath "${server_socket}" \
+    -spiffeID "${WORKLOAD_SPIFFE_ID}" > "${proof_dir}/spire-workload-entry.txt"
+}
+
+write_spire_bundle_artifacts() {
+  local proof_dir=$1
+  local bundle_path="${proof_dir}/spire-bundle.spiffe.json"
+  local output_path="${proof_dir}/tls/spire-jwt-validation-pub.pem"
+  local helper_source="${proof_dir}/spire/extract_spire_jwt_pubkey.go"
+  local server_socket="${proof_dir}/spire-server/private/api.sock"
+
+  echo "==> writing proof-scoped SPIRE bundle and JWT validation key"
+  "${proof_dir}/bin/spire-server" bundle show -format spiffe -socketPath "${server_socket}" > "${bundle_path}"
+
+  cat > "${helper_source}" <<'EOF'
+package main
+
+import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"os"
+)
+
+type bundle struct {
+	Keys []jwk `json:"keys"`
+}
+
+type bundleMap struct {
+	TrustDomains map[string]bundle `json:"trust_domains"`
+}
+
+type jwk struct {
+	Kty string `json:"kty"`
+	Use string `json:"use"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: extract_spire_jwt_pubkey <bundle.json> <output.pem>")
+		os.Exit(1)
+	}
+
+	input, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read bundle: %v\n", err)
+		os.Exit(1)
+	}
+
+	if tryDirectBundle(input, os.Args[2]) == nil {
+		return
+	}
+	if err := tryBundleMap(input, os.Args[2]); err != nil {
+		fmt.Fprintf(os.Stderr, "extract jwt validation public key: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func tryDirectBundle(input []byte, outputPath string) error {
+	var direct bundle
+	if err := json.Unmarshal(input, &direct); err != nil {
+		return err
+	}
+	return writeJWTKey(direct.Keys, outputPath)
+}
+
+func tryBundleMap(input []byte, outputPath string) error {
+	var mapped bundleMap
+	if err := json.Unmarshal(input, &mapped); err != nil {
+		return err
+	}
+	for _, item := range mapped.TrustDomains {
+		if err := writeJWTKey(item.Keys, outputPath); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("no jwt-svid rsa key found in bundle data")
+}
+
+func writeJWTKey(keys []jwk, outputPath string) error {
+	for _, key := range keys {
+		if key.Use != "jwt-svid" || key.Kty != "RSA" {
+			continue
+		}
+		modulusBytes, err := base64.RawURLEncoding.DecodeString(key.N)
+		if err != nil {
+			return fmt.Errorf("decode jwk modulus: %w", err)
+		}
+		exponentBytes, err := base64.RawURLEncoding.DecodeString(key.E)
+		if err != nil {
+			return fmt.Errorf("decode jwk exponent: %w", err)
+		}
+		exponent := 0
+		for _, b := range exponentBytes {
+			exponent = (exponent << 8) | int(b)
+		}
+		publicKey := &rsa.PublicKey{
+			N: new(big.Int).SetBytes(modulusBytes),
+			E: exponent,
+		}
+		der, err := x509.MarshalPKIXPublicKey(publicKey)
+		if err != nil {
+			return fmt.Errorf("marshal pkix public key: %w", err)
+		}
+		file, err := os.Create(outputPath)
+		if err != nil {
+			return fmt.Errorf("create output file: %w", err)
+		}
+		defer file.Close()
+		if err := pem.Encode(file, &pem.Block{Type: "PUBLIC KEY", Bytes: der}); err != nil {
+			return fmt.Errorf("encode pem: %w", err)
+		}
+		if err := file.Chmod(0o600); err != nil {
+			return fmt.Errorf("chmod output file: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("no jwt-svid rsa key found")
+}
+EOF
+
+  go run "${helper_source}" "${bundle_path}" "${output_path}"
+}
+
 write_managed_secrets_file() {
   local path=$1
   local vault_address=$2
@@ -331,7 +654,7 @@ PROOF_VAULT_AUTH_MOUNT="${VAULT_AUTH_MOUNT}"
 PROOF_VAULT_AUTH_ROLE="${VAULT_AUTH_ROLE}"
 PROOF_VAULT_BOUND_AUDIENCE="${VAULT_JWT_AUDIENCE}"
 PROOF_VAULT_BOUND_SUBJECT="${WORKLOAD_SPIFFE_ID}"
-PROOF_VAULT_BOUND_ISSUER="${WORKLOAD_JWT_ISSUER}"
+PROOF_VAULT_BOUND_ISSUER="${SPIRE_JWT_ISSUER}"
 PROOF_VAULT_SECRET_PATH="${VAULT_SECRET_PATH}"
 PROOF_VAULT_SECRET_LOGICAL_PATH="${vault_secret_logical_path}"
 PROOF_VAULT_SECRET_VALUE="${vault_secret_value}"
@@ -339,8 +662,14 @@ PROOF_VAULT_ROOT_TOKEN="${vault_root_token}"
 PROOF_VAULT_CA_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-ca.pem"
 PROOF_VAULT_SERVER_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-cert.pem"
 PROOF_VAULT_SERVER_KEY_FILE="${PROOF_DIR}/tls/vault-dev/vault-key.pem"
-PROOF_WORKLOAD_JWT_SIGNING_KEY_FILE="${PROOF_DIR}/tls/workload-jwt-signing-key.pem"
-PROOF_WORKLOAD_JWT_VALIDATION_PUB_FILE="${PROOF_DIR}/tls/workload-jwt-validation-pub.pem"
+PROOF_SPIRE_VERSION="${SPIRE_VERSION}"
+PROOF_SPIRE_TRUST_DOMAIN="${SPIRE_TRUST_DOMAIN}"
+PROOF_SPIRE_JWT_ISSUER="${SPIRE_JWT_ISSUER}"
+PROOF_SPIRE_AGENT_SPIFFE_ID="${SPIRE_AGENT_SPIFFE_ID}"
+PROOF_SPIRE_SERVER_SOCKET_PATH="${PROOF_DIR}/spire-server/private/api.sock"
+PROOF_SPIRE_AGENT_SOCKET_PATH="${PROOF_DIR}/spire-agent/public/api.sock"
+PROOF_SPIRE_BUNDLE_FILE="${PROOF_DIR}/spire-bundle.spiffe.json"
+PROOF_SPIRE_JWT_VALIDATION_PUB_FILE="${PROOF_DIR}/tls/spire-jwt-validation-pub.pem"
 EOF
   chmod 600 "${path}"
 }
@@ -402,8 +731,8 @@ EOF
   VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
   VAULT_TOKEN="${vault_root_token}" \
   vault write "auth/${VAULT_AUTH_MOUNT}/config" \
-    jwt_validation_pubkeys=@"${proof_dir}/tls/workload-jwt-validation-pub.pem" \
-    bound_issuer="${WORKLOAD_JWT_ISSUER}" >/dev/null
+    jwt_validation_pubkeys=@"${proof_dir}/tls/spire-jwt-validation-pub.pem" \
+    bound_issuer="${SPIRE_JWT_ISSUER}" >/dev/null
 
   VAULT_ADDR="${vault_local_address}" \
   VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
@@ -431,7 +760,7 @@ write_runtime_blob_and_configs() {
   local ars_storage="${proof_dir}/ars-storage"
   local index_path="${proof_dir}/artifact-index.json"
   local staging_root="${proof_dir}/es-staging"
-  local socket_path="${proof_dir}/mock-spire.sock"
+  local socket_path="${proof_dir}/spire-agent/public/api.sock"
   local digest_file="${proof_dir}/workload-zone-vault-config-digest.txt"
 
   python3 - <<'PY' \
@@ -644,6 +973,8 @@ setup() {
   require_command go
   require_command openssl
   require_command python3
+  require_command curl
+  require_command tar
   require_command vault
   require_command docker
   require_command nomad
@@ -683,14 +1014,15 @@ setup() {
   fi
   vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
 
-  stop_background_process "${PROOF_DIR}/mock-spire.pid"
+  stop_background_process "${PROOF_DIR}/spire-agent.pid"
+  stop_background_process "${PROOF_DIR}/spire-server.pid"
   stop_background_process "${PROOF_DIR}/vault-dev.pid"
   stop_vault_dev_listener "${VAULT_PORT}"
   rm -rf "${PROOF_DIR}"
-  mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/es-staging" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs"
+  mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/es-staging" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs" "${PROOF_DIR}/downloads" "${PROOF_DIR}/spire"
 
   prepare_runtime_support_binary
-  prepare_workload_api_binary "${PROOF_DIR}/bin/es-workload-api-mock"
+  prepare_spire_distribution "${PROOF_DIR}/downloads/spire.tar.gz" "${PROOF_DIR}/spire/dist"
 
   echo "==> generating guest-writable control-plane Dockerfile"
   bash "${REPO_ROOT}/scripts/generate_control_plane_dockerfile.sh" "${PROOF_DIR}/Dockerfile" >/dev/null
@@ -710,14 +1042,13 @@ setup() {
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "ags-client" "client.artifact-governance" "DNS:client.artifact-governance,URI:spiffe://execution.internal/service/artifact-governance"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "operator-client" "client.operator" "DNS:client.operator,URI:spiffe://execution.internal/operator"
   chmod 600 "${PROOF_DIR}/tls/runtime-ca-key.pem"
-  generate_workload_jwt_signing_material "${PROOF_DIR}/tls"
 
-  start_mock_workload_api \
-    "${PROOF_DIR}/bin/es-workload-api-mock" \
-    "${PROOF_DIR}/mock-spire.sock" \
-    "${PROOF_DIR}/logs/mock-spire.log" \
-    "${PROOF_DIR}/mock-spire.pid" \
-    "${PROOF_DIR}/tls/workload-jwt-signing-key.pem"
+  write_spire_configs "${PROOF_DIR}"
+  start_spire_server "${PROOF_DIR}" "${PROOF_DIR}/logs/spire-server.log" "${PROOF_DIR}/spire-server.pid"
+  start_spire_agent "${PROOF_DIR}" "$(generate_spire_join_token "${PROOF_DIR}")" "${PROOF_DIR}/logs/spire-agent.log" "${PROOF_DIR}/spire-agent.pid"
+  wait_for_attested_spire_agent "${PROOF_DIR}"
+  register_spire_workload_entry "${PROOF_DIR}"
+  write_spire_bundle_artifacts "${PROOF_DIR}"
   start_vault_dev_server "${PROOF_DIR}/logs/vault-dev.log" "${PROOF_DIR}/vault-dev.pid" "${vault_root_token}" "${vault_public_host}"
   configure_vault_dev_target "${PROOF_DIR}" "${vault_local_address}" "${vault_root_token}" "${vault_secret_value}"
   write_managed_secrets_file \

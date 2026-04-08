@@ -105,8 +105,9 @@ source /tmp/execution-substrate-supported-local-proof/managed-secrets.conf
 
 That setup script is the authoritative proof bootstrap for this runbook. It:
 
+- boots a proof-scoped real SPIRE server/agent path and real Workload API socket used by the helper-private ES runtime mount
 - starts `vault server -dev -dev-tls` as a proof-scoped process
-- configures JWT auth at `auth/<mount>/login` using the repo-owned mock SPIFFE Workload API signing public key
+- configures JWT auth at `auth/<mount>/login` using proof-only JWT validation material derived from the real SPIRE bundle
 - writes the proof secret used by the workload
 - records the generated root token, CA cert path, and JWT validation material in `managed-secrets.conf`
 

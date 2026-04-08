@@ -14,6 +14,10 @@ SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR:-${SU
 SUPPORTED_LOCAL_PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 SUPPORTED_LOCAL_INPUT_SPEC="${SUPPORTED_LOCAL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/runtime_identity_vault_success.input.json}"
 SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz}"
+SUPPORTED_LOCAL_SPIRE_VERSION="${SUPPORTED_LOCAL_SPIRE_VERSION:-1.14.4}"
+SUPPORTED_LOCAL_SPIRE_ASSET="${SUPPORTED_LOCAL_SPIRE_ASSET:-spire-${SUPPORTED_LOCAL_SPIRE_VERSION}-linux-arm64-musl.tar.gz}"
+SUPPORTED_LOCAL_SPIRE_URL="${SUPPORTED_LOCAL_SPIRE_URL:-https://github.com/spiffe/spire/releases/download/v${SUPPORTED_LOCAL_SPIRE_VERSION}/${SUPPORTED_LOCAL_SPIRE_ASSET}}"
+SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL:-}"
 
 CONTROL_PLANE_STARTED="false"
 
@@ -26,9 +30,11 @@ This is the canonical supported-local proof wrapper for the current Apple
 Silicon Mac + Lima qemu reference path. It:
   - creates the canonical proof workspace under .out/es-proof-<id>/
   - packages the bounded runtime-identity Vault-login workload
-  - cross-compiles the current Linux proof binaries from this working tree
+  - cross-compiles the current Linux runtime-support binary from this working tree
+  - stages a proof-scoped real SPIRE server/agent distribution into the guest
   - invokes scripts/72_supported_local_setup.sh inside the Linux guest
   - runs supported-host qualification without cpu_total_compute override
+  - boots the proof-scoped real SPIRE dev/test path used by the helper
   - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
   - copies resulting guest evidence back into the canonical .out workspace
@@ -40,6 +46,8 @@ Optional environment variables:
   SUPPORTED_LOCAL_HOST_PROOF_DIR=/abs/path/.out/es-proof-<id>
   SUPPORTED_LOCAL_GUEST_PROOF_DIR=/tmp/es-proof-<id>
   SUPPORTED_LOCAL_PORT_BASE=18440
+  SUPPORTED_LOCAL_SPIRE_VERSION=1.14.4
+  SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=/abs/path/to/spire-linux-arm64-musl.tar.gz
 EOF
 }
 
@@ -64,7 +72,7 @@ collect_guest_workspace() {
   mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
   if ! limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
-    bash -lc 'if [[ -d "${GUEST_PROOF_DIR}" ]]; then tar --ignore-failed-read --exclude=mock-spire.sock -C "${GUEST_PROOF_DIR}" -cf - . 2>/dev/null; fi' \
+    bash -lc 'if [[ -d "${GUEST_PROOF_DIR}" ]]; then tar --ignore-failed-read --exclude=spire-agent/public/api.sock --exclude=spire-server/private/api.sock -C "${GUEST_PROOF_DIR}" -cf - . 2>/dev/null; fi' \
     | tar -C "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" -xf - 2>/dev/null; then
     return 0
   fi
@@ -94,7 +102,8 @@ stop_pid_file() {
 }
 
 stop_pid_file "$GUEST_PROOF_DIR/vault-dev.pid"
-stop_pid_file "$GUEST_PROOF_DIR/mock-spire.pid"
+stop_pid_file "$GUEST_PROOF_DIR/spire-agent.pid"
+stop_pid_file "$GUEST_PROOF_DIR/spire-server.pid"
 rm -rf "$GUEST_BOOTSTRAP_DIR"
 EOF
   CONTROL_PLANE_STARTED="false"
@@ -163,12 +172,14 @@ prepare_host_tooling() {
       -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support" \
       ./cmd/es-runtime-support
   )
-  (
-    cd "${REPO_ROOT}"
-    env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-workload-api-mock" \
-      ./cmd/es-workload-api-mock
-  )
+
+  if [[ -n "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" ]]; then
+    cp "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}"
+  else
+    curl -L --fail --silent --show-error \
+      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}" \
+      "${SUPPORTED_LOCAL_SPIRE_URL}"
+  fi
 }
 
 copy_tooling_to_guest() {
@@ -183,12 +194,12 @@ copy_tooling_to_guest() {
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
-    bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-workload-api-mock"
+    bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/spire.tar.gz"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
-    bash -lc 'chmod 0755 "${GUEST_BOOTSTRAP_DIR}/es-runtime-support" "${GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"'
+    bash -lc 'chmod 0755 "${GUEST_BOOTSTRAP_DIR}/es-runtime-support" && chmod 0644 "${GUEST_BOOTSTRAP_DIR}/spire.tar.gz"'
 }
 
 setup_guest_environment() {
@@ -200,7 +211,8 @@ setup_guest_environment() {
     "SUPPORTED_LOCAL_PROOF_ID=${SUPPORTED_LOCAL_PROOF_ID}"
     "SUPPORTED_LOCAL_PORT_BASE=${SUPPORTED_LOCAL_PORT_BASE}"
     "SUPPORTED_LOCAL_PREBUILT_RUNTIME_SUPPORT_BINARY=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/es-runtime-support"
-    "SUPPORTED_LOCAL_PREBUILT_WORKLOAD_API_BINARY=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/es-workload-api-mock"
+    "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/spire.tar.gz"
+    "SUPPORTED_LOCAL_SPIRE_VERSION=${SUPPORTED_LOCAL_SPIRE_VERSION}"
   )
 
   if [[ -n "${SUPPORTED_LOCAL_VAULT_ADDRESS:-}" ]]; then
@@ -350,6 +362,7 @@ run() {
   require_command go
   require_command python3
   require_command tar
+  require_command curl
 
   if [[ -e "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" ]]; then
     echo "host proof dir already exists: ${SUPPORTED_LOCAL_HOST_PROOF_DIR}" >&2
