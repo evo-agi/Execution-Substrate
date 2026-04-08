@@ -21,7 +21,7 @@ This is the current bounded usefulness proof for slice `1A` and slice `1B`. It k
 ## Files
 
 - `entrypoint`: executable Python 3 workload entrypoint
-- `package.sh`: packages the workload as `dist/runtime_identity_vault_login.tar.gz`
+- `package.sh`: packages the workload as the generated local artifact `dist/runtime_identity_vault_login.tar.gz`
 - repo-owned proof bootstrap now lives in `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh`
 
 ## Packaging
@@ -33,6 +33,8 @@ This is the current bounded usefulness proof for slice `1A` and slice `1B`. It k
 This produces:
 
 - `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
+
+That `dist/` output is generated proof packaging, not tracked repo authority. Regenerate it with `package.sh` when needed.
 
 ## Runtime Requirements
 

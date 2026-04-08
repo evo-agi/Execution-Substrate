@@ -21,6 +21,8 @@ scripts/73_supported_local_proof.sh run
 
 That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
 
+The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but on this Mac the wrapper remains the canonical supported-local validation path because it stages the current host working tree into the guest and records the proof evidence under `.out/es-proof-<id>/`.
+
 ## 2. Proof Asset
 
 The workload artifact lives at:
@@ -36,6 +38,8 @@ Package it with:
 The resulting archive is:
 
 - `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
+
+That archive is a generated local proof artifact, not tracked repo authority. Rebuild it with `package.sh` when needed.
 
 The operator execute-loop input for this workload is:
 

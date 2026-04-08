@@ -30,6 +30,9 @@ go.work.sum
 # env file
 .env
 
+# Generated example proof artifacts
+/.examples/runtime_identity_vault_login/dist/
+
 # Editor/IDE
 # .idea/
 # .vscode/

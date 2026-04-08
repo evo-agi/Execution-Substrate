@@ -1,3 +1,5 @@
+//go:build linux
+
 package app_test
 
 import (
@@ -11,18 +13,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+// This is a native-Linux bootstrap validation for scripts/72_supported_local_setup.sh.
+// On the current Mac + Lima supported-local path, the canonical end-to-end validation
+// remains scripts/73_supported_local_proof.sh run because the guest consumes staged
+// host inputs and the mounted repo view is not the authoritative proof surface.
 func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("supported-local setup validation requires Linux")
-	}
-
 	for _, name := range []string{"go", "openssl", "python3", "vault", "curl", "tar"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Skipf("supported-local setup validation requires %s: %v", name, err)

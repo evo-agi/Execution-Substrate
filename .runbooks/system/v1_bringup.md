@@ -96,6 +96,8 @@ That repo-owned wrapper creates the canonical proof workspace under `.out/es-pro
 
 On this Mac, the wrapper still uses a guest `/tmp/es-proof-<id>` workspace internally because Lima mounts the repo tree read-only inside the current `qemu` guest. That guest scratch is an implementation detail; the canonical proof workspace is the host-side `.out/es-proof-<id>/`.
 
+The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but that test is not the canonical supported-local validation path on this Mac. The supported-local closure proof here is the wrapper run above because it stages the current host working tree into the guest and records the canonical evidence under `.out/es-proof-<id>/`.
+
 For the current full-profile script path, `scripts/01_bringup.sh up` still starts Nomad itself from `NOMAD_CONFIG`. Treat that path as bounded fallback/troubleshooting scaffolding, not as the clean supported-environment story for Linux.
 
 Optional bounded slice-0 override for proof hosts where Nomad CPU fingerprinting fails:
