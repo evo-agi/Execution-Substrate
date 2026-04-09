@@ -35,8 +35,11 @@ These labels are intentionally different. A contract may be live today, relied o
 - All five lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
-- The current repo-owned examples, runbooks, and proof configs keep that allowlist operator-only:
+- The current repo-owned runbooks, proofs, and generated helper configs keep that allowlist operator-only:
   - `spiffe://execution.internal/operator`
+- The first documented non-operator caller model for the next integration slice is Control Plane at:
+  - `spiffe://execution.internal/service/control-plane`
+- The current prefix-based allowlist model is sufficient for that next slice when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
 - These caller rules apply to:
   - `:prepare`
   - `:submit`

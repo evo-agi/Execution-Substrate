@@ -187,8 +187,10 @@ Current response shape:
 
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
-- The current repo-owned examples, runbooks, and proof configs keep that AGS caller allowlist operator-only:
+- The current repo-owned runbooks, proofs, and generated helper configs keep that AGS caller allowlist operator-only:
   - `spiffe://execution.internal/operator`
+- The first documented non-operator AGS caller model for the next integration slice is Control Plane at:
+  - `spiffe://execution.internal/service/control-plane`
 - AGS computes `payload_digest` from payload bytes.
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
@@ -353,9 +355,11 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 - A future infra manager may satisfy those internal attachment needs with named volumes or other managed attachment semantics without changing the current HTTPS API, `run_id` lifecycle lookup contract, or workload-visible endpoint discovery contract.
 - The current client-authorization shape is still operator-centric:
   - AGS publish and ES execution/lifecycle authorization now come from configured SPIFFE path-prefix allowlists
-  - the current repo-owned examples, runbooks, and proof configs still keep those allowlists operator-only:
+  - the current repo-owned runbooks, proofs, and generated helper configs still keep those allowlists operator-only:
     - `spiffe://execution.internal/operator`
-  - a broader Control Plane or multi-client governed-execution caller model is not yet a documented repo-owned default
+  - the first documented non-operator governed-execution caller model for the next integration slice is Control Plane at:
+    - `spiffe://execution.internal/service/control-plane`
+  - the current prefix-based allowlist model is sufficient for that next slice when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
 
 Current prepare request shape:
 
@@ -408,8 +412,10 @@ Current successful response shapes:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
-- The current repo-owned examples, runbooks, and proof configs keep that ES caller allowlist operator-only:
+- The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
   - `spiffe://execution.internal/operator`
+- The first documented non-operator ES caller model for the next integration slice is Control Plane at:
+  - `spiffe://execution.internal/service/control-plane`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:

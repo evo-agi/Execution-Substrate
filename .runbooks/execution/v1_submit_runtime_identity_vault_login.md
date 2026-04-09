@@ -19,9 +19,9 @@ On the current supported local reference host on this Mac, the canonical repo-ow
 scripts/73_supported_local_proof.sh run
 ```
 
-That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. Before bootstrap it explicitly removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, while preserving the host `.out/es-proof-<id>/` evidence record as the canonical proof output. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
+That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. Before bootstrap it explicitly removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, stages a fresh snapshot of the current host worktree into guest bootstrap scratch, and preserves the host `.out/es-proof-<id>/` evidence record as the canonical proof output. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
 
-The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but on this Mac the wrapper remains the canonical supported-local validation path because it stages the current host working tree into the guest and records the proof evidence under `.out/es-proof-<id>/`.
+The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but on this Mac the wrapper remains the canonical supported-local validation path because it stages and exercises a fresh host-worktree snapshot inside the guest and records the proof evidence under `.out/es-proof-<id>/`.
 
 ## 2. Proof Asset
 

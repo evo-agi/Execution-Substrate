@@ -122,8 +122,8 @@ func TestPublishValidOperatorCallerSucceeds(t *testing.T) {
 	}
 }
 
-func TestPublishAllowsConfiguredServiceCallerPrefix(t *testing.T) {
-	stack := startDependencyStackWithAGSAllowedCallers(t, []string{"service/"})
+func TestPublishAllowsConfiguredControlPlaneCaller(t *testing.T) {
+	stack := startDependencyStackWithAGSAllowedCallers(t, []string{"service/control-plane"})
 	defer stack.shutdownAll(t)
 
 	response := publishArtifactRequest(t, stack, "service/control-plane", false, nil)

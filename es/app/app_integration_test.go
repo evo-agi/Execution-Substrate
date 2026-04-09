@@ -207,9 +207,9 @@ func TestPrepareReturns403WhenCallerIsDisallowed(t *testing.T) {
 	}
 }
 
-func TestPrepareAllowsConfiguredServiceCallerPrefix(t *testing.T) {
+func TestPrepareAllowsConfiguredControlPlaneCaller(t *testing.T) {
 	stack := startStack(t, stackOptions{
-		AllowedExecutionCallerPrefixes: []string{"service/"},
+		AllowedExecutionCallerPrefixes: []string{"service/control-plane"},
 	})
 
 	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/control-plane", false), buildPrepareRequestBody(t, stack))

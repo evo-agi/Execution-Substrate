@@ -11,6 +11,7 @@ SUPPORTED_LOCAL_PROOF_ID="${SUPPORTED_LOCAL_PROOF_ID:-$(date -u +%Y%m%dT%H%M%SZ)
 SUPPORTED_LOCAL_HOST_PROOF_DIR="${SUPPORTED_LOCAL_HOST_PROOF_DIR:-${REPO_ROOT}/.out/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
 SUPPORTED_LOCAL_GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR:-/tmp/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
 SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR:-${SUPPORTED_LOCAL_GUEST_PROOF_DIR}.bootstrap}"
+SUPPORTED_LOCAL_GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT:-${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/repo}"
 SUPPORTED_LOCAL_PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 SUPPORTED_LOCAL_INPUT_SPEC="${SUPPORTED_LOCAL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/runtime_identity_vault_success.input.json}"
 SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz}"
@@ -30,6 +31,7 @@ This is the canonical supported-local proof wrapper for the current Apple
 Silicon Mac + Lima qemu reference path. It:
   - creates the canonical proof workspace under .out/es-proof-<id>/
   - cleans stale proof-owned guest /tmp/es-proof-* scratch before bootstrap
+  - stages a fresh snapshot of the current host worktree into guest proof scratch
   - packages the bounded runtime-identity Vault-login workload
   - cross-compiles the current Linux runtime-support binary from this working tree
   - stages a proof-scoped real SPIRE server/agent distribution into the guest
@@ -47,6 +49,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_PROOF_ID=<proof-id>
   SUPPORTED_LOCAL_HOST_PROOF_DIR=/abs/path/.out/es-proof-<id>
   SUPPORTED_LOCAL_GUEST_PROOF_DIR=/tmp/es-proof-<id>
+  SUPPORTED_LOCAL_GUEST_REPO_ROOT=/tmp/es-proof-<id>.bootstrap/repo
   SUPPORTED_LOCAL_PORT_BASE=18440
   SUPPORTED_LOCAL_SPIRE_VERSION=1.14.4
   SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=/abs/path/to/spire-linux-arm64-musl.tar.gz
@@ -64,7 +67,7 @@ require_command() {
 run_guest_stdin() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env \
-      GUEST_REPO_ROOT="${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
+      GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
       GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
       GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -seuo pipefail
@@ -83,7 +86,7 @@ collect_guest_workspace() {
 cleanup_stale_guest_proof_scratch() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env \
-      "EXECUTION_SUBSTRATE_REPO_ROOT=${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
+      "EXECUTION_SUBSTRATE_REPO_ROOT=${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
       "SUPPORTED_LOCAL_PROOF_PARENT=/tmp" \
       "SUPPORTED_LOCAL_PROOF_DIR=${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -s -- cleanup-stale < "${REPO_ROOT}/scripts/internal/supported_local_proof_cleanup.sh"
@@ -153,6 +156,7 @@ write_proof_metadata() {
     "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/proof-metadata.json" \
     "${SUPPORTED_LOCAL_INSTANCE}" \
     "${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
+    "${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_INPUT_SPEC}" \
@@ -163,14 +167,43 @@ import sys
 
 payload = {
     "instance": sys.argv[2],
-    "guest_repo_root": sys.argv[3],
-    "guest_proof_dir": sys.argv[4],
-    "host_proof_dir": sys.argv[5],
-    "input_spec": sys.argv[6],
-    "proof_id": sys.argv[7],
+    "mounted_repo_root_in_guest": sys.argv[3],
+    "guest_repo_root": sys.argv[4],
+    "guest_proof_dir": sys.argv[5],
+    "host_proof_dir": sys.argv[6],
+    "input_spec": sys.argv[7],
+    "proof_id": sys.argv[8],
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+}
+
+prepare_host_repo_snapshot() {
+  local snapshot_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.tar.gz"
+  local snapshot_sha_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.sha256"
+  local snapshot_listing_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot-files.txt"
+
+  (
+    cd "${REPO_ROOT}"
+    tar \
+      --exclude='.git' \
+      --exclude='.out' \
+      --exclude='.tmp' \
+      -czf "${snapshot_path}" \
+      .
+  )
+
+  python3 - <<'PY' "${snapshot_path}" "${snapshot_sha_path}"
+import hashlib
+import pathlib
+import sys
+
+snapshot_path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+pathlib.Path(sys.argv[2]).write_text(digest + "\n", encoding="utf-8")
+PY
+
+  tar -tzf "${snapshot_path}" | LC_ALL=C sort > "${snapshot_listing_path}"
 }
 
 prepare_host_inputs() {
@@ -214,10 +247,62 @@ prepare_host_tooling() {
   fi
 }
 
+prepare_guest_bootstrap_dir() {
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env \
+      GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+      GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+      GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
+    bash -lc 'rm -rf "${GUEST_BOOTSTRAP_DIR}" && mkdir -p "${GUEST_BOOTSTRAP_DIR}" "${GUEST_PROOF_DIR}" "$(dirname "${GUEST_REPO_ROOT}")"'
+}
+
+copy_repo_snapshot_to_guest() {
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.tar.gz"
+}
+
+extract_guest_repo_snapshot() {
+  local host_snapshot_sha
+  host_snapshot_sha="$(tr -d '[:space:]' < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.sha256")"
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env \
+      GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+      GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+      GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
+      HOST_REPO_SNAPSHOT_SHA256="${host_snapshot_sha}" \
+    bash -seuo pipefail <<'EOF'
+python3 - <<'PY' "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" "${GUEST_PROOF_DIR}/guest-repo-snapshot.sha256"
+import hashlib
+import pathlib
+import sys
+
+snapshot_path = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+pathlib.Path(sys.argv[2]).write_text(digest + "\n", encoding="utf-8")
+print(digest)
+PY
+
+guest_sha="$(tr -d '[:space:]' < "${GUEST_PROOF_DIR}/guest-repo-snapshot.sha256")"
+if [[ "${guest_sha}" != "${HOST_REPO_SNAPSHOT_SHA256}" ]]; then
+  echo "guest repo snapshot digest mismatch: host=${HOST_REPO_SNAPSHOT_SHA256} guest=${guest_sha}" >&2
+  exit 1
+fi
+
+rm -rf "${GUEST_REPO_ROOT}"
+mkdir -p "${GUEST_REPO_ROOT}"
+tar -xzf "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" -C "${GUEST_REPO_ROOT}"
+printf '%s\n' "${GUEST_REPO_ROOT}" > "${GUEST_PROOF_DIR}/guest-repo-root.txt"
+printf '%s\n' "${HOST_REPO_SNAPSHOT_SHA256}" > "${GUEST_PROOF_DIR}/repo-snapshot-match.txt"
+EOF
+}
+
 copy_tooling_to_guest() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
-    bash -lc 'rm -rf "${GUEST_BOOTSTRAP_DIR}" && mkdir -p "${GUEST_BOOTSTRAP_DIR}"'
+    bash -lc 'mkdir -p "${GUEST_BOOTSTRAP_DIR}"'
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
@@ -238,7 +323,7 @@ setup_guest_environment() {
   local -a cmd=(
     limactl shell "${SUPPORTED_LOCAL_INSTANCE}" --
     env
-    "EXECUTION_SUBSTRATE_REPO_ROOT=${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}"
+    "EXECUTION_SUBSTRATE_REPO_ROOT=${SUPPORTED_LOCAL_GUEST_REPO_ROOT}"
     "SUPPORTED_LOCAL_PROOF_DIR=${SUPPORTED_LOCAL_GUEST_PROOF_DIR}"
     "SUPPORTED_LOCAL_PROOF_ID=${SUPPORTED_LOCAL_PROOF_ID}"
     "SUPPORTED_LOCAL_PORT_BASE=${SUPPORTED_LOCAL_PORT_BASE}"
@@ -405,10 +490,13 @@ run() {
   write_proof_metadata
   trap finalize EXIT
 
-  cleanup_stale_guest_proof_scratch | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/cleanup-guest-scratch.txt"
-
+  prepare_host_repo_snapshot
   prepare_host_inputs
   prepare_host_tooling
+  prepare_guest_bootstrap_dir
+  copy_repo_snapshot_to_guest
+  extract_guest_repo_snapshot
+  cleanup_stale_guest_proof_scratch | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/cleanup-guest-scratch.txt"
   copy_tooling_to_guest
   setup_guest_environment
   copy_inputs_to_guest

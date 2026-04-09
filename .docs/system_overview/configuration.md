@@ -128,7 +128,8 @@ Minimal reference example:
 - `dependencies.artifact_registry.base_url` must be an absolute `https://` URL
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call `POST /v1/artifacts:publish`
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
-- the current repo-owned examples and proofs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
+- the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
+- the first non-operator caller to add for the next integration slice is `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
 
 AGS no longer exposes a legacy-signing compatibility control. The current publish path is evidence-native only.
 
@@ -215,7 +216,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
-- the current repo-owned examples and proofs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES
+- the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES
+- the first non-operator caller to add for the next integration slice is `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`
@@ -348,8 +350,8 @@ CGS remains implemented but is not required for the current ES admission or exec
 For local operator bring-up against this practical minimum:
 
 - on the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned proof-environment helper; it writes the current Dockerfile/TLS/config/blob assets, installs the `es-runtime-support` binary path used by ES submit config, boots a proof-scoped real SPIRE server/agent path and real Workload API socket, derives proof-only Vault JWT validation material from the SPIRE bundle, starts and configures the proof-scoped real Vault dev/test target, explicitly ensures the proof JWT auth mount plus the proof-owned KV v2 secret mount needed by the bounded credential-flow proof, writes `managed-secrets.conf`, writes `env.sh`, and replaces the earlier out-of-repo `/tmp` harnesses
-- `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac; it records proof workspaces under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, cleans stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, runs the supported-host qualification path, runs the higher-value useful credential-flow proof, and copies the resulting guest evidence back into that canonical workspace
-- on this Mac, the wrapper may still use guest `/tmp/es-proof-<id>` internally because the Lima-mounted repo tree is read-only inside the `qemu` guest; that guest scratch is proof-owned transient implementation detail, not the canonical proof workspace, and successful current-run guest scratch is removed after host evidence has been preserved
+- `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac; it records proof workspaces under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, stages a fresh snapshot of the current host worktree into guest bootstrap scratch, cleans stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, runs the supported-host qualification path, runs the higher-value useful credential-flow proof, and copies the resulting guest evidence back into that canonical workspace
+- on this Mac, the wrapper may still use guest `/tmp/es-proof-<id>` plus `/tmp/es-proof-<id>.bootstrap` internally because the Lima-mounted repo tree is read-only inside the `qemu` guest; those guest paths are proof-owned transient implementation detail, not the canonical proof workspace, and successful current-run guest scratch is removed after host evidence has been preserved
 - use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`, as the clean supported-host proof path when Nomad is already running as a pre-managed non-dev service at `NOMAD_ADDR`
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` when you intentionally want the repo to manage a local Nomad process as bounded bootstrap/troubleshooting scaffolding
 - for `BRINGUP_PROFILE=full`, the current script-managed Nomad startup path remains bounded fallback/troubleshooting even when submit-ready passes; the supported-environment path for this slice is a pre-managed non-dev Nomad client/server already running at `NOMAD_ADDR`
