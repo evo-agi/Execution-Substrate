@@ -218,12 +218,14 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - optionally `execution.runtime_identity_tmpfs_size`
 - `execution.staging_root_dir` is a writable host-local staging root
   - the current slice-0 operator path requires that host path to be mounted into the ES container at the exact same absolute path with no translation
+  - that same-path requirement is a current deployment constraint of the bounded Nomad/Docker slice, not a client-facing governed-execution contract
   - it backs run-scoped payload, run, and mount staging while the workload may still depend on those bind mounts
   - ES best-effort removes `<staging_root>/<run_id>` after it observes terminal success for that run through the current lifecycle path
   - failed, canceled, lost, or otherwise ambiguous outcomes retain `<staging_root>/<run_id>` for debugging in the current slice
   - `/execution/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
   - `/execution/staged` and caller-visible `/execution/mounts/...` remain host-backed copies of governed artifact content
   - ES does not semantically inspect payloads or mount contents for secrecy
+  - a future infra manager may replace the current host-path backing with named volumes or other managed attachment semantics if it preserves the ES-local runtime contract inside the task
 - the runtime identity contract no longer requires ES-local identity plumbing configuration
 - ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
   - this backing workspace is not persisted to host staging
@@ -234,6 +236,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - for the containerized operator bring-up path:
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
   - the bring-up path must mount `execution.spire_workload_api_socket_path` into the ES container at that same absolute path so ES can validate the socket before serving and later hand the same host path to Nomad
+  - that host socket path is current ES deployment input, not workload-visible contract; future infra-managed attachment can replace the bind form if it preserves the helper-private raw SPIRE boundary
 - for fresh Linux workload-zone VMs, `scripts/70_linux_setup.sh` now installs Docker, Nomad, Vault, and Go, writes the current single-node `/etc/nomad.d/nomad.hcl`, and then tries to qualify the root-managed `nomad.service` baseline
   - that helper does not silently claim success if the host still needs manual root investigation, cannot start `nomad.service`, reports `DevMode=true`, or still leaves `cpu.totalcompute=0`
   - if the helper had to add the current operator user to the `docker` group, the user must log out and back in before treating the VM as qualified for repo scripts

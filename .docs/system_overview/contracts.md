@@ -351,6 +351,8 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
   - `POST /v1/artifacts:publish` through AGS
   - the ES execution and lifecycle endpoints above
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator/proof helpers over those APIs; they are not a separate client contract.
+- Host staging paths, current bind-mount sources, and the helper-private SPIRE source attachment are ES/operator deployment implementation details, not part of the client-facing execution contract.
+- A future infra manager may satisfy those internal attachment needs with named volumes or other managed attachment semantics without changing the current HTTPS API, `run_id` lifecycle lookup contract, or workload-visible endpoint discovery contract.
 - The current client-authorization shape is still operator-centric:
   - AGS publish and ES execution/lifecycle calls accept `spiffe://execution.internal/operator`
   - a broader Control Plane or multi-client governed-execution caller model is not yet an implemented public contract
