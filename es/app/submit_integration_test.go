@@ -126,6 +126,98 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 	}
 }
 
+func TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	if !payload.Success || !payload.Submitted || strings.TrimSpace(payload.RunID) == "" {
+		t.Fatalf("expected accepted operator submission receipt, got %+v", payload)
+	}
+
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
+	if jobID != "exec-"+payload.RunID {
+		t.Fatalf("expected job id %q, got %q", "exec-"+payload.RunID, jobID)
+	}
+
+	statusResponse := executionStatusRequestWithCaller(t, stack, payload.RunID, "operator")
+	defer statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from operator status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+	}
+
+	var statusPayload admission.ExecutionStatusResult
+	if err := json.NewDecoder(statusResponse.Body).Decode(&statusPayload); err != nil {
+		t.Fatalf("decode operator status response: %v", err)
+	}
+	if !statusPayload.Success || statusPayload.RunID != payload.RunID {
+		t.Fatalf("expected operator status for run %q, got %+v", payload.RunID, statusPayload)
+	}
+}
+
+func TestSubmitFlowAllowsConfiguredControlPlaneCallerHandoff(t *testing.T) {
+	stack := startSubmitStackWithOptions(t, submitStackOptions{
+		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
+		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
+		publishCallerPath:              "service/control-plane",
+		executionCallerPath:            "service/control-plane",
+	})
+
+	discovery := stack.loadDiscovery(t, stack.publishResponse.ArtifactDigest)
+	var evidence map[string]any
+	readJSONBlob(t, stack.arsRootDir, discovery.Evidence.Digest, &evidence)
+	publication := evidence["claims"].(map[string]any)["package"].(map[string]any)["publication"].(map[string]any)
+	invoker := publication["invoker"].(map[string]any)
+	if got := invoker["service"]; got != "service/control-plane" {
+		t.Fatalf("expected control-plane invoker service, got %v", got)
+	}
+	if got := invoker["principal"]; got != "spiffe://execution.internal/service/control-plane" {
+		t.Fatalf("expected control-plane invoker principal, got %v", got)
+	}
+
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	if !payload.Success || !payload.Submitted {
+		t.Fatalf("expected successful control-plane submission, got %+v", payload)
+	}
+
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
+	if jobID != "exec-"+payload.RunID {
+		t.Fatalf("expected job id %q, got %q", "exec-"+payload.RunID, jobID)
+	}
+
+	statusResponse := executionStatusRequestWithCaller(t, stack, payload.RunID, "service/control-plane")
+	defer statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from control-plane status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+	}
+	var statusPayload admission.ExecutionStatusResult
+	if err := json.NewDecoder(statusResponse.Body).Decode(&statusPayload); err != nil {
+		t.Fatalf("decode control-plane status response: %v", err)
+	}
+	if !statusPayload.Success || statusPayload.RunID != payload.RunID {
+		t.Fatalf("expected control-plane status for run %q, got %+v", payload.RunID, statusPayload)
+	}
+}
+
 func TestExecutionWorkspaceTempDirUsesDotOut(t *testing.T) {
 	dir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	outputRoot := filepath.Join(repoRootFromTestFile(t), ".out")
@@ -182,6 +274,34 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 	}
 	if exitCode := task.exitCode(); exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+}
+
+func TestSubmitReturns403WhenCallerIsDisallowed(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	response := submitExecutionRequestWithCaller(t, stack, "service/execution", buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	if got := strings.TrimSpace(string(mustReadBody(t, response.Body))); got != "Caller not authorized for this operation" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
+
+func TestSubmitReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	response := submitExecutionRequestWithCaller(t, stack, "service/deployment", buildSubmitRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	if got := strings.TrimSpace(string(mustReadBody(t, response.Body))); got != "Caller not authorized for this operation" {
+		t.Fatalf("unexpected body: %q", got)
 	}
 }
 
@@ -1008,6 +1128,9 @@ type submitStack struct {
 	arsRootDir string
 	indexPath  string
 
+	publishCallerPath   string
+	executionCallerPath string
+
 	nomad     *nomadHarness
 	mockSPIRE *mockWorkloadAPIServer
 
@@ -1034,12 +1157,16 @@ type submitPublishResponse struct {
 }
 
 type submitStackOptions struct {
-	networkAccess            bool
-	baseImage                string
-	runtimeIdentityTmpfsSize int64
-	mockSPIREJWTTTL          time.Duration
-	mockSPIREFetchError      bool
-	workloadVaultAddress     string
+	networkAccess                  bool
+	baseImage                      string
+	runtimeIdentityTmpfsSize       int64
+	mockSPIREJWTTTL                time.Duration
+	mockSPIREFetchError            bool
+	workloadVaultAddress           string
+	allowedAGSCallerPrefixes       []string
+	allowedExecutionCallerPrefixes []string
+	publishCallerPath              string
+	executionCallerPath            string
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -1080,11 +1207,24 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	})
 	workloadZoneVaultDigest := writeBlobBytes(t, arsRootDir, workloadZoneVaultBytes)
 
+	allowedAGSCallerPrefixes := []string{"operator"}
+	if len(opts.allowedAGSCallerPrefixes) > 0 {
+		allowedAGSCallerPrefixes = append([]string(nil), opts.allowedAGSCallerPrefixes...)
+	}
+	allowedExecutionCallerPrefixes := []string{"operator"}
+	if len(opts.allowedExecutionCallerPrefixes) > 0 {
+		allowedExecutionCallerPrefixes = append([]string(nil), opts.allowedExecutionCallerPrefixes...)
+	}
+	publishCallerPath := firstNonEmpty(opts.publishCallerPath, "operator")
+	executionCallerPath := firstNonEmpty(opts.executionCallerPath, "operator")
+
 	stack := &submitStack{
 		fixture:                 fixture,
 		rootDir:                 rootDir,
 		arsRootDir:              arsRootDir,
 		indexPath:               indexPath,
+		publishCallerPath:       publishCallerPath,
+		executionCallerPath:     executionCallerPath,
 		nomad:                   nomad,
 		mockSPIRE:               mockSPIRE,
 		intentDigest:            labeledDigest("aa"),
@@ -1186,7 +1326,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: agsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: allowedAGSCallerPrefixes,
 		},
 		Dependencies: agsconfig.DependenciesConfig{
 			ArtifactRegistry: agsconfig.DependencyConfig{
@@ -1230,7 +1370,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: esconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: allowedExecutionCallerPrefixes,
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
@@ -1469,7 +1609,7 @@ func publishSubmitArtifact(t *testing.T, stack *submitStack, networkAccess bool)
 		stack.ags.Addr(),
 		http.MethodPost,
 		"/v1/artifacts:publish",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, stack.publishCallerPath, false),
 		requestBody,
 	)
 	defer response.Body.Close()
@@ -1604,7 +1744,7 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 		stack.ags.Addr(),
 		http.MethodPost,
 		"/v1/artifacts:publish",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, stack.publishCallerPath, false),
 		requestBody,
 	)
 	defer response.Body.Close()
@@ -1626,13 +1766,32 @@ func publishAuxiliaryArtifactArchive(t *testing.T, stack *submitStack, archive [
 func submitExecutionRequest(t *testing.T, stack *submitStack, requestBody []byte) *http.Response {
 	t.Helper()
 
+	return submitExecutionRequestWithCaller(t, stack, stack.executionCallerPath, requestBody)
+}
+
+func submitExecutionRequestWithCaller(t *testing.T, stack *submitStack, callerPath string, requestBody []byte) *http.Response {
+	t.Helper()
+
 	return doJSONRequest(
 		t,
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
 		requestBody,
+	)
+}
+
+func executionStatusRequestWithCaller(t *testing.T, stack *submitStack, runID string, callerPath string) *http.Response {
+	t.Helper()
+
+	return doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+runID+"/status",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
+		nil,
 	)
 }
 

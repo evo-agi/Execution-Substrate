@@ -37,9 +37,10 @@ These labels are intentionally different. A contract may be live today, relied o
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that allowlist operator-only:
   - `spiffe://execution.internal/operator`
-- The first documented non-operator caller model for the next integration slice is Control Plane at:
+- The first repo-owned non-operator caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
-- The current prefix-based allowlist model is sufficient for that next slice when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
+- The current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
+- The repo-owned activation path for that caller is the focused AGS/ES app integration harness; the runbooks, proofs, and helper scripts remain operator-only by default
 - These caller rules apply to:
   - `:prepare`
   - `:submit`
