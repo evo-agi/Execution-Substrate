@@ -20,16 +20,18 @@ type publishingService interface {
 }
 
 type Server struct {
-	service           publishingService
-	bootstrapIssuerCN string
-	isStarted         func() bool
+	service             publishingService
+	bootstrapIssuerCN   string
+	allowedPathPrefixes []string
+	isStarted           func() bool
 }
 
-func NewServer(service publishingService, bootstrapIssuerCN string, isStarted func() bool) *Server {
+func NewServer(service publishingService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool) *Server {
 	return &Server{
-		service:           service,
-		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
-		isStarted:         isStarted,
+		service:             service,
+		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
+		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
+		isStarted:           isStarted,
 	}
 }
 
@@ -81,7 +83,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
-	if caller.Path != "operator" {
+	authorized := false
+	for _, prefix := range s.allowedPathPrefixes {
+		if matchesAuthorizedPathPrefix(caller.Path, prefix) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
 		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
@@ -140,6 +149,17 @@ func callerIdentityFromCertificate(cert *x509.Certificate) (publish.CallerIdenti
 	}
 
 	return publish.CallerIdentity{}, false
+}
+
+func matchesAuthorizedPathPrefix(path string, prefix string) bool {
+	normalizedPath := strings.Trim(path, "/")
+	normalizedPrefix := strings.Trim(prefix, "/")
+
+	if normalizedPath == "" || normalizedPrefix == "" {
+		return false
+	}
+
+	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
 func decodeJSON(body io.ReadCloser, target any) error {

@@ -24,16 +24,18 @@ type preparationService interface {
 }
 
 type Server struct {
-	service           preparationService
-	bootstrapIssuerCN string
-	isStarted         func() bool
+	service             preparationService
+	bootstrapIssuerCN   string
+	allowedPathPrefixes []string
+	isStarted           func() bool
 }
 
-func NewServer(service preparationService, bootstrapIssuerCN string, isStarted func() bool) *Server {
+func NewServer(service preparationService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool) *Server {
 	return &Server{
-		service:           service,
-		bootstrapIssuerCN: strings.TrimSpace(bootstrapIssuerCN),
-		isStarted:         isStarted,
+		service:             service,
+		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
+		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
+		isStarted:           isStarted,
 	}
 }
 
@@ -135,30 +137,30 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-		case "status":
-			result, err := s.service.Status(r.Context(), runID)
-			if err != nil {
-				writeJSON(w, err.Status, admission.ErrorResponse{
-					Success: false,
-					Error:   err.Message,
-					Code:    err.Code,
-				})
-				return
-			}
-			writeJSON(w, http.StatusOK, result)
-		case "logs":
-			payload, err := s.service.Logs(r.Context(), runID)
-			if err != nil {
-				writeJSON(w, err.Status, admission.ErrorResponse{
-					Success: false,
-					Error:   err.Message,
-					Code:    err.Code,
-				})
-				return
-			}
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(payload)
+	case "status":
+		result, err := s.service.Status(r.Context(), runID)
+		if err != nil {
+			writeJSON(w, err.Status, admission.ErrorResponse{
+				Success: false,
+				Error:   err.Message,
+				Code:    err.Code,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case "logs":
+		payload, err := s.service.Logs(r.Context(), runID)
+		if err != nil {
+			writeJSON(w, err.Status, admission.ErrorResponse{
+				Success: false,
+				Error:   err.Message,
+				Code:    err.Code,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
 	}
 }
 
@@ -213,7 +215,14 @@ func (s *Server) authorizeExecutionCaller(w http.ResponseWriter, r *http.Request
 		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return false
 	}
-	if callerPath != "operator" {
+	authorized := false
+	for _, prefix := range s.allowedPathPrefixes {
+		if matchesAuthorizedPathPrefix(callerPath, prefix) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
 		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return false
 	}
@@ -228,17 +237,17 @@ func parseLifecycleRequest(requestPath string) (runID string, action string, ok 
 
 	trimmed := strings.TrimPrefix(requestPath, prefix)
 	switch {
-		case strings.HasSuffix(trimmed, "/status"):
-			runID = strings.TrimSuffix(trimmed, "/status")
-			action = "status"
-		case strings.HasSuffix(trimmed, "/logs"):
-			runID = strings.TrimSuffix(trimmed, "/logs")
-			action = "logs"
-		case strings.HasSuffix(trimmed, ":cancel"):
-			runID = strings.TrimSuffix(trimmed, ":cancel")
-			action = "cancel"
-		default:
-			return "", "", false
+	case strings.HasSuffix(trimmed, "/status"):
+		runID = strings.TrimSuffix(trimmed, "/status")
+		action = "status"
+	case strings.HasSuffix(trimmed, "/logs"):
+		runID = strings.TrimSuffix(trimmed, "/logs")
+		action = "logs"
+	case strings.HasSuffix(trimmed, ":cancel"):
+		runID = strings.TrimSuffix(trimmed, ":cancel")
+		action = "cancel"
+	default:
+		return "", "", false
 	}
 
 	if runID == "" || strings.Contains(runID, "/") {
@@ -275,6 +284,17 @@ func spiffePathFromCertificate(cert *x509.Certificate) (string, bool) {
 	}
 
 	return "", false
+}
+
+func matchesAuthorizedPathPrefix(path string, prefix string) bool {
+	normalizedPath := strings.Trim(path, "/")
+	normalizedPrefix := strings.Trim(prefix, "/")
+
+	if normalizedPath == "" || normalizedPrefix == "" {
+		return false
+	}
+
+	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
 func decodeJSON(body io.ReadCloser, target any) error {

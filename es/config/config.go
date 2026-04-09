@@ -19,6 +19,7 @@ type Config struct {
 	HTTP              HTTPConfig              `json:"http"`
 	TLS               TLSConfig               `json:"tls"`
 	Security          SecurityConfig          `json:"security"`
+	Authorization     AuthorizationConfig     `json:"authorization"`
 	Dependencies      DependenciesConfig      `json:"dependencies"`
 	RuntimeConfig     RuntimeConfigConfig     `json:"runtime_config"`
 	Verification      VerificationConfig      `json:"verification"`
@@ -43,6 +44,10 @@ type TLSConfig struct {
 
 type SecurityConfig struct {
 	BootstrapIssuerCommonName string `json:"bootstrap_issuer_common_name"`
+}
+
+type AuthorizationConfig struct {
+	AllowedSPIFFEPathPrefixes []string `json:"allowed_spiffe_path_prefixes"`
 }
 
 type DependenciesConfig struct {
@@ -171,6 +176,14 @@ func (c Config) Validate() error {
 
 	if strings.TrimSpace(c.Security.BootstrapIssuerCommonName) == "" {
 		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
+	}
+	if len(c.Authorization.AllowedSPIFFEPathPrefixes) == 0 {
+		return fmt.Errorf("authorization.allowed_spiffe_path_prefixes is required")
+	}
+	for _, prefix := range c.Authorization.AllowedSPIFFEPathPrefixes {
+		if strings.TrimSpace(prefix) == "" {
+			return fmt.Errorf("authorization.allowed_spiffe_path_prefixes cannot contain empty values")
+		}
 	}
 
 	if err := c.Dependencies.ArtifactRegistry.Validate("dependencies.artifact_registry"); err != nil {

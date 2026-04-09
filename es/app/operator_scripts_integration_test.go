@@ -160,6 +160,9 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		Security: agsconfig.SecurityConfig{
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
+		Authorization: agsconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
+		},
 		Dependencies: agsconfig.DependenciesConfig{
 			ArtifactRegistry: agsconfig.DependencyConfig{
 				BaseURL:        "https://127.0.0.1:" + itoa(t, arsPort),
@@ -193,6 +196,9 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		},
 		Security: esconfig.SecurityConfig{
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
+		},
+		Authorization: esconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{

@@ -34,7 +34,8 @@ These labels are intentionally different. A contract may be live today, relied o
 
 - All five lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
-- Current accepted caller identities are:
+- Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
+- The current repo-owned examples, runbooks, and proof configs keep that allowlist operator-only:
   - `spiffe://execution.internal/operator`
 - These caller rules apply to:
   - `:prepare`
@@ -47,7 +48,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 - Missing authenticated caller identity returns `401`.
 - Bootstrap PKI callers return `403`.
-- Authenticated callers outside the accepted identities return `403`.
+- Authenticated callers outside the configured allowlist return `403`.
 
 **Response semantics**
 

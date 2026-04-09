@@ -207,6 +207,19 @@ func TestPrepareReturns403WhenCallerIsDisallowed(t *testing.T) {
 	}
 }
 
+func TestPrepareAllowsConfiguredServiceCallerPrefix(t *testing.T) {
+	stack := startStack(t, stackOptions{
+		AllowedExecutionCallerPrefixes: []string{"service/"},
+	})
+
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "service/control-plane", false), buildPrepareRequestBody(t, stack))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
 func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
@@ -287,17 +300,18 @@ const (
 )
 
 type stackOptions struct {
-	MissingManifest       bool
-	MissingEvidence       bool
-	MissingVaultBlob      bool
-	CorruptVaultBlob      bool
-	InvalidVaultBlobShape bool
-	CorruptManifest       bool
-	CorruptEvidence       bool
-	DisallowedSigner      bool
-	RevokedSigner         bool
-	RevokedArtifact       bool
-	DefaultAuthMode       esconfig.WorkloadVaultAuthMode
+	MissingManifest                bool
+	MissingEvidence                bool
+	MissingVaultBlob               bool
+	CorruptVaultBlob               bool
+	InvalidVaultBlobShape          bool
+	CorruptManifest                bool
+	CorruptEvidence                bool
+	DisallowedSigner               bool
+	RevokedSigner                  bool
+	RevokedArtifact                bool
+	DefaultAuthMode                esconfig.WorkloadVaultAuthMode
+	AllowedExecutionCallerPrefixes []string
 }
 
 type testStack struct {
@@ -323,6 +337,9 @@ func startStack(t *testing.T, opts stackOptions) *testStack {
 	cfg := buildESConfig(stack, func(cfg *esconfig.Config) {
 		if opts.DefaultAuthMode != "" {
 			cfg.WorkloadVaultAuth.DefaultMode = opts.DefaultAuthMode
+		}
+		if len(opts.AllowedExecutionCallerPrefixes) > 0 {
+			cfg.Authorization.AllowedSPIFFEPathPrefixes = append([]string(nil), opts.AllowedExecutionCallerPrefixes...)
 		}
 	})
 
@@ -557,6 +574,9 @@ func buildESConfig(stack *testStack, mutate func(*esconfig.Config)) esconfig.Con
 		},
 		Security: esconfig.SecurityConfig{
 			BootstrapIssuerCommonName: stack.fixture.bootstrapCACN,
+		},
+		Authorization: esconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{

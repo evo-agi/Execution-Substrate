@@ -990,6 +990,7 @@ ags_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
+    "authorization": {"allowed_spiffe_path_prefixes": ["operator"]},
     "dependencies": {
         "artifact_registry": {
             "base_url": f"https://127.0.0.1:{ars_port}",
@@ -1015,6 +1016,7 @@ es_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
+    "authorization": {"allowed_spiffe_path_prefixes": ["operator"]},
     "dependencies": {
         "artifact_registry": {
             "base_url": f"https://127.0.0.1:{ars_port}",

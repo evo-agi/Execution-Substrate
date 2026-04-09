@@ -309,15 +309,15 @@ func validatePublishRequest(caller CallerIdentity, req *PublishRequest) (publish
 }
 
 func expectedInvokerForCaller(caller CallerIdentity) (InvokerInfo, *Error) {
-	switch caller.Path {
-		case "operator":
-			return InvokerInfo{
-				Service:   "operator",
-				Principal: "spiffe://execution.internal/operator",
-			}, nil
-		default:
-			return InvokerInfo{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "caller not authorized for artifact publication"}
+	service := strings.TrimSpace(caller.Path)
+	principal := strings.TrimSpace(caller.SPIFFEID)
+	if service == "" || principal == "" {
+		return InvokerInfo{}, &Error{Status: http.StatusForbidden, Code: codePublishForbidden, Message: "caller not authorized for artifact publication"}
 	}
+	return InvokerInfo{
+		Service:   service,
+		Principal: principal,
+	}, nil
 }
 
 func newDependencyClient(cfg config.DependencyConfig) (*dependencyClient, error) {

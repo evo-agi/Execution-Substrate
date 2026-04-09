@@ -174,7 +174,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - Construction of the aggregate `contracts/evidence/v1` publication record, with package identity/publication claims kept separate from narrow shared derivation request-binding authorization claims and execution/runtime claims
 - Construction of manifest as supporting publication data
 - Signing of the aggregate artifact-evidence record using `contracts/evidence/v1`
-- Bounded publish caller authorization for the trusted operator identity in the current slice
+- Bounded publish caller authorization through configured SPIFFE path-prefix allowlists, with the current repo-owned configs remaining operator-only
 - Uploading blobs to ARS and registering the evidence-centered artifact record with ARS
 
 **Explicit non-ownership**
@@ -187,7 +187,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 
 **Current consumers / collaborators**
 
-- Operator callers invoke AGS directly
+- The current repo-owned operator path invokes AGS directly, and additional callers may do so if their SPIFFE paths are allowed by AGS config
 - ARS is AGS's publication sink
 - ES later consumes the aggregate evidence and payloads AGS published through ARS, but ES does not call AGS on the runtime path
 
@@ -243,7 +243,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 
 **Current consumers / collaborators**
 
-- Operator callers invoke ES directly
+- The current repo-owned operator path invokes ES directly, and additional callers may do so if their SPIFFE paths are allowed by ES config
 - ES consumes ARS evidence and payloads, EGS trust policy, and the configured workload-zone Vault config reference
 - Nomad is the execution backend ES submits to and reads from
 

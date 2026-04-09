@@ -122,6 +122,34 @@ func TestPublishValidOperatorCallerSucceeds(t *testing.T) {
 	}
 }
 
+func TestPublishAllowsConfiguredServiceCallerPrefix(t *testing.T) {
+	stack := startDependencyStackWithAGSAllowedCallers(t, []string{"service/"})
+	defer stack.shutdownAll(t)
+
+	response := publishArtifactRequest(t, stack, "service/control-plane", false, nil)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(&stack.publishResponse); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+
+	_, discovery := stack.loadDiscovery(t)
+	var evidence map[string]any
+	readJSONBlob(t, stack.rootDir, discovery.Evidence.Digest, &evidence)
+	publication := evidence["claims"].(map[string]any)["package"].(map[string]any)["publication"].(map[string]any)
+	invoker := publication["invoker"].(map[string]any)
+	if got := invoker["service"]; got != "service/control-plane" {
+		t.Fatalf("expected invoker service derived from configured caller path, got %v", got)
+	}
+	if got := invoker["principal"]; got != "spiffe://execution.internal/service/control-plane" {
+		t.Fatalf("expected invoker principal derived from configured caller identity, got %v", got)
+	}
+}
+
 func TestPublishRejectsUnauthorizedCaller(t *testing.T) {
 	stack := startDependencyStack(t)
 	defer stack.shutdownAll(t)
@@ -457,6 +485,10 @@ func startPublishOnlyStack(t *testing.T) *publishedStack {
 }
 
 func startDependencyStack(t *testing.T) *publishedStack {
+	return startDependencyStackWithAGSAllowedCallers(t, []string{"operator"})
+}
+
+func startDependencyStackWithAGSAllowedCallers(t *testing.T, allowedPrefixes []string) *publishedStack {
 	t.Helper()
 
 	fixture := newTLSFixture(t)
@@ -557,6 +589,9 @@ func startDependencyStack(t *testing.T) *publishedStack {
 		Security: agsconfig.SecurityConfig{
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
+		Authorization: agsconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: append([]string(nil), allowedPrefixes...),
+		},
 		Dependencies: agsconfig.DependenciesConfig{
 			ArtifactRegistry: agsconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),
@@ -603,6 +638,9 @@ func startES(t *testing.T, stack *publishedStack) {
 		},
 		Security: esconfig.SecurityConfig{
 			BootstrapIssuerCommonName: stack.fixture.bootstrapCACN,
+		},
+		Authorization: esconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{

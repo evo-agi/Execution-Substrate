@@ -14,6 +14,11 @@
   "security": {
     "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
   },
+  "authorization": {
+    "allowed_spiffe_path_prefixes": [
+      "operator"
+    ]
+  },
   "dependencies": {
     "artifact_registry": {
       "base_url": "https://127.0.0.1:8442",

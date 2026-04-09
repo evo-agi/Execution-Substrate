@@ -155,8 +155,6 @@ Accept bounded publication input, assemble the canonical aggregate evidence reco
 
 ### Current producers / consumers
 
-- Current allowed callers are:
-  - `spiffe://execution.internal/operator`
 - `AGS` consumes the ARS write boundary.
 - `ES` later consumes AGS output indirectly through ARS reads.
 
@@ -188,7 +186,9 @@ Current response shape:
 `Current invariant`
 
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
-- AGS only allows publish callers from the operator identity above in the current bounded slice.
+- AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
+- The current repo-owned examples, runbooks, and proof configs keep that AGS caller allowlist operator-only:
+  - `spiffe://execution.internal/operator`
 - AGS computes `payload_digest` from payload bytes.
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
 - AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
@@ -206,7 +206,7 @@ Current response shape:
   - runtime-facing artifact discovery record
   - artifact descriptor as secondary publication/support data
 - AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
-- AGS derives publication caller binding from the authenticated caller and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
+- AGS derives publication caller binding directly from the authenticated caller SPIFFE identity, records the caller path as `claims.package.publication.invoker.service`, and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS now rejects non-docker `admission.workload.target_platform` values at publish time because the active shared runtime contract only admits empty or `docker` target platforms.
 - AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
 - Non-runtime workload metadata such as `artifact_class`, `workload_type`, `service_name`, `workload_identity_id`, and `description` no longer live inside the shared execution/runtime evidence claims.
@@ -325,8 +325,6 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 
 ### Current producers / consumers
 
-- Current allowed callers are:
-  - `spiffe://execution.internal/operator`
 - ES consumes:
   - the configured workload-zone Vault config reference
   - ARS artifact evidence, manifest support data when needed, and payload/blob reads
@@ -354,8 +352,10 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 - Host staging paths, current bind-mount sources, and the helper-private SPIRE source attachment are ES/operator deployment implementation details, not part of the client-facing execution contract.
 - A future infra manager may satisfy those internal attachment needs with named volumes or other managed attachment semantics without changing the current HTTPS API, `run_id` lifecycle lookup contract, or workload-visible endpoint discovery contract.
 - The current client-authorization shape is still operator-centric:
-  - AGS publish and ES execution/lifecycle calls accept `spiffe://execution.internal/operator`
-  - a broader Control Plane or multi-client governed-execution caller model is not yet an implemented public contract
+  - AGS publish and ES execution/lifecycle authorization now come from configured SPIFFE path-prefix allowlists
+  - the current repo-owned examples, runbooks, and proof configs still keep those allowlists operator-only:
+    - `spiffe://execution.internal/operator`
+  - a broader Control Plane or multi-client governed-execution caller model is not yet a documented repo-owned default
 
 Current prepare request shape:
 
@@ -407,7 +407,9 @@ Current successful response shapes:
 `Current invariant`
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
-- ES admits only the operator caller identity today on its public execution and lifecycle entry surfaces.
+- ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
+- The current repo-owned examples, runbooks, and proof configs keep that ES caller allowlist operator-only:
+  - `spiffe://execution.internal/operator`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:

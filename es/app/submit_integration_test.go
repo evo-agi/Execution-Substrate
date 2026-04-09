@@ -1185,6 +1185,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		Security: agsconfig.SecurityConfig{
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
+		Authorization: agsconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
+		},
 		Dependencies: agsconfig.DependenciesConfig{
 			ArtifactRegistry: agsconfig.DependencyConfig{
 				BaseURL:        "https://" + stack.ars.Addr(),
@@ -1225,6 +1228,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		},
 		Security: esconfig.SecurityConfig{
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
+		},
+		Authorization: esconfig.AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{

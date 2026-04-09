@@ -98,12 +98,14 @@ Minimal reference example:
 - `http`
 - `tls`
 - `security`
+- `authorization`
 - `dependencies`
 - `signer`
 
 ### Required fields
 
 - `security.bootstrap_issuer_common_name`
+- `authorization.allowed_spiffe_path_prefixes`
 - `dependencies.artifact_registry.base_url`
 - `dependencies.artifact_registry.server_name`
 - `dependencies.artifact_registry.client_cert_file`
@@ -124,7 +126,9 @@ Minimal reference example:
 
 - `signer.algorithm` must be `ed25519`
 - `dependencies.artifact_registry.base_url` must be an absolute `https://` URL
+- `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call `POST /v1/artifacts:publish`
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
+- the current repo-owned examples and proofs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
 
 AGS no longer exposes a legacy-signing compatibility control. The current publish path is evidence-native only.
 
@@ -170,6 +174,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `http`
 - `tls`
 - `security`
+- `authorization`
 - `dependencies`
 - `verification`
 - `workload_vault_auth`
@@ -179,6 +184,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 ### Required fields
 
 - `security.bootstrap_issuer_common_name`
+- `authorization.allowed_spiffe_path_prefixes`
 - `dependencies.artifact_registry.*`
 - `dependencies.execution_governance.*`
 - `runtime_config.workload_zone_vault_config_ref.digest`
@@ -204,10 +210,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - all verifier algorithms must be `ed25519`
 - verifier key IDs and public keys must match the active EGS and AGS signers
 - all dependency base URLs must be absolute `https://` URLs
+- `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call the ES execution and lifecycle APIs
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
+- the current repo-owned examples and proofs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`
@@ -358,6 +366,7 @@ For local operator bring-up against this practical minimum:
   - `CA_CERT`
   - `OPERATOR_CERT`
   - `OPERATOR_KEY`
+  - the current repo-owned examples, proofs, and bring-up configs keep `authorization.allowed_spiffe_path_prefixes=["operator"]` for AGS and ES, even though caller authorization is now deployment-configured rather than hard-coded in those services
 
 The current unified health check verifies:
 
