@@ -41,6 +41,25 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 	}
 
 	workdirBase := t.TempDir()
+	payloadPath := filepath.Join(workdirBase, "control-plane-static-script.tar.gz")
+	if err := os.WriteFile(payloadPath, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+echo START-BANNER
+i=1
+while [ "$i" -le 30 ]; do
+  echo HEARTBEAT:$i
+  sleep 1
+  i=$((i + 1))
+done
+echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+`), 0o600); err != nil {
+		t.Fatalf("write control-plane payload archive: %v", err)
+	}
+	buildLogPath := filepath.Join(workdirBase, "build.log")
+	if err := os.WriteFile(buildLogPath, []byte("control-plane integration build log\n"), 0o600); err != nil {
+		t.Fatalf("write control-plane build log: %v", err)
+	}
+
 	cmd := exec.Command(scriptPath)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(),
@@ -52,8 +71,12 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 		"CONTROL_PLANE_CERT="+controlPlaneCertPath,
 		"CONTROL_PLANE_KEY="+controlPlaneKeyPath,
 		"WORKDIR_BASE="+workdirBase,
+		"PAYLOAD_PATH="+payloadPath,
+		"BUILD_LOG_PATH="+buildLogPath,
 		"TIMEOUT_SECONDS=15",
 		"POLL_INTERVAL_SECONDS=1",
+		"WAIT_FOR_TERMINAL=1",
+		"CANCEL_AFTER_SUBMIT=1",
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -71,6 +94,9 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 	if !strings.Contains(text, "status: success state=") {
 		t.Fatalf("expected status success marker, got %s", text)
 	}
+	if !strings.Contains(text, "cancel: success status=cancel_requested") {
+		t.Fatalf("expected cancel success marker, got %s", text)
+	}
 
 	summaryPath := summaryPathFromScriptOutput(t, text)
 	summaryBytes, err := os.ReadFile(summaryPath)
@@ -87,11 +113,30 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 	if got := summary["api_surface"]; got != "direct_https_mtls" {
 		t.Fatalf("expected direct api surface marker, got %v", got)
 	}
+	if got := summary["cancel_requested"]; got != true {
+		t.Fatalf("expected cancel_requested=true in summary, got %v", got)
+	}
+	if got := summary["cancel_status"]; got != "cancel_requested" {
+		t.Fatalf("expected cancel_status=cancel_requested in summary, got %v", got)
+	}
 
 	runID, ok := summary["run_id"].(string)
 	if !ok || strings.TrimSpace(runID) == "" {
 		t.Fatalf("expected run_id in summary, got %#v", summary["run_id"])
 	}
+	workdir, ok := summary["workdir"].(string)
+	if !ok || strings.TrimSpace(workdir) == "" {
+		t.Fatalf("expected workdir in summary, got %#v", summary["workdir"])
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "cancel-response.json")); err != nil {
+		t.Fatalf("expected script cancel response file: %v", err)
+	}
+
+	job := stack.nomad.waitForExecutionJobTerminalStatus(t, runID)
+	if job.Status != "dead" {
+		t.Fatalf("expected dead control-plane job after cancel, got %q", job.Status)
+	}
+
 	statusResponse := executionStatusRequestWithCaller(t, stack, runID, "service/control-plane")
 	defer statusResponse.Body.Close()
 	if statusResponse.StatusCode != http.StatusOK {
@@ -103,6 +148,15 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 	}
 	if !statusPayload.Success || statusPayload.RunID != runID {
 		t.Fatalf("expected control-plane status for run %q, got %+v", runID, statusPayload)
+	}
+
+	cancelResponse := executionCancelRequestWithCaller(t, stack, runID, "service/deployment")
+	defer cancelResponse.Body.Close()
+	if cancelResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 from deployment cancel caller, got %d body=%s", cancelResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, cancelResponse.Body))))
+	}
+	if !strings.Contains(strings.TrimSpace(string(mustReadBody(t, cancelResponse.Body))), "Caller not authorized for this operation") {
+		t.Fatalf("expected deployment cancel authorization failure body")
 	}
 }
 

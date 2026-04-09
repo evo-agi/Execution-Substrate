@@ -24,7 +24,8 @@ For the first repo-owned non-operator API-facing path, use:
 "/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
 ```
 
-That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane`; it does not use the operator helper wrappers below.
+That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane` for publish, submit, and status; it does not use the operator helper wrappers below.
+When you supply a long-running static-script payload and set `CANCEL_AFTER_SUBMIT=1`, the same direct API example can also exercise the bounded ES `cancel` surface.
 
 The steps below remain the transparent manual breakdown for the same current slice.
 

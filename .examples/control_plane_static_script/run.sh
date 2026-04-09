@@ -84,8 +84,10 @@ write_summary() {
   local run_id=$4
   local status_value=$5
   local terminal_value=$6
+  local cancel_requested=$7
+  local cancel_status=$8
 
-  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}"
+  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}" "${cancel_requested}" "${cancel_status}"
 import json
 import pathlib
 import sys
@@ -98,6 +100,8 @@ payload = {
     "run_id": sys.argv[4],
     "status": sys.argv[5],
     "terminal": sys.argv[6] == "true",
+    "cancel_requested": sys.argv[7] == "true",
+    "cancel_status": sys.argv[8],
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -115,6 +119,7 @@ WORKDIR_BASE="${WORKDIR_BASE:-${DEFAULT_WORKDIR_BASE}}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-${DEFAULT_TIMEOUT_SECONDS}}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-${DEFAULT_POLL_INTERVAL_SECONDS}}"
 WAIT_FOR_TERMINAL="${WAIT_FOR_TERMINAL:-0}"
+CANCEL_AFTER_SUBMIT="${CANCEL_AFTER_SUBMIT:-0}"
 
 require_readable "${CA_CERT}" "CA_CERT"
 require_readable "${CONTROL_PLANE_CERT}" "CONTROL_PLANE_CERT"
@@ -130,6 +135,7 @@ PUBLISH_RESPONSE="${WORKDIR}/publish-response.json"
 SUBMIT_JSON="${WORKDIR}/submit.json"
 SUBMIT_RESPONSE="${WORKDIR}/submit-response.json"
 STATUS_RESPONSE="${WORKDIR}/status-response.json"
+CANCEL_RESPONSE="${WORKDIR}/cancel-response.json"
 SUMMARY_JSON="${WORKDIR}/summary.json"
 
 python3 - <<'PY' "${PAYLOAD_PATH}" "${BUILD_LOG_PATH}" "${PUBLISH_JSON}"
@@ -263,6 +269,8 @@ echo "submit: success run_id=${RUN_ID}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 STATUS_VALUE=""
 TERMINAL_VALUE="false"
+CANCEL_REQUESTED="false"
+CANCEL_STATUS=""
 
 while (( SECONDS <= deadline )); do
   status_http=""
@@ -270,6 +278,9 @@ while (( SECONDS <= deadline )); do
   if [[ "${status_http}" == "200" ]]; then
     STATUS_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'payload.get("status", "")')"
     TERMINAL_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'str(payload.get("terminal", False)).lower()')"
+    if [[ "${CANCEL_AFTER_SUBMIT}" == "1" ]]; then
+      break
+    fi
     if [[ "${WAIT_FOR_TERMINAL}" != "1" || "${TERMINAL_VALUE}" == "true" ]]; then
       break
     fi
@@ -286,6 +297,51 @@ if [[ -z "${STATUS_VALUE}" ]]; then
   exit 1
 fi
 
-write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}"
+if [[ "${CANCEL_AFTER_SUBMIT}" == "1" ]]; then
+  cancel_http=""
+  curl_request "POST" "${ES_URL}/v1/executions/${RUN_ID}:cancel" "" "${CANCEL_RESPONSE}" "${ES_RESOLVE:-}" cancel_http
+  if [[ "${cancel_http}" != "200" ]]; then
+    echo "cancel failed: http_status=${cancel_http}" >&2
+    cat "${CANCEL_RESPONSE}" >&2
+    exit 1
+  fi
+  CANCEL_REQUESTED="true"
+  CANCEL_STATUS="$(parse_json_field "${CANCEL_RESPONSE}" 'payload.get("status", "")')"
+  if [[ -z "${CANCEL_STATUS}" ]]; then
+    echo "cancel response missing status" >&2
+    cat "${CANCEL_RESPONSE}" >&2
+    exit 1
+  fi
+
+  if [[ "${WAIT_FOR_TERMINAL}" == "1" ]]; then
+    while (( SECONDS <= deadline )); do
+      status_http=""
+      curl_request "GET" "${ES_URL}/v1/executions/${RUN_ID}/status" "" "${STATUS_RESPONSE}" "${ES_RESOLVE:-}" status_http
+      if [[ "${status_http}" == "200" ]]; then
+        STATUS_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'payload.get("status", "")')"
+        TERMINAL_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'str(payload.get("terminal", False)).lower()')"
+        if [[ "${TERMINAL_VALUE}" == "true" ]]; then
+          break
+        fi
+      else
+        echo "status retrieval failed: http_status=${status_http}" >&2
+        cat "${STATUS_RESPONSE}" >&2
+        exit 1
+      fi
+      sleep "${POLL_INTERVAL_SECONDS}"
+    done
+  fi
+fi
+
+if [[ "${WAIT_FOR_TERMINAL}" == "1" && "${TERMINAL_VALUE}" != "true" ]]; then
+  echo "status retrieval timed out before terminal state for run_id=${RUN_ID}" >&2
+  cat "${STATUS_RESPONSE}" >&2
+  exit 1
+fi
+
+write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}" "${CANCEL_REQUESTED}" "${CANCEL_STATUS}"
 echo "status: success state=${STATUS_VALUE} terminal=${TERMINAL_VALUE}"
+if [[ "${CANCEL_REQUESTED}" == "true" ]]; then
+  echo "cancel: success status=${CANCEL_STATUS}"
+fi
 echo "summary=${SUMMARY_JSON}"

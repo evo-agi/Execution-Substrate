@@ -41,6 +41,7 @@ These labels are intentionally different. A contract may be live today, relied o
   - `spiffe://execution.internal/service/control-plane`
 - The current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
 - The repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`, paired with `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
+- That example currently exercises AGS publish plus ES submit and status over the real HTTPS+mTLS API surface, and it can additionally exercise `cancel` when `CANCEL_AFTER_SUBMIT=1` is paired with a long-running payload
 - The runbooks, proofs, and helper scripts remain operator-only by default
 - These caller rules apply to:
   - `:prepare`

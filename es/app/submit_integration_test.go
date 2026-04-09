@@ -1795,6 +1795,19 @@ func executionStatusRequestWithCaller(t *testing.T, stack *submitStack, runID st
 	)
 }
 
+func executionCancelRequestWithCaller(t *testing.T, stack *submitStack, runID string, callerPath string) *http.Response {
+	t.Helper()
+
+	return doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodPost,
+		"/v1/executions/"+runID+":cancel",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
+		nil,
+	)
+}
+
 func assertErrorResponseCode(t *testing.T, response *http.Response, expectedStatus int, expectedCode string) {
 	t.Helper()
 

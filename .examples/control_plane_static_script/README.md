@@ -9,6 +9,7 @@ It is intentionally narrow. It proves that a Control Plane caller can drive the 
 - `POST /v1/artifacts:publish`
 - `POST /v1/executions:submit`
 - `GET /v1/executions/{run_id}/status`
+- optional `POST /v1/executions/{run_id}:cancel`
 
 It does **not** use:
 
@@ -38,6 +39,9 @@ Optional:
 - `TIMEOUT_SECONDS`
 - `POLL_INTERVAL_SECONDS`
 - `WAIT_FOR_TERMINAL=1`
+- `CANCEL_AFTER_SUBMIT=1`
+
+Set `CANCEL_AFTER_SUBMIT=1` only when `PAYLOAD_PATH` points to a long-running static-script payload. In that mode the example issues `POST /v1/executions/{run_id}:cancel` after the first successful status read, then polls bounded ES status until terminal if `WAIT_FOR_TERMINAL=1`.
 
 ## Config Templates
 
@@ -57,4 +61,4 @@ The default templates remain operator-only:
 "/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
 ```
 
-The script writes a work directory under `.out/`, records the direct API request/response JSON there, and prints the final `workdir=` path so it is easy to inspect what went over the wire.
+The script writes a work directory under `.out/`, records the direct API request/response payloads there, and prints the final `workdir=` path so it is easy to inspect what went over the wire. When `CANCEL_AFTER_SUBMIT=1` is enabled, it also writes `cancel-response.json`.

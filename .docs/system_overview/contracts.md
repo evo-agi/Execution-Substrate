@@ -361,6 +361,7 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
     - `spiffe://execution.internal/service/control-plane`
   - the current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
   - the current repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`, paired with `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
+  - that direct API example currently exercises AGS publish plus ES submit and status without going through the operator helper wrappers, and it can additionally exercise the bounded ES `cancel` surface when `CANCEL_AFTER_SUBMIT=1` is paired with a long-running payload
   - the focused AGS/ES app integration harness still exists as verification for that path, but it is no longer the only repo-owned activation surface
 
 Current prepare request shape:
