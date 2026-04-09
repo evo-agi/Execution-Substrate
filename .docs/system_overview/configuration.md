@@ -130,7 +130,9 @@ Minimal reference example:
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
 - the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
-- the current repo-owned activation path for that caller is the focused AGS/ES app integration harness; the example templates and operator runbooks remain operator-only by default
+- the current repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`
+- the companion example templates for that path are `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
+- the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
 
 AGS no longer exposes a legacy-signing compatibility control. The current publish path is evidence-native only.
 
@@ -219,7 +221,9 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES
 - the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
-- the current repo-owned activation path for that caller is the focused AGS/ES app integration harness; the example templates and operator runbooks remain operator-only by default
+- the current repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`
+- the companion example templates for that path are `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
+- the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`

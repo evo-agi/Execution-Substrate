@@ -1,7 +1,7 @@
 # Runbook: Submit Static Script Workload (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-04`
+- Last Updated: `2026-04-09`
 - Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
@@ -17,6 +17,14 @@ For the preferred one-command smoke path over the same public APIs, use:
 ```bash
 scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.json
 ```
+
+For the first repo-owned non-operator API-facing path, use:
+
+```bash
+"/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
+```
+
+That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane`; it does not use the operator helper wrappers below.
 
 The steps below remain the transparent manual breakdown for the same current slice.
 

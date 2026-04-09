@@ -189,6 +189,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 
 - The current repo-owned operator path invokes AGS directly, and additional callers may do so if their SPIFFE paths are allowed by AGS config
 - The first repo-owned non-operator governed-execution caller activation path is Control Plane at `spiffe://execution.internal/service/control-plane`
+- The current repo-owned direct API example for that caller lives at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`
 - ARS is AGS's publication sink
 - ES later consumes the aggregate evidence and payloads AGS published through ARS, but ES does not call AGS on the runtime path
 
@@ -246,6 +247,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 
 - The current repo-owned operator path invokes ES directly, and additional callers may do so if their SPIFFE paths are allowed by ES config
 - The first repo-owned non-operator governed-execution caller activation path is Control Plane at `spiffe://execution.internal/service/control-plane`
+- The current repo-owned direct API example for that caller lives at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`
 - ES consumes ARS evidence and payloads, EGS trust policy, and the configured workload-zone Vault config reference
 - Nomad is the execution backend ES submits to and reads from
 

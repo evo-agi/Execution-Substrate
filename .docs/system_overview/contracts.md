@@ -360,7 +360,8 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
   - the first repo-owned non-operator governed-execution caller activation path is Control Plane at:
     - `spiffe://execution.internal/service/control-plane`
   - the current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
-  - the current repo-owned activation path for that caller is the focused AGS/ES app integration harness, which keeps the operator defaults explicit but proves publish and submit under a narrow `["operator", "service/control-plane"]` allowlist
+  - the current repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`, paired with `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
+  - the focused AGS/ES app integration harness still exists as verification for that path, but it is no longer the only repo-owned activation surface
 
 Current prepare request shape:
 
