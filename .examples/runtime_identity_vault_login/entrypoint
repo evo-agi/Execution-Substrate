@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 
 
-DEFAULT_SECRET_PATH = "secret/data/runtime-identity-vault-login"
+DEFAULT_SECRET_PATH = "proof-secrets/data/runtime-identity-vault-login"
 DEFAULT_PROOF_SETTLE_SECONDS = 3
 
 

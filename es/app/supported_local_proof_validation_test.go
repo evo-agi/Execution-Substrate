@@ -87,6 +87,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"PROOF_VAULT_BOUND_SUBJECT",
 		"PROOF_VAULT_BOUND_ISSUER",
 		"PROOF_VAULT_SECRET_PATH",
+		"PROOF_VAULT_SECRET_MOUNT",
 		"PROOF_VAULT_SECRET_LOGICAL_PATH",
 		"PROOF_VAULT_SECRET_VALUE",
 		"PROOF_VAULT_ROOT_TOKEN",
@@ -183,6 +184,8 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		t.Fatal("expected Vault client token")
 	}
 
+	assertSupportedLocalVaultBootstrapState(t, proofDir, managed)
+
 	secretMessage := readProofVaultSecret(
 		t,
 		managed["PROOF_VAULT_LOCAL_ADDR"],
@@ -258,6 +261,19 @@ func runCommand(t *testing.T, workDir string, name string, args ...string) strin
 
 	command := exec.Command(name, args...)
 	command.Dir = workDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %v: %v output=%s", name, args, err, string(output))
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func runCommandWithEnv(t *testing.T, workDir string, env []string, name string, args ...string) string {
+	t.Helper()
+
+	command := exec.Command(name, args...)
+	command.Dir = workDir
+	command.Env = append(os.Environ(), env...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run %s %v: %v output=%s", name, args, err, string(output))
@@ -427,6 +443,136 @@ func readProofVaultSecret(t *testing.T, vaultAddr string, caCertPath string, sec
 		t.Fatalf("decode vault read response: %v", err)
 	}
 	return strings.TrimSpace(payload.Data.Data.Message)
+}
+
+func runProofVaultCommand(t *testing.T, workDir string, managed map[string]string, args ...string) string {
+	t.Helper()
+
+	return runCommandWithEnv(
+		t,
+		workDir,
+		[]string{
+			"VAULT_ADDR=" + managed["PROOF_VAULT_LOCAL_ADDR"],
+			"VAULT_CACERT=" + managed["PROOF_VAULT_CA_CERT_FILE"],
+			"VAULT_TOKEN=" + managed["PROOF_VAULT_ROOT_TOKEN"],
+		},
+		"vault",
+		args...,
+	)
+}
+
+func assertSupportedLocalVaultBootstrapState(t *testing.T, proofDir string, managed map[string]string) {
+	t.Helper()
+
+	authListJSON := runProofVaultCommand(t, proofDir, managed, "auth", "list", "-format=json")
+	var authList map[string]struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(authListJSON), &authList); err != nil {
+		t.Fatalf("decode vault auth list: %v", err)
+	}
+	authMount := strings.Trim(managed["PROOF_VAULT_AUTH_MOUNT"], "/") + "/"
+	authEntry, ok := authList[authMount]
+	if !ok {
+		t.Fatalf("expected auth mount %q in %s", authMount, authListJSON)
+	}
+	if authEntry.Type != "jwt" {
+		t.Fatalf("expected auth mount %q type jwt, got %q", authMount, authEntry.Type)
+	}
+
+	secretsListJSON := runProofVaultCommand(t, proofDir, managed, "secrets", "list", "-format=json")
+	var secretsList map[string]struct {
+		Type    string            `json:"type"`
+		Options map[string]string `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(secretsListJSON), &secretsList); err != nil {
+		t.Fatalf("decode vault secrets list: %v", err)
+	}
+	secretMount := strings.Trim(managed["PROOF_VAULT_SECRET_MOUNT"], "/") + "/"
+	secretEntry, ok := secretsList[secretMount]
+	if !ok {
+		t.Fatalf("expected secret mount %q in %s", secretMount, secretsListJSON)
+	}
+	if secretEntry.Type != "kv" {
+		t.Fatalf("expected secret mount %q type kv, got %q", secretMount, secretEntry.Type)
+	}
+	if got := strings.TrimSpace(secretEntry.Options["version"]); got != "2" {
+		t.Fatalf("expected secret mount %q version 2, got %q", secretMount, got)
+	}
+
+	authConfigJSON := runProofVaultCommand(
+		t,
+		proofDir,
+		managed,
+		"read",
+		"-format=json",
+		"auth/"+strings.Trim(managed["PROOF_VAULT_AUTH_MOUNT"], "/")+"/config",
+	)
+	var authConfig struct {
+		Data struct {
+			BoundIssuer          string   `json:"bound_issuer"`
+			JWTValidationPubkeys []string `json:"jwt_validation_pubkeys"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(authConfigJSON), &authConfig); err != nil {
+		t.Fatalf("decode vault auth config: %v", err)
+	}
+	if authConfig.Data.BoundIssuer != managed["PROOF_VAULT_BOUND_ISSUER"] {
+		t.Fatalf("expected auth bound issuer %q, got %q", managed["PROOF_VAULT_BOUND_ISSUER"], authConfig.Data.BoundIssuer)
+	}
+	if len(authConfig.Data.JWTValidationPubkeys) == 0 {
+		t.Fatalf("expected jwt validation pubkeys in auth config, got %s", authConfigJSON)
+	}
+
+	roleJSON := runProofVaultCommand(
+		t,
+		proofDir,
+		managed,
+		"read",
+		"-format=json",
+		"auth/"+strings.Trim(managed["PROOF_VAULT_AUTH_MOUNT"], "/")+"/role/"+strings.Trim(managed["PROOF_VAULT_AUTH_ROLE"], "/"),
+	)
+	var role struct {
+		Data struct {
+			RoleType       string   `json:"role_type"`
+			UserClaim      string   `json:"user_claim"`
+			BoundAudiences []string `json:"bound_audiences"`
+			BoundSubject   string   `json:"bound_subject"`
+			TokenPolicies  []string `json:"token_policies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(roleJSON), &role); err != nil {
+		t.Fatalf("decode vault role: %v", err)
+	}
+	if role.Data.RoleType != "jwt" {
+		t.Fatalf("expected vault role_type jwt, got %q", role.Data.RoleType)
+	}
+	if role.Data.UserClaim != "sub" {
+		t.Fatalf("expected vault user_claim sub, got %q", role.Data.UserClaim)
+	}
+	if role.Data.BoundSubject != managed["PROOF_VAULT_BOUND_SUBJECT"] {
+		t.Fatalf("expected vault bound subject %q, got %q", managed["PROOF_VAULT_BOUND_SUBJECT"], role.Data.BoundSubject)
+	}
+	if !sliceContains(role.Data.BoundAudiences, managed["PROOF_VAULT_BOUND_AUDIENCE"]) {
+		t.Fatalf("expected vault bound audience %q in %#v", managed["PROOF_VAULT_BOUND_AUDIENCE"], role.Data.BoundAudiences)
+	}
+	if !sliceContains(role.Data.TokenPolicies, "runtime-identity-proof") {
+		t.Fatalf("expected runtime-identity-proof policy in %#v", role.Data.TokenPolicies)
+	}
+
+	policyText := runProofVaultCommand(t, proofDir, managed, "policy", "read", "runtime-identity-proof")
+	if !strings.Contains(policyText, `path "`+managed["PROOF_VAULT_SECRET_PATH"]+`"`) {
+		t.Fatalf("expected policy to include secret path %q, got %s", managed["PROOF_VAULT_SECRET_PATH"], policyText)
+	}
+}
+
+func sliceContains(items []string, want string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertSupportedLocalVaultBlobAlignment(t *testing.T, proofDir string, managed map[string]string) {

@@ -42,7 +42,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		role:        "service_execution",
 		audience:    "vault",
 		subject:     "spiffe://execution.internal/workload",
-		secretPath:  "secret/data/runtime-identity-vault-login",
+		secretPath:  "proof-secrets/data/runtime-identity-vault-login",
 		secretValue: "runtime-identity-ok",
 	})
 	operatorCertPath, operatorKeyPath := writeLeafCertificateFiles(

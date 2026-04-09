@@ -81,10 +81,10 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected SPIRE socket mount config, got %#v", mounts[3])
 	}
-	if spireMount["source"] != cfg.Execution.SPIREWorkloadAPISocketPath {
-		t.Fatalf("expected SPIRE socket source %q, got %#v", cfg.Execution.SPIREWorkloadAPISocketPath, spireMount["source"])
+	if spireMount["source"] != filepath.Dir(cfg.Execution.SPIREWorkloadAPISocketPath) {
+		t.Fatalf("expected SPIRE socket source dir %q, got %#v", filepath.Dir(cfg.Execution.SPIREWorkloadAPISocketPath), spireMount["source"])
 	}
-	if spireMount["target"] != path.Join(layout.runtimeIdentity.internalDir(), runtimeIdentitySPIRESocketName) {
-		t.Fatalf("expected helper-private SPIRE target under internal dir, got %#v", spireMount["target"])
+	if spireMount["target"] != path.Join(layout.runtimeIdentity.internalDir(), runtimeIdentitySPIRESourceDir) {
+		t.Fatalf("expected helper-private SPIRE source dir target under internal dir, got %#v", spireMount["target"])
 	}
 }

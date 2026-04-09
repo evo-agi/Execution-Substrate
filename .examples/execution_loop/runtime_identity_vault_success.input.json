@@ -58,7 +58,7 @@
   "prepare": {
     "env": {
       "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": "1",
-      "WORKLOAD_VAULT_SECRET_PATH": "secret/data/runtime-identity-vault-login"
+      "WORKLOAD_VAULT_SECRET_PATH": "proof-secrets/data/runtime-identity-vault-login"
     }
   },
   "submit": {

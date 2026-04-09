@@ -48,7 +48,7 @@ func startMockVaultCompatServer(t *testing.T, rootDir string, opts mockVaultComp
 	authMount := firstNonEmpty(opts.authMount, "jwt")
 	role := firstNonEmpty(opts.role, "service_execution")
 	audience := firstNonEmpty(opts.audience, "vault")
-	secretPath := strings.TrimPrefix(firstNonEmpty(opts.secretPath, "secret/data/runtime-identity-vault-login"), "/")
+	secretPath := strings.TrimPrefix(firstNonEmpty(opts.secretPath, "proof-secrets/data/runtime-identity-vault-login"), "/")
 	secretValue := firstNonEmpty(opts.secretValue, "runtime-identity-ok")
 
 	ca, caKey, _ := createCertificateAuthority(t, "mock-vault-ca")

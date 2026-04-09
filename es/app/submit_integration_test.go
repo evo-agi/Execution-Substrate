@@ -353,6 +353,11 @@ func runtimeIdentityWorkspaceFromEndpoint(t *testing.T, endpointURI string) stri
 	return path.Dir(endpointPath)
 }
 
+func runtimeIdentitySPIRESourceDirFromEndpoint(t *testing.T, endpointURI string) string {
+	t.Helper()
+	return path.Join(runtimeIdentityWorkspaceFromEndpoint(t, endpointURI), "internal", "source")
+}
+
 func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
 		runtimeIdentityTmpfsSize: 2 << 20,
@@ -497,9 +502,12 @@ print(json.dumps({"status": "ok", "artifact_digest": os.environ.get("EXEC_ARTIFA
 	assertNoRawSPIREEnvLeak(t, taskConfig.Env, stack.mockSPIRE.socketPath)
 
 	endpointURI := taskConfig.Env[workloadIdentityEndpointEnvKey]
-	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], path.Join(runtimeIdentityWorkspaceFromEndpoint(t, endpointURI), "internal", "spire-agent.sock"))
-	if spireMount["source"] != stack.mockSPIRE.socketPath {
-		t.Fatalf("expected helper-private SPIRE mount source %q, got %#v", stack.mockSPIRE.socketPath, spireMount["source"])
+	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentitySPIRESourceDirFromEndpoint(t, endpointURI))
+	if spireMount["source"] != filepath.Dir(stack.mockSPIRE.socketPath) {
+		t.Fatalf("expected helper-private SPIRE mount source dir %q, got %#v", filepath.Dir(stack.mockSPIRE.socketPath), spireMount["source"])
+	}
+	if spireMount["target"] != runtimeIdentitySPIRESourceDirFromEndpoint(t, endpointURI) {
+		t.Fatalf("expected helper-private SPIRE source dir target %q, got %#v", runtimeIdentitySPIRESourceDirFromEndpoint(t, endpointURI), spireMount["target"])
 	}
 
 	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)
@@ -1345,13 +1353,22 @@ func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 		defer listener.Close()
 
 		command := exec.Command("docker", "run", "--rm",
-			"-v", socketPath+":/probe/spire-agent.sock",
-			"alpine:3.20",
-			"sh", "-ceu", "test -S /probe/spire-agent.sock",
+			"--tmpfs", "/runtime:rw,size=1048576",
+			"--mount", "type=bind,src="+socketDir+",dst=/runtime/internal/source",
+			"python:3.13-alpine",
+			"sh", "-ceu", `ln -s /runtime/internal/source/spire-agent.sock /runtime/internal-spire-agent.sock
+python3 - <<'PY'
+import socket
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect("/runtime/internal-spire-agent.sock")
+client.close()
+PY`,
 		)
 		output, err := command.CombinedOutput()
 		if err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires Docker bind-mounting a unix socket file into the workload container: %v output=%s", err, strings.TrimSpace(string(output)))
+			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires Docker bind-mounting the SPIRE socket source directory into the workload container so the helper can reach the mounted unix socket: %v output=%s", err, strings.TrimSpace(string(output)))
 		}
 	})
 

@@ -26,6 +26,7 @@ const (
 
 	internalDirName = "internal"
 	spireSocketName = "spire-agent.sock"
+	spireSourceName = "source"
 )
 
 type endpointRequest struct {
@@ -40,12 +41,13 @@ type endpointResponse struct {
 }
 
 type runtimePaths struct {
-	endpointURI   string
-	endpointPath  string
-	workspaceDir  string
-	internalDir   string
-	spireSocket   string
-	workspaceRoot string
+	endpointURI    string
+	endpointPath   string
+	workspaceDir   string
+	internalDir    string
+	spireSourceDir string
+	spireSocket    string
+	workspaceRoot  string
 }
 
 type exitError struct {
@@ -97,12 +99,13 @@ func runtimePathsFromEnvironment() (runtimePaths, error) {
 	workspaceDir := filepath.Dir(endpointPath)
 
 	return runtimePaths{
-		endpointURI:   endpointURI,
-		endpointPath:  endpointPath,
-		workspaceDir:  workspaceDir,
-		internalDir:   filepath.Join(workspaceDir, internalDirName),
-		spireSocket:   filepath.Join(workspaceDir, internalDirName, spireSocketName),
-		workspaceRoot: filepath.Dir(workspaceDir),
+		endpointURI:    endpointURI,
+		endpointPath:   endpointPath,
+		workspaceDir:   workspaceDir,
+		internalDir:    filepath.Join(workspaceDir, internalDirName),
+		spireSourceDir: filepath.Join(workspaceDir, internalDirName, spireSourceName),
+		spireSocket:    filepath.Join(workspaceDir, internalDirName, spireSocketName),
+		workspaceRoot:  filepath.Dir(workspaceDir),
 	}, nil
 }
 

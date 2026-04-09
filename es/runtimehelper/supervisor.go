@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -90,29 +91,29 @@ func runSupervisor(args []string) error {
 
 	for {
 		select {
-			case helperErr := <-helperErrCh:
-				terminateProcess(workloadCmd.Process)
-				<-workloadErrCh
-				if helperErr == nil {
-					return fmt.Errorf("runtime identity helper exited unexpectedly")
-				}
-				return fmt.Errorf("runtime identity helper exited: %w", helperErr)
-			case workloadErr := <-workloadErrCh:
-				terminateProcess(helperCmd.Process)
-				<-helperErrCh
-				return workloadExitError(workloadErr)
-			case sig := <-signalCh:
-				terminateProcess(workloadCmd.Process)
-				terminateProcess(helperCmd.Process)
-				<-workloadErrCh
-				<-helperErrCh
-				return newExitError(128+int(sig.(syscall.Signal)), fmt.Errorf("received %s", sig.String()))
-			case <-timeoutCh:
-				terminateProcess(workloadCmd.Process)
-				terminateProcess(helperCmd.Process)
-				<-workloadErrCh
-				<-helperErrCh
-				return newExitError(workloadTimeoutExit, fmt.Errorf("workload timed out after %d seconds", cfg.timeoutSeconds))
+		case helperErr := <-helperErrCh:
+			terminateProcess(workloadCmd.Process)
+			<-workloadErrCh
+			if helperErr == nil {
+				return fmt.Errorf("runtime identity helper exited unexpectedly")
+			}
+			return fmt.Errorf("runtime identity helper exited: %w", helperErr)
+		case workloadErr := <-workloadErrCh:
+			terminateProcess(helperCmd.Process)
+			<-helperErrCh
+			return workloadExitError(workloadErr)
+		case sig := <-signalCh:
+			terminateProcess(workloadCmd.Process)
+			terminateProcess(helperCmd.Process)
+			<-workloadErrCh
+			<-helperErrCh
+			return newExitError(128+int(sig.(syscall.Signal)), fmt.Errorf("received %s", sig.String()))
+		case <-timeoutCh:
+			terminateProcess(workloadCmd.Process)
+			terminateProcess(helperCmd.Process)
+			<-workloadErrCh
+			<-helperErrCh
+			return newExitError(workloadTimeoutExit, fmt.Errorf("workload timed out after %d seconds", cfg.timeoutSeconds))
 		}
 	}
 }
@@ -178,6 +179,9 @@ func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
 	if err := os.Chmod(paths.internalDir, 0o700); err != nil {
 		return fmt.Errorf("chmod runtime identity internal dir: %w", err)
 	}
+	if err := materializeHelperPrivateSPIRESocket(paths); err != nil {
+		return err
+	}
 
 	platformDir := filepath.Join(filepath.Dir(cfg.workDir), "platform")
 	if err := os.Chown(platformDir, 0, 0); err != nil {
@@ -201,6 +205,50 @@ func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
 	}
 	if err := os.Chmod(cfg.entrypoint, 0o755); err != nil {
 		return fmt.Errorf("chmod workload entrypoint: %w", err)
+	}
+	return nil
+}
+
+func materializeHelperPrivateSPIRESocket(paths runtimePaths) error {
+	entries, err := os.ReadDir(paths.spireSourceDir)
+	if err != nil {
+		return fmt.Errorf("read mounted spire source dir: %w", err)
+	}
+
+	candidates := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		info, infoErr := os.Stat(filepath.Join(paths.spireSourceDir, entry.Name()))
+		if infoErr != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSocket != 0 {
+			candidates = append(candidates, entry.Name())
+		}
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("mounted spire source dir does not contain a unix socket")
+	}
+	sort.Strings(candidates)
+
+	selected := ""
+	for _, candidate := range candidates {
+		if candidate == spireSocketName {
+			selected = candidate
+			break
+		}
+	}
+	if selected == "" {
+		if len(candidates) != 1 {
+			return fmt.Errorf("mounted spire source dir contains multiple unix sockets: %s", strings.Join(candidates, ", "))
+		}
+		selected = candidates[0]
+	}
+
+	if err := os.Remove(paths.spireSocket); err != nil && !isNotExist(err) {
+		return fmt.Errorf("remove stale helper-private spire socket path: %w", err)
+	}
+	if err := os.Symlink(filepath.Join(paths.spireSourceDir, selected), paths.spireSocket); err != nil {
+		return fmt.Errorf("link helper-private spire socket path: %w", err)
 	}
 	return nil
 }
@@ -234,27 +282,27 @@ func extractWorkloadArchive(archivePath string, destinationRoot string) error {
 		}
 
 		switch header.Typeflag {
-			case tar.TypeDir:
-				if err := os.MkdirAll(destinationPath, 0o755); err != nil {
-					return fmt.Errorf("create workload directory %s: %w", header.Name, err)
-				}
-			case tar.TypeReg, tar.TypeRegA:
-				if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-					return fmt.Errorf("create workload parent directory %s: %w", header.Name, err)
-				}
-				destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode)&0o777)
-				if err != nil {
-					return fmt.Errorf("create workload file %s: %w", header.Name, err)
-				}
-				if _, err := io.Copy(destinationFile, tarReader); err != nil {
-					destinationFile.Close()
-					return fmt.Errorf("write workload file %s: %w", header.Name, err)
-				}
-				if err := destinationFile.Close(); err != nil {
-					return fmt.Errorf("close workload file %s: %w", header.Name, err)
-				}
-			default:
-				return fmt.Errorf("workload archive entry %s uses unsupported type %d", header.Name, header.Typeflag)
+		case tar.TypeDir:
+			if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+				return fmt.Errorf("create workload directory %s: %w", header.Name, err)
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+				return fmt.Errorf("create workload parent directory %s: %w", header.Name, err)
+			}
+			destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode)&0o777)
+			if err != nil {
+				return fmt.Errorf("create workload file %s: %w", header.Name, err)
+			}
+			if _, err := io.Copy(destinationFile, tarReader); err != nil {
+				destinationFile.Close()
+				return fmt.Errorf("write workload file %s: %w", header.Name, err)
+			}
+			if err := destinationFile.Close(); err != nil {
+				return fmt.Errorf("close workload file %s: %w", header.Name, err)
+			}
+		default:
+			return fmt.Errorf("workload archive entry %s uses unsupported type %d", header.Name, header.Typeflag)
 		}
 	}
 	return nil
@@ -310,12 +358,12 @@ func waitForHelperReadiness(endpointPath string, helperErrCh <-chan error) error
 	deadline := time.Now().Add(helperReadinessTimeout)
 	for time.Now().Before(deadline) {
 		select {
-			case err := <-helperErrCh:
-				if err == nil {
-					return fmt.Errorf("runtime identity helper exited before readiness")
-				}
-				return fmt.Errorf("runtime identity helper failed before readiness: %w", err)
-			default:
+		case err := <-helperErrCh:
+			if err == nil {
+				return fmt.Errorf("runtime identity helper exited before readiness")
+			}
+			return fmt.Errorf("runtime identity helper failed before readiness: %w", err)
+		default:
 		}
 
 		response, err := callIdentityEndpoint(endpointPath, endpointRequest{

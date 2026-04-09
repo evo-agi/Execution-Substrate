@@ -10,6 +10,7 @@ const (
 	runtimeIdentityEndpointEnvKey   = "EXEC_WORKLOAD_IDENTITY_ENDPOINT"
 	runtimeIdentityWorkspaceRoot    = "/run/es-runtime-identity"
 	runtimeIdentityInternalDirName  = "internal"
+	runtimeIdentitySPIRESourceDir   = "source"
 	runtimeIdentityEndpointFilename = "endpoint"
 	runtimeIdentitySPIRESocketName  = "spire-agent.sock"
 )
@@ -49,6 +50,10 @@ func (h runtimeIdentityHandoff) internalDir() string {
 
 func (h runtimeIdentityHandoff) spireSocketPath() string {
 	return path.Join(h.internalDir(), runtimeIdentitySPIRESocketName)
+}
+
+func (h runtimeIdentityHandoff) spireSourceDirPath() string {
+	return path.Join(h.internalDir(), runtimeIdentitySPIRESourceDir)
 }
 
 func (h runtimeIdentityHandoff) reservedRuntimePaths() []string {

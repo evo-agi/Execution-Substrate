@@ -28,7 +28,7 @@ VAULT_PORT="${SUPPORTED_LOCAL_VAULT_PORT:-$((PORT_BASE + 20))}"
 VAULT_AUTH_MOUNT="${SUPPORTED_LOCAL_VAULT_AUTH_MOUNT:-jwt}"
 VAULT_AUTH_ROLE="${SUPPORTED_LOCAL_VAULT_AUTH_ROLE:-service_execution}"
 VAULT_JWT_AUDIENCE="${SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE:-vault}"
-VAULT_SECRET_PATH="${SUPPORTED_LOCAL_VAULT_SECRET_PATH:-secret/data/runtime-identity-vault-login}"
+VAULT_SECRET_PATH="${SUPPORTED_LOCAL_VAULT_SECRET_PATH:-proof-secrets/data/runtime-identity-vault-login}"
 VAULT_ROOT_TOKEN="${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-${SUPPORTED_LOCAL_VAULT_TOKEN:-}}"
 VAULT_SECRET_VALUE="${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}"
 
@@ -82,7 +82,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_VAULT_AUTH_MOUNT=jwt
   SUPPORTED_LOCAL_VAULT_AUTH_ROLE=service_execution
   SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE=vault
-  SUPPORTED_LOCAL_VAULT_SECRET_PATH=secret/data/runtime-identity-vault-login
+  SUPPORTED_LOCAL_VAULT_SECRET_PATH=proof-secrets/data/runtime-identity-vault-login
   SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=<proof-root-token>
 EOF
 }
@@ -340,7 +340,16 @@ normalize_kv_v2_logical_path() {
     echo "SUPPORTED_LOCAL_VAULT_SECRET_PATH must be a KV v2 API path containing /data/: ${1}" >&2
     exit 1
   fi
-  printf '%s/%s\n' "${api_path%%/data/*}" "${api_path#*/data/}"
+  printf '%s/%s\n' "$(kv_v2_mount_from_api_path "${api_path}")" "${api_path#*/data/}"
+}
+
+kv_v2_mount_from_api_path() {
+  local api_path="${1#/}"
+  if [[ "${api_path}" != */data/* ]]; then
+    echo "SUPPORTED_LOCAL_VAULT_SECRET_PATH must be a KV v2 API path containing /data/: ${1}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${api_path%%/data/*}"
 }
 
 write_spire_configs() {
@@ -640,7 +649,8 @@ write_managed_secrets_file() {
   local vault_port=$5
   local vault_root_token=$6
   local vault_secret_value=$7
-  local vault_secret_logical_path=$8
+  local vault_secret_mount=$8
+  local vault_secret_logical_path=$9
 
   cat > "${path}" <<EOF
 SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
@@ -656,6 +666,7 @@ PROOF_VAULT_BOUND_AUDIENCE="${VAULT_JWT_AUDIENCE}"
 PROOF_VAULT_BOUND_SUBJECT="${WORKLOAD_SPIFFE_ID}"
 PROOF_VAULT_BOUND_ISSUER="${SPIRE_JWT_ISSUER}"
 PROOF_VAULT_SECRET_PATH="${VAULT_SECRET_PATH}"
+PROOF_VAULT_SECRET_MOUNT="${vault_secret_mount}"
 PROOF_VAULT_SECRET_LOGICAL_PATH="${vault_secret_logical_path}"
 PROOF_VAULT_SECRET_VALUE="${vault_secret_value}"
 PROOF_VAULT_ROOT_TOKEN="${vault_root_token}"
@@ -672,6 +683,133 @@ PROOF_SPIRE_BUNDLE_FILE="${PROOF_DIR}/spire-bundle.spiffe.json"
 PROOF_SPIRE_JWT_VALIDATION_PUB_FILE="${PROOF_DIR}/tls/spire-jwt-validation-pub.pem"
 EOF
   chmod 600 "${path}"
+}
+
+vault_with_proof_env() {
+  local proof_dir=$1
+  local vault_local_address=$2
+  local vault_root_token=$3
+  shift 3
+
+  VAULT_ADDR="${vault_local_address}" \
+  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
+  VAULT_TOKEN="${vault_root_token}" \
+  vault "$@"
+}
+
+proof_vault_api_read() {
+  local proof_dir=$1
+  local vault_local_address=$2
+  local vault_root_token=$3
+  local api_path=$4
+
+  curl --fail-with-body --silent --show-error \
+    --cacert "${proof_dir}/tls/vault-dev/vault-ca.pem" \
+    -H "X-Vault-Token: ${vault_root_token}" \
+    "${vault_local_address}/v1/${api_path#/}"
+}
+
+ensure_vault_auth_mount() {
+  local proof_dir=$1
+  local vault_local_address=$2
+  local vault_root_token=$3
+  local auth_mount=$4
+  local auth_type=$5
+  local auth_state=""
+  local auth_json=""
+
+  auth_json="$(proof_vault_api_read "${proof_dir}" "${vault_local_address}" "${vault_root_token}" sys/auth)"
+  auth_state="$(
+      python3 - <<'PY' "${auth_mount}" "${auth_type}" "${auth_json}"
+import json
+import sys
+
+mount = sys.argv[1].strip("/") + "/"
+want_type = sys.argv[2].strip()
+entry = (json.loads(sys.argv[3]).get("data") or {}).get(mount)
+if entry is None:
+    print("missing")
+else:
+    got_type = (entry.get("type") or "").strip()
+    if got_type != want_type:
+        print(f"wrong-type:{got_type}")
+    else:
+        print("ok")
+PY
+  )"
+
+  case "${auth_state}" in
+    missing)
+      echo "==> enabling proof-scoped Vault auth mount ${auth_mount}/ (${auth_type})"
+      vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" auth enable -path="${auth_mount}" "${auth_type}" >/dev/null
+      ;;
+    ok)
+      echo "==> verified proof-scoped Vault auth mount ${auth_mount}/ (${auth_type})"
+      ;;
+    wrong-type:*)
+      echo "proof Vault auth mount ${auth_mount}/ exists with unexpected type ${auth_state#wrong-type:}" >&2
+      exit 1
+      ;;
+    *)
+      echo "unexpected Vault auth mount state for ${auth_mount}/: ${auth_state}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+ensure_vault_kv_v2_mount() {
+  local proof_dir=$1
+  local vault_local_address=$2
+  local vault_root_token=$3
+  local vault_secret_api_path=$4
+  local vault_secret_mount=""
+  local mount_state=""
+  local mounts_json=""
+
+  vault_secret_mount="$(kv_v2_mount_from_api_path "${vault_secret_api_path}")"
+  mounts_json="$(proof_vault_api_read "${proof_dir}" "${vault_local_address}" "${vault_root_token}" sys/mounts)"
+  mount_state="$(
+      python3 - <<'PY' "${vault_secret_mount}" "${mounts_json}"
+import json
+import sys
+
+mount = sys.argv[1].strip("/") + "/"
+entry = (json.loads(sys.argv[2]).get("data") or {}).get(mount)
+if entry is None:
+    print("missing")
+else:
+    got_type = (entry.get("type") or "").strip()
+    version = ((entry.get("options") or {}).get("version") or "").strip()
+    if got_type != "kv":
+        print(f"wrong-type:{got_type}")
+    elif version != "2":
+        print(f"wrong-version:{version or '<empty>'}")
+    else:
+        print("ok")
+PY
+  )"
+
+  case "${mount_state}" in
+    missing)
+      echo "==> enabling proof-scoped Vault KV v2 mount ${vault_secret_mount}/"
+      vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" secrets enable -path="${vault_secret_mount}" -version=2 kv >/dev/null
+      ;;
+    ok)
+      echo "==> verified proof-scoped Vault KV v2 mount ${vault_secret_mount}/"
+      ;;
+    wrong-type:*)
+      echo "proof Vault secret mount ${vault_secret_mount}/ exists with unexpected type ${mount_state#wrong-type:}" >&2
+      exit 1
+      ;;
+    wrong-version:*)
+      echo "proof Vault secret mount ${vault_secret_mount}/ exists without KV v2 versioning (${mount_state#wrong-version:})" >&2
+      exit 1
+      ;;
+    *)
+      echo "unexpected Vault secrets mount state for ${vault_secret_mount}/: ${mount_state}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 start_vault_dev_server() {
@@ -716,38 +854,24 @@ path "${VAULT_SECRET_PATH#/}" {
 }
 EOF
 
-  echo "==> configuring proof-scoped Vault JWT auth and secret"
-  VAULT_ADDR="${vault_local_address}" \
-  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
-  VAULT_TOKEN="${vault_root_token}" \
-  vault policy write runtime-identity-proof "${policy_path}" >/dev/null
+  echo "==> configuring proof-scoped Vault JWT auth, KV v2 mount, and secret"
+  ensure_vault_auth_mount "${proof_dir}" "${vault_local_address}" "${vault_root_token}" "${VAULT_AUTH_MOUNT}" jwt
+  ensure_vault_kv_v2_mount "${proof_dir}" "${vault_local_address}" "${vault_root_token}" "${VAULT_SECRET_PATH}"
 
-  VAULT_ADDR="${vault_local_address}" \
-  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
-  VAULT_TOKEN="${vault_root_token}" \
-  vault auth enable -path="${VAULT_AUTH_MOUNT}" jwt >/dev/null
+  vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" policy write runtime-identity-proof "${policy_path}" >/dev/null
 
-  VAULT_ADDR="${vault_local_address}" \
-  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
-  VAULT_TOKEN="${vault_root_token}" \
-  vault write "auth/${VAULT_AUTH_MOUNT}/config" \
+  vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" write "auth/${VAULT_AUTH_MOUNT}/config" \
     jwt_validation_pubkeys=@"${proof_dir}/tls/spire-jwt-validation-pub.pem" \
     bound_issuer="${SPIRE_JWT_ISSUER}" >/dev/null
 
-  VAULT_ADDR="${vault_local_address}" \
-  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
-  VAULT_TOKEN="${vault_root_token}" \
-  vault write "auth/${VAULT_AUTH_MOUNT}/role/${VAULT_AUTH_ROLE}" \
+  vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" write "auth/${VAULT_AUTH_MOUNT}/role/${VAULT_AUTH_ROLE}" \
     role_type=jwt \
     user_claim=sub \
     bound_audiences="${VAULT_JWT_AUDIENCE}" \
     bound_subject="${WORKLOAD_SPIFFE_ID}" \
     token_policies=runtime-identity-proof >/dev/null
 
-  VAULT_ADDR="${vault_local_address}" \
-  VAULT_CACERT="${proof_dir}/tls/vault-dev/vault-ca.pem" \
-  VAULT_TOKEN="${vault_root_token}" \
-  vault kv put "${vault_secret_logical_path}" message="${vault_secret_value}" >/dev/null
+  vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" kv put "${vault_secret_logical_path}" message="${vault_secret_value}" >/dev/null
 }
 
 write_runtime_blob_and_configs() {
@@ -993,6 +1117,7 @@ setup() {
   local vault_local_address
   local vault_root_token
   local vault_secret_value
+  local vault_secret_mount
   local vault_secret_logical_path
 
   vault_public_host="${VAULT_PUBLIC_HOST}"
@@ -1012,6 +1137,7 @@ setup() {
   if [[ -z "${vault_secret_value}" ]]; then
     vault_secret_value="runtime-identity-ok-${PROOF_ID}"
   fi
+  vault_secret_mount="$(kv_v2_mount_from_api_path "${VAULT_SECRET_PATH}")"
   vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
 
   stop_background_process "${PROOF_DIR}/spire-agent.pid"
@@ -1059,6 +1185,7 @@ setup() {
     "${VAULT_PORT}" \
     "${vault_root_token}" \
     "${vault_secret_value}" \
+    "${vault_secret_mount}" \
     "${vault_secret_logical_path}"
 
   echo "==> writing proof configs and workload-zone Vault blob"

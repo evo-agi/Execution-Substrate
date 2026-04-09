@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,7 +23,7 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 		role:        "service_execution",
 		audience:    "vault",
 		subject:     "spiffe://execution.internal/workload",
-		secretPath:  "secret/data/runtime-identity-vault-login",
+		secretPath:  "proof-secrets/data/runtime-identity-vault-login",
 		secretValue: "runtime-identity-ok",
 	})
 
@@ -50,7 +49,7 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithEnv(t, stack, map[string]string{
 		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": "1",
-		"WORKLOAD_VAULT_SECRET_PATH":          "secret/data/runtime-identity-vault-login",
+		"WORKLOAD_VAULT_SECRET_PATH":          "proof-secrets/data/runtime-identity-vault-login",
 	}))
 	defer response.Body.Close()
 
@@ -68,9 +67,9 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 	assertNoRawSPIREEnvLeak(t, job.task(t).Env, stack.mockSPIRE.socketPath)
 
 	endpointURI := job.task(t).Env[workloadIdentityEndpointEnvKey]
-	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], path.Join(runtimeIdentityWorkspaceFromEndpoint(t, endpointURI), "internal", "spire-agent.sock"))
-	if spireMount["source"] != stack.mockSPIRE.socketPath {
-		t.Fatalf("expected helper-private SPIRE mount source %q, got %#v", stack.mockSPIRE.socketPath, spireMount["source"])
+	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentitySPIRESourceDirFromEndpoint(t, endpointURI))
+	if spireMount["source"] != filepath.Dir(stack.mockSPIRE.socketPath) {
+		t.Fatalf("expected helper-private SPIRE mount source dir %q, got %#v", filepath.Dir(stack.mockSPIRE.socketPath), spireMount["source"])
 	}
 
 	alloc := stack.nomad.waitForTerminalAllocation(t, jobID)

@@ -300,6 +300,7 @@ Runtime-path effects in the Nomad job spec are now assembled from that same inte
 
 - Host `payloadDir` is bind-mounted to `/execution/staged`
 - Host `runDir` is bind-mounted to `/execution/run`
+- The directory containing the configured SPIRE Workload API socket is bind-mounted under the helper-private runtime-identity internal subtree, and the runtime supervisor materializes the fixed helper-private socket alias from that mounted source directory
 - Runtime identity workspace is mounted as tmpfs at the run-scoped workspace derived from the discovered endpoint
 
 Cleanup behavior visible in code:

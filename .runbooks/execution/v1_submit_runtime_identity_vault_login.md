@@ -111,9 +111,10 @@ That setup script is the authoritative proof bootstrap for this runbook. It:
 
 - boots a proof-scoped real SPIRE server/agent path and real Workload API socket used by the helper-private ES runtime mount
 - starts `vault server -dev -dev-tls` as a proof-scoped process
-- configures JWT auth at `auth/<mount>/login` using proof-only JWT validation material derived from the real SPIRE bundle
+- explicitly ensures the proof JWT auth mount exists at `auth/<mount>/login` and configures it with proof-only JWT validation material derived from the real SPIRE bundle
+- explicitly enables or verifies the proof KV v2 mount backing `proof-secrets/data/...` before writing the bounded proof secret
 - writes the proof secret used by the workload
-- records the generated root token, CA cert path, and JWT validation material in `managed-secrets.conf`
+- records the generated root token, CA cert path, JWT validation material, and proof secret mount details in `managed-secrets.conf`
 
 For example, after setup you can inspect the real Vault dev/test target directly:
 
@@ -124,7 +125,7 @@ VAULT_TOKEN="$PROOF_VAULT_ROOT_TOKEN" \
 vault status
 ```
 
-This target is deliberately proof-scoped and dev/test only. It is real Vault, but it does **not** make Execution Substrate a production Vault integrator, a long-lived token broker, or a general infra manager.
+This target is deliberately proof-scoped and dev/test only. It is real Vault, but it does **not** make Execution Substrate a production Vault integrator, a long-lived token broker, or a general infra manager. Long-lived Vault ownership still belongs to the larger ecosystem outside this bounded proof tooling. The proof still relies on the dev root token plus Vault's built-in system mounts for bootstrap, but the workload-facing JWT auth path and KV v2 secret mount are now established explicitly by the repo-owned proof setup.
 
 For the canonical wrapper on this Mac:
 

@@ -51,6 +51,29 @@ Those absences are current facts, not design commitments.
 - `contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
 - `contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
 
+## 4A. Proof Bootstrap Ownership
+
+**Purpose**
+
+Keep the bounded supported-local proof honest about what this repo bootstraps for proof execution versus what still belongs to the larger ecosystem.
+
+**Current ownership**
+
+- Repo-owned proof tooling under `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh`
+- Proof-scoped SPIRE dev/test bootstrap needed to exercise the helper-private workload identity path
+- Proof-scoped Vault dev/test bootstrap needed to exercise the bounded workload JWT login and secret-read proof
+- Proof-scoped guest scratch cleanup and canonical host evidence capture under `.out/es-proof-<id>/`
+
+**Explicit non-ownership**
+
+- Long-lived Nomad, Vault, or SPIRE lifecycle management for a real environment
+- Production Vault policy, secrets-engine, auth-method, or token lifecycle management
+- General machine orchestration, shared ecosystem infra reconciliation, or cross-repo environment ownership
+
+**Boundary note**
+
+- The larger ecosystem still has to own long-lived infrastructure bootstrap and lifecycle somewhere; this repo only owns the bounded proof-scoped bootstrap it needs to prove the current Execution Substrate slice honestly.
+
 ## 5. Workload-zone Vault runtime-config surface
 
 **Purpose**

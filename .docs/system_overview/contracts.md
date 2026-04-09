@@ -343,6 +343,18 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 - `GET /v1/executions/{run_id}/logs`
 - `POST /v1/executions/{run_id}:cancel`
 
+### Current integration-facing note
+
+`Observed current contract`
+
+- The current programmatic governed-execution surface is the HTTPS API boundary, not the shell helpers:
+  - `POST /v1/artifacts:publish` through AGS
+  - the ES execution and lifecycle endpoints above
+- `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator/proof helpers over those APIs; they are not a separate client contract.
+- The current client-authorization shape is still operator-centric:
+  - AGS publish and ES execution/lifecycle calls accept `spiffe://execution.internal/operator`
+  - a broader Control Plane or multi-client governed-execution caller model is not yet an implemented public contract
+
 Current prepare request shape:
 
 - `schema_version`

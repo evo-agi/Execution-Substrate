@@ -164,9 +164,9 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 		},
 		map[string]any{
 			"type":     "bind",
-			"source":   cfg.Execution.SPIREWorkloadAPISocketPath,
-			"target":   l.runtimeIdentity.spireSocketPath(),
-			"readonly": false,
+			"source":   filepath.Dir(cfg.Execution.SPIREWorkloadAPISocketPath),
+			"target":   l.runtimeIdentity.spireSourceDirPath(),
+			"readonly": true,
 		},
 	}
 
