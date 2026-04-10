@@ -1795,6 +1795,19 @@ func executionStatusRequestWithCaller(t *testing.T, stack *submitStack, runID st
 	)
 }
 
+func executionLogsRequestWithCaller(t *testing.T, stack *submitStack, runID string, callerPath string) *http.Response {
+	t.Helper()
+
+	return doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+runID+"/logs",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
+		nil,
+	)
+}
+
 func executionCancelRequestWithCaller(t *testing.T, stack *submitStack, runID string, callerPath string) *http.Response {
 	t.Helper()
 
@@ -2434,6 +2447,18 @@ func (n *nomadHarness) allocLogs(t *testing.T, allocationID string) string {
 		t.Fatalf("fetch allocation logs: %v output=%s", err, strings.TrimSpace(output))
 	}
 	return output
+}
+
+func (n *nomadHarness) allocStderrLogs(t *testing.T, allocationID string) string {
+	t.Helper()
+
+	command := exec.Command("nomad", "alloc", "logs", "-stderr", allocationID)
+	command.Env = append(os.Environ(), "NOMAD_ADDR="+n.addr)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fetch allocation stderr logs: %v output=%s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output)
 }
 
 func (n *nomadHarness) tryAllocLogs(allocationID string) (string, error) {

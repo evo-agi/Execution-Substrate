@@ -69,6 +69,12 @@ func runHelper(args []string) error {
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 
+	readyCtx, cancelReady := context.WithTimeout(signalCtx, helperInitialFetchTimeout)
+	defer cancelReady()
+	if err := waitForSPIRESocketReady(readyCtx, paths.spireSocket); err != nil {
+		return fmt.Errorf("wait for spire workload api socket: %w", err)
+	}
+
 	client, err := workloadapi.New(signalCtx, workloadapi.WithAddr("unix://"+paths.spireSocket))
 	if err != nil {
 		return fmt.Errorf("connect spire workload api: %w", err)
@@ -81,9 +87,7 @@ func runHelper(args []string) error {
 		audience: audience,
 	}
 
-	readyCtx, cancelReady := context.WithTimeout(signalCtx, helperInitialFetchTimeout)
-	defer cancelReady()
-	if err := server.refreshToken(readyCtx); err != nil {
+	if err := server.refreshInitialToken(readyCtx); err != nil {
 		return fmt.Errorf("initial jwt-svid fetch failed: %w", err)
 	}
 
@@ -121,20 +125,20 @@ func runHelper(args []string) error {
 	}()
 
 	select {
-		case <-signalCtx.Done():
-			_ = listener.Close()
+	case <-signalCtx.Done():
+		_ = listener.Close()
+		return nil
+	case err := <-refreshErrCh:
+		_ = listener.Close()
+		if signalCtx.Err() != nil {
 			return nil
-		case err := <-refreshErrCh:
-			_ = listener.Close()
-			if signalCtx.Err() != nil {
-				return nil
-			}
-			return err
-		case err := <-serveErrCh:
-			if signalCtx.Err() != nil {
-				return nil
-			}
-			return err
+		}
+		return err
+	case err := <-serveErrCh:
+		if signalCtx.Err() != nil {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -169,6 +173,30 @@ func ensureHelperFilesystemBoundary(paths runtimePaths) error {
 		return fmt.Errorf("validate spire workload api socket: helper-private path is not a unix socket")
 	}
 	return nil
+}
+
+func waitForSPIRESocketReady(ctx context.Context, socketPath string) error {
+	var lastErr error
+	dialer := &net.Dialer{Timeout: helperRefreshRetryInterval}
+	for {
+		connection, err := dialer.DialContext(ctx, "unix", socketPath)
+		if err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		lastErr = err
+
+		timer := time.NewTimer(helperRefreshRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if lastErr != nil {
+				return lastErr
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *helperServer) serve(ctx context.Context, listener net.Listener) error {
@@ -235,10 +263,10 @@ func (s *helperServer) refreshLoop(ctx context.Context, listener net.Listener) e
 
 		timer := time.NewTimer(time.Until(refreshAt))
 		select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil
-			case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
 		}
 
 		if err := s.refreshToken(ctx); err != nil {
@@ -253,11 +281,39 @@ func (s *helperServer) refreshLoop(ctx context.Context, listener net.Listener) e
 	}
 }
 
+func (s *helperServer) refreshInitialToken(ctx context.Context) error {
+	var lastErr error
+	for {
+		attemptCtx, cancel := context.WithTimeout(ctx, helperRefreshRetryInterval)
+		err := s.fetchAndStoreToken(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		timer := time.NewTimer(helperRefreshRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if lastErr != nil {
+				return lastErr
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *helperServer) refreshToken(ctx context.Context) error {
 	refreshCtx, cancel := context.WithTimeout(ctx, helperInitialFetchTimeout)
 	defer cancel()
 
-	svid, err := s.client.FetchJWTSVID(refreshCtx, jwtsvid.Params{
+	return s.fetchAndStoreToken(refreshCtx)
+}
+
+func (s *helperServer) fetchAndStoreToken(ctx context.Context) error {
+	svid, err := s.client.FetchJWTSVID(ctx, jwtsvid.Params{
 		Audience: s.audience,
 	})
 	if err != nil {

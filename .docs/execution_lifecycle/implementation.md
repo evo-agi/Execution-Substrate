@@ -248,6 +248,7 @@ Cancel path:
 
 - ES currently protects the reserved runtime paths backing the discovered endpoint from caller mount overlap.
 - The first platform-owned runtime-identity slice must preserve a helper-private raw SPIRE channel and fixed non-root workload launch semantics before any JWT retrieval is considered complete.
+- The runtime helper now retries its first bounded JWT-SVID fetch within the existing readiness timeout so transient helper-private SPIRE socket startup races fail less often without widening the workload-visible contract or bypassing helper readiness.
 
 **Deliberate absence**
 

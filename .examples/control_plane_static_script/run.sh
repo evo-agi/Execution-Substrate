@@ -9,6 +9,7 @@ DEFAULT_BUILD_LOG_PATH="${REPO_ROOT}/.examples/execution_loop/artifacts/build.lo
 DEFAULT_WORKDIR_BASE="${REPO_ROOT}/.out"
 DEFAULT_TIMEOUT_SECONDS=30
 DEFAULT_POLL_INTERVAL_SECONDS=2
+DEFAULT_FETCH_LOGS=1
 
 require_env() {
   local name=$1
@@ -84,10 +85,12 @@ write_summary() {
   local run_id=$4
   local status_value=$5
   local terminal_value=$6
-  local cancel_requested=$7
-  local cancel_status=$8
+  local logs_retrieved=$7
+  local logs_bytes=$8
+  local cancel_requested=$9
+  local cancel_status=${10}
 
-  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}" "${cancel_requested}" "${cancel_status}"
+  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}" "${logs_retrieved}" "${logs_bytes}" "${cancel_requested}" "${cancel_status}"
 import json
 import pathlib
 import sys
@@ -100,8 +103,10 @@ payload = {
     "run_id": sys.argv[4],
     "status": sys.argv[5],
     "terminal": sys.argv[6] == "true",
-    "cancel_requested": sys.argv[7] == "true",
-    "cancel_status": sys.argv[8],
+    "logs_retrieved": sys.argv[7] == "true",
+    "logs_bytes": int(sys.argv[8]),
+    "cancel_requested": sys.argv[9] == "true",
+    "cancel_status": sys.argv[10],
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -120,6 +125,7 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-${DEFAULT_TIMEOUT_SECONDS}}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-${DEFAULT_POLL_INTERVAL_SECONDS}}"
 WAIT_FOR_TERMINAL="${WAIT_FOR_TERMINAL:-0}"
 CANCEL_AFTER_SUBMIT="${CANCEL_AFTER_SUBMIT:-0}"
+FETCH_LOGS="${FETCH_LOGS:-${DEFAULT_FETCH_LOGS}}"
 
 require_readable "${CA_CERT}" "CA_CERT"
 require_readable "${CONTROL_PLANE_CERT}" "CONTROL_PLANE_CERT"
@@ -135,6 +141,7 @@ PUBLISH_RESPONSE="${WORKDIR}/publish-response.json"
 SUBMIT_JSON="${WORKDIR}/submit.json"
 SUBMIT_RESPONSE="${WORKDIR}/submit-response.json"
 STATUS_RESPONSE="${WORKDIR}/status-response.json"
+LOGS_RESPONSE="${WORKDIR}/logs-response.txt"
 CANCEL_RESPONSE="${WORKDIR}/cancel-response.json"
 SUMMARY_JSON="${WORKDIR}/summary.json"
 
@@ -269,6 +276,9 @@ echo "submit: success run_id=${RUN_ID}"
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 STATUS_VALUE=""
 TERMINAL_VALUE="false"
+EXIT_CODE_VALUE=""
+LOGS_RETRIEVED="false"
+LOGS_BYTES=0
 CANCEL_REQUESTED="false"
 CANCEL_STATUS=""
 
@@ -278,6 +288,7 @@ while (( SECONDS <= deadline )); do
   if [[ "${status_http}" == "200" ]]; then
     STATUS_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'payload.get("status", "")')"
     TERMINAL_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'str(payload.get("terminal", False)).lower()')"
+    EXIT_CODE_VALUE="$(parse_json_field "${STATUS_RESPONSE}" '"" if payload.get("exit_code") is None else str(payload.get("exit_code"))')"
     if [[ "${CANCEL_AFTER_SUBMIT}" == "1" ]]; then
       break
     fi
@@ -294,6 +305,31 @@ done
 
 if [[ -z "${STATUS_VALUE}" ]]; then
   echo "status retrieval timed out for run_id=${RUN_ID}" >&2
+  exit 1
+fi
+
+if [[ "${FETCH_LOGS}" == "1" ]]; then
+  while (( SECONDS <= deadline )); do
+    logs_http=""
+    curl_request "GET" "${ES_URL}/v1/executions/${RUN_ID}/logs" "" "${LOGS_RESPONSE}" "${ES_RESOLVE:-}" logs_http
+    if [[ "${logs_http}" == "200" ]]; then
+      LOGS_BYTES="$(wc -c < "${LOGS_RESPONSE}" | tr -d '[:space:]')"
+      if [[ "${LOGS_BYTES}" != "0" ]]; then
+        LOGS_RETRIEVED="true"
+        break
+      fi
+    elif [[ "${logs_http}" != "409" ]]; then
+      echo "logs retrieval failed: http_status=${logs_http}" >&2
+      cat "${LOGS_RESPONSE}" >&2
+      exit 1
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+fi
+
+if [[ "${FETCH_LOGS}" == "1" && "${LOGS_RETRIEVED}" != "true" ]]; then
+  echo "logs retrieval timed out for run_id=${RUN_ID}" >&2
+  cat "${LOGS_RESPONSE}" >&2
   exit 1
 fi
 
@@ -320,6 +356,7 @@ if [[ "${CANCEL_AFTER_SUBMIT}" == "1" ]]; then
       if [[ "${status_http}" == "200" ]]; then
         STATUS_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'payload.get("status", "")')"
         TERMINAL_VALUE="$(parse_json_field "${STATUS_RESPONSE}" 'str(payload.get("terminal", False)).lower()')"
+        EXIT_CODE_VALUE="$(parse_json_field "${STATUS_RESPONSE}" '"" if payload.get("exit_code") is None else str(payload.get("exit_code"))')"
         if [[ "${TERMINAL_VALUE}" == "true" ]]; then
           break
         fi
@@ -339,8 +376,17 @@ if [[ "${WAIT_FOR_TERMINAL}" == "1" && "${TERMINAL_VALUE}" != "true" ]]; then
   exit 1
 fi
 
-write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}" "${CANCEL_REQUESTED}" "${CANCEL_STATUS}"
+if [[ "${CANCEL_AFTER_SUBMIT}" != "1" && "${TERMINAL_VALUE}" == "true" && "${EXIT_CODE_VALUE}" != "0" ]]; then
+  echo "execution failed: state=${STATUS_VALUE} exit_code=${EXIT_CODE_VALUE:-unknown}" >&2
+  cat "${STATUS_RESPONSE}" >&2
+  exit 1
+fi
+
+write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}" "${LOGS_RETRIEVED}" "${LOGS_BYTES}" "${CANCEL_REQUESTED}" "${CANCEL_STATUS}"
 echo "status: success state=${STATUS_VALUE} terminal=${TERMINAL_VALUE}"
+if [[ "${FETCH_LOGS}" == "1" ]]; then
+  echo "logs: success bytes=${LOGS_BYTES}"
+fi
 if [[ "${CANCEL_REQUESTED}" == "true" ]]; then
   echo "cancel: success status=${CANCEL_STATUS}"
 fi

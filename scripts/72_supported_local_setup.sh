@@ -31,6 +31,7 @@ VAULT_JWT_AUDIENCE="${SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE:-vault}"
 VAULT_SECRET_PATH="${SUPPORTED_LOCAL_VAULT_SECRET_PATH:-proof-secrets/data/runtime-identity-vault-login}"
 VAULT_ROOT_TOKEN="${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-${SUPPORTED_LOCAL_VAULT_TOKEN:-}}"
 VAULT_SECRET_VALUE="${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}"
+ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
 
 ARS_PORT=$((PORT_BASE + 2))
 EGS_PORT=$((PORT_BASE + 3))
@@ -84,6 +85,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE=vault
   SUPPORTED_LOCAL_VAULT_SECRET_PATH=proof-secrets/data/runtime-identity-vault-login
   SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=<proof-root-token>
+  SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1
 EOF
 }
 
@@ -910,6 +912,7 @@ write_runtime_blob_and_configs() {
     "${ES_HOST}"
 import hashlib
 import json
+import os
 import pathlib
 import sys
 
@@ -933,6 +936,10 @@ ars_host = sys.argv[17]
 egs_host = sys.argv[18]
 ags_host = sys.argv[19]
 es_host = sys.argv[20]
+allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
+operator_and_maybe_control_plane = ["operator"]
+if allow_control_plane:
+    operator_and_maybe_control_plane.append("service/control-plane")
 
 blob = {
     "vault_config": {
@@ -990,7 +997,7 @@ ags_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
-    "authorization": {"allowed_spiffe_path_prefixes": ["operator"]},
+    "authorization": {"allowed_spiffe_path_prefixes": operator_and_maybe_control_plane},
     "dependencies": {
         "artifact_registry": {
             "base_url": f"https://127.0.0.1:{ars_port}",
@@ -1016,7 +1023,7 @@ es_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
-    "authorization": {"allowed_spiffe_path_prefixes": ["operator"]},
+    "authorization": {"allowed_spiffe_path_prefixes": operator_and_maybe_control_plane},
     "dependencies": {
         "artifact_registry": {
             "base_url": f"https://127.0.0.1:{ars_port}",
@@ -1093,6 +1100,13 @@ export ARS_READ_CERT="${PROOF_DIR}/tls/execution-client-cert.pem"
 export ARS_READ_KEY="${PROOF_DIR}/tls/execution-client-key.pem"
 export WORKDIR_BASE="${PROOF_DIR}/workdirs"
 EOF
+
+  if [[ "${ALLOW_CONTROL_PLANE_CALLER}" == "1" ]]; then
+    cat >> "${env_path}" <<EOF
+export CONTROL_PLANE_CERT="${PROOF_DIR}/tls/control-plane-client-cert.pem"
+export CONTROL_PLANE_KEY="${PROOF_DIR}/tls/control-plane-client-key.pem"
+EOF
+  fi
 }
 
 setup() {
@@ -1169,6 +1183,9 @@ setup() {
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "execution-client" "client.execution" "DNS:client.execution,URI:spiffe://execution.internal/service/execution"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "ags-client" "client.artifact-governance" "DNS:client.artifact-governance,URI:spiffe://execution.internal/service/artifact-governance"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "operator-client" "client.operator" "DNS:client.operator,URI:spiffe://execution.internal/operator"
+  if [[ "${ALLOW_CONTROL_PLANE_CALLER}" == "1" ]]; then
+    make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "control-plane-client" "client.control-plane" "DNS:client.control-plane,URI:spiffe://execution.internal/service/control-plane"
+  fi
   chmod 600 "${PROOF_DIR}/tls/runtime-ca-key.pem"
 
   write_spire_configs "${PROOF_DIR}"

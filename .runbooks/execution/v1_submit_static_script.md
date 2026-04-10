@@ -24,8 +24,12 @@ For the first repo-owned non-operator API-facing path, use:
 "/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
 ```
 
-That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane` for publish, submit, and status; it does not use the operator helper wrappers below.
-When you supply a long-running static-script payload and set `CANCEL_AFTER_SUBMIT=1`, the same direct API example can also exercise the bounded ES `cancel` surface.
+That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane` for publish, submit, status, and logs; it does not use the operator helper wrappers below.
+On this Mac, the supported-local guest path is the grounded positive verification path for the logs step.
+When that direct example waits for terminal status without `CANCEL_AFTER_SUBMIT=1`, it now exits nonzero if ES reports a terminal nonzero workload exit.
+When you supply a long-running static-script payload and set `CANCEL_AFTER_SUBMIT=1 FETCH_LOGS=0`, the same direct API example instead exercises the bounded ES `cancel` surface and then waits for terminal status if requested.
+The focused app integration harness at [/Users/ds/Repositories/Execution Substrate/es/app/control_plane_integration_path_test.go](/Users/ds/Repositories/Execution%20Substrate/es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path and for disallowed-caller failures. On this Mac, that harness remains bounded to publish, submit, status, cancel, and disallowed-caller coverage rather than positive logs retrieval.
+On the supported-local guest path, `SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1 scripts/72_supported_local_setup.sh setup` now generates the matching Control Plane client cert/key and includes `service/control-plane` in the proof-scoped AGS/ES allowlists without changing the default operator-only helper path.
 
 The steps below remain the transparent manual breakdown for the same current slice.
 

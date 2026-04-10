@@ -41,7 +41,10 @@ These labels are intentionally different. A contract may be live today, relied o
   - `spiffe://execution.internal/service/control-plane`
 - The current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
 - The repo-owned activation path for that caller is the direct API example at `/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh`, paired with `/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json` and `/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json`
-- That example currently exercises AGS publish plus ES submit and status over the real HTTPS+mTLS API surface, and it can additionally exercise `cancel` when `CANCEL_AFTER_SUBMIT=1` is paired with a long-running payload
+- That direct example currently exercises AGS publish plus ES submit, status, and logs over the real HTTPS+mTLS API surface by default, and it can additionally exercise `cancel` when `CANCEL_AFTER_SUBMIT=1 FETCH_LOGS=0` is paired with a long-running payload
+- When that direct example waits for terminal status outside explicit cancel mode, it now fails fast if ES reports a terminal nonzero workload exit instead of printing a false success marker
+- On this Mac, the supported-local guest path is the grounded positive verification path for that bounded `logs` step
+- The focused app integration harness at `/Users/ds/Repositories/Execution Substrate/es/app/control_plane_integration_path_test.go` remains the repo-owned verification layer for the same direct API path, including disallowed-caller failures, while staying bounded to publish, submit, status, and cancel coverage in the host-local harness
 - The runbooks, proofs, and helper scripts remain operator-only by default
 - These caller rules apply to:
   - `:prepare`
@@ -341,6 +344,7 @@ Successful response is:
 - Logs are resolved from the currently projected allocation only.
 - Task name is fixed to `task`.
 - Output source is stdout only.
+- Successful `200` responses may still carry an empty stdout body if the selected allocation has not produced visible stdout bytes yet.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
 - If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout.
 

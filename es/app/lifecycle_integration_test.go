@@ -95,7 +95,15 @@ func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 	submitted := submitExecution(t, stack, 10, 128)
 	allocation := stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 	if allocation.ClientStatus != "complete" {
-		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
+		taskState, hasTaskState := allocation.TaskStates["task"]
+		t.Fatalf(
+			"expected complete allocation, got %q task_state_present=%t task_state=%+v stdout=%q stderr=%q",
+			allocation.ClientStatus,
+			hasTaskState,
+			taskState,
+			stack.nomad.allocLogs(t, allocation.ID),
+			stack.nomad.allocStderrLogs(t, allocation.ID),
+		)
 	}
 
 	response := doJSONRequest(
@@ -228,6 +236,27 @@ func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("expected 409, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+}
+
+func TestExecutionLogsReturns403WhenCallerIsDisallowed(t *testing.T) {
+	stack := startSubmitStack(t)
+
+	response := doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/run-deadbeefdeadbeef/logs",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "service/deployment", false),
+		nil,
+	)
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	if !strings.Contains(strings.TrimSpace(string(mustReadBody(t, response.Body))), "Caller not authorized for this operation") {
+		t.Fatalf("expected caller authorization failure body")
 	}
 }
 

@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"execution-substrate/es/admission"
 )
 
-func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
+func TestControlPlaneStaticScriptAPIPathCancelSucceeds(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
 		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
 		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
@@ -41,7 +39,7 @@ func TestControlPlaneStaticScriptAPIPathSucceeds(t *testing.T) {
 	}
 
 	workdirBase := t.TempDir()
-	payloadPath := filepath.Join(workdirBase, "control-plane-static-script.tar.gz")
+	payloadPath := filepath.Join(workdirBase, "control-plane-long-running.tar.gz")
 	if err := os.WriteFile(payloadPath, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
@@ -53,7 +51,7 @@ while [ "$i" -le 30 ]; do
 done
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `), 0o600); err != nil {
-		t.Fatalf("write control-plane payload archive: %v", err)
+		t.Fatalf("write control-plane cancel payload archive: %v", err)
 	}
 	buildLogPath := filepath.Join(workdirBase, "build.log")
 	if err := os.WriteFile(buildLogPath, []byte("control-plane integration build log\n"), 0o600); err != nil {
@@ -77,11 +75,12 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		"POLL_INTERVAL_SECONDS=1",
 		"WAIT_FOR_TERMINAL=1",
 		"CANCEL_AFTER_SUBMIT=1",
+		"FETCH_LOGS=0",
 	)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run control-plane api path: %v output=%s", err, string(output))
+		t.Fatalf("run control-plane cancel api path: %v output=%s", err, string(output))
 	}
 
 	text := string(output)
@@ -96,6 +95,9 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 	if !strings.Contains(text, "cancel: success status=cancel_requested") {
 		t.Fatalf("expected cancel success marker, got %s", text)
+	}
+	if strings.Contains(text, "logs: success bytes=") {
+		t.Fatalf("did not expect logs success marker in explicit cancel mode, got %s", text)
 	}
 
 	summaryPath := summaryPathFromScriptOutput(t, text)
@@ -112,6 +114,9 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 	if got := summary["api_surface"]; got != "direct_https_mtls" {
 		t.Fatalf("expected direct api surface marker, got %v", got)
+	}
+	if got := summary["logs_retrieved"]; got != false {
+		t.Fatalf("expected logs_retrieved=false in explicit cancel mode, got %v", got)
 	}
 	if got := summary["cancel_requested"]; got != true {
 		t.Fatalf("expected cancel_requested=true in summary, got %v", got)
@@ -135,19 +140,6 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	job := stack.nomad.waitForExecutionJobTerminalStatus(t, runID)
 	if job.Status != "dead" {
 		t.Fatalf("expected dead control-plane job after cancel, got %q", job.Status)
-	}
-
-	statusResponse := executionStatusRequestWithCaller(t, stack, runID, "service/control-plane")
-	defer statusResponse.Body.Close()
-	if statusResponse.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from control-plane status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
-	}
-	var statusPayload admission.ExecutionStatusResult
-	if err := json.NewDecoder(statusResponse.Body).Decode(&statusPayload); err != nil {
-		t.Fatalf("decode control-plane status response: %v", err)
-	}
-	if !statusPayload.Success || statusPayload.RunID != runID {
-		t.Fatalf("expected control-plane status for run %q, got %+v", runID, statusPayload)
 	}
 
 	cancelResponse := executionCancelRequestWithCaller(t, stack, runID, "service/deployment")
