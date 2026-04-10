@@ -2,13 +2,13 @@ package api
 
 import (
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"execution-substrate/cgs/policy"
+	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
 
@@ -45,7 +45,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	var request AuthorizeRequest
 	if err := decodeJSONBody(r.Body, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{
+		httpx.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 			Success: false,
 			Error:   err.Error(),
 		})
@@ -53,7 +53,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := validateRequestShape(request); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{
+		httpx.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 			Success: false,
 			Error:   err.Error(),
 		})
@@ -65,7 +65,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		WorkloadIdentityID: request.Workload.WorkloadIdentityID,
 	}
 	if err := s.policies.ValidateWorkload(workload); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{
+		httpx.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 			Success: false,
 			Error:   err.Error(),
 		})
@@ -109,7 +109,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			Code:    evaluation.Reason.Code,
 			Message: evaluation.Reason.Message,
 		}
-		writeJSON(w, http.StatusOK, response)
+		httpx.WriteJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 func validateRequestShape(request AuthorizeRequest) error {
@@ -140,22 +140,12 @@ func validateRequestShape(request AuthorizeRequest) error {
 }
 
 func decodeJSONBody(reader io.ReadCloser, target any) error {
-	defer reader.Close()
-
-	decoder := json.NewDecoder(reader)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
+	if err := httpx.DecodeStrictJSONAndClose(reader, target); err != nil {
 		if err == io.EOF {
 			return fmt.Errorf("request body is required")
 		}
 		return fmt.Errorf("malformed JSON request body")
 	}
-
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return fmt.Errorf("malformed JSON request body")
-	}
-
 	return nil
 }
 
@@ -186,14 +176,6 @@ func spiffeIdentityFromCertificate(cert *x509.Certificate) (string, bool) {
 	return "", false
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
 func writeText(w http.ResponseWriter, status int, value string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = io.WriteString(w, value)
+	httpx.WriteText(w, status, value)
 }

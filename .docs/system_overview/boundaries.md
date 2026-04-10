@@ -366,6 +366,7 @@ Provide a separate authorize-only decision surface for workload credential acces
 | Package / layer | Current role | Boundary note |
 | --- | --- | --- |
 | `internal/contracts/evidence/v1` | Active shared kernel for the aggregate AGS -> ARS -> ES artifact-evidence path | Cross-service kernel and redesign pressure point, but not a standalone service boundary |
+| `internal/httpx` | Cross-cutting transport helper for strict JSON request decoding, text responses, JSON responses, and method negotiation headers | Support layer only; it standardizes low-level HTTP mechanics without owning auth, lifecycle, or domain behavior |
 | `internal/observability` | Cross-cutting utility for request tracing, dependency logging, and trace propagation decisions | Support layer only; it does not own business behavior or define service authority |
 | service bootstrap / config entrypoints | Service-local startup wiring, config loading, auth setup, and dependency client construction | Support layer; may reveal coupling, but does not by itself define a service boundary |
 

@@ -3,12 +3,11 @@ package api
 import (
 	"context"
 	"crypto/x509"
-	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 
 	"execution-substrate/ags/publish"
+	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
 
@@ -57,7 +56,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "healthy"
 	}
 
-	writeJSON(w, http.StatusOK, HealthResponse{
+	httpx.WriteJSON(w, http.StatusOK, HealthResponse{
 		Status:  status,
 		Ready:   ready,
 		Service: serviceName,
@@ -76,11 +75,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	caller, issuerCommonName, ok := authenticatedCallerIdentity(r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		httpx.WriteText(w, http.StatusUnauthorized, "Authenticated caller identity required")
 		return
 	}
 	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
+		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
 	authorized := false
@@ -91,13 +90,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !authorized {
-		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
 
 	var request publish.PublishRequest
-	if err := decodeJSON(r.Body, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{
+	if err := httpx.DecodeStrictJSONAndClose(r.Body, &request); err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
 			Success: false,
 			Error:   "invalid request body",
 			Code:    "invalid_request",
@@ -107,7 +106,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.service.Publish(r.Context(), caller, request)
 	if err != nil {
-		writeJSON(w, err.Status, ErrorResponse{
+		httpx.WriteJSON(w, err.Status, ErrorResponse{
 			Success: false,
 			Error:   err.Message,
 			Code:    err.Code,
@@ -115,7 +114,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 func authenticatedCallerIdentity(r *http.Request) (caller publish.CallerIdentity, issuerCommonName string, ok bool) {
@@ -162,36 +161,9 @@ func matchesAuthorizedPathPrefix(path string, prefix string) bool {
 	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
 }
 
-func decodeJSON(body io.ReadCloser, target any) error {
-	defer body.Close()
-
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return err
-	}
-	return nil
-}
-
 func label(ok bool, healthy string, unhealthy string) string {
 	if ok {
 		return healthy
 	}
 	return unhealthy
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeText(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
 }

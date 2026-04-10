@@ -2,12 +2,12 @@ package api
 
 import (
 	"crypto/x509"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	"execution-substrate/egs/model"
 	"execution-substrate/egs/sign"
+	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
 
@@ -60,7 +60,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "healthy"
 	}
 
-	writeJSON(w, http.StatusOK, HealthResponse{
+	httpx.WriteJSON(w, http.StatusOK, HealthResponse{
 		Status:  status,
 		Ready:   ready,
 		Service: serviceName,
@@ -76,27 +76,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
 	callerPath, issuerCommonName, ok := authenticatedCallerIdentity(r)
 	if !ok {
-		writeText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		httpx.WriteText(w, http.StatusUnauthorized, "Authenticated caller identity required")
 		return
 	}
 	if issuerCommonName == s.bootstrapIssuerCN {
-		writeText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
+		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
 	if callerPath != "service/execution" && callerPath != "operator" {
-		writeText(w, http.StatusForbidden, "Caller not authorized for this operation")
+		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
 
 	result, err := s.signer.Sign(s.runtimeTrust)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, ErrorResponse{
+		httpx.WriteJSON(w, http.StatusInternalServerError, ErrorResponse{
 			Error: "failed to sign trust model",
 		})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, SignedRuntimeTrustResponse{
+	httpx.WriteJSON(w, http.StatusOK, SignedRuntimeTrustResponse{
 		RuntimeTrust:  result.RuntimeTrust,
 		Algorithm:     result.Algorithm,
 		KeyID:         result.KeyID,
@@ -141,16 +141,4 @@ func readinessLabel(ok bool, readyValue string, notReadyValue string) string {
 		return readyValue
 	}
 	return notReadyValue
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeText(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
 }

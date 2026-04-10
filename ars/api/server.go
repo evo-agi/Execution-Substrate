@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"execution-substrate/ars/index"
 	"execution-substrate/ars/store"
+	"execution-substrate/internal/httpx"
 	"execution-substrate/internal/observability"
 )
 
@@ -655,37 +655,19 @@ func intToString(value int) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	encoder := json.NewEncoder(w)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(value)
+	httpx.WriteJSONNoEscapeHTML(w, status, value)
 }
 
 func writeText(w http.ResponseWriter, status int, value string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = io.WriteString(w, value)
+	httpx.WriteText(w, status, value)
 }
 
 func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
-	allowed := append([]string(nil), methods...)
-	slices.Sort(allowed)
-	w.Header().Set("Allow", strings.Join(allowed, ", "))
-	w.WriteHeader(http.StatusMethodNotAllowed)
+	httpx.WriteMethodNotAllowed(w, methods...)
 }
 
 func decodeStrictJSONBody(body io.Reader, target any) error {
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("trailing data after first JSON document")
-	}
-	return nil
+	return httpx.DecodeStrictJSON(body, target)
 }
 
 func (s *Server) loadDiscoveryForRegistration(discoveryDigest string) (ArtifactDiscovery, []byte, ArtifactErrorResponse, int, bool) {

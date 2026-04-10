@@ -63,6 +63,7 @@ Top-level interaction notes:
 - The supported-environment story for that topology is narrower than the original all-in-one local bring-up convenience path: the intended supported slice-0 environment is a Linux host/VM with a pre-managed non-dev Nomad client/server that is naturally schedulable without `cpu_total_compute` override, while the script-managed local Nomad startup path remains bounded fallback/troubleshooting scaffolding.
 - `internal/contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
 - `internal/contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
+- `internal/httpx` is cross-cutting transport support for strict JSON request decoding and consistent HTTP response writing.
 - `internal/observability` is cross-cutting support, not a system boundary.
 
 ## 5. Primary system flows
