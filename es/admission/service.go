@@ -22,11 +22,11 @@ import (
 	"time"
 
 	arsapi "execution-substrate/ars/api"
-	evidencev1 "execution-substrate/contracts/evidence/v1"
-	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
 	egsmodel "execution-substrate/egs/model"
 	esconfig "execution-substrate/es/config"
-	"execution-substrate/observability"
+	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
+	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
+	"execution-substrate/internal/observability"
 )
 
 const (
@@ -403,39 +403,39 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			var payload arsapi.ArtifactDiscovery
-			if err := decodeJSON(response.Body, &payload); err != nil {
+	case http.StatusOK:
+		var payload arsapi.ArtifactDiscovery
+		if err := decodeJSON(response.Body, &payload); err != nil {
+			return arsapi.ArtifactDiscovery{}, &Error{
+				Status:  http.StatusServiceUnavailable,
+				Code:    codeArtifactEvidenceUnavailable,
+				Message: "artifact discovery payload was invalid",
+			}
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		var payload artifactRegistryErrorResponse
+		if err := json.NewDecoder(response.Body).Decode(&payload); err == nil {
+			switch strings.TrimSpace(payload.Error) {
+			case "artifact not found", "artifact data not registered":
 				return arsapi.ArtifactDiscovery{}, &Error{
-					Status:  http.StatusServiceUnavailable,
-					Code:    codeArtifactEvidenceUnavailable,
-					Message: "artifact discovery payload was invalid",
+					Status:  http.StatusNotFound,
+					Code:    codeArtifactEvidenceNotFound,
+					Message: "artifact evidence not found",
 				}
 			}
-			return payload, nil
-		case http.StatusNotFound:
-			var payload artifactRegistryErrorResponse
-			if err := json.NewDecoder(response.Body).Decode(&payload); err == nil {
-				switch strings.TrimSpace(payload.Error) {
-					case "artifact not found", "artifact data not registered":
-						return arsapi.ArtifactDiscovery{}, &Error{
-							Status:  http.StatusNotFound,
-							Code:    codeArtifactEvidenceNotFound,
-							Message: "artifact evidence not found",
-						}
-				}
-			}
-			return arsapi.ArtifactDiscovery{}, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codeArtifactEvidenceUnavailable,
-				Message: "artifact evidence is unavailable",
-			}
-		default:
-			return arsapi.ArtifactDiscovery{}, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codeArtifactEvidenceUnavailable,
-				Message: "artifact evidence is unavailable",
-			}
+		}
+		return arsapi.ArtifactDiscovery{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeArtifactEvidenceUnavailable,
+			Message: "artifact evidence is unavailable",
+		}
+	default:
+		return arsapi.ArtifactDiscovery{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeArtifactEvidenceUnavailable,
+			Message: "artifact evidence is unavailable",
+		}
 	}
 }
 
@@ -451,28 +451,28 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			var payload evidencev1.ArtifactEvidence
-			if err := decodeJSON(response.Body, &payload); err != nil {
-				return evidencev1.ArtifactEvidence{}, &Error{
-					Status:  http.StatusServiceUnavailable,
-					Code:    codeArtifactEvidenceUnavailable,
-					Message: "artifact evidence payload was invalid",
-				}
-			}
-			return payload, nil
-		case http.StatusNotFound:
+	case http.StatusOK:
+		var payload evidencev1.ArtifactEvidence
+		if err := decodeJSON(response.Body, &payload); err != nil {
 			return evidencev1.ArtifactEvidence{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
-				Message: "artifact evidence is unavailable",
+				Message: "artifact evidence payload was invalid",
 			}
-		default:
-			return evidencev1.ArtifactEvidence{}, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codeArtifactEvidenceUnavailable,
-				Message: "artifact evidence is unavailable",
-			}
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		return evidencev1.ArtifactEvidence{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeArtifactEvidenceUnavailable,
+			Message: "artifact evidence is unavailable",
+		}
+	default:
+		return evidencev1.ArtifactEvidence{}, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codeArtifactEvidenceUnavailable,
+			Message: "artifact evidence is unavailable",
+		}
 	}
 }
 

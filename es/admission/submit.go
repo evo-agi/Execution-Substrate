@@ -13,7 +13,7 @@ import (
 	"time"
 
 	esconfig "execution-substrate/es/config"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const (
@@ -170,28 +170,28 @@ func (s *Service) fetchPayloadBytes(ctx context.Context, payloadDigest string) (
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			payload, readErr := io.ReadAll(response.Body)
-			if readErr != nil {
-				return nil, &Error{
-					Status:  http.StatusServiceUnavailable,
-					Code:    codePayloadUnavailable,
-					Message: "artifact payload read failed",
-				}
-			}
-			return payload, nil
-		case http.StatusNotFound:
+	case http.StatusOK:
+		payload, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
 			return nil, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codePayloadUnavailable,
-				Message: "artifact payload is unavailable",
+				Message: "artifact payload read failed",
 			}
-		default:
-			return nil, &Error{
-				Status:  http.StatusServiceUnavailable,
-				Code:    codePayloadUnavailable,
-				Message: fmt.Sprintf("artifact payload read returned status %d", response.StatusCode),
-			}
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		return nil, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codePayloadUnavailable,
+			Message: "artifact payload is unavailable",
+		}
+	default:
+		return nil, &Error{
+			Status:  http.StatusServiceUnavailable,
+			Code:    codePayloadUnavailable,
+			Message: fmt.Sprintf("artifact payload read returned status %d", response.StatusCode),
+		}
 	}
 }
 

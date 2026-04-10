@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"execution-substrate/es/admission"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const serviceName = "execution"

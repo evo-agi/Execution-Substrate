@@ -19,10 +19,10 @@ import (
 
 	agsconfig "execution-substrate/ags/config"
 	arsconfig "execution-substrate/ars/config"
-	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
 	egsconfig "execution-substrate/egs/config"
 	egsmodel "execution-substrate/egs/model"
 	esconfig "execution-substrate/es/config"
+	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
 func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {

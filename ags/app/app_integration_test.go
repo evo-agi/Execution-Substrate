@@ -30,14 +30,14 @@ import (
 	arsconfig "execution-substrate/ars/config"
 	arsindex "execution-substrate/ars/index"
 	arsstore "execution-substrate/ars/store"
-	evidencev1 "execution-substrate/contracts/evidence/v1"
-	runtimeconfigv1 "execution-substrate/contracts/runtimeconfig/v1"
 	egsapp "execution-substrate/egs/app"
 	egsconfig "execution-substrate/egs/config"
 	egsmodel "execution-substrate/egs/model"
 	"execution-substrate/es/admission"
 	esapp "execution-substrate/es/app"
 	esconfig "execution-substrate/es/config"
+	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
+	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
 func TestPublishFlowProducesArtifactESAccepts(t *testing.T) {

@@ -10,10 +10,9 @@ source_dirs=(
   ars
   cgs
   cmd
-  contracts
   egs
   es
-  observability
+  internal
 )
 
 service_bins=(

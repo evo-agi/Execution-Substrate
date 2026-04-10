@@ -56,8 +56,8 @@ These labels are intentionally separate. A rule can be active today and still be
 
 Doc-first governance applies to all architecture-defining surfaces, especially:
 
-- the shared cross-service kernel, including `contracts/evidence/v1` or any future replacement
-- workload-zone Vault runtime-config ownership, including the reference and blob-schema surface in `contracts/runtimeconfig/v1`
+- the shared cross-service kernel, including `internal/contracts/evidence/v1` or any future replacement
+- workload-zone Vault runtime-config ownership, including the reference and blob-schema surface in `internal/contracts/runtimeconfig/v1`
 - ARS storage, registration, index, and discoverability model
 - AGS publication, caller binding, and evidence/fact assembly model
 - ES admission, package resolution, submission, lifecycle projection, and public execution shape

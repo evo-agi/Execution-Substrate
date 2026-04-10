@@ -43,8 +43,8 @@ Describe the current shared kernel that multiple services use directly today.
 
 ### Current producers / consumers
 
-- `AGS` produces aggregate artifact evidence using `contracts/evidence/v1` for the publish path.
-- `ES` treats the `contracts/evidence/v1` artifact record as the canonical admission input.
+- `AGS` produces aggregate artifact evidence using `internal/contracts/evidence/v1` for the publish path.
+- `ES` treats the `internal/contracts/evidence/v1` artifact record as the canonical admission input.
 - `ARS` stores and serves the evidence record as the first-class artifact representation, and ARS does not interpret signing semantics.
 - `EGS` does not use either package; it has its own runtime-trust signing surface.
 
@@ -53,8 +53,8 @@ Describe the current shared kernel that multiple services use directly today.
 `Observed current contract`
 
 - The repo now has one active shared artifact kernel:
-  - `contracts/evidence/v1`
-- `contracts/evidence/v1` defines one aggregate `ArtifactEvidence` record with these top-level sections:
+  - `internal/contracts/evidence/v1`
+- `internal/contracts/evidence/v1` defines one aggregate `ArtifactEvidence` record with these top-level sections:
   - `claims`
   - `seal`
 - The `claims` section currently carries:
@@ -70,7 +70,7 @@ Describe the current shared kernel that multiple services use directly today.
 `Current invariant`
 
 - AGS signs canonical aggregate evidence bytes and ES reconstructs those bytes before verifying the evidence `seal`.
-- When ES uses `contracts/evidence/v1`, it verifies:
+- When ES uses `internal/contracts/evidence/v1`, it verifies:
   - `claims.schema_version == "v1"`
   - expected `algorithm`
   - expected `key_id`
@@ -96,7 +96,7 @@ Describe the current shared kernel that multiple services use directly today.
 
 `Reopened redesign seam`
 
-- The shared-kernel role of `contracts/evidence/v1` remains explicitly reopened by `PLANS.md`.
+- The shared-kernel role of `internal/contracts/evidence/v1` remains explicitly reopened by `PLANS.md`.
 - The new aggregate evidence record is active today, but it is still a first migration cut rather than the declared end-state kernel.
 
 ## 4. Workload-Zone Vault Runtime-Config Contract
@@ -107,7 +107,7 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 
 ### Current producers / consumers
 
-- Startup config installs the required `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`.
+- Startup config installs the required `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`.
 - `ES` consumes that reference directly from its validated startup config.
 - `ARS` serves the blob addressed by the reference digest.
 
@@ -115,22 +115,22 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 
 `Observed current contract`
 
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
 
 ### Current invariants
 
 `Current invariant`
 
 - The workload-zone Vault config reference is explicit and typed rather than being an anonymous digest string.
-- The workload-zone Vault blob schema is defined by `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`.
+- The workload-zone Vault blob schema is defined by `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`.
 - ES consumes the typed `WorkloadZoneVaultConfig` derived from that blob rather than owning ad hoc local parsing of the blob shape.
 - ARS remains the blob storage and read authority after the digest is known.
 
 ### Ownership boundary
 
-- `contracts/runtimeconfig/v1` owns the shared schema surface for the reference and blob meaning.
+- `internal/contracts/runtimeconfig/v1` owns the shared schema surface for the reference and blob meaning.
 - ES startup validation currently owns the guarantee that a workload-zone Vault config reference has been installed before ES serves traffic.
 - ARS owns blob storage and retrieval by digest.
 
@@ -193,7 +193,7 @@ Current response shape:
   - `spiffe://execution.internal/service/control-plane`
 - AGS computes `payload_digest` from payload bytes.
 - AGS derives `artifact_digest` separately from deterministic package identity inputs: `payload_digest`, `artifact_type`, and `intent_digest`. Artifact identity is no longer equal to payload identity by shortcut, and it is no longer derived from admission/runtime claim material.
-- AGS now also assembles and signs one aggregate `contracts/evidence/v1` record whose `claims` section is deliberately split between:
+- AGS now also assembles and signs one aggregate `internal/contracts/evidence/v1` record whose `claims` section is deliberately split between:
   - `claims.package` for publication/discoverability-facing meaning
   - `claims.admission.authorization` for derivation request-binding meaning only
   - `claims.admission.execution` for the smaller shared runtime contract ES currently consumes:
@@ -207,7 +207,7 @@ Current response shape:
   - manifest
   - runtime-facing artifact discovery record
   - artifact descriptor as secondary publication/support data
-- AGS signs aggregate artifact evidence using `contracts/evidence/v1`.
+- AGS signs aggregate artifact evidence using `internal/contracts/evidence/v1`.
 - AGS derives publication caller binding directly from the authenticated caller SPIFFE identity, records the caller path as `claims.package.publication.invoker.service`, and always emits `claims.package.publication.builder_service = "artifact-governance"` in aggregate evidence.
 - AGS now rejects non-docker `admission.workload.target_platform` values at publish time because the active shared runtime contract only admits empty or `docker` target platforms.
 - AGS publish requests currently carry execution access at `admission.access.network_access`; that runtime-facing input is emitted into `claims.admission.execution.access` rather than into shared authorization claims.
@@ -422,7 +422,7 @@ Current successful response shapes:
   - `spiffe://execution.internal/operator`
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
-- `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
+- `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact discovery record at `/v1/artifacts/{artifact_digest}/discovery`
@@ -731,7 +731,7 @@ Current runtime rules:
 The following active edges are compatibility-heavy enough to keep in one place:
 
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
-- `contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
+- `internal/contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
 - `ES` currently uses `/execution/staged`, `/execution/run`, `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, and the current ES-owned runtime-identity backing layout as active runtime conventions.
 - `CGS` currently uses `id.conf` as a local policy input format.
 
@@ -739,7 +739,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 
 The following cross-service seams are active today and explicitly not fixed architectural endpoints:
 
-- The shared-kernel role of `contracts/evidence/v1`.
+- The shared-kernel role of `internal/contracts/evidence/v1`.
 - The ARS registration and index model.
 - The workload-zone Vault runtime-config ownership surface.
 - The AGS publish grammar and fact-assembly model.

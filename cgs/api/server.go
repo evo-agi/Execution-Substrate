@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"execution-substrate/cgs/policy"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const serviceName = "credential-governance"

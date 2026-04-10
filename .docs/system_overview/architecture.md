@@ -61,9 +61,9 @@ Top-level interaction notes:
 - The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 - Those local qualification results are environment/profile-specific, not evidence that Linux or Docker/Nomad are the wrong platform direction for this bounded phase.
 - The supported-environment story for that topology is narrower than the original all-in-one local bring-up convenience path: the intended supported slice-0 environment is a Linux host/VM with a pre-managed non-dev Nomad client/server that is naturally schedulable without `cpu_total_compute` override, while the script-managed local Nomad startup path remains bounded fallback/troubleshooting scaffolding.
-- `contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
-- `contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
-- `observability` is cross-cutting support, not a system boundary.
+- `internal/contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
+- `internal/contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
+- `internal/observability` is cross-cutting support, not a system boundary.
 
 ## 5. Primary system flows
 
@@ -73,7 +73,7 @@ AGS accepts publish requests in the current evidence-native grammar, derives art
 
 ARS then becomes the storage and retrieval boundary for the published artifact material. The current publication flow is `AGS -> ARS`, and downstream consumers do not bypass ARS for published artifact data.
 
-The aggregate evidence model in `contracts/evidence/v1` matters here because AGS emits the first-class publication record that ES later verifies. ARS then exposes a smaller runtime-facing discovery record for ES, while descriptor and manifest support data remain secondary publication discoverability rather than the primary hot-path object.
+The aggregate evidence model in `internal/contracts/evidence/v1` matters here because AGS emits the first-class publication record that ES later verifies. ARS then exposes a smaller runtime-facing discovery record for ES, while descriptor and manifest support data remain secondary publication discoverability rather than the primary hot-path object.
 
 ### Admission / preparation / submission flow
 
@@ -83,14 +83,14 @@ At a high level, ES:
 
 - accepts execution requests through bounded preflight `:prepare` and primary submission `:submit`
 - reads aggregate artifact evidence and payloads from ARS through the primary runtime-facing discovery record
-- reads the workload-zone Vault config blob from ARS using the startup-configured `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- reads the workload-zone Vault config blob from ARS using the startup-configured `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
 - loads and enforces the EGS trust model
 - stages payload and mount data locally
 - hands execution off to Nomad
 
 ES does not own artifact publication, artifact storage, trust publication, or scheduler state. It composes those inputs into a bounded execution decision and submission.
 
-For the main AGS-published artifact path, ES now requires the aggregate `contracts/evidence/v1` record. Missing or corrupt aggregate evidence is an admission failure, not a reason to re-enter the legacy fact family.
+For the main AGS-published artifact path, ES now requires the aggregate `internal/contracts/evidence/v1` record. Missing or corrupt aggregate evidence is an admission failure, not a reason to re-enter the legacy fact family.
 
 ### Lifecycle flow
 
@@ -126,7 +126,7 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - Docker is the task runtime under Nomad in the current bounded execution slice.
 - EGS publishes policy; it does not publish runtime state or own artifact execution.
 - CGS is a separate authorization boundary and is not in the current ES hot path.
-- `contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
+- `internal/contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
 - ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
 
 ## 7. Deliberate absences
@@ -147,8 +147,8 @@ These are current architectural absences, not omissions to fill automatically.
 
 **Reopened redesign seams under active pressure**
 
-- `contracts/evidence/v1` is now the only active shared artifact kernel for the AGS -> ARS -> ES path.
-- The current named workload-zone Vault config reference and workload-zone Vault blob schema now live in `contracts/runtimeconfig/v1` rather than in ES-local ad hoc shapes.
+- `internal/contracts/evidence/v1` is now the only active shared artifact kernel for the AGS -> ARS -> ES path.
+- The current named workload-zone Vault config reference and workload-zone Vault blob schema now live in `internal/contracts/runtimeconfig/v1` rather than in ES-local ad hoc shapes.
 - ARS currently combines storage integrity, registration, index shape, and canonical artifact retrieval in a way that influences AGS and ES choreography.
 - AGS currently owns publication plus evidence and fact assembly for the active artifact model, which makes its publish surface a high-pressure architectural seam.
 - ES currently carries the main request and runtime handoff composition burden, though its submit-side package resolution and staging conventions now live behind one explicit internal execution-package layout instead of drifting across helpers.
@@ -183,7 +183,7 @@ This file should stay architectural and top-level. It should not absorb detailed
 
 ## 11. Reopened redesign seams
 
-- The shared-kernel role and long-term scope of `contracts/evidence/v1`
+- The shared-kernel role and long-term scope of `internal/contracts/evidence/v1`
 - The ownership shape of the workload-zone Vault runtime-config reference and blob schema
 - The storage and discoverability shape of ARS
 - The publication and fact-assembly shape of AGS

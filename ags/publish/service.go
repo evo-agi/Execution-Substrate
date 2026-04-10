@@ -22,8 +22,8 @@ import (
 	"execution-substrate/ags/config"
 	"execution-substrate/ags/sign"
 	arsapi "execution-substrate/ars/api"
-	evidencev1 "execution-substrate/contracts/evidence/v1"
-	"execution-substrate/observability"
+	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
+	"execution-substrate/internal/observability"
 )
 
 const (

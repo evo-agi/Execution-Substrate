@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"execution-substrate/ags/publish"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const serviceName = "artifact-governance"

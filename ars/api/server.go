@@ -15,7 +15,7 @@ import (
 
 	"execution-substrate/ars/index"
 	"execution-substrate/ars/store"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const (
@@ -55,27 +55,27 @@ func (s *Server) Handler() http.Handler {
 		path := r.URL.EscapedPath()
 
 		switch {
-			case path == "/health":
-				if r.Method != http.MethodGet {
-					writeMethodNotAllowed(w, http.MethodGet)
-					return
-				}
-				s.handleHealth(w, r)
-			case path == registerPath:
-				if r.Method != http.MethodPost {
-					writeMethodNotAllowed(w, http.MethodPost)
-					return
-				}
-				if handled := s.requireWriterCaller(w, r); handled {
-					return
-				}
-				s.handleArtifactRegister(w, r)
-			case strings.HasPrefix(path, blobPathPrefix):
-				s.routeBlobRequest(w, r, path)
-			case strings.HasPrefix(path, artifactPathPrefix):
-				s.routeArtifactRequest(w, r, path)
-			default:
-				http.NotFound(w, r)
+		case path == "/health":
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w, http.MethodGet)
+				return
+			}
+			s.handleHealth(w, r)
+		case path == registerPath:
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			if handled := s.requireWriterCaller(w, r); handled {
+				return
+			}
+			s.handleArtifactRegister(w, r)
+		case strings.HasPrefix(path, blobPathPrefix):
+			s.routeBlobRequest(w, r, path)
+		case strings.HasPrefix(path, artifactPathPrefix):
+			s.routeArtifactRequest(w, r, path)
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 }
@@ -126,41 +126,41 @@ func (s *Server) routeBlobRequest(w http.ResponseWriter, r *http.Request, path s
 	rest := strings.TrimPrefix(path, blobPathPrefix)
 
 	switch {
-		case isSingleSegment(rest) && !strings.HasSuffix(rest, ":bytes") && !strings.HasSuffix(rest, ":json"):
-			switch r.Method {
-				case http.MethodHead:
-					if handled := s.requireAuthorizedCaller(w, r); handled {
-						return
-					}
-					s.handleBlobExists(w, rest)
-				case http.MethodPut:
-					if handled := s.requireWriterCaller(w, r); handled {
-						return
-					}
-					s.handleBlobUpload(w, r, rest)
-				default:
-					writeMethodNotAllowed(w, http.MethodHead, http.MethodPut)
-			}
-		case strings.HasSuffix(rest, ":bytes") && isSingleSegment(strings.TrimSuffix(rest, ":bytes")):
-			if r.Method != http.MethodGet {
-				writeMethodNotAllowed(w, http.MethodGet)
-				return
-			}
+	case isSingleSegment(rest) && !strings.HasSuffix(rest, ":bytes") && !strings.HasSuffix(rest, ":json"):
+		switch r.Method {
+		case http.MethodHead:
 			if handled := s.requireAuthorizedCaller(w, r); handled {
 				return
 			}
-			s.handleBlobBytes(w, strings.TrimSuffix(rest, ":bytes"))
-		case strings.HasSuffix(rest, ":json") && isSingleSegment(strings.TrimSuffix(rest, ":json")):
-			if r.Method != http.MethodGet {
-				writeMethodNotAllowed(w, http.MethodGet)
+			s.handleBlobExists(w, rest)
+		case http.MethodPut:
+			if handled := s.requireWriterCaller(w, r); handled {
 				return
 			}
-			if handled := s.requireAuthorizedCaller(w, r); handled {
-				return
-			}
-			s.handleBlobJSON(w, strings.TrimSuffix(rest, ":json"))
+			s.handleBlobUpload(w, r, rest)
 		default:
-			http.NotFound(w, r)
+			writeMethodNotAllowed(w, http.MethodHead, http.MethodPut)
+		}
+	case strings.HasSuffix(rest, ":bytes") && isSingleSegment(strings.TrimSuffix(rest, ":bytes")):
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if handled := s.requireAuthorizedCaller(w, r); handled {
+			return
+		}
+		s.handleBlobBytes(w, strings.TrimSuffix(rest, ":bytes"))
+	case strings.HasSuffix(rest, ":json") && isSingleSegment(strings.TrimSuffix(rest, ":json")):
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if handled := s.requireAuthorizedCaller(w, r); handled {
+			return
+		}
+		s.handleBlobJSON(w, strings.TrimSuffix(rest, ":json"))
+	default:
+		http.NotFound(w, r)
 	}
 }
 
@@ -209,12 +209,12 @@ func (s *Server) handleBlobExists(w http.ResponseWriter, rawDigest string) {
 		}
 		var corrupt store.BlobCorruptError
 		switch {
-			case errors.Is(err, store.ErrBlobNotFound):
-				w.WriteHeader(http.StatusNotFound)
-			case errors.As(err, &corrupt):
-				w.WriteHeader(http.StatusInternalServerError)
-			default:
-				w.WriteHeader(http.StatusInternalServerError)
+		case errors.Is(err, store.ErrBlobNotFound):
+			w.WriteHeader(http.StatusNotFound)
+		case errors.As(err, &corrupt):
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
 		}
 		return
 	}
@@ -247,26 +247,26 @@ func (s *Server) handleBlobUpload(w http.ResponseWriter, r *http.Request, rawDig
 		var mismatch store.BlobDigestMismatchError
 		var corrupt store.BlobCorruptError
 		switch {
-			case isInvalidDigest(err):
-				writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
-					Error:  "invalid digest",
-					Digest: digest,
-				})
-			case errors.As(err, &mismatch):
-				writeJSON(w, http.StatusConflict, BlobErrorResponse{
-					Error:  "blob digest does not match request path",
-					Digest: mismatch.Digest,
-				})
-			case errors.As(err, &corrupt):
-				writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
-					Error:  "stored blob digest mismatch",
-					Digest: corrupt.Digest,
-				})
-			default:
-				writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
-					Error:  "internal server error",
-					Digest: digest,
-				})
+		case isInvalidDigest(err):
+			writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
+				Error:  "invalid digest",
+				Digest: digest,
+			})
+		case errors.As(err, &mismatch):
+			writeJSON(w, http.StatusConflict, BlobErrorResponse{
+				Error:  "blob digest does not match request path",
+				Digest: mismatch.Digest,
+			})
+		case errors.As(err, &corrupt):
+			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+				Error:  "stored blob digest mismatch",
+				Digest: corrupt.Digest,
+			})
+		default:
+			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+				Error:  "internal server error",
+				Digest: digest,
+			})
 		}
 		return
 	}
@@ -366,64 +366,64 @@ func (s *Server) handleArtifactRead(w http.ResponseWriter, rawArtifactDigest str
 
 	referencedDigest := discoveryDigest
 	switch kind {
-		case index.KindDiscovery:
-			// The primary runtime-facing discoverability surface is the discovery record itself.
-		case index.KindDescriptor:
-			if strings.TrimSpace(entry.DescriptorDigest) == "" {
-				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
-					Error:          "artifact data not registered",
-					ArtifactDigest: artifactDigest,
-				})
-				return
-			}
-			_, referencedDigest, data, response, status, ok = s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
-			if !ok {
-				writeJSON(w, status, response)
-				return
-			}
-		case index.KindEvidence:
-			referencedDigest = strings.TrimSpace(discovery.Evidence.Digest)
-			if referencedDigest == "" {
-				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
-					Error:          "artifact data not registered",
-					ArtifactDigest: artifactDigest,
-				})
-				return
-			}
-			data, response, status, ok = s.readArtifactJSONBlob(artifactDigest, referencedDigest)
-			if !ok {
-				writeJSON(w, status, response)
-				return
-			}
-		case index.KindManifest:
-			if strings.TrimSpace(entry.DescriptorDigest) == "" {
-				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
-					Error:          "artifact data not registered",
-					ArtifactDigest: artifactDigest,
-				})
-				return
-			}
-			descriptor, _, _, response, status, ok := s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
-			if !ok {
-				writeJSON(w, status, response)
-				return
-			}
-			referencedDigest, ok = descriptorSupportingDigest(descriptor, "manifest")
-			if !ok {
-				writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
-					Error:          "artifact data not registered",
-					ArtifactDigest: artifactDigest,
-				})
-				return
-			}
-			data, response, status, ok = s.readArtifactJSONBlob(artifactDigest, referencedDigest)
-			if !ok {
-				writeJSON(w, status, response)
-				return
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
+	case index.KindDiscovery:
+		// The primary runtime-facing discoverability surface is the discovery record itself.
+	case index.KindDescriptor:
+		if strings.TrimSpace(entry.DescriptorDigest) == "" {
+			writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+				Error:          "artifact data not registered",
+				ArtifactDigest: artifactDigest,
+			})
 			return
+		}
+		_, referencedDigest, data, response, status, ok = s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
+		if !ok {
+			writeJSON(w, status, response)
+			return
+		}
+	case index.KindEvidence:
+		referencedDigest = strings.TrimSpace(discovery.Evidence.Digest)
+		if referencedDigest == "" {
+			writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+				Error:          "artifact data not registered",
+				ArtifactDigest: artifactDigest,
+			})
+			return
+		}
+		data, response, status, ok = s.readArtifactJSONBlob(artifactDigest, referencedDigest)
+		if !ok {
+			writeJSON(w, status, response)
+			return
+		}
+	case index.KindManifest:
+		if strings.TrimSpace(entry.DescriptorDigest) == "" {
+			writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+				Error:          "artifact data not registered",
+				ArtifactDigest: artifactDigest,
+			})
+			return
+		}
+		descriptor, _, _, response, status, ok := s.loadArtifactDescriptor(artifactDigest, entry.DescriptorDigest)
+		if !ok {
+			writeJSON(w, status, response)
+			return
+		}
+		referencedDigest, ok = descriptorSupportingDigest(descriptor, "manifest")
+		if !ok {
+			writeJSON(w, http.StatusNotFound, ArtifactErrorResponse{
+				Error:          "artifact data not registered",
+				ArtifactDigest: artifactDigest,
+			})
+			return
+		}
+		data, response, status, ok = s.readArtifactJSONBlob(artifactDigest, referencedDigest)
+		if !ok {
+			writeJSON(w, status, response)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -485,16 +485,16 @@ func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		var conflict index.ConflictError
 		switch {
-			case errors.As(err, &conflict):
-				writeJSON(w, http.StatusConflict, ArtifactErrorResponse{
-					Error:          "artifact already registered with different digests",
-					ArtifactDigest: conflict.ArtifactDigest,
-				})
-			default:
-				writeJSON(w, http.StatusInternalServerError, ArtifactErrorResponse{
-					Error:          "internal server error",
-					ArtifactDigest: entry.ArtifactDigest,
-				})
+		case errors.As(err, &conflict):
+			writeJSON(w, http.StatusConflict, ArtifactErrorResponse{
+				Error:          "artifact already registered with different digests",
+				ArtifactDigest: conflict.ArtifactDigest,
+			})
+		default:
+			writeJSON(w, http.StatusInternalServerError, ArtifactErrorResponse{
+				Error:          "internal server error",
+				ArtifactDigest: entry.ArtifactDigest,
+			})
 		}
 		return
 	}
@@ -515,26 +515,26 @@ func (s *Server) handleArtifactRegister(w http.ResponseWriter, r *http.Request) 
 func (s *Server) writeBlobReadError(w http.ResponseWriter, digest string, err error) {
 	var corrupt store.BlobCorruptError
 	switch {
-		case isInvalidDigest(err):
-			writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
-				Error:  "invalid digest",
-				Digest: digest,
-			})
-		case errors.Is(err, store.ErrBlobNotFound):
-			writeJSON(w, http.StatusNotFound, BlobErrorResponse{
-				Error:  "blob not found",
-				Digest: digest,
-			})
-		case errors.As(err, &corrupt):
-			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
-				Error:  "stored blob digest mismatch",
-				Digest: corrupt.Digest,
-			})
-		default:
-			writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
-				Error:  "internal server error",
-				Digest: digest,
-			})
+	case isInvalidDigest(err):
+		writeJSON(w, http.StatusBadRequest, BlobErrorResponse{
+			Error:  "invalid digest",
+			Digest: digest,
+		})
+	case errors.Is(err, store.ErrBlobNotFound):
+		writeJSON(w, http.StatusNotFound, BlobErrorResponse{
+			Error:  "blob not found",
+			Digest: digest,
+		})
+	case errors.As(err, &corrupt):
+		writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+			Error:  "stored blob digest mismatch",
+			Digest: corrupt.Digest,
+		})
+	default:
+		writeJSON(w, http.StatusInternalServerError, BlobErrorResponse{
+			Error:  "internal server error",
+			Digest: digest,
+		})
 	}
 }
 
@@ -1043,24 +1043,24 @@ func (s *Server) readArtifactBlob(artifactDigest string, digest string, expectJS
 	if err != nil {
 		var corrupt store.BlobCorruptError
 		switch {
-			case errors.Is(err, store.ErrBlobNotFound):
-				return nil, ArtifactErrorResponse{
-					Error:          "referenced blob not found",
-					ArtifactDigest: artifactDigest,
-					Digest:         digest,
-				}, http.StatusNotFound, false
-			case errors.As(err, &corrupt):
-				return nil, ArtifactErrorResponse{
-					Error:          "stored blob digest mismatch",
-					ArtifactDigest: artifactDigest,
-					Digest:         corrupt.Digest,
-				}, http.StatusInternalServerError, false
-			default:
-				return nil, ArtifactErrorResponse{
-					Error:          "internal server error",
-					ArtifactDigest: artifactDigest,
-					Digest:         digest,
-				}, http.StatusInternalServerError, false
+		case errors.Is(err, store.ErrBlobNotFound):
+			return nil, ArtifactErrorResponse{
+				Error:          "referenced blob not found",
+				ArtifactDigest: artifactDigest,
+				Digest:         digest,
+			}, http.StatusNotFound, false
+		case errors.As(err, &corrupt):
+			return nil, ArtifactErrorResponse{
+				Error:          "stored blob digest mismatch",
+				ArtifactDigest: artifactDigest,
+				Digest:         corrupt.Digest,
+			}, http.StatusInternalServerError, false
+		default:
+			return nil, ArtifactErrorResponse{
+				Error:          "internal server error",
+				ArtifactDigest: artifactDigest,
+				Digest:         digest,
+			}, http.StatusInternalServerError, false
 		}
 	}
 	if expectJSON && !json.Valid(data) {

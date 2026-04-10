@@ -48,8 +48,8 @@ Those absences are current facts, not design commitments.
 - EGS publishes trust policy; ES consumes that policy. EGS does not sit in the runtime execution path after ES has loaded and verified the trust model.
 - CGS is a separate authorization boundary. It is active today, but it is not part of the current ES hot path.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
-- `contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
-- `contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
+- `internal/contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
+- `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
 
 ## 4A. Proof Bootstrap Ownership
 
@@ -82,9 +82,9 @@ Provide the explicit shared reference and config schema ES uses to resolve workl
 
 **Current ownership**
 
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
-- `contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
 - ES startup validation that `runtime_config.workload_zone_vault_config_ref` exists before ES serves traffic
 
 **Explicit non-ownership**
@@ -171,9 +171,9 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - Publish API at `/v1/artifacts:publish`
 - Artifact digest derivation from package-facing identity inputs rooted in `payload_digest`, `artifact_type`, and `intent_digest`
 - Evidence-native publish request grammar with `artifact`, `publication`, and `admission` sections
-- Construction of the aggregate `contracts/evidence/v1` publication record, with package identity/publication claims kept separate from narrow shared derivation request-binding authorization claims and execution/runtime claims
+- Construction of the aggregate `internal/contracts/evidence/v1` publication record, with package identity/publication claims kept separate from narrow shared derivation request-binding authorization claims and execution/runtime claims
 - Construction of manifest as supporting publication data
-- Signing of the aggregate artifact-evidence record using `contracts/evidence/v1`
+- Signing of the aggregate artifact-evidence record using `internal/contracts/evidence/v1`
 - Bounded publish caller authorization through configured SPIFFE path-prefix allowlists, with the current repo-owned configs remaining operator-only
 - Uploading blobs to ARS and registering the evidence-centered artifact record with ARS
 
@@ -208,7 +208,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 
 - Whether AGS should continue to be the publication boundary for the current fact family
 - Whether the current fact assembly model should continue to define the shared cross-service package
-- Whether `contracts/evidence/v1` should remain the architecture-defining kernel behind AGS publication
+- Whether `internal/contracts/evidence/v1` should remain the architecture-defining kernel behind AGS publication
 
 ## 8. ES boundary
 
@@ -365,15 +365,15 @@ Provide a separate authorize-only decision surface for workload credential acces
 
 | Package / layer | Current role | Boundary note |
 | --- | --- | --- |
-| `contracts/evidence/v1` | Active shared kernel for the aggregate AGS -> ARS -> ES artifact-evidence path | Cross-service kernel and redesign pressure point, but not a standalone service boundary |
-| `observability` | Cross-cutting utility for request tracing, dependency logging, and trace propagation decisions | Support layer only; it does not own business behavior or define service authority |
+| `internal/contracts/evidence/v1` | Active shared kernel for the aggregate AGS -> ARS -> ES artifact-evidence path | Cross-service kernel and redesign pressure point, but not a standalone service boundary |
+| `internal/observability` | Cross-cutting utility for request tracing, dependency logging, and trace propagation decisions | Support layer only; it does not own business behavior or define service authority |
 | service bootstrap / config entrypoints | Service-local startup wiring, config loading, auth setup, and dependency client construction | Support layer; may reveal coupling, but does not by itself define a service boundary |
 
 These layers can create coupling pressure without owning domain responsibilities. Future edits must not let a shared package silently become a de facto new service boundary.
 
 ## 12. Boundary leaks and pressure points
 
-- `contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
+- `internal/contracts/evidence/v1` now concentrates the shared artifact-kernel role between AGS, ARS, and ES. That shared-kernel scope is active today and remains a redesign pressure point rather than a declared final boundary split.
 - ES, ARS, and the runtime-config surface currently participate in a tight choreography around reference resolution, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
 - The ARS runtime-facing discovery record and secondary descriptor support path constrain both AGS publication and ES discoverability. That storage-facing model still reaches further into service interaction than a pure storage boundary would.
 - ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions, including a temporary legacy alias. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
@@ -396,7 +396,7 @@ These layers can create coupling pressure without owning domain responsibilities
 - EGS policy-publication shape, especially the current trust model form
 - CGS authorize and policy-input shape, especially the role of `id.conf`
 - ES runtime identity handoff surface, including reserved runtime workspace conventions
-- The role of `contracts/evidence/v1` in cross-boundary coupling
+- The role of `internal/contracts/evidence/v1` in cross-boundary coupling
 
 These seams are intentionally open in the redesign phase. Future readers must not treat the current shapes as fixed endpoints without an explicit decision.
 

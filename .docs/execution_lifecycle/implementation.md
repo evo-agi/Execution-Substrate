@@ -118,7 +118,7 @@ What the app layer delegates:
 4. Validate the discovery/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive only the remaining shared runtime inputs from `claims.admission.execution`: env allowlist, required capabilities, `target_platform`, and `network_access`.
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
 6. Fetch the workload-zone Vault config blob from ARS using that reference.
-7. Decode and validate the workload-zone Vault blob through `contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`.
+7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`.
 8. Assemble and return `PrepareResult`.
 
 What `Prepare` reads:

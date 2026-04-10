@@ -68,8 +68,8 @@ In the current bounded execution slice, successful runs keep `execution.staging_
 High-level layout:
 
 - `ars/`, `ags/`, `egs/`, `cgs/`, `es/` for the active Go services
-- `contracts/` for shared cross-service packages
-- `observability/` for cross-cutting support code
+- `internal/contracts/` for shared cross-service packages
+- `internal/observability/` for cross-cutting support code
 - `.docs/` for authoritative design, contract, boundary, lifecycle, and governance docs
 - `.runbooks/` for operator-facing bring-up and verification steps
 - `scripts/` and `.examples/` for local verification helpers and inputs

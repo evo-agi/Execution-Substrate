@@ -47,7 +47,7 @@ This repository does not ship ready-to-run service config examples. Operators mu
 ### Minimal valid configuration
 
 - `runtime_config.workload_zone_vault_config_ref.digest` must contain the digest of the named workload-zone Vault config blob
-- the current workload-zone Vault blob must satisfy `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- the current workload-zone Vault blob must satisfy `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
 
 Minimal reference example:
 
@@ -207,7 +207,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - Nomad for real execution submit
 - Docker under Nomad for container runtime
 - workload-zone Vault config reference installed in ES startup config, with the blob available through ARS
-- the current workload-zone Vault blob must satisfy the `contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob` schema
+- the current workload-zone Vault blob must satisfy the `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob` schema
 
 ### Minimal valid configuration
 

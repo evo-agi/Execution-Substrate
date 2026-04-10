@@ -27,7 +27,7 @@ import (
 	"execution-substrate/ars/config"
 	"execution-substrate/ars/index"
 	"execution-substrate/ars/store"
-	evidencev1 "execution-substrate/contracts/evidence/v1"
+	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
 func TestLoadConfigRejectsMissingFile(t *testing.T) {

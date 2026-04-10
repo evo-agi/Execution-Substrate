@@ -8,7 +8,7 @@ import (
 
 	"execution-substrate/egs/model"
 	"execution-substrate/egs/sign"
-	"execution-substrate/observability"
+	"execution-substrate/internal/observability"
 )
 
 const serviceName = "execution-governance"
