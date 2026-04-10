@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -149,5 +151,197 @@ func TestWorkloadVaultAuthResolveRejectsMissingVaultRole(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auth role") {
 		t.Fatalf("expected missing auth role error, got %v", err)
+	}
+}
+
+func TestConfigValidateAllowsPrepareOnlyConfiguration(t *testing.T) {
+	cfg := validTestConfig()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected prepare-only config to validate, got %v", err)
+	}
+}
+
+func TestConfigValidateRequiresExecutionWhenSubmitConfigured(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Nomad = NomadConfig{
+		BaseURL:        "http://127.0.0.1:4646",
+		Datacenter:     "dc1",
+		TimeoutSeconds: 5,
+	}
+	cfg.Execution = ExecutionConfig{
+		StagingRootDir: "/tmp/es-stage",
+		BaseImage:      "alpine:3.20",
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatalf("expected submit-configured validation failure")
+	}
+	if !strings.Contains(err.Error(), "execution.runtime_support_binary") {
+		t.Fatalf("expected execution validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsTrailingDataAfterFirstDocument(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "es.json")
+	if err := os.WriteFile(configPath, []byte(validTestConfigJSON()+"\n{}"), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatalf("expected trailing JSON data to be rejected")
+	}
+	if !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing data error, got %v", err)
+	}
+}
+
+func TestWorkloadVaultAuthValidateRejectsUnsupportedMode(t *testing.T) {
+	err := WorkloadVaultAuthConfig{DefaultMode: WorkloadVaultAuthMode("other")}.Validate()
+	if err == nil {
+		t.Fatalf("expected unsupported workload vault auth mode to fail validation")
+	}
+	if !strings.Contains(err.Error(), "workload_vault_auth.default_mode") {
+		t.Fatalf("expected workload vault auth mode validation error, got %v", err)
+	}
+}
+
+func validTestConfig() Config {
+	return Config{
+		HTTP: HTTPConfig{
+			BindAddress:            "127.0.0.1",
+			Port:                   8443,
+			ReadTimeoutSeconds:     5,
+			WriteTimeoutSeconds:    5,
+			ShutdownTimeoutSeconds: 5,
+		},
+		TLS: TLSConfig{
+			CertFile:     "/tmp/es.crt",
+			KeyFile:      "/tmp/es.key",
+			ClientCAFile: "/tmp/ca.crt",
+		},
+		Security: SecurityConfig{
+			BootstrapIssuerCommonName: "Execution Bootstrap",
+		},
+		Authorization: AuthorizationConfig{
+			AllowedSPIFFEPathPrefixes: []string{"operator"},
+		},
+		Dependencies: DependenciesConfig{
+			ArtifactRegistry: validTestDependencyConfig(),
+			ExecutionGovernance: DependencyConfig{
+				BaseURL:        "https://egs.internal:8443",
+				ServerName:     "egs.internal",
+				ClientCertFile: "/tmp/es-client.crt",
+				ClientKeyFile:  "/tmp/es-client.key",
+				RootCAFile:     "/tmp/ca.crt",
+				TimeoutSeconds: 5,
+			},
+		},
+		RuntimeConfig: RuntimeConfigConfig{
+			WorkloadZoneVaultConfigRef: runtimeconfigv1.WorkloadZoneVaultConfigRef{
+				Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+		Verification: VerificationConfig{
+			TrustModel:              validTestSignerVerifierConfig(),
+			Provenance:              validTestSignerVerifierConfig(),
+			DerivationAttestation:   validTestSignerVerifierConfig(),
+			WorkloadIdentityBinding: validTestSignerVerifierConfig(),
+		},
+		WorkloadVaultAuth: WorkloadVaultAuthConfig{
+			DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
+		},
+	}
+}
+
+func validTestConfigJSON() string {
+	return `{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8443,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/tmp/es.crt",
+    "key_file": "/tmp/es.key",
+    "client_ca_file": "/tmp/ca.crt"
+  },
+  "security": {
+    "bootstrap_issuer_common_name": "Execution Bootstrap"
+  },
+  "authorization": {
+    "allowed_spiffe_path_prefixes": ["operator"]
+  },
+  "dependencies": {
+    "artifact_registry": {
+      "base_url": "https://ars.internal:8443",
+      "server_name": "ars.internal",
+      "client_cert_file": "/tmp/es-client.crt",
+      "client_key_file": "/tmp/es-client.key",
+      "root_ca_file": "/tmp/ca.crt",
+      "timeout_seconds": 5
+    },
+    "execution_governance": {
+      "base_url": "https://egs.internal:8443",
+      "server_name": "egs.internal",
+      "client_cert_file": "/tmp/es-client.crt",
+      "client_key_file": "/tmp/es-client.key",
+      "root_ca_file": "/tmp/ca.crt",
+      "timeout_seconds": 5
+    }
+  },
+  "runtime_config": {
+    "workload_zone_vault_config_ref": {
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  },
+  "verification": {
+    "trust_model": {
+      "algorithm": "ed25519",
+      "key_id": "test-key",
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "provenance": {
+      "algorithm": "ed25519",
+      "key_id": "test-key",
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "derivation_attestation": {
+      "algorithm": "ed25519",
+      "key_id": "test-key",
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "workload_identity_binding": {
+      "algorithm": "ed25519",
+      "key_id": "test-key",
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "workload_vault_auth": {
+    "default_mode": "vault_identity_jwt"
+  }
+}`
+}
+
+func validTestDependencyConfig() DependencyConfig {
+	return DependencyConfig{
+		BaseURL:        "https://ars.internal:8443",
+		ServerName:     "ars.internal",
+		ClientCertFile: "/tmp/es-client.crt",
+		ClientKeyFile:  "/tmp/es-client.key",
+		RootCAFile:     "/tmp/ca.crt",
+		TimeoutSeconds: 5,
+	}
+}
+
+func validTestSignerVerifierConfig() SignerVerifierConfig {
+	return SignerVerifierConfig{
+		Algorithm:    "ed25519",
+		KeyID:        "test-key",
+		PublicKeyHex: strings.Repeat("00", 32),
 	}
 }
