@@ -214,7 +214,7 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 
 **Purpose**
 
-Own admission, compose upstream contract checks into an execution decision, submit work to Nomad, and project execution status/logs without taking ownership of underlying lifecycle state.
+Own admission, compose upstream contract checks into an execution decision, submit work to Nomad, project execution status/logs, and retain bounded terminal result bundles without taking ownership of underlying lifecycle state or orchestration decisions.
 
 **Current ownership**
 
@@ -223,12 +223,14 @@ Own admission, compose upstream contract checks into an execution decision, subm
   - `/v1/executions:submit`
   - `/v1/executions/{run_id}/status`
   - `/v1/executions/{run_id}/logs`
+  - `/v1/executions/{run_id}/result`
   - `/v1/executions/{run_id}:cancel`
 - Admission validation and execution request shaping
 - Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state
+- Bounded retained-result storage for opaque tar.gz bundles captured from `/execution/run/result` in the current `static-script` slice
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
 
@@ -238,6 +240,8 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Artifact storage
 - Trust model publication
 - Canonical lifecycle state independent of Nomad
+- Control Plane checkpoint, review, accept, revise, fail, hold, resume, reject, escalation, or terminal-run semantics
+- Semantic interpretation of workload-authored result bundle contents
 - Vault token minting, storage, or rotation
 - Runtime identity endpoint implementation inside the workload
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
@@ -259,21 +263,23 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
-- ES now localizes payload staging, mount staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths and runtime-identity backing subtree remain active conventions inside that layout.
+- ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
+- ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 
 **Temporary compatibility edges**
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
-- Current runtime mount conventions use `/execution/staged`, `/execution/run`, and the current ES-owned runtime-identity backing layout.
+- Current runtime mount conventions use `/execution/staged`, `/execution/run`, `/execution/run/result`, and the current ES-owned runtime-identity backing layout.
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
+- `GET /v1/executions/{run_id}/result` is a bounded retained opaque bundle surface for the current slice, not a broad output platform.
 
 **Reopened seams**
 
 - The long-term ES request model and package-resolution shape
 - The current division between prepare-time composition and submit-time execution
-- The current execution-package layout and reserved path conventions
+- The current execution-package layout, retained-result behavior, and reserved path conventions
 - The final owner and vocabulary for the remaining shared execution/runtime inputs
 
 ## 9. EGS boundary

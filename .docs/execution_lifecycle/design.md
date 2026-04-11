@@ -26,6 +26,7 @@ These labels are intentionally separate. A rule can be real today, bounded in sc
 - `POST /v1/executions:submit`
 - `GET /v1/executions/{run_id}/status`
 - `GET /v1/executions/{run_id}/logs`
+- `GET /v1/executions/{run_id}/result`
 - `POST /v1/executions/{run_id}:cancel`
 
 Current slice summary:
@@ -33,6 +34,7 @@ Current slice summary:
 - `:prepare` is active today, but it is explicitly a bounded preflight surface.
 - `:submit` is the real execution-submission surface in the current slice.
 - Lifecycle after submission is Nomad-backed.
+- Terminal result retrieval is bounded to an ES-retained opaque bundle for the current `static-script` slice.
 - ES is a composition and submission boundary, not a scheduler.
 
 ## 4. Authority boundaries across the lifecycle
@@ -43,7 +45,8 @@ Current slice summary:
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
 | Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and injects endpoint-discovery environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
-| Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, resolves the current internal execution locator, reads Nomad job and projected-allocation state, reads task stdout, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
+| Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, resolves the current internal execution locator, reads Nomad job and projected-allocation state, reads task stdout, fetches retained terminal result bundles when present, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
+| Terminal result retention | ES for the retained opaque bundle only | The workload may write files under `/execution/run/result` in the current `static-script` slice. ES may package those files into an opaque retained tar.gz bundle under `execution.results_root_dir` before successful staging cleanup. ES does not parse those files into orchestration, checkpoint, or Control Plane semantics. |
 
 ## 5. Phase model
 
@@ -90,9 +93,24 @@ At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
 - `logs` reads stdout for the selected task from Nomad
+- `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory
 - `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
+
+### 5.4 Terminal result materialization phase
+
+The current `static-script` slice now reserves `/execution/run/result` as a workload-authored terminal output directory.
+
+At a design level:
+
+- workload code may write result files there
+- ES treats the directory contents as opaque output material
+- when ES observes terminal execution through `status`, `logs`, or `result`, it idempotently packages non-empty result contents into a retained tar.gz bundle keyed by `run_id`
+- retained bundles live under `execution.results_root_dir`, outside `execution.staging_root_dir`
+- successful staging cleanup does not remove retained bundles
+
+This is intentionally not a general output platform. It does not create callbacks, streaming output, checkpoint promotion, review/accept/revise branching, or an ES-owned terminal decision model.
 
 ## 6. Current lifecycle invariants
 
@@ -105,7 +123,8 @@ This is a bounded projection model, not rich execution tracking. ES does not mai
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
 - Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.
 - Docker is the task runtime under Nomad for the current submitted execution slice.
-- Submit-created host staging remains in place only while the workload may still depend on its bind mounts; after ES observes terminal success, the current slice cleans that staging best-effort while retaining non-success outcomes for debugging.
+- Submit-created host staging remains in place only while the workload may still depend on its bind mounts; after ES observes terminal success, the current slice attempts result retention and then cleans that staging best-effort while retaining non-success outcomes for debugging.
+- Retained result bundles are ES-owned opaque output artifacts, not durable lifecycle records or orchestration state.
 
 ## 7. Bounded slice rules
 
@@ -116,6 +135,7 @@ This is a bounded projection model, not rich execution tracking. ES does not mai
 - The current slice assumes one meaningful allocation per execution.
 - Lifecycle projection currently uses an explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex`.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
+- The current result surface is intentionally narrow: a retained tar.gz bundle of `/execution/run/result` for the `static-script` slice.
 - The current lifecycle model is intentionally minimal rather than a broad orchestration API.
 - Retries and reschedule behavior are not part of the current ES slice.
 
@@ -133,6 +153,8 @@ These rules are active today, but they should be treated as scoped slice design 
 - No runtime token minting owned by ES
 - No synthetic ES-specific lifecycle phase model
 - No background lifecycle workers or repair loops
+- No ES interpretation of retained terminal result bundle semantics
+- No ES-owned checkpoint, review, or terminal-finalization model
 
 These absences are part of the current design shape, not missing implementation work.
 
@@ -145,7 +167,7 @@ These absences are part of the current design shape, not missing implementation 
 - Lifecycle lookup currently depends on an explicit ES-owned execution-locator policy whose current mapping is `run_id -> exec-<run_id>`.
 - Projected-allocation selection is coherent only because the current slice assumes no meaningful retry or reschedule behavior.
 - Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
-- `:submit` now localizes its current staging and package-resolution behavior behind one internal execution-package layout, but the current `/execution/...` runtime path conventions and mount layout remain bounded slice rules rather than settled architecture.
+- `:submit` now localizes its current staging, result directory, and package-resolution behavior behind one internal execution-package layout, but the current `/execution/...` runtime path conventions, result directory convention, and mount layout remain bounded slice rules rather than settled architecture.
 - ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
 
 ## 10. Runtime identity and lifecycle interaction
@@ -154,12 +176,14 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 
 - `/execution/staged`
 - `/execution/run`
+- `/execution/run/result`
 - the current ES-owned runtime-identity subtree that backs the injected endpoint convention
 
 Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
+- `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
 - ES does not become the long-lived runtime identity owner. The bounded slice-1 implementation target is a platform-owned helper launched by a platform-owned supervisor inside the workload task.
 - The first runtime-identity slice deliberately narrows workload runtime compatibility to a fixed non-root workload process while the helper remains root-owned and helper-private access to the raw SPIRE channel is preserved.
@@ -189,6 +213,7 @@ This file should remain the high-level lifecycle design map.
 - The internal execution-locator policy behind `run_id` lookup
 - Latest-allocation lifecycle projection
 - The current execution-package layout and `/execution/...` runtime path conventions inside `:submit`
+- The current `/execution/run/result` terminal result convention
 - Runtime identity reserved-path and endpoint conventions
 - The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
 

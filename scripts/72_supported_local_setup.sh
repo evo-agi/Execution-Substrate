@@ -886,6 +886,7 @@ write_runtime_blob_and_configs() {
   local ars_storage="${proof_dir}/ars-storage"
   local index_path="${proof_dir}/artifact-index.json"
   local staging_root="${proof_dir}/es-staging"
+  local results_root="${proof_dir}/es-results"
   local socket_path="${proof_dir}/spire-agent/public/api.sock"
   local digest_file="${proof_dir}/workload-zone-vault-config-digest.txt"
 
@@ -895,6 +896,7 @@ write_runtime_blob_and_configs() {
     "${ars_storage}" \
     "${index_path}" \
     "${staging_root}" \
+    "${results_root}" \
     "${socket_path}" \
     "${digest_file}" \
     "${RUNTIME_SUPPORT_INSTALL_PATH}" \
@@ -921,21 +923,22 @@ tls_dir = pathlib.Path(sys.argv[2])
 ars_storage = pathlib.Path(sys.argv[3])
 index_path = pathlib.Path(sys.argv[4])
 staging_root = pathlib.Path(sys.argv[5])
-socket_path = pathlib.Path(sys.argv[6])
-digest_file = pathlib.Path(sys.argv[7])
-runtime_support_binary = sys.argv[8]
-vault_address = sys.argv[9]
-vault_auth_mount = sys.argv[10]
-vault_auth_role = sys.argv[11]
-vault_jwt_audience = sys.argv[12]
-ars_port = int(sys.argv[13])
-egs_port = int(sys.argv[14])
-ags_port = int(sys.argv[15])
-es_port = int(sys.argv[16])
-ars_host = sys.argv[17]
-egs_host = sys.argv[18]
-ags_host = sys.argv[19]
-es_host = sys.argv[20]
+results_root = pathlib.Path(sys.argv[6])
+socket_path = pathlib.Path(sys.argv[7])
+digest_file = pathlib.Path(sys.argv[8])
+runtime_support_binary = sys.argv[9]
+vault_address = sys.argv[10]
+vault_auth_mount = sys.argv[11]
+vault_auth_role = sys.argv[12]
+vault_jwt_audience = sys.argv[13]
+ars_port = int(sys.argv[14])
+egs_port = int(sys.argv[15])
+ags_port = int(sys.argv[16])
+es_port = int(sys.argv[17])
+ars_host = sys.argv[18]
+egs_host = sys.argv[19]
+ags_host = sys.argv[20]
+es_host = sys.argv[21]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator"]
 if allow_control_plane:
@@ -957,6 +960,7 @@ blob_path.write_bytes(blob_bytes)
 digest_file.write_text(digest + "\n", encoding="utf-8")
 index_path.write_text("{}\n", encoding="utf-8")
 staging_root.mkdir(parents=True, exist_ok=True)
+results_root.mkdir(parents=True, exist_ok=True)
 
 ars_cfg = {
     "http": {"bind_address": "127.0.0.1", "port": ars_port, "read_timeout_seconds": 5, "write_timeout_seconds": 5, "shutdown_timeout_seconds": 5},
@@ -1053,6 +1057,7 @@ es_cfg = {
     "nomad": {"base_url": "http://127.0.0.1:4646", "datacenter": "dc1", "timeout_seconds": 5},
     "execution": {
         "staging_root_dir": str(staging_root),
+        "results_root_dir": str(results_root),
         "base_image": "python:3.13-alpine",
         "runtime_support_binary": runtime_support_binary,
         "spire_workload_api_socket_path": str(socket_path),

@@ -25,9 +25,10 @@ These labels matter because implementation shape and public contract are related
 | `es/api/server.go` | HTTP route registration, caller authorization, request decoding, lifecycle path parsing, HTTP error shaping, handler-to-service dispatch | Admission logic, Nomad interaction, lifecycle state | This is where public lifecycle requests first enter ES |
 | `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
-| `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
+| `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, reserved result-path staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
 | `es/admission/submit.go` | `Submit`, execution-locator creation, payload fetch, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
-| `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
+| `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use, and terminal-result retention triggers | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
+| `es/admission/results.go` | Retained result bundle lookup, idempotent tar.gz packaging of `/execution/run/result`, and result endpoint service behavior | Output semantics, Control Plane checkpoint meaning, lifecycle ownership | This keeps the retained-result slice narrow and ES-owned without turning it into orchestration state |
 | `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env conventions, run-scoped endpoint derivation, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
 | `es/admission/mounts.go` | Runtime mount request validation, mount artifact revalidation, mount staging and archive extraction inside the run-scoped execution-package layout | General artifact publication, lifecycle state | This is where mount side effects and mount-specific trust checks live |
 
@@ -45,14 +46,14 @@ Related support files:
 - Route entrypoints are:
   - `handlePrepare -> service.Prepare`
   - `handleSubmit -> service.Submit`
-  - `handleLifecycleGet -> service.Status` or `service.Logs`
+  - `handleLifecycleGet -> service.Status`, `service.Logs`, or `service.Result`
   - `handleLifecyclePost -> service.Cancel`
 
 Where behavior lives:
 
 - Request decoding for `:prepare` and `:submit` happens in `decodeAuthorizedExecutionRequest`.
 - Caller authorization happens in `authorizeExecutionCaller`.
-- Lifecycle path parsing for `status`, `logs`, and `cancel` happens in `parseLifecycleRequest`.
+- Lifecycle path parsing for `status`, `logs`, `result`, and `cancel` happens in `parseLifecycleRequest`.
 - JSON error shaping happens in `writeJSON`.
 - Authorization failures use `writeText`.
 
@@ -88,7 +89,7 @@ Dependency wiring:
   - derivation attestation
   - workload identity binding
 - It creates the Nomad client only when submit is configured.
-- If submit is configured, it creates the local staging root on startup.
+- If submit is configured, it creates the local staging root and retained-results root on startup.
 
 **Implementation invariants**
 
@@ -292,15 +293,19 @@ Submission has visible local side effects under the configured staging root.
 - `stageExecutionInputs` creates the current run-scoped execution-package layout:
   - `<staging_root>/<run_id>/payload`
   - `<staging_root>/<run_id>/run`
+  - `<staging_root>/<run_id>/run/result`
 - Payload bytes are written to:
   - `<staging_root>/<run_id>/payload/artifact.tar.gz`
 - Mount staging uses the same run-scoped layout and creates:
   - `<staging_root>/<run_id>/mounts/<index>/contents`
+- Retained result bundles are written outside staging under:
+  - `<results_root>/<run_id>/result.tar.gz`
 
 Runtime-path effects in the Nomad job spec are now assembled from that same internal layout:
 
 - Host `payloadDir` is bind-mounted to `/execution/staged`
 - Host `runDir` is bind-mounted to `/execution/run`
+- The reserved workload result directory is visible as `/execution/run/result`
 - The directory containing the configured SPIRE Workload API socket is bind-mounted under the helper-private runtime-identity internal subtree, and the runtime supervisor materializes the fixed helper-private socket alias from that mounted source directory
 - Runtime identity workspace is mounted as tmpfs at the run-scoped workspace derived from the discovered endpoint
 
@@ -308,9 +313,11 @@ Cleanup behavior visible in code:
 
 - Failed submits remove the staged root directory.
 - Successful submits retain host staging only while the run may still depend on it.
-- ES best-effort removes `execution.staging_root_dir/<run_id>/` after `status` or `logs` observes terminal success for the run.
+- ES attempts idempotent retained-result capture from `<staging_root>/<run_id>/run/result` when `status`, `logs`, or `result` observes terminal execution.
+- ES best-effort removes `execution.staging_root_dir/<run_id>/` after `status` or `logs` observes terminal success for the run and result retention has been attempted.
 - Failed, canceled, lost, or otherwise ambiguous outcomes retain their staging root for debugging.
 - The runtime-identity workspace is not host-backed by the submit path.
+- Retained result bundles survive successful staging cleanup because they are stored under `execution.results_root_dir`.
 
 **Current simplification**
 
@@ -330,6 +337,7 @@ Cleanup behavior visible in code:
   - Docker driver
 - The wrapper shell command:
   - creates `/execution/run/work`
+  - creates `/execution/run/result`
   - creates the runtime-identity workspace path
   - untars the staged artifact into the work directory
   - `chmod +x` on `entrypoint`
@@ -361,7 +369,33 @@ How Docker appears in the implementation:
 
 - The implementation assumes one meaningful job, one meaningful task group, one meaningful task, and one meaningful allocation path in the current slice.
 
-## 12. Test-backed implementation facts
+## 12. Retained result implementation
+
+`results.go`, `lifecycle.go`, and `executionpackage.go` together implement the current retained-result slice.
+
+**Observed current implementation path**
+
+- `executionpackage.go` reserves host path `<staging_root>/<run_id>/run/result` and container path `/execution/run/result`.
+- The runtime supervisor creates the result directory as workload-writable before launching the fixed non-root workload process and normalizes result tree readability after workload exit.
+- `Status` attempts retention whenever it observes terminal execution.
+- `Logs` attempts retention whenever it observes a terminal task before any successful-stage cleanup.
+- `Result` first serves an already retained bundle if one exists, then falls back to Nomad-backed terminal lookup and one idempotent retention attempt.
+- Retention packages result directory contents into `<results_root>/<run_id>/result.tar.gz`.
+- Empty or missing result directories do not produce a bundle.
+- The retained bundle is served as `application/gzip`.
+
+**Implementation invariants**
+
+- Retention is keyed by public `run_id` but does not create a durable lifecycle record.
+- Retention is idempotent and safe across repeated `status`, `logs`, and `result` calls.
+- Result bundles are opaque to ES; ES does not parse workload-authored files for Control Plane semantics.
+- Successful staging cleanup must not run before the retention attempt for terminal success.
+
+**Current simplification**
+
+- There is no background result-retention worker. The current slice captures results synchronously during lifecycle/result observations.
+
+## 13. Test-backed implementation facts
 
 The most important implementation facts are backed by integration tests:
 
@@ -372,6 +406,7 @@ The most important implementation facts are backed by integration tests:
 - Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
+- Result integration coverage confirms the Control Plane caller can submit a current-slice static-script workload, wait for terminal status, fetch the retained result bundle, keep fetching it after staging cleanup, receive `404 result_not_found` for terminal runs with no result files, receive `403` as a disallowed caller, and repeat result fetches idempotently.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
@@ -398,7 +433,7 @@ Operator helper ownership in the current slice:
 - the compact troubleshooting matrix for those categories lives in `.runbooks/system/v1_bringup.md`; later helpers point operators there for the matching logs, readiness checks, staging-inspection guidance, and next action
 - `scripts/50_lifecycle.sh` now observes execution strictly through public ES lifecycle endpoints rather than through Nomad job/eval IDs.
 
-## 13. Current simplifications
+## 14. Current simplifications
 
 **Current simplifications**
 
@@ -407,6 +442,7 @@ Operator helper ownership in the current slice:
 - ES has no lifecycle store and uses one explicit internal execution-locator policy whose current lookup is `run_id -> exec-<run_id>`.
 - Lifecycle uses one explicit projected-allocation policy instead of a broader allocation model.
 - Log retrieval is a minimal latest-allocation stdout path.
+- Result retrieval is a retained tar.gz bundle path for `/execution/run/result`, not a broad output platform.
 - There is no retry or reschedule machinery in ES.
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
 - Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
@@ -414,7 +450,7 @@ Operator helper ownership in the current slice:
 
 These are active implementation choices, not automatically permanent design commitments.
 
-## 14. Deliberate absences
+## 15. Deliberate absences
 
 **Deliberate absences**
 
@@ -423,10 +459,13 @@ These are active implementation choices, not automatically permanent design comm
 - No retry or reschedule orchestration
 - No multi-allocation aggregation
 - No streaming log implementation
+- No streaming result implementation
+- No result-content interpretation by ES
+- No ES-owned checkpoint or terminal decision persistence
 - No token minting or token population in the ES runtime-identity workspace
 - No scheduler abstraction above Nomad in the current slice
 
-## 15. Current implementation pressure points
+## 16. Current implementation pressure points
 
 **Reopened implementation seams under visible pressure**
 
@@ -434,11 +473,11 @@ These are active implementation choices, not automatically permanent design comm
 - Admission logic now treats aggregate evidence as canonical with no remaining legacy fact fallback or side path.
 - The current execution-locator policy still resolves `run_id -> exec-<run_id>`.
 - Latest-allocation selection is simple and coherent only because the slice avoids retries and reschedule.
-- Runtime identity handling depends on reserved `/execution/...` path conventions.
+- Runtime identity handling and retained-result materialization both depend on reserved `/execution/...` path conventions.
 - Submit currently depends on runtime-facing payload discoverability plus evidence-claim cross-checks between artifact identity and payload identity.
 - The implementation is coherent today as a thin composition and handoff layer, but several of its shortcuts are still under redesign pressure rather than being settled structure.
 
-## 16. Relationship to other docs
+## 17. Relationship to other docs
 
 Use the companion documents for other kinds of authority:
 
@@ -450,7 +489,7 @@ Use the companion documents for other kinds of authority:
 
 This file should stay focused on code paths and side effects.
 
-## 17. Reopened implementation seams
+## 18. Reopened implementation seams
 
 - The implementation role of `Prepare`
 - The internal reuse of `Prepare` by `Submit`
@@ -458,11 +497,12 @@ This file should stay focused on code paths and side effects.
 - Latest-allocation selection path
 - Runtime identity reserved-path handling
 - Current execution-package layout and container path conventions behind submit
+- Current retained-result packaging and `/execution/run/result` convention
 - The extent to which current lifecycle minimalism is implementation convenience versus durable structure
 
 These seams are active today and intentionally not fixed.
 
-## 18. Decision rules for future edits
+## 19. Decision rules for future edits
 
 - Keep this file implementation-level, not contract-level.
 - Do not omit active code paths from the implementation map.

@@ -61,7 +61,7 @@ The bounded diagnostics collector is `scripts/70_diagnostics.sh`. Use `--categor
 
 When a later helper reports a readiness or substrate problem, re-run `scripts/01_bringup.sh check` first instead of inferring readiness from a single endpoint call, then use that troubleshooting matrix or `scripts/70_diagnostics.sh`.
 
-In the current bounded execution slice, successful runs keep `execution.staging_root_dir/<run_id>` only until ES observes terminal success through the lifecycle path. Failed, canceled, lost, or otherwise ambiguous outcomes retain staging for debugging.
+In the current bounded execution slice, successful runs keep `execution.staging_root_dir/<run_id>` only until ES observes terminal success through the lifecycle path. Workloads may write terminal result files under `/execution/run/result`; ES retains those as an opaque bundle under `execution.results_root_dir` before successful staging cleanup. Failed, canceled, lost, or otherwise ambiguous outcomes retain staging for debugging.
 
 ## Repo Structure
 

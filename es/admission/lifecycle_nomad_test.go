@@ -167,6 +167,7 @@ func minimalLifecycleConfig(t *testing.T) esconfig.Config {
 	return esconfig.Config{
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir: t.TempDir(),
+			ResultsRootDir: t.TempDir(),
 		},
 	}
 }

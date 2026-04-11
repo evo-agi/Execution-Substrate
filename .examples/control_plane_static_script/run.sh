@@ -10,6 +10,8 @@ DEFAULT_WORKDIR_BASE="${REPO_ROOT}/.out"
 DEFAULT_TIMEOUT_SECONDS=30
 DEFAULT_POLL_INTERVAL_SECONDS=2
 DEFAULT_FETCH_LOGS=1
+DEFAULT_FETCH_RESULT=0
+DEFAULT_GENERATE_RESULT_PAYLOAD=0
 
 require_env() {
   local name=$1
@@ -89,8 +91,10 @@ write_summary() {
   local logs_bytes=$8
   local cancel_requested=$9
   local cancel_status=${10}
+  local result_retrieved=${11}
+  local result_bytes=${12}
 
-  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}" "${logs_retrieved}" "${logs_bytes}" "${cancel_requested}" "${cancel_status}"
+  python3 - <<'PY' "${summary_path}" "${workdir}" "${artifact_digest}" "${run_id}" "${status_value}" "${terminal_value}" "${logs_retrieved}" "${logs_bytes}" "${cancel_requested}" "${cancel_status}" "${result_retrieved}" "${result_bytes}"
 import json
 import pathlib
 import sys
@@ -107,8 +111,41 @@ payload = {
     "logs_bytes": int(sys.argv[8]),
     "cancel_requested": sys.argv[9] == "true",
     "cancel_status": sys.argv[10],
+    "result_retrieved": sys.argv[11] == "true",
+    "result_bytes": int(sys.argv[12]),
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+create_result_payload() {
+  local payload_path=$1
+  python3 - <<'PY' "${payload_path}"
+import io
+import pathlib
+import tarfile
+import time
+import sys
+
+payload_path = pathlib.Path(sys.argv[1])
+script = """#!/bin/sh
+set -eu
+echo START-BANNER
+mkdir -p /execution/run/result/nested
+printf 'artifact_digest=%s\n' "${EXEC_ARTIFACT_DIGEST}" > /execution/run/result/summary.txt
+printf '{"status":"ok","source":"control-plane-static-script"}\n' > /execution/run/result/nested/result.json
+echo RESULT-WROTE:/execution/run/result/summary.txt
+echo "{\\"status\\":\\"ok\\",\\"artifact_digest\\":\\"${EXEC_ARTIFACT_DIGEST}\\"}"
+"""
+
+payload_path.parent.mkdir(parents=True, exist_ok=True)
+with tarfile.open(payload_path, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+    data = script.encode("utf-8")
+    info = tarfile.TarInfo("entrypoint")
+    info.mode = 0o755
+    info.size = len(data)
+    info.mtime = 0
+    archive.addfile(info, io.BytesIO(data))
 PY
 }
 
@@ -118,7 +155,7 @@ require_env "CA_CERT"
 require_env "CONTROL_PLANE_CERT"
 require_env "CONTROL_PLANE_KEY"
 
-PAYLOAD_PATH="${PAYLOAD_PATH:-${DEFAULT_PAYLOAD_PATH}}"
+REQUESTED_PAYLOAD_PATH="${PAYLOAD_PATH:-}"
 BUILD_LOG_PATH="${BUILD_LOG_PATH:-${DEFAULT_BUILD_LOG_PATH}}"
 WORKDIR_BASE="${WORKDIR_BASE:-${DEFAULT_WORKDIR_BASE}}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-${DEFAULT_TIMEOUT_SECONDS}}"
@@ -126,15 +163,24 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-${DEFAULT_POLL_INTERVAL_SECONDS}
 WAIT_FOR_TERMINAL="${WAIT_FOR_TERMINAL:-0}"
 CANCEL_AFTER_SUBMIT="${CANCEL_AFTER_SUBMIT:-0}"
 FETCH_LOGS="${FETCH_LOGS:-${DEFAULT_FETCH_LOGS}}"
+FETCH_RESULT="${FETCH_RESULT:-${DEFAULT_FETCH_RESULT}}"
+GENERATE_RESULT_PAYLOAD="${GENERATE_RESULT_PAYLOAD:-${DEFAULT_GENERATE_RESULT_PAYLOAD}}"
 
 require_readable "${CA_CERT}" "CA_CERT"
 require_readable "${CONTROL_PLANE_CERT}" "CONTROL_PLANE_CERT"
 require_readable "${CONTROL_PLANE_KEY}" "CONTROL_PLANE_KEY"
-require_readable "${PAYLOAD_PATH}" "PAYLOAD_PATH"
 require_readable "${BUILD_LOG_PATH}" "BUILD_LOG_PATH"
 
 mkdir -p "${WORKDIR_BASE}"
 WORKDIR="$(mktemp -d "${WORKDIR_BASE%/}/control-plane-static-script.XXXXXX")"
+
+if [[ "${GENERATE_RESULT_PAYLOAD}" == "1" ]]; then
+  PAYLOAD_PATH="${WORKDIR}/static-script-result.tar.gz"
+  create_result_payload "${PAYLOAD_PATH}"
+else
+  PAYLOAD_PATH="${REQUESTED_PAYLOAD_PATH:-${DEFAULT_PAYLOAD_PATH}}"
+fi
+require_readable "${PAYLOAD_PATH}" "PAYLOAD_PATH"
 
 PUBLISH_JSON="${WORKDIR}/publish.json"
 PUBLISH_RESPONSE="${WORKDIR}/publish-response.json"
@@ -142,6 +188,7 @@ SUBMIT_JSON="${WORKDIR}/submit.json"
 SUBMIT_RESPONSE="${WORKDIR}/submit-response.json"
 STATUS_RESPONSE="${WORKDIR}/status-response.json"
 LOGS_RESPONSE="${WORKDIR}/logs-response.txt"
+RESULT_RESPONSE="${WORKDIR}/result.tar.gz"
 CANCEL_RESPONSE="${WORKDIR}/cancel-response.json"
 SUMMARY_JSON="${WORKDIR}/summary.json"
 
@@ -279,6 +326,8 @@ TERMINAL_VALUE="false"
 EXIT_CODE_VALUE=""
 LOGS_RETRIEVED="false"
 LOGS_BYTES=0
+RESULT_RETRIEVED="false"
+RESULT_BYTES=0
 CANCEL_REQUESTED="false"
 CANCEL_STATUS=""
 
@@ -382,10 +431,42 @@ if [[ "${CANCEL_AFTER_SUBMIT}" != "1" && "${TERMINAL_VALUE}" == "true" && "${EXI
   exit 1
 fi
 
-write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}" "${LOGS_RETRIEVED}" "${LOGS_BYTES}" "${CANCEL_REQUESTED}" "${CANCEL_STATUS}"
+if [[ "${FETCH_RESULT}" == "1" ]]; then
+  if [[ "${TERMINAL_VALUE}" != "true" ]]; then
+    echo "result fetch requires terminal status for run_id=${RUN_ID}" >&2
+    cat "${STATUS_RESPONSE}" >&2
+    exit 1
+  fi
+
+  while (( SECONDS <= deadline )); do
+    result_http=""
+    curl_request "GET" "${ES_URL}/v1/executions/${RUN_ID}/result" "" "${RESULT_RESPONSE}" "${ES_RESOLVE:-}" result_http
+    if [[ "${result_http}" == "200" ]]; then
+      RESULT_BYTES="$(wc -c < "${RESULT_RESPONSE}" | tr -d '[:space:]')"
+      RESULT_RETRIEVED="true"
+      break
+    elif [[ "${result_http}" != "409" ]]; then
+      echo "result retrieval failed: http_status=${result_http}" >&2
+      cat "${RESULT_RESPONSE}" >&2
+      exit 1
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+fi
+
+if [[ "${FETCH_RESULT}" == "1" && "${RESULT_RETRIEVED}" != "true" ]]; then
+  echo "result retrieval timed out for run_id=${RUN_ID}" >&2
+  cat "${RESULT_RESPONSE}" >&2
+  exit 1
+fi
+
+write_summary "${SUMMARY_JSON}" "${WORKDIR}" "${ARTIFACT_DIGEST}" "${RUN_ID}" "${STATUS_VALUE}" "${TERMINAL_VALUE}" "${LOGS_RETRIEVED}" "${LOGS_BYTES}" "${CANCEL_REQUESTED}" "${CANCEL_STATUS}" "${RESULT_RETRIEVED}" "${RESULT_BYTES}"
 echo "status: success state=${STATUS_VALUE} terminal=${TERMINAL_VALUE}"
 if [[ "${FETCH_LOGS}" == "1" ]]; then
   echo "logs: success bytes=${LOGS_BYTES}"
+fi
+if [[ "${FETCH_RESULT}" == "1" ]]; then
+  echo "result: success bytes=${RESULT_BYTES}"
 fi
 if [[ "${CANCEL_REQUESTED}" == "true" ]]; then
   echo "cancel: success status=${CANCEL_STATUS}"

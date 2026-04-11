@@ -22,6 +22,7 @@ func TestParseSupervisorArgsRequiresFieldsAndPreservesWorkloadArgv(t *testing.T)
 	cfg, err := parseSupervisorArgs([]string{
 		"--payload-archive", "/tmp/payload.tgz",
 		"--work-dir", "/execution/run/work",
+		"--result-dir", "/execution/run/result",
 		"--entrypoint", "/execution/run/work/entrypoint",
 		"--timeout-seconds", "17",
 		"--",
@@ -31,7 +32,7 @@ func TestParseSupervisorArgsRequiresFieldsAndPreservesWorkloadArgv(t *testing.T)
 	if err != nil {
 		t.Fatalf("parse supervisor args: %v", err)
 	}
-	if cfg.payloadArchive != "/tmp/payload.tgz" || cfg.workDir != "/execution/run/work" || cfg.entrypoint != "/execution/run/work/entrypoint" {
+	if cfg.payloadArchive != "/tmp/payload.tgz" || cfg.workDir != "/execution/run/work" || cfg.resultDir != "/execution/run/result" || cfg.entrypoint != "/execution/run/work/entrypoint" {
 		t.Fatalf("unexpected parsed config: %+v", cfg)
 	}
 	if cfg.timeoutSeconds != 17 {

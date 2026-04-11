@@ -83,6 +83,9 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		result.Terminal = strings.TrimSpace(job.Status) == "dead"
 		if result.Terminal {
 			result.Status = executionLifecycleStatusTerminal
+			if _, retainErr := s.retainTerminalResult(locator); retainErr != nil {
+				log.Printf("es result retention failed run_id=%s err=%v", locator.RunID, retainErr)
+			}
 		}
 		return result, nil
 	}
@@ -94,6 +97,7 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	if !ok {
 		if result.Terminal {
 			result.Status = executionLifecycleStatusTerminal
+			s.maybeRetainTerminalResult(locator, allocation)
 		}
 		return result, nil
 	}
@@ -107,7 +111,11 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		result.ExitCode = &exitCode
 	}
 	if result.Terminal {
-		s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+		if representsTerminalSuccess(allocation) {
+			s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+		} else {
+			s.maybeRetainTerminalResult(locator, allocation)
+		}
 	}
 
 	return result, nil
@@ -157,7 +165,13 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 	if err != nil {
 		return nil, err
 	}
-	s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+	if allocationTerminal(allocation) {
+		if representsTerminalSuccess(allocation) {
+			s.maybeCleanupSuccessfulStageRoot(locator, allocation)
+		} else {
+			s.maybeRetainTerminalResult(locator, allocation)
+		}
+	}
 	return logs, nil
 }
 
@@ -184,15 +198,20 @@ func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResu
 
 func isTerminalAllocationStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-		case "complete", "failed", "lost":
-			return true
-		default:
-			return false
+	case "complete", "failed", "lost":
+		return true
+	default:
+		return false
 	}
 }
 
 func (s *Service) maybeCleanupSuccessfulStageRoot(locator executionLocator, allocation *nomadAllocationDetail) {
 	if !representsTerminalSuccess(allocation) {
+		return
+	}
+
+	if _, err := s.retainTerminalResult(locator); err != nil {
+		log.Printf("es successful stage cleanup skipped after result retention failure run_id=%s err=%v", locator.RunID, err)
 		return
 	}
 
@@ -232,20 +251,20 @@ func (c *nomadClient) fetchJob(ctx context.Context, jobID string) (nomadJobSumma
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			var payload nomadJobSummary
-			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-				return nomadJobSummary{}, nomadUnavailableError("execution runtime returned an invalid job response")
-			}
-			return payload, nil
-		case http.StatusNotFound:
-			return nomadJobSummary{}, &Error{
-				Status:  http.StatusNotFound,
-				Code:    codeExecutionNotFound,
-				Message: "execution was not found",
-			}
-		default:
-			return nomadJobSummary{}, nomadUnavailableError(fmt.Sprintf("execution runtime returned status %d", response.StatusCode))
+	case http.StatusOK:
+		var payload nomadJobSummary
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			return nomadJobSummary{}, nomadUnavailableError("execution runtime returned an invalid job response")
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		return nomadJobSummary{}, &Error{
+			Status:  http.StatusNotFound,
+			Code:    codeExecutionNotFound,
+			Message: "execution was not found",
+		}
+	default:
+		return nomadJobSummary{}, nomadUnavailableError(fmt.Sprintf("execution runtime returned status %d", response.StatusCode))
 	}
 }
 
@@ -284,20 +303,20 @@ func (c *nomadClient) fetchAllocation(ctx context.Context, allocationID string) 
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			var payload nomadAllocationDetail
-			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-				return nomadAllocationDetail{}, nomadUnavailableError("execution runtime returned an invalid allocation response")
-			}
-			return payload, nil
-		case http.StatusNotFound:
-			return nomadAllocationDetail{}, &Error{
-				Status:  http.StatusConflict,
-				Code:    codeLogsUnavailable,
-				Message: "execution allocation is not ready",
-			}
-		default:
-			return nomadAllocationDetail{}, nomadUnavailableError(fmt.Sprintf("execution runtime returned status %d", response.StatusCode))
+	case http.StatusOK:
+		var payload nomadAllocationDetail
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			return nomadAllocationDetail{}, nomadUnavailableError("execution runtime returned an invalid allocation response")
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		return nomadAllocationDetail{}, &Error{
+			Status:  http.StatusConflict,
+			Code:    codeLogsUnavailable,
+			Message: "execution allocation is not ready",
+		}
+	default:
+		return nomadAllocationDetail{}, nomadUnavailableError(fmt.Sprintf("execution runtime returned status %d", response.StatusCode))
 	}
 }
 
@@ -317,20 +336,20 @@ func (c *nomadClient) fetchTaskLogs(ctx context.Context, allocationID string, ta
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			payload, readErr := io.ReadAll(response.Body)
-			if readErr != nil {
-				return nil, nomadUnavailableError("execution logs read failed")
-			}
-			return payload, nil
-		case http.StatusNotFound:
-			return nil, &Error{
-				Status:  http.StatusConflict,
-				Code:    codeLogsUnavailable,
-				Message: "execution logs are not available",
-			}
-		default:
-			return nil, nomadUnavailableError(fmt.Sprintf("execution logs returned status %d", response.StatusCode))
+	case http.StatusOK:
+		payload, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			return nil, nomadUnavailableError("execution logs read failed")
+		}
+		return payload, nil
+	case http.StatusNotFound:
+		return nil, &Error{
+			Status:  http.StatusConflict,
+			Code:    codeLogsUnavailable,
+			Message: "execution logs are not available",
+		}
+	default:
+		return nil, nomadUnavailableError(fmt.Sprintf("execution logs returned status %d", response.StatusCode))
 	}
 }
 
@@ -345,16 +364,16 @@ func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK:
-			return nil
-		case http.StatusNotFound:
-			return &Error{
-				Status:  http.StatusNotFound,
-				Code:    codeExecutionNotFound,
-				Message: "execution was not found",
-			}
-		default:
-			return nomadUnavailableError(fmt.Sprintf("execution cancel returned status %d", response.StatusCode))
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		return &Error{
+			Status:  http.StatusNotFound,
+			Code:    codeExecutionNotFound,
+			Message: "execution was not found",
+		}
+	default:
+		return nomadUnavailableError(fmt.Sprintf("execution cancel returned status %d", response.StatusCode))
 	}
 }
 
@@ -369,11 +388,11 @@ func (c *nomadClient) purgeJob(ctx context.Context, jobID string) error {
 	defer response.Body.Close()
 
 	switch response.StatusCode {
-		case http.StatusOK, http.StatusNotFound:
-			return nil
-		default:
-			payload, _ := io.ReadAll(response.Body)
-			return fmt.Errorf("purge nomad job: unexpected status %d: %s", response.StatusCode, strings.TrimSpace(string(payload)))
+	case http.StatusOK, http.StatusNotFound:
+		return nil
+	default:
+		payload, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("purge nomad job: unexpected status %d: %s", response.StatusCode, strings.TrimSpace(string(payload)))
 	}
 }
 

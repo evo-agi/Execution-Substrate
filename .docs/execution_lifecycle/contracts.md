@@ -24,6 +24,7 @@ These labels are intentionally different. A contract may be live today, relied o
 | `POST /v1/executions:submit` | Perform real execution submission | Active and bounded | `202` JSON `SubmitResult` | ES hands off to Nomad |
 | `GET /v1/executions/{run_id}/status` | Return current execution status view | Active | `200` JSON `ExecutionStatusResult` | Nomad-backed status projection through ES |
 | `GET /v1/executions/{run_id}/logs` | Return execution logs | Active and bounded | `200` `text/plain` | Nomad-backed stdout retrieval through ES |
+| `GET /v1/executions/{run_id}/result` | Return retained terminal result bundle | Active and bounded | `200` `application/gzip` | ES-owned retained opaque bundle for current static-script slice |
 | `POST /v1/executions/{run_id}:cancel` | Request cancellation of a submitted execution | Active and bounded | `200` JSON `ExecutionCancelResult` | Bounded Nomad stop request through ES |
 
 `POST /v1/executions:prepare` is a live public endpoint in the current repo. It must not be omitted from contract documentation just because it is bounded.
@@ -32,7 +33,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 **Observed current contract**
 
-- All five lifecycle/execution endpoints require an authenticated caller identity.
+- All six lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that allowlist operator-only:
@@ -49,9 +50,10 @@ These labels are intentionally different. A contract may be live today, relied o
 - These caller rules apply to:
   - `:prepare`
   - `:submit`
-  - `status`
-  - `logs`
-  - `cancel`
+- `status`
+- `logs`
+- `result`
+- `cancel`
 
 **Current contract invariants**
 
@@ -62,7 +64,7 @@ These labels are intentionally different. A contract may be live today, relied o
 **Response semantics**
 
 - Authorization failures are plain-text responses, not JSON lifecycle error payloads.
-- Once authorization succeeds, endpoint failures are returned as JSON `ErrorResponse` payloads except for successful `logs`, which returns `text/plain`.
+- Once authorization succeeds, endpoint failures are returned as JSON `ErrorResponse` payloads except for successful `logs`, which returns `text/plain`, and successful `result`, which returns binary `application/gzip`.
 
 ## 5. Prepare contract
 
@@ -192,7 +194,8 @@ Successful response is `200` JSON with these contract fields:
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
-- Successful submit staging remains available only while the running workload may still depend on those host bind mounts.
+- Successful submit staging remains available only while the running workload may still depend on those host bind mounts. Terminal result files written under the bounded reserved runtime result directory are retained outside staging before successful staging cleanup.
+- For the current `static-script` slice, ES reserves `/execution/run/result` as a writable workload-authored terminal output directory. The workload may write result files there, and ES treats those files as opaque bundle content rather than interpreting their semantics.
 
 ### Response contract
 
@@ -287,7 +290,8 @@ Successful response is `200` JSON with these current fields:
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
 - Failed workloads still return `200`; failure is expressed through terminal state plus `exit_code` when available.
 - ES must not synthesize richer lifecycle phases than the current Nomad-backed projection exposes.
-- When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/`.
+- When status observes terminal execution, ES first attempts idempotent retention of any files under `/execution/run/result`.
+- When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/` only after result retention has been attempted.
 - Failed, canceled, lost, or otherwise ambiguous terminal outcomes do not trigger staging cleanup through `status`.
 
 ### Error contract
@@ -346,7 +350,8 @@ Successful response is:
 - Output source is stdout only.
 - Successful `200` responses may still carry an empty stdout body if the selected allocation has not produced visible stdout bytes yet.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
-- If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout.
+- If logs observes a terminal task, ES first attempts idempotent retention of any files under `/execution/run/result`.
+- If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout and attempting result retention.
 
 ### Error contract
 
@@ -380,7 +385,77 @@ Successful response is:
 - Current logs minimalism
 - The current single-task, stdout-only log contract
 
-## 9. Cancel contract
+## 9. Result contract
+
+### Purpose
+
+`GET /v1/executions/{run_id}/result` returns the retained terminal result bundle for a submitted execution when the current bounded `static-script` workload wrote files under the reserved runtime result directory.
+
+### Runtime output convention
+
+**Bounded slice contract**
+
+- The current `static-script` slice reserves `/execution/run/result` as the workload-authored terminal output directory.
+- The workload may create arbitrary regular result files and directories there.
+- ES packages retained result content opaquely and does not parse Control Plane semantics, checkpoint decisions, review outcomes, or finalization metadata from those files.
+- Host staging paths, Nomad allocation IDs, and Docker bind-mount sources are not part of the client-facing result contract.
+
+**Reopened lifecycle seam**
+
+- `/execution/run/result` is active for this bounded result-materialization slice, but it remains part of the reopened execution-package and runtime path convention surface.
+
+### Lookup and retention contract
+
+**Observed current contract**
+
+- `run_id` validation and internal execution-locator resolution follow the same rules as `status` and `logs`.
+- Retained result bundles are stored outside `execution.staging_root_dir` under `execution.results_root_dir`.
+- Retained bundles are keyed by `run_id`.
+- The retained bundle is a tar.gz archive of the reserved result directory contents.
+- Result retention is idempotent:
+  - repeated terminal `status`, `logs`, and `result` calls are safe
+  - if the bundle already exists, ES reuses it
+  - successful staging cleanup does not remove retained result bundles
+- If no retained bundle exists yet, `result` uses the same bounded Nomad-backed terminal observation model as `status` to decide whether retention can be attempted.
+
+### Response contract
+
+**Observed current contract**
+
+Successful response is:
+
+- `200`
+- `Content-Type: application/gzip`
+- retained tar.gz bundle bytes
+
+**Current contract invariants**
+
+- The result endpoint is a retained output retrieval surface, not a lifecycle-state registry.
+- ES does not synthesize Control Plane checkpoints, review decisions, or task-finalization outcomes from retained result files.
+- ES does not require callers to know host staging paths, Nomad allocation IDs, or Docker bind-mount sources.
+- Logs are not the result contract; stdout remains a separate narrow logs surface.
+
+### Error contract
+
+| Outcome | HTTP | Current code / class |
+| --- | --- | --- |
+| Missing authenticated caller | `401` | plain text |
+| Disallowed or bootstrap caller | `403` | plain text |
+| Invalid `run_id` | `400` | `invalid_run_id` |
+| Execution not found | `404` | `execution_not_found` |
+| Execution is not terminal or retained bundle is not ready | `409` | `result_unavailable` |
+| Execution is terminal but no retained result bundle exists | `404` | `result_not_found` |
+| Nomad unavailable or unusable runtime response while the endpoint still needs terminal lookup | `503` | `execution_runtime_unavailable` |
+
+### Bounded slice notes
+
+**Bounded slice contract**
+
+- The result endpoint is intentionally limited to retained opaque bundles for the current `static-script` slice.
+- It does not introduce background lifecycle reconciliation, callbacks, streaming output, or a broad runtime-output platform.
+- It does not change ES into the orchestration owner.
+
+## 10. Cancel contract
 
 ### Purpose
 
@@ -431,7 +506,7 @@ Successful response is `200` JSON with these fields:
 - The current bounded cancellation receipt shape
 - The long-term scope of the public cancel surface
 
-## 10. Run-ID and scheduler lookup contract
+## 11. Run-ID and scheduler lookup contract
 
 **Observed current contract**
 
@@ -454,7 +529,7 @@ Successful response is `200` JSON with these fields:
 
 - The mapping is active and meaningful today, but it remains explicitly reopened in the redesign phase.
 
-## 11. Allocation-selection contract
+## 12. Allocation-selection contract
 
 **Observed current contract**
 
@@ -473,7 +548,7 @@ Successful response is `200` JSON with these fields:
 
 - If multiple meaningful allocations become normal, this rule must be revisited explicitly before contract changes land.
 
-## 12. Failure and status-code matrix
+## 13. Failure and status-code matrix
 
 | Outcome | Endpoints | HTTP | Response form | Current code / note |
 | --- | --- | --- | --- | --- |
@@ -481,20 +556,23 @@ Successful response is `200` JSON with these fields:
 | Successful submit | `:submit` | `202` | JSON | `SubmitResult`, bounded receipt |
 | Successful status | `status` | `200` | JSON | `ExecutionStatusResult` |
 | Successful logs | `logs` | `200` | `text/plain` | stdout only |
+| Successful result | `result` | `200` | `application/gzip` | retained opaque tar.gz result bundle |
 | Successful cancel | `cancel` | `200` | JSON | `ExecutionCancelResult` |
 | Invalid request body, request validation failure, or request/fact mismatch | `:prepare`, `:submit` | `400` | JSON | `invalid_request` |
 | Unauthorized caller | all lifecycle/execution endpoints | `401` | plain text | authenticated caller identity required |
 | Forbidden caller | all lifecycle/execution endpoints | `403` | plain text | bootstrap or disallowed identity |
 | Aggregate artifact evidence invalid during admission | `:prepare`, `:submit` | `403` | JSON | `artifact_evidence_invalid` |
 | Aggregate artifact evidence not registered for admission | `:prepare`, `:submit` | `404` | JSON | `artifact_evidence_not_found` |
-| Invalid `run_id` | `status`, `logs`, `cancel` | `400` | JSON | `invalid_run_id` |
-| Execution not found | `status`, `logs`, `cancel` | `404` | JSON | `execution_not_found` |
+| Invalid `run_id` | `status`, `logs`, `result`, `cancel` | `400` | JSON | `invalid_run_id` |
+| Execution not found | `status`, `logs`, `result`, `cancel` | `404` | JSON | `execution_not_found` |
 | Logs not ready | `logs` | `409` | JSON | `logs_unavailable` |
+| Result not ready | `result` | `409` | JSON | `result_unavailable` |
+| Terminal execution has no retained result bundle | `result` | `404` | JSON | `result_not_found` |
 | Aggregate artifact evidence unavailable after registration | `:prepare`, `:submit` | `503` | JSON | `artifact_evidence_unavailable` |
-| Nomad unavailable or malformed runtime response | `status`, `logs`, `cancel`, and submit runtime path | `503` | JSON | `execution_runtime_unavailable` or `submission_failed` depending on operation |
+| Nomad unavailable or malformed runtime response | `status`, `logs`, `result` when it still needs terminal lookup, `cancel`, and submit runtime path | `503` | JSON | `execution_runtime_unavailable` or `submission_failed` depending on operation |
 | Workload failure reflected in status | `status` | `200` | JSON | failure is expressed in Nomad-derived fields, not a separate HTTP error |
 
-## 13. Runtime identity and lifecycle edge
+## 14. Runtime identity and lifecycle edge
 
 **Observed current contract-adjacent conventions**
 
@@ -518,7 +596,7 @@ Successful response is `200` JSON with these fields:
 - The endpoint environment convention
 - The extent to which runtime identity handoff should remain part of the public execution contract
 
-## 14. Bounded slice rules
+## 15. Bounded slice rules
 
 **Bounded slice contract**
 
@@ -527,12 +605,13 @@ Successful response is `200` JSON with these fields:
 - Latest-allocation selection is a slice rule, not a general lifecycle model.
 - Status is a minimal Nomad-backed projection.
 - Logs are a minimal latest-allocation stdout contract.
+- Result retrieval is a bounded retained opaque bundle contract for `/execution/run/result` in the current `static-script` slice.
 - No retry or reschedule policy is exposed.
 - No rich ES-owned lifecycle model is exposed.
 
 These rules are active today, but they should not be preserved by inertia.
 
-## 15. Deliberate absences
+## 16. Deliberate absences
 
 **Deliberate absences**
 
@@ -542,10 +621,12 @@ These rules are active today, but they should not be preserved by inertia.
 - No multi-allocation aggregation API
 - No streaming logs contract
 - No stderr or multi-task log contract
+- No ES interpretation of retained result bundle semantics
+- No ES-owned checkpoint, review, or terminal-finalization model
 - No synthetic ES lifecycle phases
 - No public contract for runtime token minting
 
-## 16. Reopened lifecycle seams
+## 17. Reopened lifecycle seams
 
 - The public role of `:prepare`
 - The bounded receipt shape of `:submit`
@@ -553,11 +634,12 @@ These rules are active today, but they should not be preserved by inertia.
 - Latest-allocation selection
 - Runtime identity reserved-path conventions
 - Current logs minimalism
+- Current retained-result bundle convention and `/execution/run/result` runtime path
 - The extent to which lifecycle minimalism is durable versus slice-bounded
 
 These seams are active today and intentionally not fixed.
 
-## 17. Decision rules for future edits
+## 18. Decision rules for future edits
 
 - Do not omit active endpoints from this contract document.
 - Label bounded slice rules as bounded.

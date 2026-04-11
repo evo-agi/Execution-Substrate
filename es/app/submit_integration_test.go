@@ -1427,6 +1427,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
+			ResultsRootDir:             filepath.Join(rootDir, "es-results"),
 			BaseImage:                  firstNonEmpty(opts.baseImage, "alpine:3.20"),
 			RuntimeIdentityTmpfsSize:   opts.runtimeIdentityTmpfsSize,
 			RuntimeSupportBinary:       runtimeSupportBinary,
@@ -1803,6 +1804,19 @@ func executionLogsRequestWithCaller(t *testing.T, stack *submitStack, runID stri
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+runID+"/logs",
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
+		nil,
+	)
+}
+
+func executionResultRequestWithCaller(t *testing.T, stack *submitStack, runID string, callerPath string) *http.Response {
+	t.Helper()
+
+	return doJSONRequest(
+		t,
+		stack.es.Addr(),
+		http.MethodGet,
+		"/v1/executions/"+runID+"/result",
 		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, callerPath, false),
 		nil,
 	)

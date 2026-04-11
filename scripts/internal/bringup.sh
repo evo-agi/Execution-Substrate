@@ -459,6 +459,7 @@ for path in (
     ("nomad", "base_url"),
     ("nomad", "datacenter"),
     ("execution", "staging_root_dir"),
+    ("execution", "results_root_dir"),
     ("execution", "base_image"),
     ("execution", "runtime_support_binary"),
     ("execution", "spire_workload_api_socket_path"),
@@ -494,6 +495,7 @@ def require_non_empty(path):
 base_url = require_non_empty(("nomad", "base_url"))
 datacenter = require_non_empty(("nomad", "datacenter"))
 staging_root_dir = require_non_empty(("execution", "staging_root_dir"))
+results_root_dir = require_non_empty(("execution", "results_root_dir"))
 base_image = require_non_empty(("execution", "base_image"))
 runtime_support_binary = require_non_empty(("execution", "runtime_support_binary"))
 spire_socket_path = require_non_empty(("execution", "spire_workload_api_socket_path"))
@@ -503,14 +505,25 @@ if parsed.scheme not in ("http", "https") or not parsed.netloc:
     raise SystemExit("es submit config: nomad.base_url must be a valid absolute http(s) URL")
 
 staging_root = pathlib.Path(staging_root_dir)
+results_root = pathlib.Path(results_root_dir)
 if not staging_root.is_absolute():
     raise SystemExit("es submit config: execution.staging_root_dir must be an absolute path")
+if not results_root.is_absolute():
+    raise SystemExit("es submit config: execution.results_root_dir must be an absolute path")
+if os.path.commonpath([str(staging_root), str(results_root)]) in {str(staging_root), str(results_root)}:
+    raise SystemExit("es submit config: execution.results_root_dir must be separate from execution.staging_root_dir")
 if not staging_root.exists():
     raise SystemExit(f"es submit config: execution.staging_root_dir does not exist: {staging_root_dir}")
 if not staging_root.is_dir():
     raise SystemExit(f"es submit config: execution.staging_root_dir is not a directory: {staging_root_dir}")
 if not os.access(staging_root_dir, os.W_OK):
     raise SystemExit(f"es submit config: execution.staging_root_dir is not writable: {staging_root_dir}")
+if not results_root.exists():
+    raise SystemExit(f"es submit config: execution.results_root_dir does not exist: {results_root_dir}")
+if not results_root.is_dir():
+    raise SystemExit(f"es submit config: execution.results_root_dir is not a directory: {results_root_dir}")
+if not os.access(results_root_dir, os.W_OK):
+    raise SystemExit(f"es submit config: execution.results_root_dir is not writable: {results_root_dir}")
 if not pathlib.Path(runtime_support_binary).is_absolute():
     raise SystemExit("es submit config: execution.runtime_support_binary must be an absolute path")
 spire_socket = pathlib.Path(spire_socket_path)
@@ -527,6 +540,7 @@ print(
     f"base_url={base_url} "
     f"datacenter={datacenter} "
     f"staging_root_dir={staging_root_dir} "
+    f"results_root_dir={results_root_dir} "
     f"base_image={base_image} "
     f"runtime_support_binary={runtime_support_binary} "
     f"spire_workload_api_socket_path={spire_socket_path} "

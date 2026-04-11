@@ -55,6 +55,8 @@ const (
 	codeInvalidRunID                    = "invalid_run_id"
 	codeExecutionNotFound               = "execution_not_found"
 	codeLogsUnavailable                 = "logs_unavailable"
+	codeResultUnavailable               = "result_unavailable"
+	codeResultNotFound                  = "result_not_found"
 	codeMountConflict                   = "mount_conflict"
 	codeMountArtifactInvalid            = "mount_artifact_invalid"
 )
@@ -196,6 +198,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	if cfg.SubmitConfigured() {
 		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create execution staging root: %w", err)
+		}
+		if err := os.MkdirAll(cfg.Execution.ResultsRootDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create execution results root: %w", err)
 		}
 		if err := validateExecutionRuntimeInputs(cfg.Execution); err != nil {
 			return nil, err

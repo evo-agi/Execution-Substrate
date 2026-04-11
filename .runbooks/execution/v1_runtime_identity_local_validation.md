@@ -234,6 +234,7 @@ Example execution snippet:
   },
   "execution": {
     "staging_root_dir": "/tmp/es-stage",
+    "results_root_dir": "/tmp/es-results",
     "base_image": "python:3.13-alpine"
   }
 }

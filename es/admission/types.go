@@ -80,6 +80,11 @@ type ExecutionCancelResult struct {
 	Status  string `json:"status"`
 }
 
+type ExecutionResultBundle struct {
+	MediaType string
+	Payload   []byte
+}
+
 type ErrorResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error"`

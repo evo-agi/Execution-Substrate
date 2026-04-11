@@ -99,6 +99,9 @@ func runSupervisor(args []string) error {
 			}
 			return fmt.Errorf("runtime identity helper exited: %w", helperErr)
 		case workloadErr := <-workloadErrCh:
+			if err := finalizeResultTree(cfg.resultDir); err != nil {
+				fmt.Fprintf(os.Stderr, "runtime result finalization failed: %v\n", err)
+			}
 			terminateProcess(helperCmd.Process)
 			<-helperErrCh
 			return workloadExitError(workloadErr)
@@ -121,6 +124,7 @@ func runSupervisor(args []string) error {
 type supervisorConfig struct {
 	payloadArchive string
 	workDir        string
+	resultDir      string
 	entrypoint     string
 	timeoutSeconds int
 	workloadArgv   []string
@@ -133,6 +137,7 @@ func parseSupervisorArgs(args []string) (supervisorConfig, error) {
 	cfg := supervisorConfig{}
 	fs.StringVar(&cfg.payloadArchive, "payload-archive", "", "path to the staged workload archive")
 	fs.StringVar(&cfg.workDir, "work-dir", "", "path to the workload runtime directory")
+	fs.StringVar(&cfg.resultDir, "result-dir", "", "path to the workload result directory")
 	fs.StringVar(&cfg.entrypoint, "entrypoint", "", "path to the runtime entrypoint")
 	fs.IntVar(&cfg.timeoutSeconds, "timeout-seconds", 0, "maximum workload execution time in seconds")
 	if err := fs.Parse(args); err != nil {
@@ -143,6 +148,9 @@ func parseSupervisorArgs(args []string) (supervisorConfig, error) {
 	}
 	if strings.TrimSpace(cfg.workDir) == "" {
 		return supervisorConfig{}, fmt.Errorf("--work-dir is required")
+	}
+	if strings.TrimSpace(cfg.resultDir) == "" {
+		return supervisorConfig{}, fmt.Errorf("--result-dir is required")
 	}
 	if strings.TrimSpace(cfg.entrypoint) == "" {
 		return supervisorConfig{}, fmt.Errorf("--entrypoint is required")
@@ -191,6 +199,10 @@ func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
 		return fmt.Errorf("chmod platform runtime dir: %w", err)
 	}
 
+	if err := prepareResultDir(cfg.resultDir); err != nil {
+		return err
+	}
+
 	if err := os.RemoveAll(cfg.workDir); err != nil {
 		return fmt.Errorf("clear workload runtime dir: %w", err)
 	}
@@ -207,6 +219,56 @@ func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
 		return fmt.Errorf("chmod workload entrypoint: %w", err)
 	}
 	return nil
+}
+
+func prepareResultDir(resultDir string) error {
+	if err := os.RemoveAll(resultDir); err != nil {
+		return fmt.Errorf("clear workload result dir: %w", err)
+	}
+	if err := os.MkdirAll(resultDir, 0o755); err != nil {
+		return fmt.Errorf("create workload result dir: %w", err)
+	}
+	if err := os.Chown(resultDir, workloadUID, workloadGID); err != nil {
+		return fmt.Errorf("chown workload result dir: %w", err)
+	}
+	if err := os.Chmod(resultDir, 0o755); err != nil {
+		return fmt.Errorf("chmod workload result dir: %w", err)
+	}
+	return nil
+}
+
+func finalizeResultTree(resultDir string) error {
+	info, err := os.Stat(resultDir)
+	if err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("workload result path is not a directory")
+	}
+
+	return filepath.WalkDir(resultDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case info.IsDir():
+			if err := os.Chmod(path, info.Mode().Perm()|0o555); err != nil {
+				return fmt.Errorf("make result directory readable %s: %w", path, err)
+			}
+		case info.Mode().IsRegular():
+			if err := os.Chmod(path, info.Mode().Perm()|0o444); err != nil {
+				return fmt.Errorf("make result file readable %s: %w", path, err)
+			}
+		}
+		return nil
+	})
 }
 
 func materializeHelperPrivateSPIRESocket(paths runtimePaths) error {

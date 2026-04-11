@@ -295,7 +295,7 @@ For the full profile, `submit-ready: true` means:
 - Nomad `GET /v1/agent/self` does not report `config.DevMode=true`
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - `docker info` succeeds
-- ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, and `execution.base_image`
+- ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
 - the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
 
@@ -357,7 +357,8 @@ Staging inspection guidance in this slice:
 
 - staging is only useful after a successful `:submit` already returned a real `run_id`
 - failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain `execution.staging_root_dir/<run_id>`
-- terminal success may remove `execution.staging_root_dir/<run_id>` best-effort once ES observes success through `status` or `logs`
+- terminal success may remove `execution.staging_root_dir/<run_id>` best-effort once ES observes success through `status` or `logs`, after ES has attempted retained-result capture from `/execution/run/result`
+- retained terminal result bundles, when present, live under `execution.results_root_dir/<run_id>/result.tar.gz` and are fetched through `GET /v1/executions/{run_id}/result`
 - if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step
 
 Companion diagnostics helper for the same matrix:
@@ -398,7 +399,7 @@ That helper drives:
 
 and writes a structured summary plus captured logs to a per-run work directory.
 
-Because that helper waits for terminal status and then reads logs, it also exercises the current successful-submit staging cleanup policy: ES keeps `execution.staging_root_dir/<run_id>` while the workload may still depend on it, then best-effort removes that staging root after terminal success is observed. Failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain staging for debugging.
+Because that helper waits for terminal status and then reads logs, it also exercises the current successful-submit staging cleanup policy: ES keeps `execution.staging_root_dir/<run_id>` while the workload may still depend on it, attempts retained-result capture from `/execution/run/result`, then best-effort removes that staging root after terminal success is observed. Failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain staging for debugging.
 
 Keep host qualification and smoke proof distinct:
 

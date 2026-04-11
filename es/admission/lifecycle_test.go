@@ -47,6 +47,7 @@ func TestMaybeCleanupSuccessfulStageRootRemovesOnlySuccessfulRuns(t *testing.T) 
 		cfg: esconfig.Config{
 			Execution: esconfig.ExecutionConfig{
 				StagingRootDir: stagingRoot,
+				ResultsRootDir: t.TempDir(),
 			},
 		},
 	}

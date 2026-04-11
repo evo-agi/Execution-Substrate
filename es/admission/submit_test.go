@@ -60,6 +60,7 @@ func TestBuildNomadJobSpecUsesNetworkModeAndRunMetadata(t *testing.T) {
 			runtimePayloadRoot: executionRuntimePayloadRoot,
 			runtimeRunRoot:     executionRuntimeRunRoot,
 			runtimeWorkDir:     executionRuntimeWorkDir,
+			runtimeResultDir:   executionRuntimeResultDir,
 			runtimeEntrypoint:  executionRuntimeEntrypointPath,
 			runtimeIdentity: runtimeIdentityHandoff{
 				endpointURI: "unix:///run/es-runtime-identity/run-0123456789abcdef/public.sock",

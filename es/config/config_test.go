@@ -12,6 +12,7 @@ import (
 func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
 		BaseImage:                  "alpine:3.20",
 		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
@@ -28,6 +29,7 @@ func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing
 func TestExecutionConfigValidateRejectsTmpfsSizeAboveMax(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
 		BaseImage:                  "alpine:3.20",
 		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
@@ -46,6 +48,7 @@ func TestExecutionConfigValidateRejectsTmpfsSizeAboveMax(t *testing.T) {
 func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
 		BaseImage:                  "alpine:3.20",
 		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
@@ -60,6 +63,7 @@ func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *te
 func TestExecutionConfigValidateRejectsMissingRuntimeSupportBinary(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
 		BaseImage:                  "alpine:3.20",
 		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
 	}
@@ -76,6 +80,7 @@ func TestExecutionConfigValidateRejectsMissingRuntimeSupportBinary(t *testing.T)
 func TestExecutionConfigValidateRejectsMissingSPIRESocketPath(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:       "/tmp/es-stage",
+		ResultsRootDir:       "/tmp/es-results",
 		BaseImage:            "alpine:3.20",
 		RuntimeSupportBinary: "/usr/local/bin/es-runtime-support",
 	}
@@ -86,6 +91,59 @@ func TestExecutionConfigValidateRejectsMissingSPIRESocketPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "spire_workload_api_socket_path") {
 		t.Fatalf("expected spire_workload_api_socket_path validation error, got %v", err)
+	}
+}
+
+func TestExecutionConfigValidateRejectsMissingResultsRootDir(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for missing results root dir")
+	}
+	if !strings.Contains(err.Error(), "results_root_dir") {
+		t.Fatalf("expected results_root_dir validation error, got %v", err)
+	}
+}
+
+func TestExecutionConfigValidateRejectsResultsRootDirEqualToStagingRootDir(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-stage",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for results root matching staging root")
+	}
+	if !strings.Contains(err.Error(), "results_root_dir") {
+		t.Fatalf("expected results_root_dir validation error, got %v", err)
+	}
+}
+
+func TestExecutionConfigValidateRejectsResultsRootDirUnderStagingRootDir(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-stage/results",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for results root under staging root")
+	}
+	if !strings.Contains(err.Error(), "results_root_dir") {
+		t.Fatalf("expected results_root_dir validation error, got %v", err)
 	}
 }
 
@@ -171,6 +229,7 @@ func TestConfigValidateRequiresExecutionWhenSubmitConfigured(t *testing.T) {
 	}
 	cfg.Execution = ExecutionConfig{
 		StagingRootDir: "/tmp/es-stage",
+		ResultsRootDir: "/tmp/es-results",
 		BaseImage:      "alpine:3.20",
 	}
 

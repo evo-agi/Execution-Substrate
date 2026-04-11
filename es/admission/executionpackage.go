@@ -13,12 +13,14 @@ import (
 const (
 	executionPayloadStageDirName   = "payload"
 	executionRunStageDirName       = "run"
+	executionResultStageDirName    = "result"
 	executionMountsStageDirName    = "mounts"
 	executionPayloadArchiveName    = "artifact.tar.gz"
 	executionRuntimePayloadRoot    = "/execution/staged"
 	executionRuntimeRunRoot        = "/execution/run"
 	executionRuntimePlatformDir    = executionRuntimeRunRoot + "/platform"
 	executionRuntimeWorkDir        = executionRuntimeRunRoot + "/work"
+	executionRuntimeResultDir      = executionRuntimeRunRoot + "/result"
 	executionRuntimeEntrypointPath = executionRuntimeWorkDir + "/entrypoint"
 	executionRuntimeSupportName    = "es-runtime-support"
 	executionRuntimeSupportPath    = executionRuntimePlatformDir + "/" + executionRuntimeSupportName
@@ -34,12 +36,14 @@ type executionPackageLayout struct {
 	payloadArchivePath string
 	runStageDir        string
 	platformStageDir   string
+	resultStageDir     string
 	runtimeSupportPath string
 	mountsStageRootDir string
 	runtimePayloadRoot string
 	runtimeRunRoot     string
 	runtimePlatformDir string
 	runtimeWorkDir     string
+	runtimeResultDir   string
 	runtimeEntrypoint  string
 	runtimeIdentity    runtimeIdentityHandoff
 }
@@ -58,12 +62,14 @@ func newExecutionPackageLayout(cfg esconfig.Config, locator executionLocator) ex
 		payloadArchivePath: filepath.Join(stageRootDir, executionPayloadStageDirName, executionPayloadArchiveName),
 		runStageDir:        filepath.Join(stageRootDir, executionRunStageDirName),
 		platformStageDir:   filepath.Join(stageRootDir, executionRunStageDirName, "platform"),
+		resultStageDir:     filepath.Join(stageRootDir, executionRunStageDirName, executionResultStageDirName),
 		runtimeSupportPath: filepath.Join(stageRootDir, executionRunStageDirName, "platform", executionRuntimeSupportName),
 		mountsStageRootDir: filepath.Join(stageRootDir, executionMountsStageDirName),
 		runtimePayloadRoot: executionRuntimePayloadRoot,
 		runtimeRunRoot:     executionRuntimeRunRoot,
 		runtimePlatformDir: executionRuntimePlatformDir,
 		runtimeWorkDir:     executionRuntimeWorkDir,
+		runtimeResultDir:   executionRuntimeResultDir,
 		runtimeEntrypoint:  executionRuntimeEntrypointPath,
 		runtimeIdentity:    runtimeIdentityHandoffForRun(locator.RunID),
 	}
@@ -85,6 +91,9 @@ func (l executionPackageLayout) stagePayload(payloadBytes []byte) error {
 		return err
 	}
 	if err := os.MkdirAll(l.platformStageDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(l.resultStageDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(l.payloadArchivePath, payloadBytes, 0o600); err != nil {
@@ -110,6 +119,7 @@ func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, tim
 		"supervisor",
 		"--payload-archive", filepath.ToSlash(pathJoin(l.runtimePayloadRoot, executionPayloadArchiveName)),
 		"--work-dir", l.runtimeWorkDir,
+		"--result-dir", l.runtimeResultDir,
 		"--entrypoint", l.runtimeEntrypoint,
 		"--timeout-seconds", strconv.Itoa(timeoutSeconds),
 		"--",

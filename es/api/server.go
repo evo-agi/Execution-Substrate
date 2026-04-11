@@ -19,6 +19,7 @@ type preparationService interface {
 	Submit(ctx context.Context, req admission.PrepareRequest) (admission.SubmitResult, *admission.Error)
 	Status(ctx context.Context, runID string) (admission.ExecutionStatusResult, *admission.Error)
 	Logs(ctx context.Context, runID string) ([]byte, *admission.Error)
+	Result(ctx context.Context, runID string) (admission.ExecutionResultBundle, *admission.Error)
 	Cancel(ctx context.Context, runID string) (admission.ExecutionCancelResult, *admission.Error)
 }
 
@@ -130,7 +131,7 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runID, action, ok := parseLifecycleRequest(r.URL.Path)
-	if !ok || (action != "status" && action != "logs") {
+	if !ok || (action != "status" && action != "logs" && action != "result") {
 		http.NotFound(w, r)
 		return
 	}
@@ -160,6 +161,19 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(payload)
+	case "result":
+		bundle, err := s.service.Result(r.Context(), runID)
+		if err != nil {
+			httpx.WriteJSON(w, err.Status, admission.ErrorResponse{
+				Success: false,
+				Error:   err.Message,
+				Code:    err.Code,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", bundle.MediaType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bundle.Payload)
 	}
 }
 
@@ -242,6 +256,9 @@ func parseLifecycleRequest(requestPath string) (runID string, action string, ok 
 	case strings.HasSuffix(trimmed, "/logs"):
 		runID = strings.TrimSuffix(trimmed, "/logs")
 		action = "logs"
+	case strings.HasSuffix(trimmed, "/result"):
+		runID = strings.TrimSuffix(trimmed, "/result")
+		action = "result"
 	case strings.HasSuffix(trimmed, ":cancel"):
 		runID = strings.TrimSuffix(trimmed, ":cancel")
 		action = "cancel"

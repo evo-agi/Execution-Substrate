@@ -382,15 +382,20 @@ execution = cfg.get("execution") or {}
 staging_root = (execution.get("staging_root_dir") or "").strip()
 if not staging_root:
     raise SystemExit("execution.staging_root_dir is missing from ES_CONFIG")
+results_root = (execution.get("results_root_dir") or "").strip()
 
 run_path = pathlib.Path(staging_root) / run_id
+result_path = pathlib.Path(results_root) / run_id / "result.tar.gz" if results_root else None
 exists = run_path.exists()
 summary_path.write_text(
     "\n".join(
         [
             f"staging_root_dir={staging_root}",
+            f"results_root_dir={results_root}",
             f"run_path={run_path}",
             f"exists={'true' if exists else 'false'}",
+            f"result_bundle={result_path if result_path else ''}",
+            f"result_bundle_exists={'true' if result_path and result_path.exists() else 'false'}",
         ]
     )
     + "\n",

@@ -185,9 +185,12 @@ if service == "ars":
         rw_dirs.add(os.path.normpath(str(pathlib.Path(index_file).parent)))
 elif service == "es":
     staging_root = get_path("execution", "staging_root_dir")
+    results_root = get_path("execution", "results_root_dir")
     spire_socket = get_path("execution", "spire_workload_api_socket_path")
     if staging_root and os.path.isabs(staging_root):
         rw_dirs.add(os.path.normpath(staging_root))
+    if results_root and os.path.isabs(results_root):
+        rw_dirs.add(os.path.normpath(results_root))
     if spire_socket and os.path.isabs(spire_socket):
         ro_files.add(os.path.normpath(spire_socket))
 
@@ -221,9 +224,12 @@ verify_es_staging_invariant() {
   local config_path=$1
   local proof_path
   local staging_root
-  local found=0
+  local results_root
+  local -a es_roots
+  local staging_found=0
+  local results_found=0
 
-  staging_root="$(python3 - <<'PY' "${config_path}"
+  if ! mapfile -t es_roots < <(python3 - <<'PY' "${config_path}"
 import json
 import pathlib
 import sys
@@ -231,44 +237,85 @@ import sys
 cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 execution = cfg.get("execution") or {}
 staging_root = (execution.get("staging_root_dir") or "").strip()
+results_root = (execution.get("results_root_dir") or "").strip()
 if not staging_root:
     raise SystemExit("missing execution.staging_root_dir")
+if not results_root:
+    raise SystemExit("missing execution.results_root_dir")
 print(staging_root)
+print(results_root)
 PY
-)" || return 1
+  ); then
+    return 1
+  fi
+  staging_root="${es_roots[0]}"
+  results_root="${es_roots[1]}"
 
   if [[ "${staging_root}" != /* ]]; then
     echo "ES staging invariant failed: execution.staging_root_dir must be absolute: ${staging_root}" >&2
     return 1
   fi
+  if [[ "${results_root}" != /* ]]; then
+    echo "ES staging invariant failed: execution.results_root_dir must be absolute: ${results_root}" >&2
+    return 1
+  fi
+  if python3 - <<'PY' "${staging_root}" "${results_root}"
+import os
+import sys
+
+staging_root = sys.argv[1]
+results_root = sys.argv[2]
+raise SystemExit(0 if os.path.commonpath([staging_root, results_root]) in {staging_root, results_root} else 1)
+PY
+  then
+    echo "ES staging invariant failed: execution.results_root_dir must be separate from execution.staging_root_dir" >&2
+    return 1
+  fi
   if [[ ! -d "${staging_root}" ]]; then
     mkdir -p "${staging_root}"
   fi
+  if [[ ! -d "${results_root}" ]]; then
+    mkdir -p "${results_root}"
+  fi
   if [[ ! -d "${staging_root}" ]]; then
     echo "ES staging invariant failed: staging root does not exist: ${staging_root}" >&2
+    return 1
+  fi
+  if [[ ! -d "${results_root}" ]]; then
+    echo "ES staging invariant failed: results root does not exist: ${results_root}" >&2
     return 1
   fi
   if [[ ! -w "${staging_root}" ]]; then
     echo "ES staging invariant failed: staging root is not writable: ${staging_root}" >&2
     return 1
   fi
+  if [[ ! -w "${results_root}" ]]; then
+    echo "ES staging invariant failed: results root is not writable: ${results_root}" >&2
+    return 1
+  fi
 
   while IFS= read -r spec; do
     [[ -n "${spec}" ]] || continue
     if [[ "${spec}" == "${staging_root}:${staging_root}:rw" ]]; then
-      found=1
-      break
+      staging_found=1
+    fi
+    if [[ "${spec}" == "${results_root}:${results_root}:rw" ]]; then
+      results_found=1
     fi
   done < <(control_plane_mount_specs es "${config_path}")
 
-  if (( found == 0 )); then
+  if (( staging_found == 0 )); then
     echo "ES staging invariant failed: ES container is not mounted with ${staging_root}:${staging_root}:rw" >&2
+    return 1
+  fi
+  if (( results_found == 0 )); then
+    echo "ES staging invariant failed: ES container is not mounted with ${results_root}:${results_root}:rw" >&2
     return 1
   fi
 
   proof_path="${BRINGUP_DIR}/staging-invariant.json"
   mkdir -p "$(dirname "${proof_path}")"
-  python3 - <<'PY' "${proof_path}" "${staging_root}"
+  python3 - <<'PY' "${proof_path}" "${staging_root}" "${results_root}"
 import json
 import pathlib
 import sys
@@ -276,6 +323,8 @@ import sys
 payload = {
     "host_staging_path": sys.argv[2],
     "es_container_mount_path": sys.argv[2],
+    "host_results_path": sys.argv[3],
+    "es_container_results_path": sys.argv[3],
     "path_translation": False,
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

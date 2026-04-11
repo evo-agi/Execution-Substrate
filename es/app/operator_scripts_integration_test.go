@@ -255,6 +255,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		},
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
+			ResultsRootDir:             filepath.Join(rootDir, "es-results"),
 			BaseImage:                  "python:3.13-alpine",
 			RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
@@ -655,6 +656,10 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 	if err := os.MkdirAll(stagingRootDir, 0o755); err != nil {
 		t.Fatalf("mkdir staging root: %v", err)
 	}
+	resultsRootDir := filepath.Join(rootDir, "results")
+	if err := os.MkdirAll(resultsRootDir, 0o755); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
+	}
 	runtimeSupportPath := writeBytesFile(t, rootDir, "es-runtime-support", []byte("#!/bin/sh\nexit 0\n"))
 	if err := os.Chmod(runtimeSupportPath, 0o755); err != nil {
 		t.Fatalf("chmod runtime support stub: %v", err)
@@ -682,6 +687,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		},
 		"execution": map[string]any{
 			"staging_root_dir":               stagingRootDir,
+			"results_root_dir":               resultsRootDir,
 			"base_image":                     "python:3.13-alpine",
 			"runtime_support_binary":         runtimeSupportPath,
 			"spire_workload_api_socket_path": spireSocketPath,
@@ -997,6 +1003,7 @@ exit 7
 	esConfigPath := writeJSONConfigFile(t, t.TempDir(), "es-run-diagnostics.json", map[string]any{
 		"execution": map[string]any{
 			"staging_root_dir": filepath.Join(stack.rootDir, "es-stage"),
+			"results_root_dir": filepath.Join(stack.rootDir, "es-results"),
 		},
 	})
 

@@ -341,6 +341,7 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 - `POST /v1/executions:submit`
 - `GET /v1/executions/{run_id}/status`
 - `GET /v1/executions/{run_id}/logs`
+- `GET /v1/executions/{run_id}/result`
 - `POST /v1/executions/{run_id}:cancel`
 
 ### Current integration-facing note
@@ -349,7 +350,7 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 
 - The current programmatic governed-execution surface is the HTTPS API boundary, not the shell helpers:
   - `POST /v1/artifacts:publish` through AGS
-  - the ES execution and lifecycle endpoints above
+  - the ES execution, retained-result, and lifecycle endpoints above
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator/proof helpers over those APIs; they are not a separate client contract.
 - Host staging paths, current bind-mount sources, and the helper-private SPIRE source attachment are ES/operator deployment implementation details, not part of the client-facing execution contract.
 - A future infra manager may satisfy those internal attachment needs with named volumes or other managed attachment semantics without changing the current HTTPS API, `run_id` lifecycle lookup contract, or workload-visible endpoint discovery contract.
@@ -361,7 +362,7 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
     - `spiffe://execution.internal/service/control-plane`
   - the current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
   - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`, paired with `.examples/config/ags.operator_and_control_plane.json` and `.examples/config/es.operator_and_control_plane.json`
-  - that direct API example currently exercises AGS publish plus ES submit, status, and logs without going through the operator helper wrappers, and it can additionally exercise the bounded ES `cancel` surface when `CANCEL_AFTER_SUBMIT=1 FETCH_LOGS=0` is paired with a long-running payload
+  - that direct API example currently exercises AGS publish plus ES submit, status, logs, and optional retained result retrieval without going through the operator helper wrappers, and it can additionally exercise the bounded ES `cancel` surface when `CANCEL_AFTER_SUBMIT=1 FETCH_LOGS=0` is paired with a long-running payload
   - when that direct API example waits for terminal status outside explicit cancel mode, it now fails fast if ES reports a terminal nonzero workload exit instead of printing a false success marker
   - on this Mac, the supported-local guest path is the grounded positive verification path for that bounded `logs` step
   - `es/app/control_plane_integration_path_test.go` remains the repo-owned verification layer for that same direct API path, including disallowed-caller failures, while staying bounded to publish, submit, status, and cancel coverage in the host-local harness
@@ -439,6 +440,9 @@ Current successful response shapes:
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
+- ES reserves `/execution/run/result` as the current bounded workload-authored terminal result directory for the `static-script` slice, then stores non-empty terminal result contents as an opaque tar.gz bundle under `execution.results_root_dir`.
+- `GET /v1/executions/{run_id}/result` returns the retained opaque result bundle as `application/gzip`; it is not a logs wrapper, checkpoint API, or Control Plane state surface.
+- ES attempts result retention before successful staging cleanup so retained bundles survive removal of `execution.staging_root_dir/<run_id>`.
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
@@ -451,24 +455,27 @@ Current successful response shapes:
 - Each runtime mount artifact is revalidated through ARS and runtime-trust enforcement before staging.
 - Failed submit staging is cleaned immediately.
 - Successful submit payload, run, and mount staging remain under `execution.staging_root_dir/<run_id>/` only while the workload may still depend on those bind mounts.
-- Once ES observes terminal success for the run through the current lifecycle path, it best-effort removes `execution.staging_root_dir/<run_id>/`.
+- Once ES observes terminal success for the run through the current lifecycle path, it attempts retained-result capture and then best-effort removes `execution.staging_root_dir/<run_id>/`.
 - Failed, canceled, lost, or otherwise ambiguous terminal outcomes retain their staging root for operator debugging in the current slice.
 - Lifecycle is Nomad-backed only:
   - ES does not persist run state
-  - ES resolves status, logs, and cancel through Nomad
+  - ES resolves status, logs, result readiness when no retained bundle exists, and cancel through Nomad
   - ES derives the minimal public lifecycle `status` value from Nomad-backed state as `submitted`, `running`, or `terminal`
   - logs are stdout-only for task `task`
+  - result bundles are retained opaque output artifacts keyed by `run_id`, not lifecycle-state records
   - ES uses one explicit projected-allocation policy that currently chooses the latest allocation in the current no-retry, no-reschedule slice
 
 ### Ownership boundary
 
 - ES owns request validation, cross-service composition, Nomad submission, and Nomad-backed lifecycle projection.
+- ES owns retained opaque terminal result bundles for the current bounded slice.
 - ES does not own:
   - trust policy
   - artifact publication
   - storage semantics
   - scheduler state
   - durable lifecycle state
+  - Control Plane orchestration, checkpoint, review, or terminal decision semantics
 
 ### Temporary compatibility edges
 
@@ -476,6 +483,7 @@ Current successful response shapes:
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
 - The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
+- The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
 
 ### Reopened seams

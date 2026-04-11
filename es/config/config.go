@@ -76,6 +76,7 @@ type NomadConfig struct {
 
 type ExecutionConfig struct {
 	StagingRootDir             string `json:"staging_root_dir"`
+	ResultsRootDir             string `json:"results_root_dir"`
 	BaseImage                  string `json:"base_image"`
 	RuntimeIdentityTmpfsSize   int64  `json:"runtime_identity_tmpfs_size,omitempty"`
 	RuntimeSupportBinary       string `json:"runtime_support_binary,omitempty"`
@@ -284,8 +285,17 @@ func (c ExecutionConfig) Validate(field string) error {
 	if strings.TrimSpace(c.BaseImage) == "" {
 		return fmt.Errorf("%s.base_image is required", field)
 	}
+	if strings.TrimSpace(c.ResultsRootDir) == "" {
+		return fmt.Errorf("%s.results_root_dir is required", field)
+	}
 	if !filepath.IsAbs(strings.TrimSpace(c.StagingRootDir)) {
 		return fmt.Errorf("%s.staging_root_dir must be an absolute path", field)
+	}
+	if !filepath.IsAbs(strings.TrimSpace(c.ResultsRootDir)) {
+		return fmt.Errorf("%s.results_root_dir must be an absolute path", field)
+	}
+	if pathsOverlap(filepath.Clean(strings.TrimSpace(c.StagingRootDir)), filepath.Clean(strings.TrimSpace(c.ResultsRootDir))) {
+		return fmt.Errorf("%s.results_root_dir must be separate from %s.staging_root_dir", field, field)
 	}
 	if strings.TrimSpace(c.RuntimeSupportBinary) == "" {
 		return fmt.Errorf("%s.runtime_support_binary is required", field)
@@ -306,6 +316,21 @@ func (c ExecutionConfig) Validate(field string) error {
 		return fmt.Errorf("%s.runtime_identity_tmpfs_size must not exceed %d bytes", field, maxRuntimeIdentityTmpfsSizeBytes)
 	}
 	return nil
+}
+
+func pathsOverlap(left string, right string) bool {
+	if left == right {
+		return true
+	}
+	relative, err := filepath.Rel(left, right)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return true
+	}
+	relative, err = filepath.Rel(right, left)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return true
+	}
+	return false
 }
 
 func (c ExecutionConfig) EffectiveRuntimeIdentityTmpfsSize() int64 {
@@ -383,6 +408,7 @@ func (c Config) SubmitConfigured() bool {
 		strings.TrimSpace(c.Nomad.Datacenter) != "" ||
 		c.Nomad.TimeoutSeconds != 0 ||
 		strings.TrimSpace(c.Execution.StagingRootDir) != "" ||
+		strings.TrimSpace(c.Execution.ResultsRootDir) != "" ||
 		strings.TrimSpace(c.Execution.BaseImage) != "" ||
 		strings.TrimSpace(c.Execution.RuntimeSupportBinary) != "" ||
 		strings.TrimSpace(c.Execution.SPIREWorkloadAPISocketPath) != ""

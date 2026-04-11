@@ -12,6 +12,7 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	cfg := esconfig.Config{
 		Execution: esconfig.ExecutionConfig{
 			StagingRootDir:             "/tmp/es-stage",
+			ResultsRootDir:             "/tmp/es-results",
 			RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 			SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
 			RuntimeIdentityTmpfsSize:   2 << 20,
@@ -36,6 +37,9 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	if layout.platformStageDir != filepath.Join(layout.runStageDir, "platform") {
 		t.Fatalf("expected platform stage dir under run stage dir, got %q", layout.platformStageDir)
 	}
+	if layout.resultStageDir != filepath.Join(layout.runStageDir, executionResultStageDirName) {
+		t.Fatalf("expected result stage dir under run stage dir, got %q", layout.resultStageDir)
+	}
 	if layout.runtimeSupportPath != filepath.Join(layout.platformStageDir, executionRuntimeSupportName) {
 		t.Fatalf("expected runtime support binary staged under platform dir, got %q", layout.runtimeSupportPath)
 	}
@@ -53,6 +57,9 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	}
 	if layout.runtimeWorkDir != executionRuntimeWorkDir {
 		t.Fatalf("expected runtime work dir %q, got %q", executionRuntimeWorkDir, layout.runtimeWorkDir)
+	}
+	if layout.runtimeResultDir != executionRuntimeResultDir {
+		t.Fatalf("expected runtime result dir %q, got %q", executionRuntimeResultDir, layout.runtimeResultDir)
 	}
 	if layout.runtimeEntrypoint != executionRuntimeEntrypointPath {
 		t.Fatalf("expected runtime entrypoint %q, got %q", executionRuntimeEntrypointPath, layout.runtimeEntrypoint)

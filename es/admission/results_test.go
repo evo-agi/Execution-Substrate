@@ -1,0 +1,160 @@
+package admission
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+
+	esconfig "execution-substrate/es/config"
+)
+
+func TestRetainTerminalResultPackagesResultDirectory(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	if err := os.MkdirAll(filepath.Join(layout.resultStageDir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir result dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.resultStageDir, "summary.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatalf("write result file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.resultStageDir, "nested", "result.json"), []byte(`{"status":"ok"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write nested result file: %v", err)
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err != nil {
+		t.Fatalf("retain terminal result: %v", err)
+	}
+	if !retained {
+		t.Fatalf("expected result retention to report retained bundle")
+	}
+
+	bundle, ok, resultErr := service.readRetainedResultBundle(locator)
+	if resultErr != nil {
+		t.Fatalf("read retained result: %+v", resultErr)
+	}
+	if !ok {
+		t.Fatalf("expected retained bundle to be readable")
+	}
+
+	entries := readAdmissionResultBundleEntries(t, bundle.Payload)
+	if entries["summary.txt"] != "ok\n" {
+		t.Fatalf("unexpected summary entry %q", entries["summary.txt"])
+	}
+	if entries["nested/result.json"] != "{\"status\":\"ok\"}\n" {
+		t.Fatalf("unexpected nested result entry %q", entries["nested/result.json"])
+	}
+}
+
+func TestResultReturnsRetainedBundleWithoutRuntimeLookup(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+	bundlePath := service.retainedResultBundlePath(locator)
+	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o755); err != nil {
+		t.Fatalf("mkdir retained result dir: %v", err)
+	}
+	if err := os.WriteFile(bundlePath, []byte("already retained"), 0o600); err != nil {
+		t.Fatalf("write retained bundle: %v", err)
+	}
+
+	bundle, err := service.Result(context.Background(), locator.RunID)
+	if err != nil {
+		t.Fatalf("result should not require runtime when bundle exists: %+v", err)
+	}
+	if bundle.MediaType != resultBundleMediaType || string(bundle.Payload) != "already retained" {
+		t.Fatalf("unexpected retained bundle: %+v", bundle)
+	}
+}
+
+func TestResultReturnsNotFoundForTerminalExecutionWithoutOutput(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/job/exec-run-0123456789abcdef":
+			_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"dead"}`))
+		case "/v1/job/exec-run-0123456789abcdef/allocations":
+			_, _ = w.Write([]byte(`[{"ID":"alloc-1","ModifyIndex":1}]`))
+		case "/v1/allocation/alloc-1":
+			_, _ = w.Write([]byte(`{"ID":"alloc-1","ClientStatus":"complete","TaskStates":{"task":{"State":"dead","Events":[{"Type":"Terminated","ExitCode":0}]}}}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+
+	_, err := service.Result(context.Background(), locator.RunID)
+	if err == nil || err.Status != http.StatusNotFound || err.Code != codeResultNotFound {
+		t.Fatalf("expected result_not_found, got %+v", err)
+	}
+}
+
+func TestResultReturnsConflictBeforeTerminalExecution(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/job/exec-run-0123456789abcdef":
+			_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running"}`))
+		case "/v1/job/exec-run-0123456789abcdef/allocations":
+			_, _ = w.Write([]byte(`[{"ID":"alloc-1","ModifyIndex":1}]`))
+		case "/v1/allocation/alloc-1":
+			_, _ = w.Write([]byte(`{"ID":"alloc-1","ClientStatus":"running","TaskStates":{"task":{"State":"running"}}}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+
+	_, err := service.Result(context.Background(), locator.RunID)
+	if err == nil || err.Status != http.StatusConflict || err.Code != codeResultUnavailable {
+		t.Fatalf("expected result_unavailable, got %+v", err)
+	}
+}
+
+func newResultTestService(t *testing.T) (*Service, executionLocator, executionPackageLayout) {
+	t.Helper()
+
+	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
+	service := &Service{
+		cfg: esconfig.Config{
+			Execution: esconfig.ExecutionConfig{
+				StagingRootDir: t.TempDir(),
+				ResultsRootDir: t.TempDir(),
+			},
+		},
+	}
+	layout := newExecutionPackageLayout(service.cfg, locator)
+	return service, locator, layout
+}
+
+func readAdmissionResultBundleEntries(t *testing.T, payload []byte) map[string]string {
+	t.Helper()
+
+	gzipReader, err := gzip.NewReader(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("open gzip: %v", err)
+	}
+	defer gzipReader.Close()
+
+	entries := map[string]string{}
+	tarReader := tar.NewReader(gzipReader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read tar entry: %v", err)
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			continue
+		}
+		body, err := io.ReadAll(tarReader)
+		if err != nil {
+			t.Fatalf("read tar body: %v", err)
+		}
+		entries[header.Name] = string(body)
+	}
+	return entries
+}

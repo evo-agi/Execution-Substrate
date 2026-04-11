@@ -198,7 +198,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `verification.workload_identity_binding.*`
 - `workload_vault_auth.default_mode`
 - `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds` when submit is enabled
-- `execution.staging_root_dir`, `execution.base_image` when submit is enabled
+- `execution.staging_root_dir`, `execution.results_root_dir`, `execution.base_image` when submit is enabled
 
 ### Required external dependencies
 
@@ -206,6 +206,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - EGS over HTTPS
 - Nomad for real execution submit
 - Docker under Nomad for container runtime
+- local filesystem storage for retained result bundles outside the staging root
 - workload-zone Vault config reference installed in ES startup config, with the blob available through ARS
 - the current workload-zone Vault blob must satisfy the `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob` schema
 
@@ -228,6 +229,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `nomad.base_url`
   - `nomad.datacenter`
   - `execution.staging_root_dir`
+  - `execution.results_root_dir`
   - `execution.base_image`
   - `execution.runtime_support_binary`
   - `execution.spire_workload_api_socket_path`
@@ -242,6 +244,13 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `/execution/staged` and caller-visible `/execution/mounts/...` remain host-backed copies of governed artifact content
   - ES does not semantically inspect payloads or mount contents for secrecy
   - a future infra manager may replace the current host-path backing with named volumes or other managed attachment semantics if it preserves the ES-local runtime contract inside the task
+- `execution.results_root_dir` is a writable ES-owned retained-results root
+  - it must be an absolute local filesystem path
+  - it must be separate from `execution.staging_root_dir`
+  - ES stores retained terminal result bundles under `<results_root>/<run_id>/result.tar.gz`
+  - retained bundles survive best-effort cleanup of `<staging_root>/<run_id>`
+  - retained bundles are opaque to ES callers and are fetched through `GET /v1/executions/{run_id}/result`
+  - this is a bounded current-slice terminal output contract, not a general runtime-output platform or Control Plane state store
 - the runtime identity contract no longer requires ES-local identity plumbing configuration
 - ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
   - this backing workspace is not persisted to host staging
