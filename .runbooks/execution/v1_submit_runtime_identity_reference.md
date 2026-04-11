@@ -9,27 +9,29 @@ Submit the legacy reference runtime-identity workload through the governed execu
 
 `AGS publish -> ARS -> ES submit -> Nomad/Docker -> workload discovers identity endpoint -> workload authenticates to Vault -> observable logs + exit code`
 
-This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md). It is not the slice-1 platform-owned runtime identity proof path.
+This runbook is retained for legacy compatibility validation only. It exercises the older workload-authored bridge example on top of the same static-script execution model documented in [.runbooks/execution/v1_submit_static_script.md](v1_submit_static_script.md). It is not the slice-1 platform-owned runtime identity proof path.
 
-For the current bounded platform-owned proof path, use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md) instead.
+For the current bounded platform-owned proof path, use [.runbooks/execution/v1_submit_runtime_identity_vault_login.md](v1_submit_runtime_identity_vault_login.md) instead.
 
-For a local non-production Vault dev path plus a simple HTTP identity adapter, see [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_runtime_identity_local_validation.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_runtime_identity_local_validation.md).
+For a local non-production Vault dev path plus a simple HTTP identity adapter, see [.runbooks/execution/v1_runtime_identity_local_validation.md](v1_runtime_identity_local_validation.md).
+
+Run command examples from the repository root unless a step says otherwise.
 
 ## 2. Reference Workload
 
 The reference artifact lives at:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/entrypoint](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/entrypoint)
+- [.examples/runtime_identity_reference/entrypoint](../../.examples/runtime_identity_reference/entrypoint)
 
 Package it with:
 
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/package.sh"
+".examples/runtime_identity_reference/package.sh"
 ```
 
 The resulting archive is:
 
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
+- `.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 
 ## 3. Runtime-Identity Contract In This Legacy Reference Path
 
@@ -53,13 +55,13 @@ All prerequisites from the static-script runbook still apply, plus:
 - ES base image includes `python3`
 - the publish request sets `admission.access.network_access = true`
 - the submit request includes `REFERENCE_IDENTITY_URL`
-- the legacy workload-local bridge protocol is documented in [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/README.md](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/README.md)
+- the legacy workload-local bridge protocol is documented in [.examples/runtime_identity_reference/README.md](../../.examples/runtime_identity_reference/README.md)
 - the workload-zone Vault config reachable by ES points at a Vault-compatible address reachable from the workload container
 
 Optional local helpers remain available:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py)
-- [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_vault.py](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_vault.py)
+- [.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py](../../.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py)
+- [.examples/runtime_identity_reference/helpers/mock_vault.py](../../.examples/runtime_identity_reference/helpers/mock_vault.py)
 
 These helpers are reference tooling only. They are not platform components and they are not the slice-1 helper implementation.
 
@@ -80,7 +82,7 @@ scripts/01_bringup.sh check
 
 For this full-profile runbook, do not continue unless the check reports `submit-ready: true`.
 
-If the later publish / prepare / submit / lifecycle helpers fail, first re-run `scripts/01_bringup.sh check`, then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category. If you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`.
+If the later publish / prepare / submit / lifecycle helpers fail, first re-run `scripts/01_bringup.sh check`, then use the operator troubleshooting matrix in [.runbooks/system/v1_bringup.md](../system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category. If you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`.
 
 Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.
 
@@ -89,7 +91,7 @@ Inspect retained staging only when `:submit` already returned a real `run_id` an
 Start the reference identity endpoint:
 
 ```bash
-python3 "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py" \
+python3 ".examples/runtime_identity_reference/helpers/mock_identity_endpoint.py" \
   --http-bind 0.0.0.0 \
   --http-port 18081 \
   --audience vault \
@@ -99,7 +101,7 @@ python3 "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_r
 Start the reference Vault-compatible endpoint:
 
 ```bash
-python3 "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_vault.py" \
+python3 ".examples/runtime_identity_reference/helpers/mock_vault.py" \
   --bind 0.0.0.0 \
   --port 18200 \
   --auth-mount jwt \
@@ -122,7 +124,7 @@ echo "Using WORKDIR=$WORKDIR"
 Prepare payload bytes and publish-time inputs:
 
 ```bash
-export ARTIFACT_PAYLOAD_B64="$(python3 - "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz" <<'PY'
+export ARTIFACT_PAYLOAD_B64="$(python3 - ".examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz" <<'PY'
 import base64, pathlib, sys
 print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
 PY

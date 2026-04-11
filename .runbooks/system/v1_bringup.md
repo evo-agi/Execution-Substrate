@@ -48,9 +48,9 @@ The readiness vocabulary for that primary path is now:
   - `scripts/01_bringup.sh up` probes this behavior before starting services
   - this host networking use is temporary slice-0 compatibility scaffolding only, not the final control-plane network model
 
-For a fresh Linux workload-zone VM, use `/Users/ds/Repositories/Execution Substrate/scripts/70_linux_setup.sh` as the bounded bootstrap helper.
+For a fresh Linux workload-zone VM, use `scripts/70_linux_setup.sh` as the bounded bootstrap helper.
 
-Before treating any Linux host or VM as the repo's clean `supported` environment, apply the host qualification boundary in [supported_linux_host_qualification.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md).
+Before treating any Linux host or VM as the repo's clean `supported` environment, apply the host qualification boundary in [supported_linux_host_qualification.md](../../.docs/system_overview/supported_linux_host_qualification.md).
 
 That helper currently:
 
@@ -82,7 +82,7 @@ export ES_CONFIG="/abs/path/es.json"
 export NOMAD_CONFIG="/abs/path/nomad.hcl"
 ```
 
-Build these from the current validators and the configuration matrix in [configuration.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/configuration.md). Example templates live under [/Users/ds/Repositories/Execution Substrate/.examples/config](/Users/ds/Repositories/Execution Substrate/.examples/config), but they are templates only.
+Build these from the current validators and the configuration matrix in [configuration.md](../../.docs/system_overview/configuration.md). Example templates live under [.examples/config](../../.examples/config), but they are templates only.
 
 For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
 
@@ -177,7 +177,7 @@ CGS is not required for this bring-up runbook because it is not part of the curr
 
 Run all commands from:
 
-`/Users/ds/Repositories/Execution Substrate`
+`.`
 
 ### Supported-host qualification path
 
@@ -244,7 +244,7 @@ bring-up complete
 The script writes PID files and logs under:
 
 ```bash
-"${BRINGUP_DIR:-/Users/ds/Repositories/Execution Substrate/.tmp/bringup}"
+"${BRINGUP_DIR:-.tmp/bringup}"
 ```
 
 ### Prepare-only profile
@@ -328,7 +328,7 @@ Use this matrix after an operator-facing helper already surfaced one of the boun
 Managed bring-up logs live under:
 
 ```bash
-"${BRINGUP_DIR:-/Users/ds/Repositories/Execution Substrate/.tmp/bringup}/logs"
+"${BRINGUP_DIR:-.tmp/bringup}/logs"
 ```
 
 The current one-path bring-up writes:
@@ -378,7 +378,7 @@ scripts/73_supported_local_proof.sh run
 
 This path still proves the one-host Linux substrate and same-path staging contract directly, and it now makes the bounded useful credential flow the canonical higher-value governed proof on that already-qualified host. The first platform-owned runtime identity boundary remains active through the real ES -> Nomad -> Docker path: same-container supervisor/helper, helper-private SPIRE channel, fixed non-root workload launch, and helper-death/task-fatal behavior are all active in the current slice.
 
-For the underlying credential-flow details, use [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_vault_login.md).
+For the underlying credential-flow details, use [.runbooks/execution/v1_submit_runtime_identity_vault_login.md](../execution/v1_submit_runtime_identity_vault_login.md).
 
 That bounded proof has now also been exercised on a supported local host on the current Apple Silicon Mac through Lima `qemu` + Ubuntu 24.04 arm64 under a pre-managed non-`-dev` Nomad service with natural `cpu.totalcompute`. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because the real service path still leaves natural `cpu.totalcompute=0`.
 
@@ -408,8 +408,8 @@ Keep host qualification and smoke proof distinct:
 
 If you want the manual publish/prepare/submit breakdown instead, use:
 
-- [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_static_script.md)
-- [/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_reference.md](/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_reference.md)
+- [.runbooks/execution/v1_submit_static_script.md](../execution/v1_submit_static_script.md)
+- [.runbooks/execution/v1_submit_runtime_identity_reference.md](../execution/v1_submit_runtime_identity_reference.md)
 
 ## 7. Shutdown
 

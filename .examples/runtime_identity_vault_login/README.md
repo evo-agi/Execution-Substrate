@@ -26,13 +26,15 @@ This is the current bounded usefulness proof for slice `1A` and slice `1B`. It k
 
 ## Packaging
 
+From the repository root:
+
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/package.sh"
+".examples/runtime_identity_vault_login/package.sh"
 ```
 
 This produces:
 
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
+- `.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
 
 That `dist/` output is generated proof packaging, not tracked repo authority. Regenerate it with `package.sh` when needed.
 

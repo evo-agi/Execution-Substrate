@@ -18,9 +18,11 @@ This runbook is intentionally local, non-production, and legacy:
 
 It proves only legacy plumbing and contract compatibility for the workload-authored reference path. It does not prove the slice-1 platform-owned runtime identity model.
 
+Run command examples from the repository root unless a step says otherwise.
+
 For a fresh Linux VM, an optional explicit bootstrap helper is available at:
 
-- `/Users/ds/Repositories/Execution Substrate/scripts/70_linux_setup.sh`
+- `scripts/70_linux_setup.sh`
 
 That helper installs dependencies, pauses for GitHub SSH-key setup, clones the repository once, verifies the required tools, and then hands control back to this runbook.
 
@@ -53,8 +55,8 @@ You also need:
 
 Use the existing legacy runtime identity reference workload:
 
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/entrypoint`
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/package.sh`
+- `.examples/runtime_identity_reference/entrypoint`
+- `.examples/runtime_identity_reference/package.sh`
 
 ## 3. Vault Setup Commands
 
@@ -192,7 +194,7 @@ If that returns a token, Vault JWT auth is configured correctly for this local v
 
 Use the existing minimal adapter:
 
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py`
+- `.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py`
 
 It:
 
@@ -208,7 +210,7 @@ Start it on the local host:
 ```bash
 export RI_IDENTITY_PORT="18081"
 
-python3 "/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/helpers/mock_identity_endpoint.py" \
+python3 ".examples/runtime_identity_reference/helpers/mock_identity_endpoint.py" \
   --http-bind 0.0.0.0 \
   --http-port "$RI_IDENTITY_PORT" \
   --audience vault \
@@ -244,17 +246,17 @@ The local validation path adds no new TLS or certificate requirements beyond wha
 Package the reference workload:
 
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/package.sh"
+".examples/runtime_identity_reference/package.sh"
 ```
 
 Follow the governed publish + submit flow from:
 
-- `/Users/ds/Repositories/Execution Substrate/.runbooks/execution/v1_submit_runtime_identity_reference.md`
+- `.runbooks/execution/v1_submit_runtime_identity_reference.md`
 
 Use these important values:
 
 - payload:
-  - `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
+  - `.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 - publish request:
   - `admission.access.network_access = true`
 - submit env:

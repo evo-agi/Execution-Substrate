@@ -12,6 +12,8 @@ Submit one real workload end to end through the current governed execution path:
 
 This runbook documents the current bounded static-script slice only. It does not define a richer execution model above Nomad.
 
+Run command examples from the repository root unless a step says otherwise.
+
 For the preferred one-command smoke path over the same public APIs, use:
 
 ```bash
@@ -21,21 +23,21 @@ scripts/60_execute_loop.sh .examples/execution_loop/static_script_success.input.
 For the first repo-owned non-operator API-facing path, use:
 
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
+".examples/control_plane_static_script/run.sh"
 ```
 
 That example drives the AGS and ES HTTPS+mTLS APIs directly as `spiffe://execution.internal/service/control-plane` for publish, submit, status, and logs; it does not use the operator helper wrappers below.
 On this Mac, the supported-local guest path is the grounded positive verification path for the logs step.
 When that direct example waits for terminal status without `CANCEL_AFTER_SUBMIT=1`, it now exits nonzero if ES reports a terminal nonzero workload exit.
 When you supply a long-running static-script payload and set `CANCEL_AFTER_SUBMIT=1 FETCH_LOGS=0`, the same direct API example instead exercises the bounded ES `cancel` surface and then waits for terminal status if requested.
-The focused app integration harness at [/Users/ds/Repositories/Execution Substrate/es/app/control_plane_integration_path_test.go](/Users/ds/Repositories/Execution%20Substrate/es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path and for disallowed-caller failures. On this Mac, that harness remains bounded to publish, submit, status, cancel, and disallowed-caller coverage rather than positive logs retrieval.
+The focused app integration harness at [es/app/control_plane_integration_path_test.go](../../es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path and for disallowed-caller failures. On this Mac, that harness remains bounded to publish, submit, status, cancel, and disallowed-caller coverage rather than positive logs retrieval.
 On the supported-local guest path, `SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1 scripts/72_supported_local_setup.sh setup` now generates the matching Control Plane client cert/key and includes `service/control-plane` in the proof-scoped AGS/ES allowlists without changing the default operator-only helper path.
 
 The steps below remain the transparent manual breakdown for the same current slice.
 
 ## 2. Prerequisites
 
-- The stack is already up through [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md)
+- The stack is already up through [.runbooks/system/v1_bringup.md](../system/v1_bringup.md)
 - `BRINGUP_PROFILE=full`
 - `curl`, `python3`, `tar`, `gzip`, `nomad`, and `docker` are available
 - `CA_CERT`, `OPERATOR_CERT`, `OPERATOR_KEY`, `ARS_URL`, `AGS_URL`, `EGS_URL`, `ES_URL`, and `NOMAD_ADDR` are exported
@@ -52,7 +54,7 @@ For this full-profile runbook, do not continue unless the check reports `submit-
 When later helpers fail, keep the bring-up check as the readiness source of truth:
 
 - first re-run `scripts/01_bringup.sh check`
-- then use the operator troubleshooting matrix in [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
+- then use the operator troubleshooting matrix in [.runbooks/system/v1_bringup.md](../system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category
 - if you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>` for the compact summary
 
 Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.

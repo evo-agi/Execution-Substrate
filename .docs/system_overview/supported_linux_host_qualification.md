@@ -331,7 +331,7 @@ Current proof order:
 
 The current primary proof path is documented in:
 
-- [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md)
+- [.runbooks/system/v1_bringup.md](../../.runbooks/system/v1_bringup.md)
 
 The preferred command path there is now:
 

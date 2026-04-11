@@ -21,29 +21,31 @@ scripts/73_supported_local_proof.sh run
 
 That wrapper records the proof under `.out/es-proof-<id>/`, runs supported-host qualification first, then runs this useful credential-flow workload through the real operator path. Before bootstrap it explicitly removes stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, stages a fresh snapshot of the current host worktree into guest bootstrap scratch, and preserves the host `.out/es-proof-<id>/` evidence record as the canonical proof output. The manual sections below remain the lower-level breakdown for debugging or for non-wrapper environments.
 
+Run command examples from the repository root unless a step says otherwise.
+
 The repo also carries a native-Linux bootstrap validation at `go test ./es/app -run TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget -count=1`, but on this Mac the wrapper remains the canonical supported-local validation path because it stages and exercises a fresh host-worktree snapshot inside the guest and records the proof evidence under `.out/es-proof-<id>/`.
 
 ## 2. Proof Asset
 
 The workload artifact lives at:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/entrypoint](/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/entrypoint)
+- [.examples/runtime_identity_vault_login/entrypoint](../../.examples/runtime_identity_vault_login/entrypoint)
 
 Package it with:
 
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/package.sh"
+".examples/runtime_identity_vault_login/package.sh"
 ```
 
 The resulting archive is:
 
-- `/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
+- `.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz`
 
 That archive is a generated local proof artifact, not tracked repo authority. Rebuild it with `package.sh` when needed.
 
 The operator execute-loop input for this workload is:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/execution_loop/runtime_identity_vault_success.input.json](/Users/ds/Repositories/Execution Substrate/.examples/execution_loop/runtime_identity_vault_success.input.json)
+- [.examples/execution_loop/runtime_identity_vault_success.input.json](../../.examples/execution_loop/runtime_identity_vault_success.input.json)
 
 ## 3. What This Flow Proves
 
@@ -65,7 +67,7 @@ This slice deliberately does **not**:
 
 ## 4. Preconditions
 
-All prerequisites from [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) still apply.
+All prerequisites from [.runbooks/system/v1_bringup.md](../system/v1_bringup.md) still apply.
 
 In particular, before continuing:
 
@@ -156,13 +158,13 @@ The canonical supported-local wrapper now performs that alignment through the sa
 Package the workload:
 
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/runtime_identity_vault_login/package.sh"
+".examples/runtime_identity_vault_login/package.sh"
 ```
 
 Run the normal execute-loop helper:
 
 ```bash
-scripts/60_execute_loop.sh "/Users/ds/Repositories/Execution Substrate/.examples/execution_loop/runtime_identity_vault_success.input.json"
+scripts/60_execute_loop.sh ".examples/execution_loop/runtime_identity_vault_success.input.json"
 ```
 
 ## 9. Expected Success Markers
@@ -185,7 +187,7 @@ The final log line is a JSON status object containing:
 
 This runbook does **not** prove:
 
-- host qualification by itself; use [/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md](/Users/ds/Repositories/Execution Substrate/.docs/system_overview/supported_linux_host_qualification.md) and [/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md](/Users/ds/Repositories/Execution Substrate/.runbooks/system/v1_bringup.md) to distinguish `supported` from `bounded-fallback`
+- host qualification by itself; use [.docs/system_overview/supported_linux_host_qualification.md](../../.docs/system_overview/supported_linux_host_qualification.md) and [.runbooks/system/v1_bringup.md](../system/v1_bringup.md) to distinguish `supported` from `bounded-fallback`
 - arbitrary or root workload compatibility
 - X.509 SVID delivery
 - multi-host topology

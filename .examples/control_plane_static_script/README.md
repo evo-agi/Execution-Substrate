@@ -49,7 +49,7 @@ When the example waits for terminal status without `CANCEL_AFTER_SUBMIT=1`, it n
 
 Set `CANCEL_AFTER_SUBMIT=1` only when `PAYLOAD_PATH` points to a long-running static-script payload. In that bounded cancel mode, also set `FETCH_LOGS=0`; the same direct API example then proves publish, submit, status, and `POST /v1/executions/{run_id}:cancel`, then polls bounded ES status until terminal if `WAIT_FOR_TERMINAL=1`.
 
-The focused AGS/ES app integration harness at [/Users/ds/Repositories/Execution Substrate/es/app/control_plane_integration_path_test.go](/Users/ds/Repositories/Execution%20Substrate/es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path, including disallowed-caller failures. On this Mac, that harness stays bounded to publish, submit, status, cancel, and disallowed-caller coverage; positive logs activation is grounded through the supported-local guest path above.
+The focused AGS/ES app integration harness at [es/app/control_plane_integration_path_test.go](../../es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path, including disallowed-caller failures. On this Mac, that harness stays bounded to publish, submit, status, cancel, and disallowed-caller coverage; positive logs activation is grounded through the supported-local guest path above.
 
 For the supported-local guest path, `SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1 scripts/72_supported_local_setup.sh setup` now generates the matching Control Plane client cert/key and proof-scoped AGS/ES allowlist entries without changing the default operator-only setup.
 
@@ -57,18 +57,20 @@ For the supported-local guest path, `SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1 scrip
 
 If you want the repo-owned template pair for this path, use:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/config/ags.operator_and_control_plane.json](/Users/ds/Repositories/Execution%20Substrate/.examples/config/ags.operator_and_control_plane.json)
-- [/Users/ds/Repositories/Execution Substrate/.examples/config/es.operator_and_control_plane.json](/Users/ds/Repositories/Execution%20Substrate/.examples/config/es.operator_and_control_plane.json)
+- [.examples/config/ags.operator_and_control_plane.json](../config/ags.operator_and_control_plane.json)
+- [.examples/config/es.operator_and_control_plane.json](../config/es.operator_and_control_plane.json)
 
 The default templates remain operator-only:
 
-- [/Users/ds/Repositories/Execution Substrate/.examples/config/ags.json](/Users/ds/Repositories/Execution%20Substrate/.examples/config/ags.json)
-- [/Users/ds/Repositories/Execution Substrate/.examples/config/es.json](/Users/ds/Repositories/Execution%20Substrate/.examples/config/es.json)
+- [.examples/config/ags.json](../config/ags.json)
+- [.examples/config/es.json](../config/es.json)
 
 ## Run
 
+From the repository root:
+
 ```bash
-"/Users/ds/Repositories/Execution Substrate/.examples/control_plane_static_script/run.sh"
+".examples/control_plane_static_script/run.sh"
 ```
 
 The script writes a work directory under `.out/`, records the direct API request/response payloads there, and prints the final `workdir=` path so it is easy to inspect what went over the wire. When `CANCEL_AFTER_SUBMIT=1` is enabled it also writes `cancel-response.json`.
