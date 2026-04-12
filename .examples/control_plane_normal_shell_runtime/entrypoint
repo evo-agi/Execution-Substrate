@@ -5,12 +5,15 @@ import pathlib
 import socket
 import ssl
 import subprocess
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
 
 RESULT_DIR = pathlib.Path("/execution/run/result")
+PROOF_WORKSPACE = pathlib.Path("/execution/run/work/proof-workspace")
+PROMPT = "Apply the Execution Substrate supported-local normal-shell proof mutation.\n"
 
 
 def require_env(name: str) -> str:
@@ -30,6 +33,121 @@ def codex_readiness(codex_path: str) -> str:
         return run_command([codex_path, "--version"])
     except (subprocess.CalledProcessError, FileNotFoundError):
         return run_command([codex_path, "--help"]).splitlines()[0].strip()
+
+
+def run_command_capture(args, cwd=None, input_text=None, check=True):
+    completed = subprocess.run(
+        args,
+        check=False,
+        cwd=cwd,
+        input=input_text,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if check and completed.returncode != 0:
+        raise SystemExit(
+            f"command failed ({completed.returncode}): {args}\nstdout={completed.stdout}\nstderr={completed.stderr}"
+        )
+    return completed
+
+
+def write_text(path: pathlib.Path, value: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+
+
+def reset_proof_workspace():
+    if PROOF_WORKSPACE.exists():
+        subprocess.run(["rm", "-rf", str(PROOF_WORKSPACE)], check=True)
+    PROOF_WORKSPACE.mkdir(parents=True)
+    write_text(PROOF_WORKSPACE / "README.md", "Execution Substrate CP normal-shell proof workspace\n")
+    run_command_capture(["git", "init"], cwd=PROOF_WORKSPACE)
+    run_command_capture(["git", "config", "user.email", "proof@example.invalid"], cwd=PROOF_WORKSPACE)
+    run_command_capture(["git", "config", "user.name", "Execution Substrate Proof"], cwd=PROOF_WORKSPACE)
+    run_command_capture(["git", "add", "."], cwd=PROOF_WORKSPACE)
+    env = os.environ.copy()
+    env["GIT_AUTHOR_DATE"] = "1970-01-01T00:00:00Z"
+    env["GIT_COMMITTER_DATE"] = "1970-01-01T00:00:00Z"
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=PROOF_WORKSPACE,
+        env=env,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def create_deterministic_tar_gz(source_dir: pathlib.Path, output_path: pathlib.Path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as raw:
+        with gzip_fileobj(raw) as gzip_stream:
+            with tarfile.open(fileobj=gzip_stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                for path in sorted(source_dir.rglob("*")):
+                    if ".git" in path.relative_to(source_dir).parts:
+                        continue
+                    rel = path.relative_to(source_dir).as_posix()
+                    info = archive.gettarinfo(str(path), arcname=rel)
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = ""
+                    info.gname = ""
+                    info.mtime = 0
+                    if path.is_file():
+                        with path.open("rb") as handle:
+                            archive.addfile(info, handle)
+                    else:
+                        archive.addfile(info)
+
+
+class gzip_fileobj:
+    def __init__(self, raw):
+        import gzip
+
+        self._gzip = gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0)
+
+    def __enter__(self):
+        return self._gzip
+
+    def __exit__(self, exc_type, exc, tb):
+        self._gzip.close()
+        return False
+
+
+def run_proof_codex(codex_path: str) -> dict:
+    reset_proof_workspace()
+    final_message_path = PROOF_WORKSPACE / "codex-final-message.txt"
+    completed = run_command_capture(
+        [
+            codex_path,
+            "exec",
+            "--cwd",
+            str(PROOF_WORKSPACE),
+            "--output-last-message",
+            str(final_message_path),
+            "-",
+        ],
+        cwd=PROOF_WORKSPACE,
+        input_text=PROMPT,
+    )
+    write_text(RESULT_DIR / "codex-stdout.txt", completed.stdout)
+    write_text(RESULT_DIR / "codex-stderr.txt", completed.stderr)
+    if not final_message_path.is_file():
+        raise SystemExit("proof Codex shim did not write final message")
+    write_text(RESULT_DIR / "codex-final-message.txt", final_message_path.read_text(encoding="utf-8"))
+
+    diff = run_command_capture(["git", "diff", "--", "."], cwd=PROOF_WORKSPACE).stdout
+    if "ES_CONTROL_PLANE_NORMAL_SHELL_PROOF" not in diff:
+        raise SystemExit(f"proof Codex shim did not produce expected workspace diff: {diff}")
+    write_text(RESULT_DIR / "workspace.diff", diff)
+    create_deterministic_tar_gz(PROOF_WORKSPACE, RESULT_DIR / "workspace.tar.gz")
+
+    proof_report_path = PROOF_WORKSPACE / ".codex-proof" / "codex-proof-result.json"
+    if not proof_report_path.is_file():
+        raise SystemExit("proof Codex shim did not write workspace report")
+    return json.loads(proof_report_path.read_text(encoding="utf-8"))
 
 
 def parse_identity_endpoint(uri: str) -> str:
@@ -152,6 +270,7 @@ def main() -> int:
         jwt_value,
     )
     credential_material = read_credential_material(opener, require_env("VAULT_ADDR"), token, secret_path, secret_field)
+    codex_report = run_proof_codex(codex_path)
 
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     result = {
@@ -160,14 +279,16 @@ def main() -> int:
         "python": python_version,
         "git": git_version,
         "shell": shell_version,
-        "codex": codex_version,
+        "codex_cli": codex_version,
         "credential_source": credential_source,
         "credential_secret_path": secret_path,
         "credential_secret_field": secret_field,
         "credential_material_bytes": len(credential_material.encode("utf-8")),
+        "codex": codex_report,
+        "proof_claim": "supported-local CP remote normal-shell runtime contract without upstream Codex service",
     }
-    (RESULT_DIR / "runtime-profile-readiness.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print("CP-NORMAL-SHELL-RUNTIME-PROFILE-READY", flush=True)
+    (RESULT_DIR / "runtime-contract-proof.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print("CP-NORMAL-SHELL-RUNTIME-CONTRACT-PROVED", flush=True)
     print(json.dumps({"status": "ok", "profile": result["profile"]}, sort_keys=True), flush=True)
     return 0
 

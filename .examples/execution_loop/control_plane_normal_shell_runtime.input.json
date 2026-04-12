@@ -5,7 +5,7 @@
     "args": [],
     "entrypoint": "./entrypoint",
     "kind": "control-plane-normal-shell-runtime-profile",
-    "note": "bounded Control Plane normal-shell runtime profile readiness proof"
+    "note": "bounded Control Plane normal-shell runtime contract proof"
   },
   "derivation_spec": {
     "constraints_profile": "bounded-control-plane-normal-shell",

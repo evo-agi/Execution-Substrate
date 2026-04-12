@@ -449,10 +449,11 @@ Current successful response shapes:
   - requires `network_access=true`
   - requires explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
   - uses the configured profile image instead of `execution.base_image`
-  - guarantees the profile image contract for Python, git, narrow shell utilities, and Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
+  - guarantees the profile image contract for Python, git, narrow shell utilities, and configured Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
   - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
   - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, and `EXEC_WORKLOAD_VAULT_AUTH_*` handoff for workload-side Vault login and credential-material reads
 - ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
+- The supported-local proof image may realize the configured Codex CLI path with a deterministic proof-only shim. That proves the ES runtime contract for the CP normal-shell path without claiming real upstream Codex service behavior.
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.

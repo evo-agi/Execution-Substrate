@@ -605,6 +605,7 @@ Successful response is `200` JSON with these fields:
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
 - ES does not fetch, mint, broker, validate, or store Codex credential material. The selected workload is responsible for using the existing identity endpoint and workload-vault metadata to read that material.
+- The supported-local proof realization may provide a proof-only deterministic Codex shim at `EXEC_CODEX_CLI_PATH` inside the configured profile image. That shim is proof tooling, not a new ES product API or a claim that ES owns Codex service invocation semantics.
 - The first platform-owned runtime-identity slice is intentionally limited to platform-controlled non-root workloads with no privilege-escalation path.
 - The public runtime identity endpoint must remain a bounded platform endpoint, not a raw SPIRE proxy.
 

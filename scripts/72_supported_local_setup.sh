@@ -33,6 +33,7 @@ VAULT_ROOT_TOKEN="${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-${SUPPORTED_LOCAL_VAULT_TO
 VAULT_SECRET_VALUE="${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}"
 CODEX_RUNTIME_PROFILE_IMAGE="${SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE:-execution-substrate/control-plane-normal-shell:supported-local}"
 CODEX_CLI_PATH="${SUPPORTED_LOCAL_CODEX_CLI_PATH:-/usr/local/bin/codex}"
+CODEX_REALIZATION="${SUPPORTED_LOCAL_CODEX_REALIZATION:-proof}"
 CODEX_CREDENTIAL_SECRET_PATH="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH:-proof-secrets/data/codex-runtime-profile}"
 CODEX_CREDENTIAL_SECRET_FIELD="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD:-api_key}"
 CODEX_CREDENTIAL_VALUE="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE:-}"
@@ -69,7 +70,7 @@ What it writes under /tmp/execution-substrate-supported-local-proof by default:
   - managed-secrets.conf for generated proof bootstrap material
   - operator env.sh for scripts/01_bringup.sh and scripts/60_execute_loop.sh
   - a proof-scoped real SPIRE Workload API Unix socket
-  - a proof-scoped real Vault dev/test target for the useful credential flow
+  - a proof-scoped real Vault dev/test target for credential-flow and Codex proof material
 
 This helper is the guest-side setup layer for the supported-local proof path.
 On the current Apple Silicon Mac, the canonical proof record lives on the host
@@ -93,6 +94,7 @@ Optional environment variables:
   SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=<proof-root-token>
   SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE=execution-substrate/control-plane-normal-shell:supported-local
   SUPPORTED_LOCAL_CODEX_CLI_PATH=/usr/local/bin/codex
+  SUPPORTED_LOCAL_CODEX_REALIZATION=proof
   SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH=proof-secrets/data/codex-runtime-profile
   SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD=api_key
   SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=<proof-material>
@@ -236,6 +238,7 @@ build_codex_runtime_profile_image() {
   echo "==> building Control Plane normal-shell runtime profile image ${CODEX_RUNTIME_PROFILE_IMAGE}"
   CONTROL_PLANE_NORMAL_SHELL_IMAGE="${CODEX_RUNTIME_PROFILE_IMAGE}" \
   CONTROL_PLANE_NORMAL_SHELL_CODEX_CLI_PATH="${CODEX_CLI_PATH}" \
+  CONTROL_PLANE_NORMAL_SHELL_CODEX_REALIZATION="${CODEX_REALIZATION}" \
     bash "${REPO_ROOT}/scripts/build_control_plane_normal_shell_image.sh" > "${PROOF_DIR}/control-plane-normal-shell-image.txt"
 }
 
@@ -679,9 +682,10 @@ write_managed_secrets_file() {
   local vault_secret_logical_path=$9
   local codex_runtime_profile_image=${10}
   local codex_cli_path=${11}
-  local codex_credential_secret_path=${12}
-  local codex_credential_secret_field=${13}
-  local codex_credential_value=${14}
+  local codex_realization=${12}
+  local codex_credential_secret_path=${13}
+  local codex_credential_secret_field=${14}
+  local codex_credential_value=${15}
 
   cat > "${path}" <<EOF
 SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
@@ -703,6 +707,7 @@ PROOF_VAULT_SECRET_VALUE="${vault_secret_value}"
 PROOF_VAULT_ROOT_TOKEN="${vault_root_token}"
 PROOF_CODEX_RUNTIME_PROFILE_IMAGE="${codex_runtime_profile_image}"
 PROOF_CODEX_CLI_PATH="${codex_cli_path}"
+PROOF_CODEX_REALIZATION="${codex_realization}"
 PROOF_CODEX_CREDENTIAL_SECRET_PATH="${codex_credential_secret_path}"
 PROOF_CODEX_CREDENTIAL_SECRET_FIELD="${codex_credential_secret_field}"
 PROOF_CODEX_CREDENTIAL_VALUE="${codex_credential_value}"
@@ -1292,6 +1297,7 @@ setup() {
     "${vault_secret_logical_path}" \
     "${CODEX_RUNTIME_PROFILE_IMAGE}" \
     "${CODEX_CLI_PATH}" \
+    "${CODEX_REALIZATION}" \
     "${CODEX_CREDENTIAL_SECRET_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_FIELD}" \
     "${codex_credential_value}"

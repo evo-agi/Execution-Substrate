@@ -23,6 +23,7 @@ SUBMIT_JSON_PATH=""
 SUBMIT_RESPONSE_PATH=""
 STATUS_PATH=""
 LOGS_PATH=""
+RESULT_PATH=""
 
 SPEC_PATH=""
 SPEC_NAME=""
@@ -43,6 +44,8 @@ STATE=""
 EXIT_CODE_JSON="null"
 TERMINAL="false"
 LOGS_AVAILABLE="false"
+RESULT_AVAILABLE="false"
+RESULT_BYTES="0"
 OK="false"
 
 usage() {
@@ -61,6 +64,7 @@ Optional environment variables:
   WORKDIR_BASE   Base directory for per-run output workdirs
   AGS_RESOLVE    Optional curl --resolve value for AGS
   ES_RESOLVE     Optional curl --resolve value for ES
+  FETCH_RESULT   Set to 1 to fetch GET /v1/executions/{run_id}/result after terminal success
 EOF
 }
 
@@ -89,7 +93,10 @@ write_summary() {
     "${TERMINAL}" \
     "${EXIT_CODE_JSON}" \
     "${LOGS_PATH}" \
-    "${LOGS_AVAILABLE}"
+    "${LOGS_AVAILABLE}" \
+    "${RESULT_PATH}" \
+    "${RESULT_AVAILABLE}" \
+    "${RESULT_BYTES}"
 import json
 import pathlib
 import sys
@@ -116,6 +123,9 @@ payload = {
     "exit_code": None if sys.argv[18] == "null" else json.loads(sys.argv[18]),
     "logs_path": sys.argv[19],
     "logs_available": sys.argv[20] == "true",
+    "result_path": sys.argv[21],
+    "result_available": sys.argv[22] == "true",
+    "result_bytes": int(sys.argv[23]),
 }
 summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -391,6 +401,7 @@ SUBMIT_JSON_PATH="${WORKDIR}/submit.json"
 SUBMIT_RESPONSE_PATH="${WORKDIR}/submit-response.json"
 STATUS_PATH="${WORKDIR}/status.json"
 LOGS_PATH="${WORKDIR}/logs.txt"
+RESULT_PATH="${WORKDIR}/result.tar.gz"
 
 cp "${SPEC_PATH}" "${INPUT_COPY_PATH}"
 
@@ -773,6 +784,43 @@ while true; do
     fail_local_phase "execution" "$(operator_category_execution)" "terminal exit code is ${EXIT_CODE_JSON}" "execution_failed" "${status_http}"
   fi
 
+  if [[ "${FETCH_RESULT:-0}" == "1" ]]; then
+    result_http=""
+    result_stderr="${WORKDIR}/result.stderr"
+    deadline_at_result=$(( $(date +%s) + POLL_INTERVAL_SECONDS + 10 ))
+    while true; do
+      if curl_json GET "${ES_URL}/v1/executions/${RUN_ID}/result" "" "${RESULT_PATH}" "${ES_RESOLVE:-}" "${result_stderr}" result_http; then
+        :
+      else
+        curl_exit=$?
+        write_phase_transport_error "result" "${curl_exit}" "${result_stderr}" "${ES_URL}/v1/executions/${RUN_ID}/result"
+      fi
+      HTTP_STATUS="${result_http}"
+      case "${result_http}" in
+        200)
+          RESULT_AVAILABLE="true"
+          RESULT_BYTES="$(wc -c < "${RESULT_PATH}" | tr -d '[:space:]')"
+          break
+          ;;
+        409)
+          if (( $(date +%s) > deadline_at_result )); then
+            write_phase_http_error "result" "${result_http}" "${RESULT_PATH}" "execution result unavailable"
+          fi
+          sleep "${POLL_INTERVAL_SECONDS}"
+          ;;
+        404)
+          write_phase_http_error "result" "${result_http}" "${RESULT_PATH}" "execution result not found"
+          ;;
+        503)
+          write_phase_http_error "result" "${result_http}" "${RESULT_PATH}" "execution result unavailable"
+          ;;
+        *)
+          write_phase_http_error "result" "${result_http}" "${RESULT_PATH}" "unexpected execution result response"
+          ;;
+      esac
+    done
+  fi
+
   OK="true"
   FAILED_PHASE=""
   FAILURE_CATEGORY=""
@@ -781,6 +829,9 @@ while true; do
   HTTP_STATUS="${status_http}"
   NEXT_STEP=""
   echo "execution: success run_id=${RUN_ID} exit_code=0"
+  if [[ "${FETCH_RESULT:-0}" == "1" ]]; then
+    echo "result: success bytes=${RESULT_BYTES}"
+  fi
   break
 done
 

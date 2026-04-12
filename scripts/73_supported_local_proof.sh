@@ -42,7 +42,7 @@ Silicon Mac + Lima qemu reference path. It:
   - boots the proof-scoped real SPIRE dev/test path used by the helper
   - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
-  - runs the bounded Control Plane normal-shell runtime-profile readiness proof
+  - runs the bounded Control Plane normal-shell runtime-contract proof
   - copies resulting guest evidence back into the canonical .out workspace
   - removes successful guest /tmp/es-proof-* scratch after host evidence is preserved
 
@@ -381,6 +381,9 @@ setup_guest_environment() {
   if [[ -n "${SUPPORTED_LOCAL_CODEX_CLI_PATH:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_CODEX_CLI_PATH=${SUPPORTED_LOCAL_CODEX_CLI_PATH}")
   fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_REALIZATION:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_REALIZATION=${SUPPORTED_LOCAL_CODEX_REALIZATION}")
+  fi
   if [[ -n "${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH=${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH}")
   fi
@@ -485,6 +488,7 @@ for name in (
     "summary.json",
     "status.json",
     "logs.txt",
+    "result.tar.gz",
     "publish-response.json",
     "prepare-response.json",
     "submit-response.json",
@@ -540,6 +544,68 @@ if [[ -n "${EVIDENCE_LABEL:-}" ]]; then
   cp "$GUEST_PROOF_DIR/nomad-alloc-status.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-alloc-status.txt"
   cp "$GUEST_PROOF_DIR/staging-check.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-staging-check.txt"
 fi
+EOF
+}
+
+validate_control_plane_normal_shell_result_bundle() {
+  run_guest_stdin <<'EOF'
+python3 - <<'PY' "$GUEST_PROOF_DIR/control-plane-normal-shell-result.tar.gz" "$GUEST_PROOF_DIR/control-plane-normal-shell-result-assertions.json"
+import gzip
+import io
+import json
+import pathlib
+import sys
+import tarfile
+
+bundle_path = pathlib.Path(sys.argv[1])
+assertions_path = pathlib.Path(sys.argv[2])
+if not bundle_path.is_file():
+    raise SystemExit(f"missing retained result bundle: {bundle_path}")
+
+with gzip.open(bundle_path, "rb") as gzip_stream:
+    bundle_bytes = gzip_stream.read()
+with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode="r:") as archive:
+    entries = {}
+    for member in archive.getmembers():
+        if not member.isfile():
+            continue
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            continue
+        entries[member.name] = extracted.read()
+
+required = [
+    "runtime-contract-proof.json",
+    "codex-stdout.txt",
+    "codex-stderr.txt",
+    "codex-final-message.txt",
+    "workspace.diff",
+    "workspace.tar.gz",
+]
+missing = [name for name in required if name not in entries]
+if missing:
+    raise SystemExit(f"result bundle is missing proof artifacts: {missing}; entries={sorted(entries)}")
+
+summary = json.loads(entries["runtime-contract-proof.json"].decode("utf-8"))
+if summary.get("status") != "ok":
+    raise SystemExit(f"unexpected proof status: {summary}")
+if summary.get("codex", {}).get("realization") != "supported-local-proof-codex-shim/v1":
+    raise SystemExit(f"unexpected Codex realization: {summary}")
+if summary.get("codex", {}).get("credential_material_present") is not True:
+    raise SystemExit(f"credential acquisition was not proved: {summary}")
+if b"ES_CONTROL_PLANE_NORMAL_SHELL_PROOF" not in entries["workspace.diff"]:
+    raise SystemExit("workspace diff does not contain proof mutation marker")
+if b"ES control-plane normal-shell proof completed" not in entries["codex-final-message.txt"]:
+    raise SystemExit("final message is missing proof completion marker")
+
+assertions = {
+    "bundle": str(bundle_path),
+    "entries": sorted(entries),
+    "proof_status": summary.get("status"),
+    "realization": summary.get("codex", {}).get("realization"),
+}
+assertions_path.write_text(json.dumps(assertions, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
 EOF
 }
 
@@ -606,9 +672,11 @@ cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 export OPERATOR_CERT="$CONTROL_PLANE_CERT"
 export OPERATOR_KEY="$CONTROL_PLANE_KEY"
+export FETCH_RESULT=1
 scripts/60_execute_loop.sh "$GUEST_PROOF_DIR/control_plane_normal_shell_runtime.input.json"
 EOF
   capture_execution_evidence control-plane-normal-shell
+  validate_control_plane_normal_shell_result_bundle
 
   cleanup_control_plane
   collect_guest_workspace

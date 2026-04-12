@@ -417,7 +417,7 @@ The most important implementation facts are backed by integration tests:
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
-- The supported-local proof scripts now build and configure the repo-owned Control Plane normal-shell runtime-profile image, seed proof-scoped Codex credential material in Vault, run a profile-selected CP-shaped readiness workload, and retain its result bundle. That proof validates Codex CLI invocation readiness and credential-material acquisition, but it intentionally does not call the external Codex service.
+- The supported-local proof scripts now build and configure the repo-owned Control Plane normal-shell runtime-profile image with the proof-only Codex shim realization, seed proof-scoped Codex credential material in Vault, run a profile-selected CP-shaped runtime-contract workload, fetch the retained result bundle, and validate the expected proof artifacts. That proof validates the profile image/tooling guarantee, workload-side credential acquisition, proof Codex invocation through `EXEC_CODEX_CLI_PATH`, deterministic workspace mutation, and retained-result delivery, but it intentionally does not prove real upstream Codex service behavior.
 
 Operator helper ownership in the current slice:
 

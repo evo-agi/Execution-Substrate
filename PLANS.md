@@ -54,6 +54,7 @@ Current bounded implementation status:
 - Useful credential flow completion is now also landed in the bounded sense the repo claims: one workload can use the platform-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` plus the bounded workload-vault metadata to authenticate to a real Vault dev/test target and read one secret through the real ES -> Nomad -> Docker path, without reintroducing workload-authored bridging or platform-owned Vault token brokerage.
 - The current supported local proof path is now repo-owned and converged with the bounded useful credential-flow proof: `scripts/72_supported_local_setup.sh` prepares the guest-side supported-local proof environment, including a proof-scoped real SPIRE server/agent path plus a proof-scoped real Vault dev/test target, while `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac. That path records canonical proof workspaces under `.out/es-proof-<id>/`, keeps generated proof bootstrap material in `managed-secrets.conf`, and uses guest `/tmp` scratch only as an internal Lima implementation detail because the mounted repo tree is read-only inside the guest.
 - The first bounded Control Plane normal-shell runtime contract is now an explicit opt-in ES runtime profile named `control-plane-normal-shell/v1`. It remains a bounded slice rule on the reopened ES runtime/package seam: CP still owns orchestration, review, checkpoint, and finalization semantics, while ES owns the governed Docker/Nomad runtime realization, platform-owned runtime identity delivery, the profile image selection, and non-secret credential-location metadata needed for workload-side Codex credential retrieval.
+- The supported-local proof realization for that profile now uses a repo-owned deterministic proof Codex shim at the configured `EXEC_CODEX_CLI_PATH`, invokes it through the bounded normal-shell profile path, proves workload-side Vault credential acquisition, creates a deterministic workspace mutation and runner-style artifacts, fetches the retained ES result bundle, and validates the expected proof artifacts without depending on a live upstream Codex service.
 
 ## Current Planning Objective
 
@@ -371,9 +372,10 @@ Current bounded planning direction:
   - the slice still avoids platform-owned Vault token brokerage
 - The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:
   - ES selects the configured profile image for opt-in requests
-  - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and the Codex CLI at the configured path
-  - the supported-local proof seeds proof-scoped Codex credential material in Vault and proves workload-side credential acquisition through the existing identity endpoint
-  - the proof intentionally stops short of a real Codex service call because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
+  - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and a configured Codex CLI realization at the configured path
+  - the supported-local proof realization uses the proof-only Codex shim at that path, seeds proof-scoped Codex credential material in Vault, proves workload-side credential acquisition through the existing identity endpoint, invokes the shim with stdin prompt input, creates a deterministic workspace mutation, and writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts under `/execution/run/result`
+  - the proof fetches and validates the retained ES result bundle for those artifacts
+  - the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
 - The supported-host follow-through after that credential-flow proof is now landed in bounded form:
   - keep the current script-managed local Nomad path explicit as bounded fallback/troubleshooting
   - distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks

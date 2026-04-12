@@ -94,6 +94,7 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"PROOF_VAULT_CA_CERT_FILE",
 		"PROOF_CODEX_RUNTIME_PROFILE_IMAGE",
 		"PROOF_CODEX_CLI_PATH",
+		"PROOF_CODEX_REALIZATION",
 		"PROOF_CODEX_CREDENTIAL_SECRET_PATH",
 		"PROOF_CODEX_CREDENTIAL_SECRET_FIELD",
 		"PROOF_CODEX_CREDENTIAL_VALUE",
@@ -696,6 +697,9 @@ func assertSupportedLocalSPIRERuntimeAlignment(t *testing.T, proofDir string, ma
 	}
 	if profile.CodexCLIPath != managed["PROOF_CODEX_CLI_PATH"] {
 		t.Fatalf("expected Codex CLI path %q, got %q", managed["PROOF_CODEX_CLI_PATH"], profile.CodexCLIPath)
+	}
+	if managed["PROOF_CODEX_REALIZATION"] != "proof" {
+		t.Fatalf("expected supported-local Codex realization proof, got %q", managed["PROOF_CODEX_REALIZATION"])
 	}
 	if profile.CredentialVaultSecretPath != managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"] {
 		t.Fatalf("expected Codex credential secret path %q, got %q", managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"], profile.CredentialVaultSecretPath)

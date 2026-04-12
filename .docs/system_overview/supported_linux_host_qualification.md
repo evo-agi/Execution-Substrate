@@ -343,7 +343,8 @@ That order keeps host qualification and smoke execution separate:
 
 - `scripts/73_supported_local_proof.sh run` creates one canonical proof workspace under `.out/es-proof-<id>/` and records both qualification and execution evidence there
 - inside that wrapper, the `prepare-only` bring-up plus full-profile `check` still proves the supported host boundary before any workload proof is accepted
-- the later execute-loop run now uses the bounded runtime-identity Vault-login workload as the canonical higher-value governed execution proof on that already-qualified host
+- the later execute-loop runs use the bounded runtime-identity Vault-login workload and the bounded Control Plane normal-shell runtime-contract workload as the canonical higher-value governed execution proofs on that already-qualified host
+- the Control Plane normal-shell proof fetches the retained result bundle and validates the expected proof Codex stdout/stderr, final message, workspace diff, and workspace archive artifacts
 - the wrapper may still use guest `/tmp/es-proof-<id>` plus `/tmp/es-proof-<id>.bootstrap` internally on this Mac because the Lima-mounted repo tree is read-only inside the guest, but those scratch paths are proof-owned transient implementation detail rather than the canonical proof workspace
 
 The bounded useful credential flow runbook remains the higher-value proof on top of that qualified host, not a replacement for host qualification.
