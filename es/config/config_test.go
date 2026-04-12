@@ -60,6 +60,59 @@ func TestExecutionConfigEffectiveRuntimeIdentityTmpfsSizeUsesExplicitValue(t *te
 	}
 }
 
+func TestExecutionConfigValidateAllowsEnabledControlPlaneNormalShellProfile(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RuntimeProfiles: RuntimeProfilesConfig{
+			ControlPlaneNormalShell: ControlPlaneNormalShellProfileConfig{
+				Enabled:                    true,
+				Image:                      "execution-substrate/control-plane-normal-shell:supported-local",
+				CodexCLIPath:               "/usr/local/bin/codex",
+				CredentialVaultSecretPath:  "proof-secrets/data/codex-runtime-profile",
+				CredentialVaultSecretField: "api_key",
+			},
+		},
+	}
+
+	if err := cfg.Validate("execution"); err != nil {
+		t.Fatalf("expected enabled control-plane normal-shell profile to validate, got %v", err)
+	}
+}
+
+func TestExecutionConfigValidateRejectsIncompleteControlPlaneNormalShellProfile(t *testing.T) {
+	cfg := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RuntimeProfiles: RuntimeProfilesConfig{
+			ControlPlaneNormalShell: ControlPlaneNormalShellProfileConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	err := cfg.Validate("execution")
+	if err == nil {
+		t.Fatalf("expected validation error for incomplete control-plane normal-shell profile")
+	}
+	if !strings.Contains(err.Error(), "control_plane_normal_shell.image") {
+		t.Fatalf("expected profile image validation error, got %v", err)
+	}
+
+	cfg.RuntimeProfiles.ControlPlaneNormalShell.Image = "execution-substrate/control-plane-normal-shell:supported-local"
+	cfg.RuntimeProfiles.ControlPlaneNormalShell.CodexCLIPath = "codex"
+	err = cfg.Validate("execution")
+	if err == nil || !strings.Contains(err.Error(), "codex_cli_path") {
+		t.Fatalf("expected codex_cli_path validation error, got %v", err)
+	}
+}
+
 func TestExecutionConfigValidateRejectsMissingRuntimeSupportBinary(t *testing.T) {
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",

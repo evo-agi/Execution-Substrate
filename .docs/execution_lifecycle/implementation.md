@@ -26,6 +26,7 @@ These labels matter because implementation shape and public contract are related
 | `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
 | `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, reserved result-path staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
+| `es/admission/runtimeprofile.go` | Bounded runtime-profile selection, validation, image selection, and non-secret profile environment metadata | Package-kind redesign, lifecycle semantics, secret brokerage | This keeps the Control Plane normal-shell runtime contract explicit without moving CP control behavior into ES |
 | `es/admission/submit.go` | `Submit`, execution-locator creation, payload fetch, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
 | `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use, and terminal-result retention triggers | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
 | `es/admission/results.go` | Retained result bundle lookup, idempotent tar.gz packaging of `/execution/run/result`, and result endpoint service behavior | Output semantics, Control Plane checkpoint meaning, lifecycle ownership | This keeps the retained-result slice narrow and ES-owned without turning it into orchestration state |
@@ -147,18 +148,19 @@ What `Prepare` reads:
 3. Reject non-async mode.
 4. Reuse the shared admission helper that also powers `Prepare`.
 5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
-6. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
-7. Generate the current internal execution locator:
+6. Resolve the optional bounded runtime profile selection from invocation annotations.
+7. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
+8. Generate the current internal execution locator:
   - public `run_id`
   - internal `nomad_job_id = exec-<run_id>`
-8. Create the current internal execution-package layout for the new run.
-9. Stage the payload locally through that run-scoped layout.
-10. Stage runtime mounts through the same layout when mounts are requested.
-11. Validate staged mount targets against reserved runtime paths.
-12. Build runtime environment variables from the localized runtime layout.
-13. Build the Nomad job spec with `buildNomadJobSpec`.
-14. Submit the job through `nomadClient.submitJob`.
-15. Return the bounded `SubmitResult`.
+9. Create the current internal execution-package layout for the new run.
+10. Stage the payload locally through that run-scoped layout.
+11. Stage runtime mounts through the same layout when mounts are requested.
+12. Validate staged mount targets against reserved runtime paths.
+13. Build runtime environment variables from the localized runtime layout plus any selected profile metadata.
+14. Build the Nomad job spec with `buildNomadJobSpec`, using the selected profile image when the bounded CP normal-shell profile is selected.
+15. Submit the job through `nomadClient.submitJob`.
+16. Return the bounded `SubmitResult`.
 
 Where IDs are created:
 
@@ -178,6 +180,7 @@ Where ES stops and Nomad takes over:
 - Failed submits remove the staging root immediately through deferred cleanup.
 - Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
+- `control-plane-normal-shell/v1` uses the same execution-package layout, runtime helper, runtime identity endpoint, and retained-result path as the current `static-script` slice. The selected profile changes the runtime image and adds non-secret runtime metadata; it does not add ES-owned CP lifecycle or result semantics.
 
 ## 8. Lifecycle projection implementation
 
@@ -351,6 +354,9 @@ Current job-spec assumptions:
 - network mode:
   - `none` when attestation says `network_access=false`
   - `bridge` when `network_access=true`
+- image:
+  - default executions use `execution.base_image`
+  - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
 
 After submission, ES asks Nomad for:
 
@@ -405,11 +411,13 @@ The most important implementation facts are backed by integration tests:
 - The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` as sufficient on its own.
 - Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
+- Runtime-profile unit coverage confirms `control-plane-normal-shell/v1` is rejected when unknown/disabled or when network access is absent, and confirms the selected profile injects only non-secret Codex metadata while selecting the configured profile image.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
 - Result integration coverage confirms the Control Plane caller can submit a current-slice static-script workload, wait for terminal status, fetch the retained result bundle, keep fetching it after staging cleanup, receive `404 result_not_found` for terminal runs with no result files, receive `403` as a disallowed caller, and repeat result fetches idempotently.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
+- The supported-local proof scripts now build and configure the repo-owned Control Plane normal-shell runtime-profile image, seed proof-scoped Codex credential material in Vault, run a profile-selected CP-shaped readiness workload, and retain its result bundle. That proof validates Codex CLI invocation readiness and credential-material acquisition, but it intentionally does not call the external Codex service.
 
 Operator helper ownership in the current slice:
 

@@ -78,6 +78,15 @@
     "results_root_dir": "/abs/path/es-results",
     "base_image": "alpine:3.20",
     "runtime_support_binary": "/usr/local/bin/es-runtime-support",
-    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock"
+    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock",
+    "runtime_profiles": {
+      "control_plane_normal_shell": {
+        "enabled": true,
+        "image": "execution-substrate/control-plane-normal-shell:supported-local",
+        "codex_cli_path": "/usr/local/bin/codex",
+        "credential_vault_secret_path": "proof-secrets/data/codex-runtime-profile",
+        "credential_vault_secret_field": "api_key"
+      }
+    }
   }
 }

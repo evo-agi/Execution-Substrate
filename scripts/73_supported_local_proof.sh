@@ -15,6 +15,8 @@ SUPPORTED_LOCAL_GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT:-${SUPPORTED_
 SUPPORTED_LOCAL_PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 SUPPORTED_LOCAL_INPUT_SPEC="${SUPPORTED_LOCAL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/runtime_identity_vault_success.input.json}"
 SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz}"
+SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC="${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/control_plane_normal_shell_runtime.input.json}"
+SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD="${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/dist/control_plane_normal_shell_runtime.tar.gz}"
 SUPPORTED_LOCAL_SPIRE_VERSION="${SUPPORTED_LOCAL_SPIRE_VERSION:-1.14.4}"
 SUPPORTED_LOCAL_SPIRE_ASSET="${SUPPORTED_LOCAL_SPIRE_ASSET:-spire-${SUPPORTED_LOCAL_SPIRE_VERSION}-linux-arm64-musl.tar.gz}"
 SUPPORTED_LOCAL_SPIRE_URL="${SUPPORTED_LOCAL_SPIRE_URL:-https://github.com/spiffe/spire/releases/download/v${SUPPORTED_LOCAL_SPIRE_VERSION}/${SUPPORTED_LOCAL_SPIRE_ASSET}}"
@@ -40,6 +42,7 @@ Silicon Mac + Lima qemu reference path. It:
   - boots the proof-scoped real SPIRE dev/test path used by the helper
   - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
+  - runs the bounded Control Plane normal-shell runtime-profile readiness proof
   - copies resulting guest evidence back into the canonical .out workspace
   - removes successful guest /tmp/es-proof-* scratch after host evidence is preserved
 
@@ -53,6 +56,8 @@ Optional environment variables:
   SUPPORTED_LOCAL_PORT_BASE=18440
   SUPPORTED_LOCAL_SPIRE_VERSION=1.14.4
   SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=/abs/path/to/spire-linux-arm64-musl.tar.gz
+  SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC=/abs/path/to/control_plane_normal_shell_runtime.input.json
+  SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD=/abs/path/to/control_plane_normal_shell_runtime.tar.gz
 EOF
 }
 
@@ -70,6 +75,7 @@ run_guest_stdin() {
       GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
       GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
       GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+      EVIDENCE_LABEL="${EVIDENCE_LABEL:-}" \
     bash -seuo pipefail
 }
 
@@ -160,6 +166,7 @@ write_proof_metadata() {
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
     "${SUPPORTED_LOCAL_INPUT_SPEC}" \
+    "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC}" \
     "${SUPPORTED_LOCAL_PROOF_ID}"
 import json
 import pathlib
@@ -172,7 +179,8 @@ payload = {
     "guest_proof_dir": sys.argv[5],
     "host_proof_dir": sys.argv[6],
     "input_spec": sys.argv[7],
-    "proof_id": sys.argv[8],
+    "control_plane_normal_shell_input_spec": sys.argv[8],
+    "proof_id": sys.argv[9],
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -209,15 +217,32 @@ PY
 prepare_host_inputs() {
   local payload_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
   local spec_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/runtime_identity_vault_success.input.json"
+  local cp_payload_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
+  local cp_spec_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"
 
   mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload"
   "${REPO_ROOT}/.examples/runtime_identity_vault_login/package.sh" | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-package-workload.txt"
   cp "${SUPPORTED_LOCAL_DIST_PAYLOAD}" "${payload_copy}"
+  "${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/package.sh" | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-package-control-plane-normal-shell.txt"
+  cp "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" "${cp_payload_copy}"
 
   python3 - <<'PY' \
     "${SUPPORTED_LOCAL_INPUT_SPEC}" \
     "${spec_copy}" \
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
+import json
+import pathlib
+import sys
+
+spec = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+spec["payload_path"] = sys.argv[3]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+  python3 - <<'PY' \
+    "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC}" \
+    "${cp_spec_copy}" \
+    "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
 import json
 import pathlib
 import sys
@@ -330,6 +355,7 @@ setup_guest_environment() {
     "SUPPORTED_LOCAL_PREBUILT_RUNTIME_SUPPORT_BINARY=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/es-runtime-support"
     "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/spire.tar.gz"
     "SUPPORTED_LOCAL_SPIRE_VERSION=${SUPPORTED_LOCAL_SPIRE_VERSION}"
+    "SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-1}"
   )
 
   if [[ -n "${SUPPORTED_LOCAL_VAULT_ADDRESS:-}" ]]; then
@@ -348,6 +374,24 @@ setup_guest_environment() {
     cmd+=("SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN}")
   elif [[ -n "${SUPPORTED_LOCAL_VAULT_TOKEN:-}" ]]; then
     cmd+=("SUPPORTED_LOCAL_VAULT_TOKEN=${SUPPORTED_LOCAL_VAULT_TOKEN}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE=${SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_CLI_PATH:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_CLI_PATH=${SUPPORTED_LOCAL_CODEX_CLI_PATH}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH=${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD=${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE}")
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE:-}" ]]; then
+    cmd+=("SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE=${SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE}")
   fi
 
   cmd+=(bash -s -- setup)
@@ -368,6 +412,16 @@ copy_inputs_to_guest() {
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'cat > "${GUEST_PROOF_DIR}/runtime_identity_vault_success.input.json"' \
     < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/runtime_identity_vault_success.input.json"
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    bash -lc 'cat > "${GUEST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
+
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    bash -lc 'cat > "${GUEST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"' \
+    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"
 }
 
 capture_supported_host_evidence() {
@@ -406,19 +460,27 @@ EOF
 }
 
 capture_execution_evidence() {
-  run_guest_stdin <<'EOF'
+  local evidence_label=${1:-}
+  EVIDENCE_LABEL="${evidence_label}" run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
-python3 - <<'PY' "$GUEST_PROOF_DIR"
+python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}"
 import json
 import pathlib
 import sys
 
 proof_dir = pathlib.Path(sys.argv[1])
-workdirs = sorted([path for path in (proof_dir / "workdirs").iterdir() if path.is_dir()])
+label = sys.argv[2].strip()
+workdirs = sorted([path for path in (proof_dir / "workdirs").iterdir() if path.is_dir()], key=lambda path: path.stat().st_mtime)
 if not workdirs:
     raise SystemExit("no execution-loop workdirs found")
 latest = workdirs[-1]
+
+def write_evidence(name, data):
+    (proof_dir / name).write_bytes(data)
+    if label:
+        (proof_dir / f"{label}-{name}").write_bytes(data)
+
 for name in (
     "summary.json",
     "status.json",
@@ -429,11 +491,11 @@ for name in (
 ):
     src = latest / name
     if src.exists():
-        (proof_dir / name).write_bytes(src.read_bytes())
+        write_evidence(name, src.read_bytes())
 
 summary = json.loads((latest / "summary.json").read_text(encoding="utf-8"))
-(proof_dir / "latest-workdir.txt").write_text(str(latest) + "\n", encoding="utf-8")
-(proof_dir / "run-id.txt").write_text((summary.get("run_id") or "").strip() + "\n", encoding="utf-8")
+write_evidence("latest-workdir.txt", (str(latest) + "\n").encode("utf-8"))
+write_evidence("run-id.txt", ((summary.get("run_id") or "").strip() + "\n").encode("utf-8"))
 PY
 
 run_id="$(tr -d '[:space:]' < "$GUEST_PROOF_DIR/run-id.txt")"
@@ -470,6 +532,13 @@ if [[ -d "${staging_root}/${run_id}" ]]; then
   echo "present" > "$GUEST_PROOF_DIR/staging-check.txt"
 else
   echo "absent" > "$GUEST_PROOF_DIR/staging-check.txt"
+fi
+
+if [[ -n "${EVIDENCE_LABEL:-}" ]]; then
+  cp "$GUEST_PROOF_DIR/nomad-job-status.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-job-status.txt"
+  cp "$GUEST_PROOF_DIR/nomad-job-allocs.json" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-job-allocs.json"
+  cp "$GUEST_PROOF_DIR/nomad-alloc-status.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-alloc-status.txt"
+  cp "$GUEST_PROOF_DIR/staging-check.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-staging-check.txt"
 fi
 EOF
 }
@@ -530,7 +599,16 @@ cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 scripts/60_execute_loop.sh "$GUEST_PROOF_DIR/runtime_identity_vault_success.input.json"
 EOF
-  capture_execution_evidence
+  capture_execution_evidence runtime-identity-vault
+
+  run_guest_stdin <<'EOF' | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/execute-loop-control-plane-normal-shell.txt"
+cd "$GUEST_REPO_ROOT"
+source "$GUEST_PROOF_DIR/env.sh"
+export OPERATOR_CERT="$CONTROL_PLANE_CERT"
+export OPERATOR_KEY="$CONTROL_PLANE_KEY"
+scripts/60_execute_loop.sh "$GUEST_PROOF_DIR/control_plane_normal_shell_runtime.input.json"
+EOF
+  capture_execution_evidence control-plane-normal-shell
 
   cleanup_control_plane
   collect_guest_workspace

@@ -63,6 +63,8 @@ When a later helper reports a readiness or substrate problem, re-run `scripts/01
 
 In the current bounded execution slice, successful runs keep `execution.staging_root_dir/<run_id>` only until ES observes terminal success through the lifecycle path. Workloads may write terminal result files under `/execution/run/result`; ES retains those as an opaque bundle under `execution.results_root_dir` before successful staging cleanup. Failed, canceled, lost, or otherwise ambiguous outcomes retain staging for debugging.
 
+ES also has one bounded opt-in runtime profile for Control Plane remote normal-shell attempts: `control-plane-normal-shell/v1`, selected with `invocation.annotations["execution_substrate.runtime_profile"]`. It uses a configured profile image that provides Python, git, narrow shell utilities, and Codex CLI, and it exposes only non-secret Vault credential-location metadata. The workload remains responsible for using `EXEC_WORKLOAD_IDENTITY_ENDPOINT` and the workload-vault env to fetch Codex material; ES does not broker Codex or Vault tokens.
+
 ## Repo Structure
 
 High-level layout:

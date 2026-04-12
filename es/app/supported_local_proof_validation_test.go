@@ -92,6 +92,11 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"PROOF_VAULT_SECRET_VALUE",
 		"PROOF_VAULT_ROOT_TOKEN",
 		"PROOF_VAULT_CA_CERT_FILE",
+		"PROOF_CODEX_RUNTIME_PROFILE_IMAGE",
+		"PROOF_CODEX_CLI_PATH",
+		"PROOF_CODEX_CREDENTIAL_SECRET_PATH",
+		"PROOF_CODEX_CREDENTIAL_SECRET_FIELD",
+		"PROOF_CODEX_CREDENTIAL_VALUE",
 		"PROOF_SPIRE_VERSION",
 		"PROOF_SPIRE_TRUST_DOMAIN",
 		"PROOF_SPIRE_JWT_ISSUER",
@@ -195,6 +200,17 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	)
 	if secretMessage != managed["PROOF_VAULT_SECRET_VALUE"] {
 		t.Fatalf("expected secret message %q, got %q", managed["PROOF_VAULT_SECRET_VALUE"], secretMessage)
+	}
+	codexCredential := readProofVaultField(
+		t,
+		managed["PROOF_VAULT_LOCAL_ADDR"],
+		managed["PROOF_VAULT_CA_CERT_FILE"],
+		managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"],
+		managed["PROOF_CODEX_CREDENTIAL_SECRET_FIELD"],
+		clientToken,
+	)
+	if codexCredential != managed["PROOF_CODEX_CREDENTIAL_VALUE"] {
+		t.Fatalf("expected codex credential material %q, got %q", managed["PROOF_CODEX_CREDENTIAL_VALUE"], codexCredential)
 	}
 
 	assertSupportedLocalVaultBlobAlignment(t, proofDir, managed)
@@ -414,6 +430,11 @@ func loginToProofVault(t *testing.T, vaultAddr string, caCertPath string, authMo
 
 func readProofVaultSecret(t *testing.T, vaultAddr string, caCertPath string, secretPath string, clientToken string) string {
 	t.Helper()
+	return readProofVaultField(t, vaultAddr, caCertPath, secretPath, "message", clientToken)
+}
+
+func readProofVaultField(t *testing.T, vaultAddr string, caCertPath string, secretPath string, field string, clientToken string) string {
+	t.Helper()
 
 	url := strings.TrimRight(vaultAddr, "/") + "/v1/" + strings.TrimLeft(secretPath, "/")
 	request, err := http.NewRequest(http.MethodGet, url, nil)
@@ -433,16 +454,20 @@ func readProofVaultSecret(t *testing.T, vaultAddr string, caCertPath string, sec
 	}
 
 	var payload struct {
-		Data struct {
-			Data struct {
-				Message string `json:"message"`
-			} `json:"data"`
-		} `json:"data"`
+		Data map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode vault read response: %v", err)
 	}
-	return strings.TrimSpace(payload.Data.Data.Message)
+	data, ok := payload.Data["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested data object in vault read response: %+v", payload)
+	}
+	value := strings.TrimSpace(fmt.Sprint(data[field]))
+	if value == "" {
+		t.Fatalf("expected secret field %q in %s response: %+v", field, secretPath, payload)
+	}
+	return value
 }
 
 func runProofVaultCommand(t *testing.T, workDir string, managed map[string]string, args ...string) string {
@@ -564,6 +589,9 @@ func assertSupportedLocalVaultBootstrapState(t *testing.T, proofDir string, mana
 	if !strings.Contains(policyText, `path "`+managed["PROOF_VAULT_SECRET_PATH"]+`"`) {
 		t.Fatalf("expected policy to include secret path %q, got %s", managed["PROOF_VAULT_SECRET_PATH"], policyText)
 	}
+	if !strings.Contains(policyText, `path "`+managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"]+`"`) {
+		t.Fatalf("expected policy to include Codex credential path %q, got %s", managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"], policyText)
+	}
 }
 
 func sliceContains(items []string, want string) bool {
@@ -638,6 +666,15 @@ func assertSupportedLocalSPIRERuntimeAlignment(t *testing.T, proofDir string, ma
 		Execution struct {
 			RuntimeSupportBinary   string `json:"runtime_support_binary"`
 			SPIREWorkloadAPISocket string `json:"spire_workload_api_socket_path"`
+			RuntimeProfiles        struct {
+				ControlPlaneNormalShell struct {
+					Enabled                    bool   `json:"enabled"`
+					Image                      string `json:"image"`
+					CodexCLIPath               string `json:"codex_cli_path"`
+					CredentialVaultSecretPath  string `json:"credential_vault_secret_path"`
+					CredentialVaultSecretField string `json:"credential_vault_secret_field"`
+				} `json:"control_plane_normal_shell"`
+			} `json:"runtime_profiles"`
 		} `json:"execution"`
 	}
 	if err := json.Unmarshal(configBytes, &payload); err != nil {
@@ -649,5 +686,21 @@ func assertSupportedLocalSPIRERuntimeAlignment(t *testing.T, proofDir string, ma
 	}
 	if payload.Execution.SPIREWorkloadAPISocket != managed["PROOF_SPIRE_AGENT_SOCKET_PATH"] {
 		t.Fatalf("expected ES SPIRE socket path %q, got %q", managed["PROOF_SPIRE_AGENT_SOCKET_PATH"], payload.Execution.SPIREWorkloadAPISocket)
+	}
+	profile := payload.Execution.RuntimeProfiles.ControlPlaneNormalShell
+	if !profile.Enabled {
+		t.Fatalf("expected control-plane normal-shell runtime profile to be enabled")
+	}
+	if profile.Image != managed["PROOF_CODEX_RUNTIME_PROFILE_IMAGE"] {
+		t.Fatalf("expected profile image %q, got %q", managed["PROOF_CODEX_RUNTIME_PROFILE_IMAGE"], profile.Image)
+	}
+	if profile.CodexCLIPath != managed["PROOF_CODEX_CLI_PATH"] {
+		t.Fatalf("expected Codex CLI path %q, got %q", managed["PROOF_CODEX_CLI_PATH"], profile.CodexCLIPath)
+	}
+	if profile.CredentialVaultSecretPath != managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"] {
+		t.Fatalf("expected Codex credential secret path %q, got %q", managed["PROOF_CODEX_CREDENTIAL_SECRET_PATH"], profile.CredentialVaultSecretPath)
+	}
+	if profile.CredentialVaultSecretField != managed["PROOF_CODEX_CREDENTIAL_SECRET_FIELD"] {
+		t.Fatalf("expected Codex credential secret field %q, got %q", managed["PROOF_CODEX_CREDENTIAL_SECRET_FIELD"], profile.CredentialVaultSecretField)
 	}
 }

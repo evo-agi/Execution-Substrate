@@ -75,12 +75,25 @@ type NomadConfig struct {
 }
 
 type ExecutionConfig struct {
-	StagingRootDir             string `json:"staging_root_dir"`
-	ResultsRootDir             string `json:"results_root_dir"`
-	BaseImage                  string `json:"base_image"`
-	RuntimeIdentityTmpfsSize   int64  `json:"runtime_identity_tmpfs_size,omitempty"`
-	RuntimeSupportBinary       string `json:"runtime_support_binary,omitempty"`
-	SPIREWorkloadAPISocketPath string `json:"spire_workload_api_socket_path,omitempty"`
+	StagingRootDir             string                `json:"staging_root_dir"`
+	ResultsRootDir             string                `json:"results_root_dir"`
+	BaseImage                  string                `json:"base_image"`
+	RuntimeIdentityTmpfsSize   int64                 `json:"runtime_identity_tmpfs_size,omitempty"`
+	RuntimeSupportBinary       string                `json:"runtime_support_binary,omitempty"`
+	SPIREWorkloadAPISocketPath string                `json:"spire_workload_api_socket_path,omitempty"`
+	RuntimeProfiles            RuntimeProfilesConfig `json:"runtime_profiles,omitempty"`
+}
+
+type RuntimeProfilesConfig struct {
+	ControlPlaneNormalShell ControlPlaneNormalShellProfileConfig `json:"control_plane_normal_shell,omitempty"`
+}
+
+type ControlPlaneNormalShellProfileConfig struct {
+	Enabled                    bool   `json:"enabled"`
+	Image                      string `json:"image,omitempty"`
+	CodexCLIPath               string `json:"codex_cli_path,omitempty"`
+	CredentialVaultSecretPath  string `json:"credential_vault_secret_path,omitempty"`
+	CredentialVaultSecretField string `json:"credential_vault_secret_field,omitempty"`
 }
 
 const (
@@ -315,6 +328,44 @@ func (c ExecutionConfig) Validate(field string) error {
 	if c.RuntimeIdentityTmpfsSize > maxRuntimeIdentityTmpfsSizeBytes {
 		return fmt.Errorf("%s.runtime_identity_tmpfs_size must not exceed %d bytes", field, maxRuntimeIdentityTmpfsSizeBytes)
 	}
+	if err := c.RuntimeProfiles.Validate(field + ".runtime_profiles"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c RuntimeProfilesConfig) Validate(field string) error {
+	if err := c.ControlPlaneNormalShell.Validate(field + ".control_plane_normal_shell"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c ControlPlaneNormalShellProfileConfig) Validate(field string) error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.Image) == "" {
+		return fmt.Errorf("%s.image is required when enabled", field)
+	}
+	if strings.TrimSpace(c.CodexCLIPath) == "" {
+		return fmt.Errorf("%s.codex_cli_path is required when enabled", field)
+	}
+	if !filepath.IsAbs(strings.TrimSpace(c.CodexCLIPath)) {
+		return fmt.Errorf("%s.codex_cli_path must be an absolute container path", field)
+	}
+	if strings.TrimSpace(c.CredentialVaultSecretPath) == "" {
+		return fmt.Errorf("%s.credential_vault_secret_path is required when enabled", field)
+	}
+	if strings.HasPrefix(strings.TrimSpace(c.CredentialVaultSecretPath), "/") {
+		return fmt.Errorf("%s.credential_vault_secret_path must be a Vault API path without a leading slash", field)
+	}
+	if strings.Contains(strings.TrimSpace(c.CredentialVaultSecretPath), "..") {
+		return fmt.Errorf("%s.credential_vault_secret_path must not contain path traversal segments", field)
+	}
+	if strings.TrimSpace(c.CredentialVaultSecretField) == "" {
+		return fmt.Errorf("%s.credential_vault_secret_field is required when enabled", field)
+	}
 	return nil
 }
 
@@ -411,5 +462,6 @@ func (c Config) SubmitConfigured() bool {
 		strings.TrimSpace(c.Execution.ResultsRootDir) != "" ||
 		strings.TrimSpace(c.Execution.BaseImage) != "" ||
 		strings.TrimSpace(c.Execution.RuntimeSupportBinary) != "" ||
-		strings.TrimSpace(c.Execution.SPIREWorkloadAPISocketPath) != ""
+		strings.TrimSpace(c.Execution.SPIREWorkloadAPISocketPath) != "" ||
+		c.Execution.RuntimeProfiles.ControlPlaneNormalShell.Enabled
 }

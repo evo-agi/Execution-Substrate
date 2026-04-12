@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import socket
+import ssl
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+RESULT_DIR = pathlib.Path("/execution/run/result")
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"missing required environment variable: {name}")
+    return value
+
+
+def run_command(args):
+    completed = subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return completed.stdout.strip()
+
+
+def codex_readiness(codex_path: str) -> str:
+    try:
+        return run_command([codex_path, "--version"])
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return run_command([codex_path, "--help"]).splitlines()[0].strip()
+
+
+def parse_identity_endpoint(uri: str) -> str:
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "unix":
+        raise SystemExit(f"unsupported identity endpoint scheme: {parsed.scheme!r}")
+    socket_path = parsed.path.strip()
+    if not socket_path:
+        raise SystemExit("identity endpoint path is empty")
+    return socket_path
+
+
+def request_identity_jwt(socket_path: str) -> str:
+    request_payload = {"kind": "jwt_svid", "target": "workload_vault"}
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(socket_path)
+        client.sendall((json.dumps(request_payload) + "\n").encode("utf-8"))
+        response = b""
+        while b"\n" not in response:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+    finally:
+        client.close()
+
+    payload = json.loads(response.decode("utf-8").strip())
+    if payload.get("error"):
+        raise SystemExit(f"identity endpoint returned error: {payload}")
+    jwt_value = str(payload.get("jwt", "")).strip()
+    if not jwt_value:
+        raise SystemExit(f"identity endpoint response did not include jwt: {payload}")
+    return jwt_value
+
+
+def make_opener():
+    context = ssl.create_default_context()
+    if os.environ.get("WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1":
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+
+def json_request(opener, method: str, url: str, payload=None, headers=None):
+    body = None
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with opener.open(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"{method} {url} failed with status {exc.code}: {body}") from exc
+
+
+def login_to_vault(opener, vault_addr: str, auth_mount: str, auth_role: str, jwt_value: str) -> str:
+    payload = json_request(
+        opener,
+        "POST",
+        vault_addr.rstrip("/") + f"/v1/auth/{auth_mount}/login",
+        payload={"role": auth_role, "jwt": jwt_value},
+    )
+    token = str((payload.get("auth") or {}).get("client_token", "")).strip()
+    if not token:
+        raise SystemExit("vault login response did not include auth.client_token")
+    return token
+
+
+def read_credential_material(opener, vault_addr: str, token: str, secret_path: str, field: str) -> str:
+    payload = json_request(
+        opener,
+        "GET",
+        vault_addr.rstrip("/") + "/v1/" + secret_path.lstrip("/"),
+        headers={"X-Vault-Token": token},
+    )
+    data = payload.get("data") or {}
+    if isinstance(data.get("data"), dict):
+        data = data["data"]
+    value = str(data.get(field, "")).strip()
+    if not value:
+        raise SystemExit(f"credential field {field!r} was empty in Vault response")
+    return value
+
+
+def main() -> int:
+    codex_path = require_env("EXEC_CODEX_CLI_PATH")
+    credential_source = require_env("EXEC_CODEX_CREDENTIAL_SOURCE")
+    secret_path = require_env("EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH")
+    secret_field = require_env("EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD")
+    if credential_source != "workload_vault":
+        raise SystemExit(f"unsupported credential source: {credential_source!r}")
+
+    python_version = run_command(["python3", "--version"])
+    git_version = run_command(["git", "--version"])
+    shell_version = run_command(["bash", "--version"]).splitlines()[0].strip()
+    codex_version = codex_readiness(codex_path)
+
+    temp_repo = pathlib.Path("/tmp/cp-normal-shell-git-probe")
+    if temp_repo.exists():
+        subprocess.run(["rm", "-rf", str(temp_repo)], check=True)
+    temp_repo.mkdir(parents=True)
+    run_command(["git", "init", str(temp_repo)])
+
+    socket_path = parse_identity_endpoint(require_env("EXEC_WORKLOAD_IDENTITY_ENDPOINT"))
+    jwt_value = request_identity_jwt(socket_path)
+    opener = make_opener()
+    token = login_to_vault(
+        opener,
+        require_env("VAULT_ADDR"),
+        require_env("EXEC_WORKLOAD_VAULT_AUTH_MOUNT"),
+        require_env("EXEC_WORKLOAD_VAULT_AUTH_ROLE"),
+        jwt_value,
+    )
+    credential_material = read_credential_material(opener, require_env("VAULT_ADDR"), token, secret_path, secret_field)
+
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    result = {
+        "status": "ok",
+        "profile": "control-plane-normal-shell/v1",
+        "python": python_version,
+        "git": git_version,
+        "shell": shell_version,
+        "codex": codex_version,
+        "credential_source": credential_source,
+        "credential_secret_path": secret_path,
+        "credential_secret_field": secret_field,
+        "credential_material_bytes": len(credential_material.encode("utf-8")),
+    }
+    (RESULT_DIR / "runtime-profile-readiness.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print("CP-NORMAL-SHELL-RUNTIME-PROFILE-READY", flush=True)
+    print(json.dumps({"status": "ok", "profile": result["profile"]}, sort_keys=True), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

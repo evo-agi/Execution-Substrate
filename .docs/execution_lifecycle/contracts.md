@@ -92,6 +92,7 @@ These labels are intentionally different. A contract may be live today, relied o
   - optional `env`
   - optional `mounts`
   - optional `annotations`
+- The only currently defined runtime-profile annotation is `execution_substrate.runtime_profile`. Omitted or empty keeps the default current `static-script` runtime behavior; `control-plane-normal-shell/v1` opts in to the bounded Control Plane normal-shell runtime profile.
 
 **Current contract invariants**
 
@@ -109,6 +110,7 @@ These labels are intentionally different. A contract may be live today, relied o
   - absolute cleaned target paths
   - target paths under `/execution/mounts`
   - no overlap between mount targets
+- If `execution_substrate.runtime_profile` is present, it must name a runtime profile ES supports and has enabled in config. Unsupported or disabled profile selections fail during `:prepare` before any run ID exists.
 
 ### Response contract
 
@@ -152,6 +154,7 @@ Successful response is `200` JSON with these contract fields:
 | Trust model unavailable | `503` | `trust_model_unavailable` |
 | Aggregate artifact evidence blob or response is unavailable after registration | `503` | `artifact_evidence_unavailable` |
 | Workload-zone vault lookup or blob unavailable | `503` | `workload_zone_vault_unavailable` |
+| Unsupported, disabled, or invalid runtime profile selection | `400` | `unsupported_runtime_profile` |
 | Dependency payload invalid or dependency request failed | `503` | current endpoint-specific code is preserved and the logical class remains the same as the missing dependency |
 
 ### Bounded slice notes
@@ -191,6 +194,12 @@ Successful response is `200` JSON with these contract fields:
   - `static-script` artifacts
   - no required runtime capabilities
   - `target_platform` unset or `docker`
+- `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` selects the bounded Control Plane normal-shell runtime profile. That profile remains a `static-script` overlay and additionally requires:
+  - explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
+  - `network_access=true`
+  - a configured profile image
+  - an absolute configured Codex CLI path in that image
+  - configured workload-vault secret path and field metadata for Codex credential material
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
@@ -232,6 +241,7 @@ Successful response is `202` JSON with these fields:
 | Unsupported submission mode | `400` | `unsupported_execution_mode` |
 | Unsupported artifact type or target platform | `400` | `unsupported_artifact_type` |
 | Unsupported required capabilities | `400` | `unsupported_capabilities` |
+| Unsupported, disabled, or invalid runtime profile selection | `400` | `unsupported_runtime_profile` |
 | Mount conflict or reserved-path overlap | `409` | `mount_conflict` |
 | Invalid or unusable mount artifact | `409` | `mount_artifact_invalid` |
 | Payload unavailable | `503` | `payload_unavailable` |
@@ -246,6 +256,7 @@ Successful response is `202` JSON with these fields:
 - It is async-only.
 - Its response is a bounded receipt, not a durable run model.
 - It uses the explicit payload reference carried by the ARS discovery record and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
+- `control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.
 
 ### Reopened seams
 
@@ -559,6 +570,7 @@ Successful response is `200` JSON with these fields:
 | Successful result | `result` | `200` | `application/gzip` | retained opaque tar.gz result bundle |
 | Successful cancel | `cancel` | `200` | JSON | `ExecutionCancelResult` |
 | Invalid request body, request validation failure, or request/fact mismatch | `:prepare`, `:submit` | `400` | JSON | `invalid_request` |
+| Unsupported, disabled, or invalid runtime profile selection | `:prepare`, `:submit` | `400` | JSON | `unsupported_runtime_profile` |
 | Unauthorized caller | all lifecycle/execution endpoints | `401` | plain text | authenticated caller identity required |
 | Forbidden caller | all lifecycle/execution endpoints | `403` | plain text | bootstrap or disallowed identity |
 | Aggregate artifact evidence invalid during admission | `:prepare`, `:submit` | `403` | JSON | `artifact_evidence_invalid` |
@@ -579,6 +591,11 @@ Successful response is `200` JSON with these fields:
 - ES injects the current endpoint-discovery environment conventions:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
+- For `control-plane-normal-shell/v1` only, ES injects non-secret Codex credential-location metadata:
+  - `EXEC_CODEX_CLI_PATH`
+  - `EXEC_CODEX_CREDENTIAL_SOURCE=workload_vault`
+  - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`
+  - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD`
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 - The bounded slice-1 implementation target keeps the workload-visible endpoint but changes the runtime-side owner behind it to a platform-owned helper launched by a platform-owned supervisor.
 
@@ -587,6 +604,7 @@ Successful response is `200` JSON with these fields:
 - Caller runtime mounts must not overlap the ES-owned subtree that backs the discovered endpoint.
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
+- ES does not fetch, mint, broker, validate, or store Codex credential material. The selected workload is responsible for using the existing identity endpoint and workload-vault metadata to read that material.
 - The first platform-owned runtime-identity slice is intentionally limited to platform-controlled non-root workloads with no privilege-escalation path.
 - The public runtime identity endpoint must remain a bounded platform endpoint, not a raw SPIRE proxy.
 
@@ -606,6 +624,7 @@ Successful response is `200` JSON with these fields:
 - Status is a minimal Nomad-backed projection.
 - Logs are a minimal latest-allocation stdout contract.
 - Result retrieval is a bounded retained opaque bundle contract for `/execution/run/result` in the current `static-script` slice.
+- `control-plane-normal-shell/v1` is a bounded runtime-profile slice rule layered on the current `static-script` package/runtime path.
 - No retry or reschedule policy is exposed.
 - No rich ES-owned lifecycle model is exposed.
 
@@ -635,6 +654,7 @@ These rules are active today, but they should not be preserved by inertia.
 - Runtime identity reserved-path conventions
 - Current logs minimalism
 - Current retained-result bundle convention and `/execution/run/result` runtime path
+- Current runtime-profile annotation and the bounded `control-plane-normal-shell/v1` overlay
 - The extent to which lifecycle minimalism is durable versus slice-bounded
 
 These seams are active today and intentionally not fixed.

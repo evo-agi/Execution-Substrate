@@ -75,6 +75,7 @@ At a design level, it currently:
 - resolves the artifact payload through the explicit payload digest carried by aggregate evidence, then stages it locally
 - revalidates and stages runtime mount artifacts when mounts are requested
 - reserves the runtime-identity workspace and enforces reserved-path exclusions
+- resolves the optional bounded runtime profile selection from `invocation.annotations["execution_substrate.runtime_profile"]`
 - constructs one Nomad batch job with one Docker task
 - submits that job to Nomad and returns a bounded submission receipt
 
@@ -132,6 +133,7 @@ This is intentionally not a general output platform. It does not create callback
 
 - `POST /v1/executions:prepare` is active today as a bounded milestone/public slice surface.
 - Submission is currently async-only.
+- `control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime/tooling and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.
 - The current slice assumes one meaningful allocation per execution.
 - Lifecycle projection currently uses an explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex`.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
@@ -182,6 +184,7 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
+- For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI and workload-vault credential-location metadata. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.
@@ -215,6 +218,7 @@ This file should remain the high-level lifecycle design map.
 - The current execution-package layout and `/execution/...` runtime path conventions inside `:submit`
 - The current `/execution/run/result` terminal result convention
 - Runtime identity reserved-path and endpoint conventions
+- The runtime-profile selection vocabulary and whether profile selection remains annotation based
 - The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
 
 These seams are live today and intentionally not fixed.

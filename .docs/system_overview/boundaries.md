@@ -233,6 +233,12 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Bounded retained-result storage for opaque tar.gz bundles captured from `/execution/run/result` in the current `static-script` slice
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
+- One bounded opt-in runtime profile for Control Plane normal-shell workloads:
+  - profile name `control-plane-normal-shell/v1`
+  - selected by `invocation.annotations["execution_substrate.runtime_profile"]`
+  - realized by an ES-configured Docker image
+  - exposes only non-secret Codex credential-location metadata to the workload
+  - relies on the existing platform-owned runtime identity endpoint plus workload-side Vault login for credential material acquisition
 
 **Explicit non-ownership**
 
@@ -246,6 +252,8 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Runtime identity endpoint implementation inside the workload
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
 - Policy publication or broader governance decisions that belong upstream
+- Control Plane normal-shell orchestration, task-attempt progression, review, accept/revise/fail branching, checkpoint promotion, hold/resume/reject semantics, or finalization
+- Codex token brokerage, Codex token minting, Codex token rotation, Codex service invocation ownership, or semantic interpretation of Codex outputs
 
 **Current consumers / collaborators**
 
@@ -274,6 +282,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 - `GET /v1/executions/{run_id}/result` is a bounded retained opaque bundle surface for the current slice, not a broad output platform.
+- `control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.
 
 **Reopened seams**
 
@@ -281,6 +290,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - The current division between prepare-time composition and submit-time execution
 - The current execution-package layout, retained-result behavior, and reserved path conventions
 - The final owner and vocabulary for the remaining shared execution/runtime inputs
+- Whether runtime profiles remain annotation-selected overlays or become part of a later re-derived ES admission model
 
 ## 9. EGS boundary
 

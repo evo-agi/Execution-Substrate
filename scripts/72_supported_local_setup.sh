@@ -31,6 +31,12 @@ VAULT_JWT_AUDIENCE="${SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE:-vault}"
 VAULT_SECRET_PATH="${SUPPORTED_LOCAL_VAULT_SECRET_PATH:-proof-secrets/data/runtime-identity-vault-login}"
 VAULT_ROOT_TOKEN="${SUPPORTED_LOCAL_VAULT_ROOT_TOKEN:-${SUPPORTED_LOCAL_VAULT_TOKEN:-}}"
 VAULT_SECRET_VALUE="${SUPPORTED_LOCAL_VAULT_SECRET_VALUE:-}"
+CODEX_RUNTIME_PROFILE_IMAGE="${SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE:-execution-substrate/control-plane-normal-shell:supported-local}"
+CODEX_CLI_PATH="${SUPPORTED_LOCAL_CODEX_CLI_PATH:-/usr/local/bin/codex}"
+CODEX_CREDENTIAL_SECRET_PATH="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH:-proof-secrets/data/codex-runtime-profile}"
+CODEX_CREDENTIAL_SECRET_FIELD="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD:-api_key}"
+CODEX_CREDENTIAL_VALUE="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE:-}"
+BUILD_CODEX_RUNTIME_PROFILE_IMAGE="${SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE:-1}"
 ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -85,6 +91,12 @@ Optional environment variables:
   SUPPORTED_LOCAL_VAULT_JWT_AUDIENCE=vault
   SUPPORTED_LOCAL_VAULT_SECRET_PATH=proof-secrets/data/runtime-identity-vault-login
   SUPPORTED_LOCAL_VAULT_ROOT_TOKEN=<proof-root-token>
+  SUPPORTED_LOCAL_CODEX_RUNTIME_PROFILE_IMAGE=execution-substrate/control-plane-normal-shell:supported-local
+  SUPPORTED_LOCAL_CODEX_CLI_PATH=/usr/local/bin/codex
+  SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_PATH=proof-secrets/data/codex-runtime-profile
+  SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD=api_key
+  SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=<proof-material>
+  SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE=1
   SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1
 EOF
 }
@@ -213,6 +225,18 @@ prepare_runtime_support_binary() {
     return 0
   fi
   build_runtime_support_binary
+}
+
+build_codex_runtime_profile_image() {
+  if [[ "${BUILD_CODEX_RUNTIME_PROFILE_IMAGE}" == "0" ]]; then
+    echo "==> skipping Control Plane normal-shell runtime profile image build"
+    return 0
+  fi
+
+  echo "==> building Control Plane normal-shell runtime profile image ${CODEX_RUNTIME_PROFILE_IMAGE}"
+  CONTROL_PLANE_NORMAL_SHELL_IMAGE="${CODEX_RUNTIME_PROFILE_IMAGE}" \
+  CONTROL_PLANE_NORMAL_SHELL_CODEX_CLI_PATH="${CODEX_CLI_PATH}" \
+    bash "${REPO_ROOT}/scripts/build_control_plane_normal_shell_image.sh" > "${PROOF_DIR}/control-plane-normal-shell-image.txt"
 }
 
 install_prebuilt_file() {
@@ -653,6 +677,11 @@ write_managed_secrets_file() {
   local vault_secret_value=$7
   local vault_secret_mount=$8
   local vault_secret_logical_path=$9
+  local codex_runtime_profile_image=${10}
+  local codex_cli_path=${11}
+  local codex_credential_secret_path=${12}
+  local codex_credential_secret_field=${13}
+  local codex_credential_value=${14}
 
   cat > "${path}" <<EOF
 SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
@@ -672,6 +701,11 @@ PROOF_VAULT_SECRET_MOUNT="${vault_secret_mount}"
 PROOF_VAULT_SECRET_LOGICAL_PATH="${vault_secret_logical_path}"
 PROOF_VAULT_SECRET_VALUE="${vault_secret_value}"
 PROOF_VAULT_ROOT_TOKEN="${vault_root_token}"
+PROOF_CODEX_RUNTIME_PROFILE_IMAGE="${codex_runtime_profile_image}"
+PROOF_CODEX_CLI_PATH="${codex_cli_path}"
+PROOF_CODEX_CREDENTIAL_SECRET_PATH="${codex_credential_secret_path}"
+PROOF_CODEX_CREDENTIAL_SECRET_FIELD="${codex_credential_secret_field}"
+PROOF_CODEX_CREDENTIAL_VALUE="${codex_credential_value}"
 PROOF_VAULT_CA_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-ca.pem"
 PROOF_VAULT_SERVER_CERT_FILE="${PROOF_DIR}/tls/vault-dev/vault-cert.pem"
 PROOF_VAULT_SERVER_KEY_FILE="${PROOF_DIR}/tls/vault-dev/vault-key.pem"
@@ -845,20 +879,30 @@ configure_vault_dev_target() {
   local vault_local_address=$2
   local vault_root_token=$3
   local vault_secret_value=$4
+  local codex_secret_path=$5
+  local codex_secret_field=$6
+  local codex_secret_value=$7
   local policy_path="${proof_dir}/vault/runtime-identity-proof.hcl"
   local vault_secret_logical_path
+  local codex_secret_logical_path
 
   vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
+  codex_secret_logical_path="$(normalize_kv_v2_logical_path "${codex_secret_path}")"
   mkdir -p "$(dirname "${policy_path}")"
   cat > "${policy_path}" <<EOF
 path "${VAULT_SECRET_PATH#/}" {
   capabilities = ["read"]
 }
+
+path "${codex_secret_path#/}" {
+  capabilities = ["read"]
+}
 EOF
 
-  echo "==> configuring proof-scoped Vault JWT auth, KV v2 mount, and secret"
+  echo "==> configuring proof-scoped Vault JWT auth, KV v2 mounts, and secrets"
   ensure_vault_auth_mount "${proof_dir}" "${vault_local_address}" "${vault_root_token}" "${VAULT_AUTH_MOUNT}" jwt
   ensure_vault_kv_v2_mount "${proof_dir}" "${vault_local_address}" "${vault_root_token}" "${VAULT_SECRET_PATH}"
+  ensure_vault_kv_v2_mount "${proof_dir}" "${vault_local_address}" "${vault_root_token}" "${codex_secret_path}"
 
   vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" policy write runtime-identity-proof "${policy_path}" >/dev/null
 
@@ -874,6 +918,7 @@ EOF
     token_policies=runtime-identity-proof >/dev/null
 
   vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" kv put "${vault_secret_logical_path}" message="${vault_secret_value}" >/dev/null
+  vault_with_proof_env "${proof_dir}" "${vault_local_address}" "${vault_root_token}" kv put "${codex_secret_logical_path}" "${codex_secret_field}=${codex_secret_value}" >/dev/null
 }
 
 write_runtime_blob_and_configs() {
@@ -882,6 +927,10 @@ write_runtime_blob_and_configs() {
   local vault_auth_mount=$3
   local vault_auth_role=$4
   local vault_jwt_audience=$5
+  local codex_runtime_profile_image=$6
+  local codex_cli_path=$7
+  local codex_credential_secret_path=$8
+  local codex_credential_secret_field=$9
   local tls_dir="${proof_dir}/tls"
   local ars_storage="${proof_dir}/ars-storage"
   local index_path="${proof_dir}/artifact-index.json"
@@ -904,6 +953,10 @@ write_runtime_blob_and_configs() {
     "${vault_auth_mount}" \
     "${vault_auth_role}" \
     "${vault_jwt_audience}" \
+    "${codex_runtime_profile_image}" \
+    "${codex_cli_path}" \
+    "${codex_credential_secret_path}" \
+    "${codex_credential_secret_field}" \
     "${ARS_PORT}" \
     "${EGS_PORT}" \
     "${AGS_PORT}" \
@@ -931,14 +984,18 @@ vault_address = sys.argv[10]
 vault_auth_mount = sys.argv[11]
 vault_auth_role = sys.argv[12]
 vault_jwt_audience = sys.argv[13]
-ars_port = int(sys.argv[14])
-egs_port = int(sys.argv[15])
-ags_port = int(sys.argv[16])
-es_port = int(sys.argv[17])
-ars_host = sys.argv[18]
-egs_host = sys.argv[19]
-ags_host = sys.argv[20]
-es_host = sys.argv[21]
+codex_runtime_profile_image = sys.argv[14]
+codex_cli_path = sys.argv[15]
+codex_credential_secret_path = sys.argv[16]
+codex_credential_secret_field = sys.argv[17]
+ars_port = int(sys.argv[18])
+egs_port = int(sys.argv[19])
+ags_port = int(sys.argv[20])
+es_port = int(sys.argv[21])
+ars_host = sys.argv[22]
+egs_host = sys.argv[23]
+ags_host = sys.argv[24]
+es_host = sys.argv[25]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator"]
 if allow_control_plane:
@@ -1061,6 +1118,15 @@ es_cfg = {
         "base_image": "python:3.13-alpine",
         "runtime_support_binary": runtime_support_binary,
         "spire_workload_api_socket_path": str(socket_path),
+        "runtime_profiles": {
+            "control_plane_normal_shell": {
+                "enabled": True,
+                "image": codex_runtime_profile_image,
+                "codex_cli_path": codex_cli_path,
+                "credential_vault_secret_path": codex_credential_secret_path,
+                "credential_vault_secret_field": codex_credential_secret_field,
+            }
+        },
     },
 }
 
@@ -1140,6 +1206,7 @@ setup() {
   local vault_secret_value
   local vault_secret_mount
   local vault_secret_logical_path
+  local codex_credential_value
 
   vault_public_host="${VAULT_PUBLIC_HOST}"
   if [[ -z "${vault_public_host}" ]]; then
@@ -1158,6 +1225,10 @@ setup() {
   if [[ -z "${vault_secret_value}" ]]; then
     vault_secret_value="runtime-identity-ok-${PROOF_ID}"
   fi
+  codex_credential_value="${CODEX_CREDENTIAL_VALUE}"
+  if [[ -z "${codex_credential_value}" ]]; then
+    codex_credential_value="codex-runtime-profile-ok-${PROOF_ID}"
+  fi
   vault_secret_mount="$(kv_v2_mount_from_api_path "${VAULT_SECRET_PATH}")"
   vault_secret_logical_path="$(normalize_kv_v2_logical_path "${VAULT_SECRET_PATH}")"
 
@@ -1168,6 +1239,7 @@ setup() {
   rm -rf "${PROOF_DIR}"
   mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/es-staging" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs" "${PROOF_DIR}/downloads" "${PROOF_DIR}/spire"
 
+  build_codex_runtime_profile_image
   prepare_runtime_support_binary
   prepare_spire_distribution "${PROOF_DIR}/downloads/spire.tar.gz" "${PROOF_DIR}/spire/dist"
 
@@ -1200,7 +1272,14 @@ setup() {
   register_spire_workload_entry "${PROOF_DIR}"
   write_spire_bundle_artifacts "${PROOF_DIR}"
   start_vault_dev_server "${PROOF_DIR}/logs/vault-dev.log" "${PROOF_DIR}/vault-dev.pid" "${vault_root_token}" "${vault_public_host}"
-  configure_vault_dev_target "${PROOF_DIR}" "${vault_local_address}" "${vault_root_token}" "${vault_secret_value}"
+  configure_vault_dev_target \
+    "${PROOF_DIR}" \
+    "${vault_local_address}" \
+    "${vault_root_token}" \
+    "${vault_secret_value}" \
+    "${CODEX_CREDENTIAL_SECRET_PATH}" \
+    "${CODEX_CREDENTIAL_SECRET_FIELD}" \
+    "${codex_credential_value}"
   write_managed_secrets_file \
     "${PROOF_DIR}/managed-secrets.conf" \
     "${vault_address}" \
@@ -1210,10 +1289,24 @@ setup() {
     "${vault_root_token}" \
     "${vault_secret_value}" \
     "${vault_secret_mount}" \
-    "${vault_secret_logical_path}"
+    "${vault_secret_logical_path}" \
+    "${CODEX_RUNTIME_PROFILE_IMAGE}" \
+    "${CODEX_CLI_PATH}" \
+    "${CODEX_CREDENTIAL_SECRET_PATH}" \
+    "${CODEX_CREDENTIAL_SECRET_FIELD}" \
+    "${codex_credential_value}"
 
   echo "==> writing proof configs and workload-zone Vault blob"
-  write_runtime_blob_and_configs "${PROOF_DIR}" "${vault_address}" "${VAULT_AUTH_MOUNT}" "${VAULT_AUTH_ROLE}" "${VAULT_JWT_AUDIENCE}"
+  write_runtime_blob_and_configs \
+    "${PROOF_DIR}" \
+    "${vault_address}" \
+    "${VAULT_AUTH_MOUNT}" \
+    "${VAULT_AUTH_ROLE}" \
+    "${VAULT_JWT_AUDIENCE}" \
+    "${CODEX_RUNTIME_PROFILE_IMAGE}" \
+    "${CODEX_CLI_PATH}" \
+    "${CODEX_CREDENTIAL_SECRET_PATH}" \
+    "${CODEX_CREDENTIAL_SECRET_FIELD}"
   write_env_file "${PROOF_DIR}/env.sh"
 
   cat <<EOF
@@ -1225,10 +1318,12 @@ next steps:
   source "${PROOF_DIR}/env.sh"
   source "${PROOF_DIR}/managed-secrets.conf"
   "${REPO_ROOT}/.examples/runtime_identity_vault_login/package.sh"
+  "${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/package.sh"
   export BRINGUP_PROFILE=prepare-only
   scripts/01_bringup.sh up
   BRINGUP_PROFILE=full scripts/01_bringup.sh check
   scripts/60_execute_loop.sh .examples/execution_loop/runtime_identity_vault_success.input.json
+  scripts/60_execute_loop.sh .examples/execution_loop/control_plane_normal_shell_runtime.input.json
   scripts/01_bringup.sh down
 EOF
 }

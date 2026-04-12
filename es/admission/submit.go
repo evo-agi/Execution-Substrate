@@ -77,6 +77,10 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 			Message: "only docker target_platform is supported in this execution slice",
 		}
 	}
+	runtimeProfile, profileErr := resolveExecutionRuntimeProfile(s.cfg.Execution, req, prepared.artifact)
+	if profileErr != nil {
+		return SubmitResult{}, profileErr
+	}
 
 	payloadBytes, err := s.fetchPayloadBytes(ctx, prepared.artifact.payloadDigest)
 	if err != nil {
@@ -126,7 +130,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, req.Invocation.Env)
+	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, req.Invocation.Env)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -138,6 +142,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		taskCPU,
 		taskMemoryMB,
 		env,
+		runtimeProfile,
 	)
 
 	_, submitErr := s.nomadClient.submitJob(ctx, jobSpec)
@@ -202,9 +207,12 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, invocationEnv map[string]string) map[string]string {
-	env := make(map[string]string, len(invocationEnv)+11)
+func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, invocationEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+11)
 	for key, value := range invocationEnv {
+		env[key] = value
+	}
+	for key, value := range runtimeProfile.env {
 		env[key] = value
 	}
 
@@ -231,12 +239,13 @@ func buildNomadJobSpec(
 	taskCPU int,
 	taskMemoryMB int,
 	env map[string]string,
+	runtimeProfile executionRuntimeProfile,
 ) map[string]any {
 	layout := stage.layout
 	supervisorArgs := layout.runtimeSupervisorArgs(req.Invocation.Argv, req.TimeoutSeconds)
 
 	taskConfig := map[string]any{
-		"image":        cfg.Execution.BaseImage,
+		"image":        selectedRuntimeImage(cfg.Execution, runtimeProfile),
 		"command":      executionRuntimeSupportPath,
 		"args":         supervisorArgs,
 		"privileged":   false,
@@ -299,6 +308,13 @@ func buildNomadJobSpec(
 			},
 		},
 	}
+}
+
+func selectedRuntimeImage(cfg esconfig.ExecutionConfig, runtimeProfile executionRuntimeProfile) string {
+	if image := strings.TrimSpace(runtimeProfile.image); image != "" {
+		return image
+	}
+	return strings.TrimSpace(cfg.BaseImage)
 }
 
 func newNomadClient(cfg esconfig.NomadConfig) (*nomadClient, error) {

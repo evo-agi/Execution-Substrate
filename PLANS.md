@@ -53,6 +53,7 @@ Current bounded implementation status:
 - That first workload-identity slice is intentionally compatibility-narrow: no root workloads, no arbitrary image-user execution, no shared helper/workload UID, and no supplemental groups that collapse the helper/workload boundary.
 - Useful credential flow completion is now also landed in the bounded sense the repo claims: one workload can use the platform-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` plus the bounded workload-vault metadata to authenticate to a real Vault dev/test target and read one secret through the real ES -> Nomad -> Docker path, without reintroducing workload-authored bridging or platform-owned Vault token brokerage.
 - The current supported local proof path is now repo-owned and converged with the bounded useful credential-flow proof: `scripts/72_supported_local_setup.sh` prepares the guest-side supported-local proof environment, including a proof-scoped real SPIRE server/agent path plus a proof-scoped real Vault dev/test target, while `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac. That path records canonical proof workspaces under `.out/es-proof-<id>/`, keeps generated proof bootstrap material in `managed-secrets.conf`, and uses guest `/tmp` scratch only as an internal Lima implementation detail because the mounted repo tree is read-only inside the guest.
+- The first bounded Control Plane normal-shell runtime contract is now an explicit opt-in ES runtime profile named `control-plane-normal-shell/v1`. It remains a bounded slice rule on the reopened ES runtime/package seam: CP still owns orchestration, review, checkpoint, and finalization semantics, while ES owns the governed Docker/Nomad runtime realization, platform-owned runtime identity delivery, the profile image selection, and non-secret credential-location metadata needed for workload-side Codex credential retrieval.
 
 ## Current Planning Objective
 
@@ -95,6 +96,13 @@ The following are useful current implementation facts and should remain visible 
 - The current shared execution/runtime contract in `internal/contracts/evidence/v1` is now limited to environment allowlist input, required runtime capabilities, `target_platform`, and `network_access`; non-runtime workload metadata no longer defines the live AGS -> ARS -> ES hot path.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as its bounded workload-visible runtime identity handoff and internally backs the discovered endpoint with a run-scoped ES-owned runtime subtree.
 - ES currently derives its workload-vault handoff from workload-zone vault runtime fields plus a bounded local default auth mode rather than from workload-attribute selector policy.
+- ES now also supports one explicit runtime profile selection annotation for the bounded Control Plane normal-shell slice:
+  - `invocation.annotations["execution_substrate.runtime_profile"] = "control-plane-normal-shell/v1"`
+  - the selected profile is enabled only by explicit ES submit config under `execution.runtime_profiles.control_plane_normal_shell`
+  - the profile remains a `static-script` execution-package overlay rather than a package-kind or lifecycle redesign
+  - the profile requires network access, a dedicated configured runtime image, an absolute configured Codex CLI path inside that image, and a configured workload-vault secret path/field for Codex credential material
+  - ES injects only non-secret metadata for that Codex material; the workload uses the existing platform-owned runtime identity endpoint and workload-vault auth env to fetch the material itself
+  - ES does not fetch, mint, broker, store, rotate, parse, or validate Codex tokens
 - The current slice-0 operator path now targets one Linux host/VM, runs ARS/EGS/AGS/ES as containers, keeps Nomad server/client and Docker on that same host, and treats Docker host networking as temporary compatibility scaffolding rather than final control-plane network architecture.
 - The current slice-0 operator path now requires strict client-cert authentication at the hot-path TLS boundary, including `/health`, and ARS now rejects the configured bootstrap issuer on both read and write paths like the rest of the hot path.
 - The current slice-0 operator path records the ES same-path staging proof at bring-up time, while slice `1A` and slice `1B` now separately prove the first bounded strong workload-identity handoff for runtime workloads.
@@ -361,6 +369,11 @@ Current bounded planning direction:
   - the workload performs the bounded Vault login flow itself as a client against a proof-scoped real Vault dev/test target
   - one secret read is proved through the real ES -> Nomad -> Docker path
   - the slice still avoids platform-owned Vault token brokerage
+- The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:
+  - ES selects the configured profile image for opt-in requests
+  - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and the Codex CLI at the configured path
+  - the supported-local proof seeds proof-scoped Codex credential material in Vault and proves workload-side credential acquisition through the existing identity endpoint
+  - the proof intentionally stops short of a real Codex service call because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
 - The supported-host follow-through after that credential-flow proof is now landed in bounded form:
   - keep the current script-managed local Nomad path explicit as bounded fallback/troubleshooting
   - distinguish supported, bounded-fallback, and unsupported substrate states in operator output and runbooks

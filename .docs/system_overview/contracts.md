@@ -387,6 +387,12 @@ Current invocation shape:
 - `mounts`
 - `annotations`
 
+Current runtime-profile annotation:
+
+- `execution_substrate.runtime_profile`
+  - omitted or empty: the current default `static-script` runtime behavior
+  - `control-plane-normal-shell/v1`: opt in to the bounded Control Plane normal-shell runtime profile
+
 Current lifecycle lookup policy:
 
 - `run_id` must match `run-[0-9a-f]{16}`
@@ -437,6 +443,16 @@ Current successful response shapes:
   - `static-script` artifacts
   - Docker target platform when a target platform is present
   - no required runtime capabilities
+- The bounded `control-plane-normal-shell/v1` runtime profile is an explicit prepare/submit-time opt-in using `invocation.annotations["execution_substrate.runtime_profile"]`.
+- The `control-plane-normal-shell/v1` profile:
+  - still requires a `static-script` artifact and Docker target platform
+  - requires `network_access=true`
+  - requires explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
+  - uses the configured profile image instead of `execution.base_image`
+  - guarantees the profile image contract for Python, git, narrow shell utilities, and Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
+  - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
+  - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, and `EXEC_WORKLOAD_VAULT_AUTH_*` handoff for workload-side Vault login and credential-material reads
+- ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
@@ -485,6 +501,7 @@ Current successful response shapes:
 - The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
+- `control-plane-normal-shell/v1` is a bounded compatibility-heavy runtime contract for one CP-owned normal-shell attempt path. It should not be generalized into an arbitrary image/toolchain marketplace or used to absorb CP orchestration semantics into ES.
 
 ### Reopened seams
 
@@ -492,6 +509,7 @@ Current successful response shapes:
 
 - The ES public request model is explicitly reopened in `PLANS.md`.
 - The current prepare/submit split, payload-resolution path, runtime mount model, and scheduler handoff shape are live today but not treated as settled architecture.
+- Whether runtime profiles remain annotation-selected overlays or become part of a later re-derived ES admission model remains reopened.
 
 ## 8. EGS Policy Contract
 
@@ -667,6 +685,11 @@ Current workload-visible handoff:
 
 - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - non-secret workload-vault environment inputs derived from the resolved workload-vault auth plan
+- for `control-plane-normal-shell/v1` only, non-secret Codex credential-location environment inputs:
+  - `EXEC_CODEX_CLI_PATH`
+  - `EXEC_CODEX_CREDENTIAL_SOURCE=workload_vault`
+  - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`
+  - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD`
 
 Current ES-owned implementation details behind that handoff:
 
@@ -680,6 +703,7 @@ Current runtime rules:
 - The backing workspace is not caller-controlled.
 - Caller mounts must not overlap the ES-owned runtime subtree that backs the discovered endpoint.
 - ES also injects non-secret Vault auth metadata through environment variables.
+- ES injects non-secret Codex credential-location metadata only when the bounded Control Plane normal-shell profile is selected.
 - ES does not apply per-workload selector overrides when shaping that Vault auth metadata in the current slice.
 - the slice-1 first implementation slice narrows workload runtime compatibility to platform-controlled non-root workloads:
   - helper runs as `0:0`
@@ -696,6 +720,7 @@ Current runtime rules:
 - ES reserves the runtime-identity workspace and validates that caller mount targets do not overlap it.
 - The workspace backing the discovered runtime-identity endpoint is tmpfs-backed, writable, and not persisted into host staging.
 - ES does not fetch, mint, or store identity material.
+- ES does not fetch, mint, broker, validate, or store Codex credential material.
 - ES derives the workload-vault auth plan from workload-zone vault runtime fields plus the locally configured default auth mode.
 - ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
 - Capability-sensitive behavior in this area must not rely on OS-based branching or fallback behavior.
@@ -741,6 +766,7 @@ The following active edges are compatibility-heavy enough to keep in one place:
 - `ES` currently uses `/v1/executions:prepare` as an active milestone surface rather than a declared long-term public execution API.
 - `internal/contracts/evidence/v1` now separates signed `claims` content from the `seal` envelope, but the package still remains the active shared artifact kernel and therefore still concentrates substantial cross-service meaning.
 - `ES` currently uses `/execution/staged`, `/execution/run`, `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, and the current ES-owned runtime-identity backing layout as active runtime conventions.
+- `ES` currently supports `control-plane-normal-shell/v1` as one bounded annotation-selected runtime-profile overlay for a CP-owned normal-shell attempt path, not as a general runtime-profile framework.
 - `CGS` currently uses `id.conf` as a local policy input format.
 
 ## 12. Reopened Redesign Seams
@@ -755,6 +781,7 @@ The following cross-service seams are active today and explicitly not fixed arch
 - The EGS runtime-trust form and response wrapper.
 - The CGS authorize DTO and `id.conf` policy-input model.
 - The ES/runtime identity handoff surface, including reserved path conventions.
+- The runtime-profile selection vocabulary and whether it remains annotation based.
 
 This section is not a proposal for replacements. It exists to prevent future readers from preserving the current choreography by accident.
 

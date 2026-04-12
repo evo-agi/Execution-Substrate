@@ -50,6 +50,7 @@ const (
 	codeUnsupportedExecutionMode        = "unsupported_execution_mode"
 	codeUnsupportedArtifactType         = "unsupported_artifact_type"
 	codeUnsupportedCapabilities         = "unsupported_capabilities"
+	codeUnsupportedRuntimeProfile       = "unsupported_runtime_profile"
 	codePayloadUnavailable              = "payload_unavailable"
 	codeSubmissionFailed                = "submission_failed"
 	codeInvalidRunID                    = "invalid_run_id"
@@ -314,6 +315,9 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, *Error) {
 	prepared, err := s.prepareAdmission(ctx, req)
 	if err != nil {
+		return PrepareResult{}, err
+	}
+	if err := s.validateRuntimeProfileForPrepare(req, prepared); err != nil {
 		return PrepareResult{}, err
 	}
 	return prepared.result, nil

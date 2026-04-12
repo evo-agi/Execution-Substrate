@@ -199,6 +199,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `workload_vault_auth.default_mode`
 - `nomad.base_url`, `nomad.datacenter`, `nomad.timeout_seconds` when submit is enabled
 - `execution.staging_root_dir`, `execution.results_root_dir`, `execution.base_image` when submit is enabled
+- `execution.runtime_profiles.control_plane_normal_shell.*` only when the bounded Control Plane normal-shell runtime profile is enabled
 
 ### Required external dependencies
 
@@ -234,6 +235,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `execution.runtime_support_binary`
   - `execution.spire_workload_api_socket_path`
   - optionally `execution.runtime_identity_tmpfs_size`
+- to enable the bounded Control Plane normal-shell runtime profile, include:
+  - `execution.runtime_profiles.control_plane_normal_shell.enabled=true`
+  - `execution.runtime_profiles.control_plane_normal_shell.image`
+  - `execution.runtime_profiles.control_plane_normal_shell.codex_cli_path`
+  - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_path`
+  - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_field`
 - `execution.staging_root_dir` is a writable host-local staging root
   - the current slice-0 operator path requires that host path to be mounted into the ES container at the exact same absolute path with no translation
   - that same-path requirement is a current deployment constraint of the bounded Nomad/Docker slice, not a client-facing governed-execution contract
@@ -258,6 +265,13 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - slice `1A` and `1B` additionally require:
   - `execution.runtime_support_binary`: absolute path to the platform-owned runtime supervisor/helper binary staged into the workload task
   - `execution.spire_workload_api_socket_path`: absolute path to the local SPIRE Workload API Unix socket that ES bind-mounts into the helper-private runtime path
+- the bounded `control-plane-normal-shell/v1` profile additionally requires:
+  - `execution.runtime_profiles.control_plane_normal_shell.image`: the Docker image ES selects for opt-in requests instead of `execution.base_image`
+  - `execution.runtime_profiles.control_plane_normal_shell.codex_cli_path`: an absolute container path where the profile image provides Codex CLI
+  - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_path`: the workload-zone Vault API path containing Codex credential material
+  - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_field`: the field inside that Vault response data object the workload should read
+  - `network_access=true` on the published workload, because Codex and workload-side Vault login need network reachability in this profile
+  - ES injects only non-secret metadata for the secret path/field and does not read or broker the credential
 - for the containerized operator bring-up path:
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
   - the bring-up path must mount `execution.spire_workload_api_socket_path` into the ES container at that same absolute path so ES can validate the socket before serving and later hand the same host path to Nomad
@@ -364,8 +378,8 @@ CGS remains implemented but is not required for the current ES admission or exec
 
 For local operator bring-up against this practical minimum:
 
-- on the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned proof-environment helper; it writes the current Dockerfile/TLS/config/blob assets, installs the `es-runtime-support` binary path used by ES submit config, boots a proof-scoped real SPIRE server/agent path and real Workload API socket, derives proof-only Vault JWT validation material from the SPIRE bundle, starts and configures the proof-scoped real Vault dev/test target, explicitly ensures the proof JWT auth mount plus the proof-owned KV v2 secret mount needed by the bounded credential-flow proof, writes `managed-secrets.conf`, writes `env.sh`, and replaces the earlier out-of-repo `/tmp` harnesses
-- `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac; it records proof workspaces under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload, stages a fresh snapshot of the current host worktree into guest bootstrap scratch, cleans stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, runs the supported-host qualification path, runs the higher-value useful credential-flow proof, and copies the resulting guest evidence back into that canonical workspace
+- on the current supported local reference host on this Mac, `scripts/72_supported_local_setup.sh setup` is the guest-side repo-owned proof-environment helper; it writes the current Dockerfile/TLS/config/blob assets, installs the `es-runtime-support` binary path used by ES submit config, builds the repo-owned Control Plane normal-shell runtime-profile image, boots a proof-scoped real SPIRE server/agent path and real Workload API socket, derives proof-only Vault JWT validation material from the SPIRE bundle, starts and configures the proof-scoped real Vault dev/test target, explicitly ensures the proof JWT auth mount plus the proof-owned KV v2 secret mount needed by the bounded credential-flow and Codex credential-material proofs, writes `managed-secrets.conf`, writes `env.sh`, and replaces the earlier out-of-repo `/tmp` harnesses
+- `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac; it records proof workspaces under `.out/es-proof-<id>/`, packages the bounded runtime-identity Vault-login workload and the Control Plane normal-shell runtime-profile readiness workload, stages a fresh snapshot of the current host worktree into guest bootstrap scratch, cleans stale proof-owned guest `/tmp/es-proof-*` scratch from earlier wrapper runs, runs the supported-host qualification path, runs the higher-value useful credential-flow proof, runs the bounded Control Plane normal-shell runtime-profile proof, and copies the resulting guest evidence back into that canonical workspace
 - on this Mac, the wrapper may still use guest `/tmp/es-proof-<id>` plus `/tmp/es-proof-<id>.bootstrap` internally because the Lima-mounted repo tree is read-only inside the `qemu` guest; those guest paths are proof-owned transient implementation detail, not the canonical proof workspace, and successful current-run guest scratch is removed after host evidence has been preserved
 - use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up`, then `BRINGUP_PROFILE=full scripts/01_bringup.sh check`, as the clean supported-host proof path when Nomad is already running as a pre-managed non-dev service at `NOMAD_ADDR`
 - use `BRINGUP_PROFILE=full scripts/01_bringup.sh up` when you intentionally want the repo to manage a local Nomad process as bounded bootstrap/troubleshooting scaffolding
@@ -410,6 +424,8 @@ Readiness still does **not** prove useful downstream credential use by itself. T
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
+
+The bounded Control Plane normal-shell runtime profile is proved as a runtime-readiness proxy on top of the same supported-local path: the profile image is built from the repo-owned reference recipe, ES selects it only for `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"`, the workload verifies Python, git, narrow shell tooling, and Codex CLI invocation readiness, obtains proof-scoped Codex credential material through workload-side Vault login, and writes a retained result bundle. The proof does not perform a real Codex service call because this repo cannot own a non-sensitive production Codex credential or external Codex service availability.
 
 Supported-host qualification is now achieved on the current local reference host, and the current supported local proof path is now repo-owned through `scripts/72_supported_local_setup.sh`, `scripts/73_supported_local_proof.sh run`, and the existing bring-up and execute-loop helpers. Supported vs bounded-fallback vs unsupported states must remain explicit in bring-up/readiness output.
 

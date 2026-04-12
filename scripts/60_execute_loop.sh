@@ -551,6 +551,10 @@ env = prepare.get("env")
 if env:
     invocation["env"] = env
 
+annotations = prepare.get("annotations") or submit.get("annotations")
+if annotations:
+    invocation["annotations"] = annotations
+
 prepare_request = {
     "schema_version": "v1",
     "invocation": invocation,
