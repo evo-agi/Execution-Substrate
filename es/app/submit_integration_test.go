@@ -2014,6 +2014,7 @@ client {
   enabled = true
 %s
   options = {
+    "docker.cleanup.image" = "false"
     "docker.volumes.enabled" = "true"
   }
 }

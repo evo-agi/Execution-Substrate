@@ -277,7 +277,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
   - the bring-up path must mount `execution.spire_workload_api_socket_path` into the ES container at that same absolute path so ES can validate the socket before serving and later hand the same host path to Nomad
   - that host socket path is current ES deployment input, not workload-visible contract; future infra-managed attachment can replace the bind form if it preserves the helper-private raw SPIRE boundary
-- for fresh Linux workload-zone VMs, `scripts/70_linux_setup.sh` now installs Docker, Nomad, Vault, and Go, writes the current single-node `/etc/nomad.d/nomad.hcl`, and then tries to qualify the root-managed `nomad.service` baseline
+- for fresh Linux workload-zone VMs, `scripts/70_linux_setup.sh` now installs Docker, Nomad, Vault, and Go, writes the current single-node `/etc/nomad.d/nomad.hcl` with bind mounts enabled and Nomad Docker image cleanup disabled for local runtime-profile durability, and then tries to qualify the root-managed `nomad.service` baseline
   - that helper does not silently claim success if the host still needs manual root investigation, cannot start `nomad.service`, reports `DevMode=true`, or still leaves `cpu.totalcompute=0`
   - if the helper had to add the current operator user to the `docker` group, the user must log out and back in before treating the VM as qualified for repo scripts
   - a nonzero exit from that helper means the VM is not yet a supported substrate baseline for this slice
@@ -349,6 +349,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - configured for the target datacenter in `es.nomad.datacenter`
 - Docker driver available
 - client bind mounts enabled through `client.options["docker.volumes.enabled"] = "true"`
+- when enabled local runtime-profile images are part of the supported-local proof/runtime surface, Nomad Docker image cleanup disabled through `client.options["docker.cleanup.image"] = "false"` so Nomad does not remove the configured local profile image after a stopped allocation
 - explicit local data directory for repeatable manual bring-up
 - when the current slice-0 single-node topology binds Nomad to `127.0.0.1`, the Nomad config must also set explicit loopback `advertise` addresses for `http`, `rpc`, and `serf`
 - for the supported Linux environment story in this slice, Nomad should already be running as a pre-managed non-dev service on the host/VM before `scripts/01_bringup.sh up`; the local script-managed Nomad startup path remains bounded fallback/troubleshooting scaffolding
@@ -364,6 +365,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - bind mounts enabled for Nomad Docker tasks
 - ES execution base image available or pullable
 - when `control-plane-normal-shell/v1` is enabled, the configured profile image must already be present in the Docker daemon used by Nomad before repo-owned readiness claims submit readiness
+- when that configured profile image is local-only, repo-owned submit-readiness also requires the supported-local Nomad Docker image-cleanup guardrail above; otherwise a green image-present check can drift after Nomad observes terminal allocations
 
 ## Practical Minimal Stack
 
@@ -408,6 +410,7 @@ The current unified health check verifies:
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
 - any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
+- when an enabled runtime-profile image is present, the Nomad Docker driver client options report `docker.cleanup.image=false`, so Nomad will not remove that local image after stopped tasks as part of the supported-local runtime surface
 - ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
 - if that blob supplies `vault_config.ca_bundle_pem`, the readiness check validates that it contains PEM certificate material; submit then stages it for workloads as `VAULT_CACERT` and as part of the runtime `SSL_CERT_FILE` bundle
@@ -417,6 +420,7 @@ The current unified health check verifies:
 Current limitation:
 
 - `submit-ready` is now honest about zero-compute or Docker-unhealthy Nomad nodes, but it still does not prove every workload/resource shape can place successfully; later memory, device, or placement-constraint failures remain possible
+- the local runtime-profile image durability guardrail only prevents Nomad's Docker driver from removing images after stopped tasks; manual Docker pruning, daemon reset, or an operator-deleted image still invalidates submit-readiness and must be refreshed before the next run
 - a host that needs `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` remains only a bounded fallback environment for slice-0 proof, not evidence that the substrate is naturally self-honest there
 - the script-managed local Nomad path also remains bounded fallback even when it is schedulable; the supported-environment story for this slice is a pre-managed non-dev Nomad service with natural schedulability
 - a pre-managed Nomad `-dev` agent is unsupported even if it reports positive `cpu.totalcompute`

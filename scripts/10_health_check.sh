@@ -77,11 +77,12 @@ if [[ "${PROFILE}" == "full" ]]; then
   fi
   check_docker_ready
   check_runtime_profile_images_once "${ES_CONFIG}"
+  check_runtime_profile_image_gc_policy_once "${ES_CONFIG}"
   supported_environment_line
   if [[ "${prepare_ready_verified}" == "1" ]]; then
-    echo "submit-ready: true (prepare-ready, ES submit config, Docker, required runtime profile images, and Nomad client/leader checks all passed)"
+    echo "submit-ready: true (prepare-ready, ES submit config, Docker, required runtime profile images, runtime image durability, and Nomad client/leader checks all passed)"
   else
-    echo "submit-ready: partial (Docker, required runtime profile images, Nomad, and ES submit config passed, but prepare readiness was not fully verified)"
+    echo "submit-ready: partial (Docker, required runtime profile images, runtime image durability, Nomad, and ES submit config passed, but prepare readiness was not fully verified)"
   fi
 else
   echo "submit-ready: skipped (BRINGUP_PROFILE=prepare-only)"

@@ -86,6 +86,7 @@ The current supported Linux host profile requires all of the following.
 - at least one ready client node
 - that ready node exposes positive natural `cpu.totalcompute`
 - that ready node reports Docker driver `Healthy`
+- when the current supported-local runtime-profile surface is enabled, Nomad Docker image cleanup disabled through `client.options["docker.cleanup.image"]="false"` so local runtime-profile images survive completed allocations for repeated client runs
 - no `NOMAD_CLIENT_CPU_TOTAL_COMPUTE`
 - no `client.cpu_total_compute` override in the active Nomad service config
 
@@ -103,6 +104,7 @@ The supported host still has to satisfy the other active slice-0 runtime assumpt
 
 - Docker host networking can reach host loopback from the control-plane containers
 - Nomad Docker bind mounts are enabled
+- the supported-local single-node Nomad baseline disables Nomad Docker image cleanup for local runtime-profile image durability; external Docker image pruning remains outside the support claim and must be followed by a refresh before submit-readiness is claimed again
 - the configured ES runtime support binary and SPIRE socket paths are valid for the execution path
 - the normal governed operator flow can proceed through the existing runbooks
 
@@ -282,6 +284,7 @@ Pass only if the output includes:
 - `nomad-startup-mode: pre-managed`
 - `submit-ready-mode: natural`
 - `supported-environment: supported`
+- `runtime profile image durability: nomad docker.cleanup.image=false` when `control-plane-normal-shell/v1` is enabled
 - `submit-ready: true`
 
 If the output instead shows `managed-local`, `bounded-override`, or a failed submit-readiness result, the host is not supported.

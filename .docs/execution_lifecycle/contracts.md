@@ -200,6 +200,7 @@ Successful response is `200` JSON with these contract fields:
   - a configured profile image
   - an absolute configured Codex CLI path in that image
   - configured workload-vault secret path and field metadata for Codex credential material
+- In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.

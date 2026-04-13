@@ -26,6 +26,7 @@ The readiness vocabulary for that primary path is now:
 - `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
 - `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
 - `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
+- for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
 
 ## 2. Prerequisites
 
@@ -56,6 +57,7 @@ That helper currently:
 
 - installs the base packages used by the operator path
 - writes the single-node `/etc/nomad.d/nomad.hcl` used for the one-host workload-zone baseline
+- disables Nomad Docker image cleanup in that config so locally built runtime-profile images survive completed allocations for repeated supported-local client runs
 - enables Docker
 - tries to enable and start the root-managed non-`-dev` `nomad.service`
 - exits nonzero if the VM still cannot qualify the supported substrate baseline
@@ -171,6 +173,7 @@ The current bounded system still assumes:
 - single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
 - the configured ES base image is available or pullable
 - any enabled `control-plane-normal-shell/v1` profile image is present in the Docker daemon used by Nomad before submit-ready is claimed
+- Nomad Docker image cleanup is disabled for local runtime-profile image durability when that profile is enabled
 
 CGS is not required for this bring-up runbook because it is not part of the current ES hot path.
 
@@ -197,6 +200,7 @@ Pass only if the check reports:
 - `nomad-startup-mode: pre-managed`
 - `submit-ready-mode: natural`
 - `supported-environment: supported`
+- `runtime profile image durability: nomad docker.cleanup.image=false`
 - `submit-ready: true`
 
 On the current Apple Silicon Mac, Lima `qemu` + Ubuntu 24.04 arm64 is the known supported local reference profile for this path. The previously investigated Ubuntu 24.04 VMware/aarch64 and Lima `vz` Ubuntu 24.04 arm64 local profiles remain unsupported on this Mac because natural `cpu.totalcompute` stays `0`.
@@ -298,12 +302,14 @@ For the full profile, `submit-ready: true` means:
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
 - required enabled runtime-profile images are present according to `docker image inspect`
+- enabled local runtime-profile images are protected from Nomad stopped-task image cleanup by `docker.cleanup.image=false`
 - the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally, including any `vault_config.ca_bundle_pem` certificate material
 - the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
 
 Current limitation:
 
 - this readiness result now rejects `cpu.totalcompute=0` and Docker-unhealthy nodes, but it still does not guarantee successful placement for every workload shape; later memory, device, or other constraint failures remain possible
+- the image-durability check only covers Nomad's Docker driver cleanup. Manual `docker image rm`, Docker daemon reset, or external pruning still makes the profile image absent and must be followed by a rebuild or refresh before another submit-ready claim.
 - if the host requires `NOMAD_CLIENT_CPU_TOTAL_COMPUTE` to become schedulable, that remains bounded fallback rather than clean evidence of natural substrate support
 - the current script-managed local Nomad path also remains bounded fallback/troubleshooting even when Nomad is schedulable; the supported-environment story for this slice is still a pre-managed non-`-dev` Nomad service on the Linux host/VM plus natural schedulability
 - a pre-managed `nomad agent -dev` environment is unsupported for that support claim even if it looks healthy and exposes positive compute
@@ -351,7 +357,7 @@ Docker daemon logs are outside this repo and are only a useful next step for sub
 | trust / evidence / admission failure | The published artifact, aggregate evidence, signer policy, or admission inputs were rejected after auth succeeded. | The failing publish / prepare / submit helper. | `ags.log` for publish-side evidence handling, `es.log` for prepare / submit rejection, `egs.log` when signer or artifact trust policy is the likely cause. | No. The failure is before runtime handoff. | Check the published artifact digest, aggregate evidence, and EGS trust inputs before retrying. |
 | runtime-config reference or blob failure | ES runtime-config points at a missing, unreadable, or structurally invalid workload-zone Vault blob in ARS, including malformed Vault CA bundle material when supplied. | `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`. | `es.log` and `ars.log`. | No. Fix the referenced blob first. | Re-run `scripts/01_bringup.sh check`, then confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a readable ARS JSON blob with the expected address/auth shape and valid optional CA bundle. |
 | service health / readiness failure | A required service is down, unhealthy, or not ready enough to claim service health or prepare-ready. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh`. | The failing service log under `logs/`; if ES health is failing because an upstream dependency is sick, inspect that upstream log too. | No. Readiness must be restored first. | Re-run `scripts/01_bringup.sh check`, restore service health or prepare-ready, then retry publish / prepare / submit. |
-| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, required runtime-profile image availability, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info` or `docker image inspect` fails. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, required runtime-profile images, Nomad leader/client readiness, and ES submit config before retrying. |
+| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, required runtime-profile image availability, Nomad image-cleanup guardrail, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info`, `docker image inspect`, or Nomad Docker client-option checks fail. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, required runtime-profile images, Nomad Docker image cleanup config, Nomad leader/client readiness, and ES submit config before retrying. |
 | execution failure after successful submit | `:submit` returned a `run_id`, but the workload later failed, was canceled, got lost, or otherwise ended non-successfully. | `scripts/50_lifecycle.sh` or `scripts/60_execute_loop.sh`. | Workload logs from `scripts/50_lifecycle.sh` or the per-run `logs.txt` from `scripts/60_execute_loop.sh`, plus `es.log` and `nomad.log` if the runtime handoff itself looks suspicious. | Yes, but only for non-success outcomes with a real `run_id`. | Inspect lifecycle status/logs for the `run_id`, then inspect retained host staging under `execution.staging_root_dir/<run_id>` if the run failed, was canceled, was lost, or never reached clean success. |
 | operator misuse / invalid input | The helper caught missing env vars, unreadable files, malformed JSON, or an invalid `run_id`, or the service returned a bounded input-validation error. | The failing helper itself. | Usually none. If the malformed request reached a service, inspect `ags.log` or `es.log` for the matching `400`. | No. Fix the input first. | Validate request JSON, env vars, readable file paths, and `run_id`, then retry. |
 

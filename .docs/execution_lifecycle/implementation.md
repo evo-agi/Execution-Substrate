@@ -359,6 +359,7 @@ Current job-spec assumptions:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
 - For repo-owned readiness checks, an enabled `control-plane-normal-shell/v1` profile also requires the configured image to be present in the Docker daemon used by Nomad before `submit-ready` is claimed. This is a substrate/tooling readiness check; it does not change ES result-retention semantics.
+- For that supported-local runtime-profile surface, readiness also requires Nomad's Docker client options to report `docker.cleanup.image=false`. The configured profile image is local proof/runtime material, so ES-supported readiness must not claim repeated-run durability while Nomad can remove that image after stopped allocations.
 
 After submission, ES asks Nomad for:
 
@@ -427,6 +428,7 @@ Operator helper ownership in the current slice:
 - `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile at `.out/Dockerfile`; bring-up regenerates that file before building.
 - `.out/` is the repo-local generated-artifact sink in the current slice; tracked source-of-truth inputs remain explicit exceptions such as `.out/Dockerfile`, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability including any supplied Vault CA bundle shape, Nomad, Docker, and required enabled runtime-profile images.
+- For enabled runtime-profile images, the same readiness verifier also checks the supported-local Nomad Docker image-cleanup guardrail before claiming submit-ready.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
 - `scripts/70_diagnostics.sh` is the bounded diagnostics collector for that same operator slice; category bundles gather only the logs/checks already named by the troubleshooting matrix, and `run_id` bundles use the public ES lifecycle endpoints plus local staging inspection when relevant.
 - `scripts/71_diagnostics_summary.sh` is the tiny bundle consumer for that same slice; it reads `bundle.json` from `scripts/70_diagnostics.sh` and prints a compact summary of the collected signals.

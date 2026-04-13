@@ -9,6 +9,7 @@ server {
 client {
   enabled = true
   options = {
+    "docker.cleanup.image" = "false"
     "docker.volumes.enabled" = "true"
   }
 }

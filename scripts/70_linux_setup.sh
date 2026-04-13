@@ -139,6 +139,7 @@ client {
   enabled = true
   servers = ["127.0.0.1"]
   options = {
+    "docker.cleanup.image" = "false"
     "docker.volumes.enabled" = "true"
   }
 }
@@ -489,6 +490,7 @@ echo "Environment notes:"
 echo "- This script assumes an apt-based Linux VM."
 echo "- The supported Linux profile is Docker healthy plus a root-managed non-dev nomad.service with positive natural cpu.totalcompute and no override."
 echo "- This script writes /etc/nomad.d/nomad.hcl for the single-node loopback Nomad service used by the current one-host workload-zone profile."
+echo "- That Nomad config disables Docker image cleanup so local runtime-profile images survive completed allocations for repeated supported-local client runs."
 echo "- If supported-substrate qualification failed above, do not treat this VM as supported yet."
 echo "- If nomad.service could not start or remain healthy, fix that with root-managed host investigation instead of falling back to a user-started Nomad proof."
 echo "- Some proof VMs may still need manual root investigation or bounded fallback when Nomad fingerprinting leaves cpu.totalcompute at 0."

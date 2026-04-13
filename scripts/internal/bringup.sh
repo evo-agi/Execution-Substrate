@@ -482,6 +482,55 @@ check_runtime_profile_images_once() {
   return "${status}"
 }
 
+check_runtime_profile_image_gc_policy_once() {
+  local config_path=$1
+  local images
+  local response_path
+  local summary
+  local status=0
+
+  images="$(runtime_profile_images_from_es_config "${config_path}")" || return 1
+  if [[ -z "${images}" ]]; then
+    echo "runtime profile image durability: no enabled runtime-profile images"
+    return 0
+  fi
+
+  response_path="$(mktemp)"
+
+  if ! curl --fail-with-body --silent --show-error "${NOMAD_ADDR}/v1/agent/self" >"${response_path}"; then
+    echo "runtime profile image durability: nomad agent self request failed for ${NOMAD_ADDR}/v1/agent/self" >&2
+    status=1
+  elif ! summary="$(python3 - <<'PY' "${response_path}" "${images}"
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+images = [line.strip() for line in sys.argv[2].splitlines() if line.strip()]
+config = payload.get("config") or {}
+client = config.get("Client") or {}
+options = client.get("Options") or {}
+value = str(options.get("docker.cleanup.image", "")).strip().lower()
+if value != "false":
+    image_list = ", ".join(images)
+    print(
+        "runtime profile image durability: missing nomad client option "
+        f'docker.cleanup.image=false for enabled runtime profile image(s): {image_list}',
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print("runtime profile image durability: nomad docker.cleanup.image=false")
+PY
+)"; then
+    status=1
+  else
+    echo "${summary}"
+  fi
+
+  rm -f "${response_path}"
+  return "${status}"
+}
+
 verify_es_submit_config_enabled() {
   local config_path=$1
   python3 - <<'PY' "$config_path"

@@ -279,6 +279,7 @@ server {
 client {
   enabled = true
   options = {
+    "docker.cleanup.image" = "false"
     "docker.volumes.enabled" = "true"
   }
 }
@@ -675,6 +676,96 @@ func TestRuntimeProfileImageReadinessAcceptsPresentEnabledProfileImage(t *testin
 	}
 }
 
+func TestRuntimeProfileImageReadinessRequiresNomadDockerImageCleanupDisabled(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-profile-image.json", map[string]any{
+		"execution": map[string]any{
+			"runtime_profiles": map[string]any{
+				"control_plane_normal_shell": map[string]any{
+					"enabled": true,
+					"image":   "execution-substrate/control-plane-normal-shell:supported-local",
+				},
+			},
+		},
+	})
+
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
+printf '%s\n' '{"config":{"Client":{"Options":{"docker.volumes.enabled":"true"}}}}'
+`))
+	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
+		t.Fatalf("chmod fake curl: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ES_CONFIG="+esConfigPath,
+		"NOMAD_ADDR=http://127.0.0.1:4646",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected missing nomad docker image cleanup guardrail to fail, got output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "runtime profile image durability: missing nomad client option docker.cleanup.image=false") {
+		t.Fatalf("expected missing docker cleanup guardrail output, got %s", text)
+	}
+	if !strings.Contains(text, "execution-substrate/control-plane-normal-shell:supported-local") {
+		t.Fatalf("expected enabled runtime profile image in output, got %s", text)
+	}
+}
+
+func TestRuntimeProfileImageReadinessAcceptsNomadDockerImageCleanupDisabled(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-profile-image.json", map[string]any{
+		"execution": map[string]any{
+			"runtime_profiles": map[string]any{
+				"control_plane_normal_shell": map[string]any{
+					"enabled": true,
+					"image":   "execution-substrate/control-plane-normal-shell:supported-local",
+				},
+			},
+		},
+	})
+
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte(`#!/bin/sh
+printf '%s\n' '{"config":{"Client":{"Options":{"docker.cleanup.image":"false","docker.volumes.enabled":"true"}}}}'
+`))
+	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
+		t.Fatalf("chmod fake curl: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_image_gc_policy_once "$ES_CONFIG"`)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ES_CONFIG="+esConfigPath,
+		"NOMAD_ADDR=http://127.0.0.1:4646",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected disabled nomad docker image cleanup guardrail to pass: %v output=%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "runtime profile image durability: nomad docker.cleanup.image=false") {
+		t.Fatalf("expected docker cleanup guardrail output, got %s", string(output))
+	}
+}
+
 func TestWorkloadZoneVaultBlobReadinessReportsCABundleState(t *testing.T) {
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := t.TempDir()
@@ -962,10 +1053,12 @@ func TestLinuxSetupScriptDocumentsSupportedProfileGuardrails(t *testing.T) {
 		"tries to qualify the repo's narrow supported Linux profile",
 		"systemd is required for the supported Linux profile",
 		"Installing supported single-node Nomad service config",
+		`"docker.cleanup.image" = "false"`,
 		"root-managed nomad.service",
 		"ready node(s) still report cpu.totalcompute=0 under the root-managed non-dev service",
 		"SMBIOS processor Current Speed is not usable on this host",
 		"current login shell still needs re-login before repo scripts can call docker without sudo",
+		"disables Docker image cleanup",
 		"supported-substrate: not yet qualified",
 		"This VM still needs manual root investigation before it matches the repo's supported profile.",
 		"Supported substrate baseline: not yet qualified from this script run.",
@@ -975,6 +1068,26 @@ func TestLinuxSetupScriptDocumentsSupportedProfileGuardrails(t *testing.T) {
 	for _, snippet := range requiredSnippets {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("expected %q in linux setup script, got %s", snippet, text)
+		}
+	}
+}
+
+func TestExampleNomadConfigDisablesDockerImageCleanup(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	configPath := filepath.Join(repoRoot, ".examples", "config", "nomad.hcl")
+
+	body, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read example nomad config: %v", err)
+	}
+
+	text := string(body)
+	for _, snippet := range []string{
+		`"docker.cleanup.image" = "false"`,
+		`"docker.volumes.enabled" = "true"`,
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("expected %q in example nomad config, got %s", snippet, text)
 		}
 	}
 }

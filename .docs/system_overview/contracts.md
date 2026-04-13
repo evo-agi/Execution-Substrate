@@ -451,6 +451,7 @@ Current successful response shapes:
   - requires explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
   - uses the configured profile image instead of `execution.base_image`
   - guarantees the profile image contract for Python, git, narrow shell utilities, and configured Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
+  - for the repo-owned supported-local runtime surface, requires the configured local profile image to remain available across repeated client runs by disabling Nomad Docker image cleanup in the supported single-node Nomad baseline and by refusing submit-ready when that guardrail is absent
   - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
   - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, `EXEC_WORKLOAD_VAULT_AUTH_*`, and workload-zone Vault CA trust handoff for workload-side Vault login and credential-material reads
 - ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
