@@ -110,7 +110,7 @@ CGS is active, but it is intentionally not part of the current ES hot path.
 
 ### Runtime identity / execution handoff flow
 
-ES stages execution inputs, injects the current workload identity endpoint environment variable as the bounded workload-visible handoff, protects the ES-owned runtime subtree that backs the discovered endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode.
+ES stages execution inputs, injects the current workload identity endpoint environment variable as the bounded workload-visible handoff, protects the ES-owned runtime subtree that backs the discovered endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode and optional Vault CA trust material.
 
 The current bounded slice now proves platform-owned runtime identity delivery behind that discovery contract through a same-container supervisor/helper: the helper is the only SPIRE-facing runtime component, the raw SPIRE channel remains helper-private, the workload runs as fixed non-root `10000:10000`, and helper death is task-fatal. ES still stops short of becoming the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES owns the handoff boundary, not the full runtime credential system.
 

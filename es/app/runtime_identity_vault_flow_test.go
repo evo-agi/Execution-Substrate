@@ -19,6 +19,7 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 	gateway := dockerBridgeGateway(t)
 	mockVault := startMockVaultCompatServer(t, newExecutionWorkspaceTempDir(t, "mock-vault-"), mockVaultCompatServerOptions{
 		bindAddress: "0.0.0.0",
+		publicHost:  gateway,
 		authMount:   "jwt",
 		role:        "service_execution",
 		audience:    "vault",
@@ -28,9 +29,10 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 	})
 
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
-		baseImage:            "python:3.13-alpine",
-		networkAccess:        true,
-		workloadVaultAddress: "https://" + net.JoinHostPort(gateway, strconv.Itoa(mockVault.port(t))),
+		baseImage:                "python:3.13-alpine",
+		networkAccess:            true,
+		workloadVaultAddress:     "https://" + net.JoinHostPort(gateway, strconv.Itoa(mockVault.port(t))),
+		workloadVaultCABundlePEM: mockVault.caBundle(t),
 	})
 
 	entrypointPath := filepath.Join(executionPlatformRepoRoot(t), ".examples", "runtime_identity_vault_login", "entrypoint")
@@ -41,15 +43,13 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 
 	publishSubmitArtifactArchiveWithOptions(t, stack, buildArchiveFromScript(t, string(entrypointBytes)), publishSubmitArtifactOptions{
 		environmentVariables: []string{
-			"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY",
 			"WORKLOAD_VAULT_SECRET_PATH",
 		},
 		networkAccess: true,
 	})
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithEnv(t, stack, map[string]string{
-		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": "1",
-		"WORKLOAD_VAULT_SECRET_PATH":          "proof-secrets/data/runtime-identity-vault-login",
+		"WORKLOAD_VAULT_SECRET_PATH": "proof-secrets/data/runtime-identity-vault-login",
 	}))
 	defer response.Body.Close()
 
@@ -65,6 +65,12 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	job := stack.nomad.fetchJobDetail(t, jobID)
 	assertNoRawSPIREEnvLeak(t, job.task(t).Env, stack.mockSPIRE.socketPath)
+	if job.task(t).Env["VAULT_CACERT"] != "/execution/run/platform/workload-vault-ca.pem" {
+		t.Fatalf("expected workload Vault CA cert env, got %#v", job.task(t).Env["VAULT_CACERT"])
+	}
+	if job.task(t).Env["SSL_CERT_FILE"] != "/execution/run/platform/workload-ca-bundle.pem" {
+		t.Fatalf("expected workload TLS bundle env, got %#v", job.task(t).Env["SSL_CERT_FILE"])
+	}
 
 	endpointURI := job.task(t).Env[workloadIdentityEndpointEnvKey]
 	spireMount := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], runtimeIdentitySPIRESourceDirFromEndpoint(t, endpointURI))

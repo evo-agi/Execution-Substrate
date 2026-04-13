@@ -435,6 +435,53 @@ check_docker_ready() {
   echo "docker: ready (docker info succeeded)"
 }
 
+runtime_profile_images_from_es_config() {
+  local config_path=$1
+  python3 - <<'PY' "$config_path"
+import json
+import pathlib
+import sys
+
+cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+execution = cfg.get("execution") or {}
+runtime_profiles = execution.get("runtime_profiles") or {}
+normal_shell = runtime_profiles.get("control_plane_normal_shell") or {}
+
+if normal_shell.get("enabled") is True:
+    image = normal_shell.get("image")
+    if not isinstance(image, str) or not image.strip():
+        raise SystemExit("runtime profile image: missing execution.runtime_profiles.control_plane_normal_shell.image")
+    print(image.strip())
+PY
+}
+
+check_runtime_profile_images_once() {
+  local config_path=$1
+  local images
+  local image
+  local status=0
+
+  images="$(runtime_profile_images_from_es_config "${config_path}")" || return 1
+  if [[ -z "${images}" ]]; then
+    echo "runtime profile images: none enabled"
+    return 0
+  fi
+
+  while IFS= read -r image; do
+    if [[ -z "${image}" ]]; then
+      continue
+    fi
+    if ! docker image inspect "${image}" >/dev/null 2>&1; then
+      echo "runtime profile image: missing ${image} (execution.runtime_profiles.control_plane_normal_shell.image); build or pull it in the Docker daemon used by Nomad before submit" >&2
+      status=1
+      continue
+    fi
+    echo "runtime profile image: ${image} present"
+  done <<<"${images}"
+
+  return "${status}"
+}
+
 verify_es_submit_config_enabled() {
   local config_path=$1
   python3 - <<'PY' "$config_path"
@@ -606,6 +653,7 @@ PY
   elif ! summary="$(python3 - <<'PY' "${response_path}" "${digest}"
 import json
 import pathlib
+import ssl
 import sys
 from urllib.parse import urlparse
 
@@ -627,7 +675,20 @@ for field in ("auth_mount", "auth_role", "jwt_audience"):
         print(f"workload-zone vault blob is missing vault_config.{field}", file=sys.stderr)
         raise SystemExit(1)
 
-print(f"workload-zone vault blob: digest={sys.argv[2]} ready=true")
+ca_bundle = vault.get("ca_bundle_pem")
+ca_state = "absent"
+if ca_bundle is not None:
+    if not isinstance(ca_bundle, str) or not ca_bundle.strip():
+        print("workload-zone vault blob has invalid vault_config.ca_bundle_pem", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        ssl.create_default_context(cadata=ca_bundle)
+    except Exception as exc:
+        print(f"workload-zone vault blob has invalid vault_config.ca_bundle_pem: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    ca_state = "present"
+
+print(f"workload-zone vault blob: digest={sys.argv[2]} vault_ca_bundle={ca_state} ready=true")
 PY
 )"; then
     status=1

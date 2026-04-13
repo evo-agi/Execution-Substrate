@@ -1,7 +1,7 @@
 # Runbook: Governed System Bring-up (v1)
 
 - Version: `v1`
-- Last Updated: `2026-04-07`
+- Last Updated: `2026-04-13`
 - Compatible System Version: `Execution Substrate current working tree`
 
 ## 1. Objective
@@ -24,8 +24,8 @@ The lower-level `scripts/02_start_*.sh` through `scripts/06_start_nomad.sh` help
 The readiness vocabulary for that primary path is now:
 
 - `service health`: the public health surfaces for ARS, EGS, AGS, and ES are up and reporting ready
-- `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS
-- `submit-ready`: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
+- `prepare-ready`: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
+- `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
 
 ## 2. Prerequisites
 
@@ -170,6 +170,7 @@ The current bounded system still assumes:
 - Nomad Docker bind mounts are enabled
 - single-node loopback Nomad configs set explicit `advertise` addresses for `http`, `rpc`, and `serf`
 - the configured ES base image is available or pullable
+- any enabled `control-plane-normal-shell/v1` profile image is present in the Docker daemon used by Nomad before submit-ready is claimed
 
 CGS is not required for this bring-up runbook because it is not part of the current ES hot path.
 
@@ -296,7 +297,8 @@ For the full profile, `submit-ready: true` means:
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
 - `docker info` succeeds
 - ES submit config still includes `nomad.base_url`, `nomad.datacenter`, `execution.staging_root_dir`, `execution.results_root_dir`, and `execution.base_image`
-- the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
+- required enabled runtime-profile images are present according to `docker image inspect`
+- the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally, including any `vault_config.ca_bundle_pem` certificate material
 - the current ES same-path staging invariant has already been recorded at `${BRINGUP_DIR}/staging-invariant.json`
 
 Current limitation:
@@ -318,7 +320,7 @@ It still does **not** imply Nomad is reachable, which is why the bring-up path v
 For `prepare-only`, success still means:
 
 - ARS, EGS, AGS, and ES each return `200` with `"ready": true`
-- the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally
+- the workload-zone Vault blob named by `runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and validates structurally, including any supplied Vault CA bundle
 - `submit-ready` is reported as skipped for that profile
 
 ## 5. Operator Troubleshooting Matrix
@@ -347,9 +349,9 @@ Docker daemon logs are outside this repo and are only a useful next step for sub
 | --- | --- | --- | --- | --- | --- |
 | caller authorization / credential failure | The helper reached AGS or ES, but the caller cert/key was wrong for that operation or TLS auth failed before the request was accepted. | The failing helper itself (`scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, or `scripts/50_lifecycle.sh`). This is not a bring-up readiness failure. | `ags.log` for publish; `es.log` for prepare / submit / lifecycle. | No. There is no admitted run to inspect. | Verify `OPERATOR_CERT` and `OPERATOR_KEY`, confirm the caller SPIFFE path is allowed by the current `authorization.allowed_spiffe_path_prefixes` in AGS or ES config, and remember that the repo-owned operator path keeps those allowlists operator-only by default. Then retry. |
 | trust / evidence / admission failure | The published artifact, aggregate evidence, signer policy, or admission inputs were rejected after auth succeeded. | The failing publish / prepare / submit helper. | `ags.log` for publish-side evidence handling, `es.log` for prepare / submit rejection, `egs.log` when signer or artifact trust policy is the likely cause. | No. The failure is before runtime handoff. | Check the published artifact digest, aggregate evidence, and EGS trust inputs before retrying. |
-| runtime-config reference or blob failure | ES runtime-config points at a missing, unreadable, or structurally invalid workload-zone Vault blob in ARS. | `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`. | `es.log` and `ars.log`. | No. Fix the referenced blob first. | Re-run `scripts/01_bringup.sh check`, then confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a readable ARS JSON blob with the expected shape. |
+| runtime-config reference or blob failure | ES runtime-config points at a missing, unreadable, or structurally invalid workload-zone Vault blob in ARS, including malformed Vault CA bundle material when supplied. | `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`. | `es.log` and `ars.log`. | No. Fix the referenced blob first. | Re-run `scripts/01_bringup.sh check`, then confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a readable ARS JSON blob with the expected address/auth shape and valid optional CA bundle. |
 | service health / readiness failure | A required service is down, unhealthy, or not ready enough to claim service health or prepare-ready. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh`. | The failing service log under `logs/`; if ES health is failing because an upstream dependency is sick, inspect that upstream log too. | No. Readiness must be restored first. | Re-run `scripts/01_bringup.sh check`, restore service health or prepare-ready, then retry publish / prepare / submit. |
-| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info` fails. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, Nomad leader/client readiness, and ES submit config before retrying. |
+| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, required runtime-profile image availability, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info` or `docker image inspect` fails. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, required runtime-profile images, Nomad leader/client readiness, and ES submit config before retrying. |
 | execution failure after successful submit | `:submit` returned a `run_id`, but the workload later failed, was canceled, got lost, or otherwise ended non-successfully. | `scripts/50_lifecycle.sh` or `scripts/60_execute_loop.sh`. | Workload logs from `scripts/50_lifecycle.sh` or the per-run `logs.txt` from `scripts/60_execute_loop.sh`, plus `es.log` and `nomad.log` if the runtime handoff itself looks suspicious. | Yes, but only for non-success outcomes with a real `run_id`. | Inspect lifecycle status/logs for the `run_id`, then inspect retained host staging under `execution.staging_root_dir/<run_id>` if the run failed, was canceled, was lost, or never reached clean success. |
 | operator misuse / invalid input | The helper caught missing env vars, unreadable files, malformed JSON, or an invalid `run_id`, or the service returned a bounded input-validation error. | The failing helper itself. | Usually none. If the malformed request reached a service, inspect `ags.log` or `es.log` for the matching `400`. | No. Fix the input first. | Validate request JSON, env vars, readable file paths, and `run_id`, then retry. |
 

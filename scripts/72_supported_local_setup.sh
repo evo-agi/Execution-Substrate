@@ -1012,6 +1012,7 @@ blob = {
         "auth_mount": vault_auth_mount,
         "auth_role": vault_auth_role,
         "jwt_audience": vault_jwt_audience,
+        "ca_bundle_pem": (proof_dir / "tls" / "vault-dev" / "vault-ca.pem").read_text(encoding="utf-8"),
     }
 }
 blob_bytes = (json.dumps(blob, separators=(",", ":")) + "\n").encode("utf-8")

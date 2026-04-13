@@ -43,6 +43,7 @@ The workload-visible contract shared with the current platform-owned path is:
   - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
   - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
   - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - `VAULT_CACERT` when the resolved workload-zone Vault config carries CA trust material
 
 This legacy reference runbook then adds workload-authored bridge behavior on top of that contract. The workload must **not** assume a fixed `/execution/...` socket path. ES chooses the actual backing endpoint path internally and exposes only the discovered endpoint URI.
 

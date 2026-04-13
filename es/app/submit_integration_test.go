@@ -1163,6 +1163,7 @@ type submitStackOptions struct {
 	mockSPIREJWTTTL                time.Duration
 	mockSPIREFetchError            bool
 	workloadVaultAddress           string
+	workloadVaultCABundlePEM       string
 	allowedAGSCallerPrefixes       []string
 	allowedExecutionCallerPrefixes []string
 	publishCallerPath              string
@@ -1197,13 +1198,17 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("write empty artifact index: %v", err)
 	}
 
+	vaultConfig := map[string]any{
+		"address":      firstNonEmpty(opts.workloadVaultAddress, "https://vault.internal:8200"),
+		"auth_mount":   "jwt",
+		"auth_role":    "service_execution",
+		"jwt_audience": "vault",
+	}
+	if strings.TrimSpace(opts.workloadVaultCABundlePEM) != "" {
+		vaultConfig["ca_bundle_pem"] = opts.workloadVaultCABundlePEM
+	}
 	workloadZoneVaultBytes := mustMarshalJSON(t, map[string]any{
-		"vault_config": map[string]any{
-			"address":      firstNonEmpty(opts.workloadVaultAddress, "https://vault.internal:8200"),
-			"auth_mount":   "jwt",
-			"auth_role":    "service_execution",
-			"jwt_audience": "vault",
-		},
+		"vault_config": vaultConfig,
 	})
 	workloadZoneVaultDigest := writeBlobBytes(t, arsRootDir, workloadZoneVaultBytes)
 

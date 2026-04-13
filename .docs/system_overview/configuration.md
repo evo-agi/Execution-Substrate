@@ -271,6 +271,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_path`: the workload-zone Vault API path containing Codex credential material
   - `execution.runtime_profiles.control_plane_normal_shell.credential_vault_secret_field`: the field inside that Vault response data object the workload should read
   - `network_access=true` on the published workload, because Codex and workload-side Vault login need network reachability in this profile
+  - the configured profile image must be present in the Docker daemon used by Nomad before the repo-owned full-profile readiness helper claims `submit-ready`; the supported-local setup helper builds this repo-owned image before proof execution
   - ES injects only non-secret metadata for the secret path/field and does not read or broker the credential
 - for the containerized operator bring-up path:
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
@@ -291,8 +292,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces
-  - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS
-  - submit-ready: prepare-ready plus ES submit config present, Docker available, Nomad leader present, and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
+  - prepare-ready: service health plus successful workload-zone Vault runtime-config blob verification through ARS, including structural validation of any supplied Vault CA bundle
+  - submit-ready: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node that exposes positive `cpu.totalcompute` and a healthy Docker driver
 
 Minimal vault-auth example:
 
@@ -362,6 +363,7 @@ The current host-qualification boundary for the supported Linux environment is d
 - daemon running
 - bind mounts enabled for Nomad Docker tasks
 - ES execution base image available or pullable
+- when `control-plane-normal-shell/v1` is enabled, the configured profile image must already be present in the Docker daemon used by Nomad before repo-owned readiness claims submit readiness
 
 ## Practical Minimal Stack
 
@@ -405,8 +407,10 @@ The current unified health check verifies:
 - those health checks succeeded with a real client certificate at the TLS boundary
 - Nomad has a leader and at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver when `BRINGUP_PROFILE=full`
 - `docker info` succeeds when `BRINGUP_PROFILE=full`
+- any enabled `control-plane-normal-shell/v1` runtime-profile image is present according to `docker image inspect` in the Docker daemon used by Nomad when `BRINGUP_PROFILE=full`
 - ES submit config still includes `execution.runtime_support_binary` and `execution.spire_workload_api_socket_path`, and the configured SPIRE socket path is present as a local Unix socket, when `BRINGUP_PROFILE=full`
 - the workload-zone Vault blob referenced by `ES.runtime_config.workload_zone_vault_config_ref.digest` is readable through ARS and structurally valid before first execution
+- if that blob supplies `vault_config.ca_bundle_pem`, the readiness check validates that it contains PEM certificate material; submit then stages it for workloads as `VAULT_CACERT` and as part of the runtime `SSL_CERT_FILE` bundle
 - the operator path now also surfaces Nomad bring-up mode and the current environment-support classification so a green submit-ready result cannot be misread as the same support claim in pre-managed-supported and managed-local/override fallback modes
 - the operator path also rejects Nomad `-dev` mode as unsupported rather than letting it appear as a supported pre-managed environment
 
@@ -423,9 +427,9 @@ Readiness still does **not** prove useful downstream credential use by itself. T
 
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
-Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
+Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target using the proof Vault CA bundle carried through the workload-zone runtime config, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 
-The bounded Control Plane normal-shell runtime profile is proved as an end-to-end supported-local runtime-contract proof on top of the same path: the profile image is built from the repo-owned reference recipe with a proof-only Codex shim at the configured `EXEC_CODEX_CLI_PATH`, ES selects it only for `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"`, the workload verifies Python, git, narrow shell tooling, obtains proof-scoped Codex credential material through workload-side Vault login, invokes the proof Codex shim with stdin prompt input, creates a deterministic workspace mutation, writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts, and fetches plus validates the retained ES result bundle. The proof does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability.
+The bounded Control Plane normal-shell runtime profile is proved as an end-to-end supported-local runtime-contract proof on top of the same path: the profile image is built from the repo-owned reference recipe with a proof-only Codex shim at the configured `EXEC_CODEX_CLI_PATH`, ES selects it only for `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"`, the workload verifies Python, git, narrow shell tooling, obtains proof-scoped Codex credential material through workload-side Vault login using staged CA trust material, invokes the proof Codex shim with stdin prompt input, creates a deterministic workspace mutation, writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts, and fetches plus validates the retained ES result bundle. The proof does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability.
 
 Supported-host qualification is now achieved on the current local reference host, and the current supported local proof path is now repo-owned through `scripts/72_supported_local_setup.sh`, `scripts/73_supported_local_proof.sh run`, and the existing bring-up and execute-loop helpers. Supported vs bounded-fallback vs unsupported states must remain explicit in bring-up/readiness output.
 

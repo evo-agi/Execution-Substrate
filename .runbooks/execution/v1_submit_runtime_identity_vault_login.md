@@ -146,7 +146,8 @@ Before submitting the workload, ensure the workload-zone Vault blob referenced b
     "address": "https://<container-reachable-host>:18200",
     "auth_mount": "jwt",
     "auth_role": "service_execution",
-    "jwt_audience": "vault"
+    "jwt_audience": "vault",
+    "ca_bundle_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
   }
 }
 ```

@@ -591,6 +591,13 @@ Successful response is `200` JSON with these fields:
 - ES injects the current endpoint-discovery environment conventions:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
+  - `VAULT_ADDR`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MODE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
+  - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
+  - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - when configured, `VAULT_CACERT=/execution/run/platform/workload-vault-ca.pem`
+  - when configured, `SSL_CERT_FILE=/execution/run/platform/workload-ca-bundle.pem`
 - For `control-plane-normal-shell/v1` only, ES injects non-secret Codex credential-location metadata:
   - `EXEC_CODEX_CLI_PATH`
   - `EXEC_CODEX_CREDENTIAL_SOURCE=workload_vault`
@@ -603,6 +610,7 @@ Successful response is `200` JSON with these fields:
 
 - Caller runtime mounts must not overlap the ES-owned subtree that backs the discovered endpoint.
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
+- If that runtime config supplies Vault CA trust material, ES stages it as workload-visible trust files and uses standard TLS environment rather than disabling verification.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
 - ES does not fetch, mint, broker, validate, or store Codex credential material. The selected workload is responsible for using the existing identity endpoint and workload-vault metadata to read that material.
 - The supported-local proof realization may provide a proof-only deterministic Codex shim at `EXEC_CODEX_CLI_PATH` inside the configured profile image. That shim is proof tooling, not a new ES product API or a claim that ES owns Codex service invocation semantics.

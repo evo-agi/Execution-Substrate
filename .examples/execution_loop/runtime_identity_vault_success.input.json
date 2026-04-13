@@ -19,7 +19,6 @@
     "artifact_type": "static-script",
     "runtime_interface": {
       "environment_variables": [
-        "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY",
         "WORKLOAD_VAULT_SECRET_PATH"
       ],
       "required_capabilities": []
@@ -57,7 +56,6 @@
   },
   "prepare": {
     "env": {
-      "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": "1",
       "WORKLOAD_VAULT_SECRET_PATH": "proof-secrets/data/runtime-identity-vault-login"
     }
   },

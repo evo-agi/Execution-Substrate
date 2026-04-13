@@ -67,7 +67,8 @@ def request_identity_jwt(socket_path: str) -> str:
 
 
 def make_opener():
-    context = ssl.create_default_context()
+    ca_cert = os.environ.get("VAULT_CACERT", "").strip()
+    context = ssl.create_default_context(cafile=ca_cert or None)
     if os.environ.get("WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1":
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE

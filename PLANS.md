@@ -97,6 +97,7 @@ The following are useful current implementation facts and should remain visible 
 - The current shared execution/runtime contract in `internal/contracts/evidence/v1` is now limited to environment allowlist input, required runtime capabilities, `target_platform`, and `network_access`; non-runtime workload metadata no longer defines the live AGS -> ARS -> ES hot path.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as its bounded workload-visible runtime identity handoff and internally backs the discovered endpoint with a run-scoped ES-owned runtime subtree.
 - ES currently derives its workload-vault handoff from workload-zone vault runtime fields plus a bounded local default auth mode rather than from workload-attribute selector policy.
+- When the workload-zone Vault runtime config carries a non-secret CA bundle, ES stages that trust material into the runtime platform directory, injects `VAULT_CACERT`, and also exposes a staged combined TLS bundle through `SSL_CERT_FILE` for the bounded Control Plane normal-shell Python runner path. This is a workload-facing TLS trust-material handoff, not Vault token brokerage or relaxed verification.
 - ES now also supports one explicit runtime profile selection annotation for the bounded Control Plane normal-shell slice:
   - `invocation.annotations["execution_substrate.runtime_profile"] = "control-plane-normal-shell/v1"`
   - the selected profile is enabled only by explicit ES submit config under `execution.runtime_profiles.control_plane_normal_shell`
@@ -368,12 +369,13 @@ Current bounded planning direction:
 - Useful credential flow is now proved on top of slice `1A` and slice `1B`:
   - the helper endpoint remains bounded to the workload-vault target
   - the workload performs the bounded Vault login flow itself as a client against a proof-scoped real Vault dev/test target
+  - ES provides any workload-zone Vault CA trust material from the resolved runtime config as workload-visible CA files and standard TLS environment, without disabling verification
   - one secret read is proved through the real ES -> Nomad -> Docker path
   - the slice still avoids platform-owned Vault token brokerage
 - The bounded `control-plane-normal-shell/v1` runtime profile builds on that same identity boundary:
   - ES selects the configured profile image for opt-in requests
   - the repo-owned reference image recipe provides Python, git, narrow shell utilities, and a configured Codex CLI realization at the configured path
-  - the supported-local proof realization uses the proof-only Codex shim at that path, seeds proof-scoped Codex credential material in Vault, proves workload-side credential acquisition through the existing identity endpoint, invokes the shim with stdin prompt input, creates a deterministic workspace mutation, and writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts under `/execution/run/result`
+  - the supported-local proof realization uses the proof-only Codex shim at that path, seeds proof-scoped Codex credential material in Vault, proves workload-side credential acquisition through the existing identity endpoint, invokes the shim with stdin prompt input, creates a deterministic workspace mutation, renders a result diff that includes tracked changes and proof-created untracked files, and writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts under `/execution/run/result`
   - the proof fetches and validates the retained ES result bundle for those artifacts
   - the proof intentionally does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability
 - The supported-host follow-through after that credential-flow proof is now landed in bounded form:

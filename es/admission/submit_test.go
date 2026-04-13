@@ -22,7 +22,7 @@ func TestBuildRuntimeEnvironmentPreservesInvocationEnvAndInjectsPlatformFields(t
 		AuthMount:   "jwt",
 		AuthRole:    "execution",
 		JWTAudience: "vault",
-	}, executionRuntimeProfile{}, map[string]string{
+	}, executionRuntimeProfile{}, stagedWorkloadTrustMaterial{}, map[string]string{
 		"USER_DEFINED": "1",
 	})
 
@@ -40,6 +40,36 @@ func TestBuildRuntimeEnvironmentPreservesInvocationEnvAndInjectsPlatformFields(t
 	}
 	if env["VAULT_ADDR"] != "https://vault.internal:8200" {
 		t.Fatalf("expected vault address injection, got %#v", env["VAULT_ADDR"])
+	}
+}
+
+func TestBuildRuntimeEnvironmentInjectsWorkloadVaultTrustMaterial(t *testing.T) {
+	layout := executionPackageLayout{
+		runID:              "run-0123456789abcdef",
+		runtimePlatformDir: executionRuntimePlatformDir,
+		runtimeWorkDir:     executionRuntimeWorkDir,
+		runtimeIdentity: runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/public.sock",
+		},
+	}
+
+	env := buildRuntimeEnvironment(layout, "sha256:artifact", esconfig.ResolvedWorkloadVaultAuthPlan{
+		Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+		Address:     "https://vault.internal:8200",
+		AuthMount:   "jwt",
+		AuthRole:    "execution",
+		JWTAudience: "vault",
+	}, executionRuntimeProfile{}, stagedWorkloadTrustMaterial{
+		vaultCACert:       true,
+		workloadTLSBundle: true,
+	}, nil)
+
+	if env["VAULT_CACERT"] != "/execution/run/platform/workload-vault-ca.pem" {
+		t.Fatalf("expected VAULT_CACERT injection, got %#v", env["VAULT_CACERT"])
+	}
+	if env["SSL_CERT_FILE"] != "/execution/run/platform/workload-ca-bundle.pem" {
+		t.Fatalf("expected SSL_CERT_FILE injection, got %#v", env["SSL_CERT_FILE"])
 	}
 }
 
@@ -67,7 +97,7 @@ func TestBuildRuntimeEnvironmentInjectsControlPlaneNormalShellProfileMetadata(t 
 			"EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH":  "proof-secrets/data/codex-runtime-profile",
 			"EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD": "api_key",
 		},
-	}, nil)
+	}, stagedWorkloadTrustMaterial{}, nil)
 
 	if env["EXEC_CODEX_CLI_PATH"] != "/usr/local/bin/codex" {
 		t.Fatalf("expected codex CLI metadata, got %#v", env)

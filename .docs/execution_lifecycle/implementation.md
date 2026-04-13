@@ -101,7 +101,7 @@ Dependency wiring:
   - trust model loaded
   - ARS ready
 - Live EGS reachability is not treated as a post-start runtime readiness dependency in the current implementation.
-- ES `/health` remains admission-oriented only; the operator bring-up/check path now layers workload-zone Vault runtime-config verification and, for the full profile, ES submit-config, Docker, and Nomad checks on top before declaring submit readiness.
+- ES `/health` remains admission-oriented only; the operator bring-up/check path now layers workload-zone Vault runtime-config verification and, for the full profile, ES submit-config, Docker, required runtime-profile image availability, and Nomad checks on top before declaring submit readiness.
 
 What the app layer delegates:
 
@@ -120,7 +120,7 @@ What the app layer delegates:
 4. Validate the discovery/evidence relationship, verify the evidence seal over the nested evidence claims, enforce EGS runtime-trust signer and artifact policy, cross-check package identity from `claims.package`, cross-check request derivation inputs from the narrow shared `claims.admission.authorization.derivation` surface, and derive only the remaining shared runtime inputs from `claims.admission.execution`: env allowlist, required capabilities, `target_platform`, and `network_access`.
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
 6. Fetch the workload-zone Vault config blob from ARS using that reference.
-7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`.
+7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
 8. Assemble and return `PrepareResult`.
 
 What `Prepare` reads:
@@ -180,6 +180,7 @@ Where ES stops and Nomad takes over:
 - Failed submits remove the staging root immediately through deferred cleanup.
 - Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
+- If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
 - `control-plane-normal-shell/v1` uses the same execution-package layout, runtime helper, runtime identity endpoint, and retained-result path as the current `static-script` slice. The selected profile changes the runtime image and adds non-secret runtime metadata; it does not add ES-owned CP lifecycle or result semantics.
 
 ## 8. Lifecycle projection implementation
@@ -357,6 +358,7 @@ Current job-spec assumptions:
 - image:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`
+- For repo-owned readiness checks, an enabled `control-plane-normal-shell/v1` profile also requires the configured image to be present in the Docker daemon used by Nomad before `submit-ready` is claimed. This is a substrate/tooling readiness check; it does not change ES result-retention semantics.
 
 After submission, ES asks Nomad for:
 
@@ -408,7 +410,7 @@ The most important implementation facts are backed by integration tests:
 - `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
-- The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` as sufficient on its own.
+- The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, full submit-ready state, and missing configured runtime-profile images instead of treating ES `/health` as sufficient on its own.
 - Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - Runtime-profile unit coverage confirms `control-plane-normal-shell/v1` is rejected when unknown/disabled or when network access is absent, and confirms the selected profile injects only non-secret Codex metadata while selecting the configured profile image.
@@ -417,14 +419,14 @@ The most important implementation facts are backed by integration tests:
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
-- The supported-local proof scripts now build and configure the repo-owned Control Plane normal-shell runtime-profile image with the proof-only Codex shim realization, seed proof-scoped Codex credential material in Vault, run a profile-selected CP-shaped runtime-contract workload, fetch the retained result bundle, and validate the expected proof artifacts. That proof validates the profile image/tooling guarantee, workload-side credential acquisition, proof Codex invocation through `EXEC_CODEX_CLI_PATH`, deterministic workspace mutation, and retained-result delivery, but it intentionally does not prove real upstream Codex service behavior.
+- The supported-local proof scripts now build and configure the repo-owned Control Plane normal-shell runtime-profile image with the proof-only Codex shim realization, include the proof Vault CA bundle in the workload-zone Vault runtime-config blob, seed proof-scoped Codex credential material in Vault, run a profile-selected CP-shaped runtime-contract workload, fetch the retained result bundle, and validate the expected proof artifacts. That proof validates the profile image/tooling guarantee, workload-side credential acquisition over verified Vault TLS, proof Codex invocation through `EXEC_CODEX_CLI_PATH`, deterministic workspace mutation, a retained workspace diff that includes tracked changes and proof-created untracked files, and retained-result delivery, but it intentionally does not prove real upstream Codex service behavior.
 
 Operator helper ownership in the current slice:
 
 - `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
 - `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile at `.out/Dockerfile`; bring-up regenerates that file before building.
 - `.out/` is the repo-local generated-artifact sink in the current slice; tracked source-of-truth inputs remain explicit exceptions such as `.out/Dockerfile`, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
-- `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability, Nomad, and Docker.
+- `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability including any supplied Vault CA bundle shape, Nomad, Docker, and required enabled runtime-profile images.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.
 - `scripts/70_diagnostics.sh` is the bounded diagnostics collector for that same operator slice; category bundles gather only the logs/checks already named by the troubleshooting matrix, and `run_id` bundles use the public ES lifecycle endpoints plus local staging inspection when relevant.
 - `scripts/71_diagnostics_summary.sh` is the tiny bundle consumer for that same slice; it reads `bundle.json` from `scripts/70_diagnostics.sh` and prints a compact summary of the collected signals.

@@ -48,11 +48,11 @@ That `dist/` output is generated proof packaging, not tracked repo authority. Re
   - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
   - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
   - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
+  - `VAULT_CACERT` when the workload-zone Vault endpoint uses proof/local CA material
 
 Optional:
 
 - `WORKLOAD_VAULT_SECRET_PATH`
-- `WORKLOAD_VAULT_INSECURE_SKIP_VERIFY=1`
 
 ## Expected Markers
 

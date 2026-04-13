@@ -62,6 +62,7 @@ Keep the bounded supported-local proof honest about what this repo bootstraps fo
 - Repo-owned proof tooling under `scripts/72_supported_local_setup.sh` and `scripts/73_supported_local_proof.sh`
 - Proof-scoped SPIRE dev/test bootstrap needed to exercise the helper-private workload identity path
 - Proof-scoped Vault dev/test bootstrap needed to exercise the bounded workload JWT login and secret-read proof
+- Proof-scoped non-secret Vault CA trust material needed to verify that dev/test Vault TLS endpoint from workloads
 - Proof-scoped guest scratch cleanup and canonical host evidence capture under `.out/es-proof-<id>/`
 
 **Explicit non-ownership**
@@ -239,6 +240,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
   - realized by an ES-configured Docker image
   - exposes only non-secret Codex credential-location metadata to the workload
   - relies on the existing platform-owned runtime identity endpoint plus workload-side Vault login for credential material acquisition
+  - carries workload-zone Vault CA trust material when the runtime config supplies it, without becoming a Vault token broker
 
 **Explicit non-ownership**
 

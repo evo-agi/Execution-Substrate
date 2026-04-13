@@ -1,6 +1,8 @@
 package runtimeconfig
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -58,6 +60,7 @@ type WorkloadZoneVaultConfig struct {
 	AuthMount   string `json:"auth_mount"`
 	AuthRole    string `json:"auth_role"`
 	JWTAudience string `json:"jwt_audience"`
+	CABundlePEM string `json:"ca_bundle_pem,omitempty"`
 }
 
 func (c WorkloadZoneVaultConfig) Normalized() WorkloadZoneVaultConfig {
@@ -66,6 +69,7 @@ func (c WorkloadZoneVaultConfig) Normalized() WorkloadZoneVaultConfig {
 		AuthMount:   strings.TrimSpace(c.AuthMount),
 		AuthRole:    strings.TrimSpace(c.AuthRole),
 		JWTAudience: strings.TrimSpace(c.JWTAudience),
+		CABundlePEM: strings.TrimSpace(c.CABundlePEM),
 	}
 }
 
@@ -86,6 +90,35 @@ func (c WorkloadZoneVaultConfig) Validate() error {
 	}
 	if normalized.JWTAudience == "" {
 		return fmt.Errorf("workload-zone vault jwt audience is required")
+	}
+	if normalized.CABundlePEM != "" {
+		if err := validatePEMCertificateBundle(normalized.CABundlePEM); err != nil {
+			return fmt.Errorf("workload-zone vault ca_bundle_pem: %w", err)
+		}
+	}
+	return nil
+}
+
+func validatePEMCertificateBundle(bundle string) error {
+	remaining := []byte(strings.TrimSpace(bundle))
+	certificates := 0
+	for len(remaining) > 0 {
+		var block *pem.Block
+		block, remaining = pem.Decode(remaining)
+		if block == nil {
+			return fmt.Errorf("must contain only PEM certificate blocks")
+		}
+		if block.Type != "CERTIFICATE" {
+			return fmt.Errorf("must contain only CERTIFICATE blocks")
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return fmt.Errorf("invalid certificate block: %w", err)
+		}
+		certificates++
+		remaining = []byte(strings.TrimSpace(string(remaining)))
+	}
+	if certificates == 0 {
+		return fmt.Errorf("must contain at least one certificate")
 	}
 	return nil
 }

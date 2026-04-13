@@ -184,7 +184,7 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
-- For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI and workload-vault credential-location metadata. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
+- For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.

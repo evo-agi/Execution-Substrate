@@ -130,6 +130,7 @@ type ResolvedWorkloadVaultAuthPlan struct {
 	AuthMount   string
 	AuthRole    string
 	JWTAudience string
+	CABundlePEM string
 }
 
 func Load(path string) (Config, error) {
@@ -439,6 +440,7 @@ func (c WorkloadVaultAuthConfig) Resolve(vault runtimeconfigv1.WorkloadZoneVault
 		AuthMount:   normalized.AuthMount,
 		AuthRole:    normalized.AuthRole,
 		JWTAudience: normalized.JWTAudience,
+		CABundlePEM: normalized.CABundlePEM,
 	}, nil
 }
 

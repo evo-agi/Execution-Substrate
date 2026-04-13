@@ -18,9 +18,7 @@
   "publish": {
     "artifact_type": "static-script",
     "runtime_interface": {
-      "environment_variables": [
-        "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY"
-      ],
+      "environment_variables": [],
       "required_capabilities": []
     },
     "provenance": {
@@ -57,9 +55,6 @@
   "prepare": {
     "annotations": {
       "execution_substrate.runtime_profile": "control-plane-normal-shell/v1"
-    },
-    "env": {
-      "WORKLOAD_VAULT_INSECURE_SKIP_VERIFY": "1"
     }
   },
   "submit": {

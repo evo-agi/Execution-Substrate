@@ -76,7 +76,9 @@ var (
 		"EXEC_SVID_PATH":              {},
 		"VAULT_AGENT_TOKEN_PATH":      {},
 		"VAULT_ADDR":                  {},
+		"VAULT_CACERT":                {},
 		"VAULT_NAMESPACE":             {},
+		"SSL_CERT_FILE":               {},
 		runtimeIdentityEndpointEnvKey: {},
 	}
 	reservedRuntimeEnvPrefixes = []string{

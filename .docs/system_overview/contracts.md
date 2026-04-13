@@ -125,6 +125,7 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 
 - The workload-zone Vault config reference is explicit and typed rather than being an anonymous digest string.
 - The workload-zone Vault blob schema is defined by `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`.
+- The current blob schema carries the Vault HTTPS address, JWT auth mount, auth role, JWT audience, and optional non-secret `ca_bundle_pem` trust material for Vault TLS verification.
 - ES consumes the typed `WorkloadZoneVaultConfig` derived from that blob rather than owning ad hoc local parsing of the blob shape.
 - ARS remains the blob storage and read authority after the digest is known.
 
@@ -429,7 +430,7 @@ Current successful response shapes:
   - `spiffe://execution.internal/operator`
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
-- `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode`, and returns bounded preflight success only.
+- `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode` and optional Vault CA trust material, and returns bounded preflight success only.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact discovery record at `/v1/artifacts/{artifact_digest}/discovery`
@@ -451,7 +452,7 @@ Current successful response shapes:
   - uses the configured profile image instead of `execution.base_image`
   - guarantees the profile image contract for Python, git, narrow shell utilities, and configured Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
   - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
-  - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, and `EXEC_WORKLOAD_VAULT_AUTH_*` handoff for workload-side Vault login and credential-material reads
+  - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, `EXEC_WORKLOAD_VAULT_AUTH_*`, and workload-zone Vault CA trust handoff for workload-side Vault login and credential-material reads
 - ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
 - The supported-local proof image may realize the configured Codex CLI path with a deterministic proof-only shim. That proves the ES runtime contract for the CP normal-shell path without claiming real upstream Codex service behavior.
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
@@ -686,6 +687,14 @@ Current workload-visible handoff:
 
 - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - non-secret workload-vault environment inputs derived from the resolved workload-vault auth plan
+  - `VAULT_ADDR`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MODE`
+  - `EXEC_WORKLOAD_VAULT_AUTH_MOUNT`
+  - `EXEC_WORKLOAD_VAULT_AUTH_ROLE`
+  - `EXEC_WORKLOAD_VAULT_JWT_AUDIENCE`
+- when the resolved workload-zone Vault config includes CA material, ES stages:
+  - `VAULT_CACERT=/execution/run/platform/workload-vault-ca.pem`
+  - `SSL_CERT_FILE=/execution/run/platform/workload-ca-bundle.pem`
 - for `control-plane-normal-shell/v1` only, non-secret Codex credential-location environment inputs:
   - `EXEC_CODEX_CLI_PATH`
   - `EXEC_CODEX_CREDENTIAL_SOURCE=workload_vault`

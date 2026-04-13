@@ -90,8 +90,10 @@ def request_identity_jwt(socket_path: str) -> str:
 
 def make_urlopener() -> urllib.request.OpenerDirector:
     insecure = os.environ.get("WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1"
+    ca_cert = os.environ.get("VAULT_CACERT", "").strip()
     if not insecure:
-        return urllib.request.build_opener()
+        context = ssl.create_default_context(cafile=ca_cert or None)
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
 
     context = ssl.create_default_context()
     context.check_hostname = False

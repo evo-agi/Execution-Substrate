@@ -80,6 +80,39 @@ def reset_proof_workspace():
     )
 
 
+def workspace_diff(cwd: pathlib.Path) -> str:
+    parts = []
+
+    tracked = run_command_capture(["git", "diff", "--", "."], cwd=cwd).stdout
+    if tracked:
+        parts.append(tracked.rstrip("\n"))
+
+    untracked = run_command_capture(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", "."],
+        cwd=cwd,
+    ).stdout
+    for rel in sorted(path for path in untracked.split("\0") if path):
+        path = cwd / rel
+        if not path.is_file():
+            continue
+        completed = run_command_capture(
+            ["git", "diff", "--no-index", "--", "/dev/null", rel],
+            cwd=cwd,
+            check=False,
+        )
+        if completed.returncode not in (0, 1):
+            raise SystemExit(
+                "git diff for untracked proof file failed "
+                f"({completed.returncode}): {rel}\nstdout={completed.stdout}\nstderr={completed.stderr}"
+            )
+        if completed.stdout:
+            parts.append(completed.stdout.rstrip("\n"))
+
+    if not parts:
+        return ""
+    return "\n".join(parts) + "\n"
+
+
 def create_deterministic_tar_gz(source_dir: pathlib.Path, output_path: pathlib.Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as raw:
@@ -138,7 +171,7 @@ def run_proof_codex(codex_path: str) -> dict:
         raise SystemExit("proof Codex shim did not write final message")
     write_text(RESULT_DIR / "codex-final-message.txt", final_message_path.read_text(encoding="utf-8"))
 
-    diff = run_command_capture(["git", "diff", "--", "."], cwd=PROOF_WORKSPACE).stdout
+    diff = workspace_diff(PROOF_WORKSPACE)
     if "ES_CONTROL_PLANE_NORMAL_SHELL_PROOF" not in diff:
         raise SystemExit(f"proof Codex shim did not produce expected workspace diff: {diff}")
     write_text(RESULT_DIR / "workspace.diff", diff)
@@ -186,7 +219,8 @@ def request_identity_jwt(socket_path: str) -> str:
 
 
 def make_opener():
-    context = ssl.create_default_context()
+    ca_cert = os.environ.get("VAULT_CACERT", "").strip()
+    context = ssl.create_default_context(cafile=ca_cert or None)
     if os.environ.get("WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1":
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE

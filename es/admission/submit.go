@@ -130,7 +130,17 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, req.Invocation.Env)
+	var trustErr error
+	stage.trustMaterial, trustErr = stage.layout.stageWorkloadVaultTrustMaterial(prepared.workloadVaultPlan)
+	if trustErr != nil {
+		return SubmitResult{}, &Error{
+			Status:  http.StatusInternalServerError,
+			Code:    codeSubmissionFailed,
+			Message: fmt.Sprintf("stage workload vault trust material failed: %v", trustErr),
+		}
+	}
+
+	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, stage.trustMaterial, req.Invocation.Env)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -207,8 +217,8 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, invocationEnv map[string]string) map[string]string {
-	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+11)
+func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, trustMaterial stagedWorkloadTrustMaterial, invocationEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+13)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
@@ -221,6 +231,12 @@ func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest strin
 	env["EXEC_WORK_DIR"] = layout.runtimeWorkDir
 	env["SERVICE_ID"] = "execution"
 	env["VAULT_ADDR"] = workloadVaultPlan.Address
+	if trustMaterial.vaultCACert {
+		env["VAULT_CACERT"] = layout.workloadVaultCACertRuntimePath()
+	}
+	if trustMaterial.workloadTLSBundle {
+		env["SSL_CERT_FILE"] = layout.workloadTLSBundleRuntimePath()
+	}
 	env[layout.runtimeIdentity.endpointEnvKey] = layout.runtimeIdentity.endpointURI
 	env["EXEC_WORKLOAD_VAULT_AUTH_MODE"] = string(workloadVaultPlan.Mode)
 	env["EXEC_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount

@@ -38,6 +38,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 	t.Cleanup(func() { mockSPIRE.stop() })
 	mockVault := startMockVaultCompatServer(t, rootDir, mockVaultCompatServerOptions{
 		bindAddress: "0.0.0.0",
+		publicHost:  dockerGateway,
 		authMount:   "jwt",
 		role:        "service_execution",
 		audience:    "vault",
@@ -78,6 +79,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			AuthMount:   "jwt",
 			AuthRole:    "service_execution",
 			JWTAudience: "vault",
+			CABundlePEM: mockVault.caBundle(t),
 		},
 	})
 	workloadZoneVaultDigest := writeBlobBytes(t, arsRootDir, workloadZoneVaultBytes)
@@ -387,6 +389,9 @@ advertise {
 	if !strings.Contains(string(checkOutput), "prepare-ready: true") || !strings.Contains(string(checkOutput), "submit-ready: true") {
 		t.Fatalf("expected explicit prepare-ready and submit-ready output, got %s", string(checkOutput))
 	}
+	if !strings.Contains(string(checkOutput), "vault_ca_bundle=present") {
+		t.Fatalf("expected workload-zone Vault CA bundle readiness in bringup check output, got %s", string(checkOutput))
+	}
 	if !strings.Contains(string(checkOutput), "nomad-startup-mode: managed-local") {
 		t.Fatalf("expected managed-local nomad startup mode in bringup check output, got %s", string(checkOutput))
 	}
@@ -578,9 +583,170 @@ func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
 	if !strings.Contains(string(output), "prepare-ready: true") {
 		t.Fatalf("expected prepare-ready output, got %s", string(output))
 	}
+	if !strings.Contains(string(output), "vault_ca_bundle=absent") {
+		t.Fatalf("expected absent Vault CA bundle state, got %s", string(output))
+	}
 	if !strings.Contains(string(output), "submit-ready: skipped (BRINGUP_PROFILE=prepare-only)") {
 		t.Fatalf("expected submit-ready skip output, got %s", string(output))
 	}
+}
+
+func TestRuntimeProfileImageReadinessRejectsMissingEnabledProfileImage(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-profile-image.json", map[string]any{
+		"execution": map[string]any{
+			"runtime_profiles": map[string]any{
+				"control_plane_normal_shell": map[string]any{
+					"enabled": true,
+					"image":   "execution-substrate/control-plane-normal-shell:supported-local",
+				},
+			},
+		},
+	})
+
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeDockerPath := writeBytesFile(t, fakeBinDir, "docker", []byte("#!/bin/sh\nif [ \"$1\" = image ] && [ \"$2\" = inspect ]; then\n  printf 'missing image: %s\\n' \"$3\" >&2\n  exit 1\nfi\nprintf 'unexpected docker invocation: %s\\n' \"$*\" >&2\nexit 64\n"))
+	if err := os.Chmod(fakeDockerPath, 0o755); err != nil {
+		t.Fatalf("chmod fake docker: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_images_once "$ES_CONFIG"`)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ES_CONFIG="+esConfigPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected missing runtime profile image to fail, got output=%s", string(output))
+	}
+	text := string(output)
+	if !strings.Contains(text, "runtime profile image: missing execution-substrate/control-plane-normal-shell:supported-local") {
+		t.Fatalf("expected missing runtime profile image output, got %s", text)
+	}
+	if !strings.Contains(text, "execution.runtime_profiles.control_plane_normal_shell.image") {
+		t.Fatalf("expected config field in missing runtime profile image output, got %s", text)
+	}
+}
+
+func TestRuntimeProfileImageReadinessAcceptsPresentEnabledProfileImage(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-profile-image.json", map[string]any{
+		"execution": map[string]any{
+			"runtime_profiles": map[string]any{
+				"control_plane_normal_shell": map[string]any{
+					"enabled": true,
+					"image":   "execution-substrate/control-plane-normal-shell:supported-local",
+				},
+			},
+		},
+	})
+
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeDockerPath := writeBytesFile(t, fakeBinDir, "docker", []byte("#!/bin/sh\nif [ \"$1\" = image ] && [ \"$2\" = inspect ] && [ \"$3\" = execution-substrate/control-plane-normal-shell:supported-local ]; then\n  exit 0\nfi\nprintf 'unexpected docker invocation: %s\\n' \"$*\" >&2\nexit 64\n"))
+	if err := os.Chmod(fakeDockerPath, 0o755); err != nil {
+		t.Fatalf("chmod fake docker: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_runtime_profile_images_once "$ES_CONFIG"`)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ES_CONFIG="+esConfigPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected present runtime profile image to pass: %v output=%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "runtime profile image: execution-substrate/control-plane-normal-shell:supported-local present") {
+		t.Fatalf("expected present runtime profile image output, got %s", string(output))
+	}
+}
+
+func TestWorkloadZoneVaultBlobReadinessReportsCABundleState(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+	_, _, caPEM := createCertificateAuthority(t, "workload-zone-vault-ca")
+
+	output, err := runWorkloadZoneVaultBlobReadinessWithFakeCurl(t, repoRoot, rootDir, string(mustMarshalJSON(t, map[string]any{
+		"vault_config": map[string]any{
+			"address":       "https://vault.internal:8200",
+			"auth_mount":    "jwt",
+			"auth_role":     "service_execution",
+			"jwt_audience":  "vault",
+			"ca_bundle_pem": string(caPEM),
+		},
+	})))
+	if err != nil {
+		t.Fatalf("expected workload-zone Vault blob readiness to pass: %v output=%s", err, output)
+	}
+	if !strings.Contains(output, "vault_ca_bundle=present") {
+		t.Fatalf("expected CA bundle present state, got %s", output)
+	}
+}
+
+func TestWorkloadZoneVaultBlobReadinessRejectsInvalidCABundle(t *testing.T) {
+	repoRoot := executionPlatformRepoRoot(t)
+	rootDir := t.TempDir()
+
+	output, err := runWorkloadZoneVaultBlobReadinessWithFakeCurl(t, repoRoot, rootDir, `{"vault_config":{"address":"https://vault.internal:8200","auth_mount":"jwt","auth_role":"service_execution","jwt_audience":"vault","ca_bundle_pem":"not pem"}}`)
+	if err == nil {
+		t.Fatalf("expected invalid workload-zone Vault CA bundle to fail, got output=%s", output)
+	}
+	if !strings.Contains(output, "invalid vault_config.ca_bundle_pem") {
+		t.Fatalf("expected invalid CA bundle output, got %s", output)
+	}
+}
+
+func runWorkloadZoneVaultBlobReadinessWithFakeCurl(t *testing.T, repoRoot string, rootDir string, blob string) (string, error) {
+	t.Helper()
+
+	esConfigPath := writeJSONConfigFile(t, rootDir, "es-runtime-config.json", map[string]any{
+		"runtime_config": map[string]any{
+			"workload_zone_vault_config_ref": map[string]any{
+				"digest": labeledDigest("42"),
+			},
+		},
+	})
+	fakeBinDir := filepath.Join(rootDir, "bin")
+	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin dir: %v", err)
+	}
+	fakeCurlPath := writeBytesFile(t, fakeBinDir, "curl", []byte("#!/bin/sh\nprintf '%s' \"$FAKE_ARS_BLOB\"\n"))
+	if err := os.Chmod(fakeCurlPath, 0o755); err != nil {
+		t.Fatalf("chmod fake curl: %v", err)
+	}
+	for _, name := range []string{"ca.pem", "client.pem", "client.key"} {
+		if err := os.WriteFile(filepath.Join(rootDir, name), []byte("placeholder\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	cmd := exec.Command("bash", "-c", `source scripts/internal/bringup.sh; check_workload_zone_vault_blob "$ES_CONFIG"`)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ES_CONFIG="+esConfigPath,
+		"ARS_URL=https://ars.internal:8443",
+		"CA_CERT="+filepath.Join(rootDir, "ca.pem"),
+		"ARS_READ_CERT="+filepath.Join(rootDir, "client.pem"),
+		"ARS_READ_KEY="+filepath.Join(rootDir, "client.key"),
+		"FAKE_ARS_BLOB="+blob,
+	)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {

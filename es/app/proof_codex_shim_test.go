@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -41,6 +42,10 @@ func TestProofCodexShimAcquiresCredentialAndMutatesWorkspace(t *testing.T) {
 	identityRequests := startProofIdentityEndpoint(t, socketPath)
 	vaultServer, loginRequests, secretReads := startProofCodexVaultServer(t)
 	defer vaultServer.Close()
+	vaultCAPEMPath := filepath.Join(t.TempDir(), "vault-ca.pem")
+	if err := os.WriteFile(vaultCAPEMPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: vaultServer.Certificate().Raw}), 0o600); err != nil {
+		t.Fatalf("write Vault CA bundle: %v", err)
+	}
 
 	prompt := "Apply the Execution Substrate supported-local normal-shell proof mutation.\n"
 	finalPath := filepath.Join(workspace, "final-message.txt")
@@ -54,7 +59,8 @@ func TestProofCodexShimAcquiresCredentialAndMutatesWorkspace(t *testing.T) {
 		"EXEC_WORKLOAD_VAULT_AUTH_MOUNT=jwt",
 		"EXEC_WORKLOAD_VAULT_AUTH_ROLE=service_execution",
 		"VAULT_ADDR="+vaultServer.URL,
-		"WORKLOAD_VAULT_INSECURE_SKIP_VERIFY=1",
+		"VAULT_CACERT="+vaultCAPEMPath,
+		"SSL_CERT_FILE="+vaultCAPEMPath,
 	)
 
 	output, err := command.CombinedOutput()
@@ -110,6 +116,74 @@ func TestProofCodexShimAcquiresCredentialAndMutatesWorkspace(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(secretReads); got != 1 {
 		t.Fatalf("expected one Vault secret read, got %d", got)
+	}
+}
+
+func TestControlPlaneNormalShellEntrypointWorkspaceDiffIncludesUntrackedProofMutation(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skipf("control-plane normal-shell entrypoint test requires python3: %v", err)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("control-plane normal-shell entrypoint test requires git: %v", err)
+	}
+
+	repoRoot := executionPlatformRepoRoot(t)
+	entrypointPath := filepath.Join(repoRoot, ".examples", "control_plane_normal_shell_runtime", "entrypoint")
+	if _, err := os.Stat(entrypointPath); err != nil {
+		t.Fatalf("stat control-plane normal-shell entrypoint: %v", err)
+	}
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("baseline\n"), 0o600); err != nil {
+		t.Fatalf("write baseline file: %v", err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = workspace
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v output=%s", strings.Join(args, " "), err, string(output))
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "proof@example.invalid")
+	runGit("config", "user.name", "Execution Substrate Proof")
+	runGit("add", ".")
+	runGit("commit", "-m", "baseline")
+
+	proofDir := filepath.Join(workspace, ".codex-proof")
+	if err := os.MkdirAll(proofDir, 0o700); err != nil {
+		t.Fatalf("create proof dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(proofDir, "normal-shell-proof.txt"),
+		[]byte("ES_CONTROL_PLANE_NORMAL_SHELL_PROOF\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write untracked proof mutation: %v", err)
+	}
+
+	snippet := `
+import importlib.machinery
+import importlib.util
+import pathlib
+import sys
+
+loader = importlib.machinery.SourceFileLoader("cp_normal_shell_entrypoint", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+sys.stdout.write(module.workspace_diff(pathlib.Path(sys.argv[2])))
+`
+	command := exec.Command("python3", "-c", snippet, entrypointPath, workspace)
+	command.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render workspace diff: %v output=%s", err, string(output))
+	}
+	if !strings.Contains(string(output), "ES_CONTROL_PLANE_NORMAL_SHELL_PROOF") {
+		t.Fatalf("expected untracked proof mutation in workspace diff, got %s", string(output))
 	}
 }
 

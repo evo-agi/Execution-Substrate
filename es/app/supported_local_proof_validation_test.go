@@ -635,6 +635,7 @@ func assertSupportedLocalVaultBlobAlignment(t *testing.T, proofDir string, manag
 			AuthMount   string `json:"auth_mount"`
 			AuthRole    string `json:"auth_role"`
 			JWTAudience string `json:"jwt_audience"`
+			CABundlePEM string `json:"ca_bundle_pem"`
 		} `json:"vault_config"`
 	}
 	if err := json.Unmarshal(blobBytes, &payload); err != nil {
@@ -652,6 +653,13 @@ func assertSupportedLocalVaultBlobAlignment(t *testing.T, proofDir string, manag
 	}
 	if payload.VaultConfig.JWTAudience != managed["PROOF_VAULT_BOUND_AUDIENCE"] {
 		t.Fatalf("expected blob jwt audience %q, got %q", managed["PROOF_VAULT_BOUND_AUDIENCE"], payload.VaultConfig.JWTAudience)
+	}
+	caBundleBytes, err := os.ReadFile(managed["PROOF_VAULT_CA_CERT_FILE"])
+	if err != nil {
+		t.Fatalf("read proof Vault CA cert file: %v", err)
+	}
+	if payload.VaultConfig.CABundlePEM != string(caBundleBytes) {
+		t.Fatalf("expected blob CA bundle to match proof Vault CA cert file")
 	}
 }
 

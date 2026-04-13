@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	esconfig "execution-substrate/es/config"
 )
@@ -24,7 +25,17 @@ const (
 	executionRuntimeEntrypointPath = executionRuntimeWorkDir + "/entrypoint"
 	executionRuntimeSupportName    = "es-runtime-support"
 	executionRuntimeSupportPath    = executionRuntimePlatformDir + "/" + executionRuntimeSupportName
+	executionWorkloadVaultCAName   = "workload-vault-ca.pem"
+	executionWorkloadTLSBundleName = "workload-ca-bundle.pem"
 )
+
+var systemCABundleCandidatePaths = []string{
+	"/etc/ssl/certs/ca-certificates.crt",
+	"/etc/ssl/cert.pem",
+	"/etc/pki/tls/certs/ca-bundle.crt",
+	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+	"/etc/ssl/ca-bundle.pem",
+}
 
 // executionPackageLayout localizes the current ES-owned mapping between a
 // run-scoped host staging tree and the container-visible runtime layout used by
@@ -49,8 +60,14 @@ type executionPackageLayout struct {
 }
 
 type stagedExecutionInputs struct {
-	layout executionPackageLayout
-	mounts []stagedRuntimeMount
+	layout        executionPackageLayout
+	mounts        []stagedRuntimeMount
+	trustMaterial stagedWorkloadTrustMaterial
+}
+
+type stagedWorkloadTrustMaterial struct {
+	vaultCACert       bool
+	workloadTLSBundle bool
 }
 
 func newExecutionPackageLayout(cfg esconfig.Config, locator executionLocator) executionPackageLayout {
@@ -125,6 +142,84 @@ func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, tim
 		"--",
 	}
 	return append(args, workloadArgv...)
+}
+
+func (l executionPackageLayout) workloadVaultCACertStagePath() string {
+	return filepath.Join(l.platformStageDir, executionWorkloadVaultCAName)
+}
+
+func (l executionPackageLayout) workloadTLSBundleStagePath() string {
+	return filepath.Join(l.platformStageDir, executionWorkloadTLSBundleName)
+}
+
+func (l executionPackageLayout) workloadVaultCACertRuntimePath() string {
+	return pathJoin(l.runtimePlatformDir, executionWorkloadVaultCAName)
+}
+
+func (l executionPackageLayout) workloadTLSBundleRuntimePath() string {
+	return pathJoin(l.runtimePlatformDir, executionWorkloadTLSBundleName)
+}
+
+func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(plan esconfig.ResolvedWorkloadVaultAuthPlan) (stagedWorkloadTrustMaterial, error) {
+	caBundle := normalizePEMForRuntimeFile(plan.CABundlePEM)
+	if len(caBundle) == 0 {
+		return stagedWorkloadTrustMaterial{}, nil
+	}
+	systemBundle, err := readSystemCABundle()
+	if err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+
+	if err := os.MkdirAll(l.platformStageDir, 0o755); err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+	if err := os.WriteFile(l.workloadVaultCACertStagePath(), caBundle, 0o644); err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+	if err := os.WriteFile(l.workloadTLSBundleStagePath(), appendPEMBundle(systemBundle, caBundle), 0o644); err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+	return stagedWorkloadTrustMaterial{
+		vaultCACert:       true,
+		workloadTLSBundle: true,
+	}, nil
+}
+
+func normalizePEMForRuntimeFile(value string) []byte {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return []byte(trimmed + "\n")
+}
+
+func appendPEMBundle(base []byte, extra []byte) []byte {
+	normalizedBase := normalizePEMForRuntimeFile(string(base))
+	normalizedExtra := normalizePEMForRuntimeFile(string(extra))
+	combined := make([]byte, 0, len(normalizedBase)+len(normalizedExtra)+1)
+	combined = append(combined, normalizedBase...)
+	if len(combined) > 0 && len(normalizedExtra) > 0 {
+		combined = append(combined, '\n')
+	}
+	combined = append(combined, normalizedExtra...)
+	return combined
+}
+
+func readSystemCABundle() ([]byte, error) {
+	candidates := make([]string, 0, len(systemCABundleCandidatePaths)+1)
+	if configured := strings.TrimSpace(os.Getenv("SSL_CERT_FILE")); configured != "" {
+		candidates = append(candidates, configured)
+	}
+	candidates = append(candidates, systemCABundleCandidatePaths...)
+
+	for _, candidate := range candidates {
+		content, err := os.ReadFile(filepath.Clean(candidate))
+		if err != nil || len(strings.TrimSpace(string(content))) == 0 {
+			continue
+		}
+		return content, nil
+	}
+	return nil, fmt.Errorf("system CA bundle not found for workload TLS bundle")
 }
 
 func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string) error {

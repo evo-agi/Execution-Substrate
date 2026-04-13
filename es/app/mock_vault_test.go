@@ -19,6 +19,7 @@ import (
 
 type mockVaultCompatServerOptions struct {
 	bindAddress string
+	publicHost  string
 	authMount   string
 	role        string
 	audience    string
@@ -35,6 +36,7 @@ type mockVaultCompatServer struct {
 	loginPath   string
 	secretPath  string
 	clientToken string
+	caBundlePEM string
 
 	mu              sync.Mutex
 	loginCount      int
@@ -51,8 +53,9 @@ func startMockVaultCompatServer(t *testing.T, rootDir string, opts mockVaultComp
 	secretPath := strings.TrimPrefix(firstNonEmpty(opts.secretPath, "proof-secrets/data/runtime-identity-vault-login"), "/")
 	secretValue := firstNonEmpty(opts.secretValue, "runtime-identity-ok")
 
-	ca, caKey, _ := createCertificateAuthority(t, "mock-vault-ca")
-	certPath, keyPath := writeLeafCertificateFiles(t, rootDir, "mock-vault", ca, caKey, "mock-vault.internal", nil)
+	ca, caKey, caPEM := createCertificateAuthority(t, "mock-vault-ca")
+	publicHost := firstNonEmpty(opts.publicHost, "mock-vault.internal")
+	certPath, keyPath := writeLeafCertificateFiles(t, rootDir, "mock-vault", ca, caKey, publicHost, nil)
 	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		t.Fatalf("load mock vault tls key pair: %v", err)
@@ -68,6 +71,7 @@ func startMockVaultCompatServer(t *testing.T, rootDir string, opts mockVaultComp
 		secretPath:  "/v1/" + secretPath,
 		clientToken: "runtime-identity-vault-token",
 		address:     listener.Addr().String(),
+		caBundlePEM: string(caPEM),
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +189,14 @@ func (s *mockVaultCompatServer) port(t *testing.T) int {
 		t.Fatalf("parse mock vault port: %v", err)
 	}
 	return value
+}
+
+func (s *mockVaultCompatServer) caBundle(t *testing.T) string {
+	t.Helper()
+	if strings.TrimSpace(s.caBundlePEM) == "" {
+		t.Fatalf("mock Vault CA bundle is empty")
+	}
+	return s.caBundlePEM
 }
 
 func decodeJWTClaimsUnverified(token string) (map[string]string, error) {

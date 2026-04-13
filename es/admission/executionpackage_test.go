@@ -1,8 +1,10 @@
 package admission
 
 import (
+	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
@@ -93,5 +95,47 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	}
 	if spireMount["target"] != path.Join(layout.runtimeIdentity.internalDir(), runtimeIdentitySPIRESourceDir) {
 		t.Fatalf("expected helper-private SPIRE source dir target under internal dir, got %#v", spireMount["target"])
+	}
+}
+
+func TestStageWorkloadVaultTrustMaterialWritesVaultAndCombinedBundles(t *testing.T) {
+	rootDir := t.TempDir()
+	systemBundlePath := filepath.Join(rootDir, "system-ca.pem")
+	if err := os.WriteFile(systemBundlePath, []byte("-----BEGIN CERTIFICATE-----\nsystem\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatalf("write system bundle: %v", err)
+	}
+	t.Setenv("SSL_CERT_FILE", systemBundlePath)
+
+	layout := executionPackageLayout{
+		platformStageDir:   filepath.Join(rootDir, "stage", "run", "platform"),
+		runtimePlatformDir: executionRuntimePlatformDir,
+	}
+	staged, err := layout.stageWorkloadVaultTrustMaterial(esconfig.ResolvedWorkloadVaultAuthPlan{
+		CABundlePEM: "-----BEGIN CERTIFICATE-----\nvault\n-----END CERTIFICATE-----",
+	})
+	if err != nil {
+		t.Fatalf("stage workload vault trust material: %v", err)
+	}
+	if !staged.vaultCACert || !staged.workloadTLSBundle {
+		t.Fatalf("expected both trust material files to be staged, got %+v", staged)
+	}
+
+	vaultBundle, err := os.ReadFile(layout.workloadVaultCACertStagePath())
+	if err != nil {
+		t.Fatalf("read vault CA bundle: %v", err)
+	}
+	if strings.Count(string(vaultBundle), "BEGIN CERTIFICATE") != 1 || !strings.Contains(string(vaultBundle), "vault") {
+		t.Fatalf("unexpected vault CA bundle: %q", string(vaultBundle))
+	}
+
+	combinedBundle, err := os.ReadFile(layout.workloadTLSBundleStagePath())
+	if err != nil {
+		t.Fatalf("read combined CA bundle: %v", err)
+	}
+	if !strings.Contains(string(combinedBundle), "system") || !strings.Contains(string(combinedBundle), "vault") {
+		t.Fatalf("expected combined bundle to contain system and Vault material, got %q", string(combinedBundle))
+	}
+	if layout.workloadVaultCACertRuntimePath() != "/execution/run/platform/workload-vault-ca.pem" {
+		t.Fatalf("unexpected runtime Vault CA path %q", layout.workloadVaultCACertRuntimePath())
 	}
 }
