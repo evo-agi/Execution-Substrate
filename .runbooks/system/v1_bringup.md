@@ -28,6 +28,8 @@ The readiness vocabulary for that primary path is now:
 - `submit-ready`: prepare-ready plus ES submit config present, Docker available, required enabled runtime-profile images present, Nomad leader present, and at least one ready Nomad client node with positive `cpu.totalcompute` and a healthy Docker driver
 - for enabled local runtime-profile images, `submit-ready` also requires Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, because the supported-local CP normal-shell proof image is local runtime material rather than a pullable product registry image
 
+For the ES-side supported-local Control Plane consumer story, including the real CP-facing API surface, `control-plane-normal-shell/v1`, workload-visible identity/Vault/trust-material handoff, retained-result meaning, and ownership boundaries, use [supported_local_cp_consumer_runbook.md](../../.docs/supported_local_cp_consumer_runbook.md).
+
 ## 2. Prerequisites
 
 ### Required software
@@ -211,6 +213,8 @@ The current guest-side helper is intentionally narrow:
 - it boots the proof-scoped real SPIRE server/agent path that backs the helper-private Workload API socket used by ES submit config
 - it seeds the bounded workload-zone Vault runtime fields used by ES, including the proof-scoped real Vault dev/test target for the current runtime-identity Vault-login workload
 - it does not broaden the slice beyond the bounded workload-vault login and one-secret-read proof
+
+For CP consumer-specific diagnosis, do not infer extra ES ownership from this helper. Use the canonical ES-side CP consumer runbook linked above.
 
 ### Full execution profile
 
