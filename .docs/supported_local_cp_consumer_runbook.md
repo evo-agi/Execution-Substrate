@@ -83,6 +83,22 @@ Infra Manager owns:
 
 ES does not fetch, mint, broker, store, rotate, parse, or validate Vault tokens or Codex tokens for CP. The workload uses the runtime identity endpoint plus workload-Vault metadata to acquire credential material itself.
 
+Releaseability and scaling alignment for CP consumers:
+
+- CP's v1 console/API contract may rely on ES endpoint names, response classes,
+  retained opaque bundle behavior, and `control-plane-normal-shell/v1` only as
+  the bounded compatibility surface named in the adjacent CP contract.
+- ES must not present provider run ids, Nomad lifecycle projection, retained
+  bundles, health/readiness signals, helper examples, or supported-local proof
+  output as CP release, rollback, orchestration, review, checkpoint, or
+  intervention authority.
+- Any change that breaks the current CP publish -> prepare -> submit ->
+  status/logs/result/cancel sequence, runtime-profile name, or retained opaque
+  bundle semantics needs an explicit cross-repo compatibility, drain, or
+  versioning plan before CP productization depends on it.
+- ES `/health` remains service health. Supported-local submit claims still come
+  from the submit-ready check described below, not from a single endpoint probe.
+
 ## 4. Real client surface
 
 The CP-facing programmatic surface is the HTTPS+mTLS API boundary.
