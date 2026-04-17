@@ -15,6 +15,7 @@ Status classification:
 
 Use this alongside:
 
+- [Control Plane long-running operator mode contract](../../Control%20Plane/.docs/long-running-operator-mode-contract.md)
 - [system_overview/contracts.md](system_overview/contracts.md)
 - [system_overview/boundaries.md](system_overview/boundaries.md)
 - [execution_lifecycle/contracts.md](execution_lifecycle/contracts.md)
@@ -58,6 +59,14 @@ ES owns:
 - Nomad-backed status/log/result/cancel projection through public ES endpoints
 - retained opaque `result.tar.gz` bundles captured from `/execution/run/result`
 - the truth of whether this repo's readiness helpers can honestly claim `submit-ready`
+
+The Control Plane long-running operator mode contract freezes how those ES
+facts may be consumed by browser/API operator mode: ES provider run ids,
+status/log/result/cancel responses, retained bundles, runtime-profile evidence,
+and submit-readiness are runtime evidence, not Control Plane orchestration
+truth. ES retained results remain opaque output material; Control Plane owns
+their semantic validation and any review, checkpoint, hold/resume/reject, or
+terminal run decision.
 
 Control Plane owns:
 

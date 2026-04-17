@@ -66,6 +66,8 @@ In the current bounded execution slice, successful runs keep `execution.staging_
 
 For the bounded supported-local Control Plane consumer path, including the `control-plane-normal-shell/v1` runtime profile, submit-ready meaning, workload-visible identity/Vault/trust-material handoff, retained-result behavior, and ownership boundaries, use the canonical ES-side runbook: [.docs/supported_local_cp_consumer_runbook.md](.docs/supported_local_cp_consumer_runbook.md).
 
+The Control Plane-owned long-running operator mode, releaseability, and scaling freeze lives in the adjacent Control Plane repo at [`.docs/long-running-operator-mode-contract.md`](../Control%20Plane/.docs/long-running-operator-mode-contract.md). ES must not widen this supported-local surface into CP orchestration, review, checkpoint, hold/resume/reject, or release authority without an explicit new contract.
+
 ## Repo Structure
 
 High-level layout:
