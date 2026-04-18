@@ -12,10 +12,9 @@ COPY ags ./ags
 COPY ars ./ars
 COPY cgs ./cgs
 COPY cmd ./cmd
-COPY contracts ./contracts
 COPY egs ./egs
 COPY es ./es
-COPY observability ./observability
+COPY internal ./internal
 
 RUN test -n "${TARGETARCH}" && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /out/ars ./cmd/ars && \
