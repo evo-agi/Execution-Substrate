@@ -2,6 +2,8 @@ package admission
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
@@ -52,13 +54,95 @@ func TestProducerContractDeclarationRequiresGovernedOutcomeEvidence(t *testing.T
 	assertContainsAll(t, evidence.ResultHeaders.RequiredHeaders, []string{OutcomeHeaderSource, OutcomeHeaderObservation, OutcomeHeaderAccessClass})
 
 	for _, required := range []string{
+		"not_service_health",
+		"not_submit_readiness",
+		"not_artifact_admission_proof",
 		"not_run_authority",
+		"not_lifecycle_truth",
 		"not_credential_truth",
 		"not_lifecycle_write_coordination",
+		"not_policy_truth",
 		"not_scheduler_api",
 	} {
 		if !containsString(declaration.NonAuthority, required) {
 			t.Fatalf("expected non_authority to include %q, got %v", required, declaration.NonAuthority)
+		}
+	}
+}
+
+func TestProducerContractOutcomeEvidenceMatchesCurrentResponseEvidence(t *testing.T) {
+	declaration := producerOutcomeEvidenceDeclaration()
+	projection := LifecycleProjection{
+		Source:   lifecycleProjectionSourceNomad,
+		Revision: "opaque-same-run-read-token",
+	}
+
+	for _, observation := range []string{
+		outcomeObservationNomadJobProjection,
+		outcomeObservationNomadProjectedAllocation,
+		outcomeObservationNomadTaskStateProjection,
+	} {
+		evidence := statusOutcomeEvidence(observation, projection, observation == outcomeObservationNomadTaskStateProjection)
+		assertDeclaredEvidenceMatchesRuntimeEvidence(t, declaration.StatusJSON, evidence)
+		if evidence.LifecycleProjection == nil || *evidence.LifecycleProjection != projection {
+			t.Fatalf("expected status evidence to carry lifecycle projection, got %+v", evidence)
+		}
+		assertContainsAll(t, declaration.StatusJSON.RequiredFields, []string{"source", "observation", "lifecycle_projection", "provider_terminal_observed"})
+	}
+
+	cancelEvidence := cancelOutcomeEvidence()
+	assertDeclaredEvidenceMatchesRuntimeEvidence(t, declaration.CancelJSON, cancelEvidence)
+	if cancelEvidence.ProviderTerminalObserved == nil || *cancelEvidence.ProviderTerminalObserved {
+		t.Fatalf("expected cancel evidence to avoid terminal-completion claim, got %+v", cancelEvidence)
+	}
+	assertContainsAll(t, declaration.CancelJSON.RequiredFields, []string{"source", "observation", "provider_terminal_observed"})
+
+	logsEvidence := logsOutcomeEvidence(false)
+	assertDeclaredEvidenceMatchesRuntimeEvidence(t, declaration.LogsHeaders, logsEvidence)
+	if declaration.LogsHeaders.MediaType != LogsMediaType {
+		t.Fatalf("expected logs media type %q, got %q", LogsMediaType, declaration.LogsHeaders.MediaType)
+	}
+	assertContainsAll(t, declaration.LogsHeaders.RequiredHeaders, []string{
+		OutcomeHeaderSource,
+		OutcomeHeaderObservation,
+		OutcomeHeaderAccessClass,
+		OutcomeHeaderProviderTerminalObserved,
+	})
+
+	resultEvidence := retainedResultOutcomeEvidence()
+	assertDeclaredEvidenceMatchesRuntimeEvidence(t, declaration.ResultHeaders, resultEvidence)
+	if declaration.ResultHeaders.MediaType != resultBundleMediaType {
+		t.Fatalf("expected result media type %q, got %q", resultBundleMediaType, declaration.ResultHeaders.MediaType)
+	}
+	assertContainsAll(t, declaration.ResultHeaders.RequiredHeaders, []string{
+		OutcomeHeaderSource,
+		OutcomeHeaderObservation,
+		OutcomeHeaderAccessClass,
+	})
+}
+
+func TestProducerContractDeclarationDoesNotExposeAuthorityOrSchedulerClaims(t *testing.T) {
+	declaration := producerContractDeclaration(producerContractSubmitConfig(true))
+	payload, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatalf("marshal producer declaration: %v", err)
+	}
+	text := string(payload)
+
+	for _, forbidden := range []string{
+		"nomad_job_id",
+		"allocation_id",
+		"task_id",
+		"scheduler_id",
+		"vault_token",
+		"codex_token",
+		"jwt_svid",
+		"lease",
+		"policy_approval",
+		"write_precondition",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("producer declaration must not expose %q: %s", forbidden, text)
 		}
 	}
 }
@@ -132,6 +216,23 @@ func assertEvidenceSurface(t *testing.T, surface ProducerOutcomeEvidenceSurfaceD
 		if !containsString(surface.Observations, observation) {
 			t.Fatalf("expected observation %q in %+v", observation, surface)
 		}
+	}
+}
+
+func assertDeclaredEvidenceMatchesRuntimeEvidence(t *testing.T, surface ProducerOutcomeEvidenceSurfaceDeclaration, evidence ExecutionOutcomeEvidence) {
+	t.Helper()
+
+	if !surface.Required {
+		t.Fatalf("expected required evidence surface, got %+v", surface)
+	}
+	if surface.Source != evidence.Source {
+		t.Fatalf("declared source %q does not match runtime evidence %+v", surface.Source, evidence)
+	}
+	if !containsString(surface.Observations, evidence.Observation) {
+		t.Fatalf("declared observations %v do not include runtime evidence %+v", surface.Observations, evidence)
+	}
+	if surface.AccessClass != evidence.AccessClass {
+		t.Fatalf("declared access class %q does not match runtime evidence %+v", surface.AccessClass, evidence)
 	}
 }
 

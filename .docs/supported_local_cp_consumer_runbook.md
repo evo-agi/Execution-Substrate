@@ -216,6 +216,52 @@ the workload, that the workload will use the identity endpoint correctly, that
 Vault or Codex credential material exists, or that retained result contents have
 any CP semantic meaning.
 
+## 4B. Golden producer proof path
+
+For the current governed-execution producer proof, keep the ES checks in one
+operator-legible evidence chain:
+
+1. Producer declaration: call `GET /v1/executions:contract` over the same
+   HTTPS+mTLS caller boundary intended for governed execution. Require
+   `schema_version = "execution-substrate.producer-contract/v1"`,
+   `service = "execution"`,
+   `governed_execution.contract = "governed-execution-producer/v1"`,
+   `governed_execution.enabled = true`, and the `non_authority`
+   classifications.
+2. CP normal-shell compatibility: for normal-shell clients, require the
+   declaration to report `control-plane-normal-shell/v1` as enabled, then use
+   `POST /v1/executions:prepare` and `POST /v1/executions:submit` with
+   `invocation.annotations["execution_substrate.runtime_profile"] =
+   "control-plane-normal-shell/v1"`.
+3. Runtime authority handoff evidence: require successful `:submit` responses,
+   and `status` responses when recoverable, to carry `authority_handoff`.
+   Treat it only as ES-owned evidence of non-secret runtime handoff facts ES
+   selected or staged: runtime profile, workload identity endpoint handoff,
+   workload-Vault auth metadata, selected workload-zone Vault config digest,
+   and bounded profile credential-location metadata.
+4. Lifecycle read freshness: require status responses to carry
+   `status.lifecycle_projection.revision`. Compare it only as an opaque
+   same-run read-coordination token. Do not parse it, order it, treat it as a
+   scheduler identifier, or pass it as a write precondition to `logs`,
+   `result`, or `cancel`.
+5. Mandatory outcome evidence: require `outcome_evidence` in status and cancel
+   JSON. Require successful logs responses to keep
+   `Content-Type: text/plain; charset=utf-8` and expose
+   `Execution-Substrate-Outcome-*` headers. Require successful result responses
+   to keep `Content-Type: application/gzip` and expose the same outcome header
+   family.
+6. Live supported-local validation: after the static declaration gate, use
+   `/health`, `scripts/01_bringup.sh check`, `VERIFY_RUNTIME_CONFIG=1
+   scripts/10_health_check.sh`, and the supported-local proof path to validate
+   Docker, Nomad, profile image, runtime-config, workload identity, Vault, and
+   retained-result behavior in the prepared environment.
+
+A passing static contract check without supported-local readiness is not a live
+runtime proof. A passing Docker/Nomad-backed proof without the producer
+declaration above is not current governed-execution producer compatibility.
+Neither path adds authority claims beyond the evidence ES actually declares,
+observes, or retains.
+
 ## 5. `submit-ready` meaning
 
 For the supported-local CP normal-shell path, `submit-ready: true` means the repo-owned readiness baseline has proved all current preconditions needed before attempting `POST /v1/executions:submit`.

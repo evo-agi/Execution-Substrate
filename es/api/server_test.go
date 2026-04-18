@@ -42,19 +42,27 @@ func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
 	if logsRecorder.Code != http.StatusOK {
 		t.Fatalf("expected logs 200, got %d body=%s", logsRecorder.Code, logsRecorder.Body.String())
 	}
+	assertHeader(t, logsRecorder.Result(), "Content-Type", admission.LogsMediaType)
 	assertHeader(t, logsRecorder.Result(), headerOutcomeSource, "nomad")
 	assertHeader(t, logsRecorder.Result(), headerOutcomeObservation, "nomad_task_stdout")
 	assertHeader(t, logsRecorder.Result(), headerOutcomeAccessClass, "plaintext_stdout")
 	assertHeader(t, logsRecorder.Result(), headerProviderTerminalObserved, "false")
+	if logsRecorder.Body.String() != "hello\n" {
+		t.Fatalf("expected logs payload to remain plain text, got %q", logsRecorder.Body.String())
+	}
 
 	resultRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(resultRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
 	if resultRecorder.Code != http.StatusOK {
 		t.Fatalf("expected result 200, got %d body=%s", resultRecorder.Code, resultRecorder.Body.String())
 	}
+	assertHeader(t, resultRecorder.Result(), "Content-Type", "application/gzip")
 	assertHeader(t, resultRecorder.Result(), headerOutcomeSource, "es_retained_result_store")
 	assertHeader(t, resultRecorder.Result(), headerOutcomeObservation, "retained_result_bundle")
 	assertHeader(t, resultRecorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	if resultRecorder.Body.String() != "bundle" {
+		t.Fatalf("expected result payload bytes unchanged, got %q", resultRecorder.Body.String())
+	}
 }
 
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {

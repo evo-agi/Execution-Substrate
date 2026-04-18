@@ -131,3 +131,49 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		t.Fatalf("CP consumer runbook missing producer contract gate note")
 	}
 }
+
+func TestGoldenProducerProofPathIsDocumented(t *testing.T) {
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	capabilityProbing := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
+
+	for _, required := range []string{
+		"Golden producer proof path",
+		"`GET /v1/executions:contract`",
+		"`schema_version = \"execution-substrate.producer-contract/v1\"`",
+		"`service = \"execution\"`",
+		"`governed_execution.contract = \"governed-execution-producer/v1\"`",
+		"`governed_execution.enabled = true`",
+		"`control-plane-normal-shell/v1`",
+		"`invocation.annotations[\"execution_substrate.runtime_profile\"] = \"control-plane-normal-shell/v1\"`",
+		"`authority_handoff`",
+		"`status.lifecycle_projection.revision`",
+		"`outcome_evidence`",
+		"`Content-Type: text/plain; charset=utf-8`",
+		"`Content-Type: application/gzip`",
+		"`Execution-Substrate-Outcome-*` headers",
+		"A passing static contract check without supported-local readiness is not a live runtime proof.",
+		"A passing Docker/Nomad-backed proof without the producer declaration above is not current governed-execution producer compatibility.",
+	} {
+		if !strings.Contains(runbook, required) {
+			t.Fatalf("supported-local CP consumer runbook missing golden producer proof phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"status JSON to include `outcome_evidence`",
+		"cancel JSON to include `outcome_evidence`",
+		"successful logs responses to preserve `text/plain; charset=utf-8`",
+		"successful result responses to preserve `application/gzip`",
+		"`authority_handoff` is additive and read-only.",
+		"No claim that a JWT-SVID, Vault token, Codex token, or lease exists or is still valid.",
+	} {
+		if !strings.Contains(lifecycleContracts, required) {
+			t.Fatalf("execution lifecycle contract missing producer proof phrase %q", required)
+		}
+	}
+
+	if !strings.Contains(capabilityProbing, "Read-only producer contract declarations, such as ES `GET /v1/executions:contract`, are not runtime capability probes.") {
+		t.Fatalf("capability probing doc missing static producer declaration boundary")
+	}
+}
