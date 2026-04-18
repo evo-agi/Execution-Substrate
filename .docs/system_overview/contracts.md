@@ -344,6 +344,7 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 - ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
 - Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
 - ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque equality token for status reads, not a scheduler ID, write precondition, or ES-owned lifecycle record.
+- ES lifecycle/status/result/log/cancel surfaces may expose additive `outcome_evidence` descriptors for evidence ES directly observed or retained: Nomad-backed status projection depth, accepted Nomad stop requests, Nomad task stdout, and opaque ES-retained result bundles. These descriptors are read-only evidence labels, not lifecycle ownership, scheduler identifiers, policy truth, credential truth, or write preconditions.
 - ES submit/status expose a bounded `authority_handoff` read fact for submitted runs when ES can recover the submitted runtime handoff. It contains only non-secret facts ES selected or derived during admission/runtime handoff: runtime profile, workload identity endpoint handoff, workload-vault auth plan metadata, selected workload-zone Vault config digest, and bounded profile credential-location metadata. It is not live credential, lease, token-expiry, approval, scheduler-ID, or lifecycle-store state.
 - ES-retained result bundles are opaque output material. They are not logs wrappers, CP checkpoints, review decisions, finalization records, or ES-owned orchestration state.
 - The workload credential handoff is non-secret and workload-side: ES injects identity and credential-location metadata, while the workload uses the discovered endpoint and workload-Vault metadata to acquire material itself.
@@ -358,6 +359,7 @@ Compatibility edges to preserve during the next package unless a coordinated mig
 - `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
 - `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
 - the exact `authority_handoff` field names, evidence-source labels, and current workload-visible env/path vocabulary while the request, runtime-profile, and runtime-identity seams remain reopened
+- the additive `outcome_evidence` JSON field and successful logs/result evidence headers while the status/result/log/cancel descriptor vocabulary remains bounded to the current Nomad/retained-result slice
 - retained `application/gzip` result bundles keyed by public `run_id`
 
 `Observed current contract`
@@ -453,6 +455,7 @@ Current successful response shapes:
   - `lifecycle_projection`
     - `source`
     - `revision`
+  - `outcome_evidence`
   - optional `authority_handoff`
   - optional `exit_code`
   - `terminal`
@@ -460,6 +463,7 @@ Current successful response shapes:
   - `success`
   - `run_id`
   - `status`
+  - `outcome_evidence`
 
 ### Current invariants
 
@@ -524,6 +528,7 @@ Current successful response shapes:
   - ES resolves status, logs, result readiness when no retained bundle exists, and cancel through Nomad
   - ES derives the minimal public lifecycle `status` value from Nomad-backed state as `submitted`, `running`, or `terminal`
   - ES includes `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision` in status responses so consumers can compare status observations without inferring Nomad IDs or ES-owned run persistence
+  - ES includes additive `outcome_evidence` on status and cancel JSON responses and successful logs/result headers to label the bounded observation or retained output source without exposing scheduler IDs, staging paths, or payload contents
   - ES may include `authority_handoff` in status from submitted runtime handoff metadata/environment, but that fact remains read-only runtime handoff evidence and is not lifecycle state
   - logs are stdout-only for task `task`
   - result bundles are retained opaque output artifacts keyed by `run_id`, not lifecycle-state records
@@ -550,6 +555,7 @@ Current successful response shapes:
 - The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
 - The current `authority_handoff` JSON field layout, evidence-source labels, and current endpoint/path/env names are compatibility-heavy read vocabulary on reopened request/runtime-identity seams.
+- The current `outcome_evidence` JSON field layout, successful logs/result evidence headers, and observation labels are current-slice read vocabulary, not durable scheduler, log, result, or cancellation architecture.
 - `control-plane-normal-shell/v1` is a bounded compatibility-heavy runtime contract for one CP-owned normal-shell attempt path. It should not be generalized into an arbitrary image/toolchain marketplace or used to absorb CP orchestration semantics into ES.
 
 ### Reopened seams

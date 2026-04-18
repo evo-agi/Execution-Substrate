@@ -36,7 +36,7 @@ These labels matter because implementation shape and public contract are related
 
 Related support files:
 
-- `es/admission/types.go` carries the current request/result/data structs used across prepare, submit, and lifecycle paths.
+- `es/admission/types.go` carries the current request/result/data structs used across prepare, submit, and lifecycle paths, including the additive outcome-evidence descriptor structs for status/cancel JSON and successful logs/result metadata.
 - `es/api/types.go` currently carries the health response shape rather than lifecycle endpoint payloads.
 
 ## 4. Handler-to-service flow
@@ -199,11 +199,13 @@ Where ES stops and Nomad takes over:
 - `fetchProjectedAllocation` reads the job's allocations and applies the explicit current projected-allocation policy.
 - `fetchAllocation` retrieves the detailed allocation record.
 - The status path derives the public `lifecycle_projection` fact from the observed Nomad job and selected allocation modify indexes, without exposing Nomad job IDs or allocation IDs.
+- The lifecycle/result paths attach additive outcome-evidence descriptors for current response facts without exposing Nomad IDs, task IDs, host paths, result filesystem paths, or result payload contents.
 
 Status path:
 
 - Fetch job summary.
 - Build a minimal `ExecutionStatusResult` with `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision`.
+- Add `outcome_evidence` with `source = "nomad"`, the current observation label (`nomad_job_projection`, `nomad_projected_allocation`, or `nomad_task_state_projection`), the same lifecycle projection token, and whether provider terminal state was observed.
 - Recover `authority_handoff` from the submitted runtime spec when the internal ES handoff metadata and submitted environment are present.
 - Resolve the currently projected allocation if present.
 - Map the current Nomad-backed path into public `status` values:
@@ -220,13 +222,14 @@ Logs path:
 - Resolve the currently projected allocation.
 - Require task `task` to be in `running` or `dead`.
 - Fetch stdout via Nomad client FS logs endpoint.
+- Return stdout bytes with outcome evidence that labels the body as `nomad_task_stdout`, access class `plaintext_stdout`, and whether terminal state was observed during the lookup.
 - If the selected task is terminal-successful, best-effort remove the run-scoped host staging root after stdout is fetched.
 
 Cancel path:
 
 - Fetch job summary.
 - Stop the job through Nomad with `purge=false`.
-- Return bounded cancel receipt without exposing Nomad job identifiers publicly.
+- Return bounded cancel receipt with outcome evidence `nomad_stop_request_accepted` and `provider_terminal_observed = false`, without exposing Nomad job identifiers publicly or claiming the workload has stopped.
 
 **Implementation invariants**
 
@@ -234,6 +237,7 @@ Cancel path:
 - Latest-allocation selection is the only allocation-selection logic in the current implementation.
 - Post-submit lifecycle reads are read-through from Nomad rather than reconstructed from staging directories or ES memory.
 - The lifecycle projection revision is a status read token only; no lifecycle write path accepts it as a precondition.
+- Outcome-evidence descriptors are response labels only; no lifecycle write path accepts them as preconditions and no descriptor is a scheduler identifier.
 - Status `authority_handoff` recovery is also read-through from the submitted runtime spec. It does not add ES run persistence, and it does not expose backend job/allocation IDs.
 
 ## 9. Runtime identity and mount implementation
@@ -399,13 +403,14 @@ How Docker appears in the implementation:
 - `Result` first serves an already retained bundle if one exists, then falls back to Nomad-backed terminal lookup and one idempotent retention attempt.
 - Retention packages result directory contents into `<results_root>/<run_id>/result.tar.gz`.
 - Empty or missing result directories do not produce a bundle.
-- The retained bundle is served as `application/gzip`.
+- The retained bundle is served as `application/gzip` with outcome evidence that labels the source as the ES retained-result store, observation as `retained_result_bundle`, and access class as `opaque_result_bundle`.
 
 **Implementation invariants**
 
 - Retention is keyed by public `run_id` but does not create a durable lifecycle record.
 - Retention is idempotent and safe across repeated `status`, `logs`, and `result` calls.
 - Result bundles are opaque to ES; ES does not parse workload-authored files for Control Plane semantics.
+- Result outcome evidence does not include host paths, archive entry lists, payload interpretation, or provider terminal proof when the request can be served from an already retained bundle without runtime lookup.
 - Successful staging cleanup must not run before the retention attempt for terminal success.
 
 **Current simplification**
@@ -463,6 +468,7 @@ Operator helper ownership in the current slice:
 - Lifecycle uses one explicit projected-allocation policy instead of a broader allocation model.
 - Log retrieval is a minimal latest-allocation stdout path.
 - Result retrieval is a retained tar.gz bundle path for `/execution/run/result`, not a broad output platform.
+- Outcome-evidence descriptors are additive labels for current response sources, not a broad evidence store or revision model.
 - There is no retry or reschedule machinery in ES.
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
 - Authority handoff reporting is non-secret submit/status read evidence, not a live credential observer.

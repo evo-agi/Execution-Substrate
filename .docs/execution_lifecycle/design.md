@@ -98,13 +98,15 @@ At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
 - `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is opaque to callers
+- `status` also returns additive `outcome_evidence` that labels which current Nomad observation family backed the served projection and references the same opaque lifecycle projection token
 - `status` may also return `authority_handoff` by recovering ES-submitted non-secret runtime handoff facts from the submitted runtime spec
-- `logs` reads stdout for the selected task from Nomad
-- `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory
-- `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
+- `logs` reads stdout for the selected task from Nomad and labels successful bodies as current Nomad task stdout
+- `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory and labels successful bodies as opaque retained bundles
+- `cancel` asks Nomad to stop the job and labels the receipt as an accepted stop request without turning ES into a broader control-plane owner or claiming observed termination
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
 The lifecycle projection revision lets consumers compare status observations without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract.
+The outcome evidence descriptors let consumers distinguish what ES observed or retained for the current response without treating those labels as scheduler IDs, write preconditions, log/result revisions, policy truth, credential truth, or a global ES run revision.
 The authority handoff fact lets consumers see the ES-selected runtime authority path without treating it as live credential state, scheduler identity, or Control Plane orchestration truth.
 
 ### 5.4 Terminal result materialization phase
@@ -129,6 +131,7 @@ This is intentionally not a general output platform. It does not create callback
 - ES does not become the scheduler.
 - Lifecycle responses are projections of Nomad state, not ES-owned execution state.
 - The status `lifecycle_projection.revision` is an opaque read-coordination token derived from Nomad observation, not a write precondition or an ES lifecycle-state version.
+- `outcome_evidence` is read-only response evidence. It does not add scheduler identifiers, result-content interpretation, log completeness guarantees, cancellation completion truth, or write coordination.
 - `:submit` returns a bounded submission receipt rather than a durable run model.
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
 - Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.
@@ -148,6 +151,7 @@ This is intentionally not a general output platform. It does not create callback
 - Lifecycle projection currently uses an explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex`.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
 - The current result surface is intentionally narrow: a retained tar.gz bundle of `/execution/run/result` for the `static-script` slice.
+- The current outcome-evidence descriptor vocabulary is intentionally narrow: Nomad status projection depth, Nomad task stdout, accepted Nomad stop request, and ES-retained opaque result bundle labels.
 - The current lifecycle model is intentionally minimal rather than a broad orchestration API.
 - Retries and reschedule behavior are not part of the current ES slice.
 

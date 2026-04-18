@@ -35,6 +35,14 @@ func TestStatusReturnsSubmittedWhenNoAllocationExistsYet(t *testing.T) {
 	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:11" {
 		t.Fatalf("expected job-derived lifecycle projection, got %+v", result.LifecycleProjection)
 	}
+	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
+		result.OutcomeEvidence.Observation != outcomeObservationNomadJobProjection ||
+		result.OutcomeEvidence.LifecycleProjection == nil ||
+		*result.OutcomeEvidence.LifecycleProjection != result.LifecycleProjection ||
+		result.OutcomeEvidence.ProviderTerminalObserved == nil ||
+		*result.OutcomeEvidence.ProviderTerminalObserved {
+		t.Fatalf("unexpected outcome evidence %+v", result.OutcomeEvidence)
+	}
 }
 
 func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) {
@@ -63,6 +71,14 @@ func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) 
 	}
 	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:25" {
 		t.Fatalf("expected allocation-derived lifecycle projection, got %+v", result.LifecycleProjection)
+	}
+	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
+		result.OutcomeEvidence.Observation != outcomeObservationNomadTaskStateProjection ||
+		result.OutcomeEvidence.LifecycleProjection == nil ||
+		*result.OutcomeEvidence.LifecycleProjection != result.LifecycleProjection ||
+		result.OutcomeEvidence.ProviderTerminalObserved == nil ||
+		!*result.OutcomeEvidence.ProviderTerminalObserved {
+		t.Fatalf("unexpected outcome evidence %+v", result.OutcomeEvidence)
 	}
 }
 
@@ -101,12 +117,19 @@ func TestLogsReturnsTaskStdoutFromNomad(t *testing.T) {
 		})),
 	}
 
-	logs, err := service.Logs(context.Background(), "run-0123456789abcdef")
+	result, err := service.Logs(context.Background(), "run-0123456789abcdef")
 	if err != nil {
 		t.Fatalf("logs: %+v", err)
 	}
-	if string(logs) != "hello from workload\n" {
-		t.Fatalf("unexpected logs %q", string(logs))
+	if string(result.Payload) != "hello from workload\n" {
+		t.Fatalf("unexpected logs %q", string(result.Payload))
+	}
+	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
+		result.OutcomeEvidence.Observation != outcomeObservationNomadTaskStdout ||
+		result.OutcomeEvidence.AccessClass != outcomeAccessClassPlaintextStdout ||
+		result.OutcomeEvidence.ProviderTerminalObserved == nil ||
+		*result.OutcomeEvidence.ProviderTerminalObserved {
+		t.Fatalf("unexpected logs outcome evidence %+v", result.OutcomeEvidence)
 	}
 }
 
@@ -134,6 +157,12 @@ func TestCancelStopsNomadJobWithoutPurge(t *testing.T) {
 	}
 	if result.Status != executionLifecycleStatusCancelRequested || result.RunID != "run-0123456789abcdef" {
 		t.Fatalf("unexpected cancel result %+v", result)
+	}
+	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
+		result.OutcomeEvidence.Observation != outcomeObservationNomadStopAccepted ||
+		result.OutcomeEvidence.ProviderTerminalObserved == nil ||
+		*result.OutcomeEvidence.ProviderTerminalObserved {
+		t.Fatalf("unexpected cancel outcome evidence %+v", result.OutcomeEvidence)
 	}
 }
 

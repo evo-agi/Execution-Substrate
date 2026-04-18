@@ -136,8 +136,9 @@ func (s *Service) readRetainedResultBundle(locator executionLocator) (ExecutionR
 	payload, err := os.ReadFile(s.retainedResultBundlePath(locator))
 	if err == nil {
 		return ExecutionResultBundle{
-			MediaType: resultBundleMediaType,
-			Payload:   payload,
+			MediaType:       resultBundleMediaType,
+			OutcomeEvidence: retainedResultOutcomeEvidence(),
+			Payload:         payload,
 		}, true, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {

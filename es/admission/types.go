@@ -69,6 +69,7 @@ type ExecutionStatusResult struct {
 	RunID               string                     `json:"run_id"`
 	Status              string                     `json:"status"`
 	LifecycleProjection LifecycleProjection        `json:"lifecycle_projection"`
+	OutcomeEvidence     ExecutionOutcomeEvidence   `json:"outcome_evidence"`
 	AuthorityHandoff    *ExecutionAuthorityHandoff `json:"authority_handoff,omitempty"`
 	ExitCode            *int                       `json:"exit_code,omitempty"`
 	Terminal            bool                       `json:"terminal"`
@@ -80,6 +81,18 @@ type ExecutionStatusResult struct {
 type LifecycleProjection struct {
 	Source   string `json:"source"`
 	Revision string `json:"revision"`
+}
+
+// ExecutionOutcomeEvidence is the additive response-evidence descriptor for
+// lifecycle observations and retained outputs ES can directly source today.
+// It is intentionally a label surface, not a scheduler identifier, write
+// precondition, policy claim, credential claim, or ES-owned lifecycle record.
+type ExecutionOutcomeEvidence struct {
+	Source                   string               `json:"source"`
+	Observation              string               `json:"observation"`
+	AccessClass              string               `json:"access_class,omitempty"`
+	LifecycleProjection      *LifecycleProjection `json:"lifecycle_projection,omitempty"`
+	ProviderTerminalObserved *bool                `json:"provider_terminal_observed,omitempty"`
 }
 
 // ExecutionAuthorityHandoff is the bounded non-secret read surface for the
@@ -147,14 +160,21 @@ type ExecutionAuthorityEvidence struct {
 // backed lifecycle slice. It confirms that ES asked Nomad to stop the job,
 // but it does not create a durable execution record or wider lifecycle model.
 type ExecutionCancelResult struct {
-	Success bool   `json:"success"`
-	RunID   string `json:"run_id"`
-	Status  string `json:"status"`
+	Success         bool                     `json:"success"`
+	RunID           string                   `json:"run_id"`
+	Status          string                   `json:"status"`
+	OutcomeEvidence ExecutionOutcomeEvidence `json:"outcome_evidence"`
+}
+
+type ExecutionLogsResult struct {
+	OutcomeEvidence ExecutionOutcomeEvidence
+	Payload         []byte
 }
 
 type ExecutionResultBundle struct {
-	MediaType string
-	Payload   []byte
+	MediaType       string
+	OutcomeEvidence ExecutionOutcomeEvidence
+	Payload         []byte
 }
 
 type ErrorResponse struct {

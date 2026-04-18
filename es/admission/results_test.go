@@ -41,6 +41,11 @@ func TestRetainTerminalResultPackagesResultDirectory(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected retained bundle to be readable")
 	}
+	if bundle.OutcomeEvidence.Source != outcomeEvidenceSourceRetainedResultStore ||
+		bundle.OutcomeEvidence.Observation != outcomeObservationRetainedResultBundle ||
+		bundle.OutcomeEvidence.AccessClass != outcomeAccessClassOpaqueResultBundle {
+		t.Fatalf("unexpected retained result outcome evidence %+v", bundle.OutcomeEvidence)
+	}
 
 	entries := readAdmissionResultBundleEntries(t, bundle.Payload)
 	if entries["summary.txt"] != "ok\n" {
@@ -67,6 +72,11 @@ func TestResultReturnsRetainedBundleWithoutRuntimeLookup(t *testing.T) {
 	}
 	if bundle.MediaType != resultBundleMediaType || string(bundle.Payload) != "already retained" {
 		t.Fatalf("unexpected retained bundle: %+v", bundle)
+	}
+	if bundle.OutcomeEvidence.Source != outcomeEvidenceSourceRetainedResultStore ||
+		bundle.OutcomeEvidence.Observation != outcomeObservationRetainedResultBundle ||
+		bundle.OutcomeEvidence.AccessClass != outcomeAccessClassOpaqueResultBundle {
+		t.Fatalf("unexpected retained result outcome evidence %+v", bundle.OutcomeEvidence)
 	}
 }
 

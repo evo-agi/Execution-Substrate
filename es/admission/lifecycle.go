@@ -105,12 +105,14 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 				log.Printf("es result retention failed run_id=%s err=%v", locator.RunID, retainErr)
 			}
 		}
+		result.OutcomeEvidence = statusOutcomeEvidence(outcomeObservationNomadJobProjection, result.LifecycleProjection, result.Terminal)
 		return result, nil
 	}
 	result.LifecycleProjection = lifecycleProjectionFromNomad(job.ModifyIndex, allocation.ModifyIndex)
 
 	result.Status = executionLifecycleStatusRunning
 	result.Terminal = isTerminalAllocationStatus(strings.TrimSpace(allocation.ClientStatus))
+	observation := outcomeObservationNomadProjectedAllocation
 
 	taskState, ok := allocation.TaskStates[nomadTaskName]
 	if !ok {
@@ -118,8 +120,10 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 			result.Status = executionLifecycleStatusTerminal
 			s.maybeRetainTerminalResult(locator, allocation)
 		}
+		result.OutcomeEvidence = statusOutcomeEvidence(observation, result.LifecycleProjection, result.Terminal)
 		return result, nil
 	}
+	observation = outcomeObservationNomadTaskStateProjection
 	if !result.Terminal && strings.TrimSpace(taskState.State) == "dead" {
 		result.Terminal = true
 	}
@@ -136,6 +140,7 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 			s.maybeRetainTerminalResult(locator, allocation)
 		}
 	}
+	result.OutcomeEvidence = statusOutcomeEvidence(observation, result.LifecycleProjection, result.Terminal)
 
 	return result, nil
 }
@@ -166,22 +171,22 @@ func (j nomadJobSummary) task(name string) (nomadJobTask, bool) {
 	return nomadJobTask{}, false
 }
 
-func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
+func (s *Service) Logs(ctx context.Context, runID string) (ExecutionLogsResult, *Error) {
 	locator, err := resolveExecutionLocator(runID)
 	if err != nil {
-		return nil, err
+		return ExecutionLogsResult{}, err
 	}
 
 	if _, err := s.nomadClient.fetchJob(ctx, locator.JobID()); err != nil {
-		return nil, err
+		return ExecutionLogsResult{}, err
 	}
 
 	allocation, err := s.nomadClient.fetchProjectedAllocation(ctx, locator.JobID())
 	if err != nil {
-		return nil, err
+		return ExecutionLogsResult{}, err
 	}
 	if allocation == nil {
-		return nil, &Error{
+		return ExecutionLogsResult{}, &Error{
 			Status:  http.StatusConflict,
 			Code:    codeLogsUnavailable,
 			Message: "execution allocation is not ready",
@@ -190,7 +195,7 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 
 	taskState, ok := allocation.TaskStates[nomadTaskName]
 	if !ok {
-		return nil, &Error{
+		return ExecutionLogsResult{}, &Error{
 			Status:  http.StatusConflict,
 			Code:    codeLogsUnavailable,
 			Message: "execution allocation is not ready",
@@ -199,7 +204,7 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 	switch taskState.State {
 	case "running", "dead":
 	default:
-		return nil, &Error{
+		return ExecutionLogsResult{}, &Error{
 			Status:  http.StatusConflict,
 			Code:    codeLogsUnavailable,
 			Message: "execution logs are not available yet",
@@ -208,16 +213,20 @@ func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {
 
 	logs, err := s.nomadClient.fetchTaskLogs(ctx, allocation.ID, nomadTaskName)
 	if err != nil {
-		return nil, err
+		return ExecutionLogsResult{}, err
 	}
-	if allocationTerminal(allocation) {
+	terminalObserved := allocationTerminal(allocation)
+	if terminalObserved {
 		if representsTerminalSuccess(allocation) {
 			s.maybeCleanupSuccessfulStageRoot(locator, allocation)
 		} else {
 			s.maybeRetainTerminalResult(locator, allocation)
 		}
 	}
-	return logs, nil
+	return ExecutionLogsResult{
+		OutcomeEvidence: logsOutcomeEvidence(terminalObserved),
+		Payload:         logs,
+	}, nil
 }
 
 func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResult, *Error) {
@@ -235,9 +244,10 @@ func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResu
 	}
 
 	return ExecutionCancelResult{
-		Success: true,
-		RunID:   locator.RunID,
-		Status:  executionLifecycleStatusCancelRequested,
+		Success:         true,
+		RunID:           locator.RunID,
+		Status:          executionLifecycleStatusCancelRequested,
+		OutcomeEvidence: cancelOutcomeEvidence(),
 	}, nil
 }
 

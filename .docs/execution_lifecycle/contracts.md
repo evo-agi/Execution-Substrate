@@ -299,6 +299,13 @@ Successful response is `200` JSON with these current fields:
 - `lifecycle_projection`
   - `source`
   - `revision`
+- `outcome_evidence`
+  - `source`
+  - `observation`
+  - `lifecycle_projection`
+    - `source`
+    - `revision`
+  - `provider_terminal_observed`
 - optional `authority_handoff`
 - optional `exit_code`
 - `terminal`
@@ -316,6 +323,7 @@ Successful response is `200` JSON with these current fields:
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
 - Failed workloads still return `200`; failure is expressed through terminal state plus `exit_code` when available.
 - ES must not synthesize richer lifecycle phases than the current Nomad-backed projection exposes.
+- `outcome_evidence` is an additive read-only descriptor for the status observation ES just served. In the current slice its `source` is `nomad`; its `observation` label is one of `nomad_job_projection`, `nomad_projected_allocation`, or `nomad_task_state_projection`; its nested `lifecycle_projection` repeats the opaque status read token; and `provider_terminal_observed` says whether this status read observed a terminal provider state.
 - When status observes terminal execution, ES first attempts idempotent retention of any files under `/execution/run/result`.
 - When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/` only after result retention has been attempted.
 - Failed, canceled, lost, or otherwise ambiguous terminal outcomes do not trigger staging cleanup through `status`.
@@ -403,6 +411,7 @@ Current shape:
 - The public response no longer carries scheduler job/allocation identifiers or task-state detail.
 - The projection revision is the only current status lifecycle read-coordination fact; it does not imply an ES-owned lifecycle-state store.
 - `authority_handoff`, when present, is a separate runtime-handoff evidence fact, not a lifecycle revision or write-coordination token.
+- `outcome_evidence` is a current-slice status evidence descriptor. It does not make Nomad job IDs, allocation IDs, task IDs, task-state detail, or the current latest-allocation rule public contract.
 
 ### Reopened seams
 
@@ -434,6 +443,10 @@ Successful response is:
 - `200`
 - `Content-Type: text/plain; charset=utf-8`
 - stdout payload bytes only
+- `Execution-Substrate-Outcome-Source: nomad`
+- `Execution-Substrate-Outcome-Observation: nomad_task_stdout`
+- `Execution-Substrate-Outcome-Access-Class: plaintext_stdout`
+- `Execution-Substrate-Provider-Terminal-Observed: true|false`
 
 **Current contract invariants**
 
@@ -441,6 +454,7 @@ Successful response is:
 - Task name is fixed to `task`.
 - Output source is stdout only.
 - Successful `200` responses may still carry an empty stdout body if the selected allocation has not produced visible stdout bytes yet.
+- The successful response headers are additive descriptors for the bytes being returned. They say ES fetched current stdout through the bounded Nomad log path for the selected task; they are not pagination cursors, log revisions, scheduler IDs, stderr indicators, or write preconditions.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
 - If logs observes a terminal task, ES first attempts idempotent retention of any files under `/execution/run/result`.
 - If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout and attempting result retention.
@@ -519,12 +533,16 @@ Successful response is:
 - `200`
 - `Content-Type: application/gzip`
 - retained tar.gz bundle bytes
+- `Execution-Substrate-Outcome-Source: es_retained_result_store`
+- `Execution-Substrate-Outcome-Observation: retained_result_bundle`
+- `Execution-Substrate-Outcome-Access-Class: opaque_result_bundle`
 
 **Current contract invariants**
 
 - The result endpoint is a retained output retrieval surface, not a lifecycle-state registry.
 - ES does not synthesize Control Plane checkpoints, review decisions, or task-finalization outcomes from retained result files.
 - ES does not require callers to know host staging paths, Nomad allocation IDs, or Docker bind-mount sources.
+- The successful response headers label the body as an opaque ES-retained result bundle. They do not reveal bundle contents, host paths, retention filesystem paths, or any semantic interpretation of the files inside the archive.
 - Logs are not the result contract; stdout remains a separate narrow logs surface.
 
 ### Error contract
@@ -569,11 +587,16 @@ Successful response is `200` JSON with these fields:
 - `success`
 - `run_id`
 - `status`
+- `outcome_evidence`
+  - `source`
+  - `observation`
+  - `provider_terminal_observed`
 
 **Current contract invariants**
 
 - Current successful cancel receipts use `status = "cancel_requested"`.
 - Cancel is a bounded Nomad stop request, not a wider cancellation model.
+- `outcome_evidence.source` is `nomad`, `outcome_evidence.observation` is `nomad_stop_request_accepted`, and `outcome_evidence.provider_terminal_observed` is `false` on the current successful receipt because ES has only observed Nomad accepting the stop request, not provider termination.
 
 ### Error contract
 
@@ -590,6 +613,7 @@ Successful response is `200` JSON with these fields:
 - Cancel does not create a richer cancellation state model.
 - Cancel does not purge the Nomad job.
 - Cancel does not create a durable ES cancellation record.
+- Cancel does not return proof that the workload has stopped. Callers must use status reads for later terminal observation.
 
 ### Reopened seams
 

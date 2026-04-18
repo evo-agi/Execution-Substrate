@@ -64,6 +64,7 @@ ES owns:
 - staging of non-secret Vault CA trust material when the workload-zone Vault config supplies it
 - Nomad-backed status/log/result/cancel projection through public ES endpoints
 - the status `lifecycle_projection` source and opaque revision as a bounded read-coordination fact
+- additive outcome-evidence descriptors on status/cancel JSON and successful logs/result responses for the exact current response source ES observed or retained
 - bounded non-secret `authority_handoff` facts on submit/status for the selected runtime profile, workload identity endpoint handoff, workload-Vault auth metadata, selected workload-zone Vault config digest, and profile credential-location metadata
 - retained opaque `result.tar.gz` bundles captured from `/execution/run/result`
 - the truth of whether this repo's readiness helpers can honestly claim `submit-ready`
@@ -130,6 +131,22 @@ Status responses include `lifecycle_projection.source` and
 to detect a changed ES lifecycle observation, but must treat the revision as
 opaque. It is not a Nomad job/allocation identifier, not a cancel/result/logs
 write precondition, and not a Control Plane orchestration checkpoint.
+
+Status and cancel JSON responses include additive `outcome_evidence`.
+Successful logs and result responses expose the same outcome-evidence family as
+HTTP headers:
+
+- `Execution-Substrate-Outcome-Source`
+- `Execution-Substrate-Outcome-Observation`
+- `Execution-Substrate-Outcome-Access-Class`
+- `Execution-Substrate-Provider-Terminal-Observed` for logs
+
+CP may use these labels to tell whether ES served a Nomad-backed status
+projection, accepted Nomad stop request receipt, Nomad task stdout body, or
+opaque ES-retained result bundle. CP must not treat them as scheduler IDs,
+global run revisions, write preconditions, stdout/stderr completeness, cancel
+completion proof, retained-result content meaning, policy truth, or credential
+truth.
 
 Submit responses, and status responses when the submitted handoff facts are
 recoverable, include `authority_handoff`. CP may use that field as ES-owned

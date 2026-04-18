@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"execution-substrate/es/admission"
@@ -18,10 +19,19 @@ type preparationService interface {
 	Prepare(ctx context.Context, req admission.PrepareRequest) (admission.PrepareResult, *admission.Error)
 	Submit(ctx context.Context, req admission.PrepareRequest) (admission.SubmitResult, *admission.Error)
 	Status(ctx context.Context, runID string) (admission.ExecutionStatusResult, *admission.Error)
-	Logs(ctx context.Context, runID string) ([]byte, *admission.Error)
+	Logs(ctx context.Context, runID string) (admission.ExecutionLogsResult, *admission.Error)
 	Result(ctx context.Context, runID string) (admission.ExecutionResultBundle, *admission.Error)
 	Cancel(ctx context.Context, runID string) (admission.ExecutionCancelResult, *admission.Error)
 }
+
+const (
+	headerOutcomeSource             = "Execution-Substrate-Outcome-Source"
+	headerOutcomeObservation        = "Execution-Substrate-Outcome-Observation"
+	headerOutcomeAccessClass        = "Execution-Substrate-Outcome-Access-Class"
+	headerProviderTerminalObserved  = "Execution-Substrate-Provider-Terminal-Observed"
+	headerLifecycleProjectionSource = "Execution-Substrate-Lifecycle-Projection-Source"
+	headerLifecycleProjectionRev    = "Execution-Substrate-Lifecycle-Projection-Revision"
+)
 
 type Server struct {
 	service             preparationService
@@ -149,7 +159,7 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 		}
 		httpx.WriteJSON(w, http.StatusOK, result)
 	case "logs":
-		payload, err := s.service.Logs(r.Context(), runID)
+		result, err := s.service.Logs(r.Context(), runID)
 		if err != nil {
 			httpx.WriteJSON(w, err.Status, admission.ErrorResponse{
 				Success: false,
@@ -159,8 +169,9 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		writeOutcomeEvidenceHeaders(w.Header(), result.OutcomeEvidence)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(payload)
+		_, _ = w.Write(result.Payload)
 	case "result":
 		bundle, err := s.service.Result(r.Context(), runID)
 		if err != nil {
@@ -172,8 +183,32 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", bundle.MediaType)
+		writeOutcomeEvidenceHeaders(w.Header(), bundle.OutcomeEvidence)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(bundle.Payload)
+	}
+}
+
+func writeOutcomeEvidenceHeaders(header http.Header, evidence admission.ExecutionOutcomeEvidence) {
+	if strings.TrimSpace(evidence.Source) != "" {
+		header.Set(headerOutcomeSource, evidence.Source)
+	}
+	if strings.TrimSpace(evidence.Observation) != "" {
+		header.Set(headerOutcomeObservation, evidence.Observation)
+	}
+	if strings.TrimSpace(evidence.AccessClass) != "" {
+		header.Set(headerOutcomeAccessClass, evidence.AccessClass)
+	}
+	if evidence.ProviderTerminalObserved != nil {
+		header.Set(headerProviderTerminalObserved, strconv.FormatBool(*evidence.ProviderTerminalObserved))
+	}
+	if evidence.LifecycleProjection != nil {
+		if strings.TrimSpace(evidence.LifecycleProjection.Source) != "" {
+			header.Set(headerLifecycleProjectionSource, evidence.LifecycleProjection.Source)
+		}
+		if strings.TrimSpace(evidence.LifecycleProjection.Revision) != "" {
+			header.Set(headerLifecycleProjectionRev, evidence.LifecycleProjection.Revision)
+		}
 	}
 }
 
