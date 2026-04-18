@@ -34,6 +34,14 @@ The current Go system is a governed publication + storage + policy + admission +
 
 This is a coherent architecture, but it is not presented here as the final decomposition.
 
+## 3A. Program orientation
+
+Execution Substrate is the primary governed execution system in this repository. The current foundational boundary and contract work is part of the ES program because it determines what ES can admit, run, project, retain, and expose safely.
+
+Control Plane is a first non-operator consumer, not an owner of ES core contracts. CP-facing compatibility is important and must remain explicit, but CP documents, probes, examples, or proof-harness expectations do not define ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness semantics.
+
+The next milestone package is ES-owned: Workstream A and Workstream B clarify the shared-kernel and AGS/ARS input boundaries that ES consumes, while Workstream C delivers the ES admission and runtime-boundary realignment.
+
 ## 4. Topology overview
 
 **Observed current topology**
@@ -129,6 +137,7 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - CGS is a separate authorization boundary and is not in the current ES hot path.
 - `internal/contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
 - ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
+- ES-owned contracts are defined by this repository's `PLANS.md` and `.docs/` pages. Control Plane consumption docs may rely on accepted ES surfaces, but they do not widen or own ES core semantics.
 
 ## 7. Deliberate absences
 

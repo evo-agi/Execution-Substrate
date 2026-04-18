@@ -6,6 +6,8 @@ This document defines the current ES lifecycle and public execution contract in 
 
 Some lifecycle endpoints are live today but intentionally bounded. This file is authoritative for current endpoint, response, error, and lookup semantics. `.docs/execution_lifecycle/design.md` is the higher-level lifecycle design map, and `.docs/execution_lifecycle/implementation.md` records lower-level implementation behavior.
 
+Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
+
 ## 2. How to read this document
 
 - **Observed current contract**: A public endpoint, response, error, or lookup rule enforced by the current Go code and tests.

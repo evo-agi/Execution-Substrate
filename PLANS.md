@@ -73,6 +73,52 @@ The current plan must prioritize:
 
 Current code remains the starting point for any reopened-seam work, not a compatibility promise. Historical references outside this repo, including the Monolith/Python repository, may inform migration context or bounded proof/bootstrap conventions only; they are not current architecture authority.
 
+## Primary Program Orientation
+
+Execution Substrate is the primary program in this repository.
+
+The current ES work is foundational boundary and contract work, and that is real program delivery: it decides what governed execution can safely admit, run, project, retain, and expose to callers.
+
+Control Plane is an important first non-operator consumer. It improves ergonomics and governance around ES, but it does not define ES core contracts. Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.
+
+The next milestone package is **ES Admission And Runtime Boundary Realignment**.
+
+That package is ES-owned. It should deliver a coherent ES milestone by:
+
+- classifying stable ES semantic contracts, temporary compatibility edges, and implementation details/current slice constraints before implementation spreads outward
+- completing only the Workstream A shared-kernel decisions needed to keep ES from inheriting accidental cross-service grammar
+- completing only the Workstream B publication/storage/discoverability decisions needed to make ES input ownership explicit
+- delivering Workstream C as the primary ES admission, submission, lifecycle-projection, retained-result, and runtime-boundary package
+- preserving current CP compatibility for the governed execution path unless an explicit compatibility, drain, migration, or versioning plan is documented
+- keeping the current `execution_substrate.runtime_profile` annotation and `control-plane-normal-shell/v1` profile as accepted bounded compatibility for the next milestone package
+
+Stable semantic contracts for this next package:
+
+- ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
+- Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
+- ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
+- ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
+- ES-owned runtime identity and workload-credential handoff must remain platform-owned, non-secret, and non-brokering: workloads use the discovered endpoint and workload-Vault metadata; ES does not fetch, mint, store, rotate, parse, or validate Vault or Codex credential material.
+- Caller authentication and narrow SPIFFE allowlist authorization remain required on the governed execution path.
+
+Temporary compatibility edges to preserve explicitly during this package:
+
+- current CP compatibility for AGS publish plus ES prepare, submit, status, logs, result, and cancel over HTTPS+mTLS
+- `POST /v1/executions:prepare` as an active bounded preflight surface
+- `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
+- the current `static-script` overlay behavior for that profile
+- `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
+- retained `application/gzip` result bundles keyed by public `run_id`
+- supported-local profile-image durability checks, including the Nomad Docker `docker.cleanup.image=false` guardrail for enabled local runtime-profile images
+
+Implementation details and current slice constraints not to promote into stable architecture:
+
+- host staging roots, bind-mount source paths, `.out/` proof workspaces, generated helper artifacts, and guest `/tmp` scratch
+- the internal Nomad job naming rule `exec-<run_id>`
+- the latest-allocation projection rule, stdout-only log retrieval, single task named `task`, async-only submit, and no-retry/no-reschedule slice
+- proof-only Codex shim behavior and supported-local proof bootstrap details
+- helper scripts and examples as client contracts; the HTTPS API and documented runtime handoff are the client-facing surfaces
+
 ## Current-State Facts To Preserve During Redesign
 
 The following are useful current implementation facts and should remain visible to future agents while the redesign is underway:
@@ -182,6 +228,7 @@ Purpose:
 - Re-derive the minimum shared contract surface needed across services.
 - Keep the shared artifact kernel narrow and evidence-owned after excising the historical signing kernel.
 - Stop treating a shared package as the default home for cross-service meaning unless that meaning is truly stable and jointly owned.
+- For the next milestone package, answer only the shared-kernel questions that ES needs to admit and execute governed artifacts without inheriting accidental AGS, ARS, or CP grammar.
 
 Target files and packages:
 
@@ -197,6 +244,7 @@ Success condition:
 - The future shared surface is smaller and intentionally owned.
 - Cross-service semantics that do not need to be shared are moved back toward service-local ownership.
 - Future agents can tell which contracts are kernel-level versus service-level without inferring from package reuse.
+- Future agents can tell which shared-kernel rules are stable ES admission semantics, which are temporary compatibility edges, and which are merely current slice implementation detail.
 
 Dependencies:
 
@@ -210,6 +258,7 @@ Purpose:
 - Decide whether the current runtime-facing discovery shape, the secondary descriptor support path, and the current AGS artifact-identity derivation rule survive.
 - Separate storage integrity concerns from publication grammar and from ES consumption needs.
 - Keep the shared evidence grammar narrow: package identity remains separate, shared admission authorization is limited to derivation request binding, and execution/runtime claims remain distinct from non-shared publication or policy residue.
+- For the next milestone package, treat AGS and ARS work as an ES-enabling input-boundary reset: AGS/ARS own publication and discoverability; ES consumes their designed outputs; CP examples or probes do not define that contract.
 
 Target files and packages:
 
@@ -225,6 +274,7 @@ Success condition:
 - The artifact discovery model is explicit about what is canonical, what is runtime-discoverable, and what is merely current secondary publication/support implementation detail.
 - Payload versus artifact identity is no longer hidden in convenience assumptions.
 - ES can later consume artifact data through a designed discoverability surface rather than through an inherited tuple shape.
+- CP consumer compatibility can rely on the accepted API path, but CP-specific convenience expectations are not mistaken for AGS/ARS/ES core semantics.
 
 Dependencies:
 
@@ -237,6 +287,8 @@ Purpose:
 - Redesign ES public admission and execution surfaces.
 - Re-derive the preparation and submission boundary, scheduler handoff, and runtime package resolution from the Go codebase rather than from current inherited grammar.
 - Decide what ES should own, what ES should compose, and what ES should stop carrying.
+- Deliver the primary ES milestone package after the Workstream A and B input-boundary gates are explicit enough for ES not to inherit their ambiguities.
+- Preserve the accepted CP governed-execution compatibility edge without letting CP orchestration, review, checkpoint, or finalization assumptions become ES-owned semantics.
 
 Target files and packages:
 
@@ -252,11 +304,13 @@ Success condition:
 - ES no longer depends on the current inherited artifact and policy grammar by convenience.
 - The remaining shared execution/runtime inputs are intentionally defined rather than passively inherited from upstream publication metadata.
 - Scheduler handoff, payload resolution, and lifecycle projection are described as deliberate ES boundaries.
+- The current CP path, `execution_substrate.runtime_profile`, and `control-plane-normal-shell/v1` remain compatible unless an explicit migration/versioning note says otherwise.
+- Stable semantic contracts, temporary compatibility edges, and implementation details/current slice constraints are classified in `PLANS.md` and the adjacent system/lifecycle docs.
 
 Dependencies:
 
-- Workstream A
-- Workstream B
+- Workstream A, as the shared-kernel gate needed for ES admission ownership
+- Workstream B, as the AGS/ARS input-boundary gate needed for ES payload and evidence ownership
 
 ### Workstream D - Policy And Authorization Reset
 
@@ -402,31 +456,35 @@ Future agents should follow this order unless a later revision to `PLANS.md` cha
 1. Reset planning authority in `PLANS.md`.
    This step is complete when the repo no longer treats the old frozen-slice plan as the operative design target.
 
-2. Execute Workstream A first.
-   The shared contract and kernel decision had to happen before broad service redesign because the codebase previously leaked architecture through the historical signing kernel. The current repo now carries only the evidence-native kernel on the primary artifact path.
+2. Execute the next milestone as **ES Admission And Runtime Boundary Realignment**.
+   This is a package made of Workstream A, Workstream B, and Workstream C, with ES as the primary delivery owner. Workstream A and Workstream B are gates that keep ES input contracts honest; Workstream C is the delivered ES milestone.
 
-3. Execute Workstream B second.
-   AGS and ARS define the artifact publication and retrieval substrate that ES currently consumes. Their redesign must happen before ES is reshaped in earnest.
+3. Complete the Workstream A gate first.
+   The shared contract and kernel decision must be explicit enough that ES admission does not inherit accidental shared grammar. This gate is not permission to create a broad new shared kernel, and it is not CP-owned.
 
-4. Execute Workstream C third.
-   ES should be redesigned only after the kernel decision and artifact contract direction are clear enough to avoid re-embedding the old choreography.
+4. Complete the Workstream B gate second.
+   AGS and ARS define the artifact publication and retrieval substrate that ES consumes. This gate must make the ES-consumed discovery and payload/evidence ownership explicit without letting CP examples or helper scripts become contract authority.
 
-5. Execute Workstream D fourth.
+5. Deliver Workstream C third.
+   ES admission, submission, lifecycle projection, retained-result behavior, runtime-profile handling, and runtime-boundary ownership are the primary next milestone delivery. Preserve the accepted CP governed-execution path as bounded compatibility while keeping ES-owned semantics in ES docs.
+
+6. Execute Workstream D fourth.
    Policy and authorization surfaces should be re-derived once the ES execution shape is clear enough to say what policy inputs and outputs actually belong at runtime.
 
-6. Execute Workstream E fifth.
+7. Execute Workstream E fifth.
    Lookup/config indirection should be reset only after artifact, execution, and policy contracts have been clarified, because the replacement owner depends on those decisions.
 
-7. Execute Workstream F sixth.
+8. Execute Workstream F sixth.
    Runtime identity handoff should be redesigned after ES, policy, and runtime-config responsibilities are clear. Otherwise path conventions and auth-plan details will re-freeze around current incidental coupling.
 
-8. Do scripts, runbooks, deployment glue, and peripheral cleanup only after the core contracts stabilize.
+9. Do scripts, runbooks, deployment glue, and peripheral cleanup only after the core contracts stabilize.
    Cleanup is valuable, but it should not happen while the architecture-defining surfaces are still moving.
 
 This ordering is deliberate:
 
-- redesign the kernel before the services that depend on it
-- redesign publication and storage before redesigning execution consumption
+- use Workstream A and Workstream B as gates so ES does not inherit accidental shared or publication/storage grammar
+- deliver Workstream C as the next ES-owned program milestone, not as a CP-shaped feature expansion
+- preserve current CP compatibility as a bounded consumer edge while ES-owned contracts remain defined in this repo
 - redesign execution before finalizing policy and lookup consumers
 - redesign runtime identity only after the ES and policy boundaries are explicit
 
@@ -446,6 +504,9 @@ Future agents working in this phase must follow these rules:
 - Keep capability-sensitive behavior validated by behavior or static resource checks, not by OS labels or fallback branching.
 - Preserve current implementation behavior until a replacement contract is explicitly documented, tested, and implemented.
 - Treat compatibility shims as temporary and track their removal conditions.
+- Do not describe foundational ES boundary and contract work as secondary to the program; it is the current primary ES milestone.
+- Do not let Control Plane documents, probes, or examples define ES core contracts. They may document consumption of accepted ES surfaces only.
+- Preserve current CP compatibility for the governed execution path, including `execution_substrate.runtime_profile` and `control-plane-normal-shell/v1`, unless a coordinated compatibility, drain, migration, or versioning plan is documented first.
 
 ## Reopened-Seam Exit Criteria
 

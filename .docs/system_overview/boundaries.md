@@ -50,6 +50,8 @@ Those absences are current facts, not design commitments.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
 - `internal/contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
 - `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
+- ES-owned admission, submission, lifecycle projection, runtime-profile, runtime-identity, retained-result, and readiness semantics are defined by this repository's planning and boundary docs.
+- Control Plane is a consumer of accepted AGS and ES surfaces, not an owner of ES core contracts. CP documents, examples, probes, or proof-harness expectations must be treated as consumer compatibility inputs unless `PLANS.md` explicitly promotes a rule into ES-owned semantics.
 
 ## 4A. Proof Bootstrap Ownership
 
@@ -264,6 +266,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - The current repo-owned direct API example for that caller lives at `.examples/control_plane_static_script/run.sh`
 - ES consumes ARS evidence and payloads, EGS trust policy, and the configured workload-zone Vault config reference
 - Nomad is the execution backend ES submits to and reads from
+- The supported-local CP consumer runbook documents how CP consumes the accepted ES surface; it does not define ES core contracts.
 
 **Boundary pressure points**
 
@@ -285,6 +288,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 - `GET /v1/executions/{run_id}/result` is a bounded retained opaque bundle surface for the current slice, not a broad output platform.
 - `control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.
+- Current CP compatibility for publish -> prepare -> submit -> status/logs/result/cancel is a retained consumer edge. Breaking it requires an explicit compatibility, drain, migration, or versioning plan rather than an implied ES boundary change.
 
 **Reopened seams**
 

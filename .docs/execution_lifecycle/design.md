@@ -6,6 +6,8 @@ This document describes the current ES lifecycle design in the repository's boun
 
 The lifecycle slice documented here is real and implemented today. At the same time, some lifecycle rules are intentionally bounded and must not be mistaken for long-term architecture simply because they are active in the current slice.
 
+Foundational ES lifecycle and runtime-boundary clarification is primary Execution Substrate program work, not a secondary architecture-only exercise. Control Plane is an important consumer of the accepted ES lifecycle surface, but CP orchestration, review, checkpoint, hold/resume/reject, finalization, and proof-harness semantics do not define ES lifecycle ownership.
+
 This file stays design-level. Detailed endpoint and response rules belong in `.docs/execution_lifecycle/contracts.md`. Current implementation behavior belongs in `.docs/execution_lifecycle/implementation.md`.
 
 ## 2. How to read this document

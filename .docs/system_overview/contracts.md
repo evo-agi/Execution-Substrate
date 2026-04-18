@@ -334,6 +334,39 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
   - EGS runtime-trust publication
   - Nomad job and allocation APIs
 
+### Next milestone classification
+
+`Current invariant`
+
+Stable semantic contracts for the ES Admission And Runtime Boundary Realignment package:
+
+- ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle retrieval, and runtime handoff boundary enforcement.
+- ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
+- Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
+- ES-retained result bundles are opaque output material. They are not logs wrappers, CP checkpoints, review decisions, finalization records, or ES-owned orchestration state.
+- The workload credential handoff is non-secret and workload-side: ES injects identity and credential-location metadata, while the workload uses the discovered endpoint and workload-Vault metadata to acquire material itself.
+- Caller identity and narrow configured SPIFFE allowlist authorization remain required on the governed execution path.
+
+`Temporary compatibility edge`
+
+Compatibility edges to preserve during the next package unless a coordinated migration/versioning note says otherwise:
+
+- current CP compatibility for AGS publish plus ES prepare, submit, status, logs, result, and cancel
+- `POST /v1/executions:prepare` as an active bounded preflight surface
+- `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
+- `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
+- retained `application/gzip` result bundles keyed by public `run_id`
+
+`Observed current contract`
+
+Implementation details and current slice constraints must not be promoted into stable cross-service semantics merely because they appear in code, helpers, or CP proof harnesses:
+
+- host staging roots, bind-mount source paths, local proof workspaces, guest scratch, and generated helper artifacts
+- internal Nomad job IDs such as `exec-<run_id>`
+- latest-allocation projection, stdout-only log retrieval, one task named `task`, async-only submit, and no-retry/no-reschedule behavior
+- proof-only Codex shim behavior and supported-local proof bootstrap details
+- shell helpers and examples as client contracts
+
 ### Public surface
 
 `Observed current contract`

@@ -13,6 +13,12 @@ Status classification:
 - The runtime-profile annotation, retained-result bundle shape, `/execution/...` runtime paths, and runtime identity endpoint convention remain active compatibility-heavy conventions on reopened ES seams.
 - This runbook documents accepted current behavior. It does not settle the long-term ES request model, package model, runtime-profile vocabulary, or runtime path layout.
 
+Authority boundary:
+
+- This runbook documents how CP consumes an accepted ES-owned surface; it is not the source of truth for ES core contracts.
+- If CP documents, probes, examples, or proof-harness expectations ask for behavior beyond `PLANS.md`, `.docs/system_overview/`, and `.docs/execution_lifecycle/`, treat that as a cross-repo compatibility decision to coordinate rather than as an implicit ES contract.
+- Preserving the current CP path matters, but widening ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness semantics requires ES-side planning and boundary-doc updates first.
+
 Use this alongside:
 
 - [Control Plane long-running operator mode contract](../../Control%20Plane/.docs/long-running-operator-mode-contract.md)
