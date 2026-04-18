@@ -58,6 +58,7 @@ func TestProducerContractDeclarationRequiresGovernedOutcomeEvidence(t *testing.T
 		"not_submit_readiness",
 		"not_artifact_admission_proof",
 		"not_run_authority",
+		"not_run_existence_proof",
 		"not_lifecycle_truth",
 		"not_credential_truth",
 		"not_lifecycle_write_coordination",
@@ -160,6 +161,19 @@ func TestProducerContractDeclarationMarksSubmitlessServiceDisabled(t *testing.T)
 	}
 	assertRuntimeProfileStatus(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileDefaultStaticScript, "disabled")
 	assertRuntimeProfileStatus(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileControlPlaneNormalShell, "disabled")
+	assertRuntimeProfileDisabledReason(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileDefaultStaticScript, "submit_not_configured")
+	assertRuntimeProfileDisabledReason(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileControlPlaneNormalShell, "submit_not_configured")
+}
+
+func TestProducerContractDeclarationMarksDisabledRuntimeProfileReason(t *testing.T) {
+	declaration := producerContractDeclaration(producerContractSubmitConfig(false))
+
+	if !declaration.GovernedExecution.Enabled {
+		t.Fatalf("expected governed execution enabled when submit is configured, got %+v", declaration.GovernedExecution)
+	}
+	assertRuntimeProfileStatus(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileDefaultStaticScript, "enabled")
+	assertRuntimeProfileStatus(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileControlPlaneNormalShell, "disabled")
+	assertRuntimeProfileDisabledReason(t, declaration.GovernedExecution.RuntimeProfiles, runtimeProfileControlPlaneNormalShell, "profile_not_enabled")
 }
 
 func producerContractSubmitConfig(enableControlPlaneProfile bool) esconfig.Config {
@@ -196,6 +210,20 @@ func assertRuntimeProfileStatus(t *testing.T, profiles []ProducerRuntimeProfileD
 		if profile.Name == name {
 			if profile.Status != status {
 				t.Fatalf("expected profile %s status %s, got %+v", name, status, profile)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing runtime profile %q in %+v", name, profiles)
+}
+
+func assertRuntimeProfileDisabledReason(t *testing.T, profiles []ProducerRuntimeProfileDeclaration, name string, reason string) {
+	t.Helper()
+
+	for _, profile := range profiles {
+		if profile.Name == name {
+			if profile.DisabledReason != reason {
+				t.Fatalf("expected profile %s disabled reason %s, got %+v", name, reason, profile)
 			}
 			return
 		}

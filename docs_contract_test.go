@@ -177,3 +177,46 @@ func TestGoldenProducerProofPathIsDocumented(t *testing.T) {
 		t.Fatalf("capability probing doc missing static producer declaration boundary")
 	}
 }
+
+func TestProducerFailurePathDistinctionsAreDocumented(t *testing.T) {
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	for _, required := range []string{
+		"`disabled_reason = \"submit_not_configured\"`",
+		"`disabled_reason = \"profile_not_enabled\"`",
+		"`not_run_existence_proof`",
+		"`execution_not_found` is a lifecycle observation absence",
+		"not a producer declaration incompatibility",
+		"not, by itself, a submit-readiness or substrate-health result",
+	} {
+		if !strings.Contains(lifecycleContracts, required) {
+			t.Fatalf("execution lifecycle contract missing failure-path distinction %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`submit_not_configured`",
+		"`profile_not_enabled`",
+		"`not_run_existence_proof`",
+		"static compatibility metadata for live lifecycle observation",
+	} {
+		if !strings.Contains(contracts, required) {
+			t.Fatalf("system contracts doc missing producer failure-path distinction %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"producer declaration incompatibility",
+		"runtime/live substrate readiness failure",
+		"missing mandatory outcome-evidence support",
+		"required runtime profile is unavailable",
+		"run lifecycle observation absence",
+		"not producer declaration incompatibility or submit readiness",
+	} {
+		if !strings.Contains(runbook, required) {
+			t.Fatalf("CP consumer runbook missing producer failure-path distinction %q", required)
+		}
+	}
+}

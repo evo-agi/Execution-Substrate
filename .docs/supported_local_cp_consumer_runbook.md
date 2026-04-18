@@ -211,6 +211,23 @@ a disabled required runtime profile is an early compatibility failure. Do not
 work around that by starting the high-value run and hoping lifecycle responses
 carry the required evidence later.
 
+Treat these as producer declaration incompatibility, not runtime/live substrate
+readiness failure:
+
+- `governed_execution.enabled=false` with
+  `disabled_reason="submit_not_configured"` means the pointed-at ES is not
+  configured for submit.
+- a missing required runtime-profile entry, or a profile entry with
+  `status="disabled"` and `disabled_reason="profile_not_enabled"`, means the
+  required runtime profile is unavailable on that producer.
+- missing mandatory outcome-evidence support means the producer has not
+  declared the status/cancel/logs/result evidence carriers CP requires.
+
+Treat `submit-ready: false`, missing Docker/Nomad/profile-image readiness, and
+other readiness-helper failures as runtime/live substrate readiness failure.
+Those failures do not by themselves mean the producer declaration is
+incompatible.
+
 The declaration does not prove that a run exists, that Nomad can currently place
 the workload, that the workload will use the identity endpoint correctly, that
 Vault or Codex credential material exists, or that retained result contents have
@@ -439,6 +456,7 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 | CP contract probe expects routes or fields beyond the listed API surface | The probe is asking for behavior outside the accepted ES client contract. | CP proof harness / contract probe |
 | `submit-ready: false`, missing Docker, missing Nomad leader/client, `DevMode=true`, `cpu.totalcompute=0`, missing profile image, or missing `docker.cleanup.image=false` | ES is refusing to claim runtime readiness honestly. The fix is substrate/profile/image lifecycle, not a runtime contract widening. | Local environment / Infra Manager for bootstrap and lifecycle; ES docs define the readiness truth |
 | `:submit` returns `execution_runtime_unavailable`, `submission_failed`, or a Nomad/Docker runtime placement problem after readiness | Runtime handoff reached the substrate, but the substrate could not accept or run that workload shape. | ES runtime/profile config or local Nomad/Docker environment, based on the concrete failure |
+| `status`, `logs`, `result`, or `cancel` returns `execution_not_found` for a syntactically valid `run_id` | ES has no lifecycle observation for that `run_id` through the current Nomad-backed lookup. This is run lifecycle observation absence, not producer declaration incompatibility or submit readiness. | ES/Nomad lifecycle observation first; CP if the `run_id` was never submitted to this ES instance |
 | Workload starts, then identity endpoint or Vault login fails | The run passed ES submit. Check endpoint use, helper-private SPIRE availability, workload-Vault metadata, CA trust, and the proof-scoped Vault target. | ES runtime contract if injected values/files are wrong; workload/CP runner if it misuses them; local environment for SPIRE/Vault availability |
 | Workload reaches terminal success but `GET /result` returns `result_not_found` | ES has no retained bundle. If `/execution/run/result` was not written, this is not an ES result-retention bug. | CP runner/workload first, ES only if result files existed and were not retained |
 | CP proof harness fails review, finalization, checkpoint promotion, expected Codex semantics, or proof-matrix assertions after ES returned the expected status/log/result contract | ES fulfilled the bounded runtime surface; the failing semantics are above ES ownership. | Control Plane proof harness / orchestration |

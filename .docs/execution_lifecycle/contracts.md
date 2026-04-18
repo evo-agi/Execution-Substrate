@@ -115,11 +115,17 @@ Runtime-profile entries are configuration-aware:
 - `static-script/default` is `enabled` only when submit is configured
 - `control-plane-normal-shell/v1` is `enabled` only when submit is configured and `execution.runtime_profiles.control_plane_normal_shell.enabled=true`
 
+Runtime-profile disabled reasons are part of the current declaration shape:
+
+- when submit configuration is absent, governed execution is disabled with `disabled_reason = "submit_not_configured"` and each declared runtime-profile entry is disabled for the same reason
+- when submit configuration is present but the bounded Control Plane normal-shell profile is not enabled, that profile entry is disabled with `disabled_reason = "profile_not_enabled"`
+
 ### Current contract invariants
 
 - The declaration is read-only and non-secret.
 - The declaration is served only after the same authenticated caller and configured SPIFFE allowlist check used by the execution and lifecycle API.
 - The declaration is not service health, submit readiness, artifact-specific admission proof, run existence proof, lifecycle state, lifecycle write coordination, credential possession, policy approval, or scheduler API.
+- The current `non_authority` classifications include `not_service_health`, `not_submit_readiness`, `not_artifact_admission_proof`, `not_run_authority`, `not_run_existence_proof`, `not_lifecycle_truth`, `not_lifecycle_write_coordination`, `not_credential_truth`, `not_policy_truth`, and `not_scheduler_api`.
 - The declaration must not expose Nomad job IDs, allocation IDs, task IDs, host paths, result filesystem paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, or policy approval state.
 - Consumers may use the declaration as an early compatibility gate by requiring `governed_execution.contract = "governed-execution-producer/v1"`, `governed_execution.enabled = true`, and mandatory status/cancel/logs/result outcome-evidence surfaces.
 - Consumers that require the bounded Control Plane normal-shell path must also require an enabled `control-plane-normal-shell/v1` runtime-profile entry.
@@ -769,6 +775,8 @@ Successful response is `200` JSON with these fields:
 | Aggregate artifact evidence unavailable after registration | `:prepare`, `:submit` | `503` | JSON | `artifact_evidence_unavailable` |
 | Nomad unavailable or malformed runtime response | `status`, `logs`, `result` when it still needs terminal lookup, `cancel`, and submit runtime path | `503` | JSON | `execution_runtime_unavailable` or `submission_failed` depending on operation |
 | Workload failure reflected in status | `status` | `200` | JSON | failure is expressed in Nomad-derived fields, not a separate HTTP error |
+
+`execution_not_found` is a lifecycle observation absence on the current Nomad-backed lookup for the supplied `run_id`. It is not a producer declaration incompatibility and not, by itself, a submit-readiness or substrate-health result.
 
 ## 14. Runtime identity and lifecycle edge
 

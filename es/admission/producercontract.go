@@ -41,6 +41,7 @@ func producerContractDeclaration(cfg esconfig.Config) ProducerContractDeclaratio
 			"not_submit_readiness",
 			"not_artifact_admission_proof",
 			"not_run_authority",
+			"not_run_existence_proof",
 			"not_lifecycle_truth",
 			"not_lifecycle_write_coordination",
 			"not_credential_truth",
