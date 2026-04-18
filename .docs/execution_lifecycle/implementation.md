@@ -46,6 +46,7 @@ Related support files:
 - `Server.Handler()` in `es/api/server.go` builds the HTTP mux.
 - The mux is wrapped with `observability.WrapHandler("execution", mux)` before serving.
 - Route entrypoints are:
+  - `handleProducerContract -> service.ProducerContract`
   - `handlePrepare -> service.Prepare`
   - `handleSubmit -> service.Submit`
   - `handleLifecycleGet -> service.Status`, `service.Logs`, or `service.Result`
@@ -53,6 +54,7 @@ Related support files:
 
 Where behavior lives:
 
+- The producer contract handler authorizes the caller, then returns the service-owned static declaration.
 - Request decoding for `:prepare` and `:submit` happens in `decodeAuthorizedExecutionRequest`.
 - Caller authorization happens in `authorizeExecutionCaller`.
 - Lifecycle path parsing for `status`, `logs`, `result`, and `cancel` happens in `parseLifecycleRequest`.
@@ -61,6 +63,7 @@ Where behavior lives:
 
 **Implementation invariants**
 
+- `GET /v1/executions:contract` uses the same execution-caller authorization helper as prepare, submit, status, logs, result, and cancel.
 - Authorization runs before body decode for execution endpoints.
 - Lifecycle GET/POST handlers authorize first, then parse the path, then delegate to the admission service.
 - HTTP handlers do not own business logic beyond auth, decode, parse, and response shaping.
@@ -103,6 +106,7 @@ Dependency wiring:
   - ARS ready
 - Live EGS reachability is not treated as a post-start runtime readiness dependency in the current implementation.
 - ES `/health` remains admission-oriented only; the operator bring-up/check path now layers workload-zone Vault runtime-config verification and, for the full profile, ES submit-config, Docker, required runtime-profile image availability, and Nomad checks on top before declaring submit readiness.
+- `GET /v1/executions:contract` is static compatibility metadata assembled from the ES service configuration and the current code-owned outcome-evidence vocabulary. It does not call Nomad, ARS, EGS, Docker, Vault, SPIRE, or any run-specific store.
 
 What the app layer delegates:
 

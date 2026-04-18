@@ -1,6 +1,15 @@
 package admission
 
 const (
+	LogsMediaType = "text/plain; charset=utf-8"
+
+	OutcomeHeaderSource                    = "Execution-Substrate-Outcome-Source"
+	OutcomeHeaderObservation               = "Execution-Substrate-Outcome-Observation"
+	OutcomeHeaderAccessClass               = "Execution-Substrate-Outcome-Access-Class"
+	OutcomeHeaderProviderTerminalObserved  = "Execution-Substrate-Provider-Terminal-Observed"
+	OutcomeHeaderLifecycleProjectionSource = "Execution-Substrate-Lifecycle-Projection-Source"
+	OutcomeHeaderLifecycleProjectionRev    = "Execution-Substrate-Lifecycle-Projection-Revision"
+
 	outcomeEvidenceSourceNomad                 = "nomad"
 	outcomeEvidenceSourceRetainedResultStore   = "es_retained_result_store"
 	outcomeObservationNomadJobProjection       = "nomad_job_projection"

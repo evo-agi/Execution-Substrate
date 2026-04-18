@@ -355,6 +355,7 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 Compatibility edges to preserve during the next package unless a coordinated migration/versioning note says otherwise:
 
 - current CP compatibility for AGS publish plus ES prepare, submit, status, logs, result, and cancel
+- `GET /v1/executions:contract` as a narrow read-only producer compatibility declaration for the current governed-execution contract and mandatory outcome-evidence surfaces
 - `POST /v1/executions:prepare` as an active bounded preflight surface
 - `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
 - `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
@@ -377,6 +378,7 @@ Implementation details and current slice constraints must not be promoted into s
 `Observed current contract`
 
 - `POST /v1/executions:prepare`
+- `GET /v1/executions:contract`
 - `POST /v1/executions:submit`
 - `GET /v1/executions/{run_id}/status`
 - `GET /v1/executions/{run_id}/logs`
@@ -440,6 +442,16 @@ Current lifecycle lookup policy:
 
 Current successful response shapes:
 
+- `:contract`
+  - `schema_version`
+  - `service`
+  - `governed_execution`
+    - `contract`
+    - `enabled`
+    - optional `disabled_reason`
+    - `runtime_profiles`
+    - `outcome_evidence`
+  - `non_authority`
 - `:prepare`
   - `success`
 - `:submit`
@@ -471,6 +483,7 @@ Current successful response shapes:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
+- `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
   - `spiffe://execution.internal/operator`
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
@@ -503,6 +516,8 @@ Current successful response shapes:
 - Successful submit returns the bounded `authority_handoff` read fact assembled from the same selected runtime profile, runtime identity handoff, workload-vault plan, workload-zone Vault config reference, and profile credential-location metadata ES hands to the submitted runtime.
 - Status returns `authority_handoff` when ES can recover those non-secret facts from the submitted runtime spec. This recovery does not create a run store and does not expose Nomad job IDs, allocation IDs, or task-state detail.
 - The supported-local proof image may realize the configured Codex CLI path with a deterministic proof-only shim. That proves the ES runtime contract for the CP normal-shell path without claiming real upstream Codex service behavior.
+- The producer contract declaration lets clients verify before submission that this ES instance declares `governed-execution-producer/v1`, whether submit is enabled, whether `control-plane-normal-shell/v1` is enabled in config, and that status/cancel JSON plus successful logs/result responses require the current outcome-evidence carriers.
+- The producer contract declaration is not service health, submit readiness, artifact-specific admission proof, run authority, lifecycle truth, credential truth, policy truth, lifecycle write coordination, or scheduler API.
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
@@ -551,6 +566,7 @@ Current successful response shapes:
 `Temporary compatibility edge`
 
 - `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
+- `GET /v1/executions:contract` is a current compatibility-gate declaration for CP/IM consumers; it is not a broad capability registry or replacement for readiness checks.
 - The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.

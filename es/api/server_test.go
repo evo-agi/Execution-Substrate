@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,13 +57,54 @@ func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
 	assertHeader(t, resultRecorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
 }
 
+func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
+	service := fakeLifecycleService{
+		producerContract: admission.ProducerContractDeclaration{
+			SchemaVersion: "execution-substrate.producer-contract/v1",
+			Service:       "execution",
+			GovernedExecution: admission.GovernedExecutionProducerContractDeclaration{
+				Contract: "governed-execution-producer/v1",
+				Enabled:  true,
+			},
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator"}, func() bool { return true })
+
+	unauthorizedRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorizedRecorder, httptest.NewRequest(http.MethodGet, "/v1/executions:contract", nil))
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized contract probe 401, got %d body=%s", unauthorizedRecorder.Code, unauthorizedRecorder.Body.String())
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions:contract"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected contract probe 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload admission.ProducerContractDeclaration
+	if err := json.NewDecoder(recorder.Result().Body).Decode(&payload); err != nil {
+		t.Fatalf("decode contract declaration: %v", err)
+	}
+	if payload.SchemaVersion != "execution-substrate.producer-contract/v1" ||
+		payload.GovernedExecution.Contract != "governed-execution-producer/v1" ||
+		!payload.GovernedExecution.Enabled {
+		t.Fatalf("unexpected contract declaration %+v", payload)
+	}
+}
+
 type fakeLifecycleService struct {
-	logsResult   admission.ExecutionLogsResult
-	resultBundle admission.ExecutionResultBundle
+	logsResult       admission.ExecutionLogsResult
+	resultBundle     admission.ExecutionResultBundle
+	producerContract admission.ProducerContractDeclaration
 }
 
 func (f fakeLifecycleService) Health(context.Context) admission.HealthSnapshot {
 	return admission.HealthSnapshot{}
+}
+
+func (f fakeLifecycleService) ProducerContract(context.Context) admission.ProducerContractDeclaration {
+	return f.producerContract
 }
 
 func (f fakeLifecycleService) Prepare(context.Context, admission.PrepareRequest) (admission.PrepareResult, *admission.Error) {

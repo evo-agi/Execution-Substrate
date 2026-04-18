@@ -108,6 +108,10 @@ Releaseability and scaling alignment for CP consumers:
   versioning plan before CP productization depends on it.
 - ES `/health` remains service health. Supported-local submit claims still come
   from the submit-ready check described below, not from a single endpoint probe.
+- ES `GET /v1/executions:contract` is the current producer-side compatibility
+  declaration for the governed-execution contract and mandatory outcome-evidence
+  surfaces. It is not service health, submit readiness, run authority,
+  credential truth, lifecycle write coordination, or scheduler API.
 
 ## 4. Real client surface
 
@@ -119,6 +123,7 @@ Publication:
 
 Execution and lifecycle:
 
+- `GET /v1/executions:contract` on ES
 - `POST /v1/executions:prepare` on ES
 - `POST /v1/executions:submit` on ES
 - `GET /v1/executions/{run_id}/status` on ES
@@ -176,6 +181,40 @@ These are helper/proof surfaces, not separate client contracts:
 - `.examples/control_plane_normal_shell_runtime/entrypoint`
 
 Those helpers and examples are useful for operator diagnosis and repo-owned proof capture. CP consumers should treat the API endpoints above as the real surface.
+
+## 4A. Early Compatibility Gate
+
+Before starting a high-value governed run, CP or Infra Manager may use this
+producer-side sequence:
+
+1. Call `GET /v1/executions:contract` over the same HTTPS+mTLS boundary and
+   caller identity class intended for governed execution. Require `200`,
+   `schema_version = "execution-substrate.producer-contract/v1"`,
+   `governed_execution.contract = "governed-execution-producer/v1"`, and
+   `governed_execution.enabled = true`.
+2. Require the declaration to mark status JSON, cancel JSON, successful logs
+   headers, and successful result headers as required `outcome_evidence`
+   carriers. For normal-shell clients, also require an enabled
+   `control-plane-normal-shell/v1` runtime-profile entry.
+3. Call ES `/health` to verify service health. Treat `/health` as service
+   health only, not submit readiness and not a producer-contract declaration.
+4. Use the environment-owned readiness proof before submit. On the repo-owned
+   supported-local path this is `scripts/01_bringup.sh check` or
+   `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`; CP/IM may consume an
+   equivalent profile only if it preserves the same submit-ready truth.
+5. Use `POST /v1/executions:prepare` for artifact-specific admission proof
+   before `:submit` when CP already has the candidate artifact.
+
+A missing `GET /v1/executions:contract`, a non-`200` response, a disabled
+governed-execution declaration, missing mandatory outcome-evidence carriers, or
+a disabled required runtime profile is an early compatibility failure. Do not
+work around that by starting the high-value run and hoping lifecycle responses
+carry the required evidence later.
+
+The declaration does not prove that a run exists, that Nomad can currently place
+the workload, that the workload will use the identity endpoint correctly, that
+Vault or Codex credential material exists, or that retained result contents have
+any CP semantic meaning.
 
 ## 5. `submit-ready` meaning
 
@@ -348,6 +387,7 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 | CP cannot obtain or use the supported-local profile, service URLs, CA, or client cert/key before reaching AGS/ES | The request did not reach the ES/AGS API contract. Check local profile emission, TLS material, and endpoint wiring. | Infra Manager / local environment, with CP consuming the emitted profile |
 | TLS handshake, connection, or mTLS failure before an AGS/ES handler response | The HTTPS+mTLS transport boundary failed. If the services are healthy through ES readiness but CP cannot connect, start with profile/client material. | Infra Manager / local environment / CP profile use |
 | `401` or `403` from AGS or ES after a request reaches the service | Caller identity is missing, bootstrap-issued, or outside `authorization.allowed_spiffe_path_prefixes`. | ES/AGS config for allowed callers, plus CP/IM for the presented client identity |
+| `GET /v1/executions:contract` is missing, disabled, lacks mandatory outcome-evidence carriers, or lacks an enabled required runtime profile | The pointed-at ES has not declared the current governed-execution producer contract for the requested CP path. | ES version/config first; CP/IM should fail the compatibility gate before submit |
 | `POST /v1/artifacts:publish` fails with publish request validation or evidence assembly errors | The artifact publication boundary failed before ES runtime. | CP request construction or AGS publication config, depending on the concrete response |
 | `POST /v1/executions:prepare` fails with evidence, trust, runtime-config, unsupported profile, or request/fact mismatch errors | ES rejected the request before runtime handoff. | ES/AGS/ARS/EGS inputs for evidence/trust/config; CP if the request shape or profile annotation is wrong |
 | CP contract probe expects routes or fields beyond the listed API surface | The probe is asking for behavior outside the accepted ES client contract. | CP proof harness / contract probe |
@@ -360,11 +400,12 @@ Route based on the first failed boundary. Do not over-classify a later symptom u
 ## 10. Fast diagnosis checklist
 
 1. Re-run `scripts/01_bringup.sh check` and record whether the environment reports `prepare-ready: true`, `submit-ready: true`, `submit-ready-mode: natural`, and `supported-environment: supported`.
-2. Confirm CP is using the direct API surface, not assuming helper script behavior as product contract.
-3. Confirm AGS and ES configs allow `spiffe://execution.internal/service/control-plane` narrowly.
-4. For `control-plane-normal-shell/v1`, confirm the request sets `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` and the published artifact has `network_access=true`.
-5. Confirm the configured profile image exists in the Docker daemon used by Nomad and Nomad reports `docker.cleanup.image=false`.
-6. If the workload starts, inspect logs for endpoint/Vault/trust-material failures before treating the issue as submit readiness.
-7. If retained result fetch fails, distinguish `result_unavailable` from `result_not_found`, then check whether the workload wrote result files under `/execution/run/result`.
+2. Call `GET /v1/executions:contract` and confirm the current producer contract, mandatory outcome-evidence carriers, and any required runtime profile are enabled.
+3. Confirm CP is using the direct API surface, not assuming helper script behavior as product contract.
+4. Confirm AGS and ES configs allow `spiffe://execution.internal/service/control-plane` narrowly.
+5. For `control-plane-normal-shell/v1`, confirm the request sets `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"` and the published artifact has `network_access=true`.
+6. Confirm the configured profile image exists in the Docker daemon used by Nomad and Nomad reports `docker.cleanup.image=false`.
+7. If the workload starts, inspect logs for endpoint/Vault/trust-material failures before treating the issue as submit readiness.
+8. If retained result fetch fails, distinguish `result_unavailable` from `result_not_found`, then check whether the workload wrote result files under `/execution/run/result`.
 
 Use `.runbooks/system/v1_bringup.md` for the broader operator troubleshooting matrix and diagnostics collection. This runbook is the ES-side CP consumer overlay for that same accepted supported-local surface.

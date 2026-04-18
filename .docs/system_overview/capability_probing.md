@@ -111,6 +111,14 @@ Probes enforce the documented contract.
 
 Probes do not define new behavior on their own and must not silently widen a service boundary.
 
+## Producer Contract Declarations
+
+Read-only producer contract declarations, such as ES `GET /v1/executions:contract`, are not runtime capability probes.
+
+They may declare static compatibility facts owned by the producer, such as the current governed-execution producer contract, config-enabled runtime-profile names, and mandatory response-evidence carriers. They must not perform background probing, call runtime dependencies, create run state, or replace health/readiness checks.
+
+Consumers may use such declarations as early compatibility gates, but runtime readiness still belongs to the documented validation and readiness boundaries.
+
 ## Example: Runtime Identity
 
 For the bounded slice-1 runtime-identity delivery slice:

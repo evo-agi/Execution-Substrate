@@ -188,6 +188,51 @@ type HealthSnapshot struct {
 	TrustModelLoaded        bool
 }
 
+// ProducerContractDeclaration is the narrow producer-side compatibility
+// declaration for the current governed-execution path. It is static
+// non-secret metadata, not health, readiness, run authority, credential truth,
+// lifecycle write coordination, or scheduler API.
+type ProducerContractDeclaration struct {
+	SchemaVersion     string                                       `json:"schema_version"`
+	Service           string                                       `json:"service"`
+	GovernedExecution GovernedExecutionProducerContractDeclaration `json:"governed_execution"`
+	NonAuthority      []string                                     `json:"non_authority"`
+}
+
+type GovernedExecutionProducerContractDeclaration struct {
+	Contract        string                              `json:"contract"`
+	Enabled         bool                                `json:"enabled"`
+	DisabledReason  string                              `json:"disabled_reason,omitempty"`
+	RuntimeProfiles []ProducerRuntimeProfileDeclaration `json:"runtime_profiles"`
+	OutcomeEvidence ProducerOutcomeEvidenceDeclaration  `json:"outcome_evidence"`
+}
+
+type ProducerRuntimeProfileDeclaration struct {
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	DisabledReason string `json:"disabled_reason,omitempty"`
+}
+
+type ProducerOutcomeEvidenceDeclaration struct {
+	Required      bool                                      `json:"required"`
+	StatusJSON    ProducerOutcomeEvidenceSurfaceDeclaration `json:"status_json"`
+	CancelJSON    ProducerOutcomeEvidenceSurfaceDeclaration `json:"cancel_json"`
+	LogsHeaders   ProducerOutcomeEvidenceSurfaceDeclaration `json:"logs_headers"`
+	ResultHeaders ProducerOutcomeEvidenceSurfaceDeclaration `json:"result_headers"`
+}
+
+type ProducerOutcomeEvidenceSurfaceDeclaration struct {
+	Required        bool     `json:"required"`
+	Carrier         string   `json:"carrier"`
+	Field           string   `json:"field,omitempty"`
+	MediaType       string   `json:"media_type,omitempty"`
+	RequiredFields  []string `json:"required_fields,omitempty"`
+	RequiredHeaders []string `json:"required_headers,omitempty"`
+	Source          string   `json:"source,omitempty"`
+	Observations    []string `json:"observations,omitempty"`
+	AccessClass     string   `json:"access_class,omitempty"`
+}
+
 type RuntimeInterface struct {
 	EnvironmentVariables []string `json:"environment_variables"`
 	RequiredCapabilities []string `json:"required_capabilities"`

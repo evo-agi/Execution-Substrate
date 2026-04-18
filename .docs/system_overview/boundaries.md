@@ -222,6 +222,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 **Current ownership**
 
 - Public request surfaces:
+  - `/v1/executions:contract`
   - `/v1/executions:prepare`
   - `/v1/executions:submit`
   - `/v1/executions/{run_id}/status`
@@ -235,6 +236,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state, including the bounded status `lifecycle_projection` read-coordination fact
 - Bounded retained-result storage for opaque tar.gz bundles captured from `/execution/run/result` in the current `static-script` slice
 - Additive outcome/evidence descriptors for current lifecycle observations and retained outputs that ES can directly source: Nomad status projection depth, Nomad task stdout, accepted Nomad stop request receipts, and opaque ES-retained result bundles
+- A narrow non-secret producer compatibility declaration for the current governed-execution contract, submit/profile enablement, and mandatory outcome-evidence response carriers
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
 - Bounded non-secret `authority_handoff` read facts for submitted runs, sourced from ES-selected runtime handoff facts and the submitted runtime spec
@@ -259,6 +261,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
 - Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - Scheduler identifiers, backend allocation/task IDs, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, or write-precondition semantics behind the `outcome_evidence` descriptor surface
+- Service health, submit readiness, run authority, credential truth, lifecycle write coordination, policy truth, or scheduler API semantics behind the producer compatibility declaration
 - Policy publication or broader governance decisions that belong upstream
 - Control Plane normal-shell orchestration, task-attempt progression, review, accept/revise/fail branching, checkpoint promotion, hold/resume/reject semantics, or finalization
 - Codex token brokerage, Codex token minting, Codex token rotation, Codex service invocation ownership, or semantic interpretation of Codex outputs
@@ -282,6 +285,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
 - ES status now exposes only the bounded `lifecycle_projection.source` and opaque `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, or task-state detail as public lifecycle contract.
 - ES status/cancel JSON and successful logs/result responses now include additive outcome/evidence descriptors that label what ES observed or retained without promoting the current scheduler lookup, projected-allocation rule, stdout path, or retained-result storage layout into broader public contract.
+- ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.
 - ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
 - ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
@@ -290,6 +294,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 **Temporary compatibility edges**
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
+- `/v1/executions:contract` exists as a bounded producer compatibility declaration for the current CP governed-execution path. It should not grow into a general capability registry by drift.
 - Current runtime mount conventions use `/execution/staged`, `/execution/run`, `/execution/run/result`, and the current ES-owned runtime-identity backing layout.
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 - The `authority_handoff` field layout and evidence labels are current read vocabulary for the bounded handoff slice, not a durable policy or lifecycle model.

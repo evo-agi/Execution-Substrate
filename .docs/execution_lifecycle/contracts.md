@@ -22,6 +22,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 | Endpoint | Purpose | Current status | Response type | High-level ownership note |
 | --- | --- | --- | --- | --- |
+| `GET /v1/executions:contract` | Return the narrow producer compatibility declaration for the current governed-execution contract | Active and bounded | `200` JSON `ProducerContractDeclaration` | ES-owned static compatibility declaration, not readiness or run authority |
 | `POST /v1/executions:prepare` | Return bounded preflight success without creating execution state | Active and bounded | `200` JSON `PrepareResult` | ES-owned admission composition surface |
 | `POST /v1/executions:submit` | Perform real execution submission | Active and bounded | `202` JSON `SubmitResult` | ES hands off to Nomad |
 | `GET /v1/executions/{run_id}/status` | Return current execution status view plus bounded projection revision | Active | `200` JSON `ExecutionStatusResult` | Nomad-backed status projection through ES |
@@ -35,7 +36,7 @@ These labels are intentionally different. A contract may be live today, relied o
 
 **Observed current contract**
 
-- All six lifecycle/execution endpoints require an authenticated caller identity.
+- All lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that allowlist operator-only:
@@ -50,12 +51,13 @@ These labels are intentionally different. A contract may be live today, relied o
 - The focused app integration harness at `es/app/control_plane_integration_path_test.go` remains the repo-owned verification layer for the same direct API path, including disallowed-caller failures, while staying bounded to publish, submit, status, and cancel coverage in the host-local harness
 - The runbooks, proofs, and helper scripts remain operator-only by default
 - These caller rules apply to:
+  - `:contract`
   - `:prepare`
   - `:submit`
-- `status`
-- `logs`
-- `result`
-- `cancel`
+  - `status`
+  - `logs`
+  - `result`
+  - `cancel`
 
 **Current contract invariants**
 
@@ -67,6 +69,83 @@ These labels are intentionally different. A contract may be live today, relied o
 
 - Authorization failures are plain-text responses, not JSON lifecycle error payloads.
 - Once authorization succeeds, endpoint failures are returned as JSON `ErrorResponse` payloads except for successful `logs`, which returns `text/plain`, and successful `result`, which returns binary `application/gzip`.
+
+## 4A. Producer Contract Declaration
+
+### Purpose
+
+`GET /v1/executions:contract` returns a non-secret, non-run-specific declaration for the current governed-execution producer compatibility surface.
+
+It exists so Control Plane or an infrastructure manager can fail fast when a pointed-at ES instance does not declare the current producer contract before a high-value run is submitted.
+
+### Response contract
+
+**Observed current contract**
+
+Successful response is `200` JSON with these fields:
+
+- `schema_version = "execution-substrate.producer-contract/v1"`
+- `service = "execution"`
+- `governed_execution`
+  - `contract = "governed-execution-producer/v1"`
+  - `enabled`
+  - optional `disabled_reason`
+  - `runtime_profiles`
+  - `outcome_evidence`
+- `non_authority`
+
+The `outcome_evidence` declaration says that the current governed-execution producer contract requires:
+
+- status JSON to include `outcome_evidence`
+- cancel JSON to include `outcome_evidence`
+- successful logs responses to preserve `text/plain; charset=utf-8` and expose outcome evidence through `Execution-Substrate-Outcome-*` headers
+- successful result responses to preserve `application/gzip` and expose outcome evidence through `Execution-Substrate-Outcome-*` headers
+
+The declared evidence labels are the current bounded vocabulary:
+
+- status observations from Nomad: `nomad_job_projection`, `nomad_projected_allocation`, and `nomad_task_state_projection`
+- cancel receipt observation from Nomad: `nomad_stop_request_accepted`
+- logs observation from Nomad: `nomad_task_stdout` with access class `plaintext_stdout`
+- result observation from the ES retained-result store: `retained_result_bundle` with access class `opaque_result_bundle`
+
+When ES submit configuration is absent, `governed_execution.enabled` is `false` with `disabled_reason = "submit_not_configured"`. This is an early compatibility failure for current live governed-execution clients; it is not a health failure.
+
+Runtime-profile entries are configuration-aware:
+
+- `static-script/default` is `enabled` only when submit is configured
+- `control-plane-normal-shell/v1` is `enabled` only when submit is configured and `execution.runtime_profiles.control_plane_normal_shell.enabled=true`
+
+### Current contract invariants
+
+- The declaration is read-only and non-secret.
+- The declaration is served only after the same authenticated caller and configured SPIFFE allowlist check used by the execution and lifecycle API.
+- The declaration is not service health, submit readiness, artifact-specific admission proof, run existence proof, lifecycle state, lifecycle write coordination, credential possession, policy approval, or scheduler API.
+- The declaration must not expose Nomad job IDs, allocation IDs, task IDs, host paths, result filesystem paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, or policy approval state.
+- Consumers may use the declaration as an early compatibility gate by requiring `governed_execution.contract = "governed-execution-producer/v1"`, `governed_execution.enabled = true`, and mandatory status/cancel/logs/result outcome-evidence surfaces.
+- Consumers that require the bounded Control Plane normal-shell path must also require an enabled `control-plane-normal-shell/v1` runtime-profile entry.
+- Consumers must still use `/health`, submit-readiness checks, and `:prepare` for service health, environment readiness, and artifact-specific admission proof.
+
+### Error contract
+
+| Outcome | HTTP | Current code / class |
+| --- | --- | --- |
+| Missing authenticated caller | `401` | plain text |
+| Disallowed or bootstrap caller | `403` | plain text |
+
+### Bounded slice notes
+
+**Bounded slice contract**
+
+- The declaration is a narrow compatibility-gate surface for the current CP governed-execution producer path.
+- It describes the current producer contract; it does not create a broad capability registry or a cross-service probing framework.
+- It does not replace the existing submit-ready operator checks.
+
+### Reopened seams
+
+**Reopened lifecycle seams**
+
+- The long-term ES public execution shape remains reopened.
+- The declaration is retained as current compatibility support while the request, runtime-profile, lifecycle, and evidence vocabularies remain bounded.
 
 ## 5. Prepare contract
 

@@ -92,6 +92,7 @@ ES is the current admission and submission composition point.
 
 At a high level, ES:
 
+- declares its current governed-execution producer compatibility contract through a narrow read-only `:contract` surface
 - accepts execution requests through bounded preflight `:prepare` and primary submission `:submit`
 - reads aggregate artifact evidence and payloads from ARS through the primary runtime-facing discovery record
 - reads the workload-zone Vault config blob from ARS using the startup-configured `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
@@ -175,6 +176,7 @@ These are current architectural absences, not omissions to fill automatically.
 
 **Temporary compatibility-heavy conventions**
 
+- `GET /v1/executions:contract` is active today as a narrow producer compatibility declaration for the current CP governed-execution path. It is not a broad capability registry or readiness substitute.
 - `POST /v1/executions:prepare` is active today but explicitly bounded as a small preflight-success surface rather than declared as the permanent execution API shape.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.

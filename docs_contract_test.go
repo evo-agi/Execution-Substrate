@@ -29,6 +29,8 @@ func TestSupportedLocalCPConsumerRunbookPreservesControlPlaneBoundaries(t *testi
 		"not Control Plane orchestration truth",
 		"ES retained results remain opaque output material",
 		"semantic validation and any review, checkpoint, hold/resume/reject, or terminal run decision",
+		"GET /v1/executions:contract",
+		"governed-execution-producer/v1",
 		"POST /v1/executions:prepare",
 		"POST /v1/executions:submit",
 		"GET /v1/executions/{run_id}/status",
@@ -98,6 +100,7 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		"Stable semantic contracts for the ES Admission And Runtime Boundary Realignment package",
 		"Compatibility edges to preserve during the next package unless a coordinated migration/versioning note says otherwise",
 		"Implementation details and current slice constraints must not be promoted into stable cross-service semantics",
+		"GET /v1/executions:contract",
 		"lifecycle_projection",
 	} {
 		if !strings.Contains(contracts, required) {
@@ -123,5 +126,8 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 	}
 	if !strings.Contains(runbook, "Status responses include `lifecycle_projection.source` and") {
 		t.Fatalf("CP consumer runbook missing lifecycle projection consumption note")
+	}
+	if !strings.Contains(runbook, "`GET /v1/executions:contract` is the current producer-side compatibility") {
+		t.Fatalf("CP consumer runbook missing producer contract gate note")
 	}
 }

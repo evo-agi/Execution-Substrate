@@ -25,6 +25,7 @@ These labels are intentionally separate. A rule can be real today, bounded in sc
 **Observed current lifecycle model**
 
 - `POST /v1/executions:prepare`
+- `GET /v1/executions:contract`
 - `POST /v1/executions:submit`
 - `GET /v1/executions/{run_id}/status`
 - `GET /v1/executions/{run_id}/logs`
@@ -33,6 +34,7 @@ These labels are intentionally separate. A rule can be real today, bounded in sc
 
 Current slice summary:
 
+- `:contract` is a narrow read-only producer compatibility declaration for the current governed-execution contract and mandatory outcome-evidence response surfaces.
 - `:prepare` is active today, but it is explicitly a bounded preflight surface.
 - `:submit` is the real execution-submission surface in the current slice.
 - Lifecycle after submission is Nomad-backed.
@@ -54,6 +56,10 @@ Current slice summary:
 ## 5. Phase model
 
 ### 5.1 Preparation phase
+
+`GET /v1/executions:contract` is a live read-only compatibility declaration in the current repo. It lets allowed clients verify that ES declares the current governed-execution producer contract, submit/profile enablement, and mandatory outcome-evidence carriers before a run starts.
+
+The declaration is intentionally not a health check, readiness proof, artifact-specific prepare result, run authority, credential truth, lifecycle state, write-precondition token, or scheduler API.
 
 `POST /v1/executions:prepare` is a live public surface in the current repo.
 
@@ -145,6 +151,7 @@ This is intentionally not a general output platform. It does not create callback
 **Bounded slice rules**
 
 - `POST /v1/executions:prepare` is active today as a bounded milestone/public slice surface.
+- `GET /v1/executions:contract` is active today as a bounded producer-side compatibility declaration, not as a broad capability registry.
 - Submission is currently async-only.
 - `control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime/tooling and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.
 - The current slice assumes one meaningful allocation per execution.

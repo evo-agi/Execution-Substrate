@@ -16,6 +16,7 @@ const serviceName = "execution"
 
 type preparationService interface {
 	Health(ctx context.Context) admission.HealthSnapshot
+	ProducerContract(ctx context.Context) admission.ProducerContractDeclaration
 	Prepare(ctx context.Context, req admission.PrepareRequest) (admission.PrepareResult, *admission.Error)
 	Submit(ctx context.Context, req admission.PrepareRequest) (admission.SubmitResult, *admission.Error)
 	Status(ctx context.Context, runID string) (admission.ExecutionStatusResult, *admission.Error)
@@ -25,12 +26,12 @@ type preparationService interface {
 }
 
 const (
-	headerOutcomeSource             = "Execution-Substrate-Outcome-Source"
-	headerOutcomeObservation        = "Execution-Substrate-Outcome-Observation"
-	headerOutcomeAccessClass        = "Execution-Substrate-Outcome-Access-Class"
-	headerProviderTerminalObserved  = "Execution-Substrate-Provider-Terminal-Observed"
-	headerLifecycleProjectionSource = "Execution-Substrate-Lifecycle-Projection-Source"
-	headerLifecycleProjectionRev    = "Execution-Substrate-Lifecycle-Projection-Revision"
+	headerOutcomeSource             = admission.OutcomeHeaderSource
+	headerOutcomeObservation        = admission.OutcomeHeaderObservation
+	headerOutcomeAccessClass        = admission.OutcomeHeaderAccessClass
+	headerProviderTerminalObserved  = admission.OutcomeHeaderProviderTerminalObserved
+	headerLifecycleProjectionSource = admission.OutcomeHeaderLifecycleProjectionSource
+	headerLifecycleProjectionRev    = admission.OutcomeHeaderLifecycleProjectionRev
 )
 
 type Server struct {
@@ -52,6 +53,7 @@ func NewServer(service preparationService, bootstrapIssuerCN string, allowedPath
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /v1/executions:contract", s.handleProducerContract)
 	// TODO: /v1/executions:prepare is a bounded milestone surface for the
 	// 		 admission/preparation slice. It is not yet a permanent long-term public
 	// 		 execution API and must not accumulate run IDs, scheduler metadata, or
@@ -95,6 +97,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
+}
+
+func (s *Server) handleProducerContract(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeExecutionCaller(w, r) {
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, s.service.ProducerContract(r.Context()))
 }
 
 func (s *Server) handlePrepare(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +178,7 @@ func (s *Server) handleLifecycleGet(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Type", admission.LogsMediaType)
 		writeOutcomeEvidenceHeaders(w.Header(), result.OutcomeEvidence)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(result.Payload)
