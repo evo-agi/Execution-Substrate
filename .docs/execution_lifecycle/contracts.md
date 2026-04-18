@@ -219,12 +219,14 @@ Successful response is `202` JSON with these fields:
 - `submitted`
 - `run_id`
 - `status`
+- `authority_handoff`
 
 **Current contract invariants**
 
 - Successful `:submit` returns a bounded submission receipt.
 - The receipt confirms execution handoff through `run_id`, not durable ES lifecycle ownership.
 - Current successful receipts use `status = "submitted"`.
+- Successful receipts include the bounded non-secret `authority_handoff` facts ES selected for the submitted runtime handoff.
 
 ### Explicit non-effects
 
@@ -232,6 +234,7 @@ Successful response is `202` JSON with these fields:
 - No sync execution result is returned.
 - No retry or reschedule policy is created.
 - No richer scheduler abstraction is exposed.
+- No live Vault, Codex, SPIRE, lease, token-expiry, or approval state is returned.
 
 ### Error contract
 
@@ -296,6 +299,7 @@ Successful response is `200` JSON with these current fields:
 - `lifecycle_projection`
   - `source`
   - `revision`
+- optional `authority_handoff`
 - optional `exit_code`
 - `terminal`
 
@@ -306,6 +310,7 @@ Successful response is `200` JSON with these current fields:
 - `lifecycle_projection.revision` is an opaque equality token derived from the Nomad job and selected-allocation modify indexes observed while serving the status request.
 - Callers may compare `lifecycle_projection.revision` values for the same `run_id` to detect that ES observed a different lifecycle projection.
 - Callers must not parse or order `lifecycle_projection.revision`, treat it as a Nomad job/allocation identifier, or use it as a write precondition for `logs`, `result`, or `cancel`.
+- `authority_handoff`, when present, is recovered from the submitted runtime spec and remains a bounded non-secret read fact. It does not make status a run store, scheduler abstraction, live credential observation, or Control Plane orchestration record.
 - If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
 - Once an allocation is selected and not terminal, status returns `status = "running"`.
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
@@ -314,6 +319,70 @@ Successful response is `200` JSON with these current fields:
 - When status observes terminal execution, ES first attempts idempotent retention of any files under `/execution/run/result`.
 - When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/` only after result retention has been attempted.
 - Failed, canceled, lost, or otherwise ambiguous terminal outcomes do not trigger staging cleanup through `status`.
+
+### Authority handoff read surface
+
+**Observed current contract**
+
+`authority_handoff` is present on successful `:submit` responses for new submissions and may be present on `status` responses when ES can recover the submitted handoff facts.
+
+Current shape:
+
+- `authority_path`
+- `runtime_profile`
+  - `name`
+- `identity_handoff`
+  - `mode`
+  - `endpoint_env`
+  - `endpoint_uri`
+  - `jwt_svid_target`
+- `workload_vault`
+  - `auth_mode`
+  - `address`
+  - `auth_mount`
+  - `auth_role`
+  - `jwt_audience`
+  - optional `ca_cert_env`
+  - optional `ca_cert_path`
+  - optional `tls_bundle_env`
+  - optional `tls_bundle_path`
+- `runtime_config_refs`
+  - `workload_zone_vault_config`
+    - `digest`
+- optional `codex_credential_location` for `control-plane-normal-shell/v1`
+  - `cli_path`
+  - `credential_source`
+  - `vault_secret_path`
+  - `vault_secret_field`
+- `evidence`
+  - `source`
+  - `runtime_profile`
+  - `identity_handoff`
+  - `workload_vault`
+  - `runtime_config_refs`
+  - optional `codex_credential_location`
+
+**Current contract invariants**
+
+- `authority_handoff` is additive and read-only.
+- It contains only non-secret handoff facts ES selected, derived, or injected at admission/runtime handoff time.
+- It must not expose Nomad job IDs, allocation IDs, task IDs, raw SPIRE socket source paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, token expirations, or rich policy/approval state.
+- Its evidence labels identify the bounded source family for each fact; they are not write preconditions and not ordering tokens.
+
+**Bounded slice contract**
+
+- The current `authority_path` is `workload_identity_endpoint/workload_vault`.
+- The current identity handoff mode is `workload_identity_endpoint`.
+- The current JWT-SVID target label is `workload_vault`.
+- The current workload-vault auth mode is `vault_identity_jwt`.
+- The current `control-plane-normal-shell/v1` profile may include non-secret Codex credential-location metadata whose credential source is `workload_vault`.
+
+**Deliberate absences**
+
+- No claim that the workload has successfully used the endpoint.
+- No claim that a JWT-SVID, Vault token, Codex token, or lease exists or is still valid.
+- No claim that ES has observed or approved Control Plane review/checkpoint/finalization state.
+- No claim that the submitted scheduler job or selected allocation identifiers are public contract.
 
 ### Error contract
 
@@ -332,7 +401,8 @@ Successful response is `200` JSON with these current fields:
 - Status is intentionally minimal.
 - The contract is built around current Nomad projection rather than a richer ES-owned execution model.
 - The public response no longer carries scheduler job/allocation identifiers or task-state detail.
-- The projection revision is the only current status read-coordination fact; it does not imply an ES-owned lifecycle-state store.
+- The projection revision is the only current status lifecycle read-coordination fact; it does not imply an ES-owned lifecycle-state store.
+- `authority_handoff`, when present, is a separate runtime-handoff evidence fact, not a lifecycle revision or write-coordination token.
 
 ### Reopened seams
 
@@ -618,6 +688,7 @@ Successful response is `200` JSON with these fields:
   - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD`
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
 - The bounded slice-1 implementation target keeps the workload-visible endpoint but changes the runtime-side owner behind it to a platform-owned helper launched by a platform-owned supervisor.
+- ES exposes the same bounded non-secret facts through `authority_handoff` on submit/status when available. That read surface is evidence of the submitted runtime handoff, not evidence of live credential possession.
 
 **Current contract invariants**
 
@@ -626,6 +697,7 @@ Successful response is `200` JSON with these fields:
 - If that runtime config supplies Vault CA trust material, ES stages it as workload-visible trust files and uses standard TLS environment rather than disabling verification.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
 - ES does not fetch, mint, broker, validate, or store Codex credential material. The selected workload is responsible for using the existing identity endpoint and workload-vault metadata to read that material.
+- ES does not expose live runtime credential state through `authority_handoff`.
 - The supported-local proof realization may provide a proof-only deterministic Codex shim at `EXEC_CODEX_CLI_PATH` inside the configured profile image. That shim is proof tooling, not a new ES product API or a claim that ES owns Codex service invocation semantics.
 - The first platform-owned runtime-identity slice is intentionally limited to platform-controlled non-root workloads with no privilege-escalation path.
 - The public runtime identity endpoint must remain a bounded platform endpoint, not a raw SPIRE proxy.

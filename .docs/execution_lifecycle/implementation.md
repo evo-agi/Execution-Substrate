@@ -27,6 +27,7 @@ These labels matter because implementation shape and public contract are related
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
 | `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, reserved result-path staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
 | `es/admission/runtimeprofile.go` | Bounded runtime-profile selection, validation, image selection, and non-secret profile environment metadata | Package-kind redesign, lifecycle semantics, secret brokerage | This keeps the Control Plane normal-shell runtime contract explicit without moving CP control behavior into ES |
+| `es/admission/authorityhandoff.go` | Bounded non-secret authority handoff DTO assembly and recovery from submitted runtime specs | Live credential state, policy approval state, scheduler identity, lifecycle storage | This keeps the CP-consumable handoff read surface grounded in facts ES selected and injected |
 | `es/admission/submit.go` | `Submit`, execution-locator creation, payload fetch, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
 | `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use, and terminal-result retention triggers | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
 | `es/admission/results.go` | Retained result bundle lookup, idempotent tar.gz packaging of `/execution/run/result`, and result endpoint service behavior | Output semantics, Control Plane checkpoint meaning, lifecycle ownership | This keeps the retained-result slice narrow and ES-owned without turning it into orchestration state |
@@ -158,9 +159,10 @@ What `Prepare` reads:
 11. Stage runtime mounts through the same layout when mounts are requested.
 12. Validate staged mount targets against reserved runtime paths.
 13. Build runtime environment variables from the localized runtime layout plus any selected profile metadata.
-14. Build the Nomad job spec with `buildNomadJobSpec`, using the selected profile image when the bounded CP normal-shell profile is selected.
-15. Submit the job through `nomadClient.submitJob`.
-16. Return the bounded `SubmitResult`.
+14. Assemble the bounded non-secret `authority_handoff` fact from the same runtime profile, identity endpoint, workload-vault plan, runtime-config reference, and profile credential-location metadata ES is about to submit.
+15. Build the Nomad job spec with `buildNomadJobSpec`, using the selected profile image when the bounded CP normal-shell profile is selected and carrying only internal handoff metadata needed for later status recovery.
+16. Submit the job through `nomadClient.submitJob`.
+17. Return the bounded `SubmitResult`.
 
 Where IDs are created:
 
@@ -168,6 +170,7 @@ Where IDs are created:
 - That locator currently derives Nomad job ID as `exec-<run_id>`.
 - The public `SubmitResult` now returns `run_id` and bounded receipt status only; Nomad IDs remain internal implementation detail.
 - The submitted Nomad job also carries `run_id` metadata so internal tooling and tests can resolve the current slice without treating the naming rule as public contract.
+- The submitted Nomad job carries narrow ES handoff metadata for `authority_handoff` status recovery. That metadata is an internal evidence carrier for non-secret runtime handoff facts, not a public scheduler identifier surface.
 
 Where ES stops and Nomad takes over:
 
@@ -182,6 +185,7 @@ Where ES stops and Nomad takes over:
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
 - If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
 - `control-plane-normal-shell/v1` uses the same execution-package layout, runtime helper, runtime identity endpoint, and retained-result path as the current `static-script` slice. The selected profile changes the runtime image and adds non-secret runtime metadata; it does not add ES-owned CP lifecycle or result semantics.
+- The `authority_handoff` returned by submit is assembled from submit-time facts only. It does not observe whether the workload later uses the endpoint, receives a JWT-SVID, logs in to Vault, reads Codex credential material, or holds a live lease.
 
 ## 8. Lifecycle projection implementation
 
@@ -200,6 +204,7 @@ Status path:
 
 - Fetch job summary.
 - Build a minimal `ExecutionStatusResult` with `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision`.
+- Recover `authority_handoff` from the submitted runtime spec when the internal ES handoff metadata and submitted environment are present.
 - Resolve the currently projected allocation if present.
 - Map the current Nomad-backed path into public `status` values:
   - `submitted`
@@ -229,6 +234,7 @@ Cancel path:
 - Latest-allocation selection is the only allocation-selection logic in the current implementation.
 - Post-submit lifecycle reads are read-through from Nomad rather than reconstructed from staging directories or ES memory.
 - The lifecycle projection revision is a status read token only; no lifecycle write path accepts it as a precondition.
+- Status `authority_handoff` recovery is also read-through from the submitted runtime spec. It does not add ES run persistence, and it does not expose backend job/allocation IDs.
 
 ## 9. Runtime identity and mount implementation
 
@@ -459,6 +465,7 @@ Operator helper ownership in the current slice:
 - Result retrieval is a retained tar.gz bundle path for `/execution/run/result`, not a broad output platform.
 - There is no retry or reschedule machinery in ES.
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
+- Authority handoff reporting is non-secret submit/status read evidence, not a live credential observer.
 - Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
 - Aggregate evidence is the only first-class admission input for the published artifact path.
 

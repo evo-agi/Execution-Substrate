@@ -63,6 +63,7 @@ Top-level interaction notes:
 - CGS is active as a separate authorization surface, but it is intentionally outside the current ES hot path.
 - Nomad is the execution backend and lifecycle authority for submitted work.
 - ES status exposes a bounded `lifecycle_projection` fact derived from Nomad observation so consumers can compare status reads without inferring scheduler identifiers or ES-owned run persistence.
+- ES submit/status expose a bounded non-secret `authority_handoff` fact when ES can state the submitted runtime authority path from facts it selected and handed off. This is not live credential state or scheduler identity.
 - Docker is the container runtime used underneath Nomad in the current slice.
 - The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
@@ -122,6 +123,8 @@ CGS is active, but it is intentionally not part of the current ES hot path.
 ES stages execution inputs, injects the current workload identity endpoint environment variable as the bounded workload-visible handoff, protects the ES-owned runtime subtree that backs the discovered endpoint from caller overlap, and carries a bounded workload-vault handoff derived from workload-zone vault runtime fields plus its default auth mode and optional Vault CA trust material.
 
 The current bounded slice now proves platform-owned runtime identity delivery behind that discovery contract through a same-container supervisor/helper: the helper is the only SPIRE-facing runtime component, the raw SPIRE channel remains helper-private, the workload runs as fixed non-root `10000:10000`, and helper death is task-fatal. ES still stops short of becoming the owner of runtime token minting, runtime identity endpoint implementation inside the workload, or a broader runtime credential lifecycle. ES owns the handoff boundary, not the full runtime credential system.
+
+The `authority_handoff` read fact reports the non-secret handoff path ES submitted: selected runtime profile, workload identity endpoint URI/env, workload-vault auth metadata, selected workload-zone Vault config digest, and bounded profile credential-location metadata when applicable. It does not claim that the workload successfully fetched or currently holds credential material.
 
 The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The current bounded runtime-identity slice now also proves useful credential flow through the existing discovery contract: one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a proof-scoped real Vault dev/test target and read one secret without making ES a Vault token broker. Supported-host qualification for the Linux Nomad/Docker substrate is now also proved on the current local reference host, and the canonical repo-owned proof path now records the resulting evidence under `.out/es-proof-<id>/`.
 

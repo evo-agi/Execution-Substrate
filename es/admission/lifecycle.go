@@ -24,9 +24,20 @@ const (
 )
 
 type nomadJobSummary struct {
-	ID          string `json:"ID"`
-	Status      string `json:"Status"`
-	ModifyIndex uint64 `json:"ModifyIndex"`
+	ID          string              `json:"ID"`
+	Status      string              `json:"Status"`
+	ModifyIndex uint64              `json:"ModifyIndex"`
+	Meta        map[string]string   `json:"Meta"`
+	TaskGroups  []nomadJobTaskGroup `json:"TaskGroups"`
+}
+
+type nomadJobTaskGroup struct {
+	Tasks []nomadJobTask `json:"Tasks"`
+}
+
+type nomadJobTask struct {
+	Name string            `json:"Name"`
+	Env  map[string]string `json:"Env"`
 }
 
 type nomadAllocationListEntry struct {
@@ -78,6 +89,9 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		Status:              executionLifecycleStatusSubmitted,
 		LifecycleProjection: lifecycleProjectionFromNomad(job.ModifyIndex),
 	}
+	if authorityHandoff, ok := authorityHandoffFromNomadJob(job); ok {
+		result.AuthorityHandoff = authorityHandoff
+	}
 
 	allocation, err := s.nomadClient.fetchProjectedAllocation(ctx, locator.JobID())
 	if err != nil {
@@ -124,6 +138,32 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	}
 
 	return result, nil
+}
+
+func authorityHandoffFromNomadJob(job nomadJobSummary) (*ExecutionAuthorityHandoff, bool) {
+	if strings.TrimSpace(job.Meta[executionAuthorityMetadataSchemaKey]) != executionAuthorityMetadataSchemaVersion {
+		return nil, false
+	}
+	task, ok := job.task(nomadTaskName)
+	if !ok {
+		return nil, false
+	}
+	return executionAuthorityHandoffFromSubmittedRuntimeSpec(
+		job.Meta[executionAuthorityMetadataRuntimeProfileKey],
+		job.Meta[executionAuthorityMetadataWorkloadZoneVaultConfigKey],
+		task.Env,
+	)
+}
+
+func (j nomadJobSummary) task(name string) (nomadJobTask, bool) {
+	for _, group := range j.TaskGroups {
+		for _, task := range group.Tasks {
+			if strings.TrimSpace(task.Name) == name {
+				return task, true
+			}
+		}
+	}
+	return nomadJobTask{}, false
 }
 
 func (s *Service) Logs(ctx context.Context, runID string) ([]byte, *Error) {

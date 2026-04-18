@@ -123,6 +123,7 @@ func TestBuildNomadJobSpecUsesNetworkModeAndRunMetadata(t *testing.T) {
 			RuntimeIdentityTmpfsSize: 2 << 20,
 		},
 	}
+	cfg.RuntimeConfig.WorkloadZoneVaultConfigRef.Digest = testWorkloadZoneVaultConfigDigest
 	stage := stagedExecutionInputs{
 		layout: executionPackageLayout{
 			payloadStageDir:    "/tmp/stage/payload",
@@ -155,6 +156,11 @@ func TestBuildNomadJobSpecUsesNetworkModeAndRunMetadata(t *testing.T) {
 	meta, ok := job["Meta"].(map[string]any)
 	if !ok || meta["run_id"] != "run-0123456789abcdef" {
 		t.Fatalf("expected run_id metadata in job spec, got %#v", job["Meta"])
+	}
+	if meta[executionAuthorityMetadataSchemaKey] != executionAuthorityMetadataSchemaVersion ||
+		meta[executionAuthorityMetadataRuntimeProfileKey] != runtimeProfileDefaultStaticScript ||
+		meta[executionAuthorityMetadataWorkloadZoneVaultConfigKey] != testWorkloadZoneVaultConfigDigest {
+		t.Fatalf("expected authority handoff metadata in job spec, got %#v", meta)
 	}
 
 	taskGroups, ok := job["TaskGroups"].([]any)

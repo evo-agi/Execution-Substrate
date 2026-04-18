@@ -236,6 +236,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Bounded retained-result storage for opaque tar.gz bundles captured from `/execution/run/result` in the current `static-script` slice
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
+- Bounded non-secret `authority_handoff` read facts for submitted runs, sourced from ES-selected runtime handoff facts and the submitted runtime spec
 - One bounded opt-in runtime profile for Control Plane normal-shell workloads:
   - profile name `control-plane-normal-shell/v1`
   - selected by `invocation.annotations["execution_substrate.runtime_profile"]`
@@ -255,6 +256,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Vault token minting, storage, or rotation
 - Runtime identity endpoint implementation inside the workload
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
+- Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - Policy publication or broader governance decisions that belong upstream
 - Control Plane normal-shell orchestration, task-attempt progression, review, accept/revise/fail branching, checkpoint promotion, hold/resume/reject semantics, or finalization
 - Codex token brokerage, Codex token minting, Codex token rotation, Codex service invocation ownership, or semantic interpretation of Codex outputs
@@ -277,6 +279,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
 - ES status now exposes only the bounded `lifecycle_projection.source` and opaque `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, or task-state detail as public lifecycle contract.
+- ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.
 - ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
 - ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
@@ -286,6 +289,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
 - Current runtime mount conventions use `/execution/staged`, `/execution/run`, `/execution/run/result`, and the current ES-owned runtime-identity backing layout.
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
+- The `authority_handoff` field layout and evidence labels are current read vocabulary for the bounded handoff slice, not a durable policy or lifecycle model.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
 - `GET /v1/executions/{run_id}/result` is a bounded retained opaque bundle surface for the current slice, not a broad output platform.
 - `control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.

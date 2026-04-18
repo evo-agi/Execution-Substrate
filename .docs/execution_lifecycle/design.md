@@ -36,6 +36,7 @@ Current slice summary:
 - `:prepare` is active today, but it is explicitly a bounded preflight surface.
 - `:submit` is the real execution-submission surface in the current slice.
 - Lifecycle after submission is Nomad-backed.
+- Submitted runs can expose a bounded non-secret `authority_handoff` read fact describing the ES-selected runtime authority path and evidence source for that handoff.
 - Terminal result retrieval is bounded to an ES-retained opaque bundle for the current `static-script` slice.
 - ES is a composition and submission boundary, not a scheduler.
 
@@ -46,7 +47,7 @@ Current slice summary:
 | Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preflight result. ARS is authoritative for runtime-facing artifact discovery, evidence and payload blob reads, secondary manifest support reads when needed, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
-| Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths and injects endpoint-discovery environment conventions, but it does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
+| Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths, injects endpoint-discovery environment conventions, and may expose bounded non-secret `authority_handoff` facts about the submitted handoff. It does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
 | Lifecycle inspection and control | Nomad, accessed through ES | ES validates `run_id`, resolves the current internal execution locator, reads Nomad job and projected-allocation state, reads task stdout, fetches retained terminal result bundles when present, and asks Nomad to stop jobs. ES projects or forwards that state; it does not own a separate lifecycle registry. |
 | Terminal result retention | ES for the retained opaque bundle only | The workload may write files under `/execution/run/result` in the current `static-script` slice. ES may package those files into an opaque retained tar.gz bundle under `execution.results_root_dir` before successful staging cleanup. ES does not parse those files into orchestration, checkpoint, or Control Plane semantics. |
 
@@ -78,6 +79,7 @@ At a design level, it currently:
 - revalidates and stages runtime mount artifacts when mounts are requested
 - reserves the runtime-identity workspace and enforces reserved-path exclusions
 - resolves the optional bounded runtime profile selection from `invocation.annotations["execution_substrate.runtime_profile"]`
+- assembles the bounded non-secret authority handoff facts for the selected runtime path
 - constructs one Nomad batch job with one Docker task
 - submits that job to Nomad and returns a bounded submission receipt
 
@@ -96,12 +98,14 @@ At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
 - `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is opaque to callers
+- `status` may also return `authority_handoff` by recovering ES-submitted non-secret runtime handoff facts from the submitted runtime spec
 - `logs` reads stdout for the selected task from Nomad
 - `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory
 - `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
 The lifecycle projection revision lets consumers compare status observations without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract.
+The authority handoff fact lets consumers see the ES-selected runtime authority path without treating it as live credential state, scheduler identity, or Control Plane orchestration truth.
 
 ### 5.4 Terminal result materialization phase
 
@@ -128,6 +132,7 @@ This is intentionally not a general output platform. It does not create callback
 - `:submit` returns a bounded submission receipt rather than a durable run model.
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
 - Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.
+- `authority_handoff` is read-only handoff evidence and does not become lifecycle state, write coordination, or a live credential claim.
 - Docker is the task runtime under Nomad for the current submitted execution slice.
 - Submit-created host staging remains in place only while the workload may still depend on its bind mounts; after ES observes terminal success, the current slice attempts result retention and then cleans that staging best-effort while retaining non-success outcomes for debugging.
 - Retained result bundles are ES-owned opaque output artifacts, not durable lifecycle records or orchestration state.
@@ -185,11 +190,13 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 - `/execution/run`
 - `/execution/run/result`
 - the current ES-owned runtime-identity subtree that backs the injected endpoint convention
+- the bounded `authority_handoff` read fact that describes the selected non-secret runtime authority path
 
 Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
 - For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
+- The read-side `authority_handoff` surface may report those same non-secret facts and the selected workload-zone Vault config digest. It does not assert that endpoint use, JWT-SVID retrieval, Vault login, secret read, or token lease state succeeded.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.
 - The runtime-identity workspace is provisioned as tmpfs in the current submit path.

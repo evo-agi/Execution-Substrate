@@ -344,6 +344,7 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 - ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
 - Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
 - ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque equality token for status reads, not a scheduler ID, write precondition, or ES-owned lifecycle record.
+- ES submit/status expose a bounded `authority_handoff` read fact for submitted runs when ES can recover the submitted runtime handoff. It contains only non-secret facts ES selected or derived during admission/runtime handoff: runtime profile, workload identity endpoint handoff, workload-vault auth plan metadata, selected workload-zone Vault config digest, and bounded profile credential-location metadata. It is not live credential, lease, token-expiry, approval, scheduler-ID, or lifecycle-store state.
 - ES-retained result bundles are opaque output material. They are not logs wrappers, CP checkpoints, review decisions, finalization records, or ES-owned orchestration state.
 - The workload credential handoff is non-secret and workload-side: ES injects identity and credential-location metadata, while the workload uses the discovered endpoint and workload-Vault metadata to acquire material itself.
 - Caller identity and narrow configured SPIFFE allowlist authorization remain required on the governed execution path.
@@ -356,6 +357,7 @@ Compatibility edges to preserve during the next package unless a coordinated mig
 - `POST /v1/executions:prepare` as an active bounded preflight surface
 - `invocation.annotations["execution_substrate.runtime_profile"]` and the bounded `control-plane-normal-shell/v1` profile
 - `/execution/staged`, `/execution/run`, `/execution/run/result`, and current runtime-identity path conventions
+- the exact `authority_handoff` field names, evidence-source labels, and current workload-visible env/path vocabulary while the request, runtime-profile, and runtime-identity seams remain reopened
 - retained `application/gzip` result bundles keyed by public `run_id`
 
 `Observed current contract`
@@ -443,6 +445,7 @@ Current successful response shapes:
   - `submitted`
   - `run_id`
   - `status`
+  - `authority_handoff`
 - `status`
   - `success`
   - `run_id`
@@ -450,6 +453,7 @@ Current successful response shapes:
   - `lifecycle_projection`
     - `source`
     - `revision`
+  - optional `authority_handoff`
   - optional `exit_code`
   - `terminal`
 - `cancel`
@@ -492,6 +496,8 @@ Current successful response shapes:
   - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
   - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, `EXEC_WORKLOAD_VAULT_AUTH_*`, and workload-zone Vault CA trust handoff for workload-side Vault login and credential-material reads
 - ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
+- Successful submit returns the bounded `authority_handoff` read fact assembled from the same selected runtime profile, runtime identity handoff, workload-vault plan, workload-zone Vault config reference, and profile credential-location metadata ES hands to the submitted runtime.
+- Status returns `authority_handoff` when ES can recover those non-secret facts from the submitted runtime spec. This recovery does not create a run store and does not expose Nomad job IDs, allocation IDs, or task-state detail.
 - The supported-local proof image may realize the configured Codex CLI path with a deterministic proof-only shim. That proves the ES runtime contract for the CP normal-shell path without claiming real upstream Codex service behavior.
 - `:submit` is the primary public execution handoff in the current slice and its successful receipt is centered on `run_id`, not backend-specific scheduler IDs.
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
@@ -518,6 +524,7 @@ Current successful response shapes:
   - ES resolves status, logs, result readiness when no retained bundle exists, and cancel through Nomad
   - ES derives the minimal public lifecycle `status` value from Nomad-backed state as `submitted`, `running`, or `terminal`
   - ES includes `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision` in status responses so consumers can compare status observations without inferring Nomad IDs or ES-owned run persistence
+  - ES may include `authority_handoff` in status from submitted runtime handoff metadata/environment, but that fact remains read-only runtime handoff evidence and is not lifecycle state
   - logs are stdout-only for task `task`
   - result bundles are retained opaque output artifacts keyed by `run_id`, not lifecycle-state records
   - ES uses one explicit projected-allocation policy that currently chooses the latest allocation in the current no-retry, no-reschedule slice
@@ -542,6 +549,7 @@ Current successful response shapes:
 - The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
+- The current `authority_handoff` JSON field layout, evidence-source labels, and current endpoint/path/env names are compatibility-heavy read vocabulary on reopened request/runtime-identity seams.
 - `control-plane-normal-shell/v1` is a bounded compatibility-heavy runtime contract for one CP-owned normal-shell attempt path. It should not be generalized into an arbitrary image/toolchain marketplace or used to absorb CP orchestration semantics into ES.
 
 ### Reopened seams
@@ -740,6 +748,32 @@ Current workload-visible handoff:
   - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`
   - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD`
 
+Current ES read handoff surface:
+
+- `authority_handoff.authority_path = "workload_identity_endpoint/workload_vault"`
+- `authority_handoff.runtime_profile.name`
+- `authority_handoff.identity_handoff`
+  - `mode = "workload_identity_endpoint"`
+  - `endpoint_env`
+  - `endpoint_uri`
+  - `jwt_svid_target = "workload_vault"`
+- `authority_handoff.workload_vault`
+  - `auth_mode`
+  - `address`
+  - `auth_mount`
+  - `auth_role`
+  - `jwt_audience`
+  - optional CA trust file env/path labels when CA trust material was staged
+- `authority_handoff.runtime_config_refs.workload_zone_vault_config.digest`
+- for `control-plane-normal-shell/v1` only, `authority_handoff.codex_credential_location`
+  - `cli_path`
+  - `credential_source = "workload_vault"`
+  - `vault_secret_path`
+  - `vault_secret_field`
+- `authority_handoff.evidence` labels whether each fact came from the submitted runtime spec, submitted runtime environment, or submitted runtime metadata.
+
+This surface is intentionally non-secret and read-only. It does not state that a workload successfully contacted the endpoint, obtained a JWT-SVID, logged into Vault, holds a Vault token, read a Codex token, or has a live lease.
+
 Current ES-owned implementation details behind that handoff:
 
 - ES currently backs the discovered endpoint with a writable tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
@@ -772,6 +806,7 @@ Current runtime rules:
 - ES does not fetch, mint, broker, validate, or store Codex credential material.
 - ES derives the workload-vault auth plan from workload-zone vault runtime fields plus the locally configured default auth mode.
 - ES does not treat endpoint creation failure, workload identity failure, or Vault auth failure as ES lifecycle state.
+- ES exposes only bounded non-secret authority handoff facts and their evidence sources; it does not expose live credential possession, lease state, token expiry, policy approval state, or backend scheduler identifiers through that surface.
 - Capability-sensitive behavior in this area must not rely on OS-based branching or fallback behavior.
 - The first platform-owned runtime-identity slice must fail closed unless the workload can be launched as fixed non-root `10000:10000` with no supplemental groups and no privilege-escalation path.
 - The raw SPIRE channel must remain helper-private and must not be exposed to workload env, workload mounts, or workload-authored code.

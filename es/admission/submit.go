@@ -141,6 +141,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	}
 
 	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, stage.trustMaterial, req.Invocation.Env)
+	authorityHandoff := buildExecutionAuthorityHandoff(
+		runtimeProfile,
+		stage.layout.runtimeIdentity,
+		prepared.workloadVaultPlan,
+		s.workloadZoneVaultConfigRef.Digest,
+		stage.trustMaterial,
+	)
 	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
@@ -166,10 +173,11 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	submitted = true
 
 	return SubmitResult{
-		Success:   true,
-		Submitted: true,
-		RunID:     locator.RunID,
-		Status:    "submitted",
+		Success:          true,
+		Submitted:        true,
+		RunID:            locator.RunID,
+		Status:           "submitted",
+		AuthorityHandoff: &authorityHandoff,
 	}, nil
 }
 
@@ -259,6 +267,8 @@ func buildNomadJobSpec(
 ) map[string]any {
 	layout := stage.layout
 	supervisorArgs := layout.runtimeSupervisorArgs(req.Invocation.Argv, req.TimeoutSeconds)
+	jobMeta := executionAuthorityMetadata(runtimeProfile, cfg.RuntimeConfig.WorkloadZoneVaultConfigRef.Digest)
+	jobMeta["run_id"] = runID
 
 	taskConfig := map[string]any{
 		"image":        selectedRuntimeImage(cfg.Execution, runtimeProfile),
@@ -277,11 +287,9 @@ func buildNomadJobSpec(
 
 	return map[string]any{
 		"Job": map[string]any{
-			"ID":   jobID,
-			"Name": jobID,
-			"Meta": map[string]any{
-				"run_id": runID,
-			},
+			"ID":          jobID,
+			"Name":        jobID,
+			"Meta":        jobMeta,
 			"Type":        "batch",
 			"Datacenters": []string{cfg.Nomad.Datacenter},
 			"TaskGroups": []any{

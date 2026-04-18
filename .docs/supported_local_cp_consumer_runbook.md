@@ -64,6 +64,7 @@ ES owns:
 - staging of non-secret Vault CA trust material when the workload-zone Vault config supplies it
 - Nomad-backed status/log/result/cancel projection through public ES endpoints
 - the status `lifecycle_projection` source and opaque revision as a bounded read-coordination fact
+- bounded non-secret `authority_handoff` facts on submit/status for the selected runtime profile, workload identity endpoint handoff, workload-Vault auth metadata, selected workload-zone Vault config digest, and profile credential-location metadata
 - retained opaque `result.tar.gz` bundles captured from `/execution/run/result`
 - the truth of whether this repo's readiness helpers can honestly claim `submit-ready`
 
@@ -129,6 +130,15 @@ Status responses include `lifecycle_projection.source` and
 to detect a changed ES lifecycle observation, but must treat the revision as
 opaque. It is not a Nomad job/allocation identifier, not a cancel/result/logs
 write precondition, and not a Control Plane orchestration checkpoint.
+
+Submit responses, and status responses when the submitted handoff facts are
+recoverable, include `authority_handoff`. CP may use that field as ES-owned
+evidence of the submitted runtime authority path: runtime profile,
+workload-visible identity endpoint, workload-Vault auth metadata, selected
+workload-zone Vault config digest, and bounded profile credential-location
+metadata. CP must not treat it as proof that the workload successfully fetched
+a JWT-SVID, logged into Vault, holds a token or lease, read a Codex credential,
+or reached any CP review/checkpoint/finalization state.
 
 The current repo-owned non-operator caller activation path is:
 
@@ -207,6 +217,11 @@ The profile remains a `static-script` overlay. It currently requires:
 - configured workload-Vault secret path and field metadata for Codex credential material
 
 The selected profile changes the runtime image and injects non-secret runtime metadata. It does not add ES-owned CP lifecycle, review, checkpoint, or finalization semantics.
+
+For this profile, `authority_handoff` may include the non-secret Codex
+credential-location metadata ES injected: configured CLI path, credential source
+`workload_vault`, and the configured Vault secret path/field labels. It does not
+include credential material and does not prove that credential material was read.
 
 ## 7. Workload runtime contract
 

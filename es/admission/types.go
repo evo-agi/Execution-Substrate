@@ -54,22 +54,24 @@ type PrepareResult struct {
 // and handed a real Nomad job to the scheduler, but it intentionally does not
 // create a durable execution record or broader lifecycle surface.
 type SubmitResult struct {
-	Success   bool   `json:"success"`
-	Submitted bool   `json:"submitted"`
-	RunID     string `json:"run_id"`
-	Status    string `json:"status"`
+	Success          bool                       `json:"success"`
+	Submitted        bool                       `json:"submitted"`
+	RunID            string                     `json:"run_id"`
+	Status           string                     `json:"status"`
+	AuthorityHandoff *ExecutionAuthorityHandoff `json:"authority_handoff,omitempty"`
 }
 
 // ExecutionStatusResult is the bounded Nomad-backed lifecycle view for a
 // submitted execution. It intentionally reflects only minimal mapped state and
 // does not imply a durable ES-owned lifecycle record.
 type ExecutionStatusResult struct {
-	Success             bool                `json:"success"`
-	RunID               string              `json:"run_id"`
-	Status              string              `json:"status"`
-	LifecycleProjection LifecycleProjection `json:"lifecycle_projection"`
-	ExitCode            *int                `json:"exit_code,omitempty"`
-	Terminal            bool                `json:"terminal"`
+	Success             bool                       `json:"success"`
+	RunID               string                     `json:"run_id"`
+	Status              string                     `json:"status"`
+	LifecycleProjection LifecycleProjection        `json:"lifecycle_projection"`
+	AuthorityHandoff    *ExecutionAuthorityHandoff `json:"authority_handoff,omitempty"`
+	ExitCode            *int                       `json:"exit_code,omitempty"`
+	Terminal            bool                       `json:"terminal"`
 }
 
 // LifecycleProjection is a bounded read-coordination fact for status
@@ -78,6 +80,67 @@ type ExecutionStatusResult struct {
 type LifecycleProjection struct {
 	Source   string `json:"source"`
 	Revision string `json:"revision"`
+}
+
+// ExecutionAuthorityHandoff is the bounded non-secret read surface for the
+// runtime authority path ES selected and submitted for a run. It intentionally
+// avoids live credential, lease, approval, scheduler identifier, or lifecycle
+// store claims.
+type ExecutionAuthorityHandoff struct {
+	AuthorityPath           string                              `json:"authority_path"`
+	RuntimeProfile          ExecutionAuthorityRuntimeProfile    `json:"runtime_profile"`
+	IdentityHandoff         ExecutionAuthorityIdentityHandoff   `json:"identity_handoff"`
+	WorkloadVault           ExecutionAuthorityWorkloadVault     `json:"workload_vault"`
+	RuntimeConfigRefs       ExecutionAuthorityRuntimeConfigRefs `json:"runtime_config_refs"`
+	CodexCredentialLocation *ExecutionAuthorityCodexCredential  `json:"codex_credential_location,omitempty"`
+	Evidence                ExecutionAuthorityEvidence          `json:"evidence"`
+}
+
+type ExecutionAuthorityRuntimeProfile struct {
+	Name string `json:"name"`
+}
+
+type ExecutionAuthorityIdentityHandoff struct {
+	Mode          string `json:"mode"`
+	EndpointEnv   string `json:"endpoint_env"`
+	EndpointURI   string `json:"endpoint_uri"`
+	JWTSVIDTarget string `json:"jwt_svid_target"`
+}
+
+type ExecutionAuthorityWorkloadVault struct {
+	AuthMode      string `json:"auth_mode"`
+	Address       string `json:"address"`
+	AuthMount     string `json:"auth_mount"`
+	AuthRole      string `json:"auth_role"`
+	JWTAudience   string `json:"jwt_audience"`
+	CACertEnv     string `json:"ca_cert_env,omitempty"`
+	CACertPath    string `json:"ca_cert_path,omitempty"`
+	TLSBundleEnv  string `json:"tls_bundle_env,omitempty"`
+	TLSBundlePath string `json:"tls_bundle_path,omitempty"`
+}
+
+type ExecutionAuthorityRuntimeConfigRefs struct {
+	WorkloadZoneVaultConfig ExecutionAuthorityRuntimeConfigRef `json:"workload_zone_vault_config"`
+}
+
+type ExecutionAuthorityRuntimeConfigRef struct {
+	Digest string `json:"digest"`
+}
+
+type ExecutionAuthorityCodexCredential struct {
+	CLIPath          string `json:"cli_path"`
+	CredentialSource string `json:"credential_source"`
+	VaultSecretPath  string `json:"vault_secret_path"`
+	VaultSecretField string `json:"vault_secret_field"`
+}
+
+type ExecutionAuthorityEvidence struct {
+	Source                  string `json:"source"`
+	RuntimeProfile          string `json:"runtime_profile"`
+	IdentityHandoff         string `json:"identity_handoff"`
+	WorkloadVault           string `json:"workload_vault"`
+	RuntimeConfigRefs       string `json:"runtime_config_refs"`
+	CodexCredentialLocation string `json:"codex_credential_location,omitempty"`
 }
 
 // ExecutionCancelResult is the bounded cancellation receipt for the Nomad-

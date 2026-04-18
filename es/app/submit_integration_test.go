@@ -143,6 +143,7 @@ func TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt(t *testing.T)
 	if !payload.Success || !payload.Submitted || strings.TrimSpace(payload.RunID) == "" {
 		t.Fatalf("expected accepted operator submission receipt, got %+v", payload)
 	}
+	assertDefaultAuthorityHandoff(t, payload.AuthorityHandoff, stack, payload.RunID)
 
 	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
 	if jobID != "exec-"+payload.RunID {
@@ -161,6 +162,45 @@ func TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt(t *testing.T)
 	}
 	if !statusPayload.Success || statusPayload.RunID != payload.RunID {
 		t.Fatalf("expected operator status for run %q, got %+v", payload.RunID, statusPayload)
+	}
+	assertDefaultAuthorityHandoff(t, statusPayload.AuthorityHandoff, stack, payload.RunID)
+}
+
+func assertDefaultAuthorityHandoff(t *testing.T, handoff *admission.ExecutionAuthorityHandoff, stack *submitStack, runID string) {
+	t.Helper()
+
+	if handoff == nil {
+		t.Fatalf("expected authority_handoff for submitted run")
+	}
+	if handoff.AuthorityPath != "workload_identity_endpoint/workload_vault" {
+		t.Fatalf("unexpected authority path %+v", handoff)
+	}
+	if handoff.RuntimeProfile.Name != "static-script/default" {
+		t.Fatalf("unexpected runtime profile %+v", handoff.RuntimeProfile)
+	}
+	if handoff.IdentityHandoff.Mode != "workload_identity_endpoint" ||
+		handoff.IdentityHandoff.EndpointEnv != workloadIdentityEndpointEnvKey ||
+		!strings.HasPrefix(handoff.IdentityHandoff.EndpointURI, "unix:///run/es-runtime-identity/"+runID+"/") ||
+		handoff.IdentityHandoff.JWTSVIDTarget != "workload_vault" {
+		t.Fatalf("unexpected identity handoff %+v", handoff.IdentityHandoff)
+	}
+	if handoff.WorkloadVault.AuthMode != string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT) ||
+		handoff.WorkloadVault.Address != "https://vault.internal:8200" ||
+		handoff.WorkloadVault.AuthMount != "jwt" ||
+		handoff.WorkloadVault.AuthRole != "service_execution" ||
+		handoff.WorkloadVault.JWTAudience != "vault" {
+		t.Fatalf("unexpected workload vault handoff %+v", handoff.WorkloadVault)
+	}
+	if handoff.RuntimeConfigRefs.WorkloadZoneVaultConfig.Digest != stack.workloadZoneVaultDigest {
+		t.Fatalf("unexpected runtime config refs %+v", handoff.RuntimeConfigRefs)
+	}
+	if handoff.CodexCredentialLocation != nil {
+		t.Fatalf("did not expect codex credential location for default profile: %+v", handoff.CodexCredentialLocation)
+	}
+	if handoff.Evidence.Source != "submitted_runtime_spec" ||
+		handoff.Evidence.IdentityHandoff != "submitted_runtime_environment" ||
+		handoff.Evidence.RuntimeConfigRefs != "submitted_runtime_metadata" {
+		t.Fatalf("unexpected authority evidence %+v", handoff.Evidence)
 	}
 }
 
