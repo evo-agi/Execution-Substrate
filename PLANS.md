@@ -96,6 +96,7 @@ Stable semantic contracts for this next package:
 
 - ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
 - Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
+- ES may expose a bounded lifecycle projection revision on status responses as an opaque read-coordination fact derived from Nomad observation. That revision is not a scheduler identifier, not an ordering promise across scheduler backends, not a write precondition for cancel/result/logs, and not evidence of an ES-owned lifecycle store.
 - ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
 - ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
 - ES-owned runtime identity and workload-credential handoff must remain platform-owned, non-secret, and non-brokering: workloads use the discovered endpoint and workload-Vault metadata; ES does not fetch, mint, store, rotate, parse, or validate Vault or Codex credential material.
@@ -115,7 +116,7 @@ Implementation details and current slice constraints not to promote into stable 
 
 - host staging roots, bind-mount source paths, `.out/` proof workspaces, generated helper artifacts, and guest `/tmp` scratch
 - the internal Nomad job naming rule `exec-<run_id>`
-- the latest-allocation projection rule, stdout-only log retrieval, single task named `task`, async-only submit, and no-retry/no-reschedule slice
+- the latest-allocation projection rule, stdout-only log retrieval, single task named `task`, async-only submit, and no-retry/no-reschedule slice, except that the status response may expose an opaque lifecycle projection revision without exposing the underlying selection rule or scheduler IDs
 - proof-only Codex shim behavior and supported-local proof bootstrap details
 - helper scripts and examples as client contracts; the HTTPS API and documented runtime handoff are the client-facing surfaces
 
@@ -135,6 +136,7 @@ The following are useful current implementation facts and should remain visible 
 - CGS currently loads explicit subject policy records from startup `id.conf` input and returns bounded authorization decisions through `POST /v1/credential/authorize`.
 - EGS currently publishes a signed runtime-trust payload with signer policy and artifact revocation policy, alongside separate EGS-owned publication metadata.
 - ES currently exposes a bounded preflight `POST /v1/executions:prepare`, a primary public execution handoff at `POST /v1/executions:submit`, and minimal Nomad-backed lifecycle endpoints whose current `run_id` lookup and projected-allocation rules are explicit ES-internal slice policy rather than public contract.
+- ES status now includes a bounded lifecycle projection fact, `lifecycle_projection`, whose `source` is the current lifecycle authority and whose `revision` is an opaque equality token derived from Nomad modify indexes. This is a read coordination surface for consumers, not a write coordination API or a durable ES run record.
 - ES now localizes submit-time payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; `/execution/staged` and `/execution/run` remain current bounded runtime conventions rather than diffuse helper assumptions.
 - ES currently reserves `/execution/run/result` as the bounded workload-authored terminal output directory for the current `static-script` slice. That convention is active for the retained-result slice, but it remains part of the reopened execution-package/runtime-path surface rather than settled architecture.
 - ES currently retains run-scoped host staging while the submitted workload may still depend on it, captures any terminal result files from the reserved result directory into a retained ES-owned bundle outside staging, then best-effort removes `execution.staging_root_dir/<run_id>` after ES observes terminal success; failed, canceled, lost, or otherwise ambiguous outcomes retain staging for operator debugging.

@@ -24,7 +24,7 @@ These labels are intentionally different. A contract may be live today, relied o
 | --- | --- | --- | --- | --- |
 | `POST /v1/executions:prepare` | Return bounded preflight success without creating execution state | Active and bounded | `200` JSON `PrepareResult` | ES-owned admission composition surface |
 | `POST /v1/executions:submit` | Perform real execution submission | Active and bounded | `202` JSON `SubmitResult` | ES hands off to Nomad |
-| `GET /v1/executions/{run_id}/status` | Return current execution status view | Active | `200` JSON `ExecutionStatusResult` | Nomad-backed status projection through ES |
+| `GET /v1/executions/{run_id}/status` | Return current execution status view plus bounded projection revision | Active | `200` JSON `ExecutionStatusResult` | Nomad-backed status projection through ES |
 | `GET /v1/executions/{run_id}/logs` | Return execution logs | Active and bounded | `200` `text/plain` | Nomad-backed stdout retrieval through ES |
 | `GET /v1/executions/{run_id}/result` | Return retained terminal result bundle | Active and bounded | `200` `application/gzip` | ES-owned retained opaque bundle for current static-script slice |
 | `POST /v1/executions/{run_id}:cancel` | Request cancellation of a submitted execution | Active and bounded | `200` JSON `ExecutionCancelResult` | Bounded Nomad stop request through ES |
@@ -293,12 +293,19 @@ Successful response is `200` JSON with these current fields:
 - `success`
 - `run_id`
 - `status`
+- `lifecycle_projection`
+  - `source`
+  - `revision`
 - optional `exit_code`
 - `terminal`
 
 **Current contract invariants**
 
 - Status is a Nomad-backed projection.
+- `lifecycle_projection.source` is `nomad` in the current contract because Nomad is the submitted-execution lifecycle authority.
+- `lifecycle_projection.revision` is an opaque equality token derived from the Nomad job and selected-allocation modify indexes observed while serving the status request.
+- Callers may compare `lifecycle_projection.revision` values for the same `run_id` to detect that ES observed a different lifecycle projection.
+- Callers must not parse or order `lifecycle_projection.revision`, treat it as a Nomad job/allocation identifier, or use it as a write precondition for `logs`, `result`, or `cancel`.
 - If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
 - Once an allocation is selected and not terminal, status returns `status = "running"`.
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
@@ -325,6 +332,7 @@ Successful response is `200` JSON with these current fields:
 - Status is intentionally minimal.
 - The contract is built around current Nomad projection rather than a richer ES-owned execution model.
 - The public response no longer carries scheduler job/allocation identifiers or task-state detail.
+- The projection revision is the only current status read-coordination fact; it does not imply an ES-owned lifecycle-state store.
 
 ### Reopened seams
 
@@ -528,10 +536,12 @@ Successful response is `200` JSON with these fields:
 - ES owns one explicit internal execution-locator policy for lifecycle lookup.
 - The current locator resolves scheduler lookup as `nomad_job_id = exec-<run_id>`.
 - Status, logs, and cancel all depend on this derivation today.
+- Status responses expose `lifecycle_projection.revision` instead of exposing that internal scheduler lookup target.
 
 **Current contract invariant**
 
 - This internal locator policy is currently authoritative for lifecycle lookup because ES does not own a separate run registry or lifecycle store.
+- The status projection revision is derived after this lookup from Nomad observation, and it does not make the locator mapping public contract.
 
 **What this contract does not imply**
 

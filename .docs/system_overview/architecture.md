@@ -62,6 +62,7 @@ Top-level interaction notes:
 - ES is the main composition boundary. It consumes ARS, EGS, and startup-owned runtime-config inputs to admit and submit work.
 - CGS is active as a separate authorization surface, but it is intentionally outside the current ES hot path.
 - Nomad is the execution backend and lifecycle authority for submitted work.
+- ES status exposes a bounded `lifecycle_projection` fact derived from Nomad observation so consumers can compare status reads without inferring scheduler identifiers or ES-owned run persistence.
 - Docker is the container runtime used underneath Nomad in the current slice.
 - The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
@@ -137,6 +138,7 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - CGS is a separate authorization boundary and is not in the current ES hot path.
 - `internal/contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
 - ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
+- ES lifecycle projection revisions are read-coordination facts only; they do not create ES-owned lifecycle state or write preconditions.
 - ES-owned contracts are defined by this repository's `PLANS.md` and `.docs/` pages. Control Plane consumption docs may rely on accepted ES surfaces, but they do not widen or own ES core semantics.
 
 ## 7. Deliberate absences

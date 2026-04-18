@@ -20,11 +20,13 @@ const (
 	executionLifecycleStatusRunning         = "running"
 	executionLifecycleStatusTerminal        = "terminal"
 	executionLifecycleStatusCancelRequested = "cancel_requested"
+	lifecycleProjectionSourceNomad          = "nomad"
 )
 
 type nomadJobSummary struct {
-	ID     string `json:"ID"`
-	Status string `json:"Status"`
+	ID          string `json:"ID"`
+	Status      string `json:"Status"`
+	ModifyIndex uint64 `json:"ModifyIndex"`
 }
 
 type nomadAllocationListEntry struct {
@@ -35,6 +37,7 @@ type nomadAllocationListEntry struct {
 type nomadAllocationDetail struct {
 	ID           string                    `json:"ID"`
 	ClientStatus string                    `json:"ClientStatus"`
+	ModifyIndex  uint64                    `json:"ModifyIndex"`
 	TaskStates   map[string]nomadTaskState `json:"TaskStates"`
 }
 
@@ -70,9 +73,10 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	}
 
 	result := ExecutionStatusResult{
-		Success: true,
-		RunID:   locator.RunID,
-		Status:  executionLifecycleStatusSubmitted,
+		Success:             true,
+		RunID:               locator.RunID,
+		Status:              executionLifecycleStatusSubmitted,
+		LifecycleProjection: lifecycleProjectionFromNomad(job.ModifyIndex),
 	}
 
 	allocation, err := s.nomadClient.fetchProjectedAllocation(ctx, locator.JobID())
@@ -89,6 +93,7 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		}
 		return result, nil
 	}
+	result.LifecycleProjection = lifecycleProjectionFromNomad(job.ModifyIndex, allocation.ModifyIndex)
 
 	result.Status = executionLifecycleStatusRunning
 	result.Terminal = isTerminalAllocationStatus(strings.TrimSpace(allocation.ClientStatus))
@@ -292,7 +297,23 @@ func (c *nomadClient) fetchProjectedAllocation(ctx context.Context, jobID string
 	if errResult != nil {
 		return nil, errResult
 	}
+	if selected.ModifyIndex > detail.ModifyIndex {
+		detail.ModifyIndex = selected.ModifyIndex
+	}
 	return &detail, nil
+}
+
+func lifecycleProjectionFromNomad(indices ...uint64) LifecycleProjection {
+	var maxIndex uint64
+	for _, index := range indices {
+		if index > maxIndex {
+			maxIndex = index
+		}
+	}
+	return LifecycleProjection{
+		Source:   lifecycleProjectionSourceNomad,
+		Revision: fmt.Sprintf("nomad-index:%d", maxIndex),
+	}
 }
 
 func (c *nomadClient) fetchAllocation(ctx context.Context, allocationID string) (nomadAllocationDetail, *Error) {

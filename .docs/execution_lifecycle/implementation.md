@@ -194,11 +194,12 @@ Where ES stops and Nomad takes over:
 - `fetchJob` reads the Nomad job summary.
 - `fetchProjectedAllocation` reads the job's allocations and applies the explicit current projected-allocation policy.
 - `fetchAllocation` retrieves the detailed allocation record.
+- The status path derives the public `lifecycle_projection` fact from the observed Nomad job and selected allocation modify indexes, without exposing Nomad job IDs or allocation IDs.
 
 Status path:
 
 - Fetch job summary.
-- Build a minimal `ExecutionStatusResult`.
+- Build a minimal `ExecutionStatusResult` with `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision`.
 - Resolve the currently projected allocation if present.
 - Map the current Nomad-backed path into public `status` values:
   - `submitted`
@@ -227,6 +228,7 @@ Cancel path:
 - ES does not consult any ES-owned run store for lifecycle lookup.
 - Latest-allocation selection is the only allocation-selection logic in the current implementation.
 - Post-submit lifecycle reads are read-through from Nomad rather than reconstructed from staging directories or ES memory.
+- The lifecycle projection revision is a status read token only; no lifecycle write path accepts it as a precondition.
 
 ## 9. Runtime identity and mount implementation
 

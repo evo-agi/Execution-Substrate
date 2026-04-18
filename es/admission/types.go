@@ -64,11 +64,20 @@ type SubmitResult struct {
 // submitted execution. It intentionally reflects only minimal mapped state and
 // does not imply a durable ES-owned lifecycle record.
 type ExecutionStatusResult struct {
-	Success  bool   `json:"success"`
-	RunID    string `json:"run_id"`
-	Status   string `json:"status"`
-	ExitCode *int   `json:"exit_code,omitempty"`
-	Terminal bool   `json:"terminal"`
+	Success             bool                `json:"success"`
+	RunID               string              `json:"run_id"`
+	Status              string              `json:"status"`
+	LifecycleProjection LifecycleProjection `json:"lifecycle_projection"`
+	ExitCode            *int                `json:"exit_code,omitempty"`
+	Terminal            bool                `json:"terminal"`
+}
+
+// LifecycleProjection is a bounded read-coordination fact for status
+// responses. Revision is opaque to callers; it is not a scheduler identifier
+// or a precondition for lifecycle writes.
+type LifecycleProjection struct {
+	Source   string `json:"source"`
+	Revision string `json:"revision"`
 }
 
 // ExecutionCancelResult is the bounded cancellation receipt for the Nomad-

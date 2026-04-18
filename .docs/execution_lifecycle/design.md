@@ -95,11 +95,13 @@ After submission, lifecycle is projected from Nomad.
 At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
+- `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is opaque to callers
 - `logs` reads stdout for the selected task from Nomad
 - `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory
 - `cancel` asks Nomad to stop the job without turning ES into a broader control-plane owner
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
+The lifecycle projection revision lets consumers compare status observations without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract.
 
 ### 5.4 Terminal result materialization phase
 
@@ -122,6 +124,7 @@ This is intentionally not a general output platform. It does not create callback
 - Nomad is authoritative for submitted execution lifecycle after `:submit`.
 - ES does not become the scheduler.
 - Lifecycle responses are projections of Nomad state, not ES-owned execution state.
+- The status `lifecycle_projection.revision` is an opaque read-coordination token derived from Nomad observation, not a write precondition or an ES lifecycle-state version.
 - `:submit` returns a bounded submission receipt rather than a durable run model.
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
 - Runtime identity or runtime credential failures remain workload/runtime failures rather than creating a new ES lifecycle phase.

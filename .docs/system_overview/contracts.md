@@ -343,6 +343,7 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 - ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle retrieval, and runtime handoff boundary enforcement.
 - ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
 - Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
+- ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque equality token for status reads, not a scheduler ID, write precondition, or ES-owned lifecycle record.
 - ES-retained result bundles are opaque output material. They are not logs wrappers, CP checkpoints, review decisions, finalization records, or ES-owned orchestration state.
 - The workload credential handoff is non-secret and workload-side: ES injects identity and credential-location metadata, while the workload uses the discovered endpoint and workload-Vault metadata to acquire material itself.
 - Caller identity and narrow configured SPIFFE allowlist authorization remain required on the governed execution path.
@@ -446,6 +447,9 @@ Current successful response shapes:
   - `success`
   - `run_id`
   - `status`
+  - `lifecycle_projection`
+    - `source`
+    - `revision`
   - optional `exit_code`
   - `terminal`
 - `cancel`
@@ -513,6 +517,7 @@ Current successful response shapes:
   - ES does not persist run state
   - ES resolves status, logs, result readiness when no retained bundle exists, and cancel through Nomad
   - ES derives the minimal public lifecycle `status` value from Nomad-backed state as `submitted`, `running`, or `terminal`
+  - ES includes `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision` in status responses so consumers can compare status observations without inferring Nomad IDs or ES-owned run persistence
   - logs are stdout-only for task `task`
   - result bundles are retained opaque output artifacts keyed by `run_id`, not lifecycle-state records
   - ES uses one explicit projected-allocation policy that currently chooses the latest allocation in the current no-retry, no-reschedule slice

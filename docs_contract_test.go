@@ -69,6 +69,7 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		"Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.",
 		"Workstream A and Workstream B are gates that keep ES input contracts honest; Workstream C is the delivered ES milestone.",
 		"keeping the current `execution_substrate.runtime_profile` annotation and `control-plane-normal-shell/v1` profile as accepted bounded compatibility",
+		"ES may expose a bounded lifecycle projection revision on status responses as an opaque read-coordination fact derived from Nomad observation.",
 	} {
 		if !strings.Contains(plans, required) {
 			t.Fatalf("PLANS missing %q", required)
@@ -97,6 +98,7 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		"Stable semantic contracts for the ES Admission And Runtime Boundary Realignment package",
 		"Compatibility edges to preserve during the next package unless a coordinated migration/versioning note says otherwise",
 		"Implementation details and current slice constraints must not be promoted into stable cross-service semantics",
+		"lifecycle_projection",
 	} {
 		if !strings.Contains(contracts, required) {
 			t.Fatalf("contracts doc missing %q", required)
@@ -106,8 +108,20 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 	if !strings.Contains(lifecycle, "CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts.") {
 		t.Fatalf("lifecycle contracts doc missing ES ownership authority note")
 	}
+	for _, required := range []string{
+		"`lifecycle_projection.source` is `nomad`",
+		"`lifecycle_projection.revision` is an opaque equality token",
+		"Callers must not parse or order `lifecycle_projection.revision`",
+	} {
+		if !strings.Contains(lifecycle, required) {
+			t.Fatalf("lifecycle contracts doc missing %q", required)
+		}
+	}
 
 	if !strings.Contains(runbook, "This runbook documents how CP consumes an accepted ES-owned surface; it is not the source of truth for ES core contracts.") {
 		t.Fatalf("CP consumer runbook missing ES ownership authority note")
+	}
+	if !strings.Contains(runbook, "Status responses include `lifecycle_projection.source` and") {
+		t.Fatalf("CP consumer runbook missing lifecycle projection consumption note")
 	}
 }

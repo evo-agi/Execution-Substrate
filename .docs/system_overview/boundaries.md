@@ -232,7 +232,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
-- Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state
+- Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state, including the bounded status `lifecycle_projection` read-coordination fact
 - Bounded retained-result storage for opaque tar.gz bundles captured from `/execution/run/result` in the current `static-script` slice
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
@@ -276,6 +276,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
+- ES status now exposes only the bounded `lifecycle_projection.source` and opaque `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, or task-state detail as public lifecycle contract.
 - ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
 - ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.

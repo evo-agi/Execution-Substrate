@@ -63,14 +63,16 @@ ES owns:
 - non-secret workload-Vault auth metadata and Codex credential-location metadata
 - staging of non-secret Vault CA trust material when the workload-zone Vault config supplies it
 - Nomad-backed status/log/result/cancel projection through public ES endpoints
+- the status `lifecycle_projection` source and opaque revision as a bounded read-coordination fact
 - retained opaque `result.tar.gz` bundles captured from `/execution/run/result`
 - the truth of whether this repo's readiness helpers can honestly claim `submit-ready`
 
 The Control Plane long-running operator mode contract freezes how those ES
 facts may be consumed by browser/API operator mode: ES provider run ids,
-status/log/result/cancel responses, retained bundles, runtime-profile evidence,
-and submit-readiness are runtime evidence, not Control Plane orchestration
-truth. ES retained results remain opaque output material; Control Plane owns
+status/log/result/cancel responses, status projection revisions, retained
+bundles, runtime-profile evidence, and submit-readiness are runtime evidence,
+not Control Plane orchestration truth. ES retained results remain opaque output
+material; Control Plane owns
 their semantic validation and any review, checkpoint, hold/resume/reject, or
 terminal run decision.
 
@@ -121,6 +123,12 @@ Execution and lifecycle:
 - `GET /v1/executions/{run_id}/logs` on ES
 - `GET /v1/executions/{run_id}/result` on ES
 - `POST /v1/executions/{run_id}:cancel` on ES
+
+Status responses include `lifecycle_projection.source` and
+`lifecycle_projection.revision`. CP may compare revisions for the same `run_id`
+to detect a changed ES lifecycle observation, but must treat the revision as
+opaque. It is not a Nomad job/allocation identifier, not a cancel/result/logs
+write precondition, and not a Control Plane orchestration checkpoint.
 
 The current repo-owned non-operator caller activation path is:
 

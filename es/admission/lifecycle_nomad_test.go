@@ -16,7 +16,7 @@ func TestStatusReturnsSubmittedWhenNoAllocationExistsYet(t *testing.T) {
 		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/v1/job/exec-run-0123456789abcdef":
-				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running"}`))
+				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running","ModifyIndex":11}`))
 			case "/v1/job/exec-run-0123456789abcdef/allocations":
 				_, _ = w.Write([]byte(`[]`))
 			default:
@@ -32,6 +32,9 @@ func TestStatusReturnsSubmittedWhenNoAllocationExistsYet(t *testing.T) {
 	if result.Status != executionLifecycleStatusSubmitted || result.Terminal {
 		t.Fatalf("expected submitted non-terminal result, got %+v", result)
 	}
+	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:11" {
+		t.Fatalf("expected job-derived lifecycle projection, got %+v", result.LifecycleProjection)
+	}
 }
 
 func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) {
@@ -40,11 +43,11 @@ func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) 
 		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/v1/job/exec-run-0123456789abcdef":
-				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running"}`))
+				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running","ModifyIndex":10}`))
 			case "/v1/job/exec-run-0123456789abcdef/allocations":
-				_, _ = w.Write([]byte(`[{"ID":"alloc-old","ModifyIndex":1},{"ID":"alloc-new","ModifyIndex":2}]`))
+				_, _ = w.Write([]byte(`[{"ID":"alloc-old","ModifyIndex":1},{"ID":"alloc-new","ModifyIndex":20}]`))
 			case "/v1/allocation/alloc-new":
-				_, _ = w.Write([]byte(`{"ID":"alloc-new","ClientStatus":"complete","TaskStates":{"task":{"State":"dead","Events":[{"Type":"Started"},{"Type":"Terminated","ExitCode":7}]}}}`))
+				_, _ = w.Write([]byte(`{"ID":"alloc-new","ClientStatus":"complete","ModifyIndex":25,"TaskStates":{"task":{"State":"dead","Events":[{"Type":"Started"},{"Type":"Terminated","ExitCode":7}]}}}`))
 			default:
 				t.Fatalf("unexpected path %q", r.URL.Path)
 			}
@@ -57,6 +60,19 @@ func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) 
 	}
 	if result.Status != executionLifecycleStatusTerminal || !result.Terminal || result.ExitCode == nil || *result.ExitCode != 7 {
 		t.Fatalf("expected terminal status with exit code, got %+v", result)
+	}
+	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:25" {
+		t.Fatalf("expected allocation-derived lifecycle projection, got %+v", result.LifecycleProjection)
+	}
+}
+
+func TestLifecycleProjectionFromNomadUsesHighestObservedModifyIndex(t *testing.T) {
+	projection := lifecycleProjectionFromNomad(7, 3, 19, 12)
+	if projection.Source != lifecycleProjectionSourceNomad {
+		t.Fatalf("expected nomad projection source, got %q", projection.Source)
+	}
+	if projection.Revision != "nomad-index:19" {
+		t.Fatalf("expected highest observed modify index in opaque revision, got %q", projection.Revision)
 	}
 }
 
