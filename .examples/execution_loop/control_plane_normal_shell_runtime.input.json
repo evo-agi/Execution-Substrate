@@ -1,0 +1,68 @@
+{
+  "name": "control-plane-normal-shell-runtime-profile",
+  "payload_path": "../control_plane_normal_shell_runtime/dist/control_plane_normal_shell_runtime.tar.gz",
+  "intent": {
+    "args": [],
+    "entrypoint": "./entrypoint",
+    "kind": "control-plane-normal-shell-runtime-profile",
+    "note": "bounded Control Plane normal-shell runtime contract proof"
+  },
+  "derivation_spec": {
+    "constraints_profile": "bounded-control-plane-normal-shell",
+    "kind": "static-script",
+    "platform": "docker"
+  },
+  "build_log": {
+    "inline": "packaged control_plane_normal_shell_runtime example"
+  },
+  "publish": {
+    "artifact_type": "static-script",
+    "runtime_interface": {
+      "environment_variables": [],
+      "required_capabilities": []
+    },
+    "provenance": {
+      "policy_decisions": [
+        {
+          "rule": "allow",
+          "result": "applied"
+        }
+      ]
+    },
+    "derivation": {
+      "output_id": "control-plane-normal-shell-runtime-profile",
+      "producer_run_id": "build-run-1",
+      "constraints": {
+        "allowed_toolchains": [],
+        "forbidden_toolchains": [],
+        "os": "linux",
+        "arch": "amd64",
+        "network_access": true,
+        "writable_paths": [],
+        "forbidden_paths": [],
+        "determinism_expectation": "deterministic"
+      },
+      "policy_version": "2026-04-11",
+      "expected_artifact_type": "static-script"
+    },
+    "access": {
+      "network_access": true
+    },
+    "workload": {
+      "target_platform": "docker"
+    }
+  },
+  "prepare": {
+    "annotations": {
+      "execution_substrate.runtime_profile": "control-plane-normal-shell/v1"
+    }
+  },
+  "submit": {
+    "mode": "async",
+    "resources": {
+      "cpu": 20,
+      "memory_mb": 512
+    },
+    "timeout_seconds": 180
+  }
+}

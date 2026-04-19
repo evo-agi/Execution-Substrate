@@ -1,0 +1,169 @@
+package api
+
+import (
+	"context"
+	"crypto/x509"
+	"net/http"
+	"strings"
+
+	"execution-substrate/ags/publish"
+	"execution-substrate/internal/httpx"
+	"execution-substrate/internal/observability"
+)
+
+const serviceName = "artifact-governance"
+
+type publishingService interface {
+	Health(ctx context.Context) publish.HealthSnapshot
+	Publish(ctx context.Context, caller publish.CallerIdentity, req publish.PublishRequest) (publish.PublishResult, *publish.Error)
+}
+
+type Server struct {
+	service             publishingService
+	bootstrapIssuerCN   string
+	allowedPathPrefixes []string
+	isStarted           func() bool
+}
+
+func NewServer(service publishingService, bootstrapIssuerCN string, allowedPathPrefixes []string, isStarted func() bool) *Server {
+	return &Server{
+		service:             service,
+		bootstrapIssuerCN:   strings.TrimSpace(bootstrapIssuerCN),
+		allowedPathPrefixes: append([]string(nil), allowedPathPrefixes...),
+		isStarted:           isStarted,
+	}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("POST /v1/artifacts:publish", s.handlePublish)
+	return observability.WrapHandler(serviceName, mux)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	_ = r
+
+	started := false
+	if s.isStarted != nil {
+		started = s.isStarted()
+	}
+
+	snapshot := s.service.Health(r.Context())
+	ready := started && snapshot.SignerReady && snapshot.ArtifactRegistryHealthy
+	status := "unhealthy"
+	if ready {
+		status = "healthy"
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, HealthResponse{
+		Status:  status,
+		Ready:   ready,
+		Service: serviceName,
+		AdditionalProperties: HealthAdditionalProperties{
+			Dependencies: HealthDependencies{
+				ArtifactRegistry: label(snapshot.ArtifactRegistryHealthy, "healthy", "unhealthy"),
+			},
+			Readiness: HealthReadiness{
+				ServerStarted: label(started, "started", "not_started"),
+				Signer:        label(snapshot.SignerReady, "initialized", "missing"),
+			},
+		},
+	})
+}
+
+func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
+	caller, issuerCommonName, ok := authenticatedCallerIdentity(r)
+	if !ok {
+		httpx.WriteText(w, http.StatusUnauthorized, "Authenticated caller identity required")
+		return
+	}
+	if issuerCommonName == s.bootstrapIssuerCN {
+		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
+		return
+	}
+	authorized := false
+	for _, prefix := range s.allowedPathPrefixes {
+		if matchesAuthorizedPathPrefix(caller.Path, prefix) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
+		return
+	}
+
+	var request publish.PublishRequest
+	if err := httpx.DecodeStrictJSONAndClose(r.Body, &request); err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, ErrorResponse{
+			Success: false,
+			Error:   "invalid request body",
+			Code:    "invalid_request",
+		})
+		return
+	}
+
+	result, err := s.service.Publish(r.Context(), caller, request)
+	if err != nil {
+		httpx.WriteJSON(w, err.Status, ErrorResponse{
+			Success: false,
+			Error:   err.Message,
+			Code:    err.Code,
+		})
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+func authenticatedCallerIdentity(r *http.Request) (caller publish.CallerIdentity, issuerCommonName string, ok bool) {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return publish.CallerIdentity{}, "", false
+	}
+
+	cert := r.TLS.VerifiedChains[0][0]
+	if cert == nil {
+		return publish.CallerIdentity{}, "", false
+	}
+
+	caller, ok = callerIdentityFromCertificate(cert)
+	if !ok {
+		return publish.CallerIdentity{}, "", false
+	}
+	return caller, cert.Issuer.CommonName, true
+}
+
+func callerIdentityFromCertificate(cert *x509.Certificate) (publish.CallerIdentity, bool) {
+	const prefix = "spiffe://execution.internal/"
+
+	for _, uri := range cert.URIs {
+		value := uri.String()
+		if strings.HasPrefix(value, prefix) {
+			return publish.CallerIdentity{
+				Path:     strings.TrimPrefix(value, prefix),
+				SPIFFEID: value,
+			}, true
+		}
+	}
+
+	return publish.CallerIdentity{}, false
+}
+
+func matchesAuthorizedPathPrefix(path string, prefix string) bool {
+	normalizedPath := strings.Trim(path, "/")
+	normalizedPrefix := strings.Trim(prefix, "/")
+
+	if normalizedPath == "" || normalizedPrefix == "" {
+		return false
+	}
+
+	return normalizedPath == normalizedPrefix || strings.HasPrefix(normalizedPath, normalizedPrefix+"/")
+}
+
+func label(ok bool, healthy string, unhealthy string) string {
+	if ok {
+		return healthy
+	}
+	return unhealthy
+}

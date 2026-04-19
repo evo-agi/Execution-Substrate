@@ -1,0 +1,36 @@
+{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8443,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/abs/path/tls/egs-server-cert.pem",
+    "key_file": "/abs/path/tls/egs-server-key.pem",
+    "client_ca_file": "/abs/path/tls/runtime-ca.pem"
+  },
+  "security": {
+    "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
+  },
+  "signer": {
+    "algorithm": "ed25519",
+    "key_id": "egs-key-1",
+    "private_key_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+    "public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce"
+  },
+  "trust_model": {
+    "signer_policy": {
+      "allowed_signers": [
+        "ags-key-1"
+      ],
+      "revoked_signers": []
+    },
+    "artifact_policy": {
+      "revoked_artifacts": []
+    },
+    "update_revision": 1,
+    "version": "v1"
+  }
+}

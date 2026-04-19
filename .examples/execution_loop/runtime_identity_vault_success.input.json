@@ -1,0 +1,70 @@
+{
+  "name": "runtime-identity-vault-success",
+  "payload_path": "../runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz",
+  "intent": {
+    "args": [],
+    "entrypoint": "./entrypoint",
+    "kind": "runtime-identity-vault-login",
+    "note": "bounded useful credential flow example"
+  },
+  "derivation_spec": {
+    "constraints_profile": "bounded-default",
+    "kind": "static-script",
+    "platform": "docker"
+  },
+  "build_log": {
+    "inline": "packaged runtime_identity_vault_login example"
+  },
+  "publish": {
+    "artifact_type": "static-script",
+    "runtime_interface": {
+      "environment_variables": [
+        "WORKLOAD_VAULT_SECRET_PATH"
+      ],
+      "required_capabilities": []
+    },
+    "provenance": {
+      "policy_decisions": [
+        {
+          "rule": "allow",
+          "result": "applied"
+        }
+      ]
+    },
+    "derivation": {
+      "output_id": "runtime-identity-vault-login",
+      "producer_run_id": "build-run-1",
+      "constraints": {
+        "allowed_toolchains": [],
+        "forbidden_toolchains": [],
+        "os": "linux",
+        "arch": "amd64",
+        "network_access": true,
+        "writable_paths": [],
+        "forbidden_paths": [],
+        "determinism_expectation": "deterministic"
+      },
+      "policy_version": "2026-03-31",
+      "expected_artifact_type": "static-script"
+    },
+    "access": {
+      "network_access": true
+    },
+    "workload": {
+      "target_platform": "docker"
+    }
+  },
+  "prepare": {
+    "env": {
+      "WORKLOAD_VAULT_SECRET_PATH": "proof-secrets/data/runtime-identity-vault-login"
+    }
+  },
+  "submit": {
+    "mode": "async",
+    "resources": {
+      "cpu": 10,
+      "memory_mb": 128
+    },
+    "timeout_seconds": 120
+  }
+}

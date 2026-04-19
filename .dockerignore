@@ -1,0 +1,9 @@
+.git
+.tmp
+.out/*
+!.out/Dockerfile
+bringup-script-*
+es-submit-*
+*.test
+coverage.*
+profile.cov

@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+DEFAULT_SECRET_PATH = "proof-secrets/data/runtime-identity-vault-login"
+DEFAULT_PROOF_SETTLE_SECONDS = 3
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"missing required environment variable: {name}")
+    return value
+
+
+def emit(message: str) -> None:
+    print(message, flush=True)
+
+
+def parse_identity_endpoint(uri: str) -> str:
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "unix":
+        raise SystemExit(f"unsupported identity endpoint scheme: {parsed.scheme!r}")
+    socket_path = parsed.path.strip()
+    if not socket_path:
+        raise SystemExit("identity endpoint path is empty")
+    return socket_path
+
+
+def assert_raw_spire_denied(endpoint_path: str) -> None:
+    raw_spire = os.path.join(os.path.dirname(endpoint_path), "internal", "spire-agent.sock")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(1)
+    try:
+        client.connect(raw_spire)
+        raise SystemExit("raw SPIRE socket unexpectedly reachable from workload")
+    except OSError:
+        emit("RAW-SPIRE-DENIED")
+    finally:
+        client.close()
+
+
+def request_identity_jwt(socket_path: str) -> str:
+    request_payload = {
+        "kind": "jwt_svid",
+        "target": "workload_vault",
+    }
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(socket_path)
+        client.sendall((json.dumps(request_payload) + "\n").encode("utf-8"))
+
+        response_chunks = []
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response_chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+    finally:
+        client.close()
+
+    raw_response = b"".join(response_chunks).decode("utf-8").strip()
+    if not raw_response:
+        raise SystemExit("identity endpoint returned an empty response")
+
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"identity endpoint returned invalid JSON: {exc}") from exc
+
+    if payload.get("error"):
+        raise SystemExit(f"identity endpoint returned error: {payload}")
+
+    jwt_value = str(payload.get("jwt", "")).strip()
+    if not jwt_value:
+        raise SystemExit(f"identity endpoint response did not include jwt: {payload}")
+    return jwt_value
+
+
+def make_urlopener() -> urllib.request.OpenerDirector:
+    insecure = os.environ.get("WORKLOAD_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1"
+    ca_cert = os.environ.get("VAULT_CACERT", "").strip()
+    if not insecure:
+        context = ssl.create_default_context(cafile=ca_cert or None)
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+
+def do_json_request(opener, method: str, url: str, payload=None, headers=None):
+    body = None
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with opener.open(request, timeout=10) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"{method} {url} failed with status {exc.code}: {raw_body}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"{method} {url} failed: {exc}") from exc
+
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{method} {url} returned invalid JSON: {exc}") from exc
+
+
+def login_to_vault(opener, vault_addr: str, auth_mount: str, auth_role: str, jwt_value: str) -> str:
+    url = vault_addr.rstrip("/") + f"/v1/auth/{auth_mount}/login"
+    response = do_json_request(
+        opener,
+        "POST",
+        url,
+        payload={
+            "role": auth_role,
+            "jwt": jwt_value,
+        },
+    )
+    auth = response.get("auth", {})
+    client_token = str(auth.get("client_token", "")).strip()
+    if not client_token:
+        raise SystemExit("vault login response did not include auth.client_token")
+    return client_token
+
+
+def read_secret(opener, vault_addr: str, client_token: str, secret_path: str):
+    url = vault_addr.rstrip("/") + f"/v1/{secret_path.lstrip('/')}"
+    response = do_json_request(
+        opener,
+        "GET",
+        url,
+        headers={"X-Vault-Token": client_token},
+    )
+    if isinstance(response.get("data"), dict):
+        nested = response["data"]
+        if isinstance(nested.get("data"), dict):
+            return nested["data"]
+        return nested
+    raise SystemExit("vault secret response did not include a data object")
+
+
+def main() -> int:
+    identity_endpoint = require_env("EXEC_WORKLOAD_IDENTITY_ENDPOINT")
+    vault_addr = require_env("VAULT_ADDR")
+    auth_mode = require_env("EXEC_WORKLOAD_VAULT_AUTH_MODE")
+    auth_mount = require_env("EXEC_WORKLOAD_VAULT_AUTH_MOUNT")
+    auth_role = require_env("EXEC_WORKLOAD_VAULT_AUTH_ROLE")
+    jwt_audience = require_env("EXEC_WORKLOAD_VAULT_JWT_AUDIENCE")
+    secret_path = os.environ.get("WORKLOAD_VAULT_SECRET_PATH", DEFAULT_SECRET_PATH).strip() or DEFAULT_SECRET_PATH
+
+    if auth_mode != "vault_identity_jwt":
+        raise SystemExit(f"unsupported auth mode: {auth_mode!r}")
+
+    emit("RUNTIME-IDENTITY-VAULT-LOGIN-START")
+    emit(f"IDENTITY-ENDPOINT={identity_endpoint}")
+    emit(f"VAULT-ADDR={vault_addr}")
+    emit(f"VAULT-AUTH-MOUNT={auth_mount}")
+    emit(f"VAULT-AUTH-ROLE={auth_role}")
+    emit(f"JWT-AUDIENCE={jwt_audience}")
+    emit(f"SECRET-PATH={secret_path}")
+
+    socket_path = parse_identity_endpoint(identity_endpoint)
+    emit("PLATFORM-ENDPOINT-USED")
+    assert_raw_spire_denied(socket_path)
+
+    jwt_value = request_identity_jwt(socket_path)
+    emit("IDENTITY-JWT-RECEIVED")
+
+    opener = make_urlopener()
+    client_token = login_to_vault(opener, vault_addr, auth_mount, auth_role, jwt_value)
+    if not client_token:
+        raise SystemExit("vault login did not return a client token")
+    emit("VAULT-LOGIN-SUCCESS")
+
+    secret_data = read_secret(opener, vault_addr, client_token, secret_path)
+    message = str(secret_data.get("message", "")).strip()
+    if not message:
+        raise SystemExit("vault secret response did not include data.message")
+
+    emit(f"SECRET-READ-SUCCESS:{message}")
+    emit(
+        json.dumps(
+            {
+                "status": "ok",
+                "artifact_digest": os.environ.get("EXEC_ARTIFACT_DIGEST", ""),
+                "secret_message": message,
+            },
+            sort_keys=True,
+        ),
+    )
+    # Keep the proof workload alive briefly so operator-path polling can capture
+    # logs before Nomad drops client-side log state for this fast-completing task.
+    time.sleep(DEFAULT_PROOF_SETTLE_SECONDS)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

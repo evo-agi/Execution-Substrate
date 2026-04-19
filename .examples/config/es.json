@@ -1,0 +1,82 @@
+{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8445,
+    "read_timeout_seconds": 5,
+    "write_timeout_seconds": 5,
+    "shutdown_timeout_seconds": 5
+  },
+  "tls": {
+    "cert_file": "/abs/path/tls/es-server-cert.pem",
+    "key_file": "/abs/path/tls/es-server-key.pem",
+    "client_ca_file": "/abs/path/tls/runtime-ca.pem"
+  },
+  "security": {
+    "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
+  },
+  "authorization": {
+    "allowed_spiffe_path_prefixes": [
+      "operator"
+    ]
+  },
+  "dependencies": {
+    "artifact_registry": {
+      "base_url": "https://127.0.0.1:8442",
+      "server_name": "server.artifact-registry.internal",
+      "client_cert_file": "/abs/path/tls/es-client-cert.pem",
+      "client_key_file": "/abs/path/tls/es-client-key.pem",
+      "root_ca_file": "/abs/path/tls/runtime-ca.pem",
+      "timeout_seconds": 5
+    },
+    "execution_governance": {
+      "base_url": "https://127.0.0.1:8443",
+      "server_name": "server.execution-governance.internal",
+      "client_cert_file": "/abs/path/tls/es-client-cert.pem",
+      "client_key_file": "/abs/path/tls/es-client-key.pem",
+      "root_ca_file": "/abs/path/tls/runtime-ca.pem",
+      "timeout_seconds": 5
+    }
+  },
+  "runtime_config": {
+    "workload_zone_vault_config_ref": {
+      "digest": "sha256:<workload-zone-vault-config-digest>"
+    }
+  },
+  "verification": {
+    "trust_model": {
+      "algorithm": "ed25519",
+      "key_id": "egs-key-1",
+      "public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce"
+    },
+    "provenance": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    },
+    "derivation_attestation": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    },
+    "workload_identity_binding": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    }
+  },
+  "workload_vault_auth": {
+    "default_mode": "vault_identity_jwt"
+  },
+  "nomad": {
+    "base_url": "http://127.0.0.1:4646",
+    "datacenter": "dc1",
+    "timeout_seconds": 5
+  },
+  "execution": {
+    "staging_root_dir": "/abs/path/es-staging",
+    "results_root_dir": "/abs/path/es-results",
+    "base_image": "alpine:3.20",
+    "runtime_support_binary": "/usr/local/bin/es-runtime-support",
+    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock"
+  }
+}

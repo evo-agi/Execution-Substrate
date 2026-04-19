@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import ssl
+import threading
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+DEFAULT_SECRET_PATH = "secret/data/runtime-identity-reference"
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(f"missing required environment variable: {name}")
+    return value
+
+
+def parse_identity_endpoint(uri: str) -> str:
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "unix":
+        raise SystemExit(f"unsupported identity endpoint scheme: {parsed.scheme!r}")
+    socket_path = parsed.path.strip()
+    if not socket_path:
+        raise SystemExit("identity endpoint path is empty")
+    return socket_path
+
+
+def request_identity_jwt(socket_path: str, audience: str) -> str:
+    request_payload = {
+        "kind": "jwt_request",
+        "audience": audience,
+    }
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(socket_path)
+        client.sendall((json.dumps(request_payload) + "\n").encode("utf-8"))
+
+        response_chunks = []
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response_chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+    finally:
+        client.close()
+
+    raw_response = b"".join(response_chunks).decode("utf-8").strip()
+    if not raw_response:
+        raise SystemExit("identity endpoint returned an empty response")
+
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"identity endpoint returned invalid JSON: {exc}") from exc
+
+    jwt = str(payload.get("jwt", "")).strip()
+    if not jwt:
+        raise SystemExit("identity endpoint response did not include jwt")
+    return jwt
+
+
+def request_upstream_identity_jwt(opener, identity_url: str, audience: str) -> str:
+    response = do_json_request(
+        opener,
+        "POST",
+        identity_url,
+        payload={"audience": audience},
+    )
+    jwt = str(response.get("jwt", "")).strip()
+    if not jwt:
+        raise SystemExit("upstream identity response did not include jwt")
+    return jwt
+
+
+def start_local_identity_bridge(socket_path: str, identity_url: str):
+    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+    try:
+        os.remove(socket_path)
+    except FileNotFoundError:
+        pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(socket_path)
+    server.listen()
+    os.chmod(socket_path, 0o777)
+    stop_event = threading.Event()
+    opener = make_urlopener()
+
+    def serve():
+        try:
+            while not stop_event.is_set():
+                try:
+                    connection, _ = server.accept()
+                except OSError:
+                    if stop_event.is_set():
+                        return
+                    raise
+                with connection:
+                    raw = b""
+                    while b"\n" not in raw:
+                        chunk = connection.recv(4096)
+                        if not chunk:
+                            break
+                        raw += chunk
+                    payload = json.loads(raw.decode("utf-8").strip() or "{}")
+                    audience = str(payload.get("audience", "")).strip()
+                    jwt = request_upstream_identity_jwt(opener, identity_url, audience)
+                    connection.sendall((json.dumps({"jwt": jwt}) + "\n").encode("utf-8"))
+        finally:
+            server.close()
+            try:
+                os.remove(socket_path)
+            except FileNotFoundError:
+                pass
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+
+    def cleanup():
+        stop_event.set()
+        try:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(1)
+            probe.connect(socket_path)
+            probe.close()
+        except OSError:
+            pass
+        thread.join(timeout=2)
+
+    return cleanup
+
+
+def build_url(base: str, suffix: str) -> str:
+    return base.rstrip("/") + suffix
+
+
+def make_urlopener() -> urllib.request.OpenerDirector:
+    insecure = os.environ.get("REFERENCE_VAULT_INSECURE_SKIP_VERIFY", "").strip() == "1"
+    if not insecure:
+        return urllib.request.build_opener()
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+
+def do_json_request(opener, method: str, url: str, payload=None, headers=None):
+    body = None
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with opener.open(request, timeout=10) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"{method} {url} failed with status {exc.code}: {raw_body}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"{method} {url} failed: {exc}") from exc
+
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{method} {url} returned invalid JSON: {exc}") from exc
+
+
+def login_to_vault(opener, vault_addr: str, auth_mount: str, auth_role: str, jwt: str) -> str:
+    url = build_url(vault_addr, f"/v1/auth/{auth_mount}/login")
+    payload = {
+        "role": auth_role,
+        "jwt": jwt,
+    }
+    response = do_json_request(opener, "POST", url, payload=payload)
+    auth = response.get("auth", {})
+    client_token = str(auth.get("client_token", "")).strip()
+    if not client_token:
+        raise SystemExit("vault login response did not include auth.client_token")
+    return client_token
+
+
+def read_secret(opener, vault_addr: str, client_token: str, secret_path: str):
+    url = build_url(vault_addr, f"/v1/{secret_path.lstrip('/')}")
+    response = do_json_request(
+        opener,
+        "GET",
+        url,
+        headers={"X-Vault-Token": client_token},
+    )
+
+    if isinstance(response.get("data"), dict):
+        nested = response["data"]
+        if isinstance(nested.get("data"), dict):
+            return nested["data"]
+        return nested
+    raise SystemExit("vault secret response did not include a data object")
+
+
+def main() -> int:
+    identity_endpoint = require_env("EXEC_WORKLOAD_IDENTITY_ENDPOINT")
+    identity_url = require_env("REFERENCE_IDENTITY_URL")
+    vault_addr = require_env("VAULT_ADDR")
+    auth_mode = require_env("EXEC_WORKLOAD_VAULT_AUTH_MODE")
+    auth_mount = require_env("EXEC_WORKLOAD_VAULT_AUTH_MOUNT")
+    auth_role = require_env("EXEC_WORKLOAD_VAULT_AUTH_ROLE")
+    jwt_audience = require_env("EXEC_WORKLOAD_VAULT_JWT_AUDIENCE")
+    secret_path = os.environ.get("REFERENCE_SECRET_PATH", DEFAULT_SECRET_PATH).strip() or DEFAULT_SECRET_PATH
+
+    if auth_mode != "vault_identity_jwt":
+        raise SystemExit(f"unsupported auth mode for reference workload: {auth_mode!r}")
+
+    print("RUNTIME-IDENTITY-REFERENCE-START")
+    print(f"IDENTITY-ENDPOINT={identity_endpoint}")
+    print(f"VAULT-ADDR={vault_addr}")
+    print(f"VAULT-AUTH-MOUNT={auth_mount}")
+    print(f"VAULT-AUTH-ROLE={auth_role}")
+    print(f"JWT-AUDIENCE={jwt_audience}")
+    print(f"SECRET-PATH={secret_path}")
+
+    socket_path = parse_identity_endpoint(identity_endpoint)
+    cleanup = start_local_identity_bridge(socket_path, identity_url)
+    try:
+        jwt = request_identity_jwt(socket_path, jwt_audience)
+    finally:
+        cleanup()
+    print("IDENTITY-JWT-RECEIVED")
+
+    opener = make_urlopener()
+    client_token = login_to_vault(opener, vault_addr, auth_mount, auth_role, jwt)
+    print("VAULT-AUTH-SUCCESS")
+
+    secret_data = read_secret(opener, vault_addr, client_token, secret_path)
+    message = str(secret_data.get("message", "")).strip()
+    if not message:
+        raise SystemExit("vault secret response did not include data.message")
+
+    print(f"SECRET-READ-SUCCESS:{message}")
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "secret_message": message,
+                "artifact_digest": os.environ.get("EXEC_ARTIFACT_DIGEST", ""),
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

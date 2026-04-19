@@ -13,6 +13,9 @@
 
 # Code coverage profiles and other test artifacts
 *.out
+!.out/
+.out/*
+!.out/Dockerfile
 coverage.*
 *.coverprofile
 profile.cov
@@ -27,6 +30,12 @@ go.work.sum
 # env file
 .env
 
+# Generated example proof artifacts
+/.examples/runtime_identity_vault_login/dist/
+
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# OS-specific files
+.DS_Store
