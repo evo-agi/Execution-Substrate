@@ -13,7 +13,7 @@ import (
 )
 
 func TestExecutionStatusCleansSuccessfulStageRootAndLogsStillWork(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
 	stageRoot := filepath.Join(stack.rootDir, "es-stage", submitted.RunID)
 
@@ -40,7 +40,7 @@ func TestExecutionStatusCleansSuccessfulStageRootAndLogsStillWork(t *testing.T) 
 }
 
 func TestExecutionStatusRetainsFailedStageRootForDebugging(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
@@ -71,7 +71,7 @@ exit 7
 }
 
 func TestExecutionCancelRetainsStageRootForDebugging(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
@@ -119,7 +119,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestExecutionLoopScriptSuccessCleansSuccessfulStageRootsAcrossRepeatedRuns(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 
 	specPath := writeExecutionLoopSpec(
 		t,

@@ -1103,7 +1103,7 @@ func TestExampleNomadConfigDisablesDockerImageCleanup(t *testing.T) {
 }
 
 func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
 
 	repoRoot := executionPlatformRepoRoot(t)
@@ -1262,7 +1262,7 @@ func TestDiagnosticsScriptRuntimeConfigCategoryBundleAcceptsSurfacedFailureLabel
 }
 
 func TestDiagnosticsScriptRunIDBundleCollectsLifecycleSignalsAndStaging(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo FAIL-BANNER
@@ -1632,7 +1632,7 @@ func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
 }
 
 func TestLifecycleScriptCategorizesExecutionFailure(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo FAIL-BANNER

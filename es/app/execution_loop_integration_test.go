@@ -44,7 +44,7 @@ type executionLoopResult struct {
 }
 
 func TestExecuteLoopScriptSuccessAndDeterministicDigests(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 
 	specPath := writeExecutionLoopSpec(
 		t,
@@ -106,7 +106,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestExecuteLoopScriptFailureSummary(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 
 	specPath := writeExecutionLoopSpec(
 		t,

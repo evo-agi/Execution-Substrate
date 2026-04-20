@@ -1,8 +1,8 @@
-# Remote Supported-Host Alpha 0.1
+# Remote Supported-Host Alpha 0.2
 
 ## Purpose And Status
 
-Remote Supported-Host Alpha 0.1 is an intermediate alpha for a Control Plane consumer running on a Mac against one remote Linux Execution Substrate host.
+Remote Supported-Host Alpha 0.2 is an intermediate alpha for a Control Plane consumer running on a Mac against one remote Linux Execution Substrate host. It extends Alpha 0.1 with Control Plane profile diagnostics and an Infrastructure Manager remote doctor skeleton; it does not change ES runtime semantics.
 
 It is not the final commercial deployment target. Full remote Control Plane, remote Temporal, HA, object storage, and source/workspace sync models remain out of scope for this alpha.
 
@@ -14,15 +14,14 @@ Status classification:
 
 ## Topology
 
-For Remote Alpha 0.1:
+For Remote Alpha 0.2:
 
 - Control Plane API, UI, worker, and Temporal remain on the Mac.
 - Safari on the Mac remains the operator browser for the current alpha.
 - ES, AGS, ARS, EGS, Docker, Nomad, SPIRE, Vault, and runtime support run on one remote Linux host.
 - CP connects to AGS and ES over direct routable HTTPS with mTLS.
 - No shared filesystem is assumed between Mac and remote host.
-- Infrastructure Manager may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only. It is not CP run authority, ES runtime authority, or a long-lived reconciler.
-- IM may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only.
+- Infrastructure Manager may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only. It is not CP run authority, ES runtime authority, a remote SSH installer, a remote host provisioner, or a long-lived reconciler.
 
 ## Direct Remote Requirements
 
@@ -65,9 +64,30 @@ Bridge or tunnel mode may remain useful as compatibility or troubleshooting evid
 
 Direct HTTPS/mTLS with matching DNS/IP SANs is the acceptance posture for this alpha.
 
+## Doctor And Support-Bundle Vocabulary
+
+Infrastructure Manager doctor output and ES support-bundle expectations use the same Remote Alpha 0.2 stage vocabulary:
+
+- `remote_host_reachable`
+- `docker_ready`
+- `nomad_ready`
+- `runtime_profile_ready`
+- `es_services_healthy`
+- `cert_trust_ok`
+- `producer_contract_compatible`
+- `ags_publish_probe`
+- `es_prepare_probe`
+- `submit_ready`
+- `retained_result_fetch`
+- `cp_profile_usable`
+
+Those stages are operator diagnostics and support-bundle provenance. They are not ES core lifecycle contracts, not Control Plane run-control authority, not ES runtime authority, not a durable reconciliation loop, and not proof that Control Plane review, checkpoint, finalization, hold/resume/reject, or intervention semantics moved into ES.
+
+Support-bundle summaries for this alpha should preserve product blocker codes tied to the vocabulary above. They should not surface script numbers, Lima implementation details, bridge ports, proof-harness names, or remote filesystem paths as product blocker identifiers.
+
 ## Non-Goals
 
-Remote Alpha 0.1 does not add:
+Remote Alpha 0.2 does not add:
 
 - remote SSH install automation
 - remote install commands

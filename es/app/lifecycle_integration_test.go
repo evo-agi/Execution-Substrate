@@ -15,7 +15,7 @@ import (
 )
 
 func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
 	jobID := stack.nomad.waitForExecutionJob(t, submitted.RunID)
 
@@ -91,7 +91,7 @@ func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 }
 
 func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
 	allocation := stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 	if allocation.ClientStatus != "complete" {
@@ -133,7 +133,7 @@ func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 }
 
 func TestExecutionCancelStopsNomadJob(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
@@ -282,7 +282,7 @@ func TestExecutionStatusReturns503WhenNomadUnavailable(t *testing.T) {
 }
 
 func TestExecutionStatusReflectsFailedAllocation(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER

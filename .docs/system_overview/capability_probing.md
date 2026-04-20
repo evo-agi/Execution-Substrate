@@ -135,3 +135,11 @@ For the bounded slice-1 runtime-identity delivery slice:
 - these checks belong at startup only; if the slice cannot prove those runtime conditions, it must fail closed instead of degrading to workload-owned SPIRE access
 
 This keeps the slice behavior-based, deterministic, and consistent across environments without introducing OS-based branching.
+
+## Test Harness Use
+
+`es/app` integration tests that exercise submitted Nomad/Docker allocations through the current runtime-identity helper path use the same behavior-based capability shape as a test-harness gate.
+
+The gate proves the local test substrate can run Docker/Nomad allocations and can carry the SPIRE Workload API socket source directory into the workload container so the helper can reach the mounted Unix socket. Unsupported hosts skip those allocation-dependent tests with an explicit runtime-identity capability reason instead of letting expected substrate limitations appear as noisy workload failures.
+
+This is test hygiene only. It does not change ES public contracts, readiness semantics, startup validation, runtime identity ownership, or runtime failure semantics. Tests that cover prepare-only behavior, caller authorization, static submit/job-spec shape, or submit-time validation without requiring helper socket reachability do not use this gate.

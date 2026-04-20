@@ -226,7 +226,8 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
 
 	for _, required := range []string{
-		"Remote Supported-Host Alpha 0.1 is an intermediate alpha",
+		"Remote Supported-Host Alpha 0.2 is an intermediate alpha",
+		"Control Plane profile diagnostics and an Infrastructure Manager remote doctor skeleton",
 		"not the final commercial deployment target",
 		"Control Plane API, UI, worker, and Temporal remain on the Mac",
 		"ES, AGS, ARS, EGS, Docker, Nomad, SPIRE, Vault, and runtime support run on one remote Linux host.",
@@ -254,7 +255,7 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 		"ES staging root paths",
 		"ES results root paths",
 		"remote filesystem paths",
-		"IM may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only",
+		"Infrastructure Manager may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only",
 		"Direct HTTPS/mTLS with matching DNS/IP SANs is the acceptance posture",
 	} {
 		if !strings.Contains(remote, required) {
@@ -262,7 +263,36 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(runbook, "Remote Supported-Host Alpha 0.1") {
+	if !strings.Contains(runbook, "Remote Supported-Host Alpha 0.2") {
 		t.Fatalf("supported-local CP consumer runbook missing remote alpha link")
+	}
+}
+
+func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+
+	for _, required := range []string{
+		"Doctor And Support-Bundle Vocabulary",
+		"`remote_host_reachable`",
+		"`docker_ready`",
+		"`nomad_ready`",
+		"`runtime_profile_ready`",
+		"`es_services_healthy`",
+		"`cert_trust_ok`",
+		"`producer_contract_compatible`",
+		"`ags_publish_probe`",
+		"`es_prepare_probe`",
+		"`submit_ready`",
+		"`retained_result_fetch`",
+		"`cp_profile_usable`",
+		"operator diagnostics and support-bundle provenance",
+		"not ES core lifecycle contracts",
+		"not Control Plane run-control authority",
+		"product blocker codes",
+		"not surface script numbers, Lima implementation details, bridge ports, proof-harness names, or remote filesystem paths",
+	} {
+		if !strings.Contains(remote, required) {
+			t.Fatalf("remote supported-host alpha doc missing doctor vocabulary phrase %q", required)
+		}
 	}
 }

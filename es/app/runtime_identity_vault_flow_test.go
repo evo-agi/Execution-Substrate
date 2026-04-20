@@ -28,7 +28,7 @@ func TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead(t *testin
 		secretValue: "runtime-identity-ok",
 	})
 
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage:                "python:3.13-alpine",
 		networkAccess:            true,
 		workloadVaultAddress:     "https://" + net.JoinHostPort(gateway, strconv.Itoa(mockVault.port(t))),

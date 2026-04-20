@@ -12,7 +12,7 @@ import (
 )
 
 func TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle(t *testing.T) {
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
 		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
 	})
@@ -115,7 +115,7 @@ func TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle(t *testing.T
 }
 
 func TestControlPlaneStaticScriptAPIPathCancelSucceeds(t *testing.T) {
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
 		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
 	})

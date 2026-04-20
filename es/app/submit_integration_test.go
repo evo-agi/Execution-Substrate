@@ -54,6 +54,8 @@ const (
 	helperReadyLogMarker           = "RUNTIME-HELPER-READY"
 	helperCapsLogPrefix            = "RUNTIME-HELPER-CAPS"
 	workloadBoundaryLogPrefix      = "RUNTIME-WORKLOAD-BOUNDARY"
+
+	runtimeIdentityCapabilitySkipPrefix = "runtime identity integration requires Linux/Nomad/Docker substrate with bind-mounted SPIRE Workload API Unix socket support"
 )
 
 var slice1RuntimeIdentityCapabilityProbe struct {
@@ -61,8 +63,12 @@ var slice1RuntimeIdentityCapabilityProbe struct {
 	reason string
 }
 
+func TestRuntimeIdentityIntegrationCapabilityProbe(t *testing.T) {
+	requireSlice1RuntimeIdentityCapabilities(t)
+}
+
 func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 
 	response := doJSONRequest(
 		t,
@@ -271,7 +277,7 @@ func TestExecutionWorkspaceTempDirUsesDotOut(t *testing.T) {
 }
 
 func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
-	stack := startSubmitStackWithNetworkAccess(t, true)
+	stack := startRuntimeIdentitySubmitStackWithNetworkAccess(t, true)
 
 	response := doJSONRequest(
 		t,
@@ -346,7 +352,7 @@ func TestSubmitReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 }
 
 func TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks(t *testing.T) {
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage: "python:3.13-alpine",
 	})
 
@@ -548,8 +554,7 @@ func TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize(t *testing.T) {
 }
 
 func TestSubmitFlowProvidesPlatformOwnedRuntimeIdentityThroughBoundedEndpoint(t *testing.T) {
-	requireSlice1RuntimeIdentityCapabilities(t)
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage:       "python:3.13-alpine",
 		mockSPIREJWTTTL: 20 * time.Second,
 	})
@@ -705,8 +710,7 @@ print(json.dumps({"status": "ok", "artifact_digest": os.environ.get("EXEC_ARTIFA
 }
 
 func TestSubmitFlowRejectsRuntimeIdentityPassthroughRequests(t *testing.T) {
-	requireSlice1RuntimeIdentityCapabilities(t)
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage: "python:3.13-alpine",
 	})
 
@@ -772,8 +776,7 @@ print(json.dumps({"status": "ok", "artifact_digest": os.environ.get("EXEC_ARTIFA
 }
 
 func TestSubmitFlowDoesNotStartWorkloadBeforeHelperReadiness(t *testing.T) {
-	requireSlice1RuntimeIdentityCapabilities(t)
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage:           "python:3.13-alpine",
 		mockSPIREFetchError: true,
 	})
@@ -807,8 +810,7 @@ print("WORKLOAD-STARTED", flush=True)
 }
 
 func TestSubmitFlowHelperDeathIsTaskFatal(t *testing.T) {
-	requireSlice1RuntimeIdentityCapabilities(t)
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage:       "python:3.13-alpine",
 		mockSPIREJWTTTL: 4 * time.Second,
 	})
@@ -876,8 +878,7 @@ print("WORKLOAD-COMPLETE", flush=True)
 }
 
 func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
-	requireSlice1RuntimeIdentityCapabilities(t)
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
 		baseImage: "python:3.13-alpine",
 	})
 
@@ -916,7 +917,7 @@ func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
 }
 
 func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
 echo START-BANNER
@@ -1507,31 +1508,53 @@ func firstNonZeroDuration(value time.Duration, fallback time.Duration) time.Dura
 	return value
 }
 
+func startRuntimeIdentitySubmitStack(t *testing.T) *submitStack {
+	t.Helper()
+	requireSlice1RuntimeIdentityCapabilities(t)
+	return startSubmitStack(t)
+}
+
+func startRuntimeIdentitySubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitStack {
+	t.Helper()
+	requireSlice1RuntimeIdentityCapabilities(t)
+	return startSubmitStackWithOptions(t, opts)
+}
+
+func startRuntimeIdentitySubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submitStack {
+	t.Helper()
+	requireSlice1RuntimeIdentityCapabilities(t)
+	return startSubmitStackWithNetworkAccess(t, networkAccess)
+}
+
 func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 	t.Helper()
 
 	slice1RuntimeIdentityCapabilityProbe.once.Do(func() {
 		if _, err := exec.LookPath("docker"); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires docker: %v", err)
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("docker binary lookup failed: %v", err))
 			return
 		}
 		if _, err := exec.LookPath("nomad"); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires nomad: %v", err)
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("nomad binary lookup failed: %v", err))
 			return
 		}
 		if output, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires a reachable docker daemon: %v output=%s", err, strings.TrimSpace(string(output)))
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("docker daemon probe failed: %v output=%s", err, strings.TrimSpace(string(output))))
 			return
 		}
 
-		probeRoot := socketTestRootDir(t)
+		probeRoot, err := socketTestRootDirPath()
+		if err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("socket probe root unavailable: %v", err))
+			return
+		}
 		if err := os.MkdirAll(probeRoot, 0o755); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe root: %v", err)
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("create socket probe root: %v", err))
 			return
 		}
 		socketDir, err := os.MkdirTemp(probeRoot, "execution-substrate-socket-probe-")
 		if err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("create socket probe dir: %v", err)
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("create socket probe dir: %v", err))
 			return
 		}
 		defer os.RemoveAll(socketDir)
@@ -1539,16 +1562,190 @@ func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
 		socketPath := filepath.Join(socketDir, "spire-agent.sock")
 		listener, err := net.Listen("unix", socketPath)
 		if err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("listen on socket probe path: %v", err)
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("listen on socket probe path: %v", err))
 			return
 		}
 		defer listener.Close()
+		go acceptRuntimeIdentitySocketProbeConnections(listener)
 
-		command := exec.Command("docker", "run", "--rm",
-			"--tmpfs", "/runtime:rw,size=1048576",
-			"--mount", "type=bind,src="+socketDir+",dst=/runtime/internal/source",
-			"python:3.13-alpine",
-			"sh", "-ceu", `ln -s /runtime/internal/source/spire-agent.sock /runtime/internal-spire-agent.sock
+		if reason := probeDockerRuntimeIdentitySocketMount(socketDir); reason != "" {
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(reason)
+			return
+		}
+
+		probeWorkspace, err := runtimeIdentityCapabilityProbeWorkspace()
+		if err != nil {
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("create Nomad allocation probe workspace: %v", err))
+			return
+		}
+		defer os.RemoveAll(probeWorkspace)
+
+		if reason := probeNomadRuntimeIdentitySocketAllocation(probeWorkspace, socketDir); reason != "" {
+			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(reason)
+			return
+		}
+	})
+
+	if slice1RuntimeIdentityCapabilityProbe.reason != "" {
+		t.Skip(slice1RuntimeIdentityCapabilityProbe.reason)
+	}
+}
+
+func runtimeIdentityCapabilitySkipReason(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if runtimeIdentityProbeLooksLikeDockerDesktopMacOS(detail) {
+		return runtimeIdentityCapabilitySkipPrefix + "; Docker Desktop/macOS failed capability probe: " + detail
+	}
+	if detail == "" {
+		return runtimeIdentityCapabilitySkipPrefix + "; capability probe failed"
+	}
+	return runtimeIdentityCapabilitySkipPrefix + "; capability probe failed: " + detail
+}
+
+func runtimeIdentityProbeLooksLikeDockerDesktopMacOS(detail string) bool {
+	lower := strings.ToLower(detail)
+	return strings.Contains(detail, "OSError: [Errno 95]") ||
+		strings.Contains(detail, "Errno 95") ||
+		strings.Contains(lower, "not supported")
+}
+
+func acceptRuntimeIdentitySocketProbeConnections(listener net.Listener) {
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		_ = connection.Close()
+	}
+}
+
+func probeDockerRuntimeIdentitySocketMount(socketDir string) string {
+	command := exec.Command("docker", "run", "--rm",
+		"--tmpfs", "/runtime:rw,size=1048576",
+		"--mount", "type=bind,src="+socketDir+",dst=/runtime/internal/source",
+		"python:3.13-alpine",
+		"sh", "-ceu", runtimeIdentitySocketProbeScript("DOCKER-RUNTIME-IDENTITY-SOCKET-PROBE-OK"),
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("Docker bind-mounted SPIRE socket source directory probe failed: %v output=%s", err, strings.TrimSpace(string(output)))
+	}
+	if !strings.Contains(string(output), "DOCKER-RUNTIME-IDENTITY-SOCKET-PROBE-OK") {
+		return fmt.Sprintf("Docker bind-mounted SPIRE socket source directory probe did not report success output=%s", strings.TrimSpace(string(output)))
+	}
+	return ""
+}
+
+func probeNomadRuntimeIdentitySocketAllocation(rootDir string, socketDir string) string {
+	harness, reason := startNomadHarnessForCapabilityProbe(rootDir)
+	if reason != "" {
+		return fmt.Sprintf("Nomad Docker allocation execution probe failed: %s", reason)
+	}
+	defer harness.stop()
+
+	jobID := fmt.Sprintf("runtime-identity-capability-probe-%d", time.Now().UnixNano())
+	jobSpec := map[string]any{
+		"Job": map[string]any{
+			"ID":          jobID,
+			"Name":        jobID,
+			"Type":        "batch",
+			"Datacenters": []string{"dc1"},
+			"TaskGroups": []any{
+				map[string]any{
+					"Name":  "group",
+					"Count": 1,
+					"RestartPolicy": map[string]any{
+						"Attempts": 0,
+						"Mode":     "fail",
+						"Interval": int64(time.Minute),
+						"Delay":    int64(10 * time.Second),
+					},
+					"ReschedulePolicy": map[string]any{
+						"Attempts":      0,
+						"Unlimited":     false,
+						"Delay":         int64(0),
+						"DelayFunction": "constant",
+						"MaxDelay":      int64(0),
+					},
+					"Tasks": []any{
+						map[string]any{
+							"Name":   "task",
+							"Driver": "docker",
+							"Config": map[string]any{
+								"image":   "python:3.13-alpine",
+								"command": "sh",
+								"args": []string{
+									"-ceu",
+									runtimeIdentitySocketProbeScript("NOMAD-RUNTIME-IDENTITY-SOCKET-PROBE-OK"),
+								},
+								"network_mode": "none",
+								"mounts": []any{
+									map[string]any{
+										"type":     "tmpfs",
+										"target":   "/runtime",
+										"readonly": false,
+										"tmpfs_options": map[string]any{
+											"size": int64(1 << 20),
+										},
+									},
+									map[string]any{
+										"type":     "bind",
+										"source":   socketDir,
+										"target":   "/runtime/internal/source",
+										"readonly": true,
+									},
+								},
+							},
+							"Resources": map[string]any{
+								"CPU":      10,
+								"MemoryMB": 64,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(jobSpec)
+	if err != nil {
+		return fmt.Sprintf("marshal Nomad allocation probe job failed: %v", err)
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Post(harness.addr+"/v1/jobs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("submit Nomad allocation probe job failed: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		return fmt.Sprintf("submit Nomad allocation probe job returned status %d body=%s", response.StatusCode, strings.TrimSpace(string(payload)))
+	}
+
+	allocation, waitReason := harness.waitForTerminalAllocationResult(jobID, 45*time.Second)
+	if waitReason != "" {
+		return waitReason
+	}
+	stdout, stdoutErr := harness.tryAllocLogs(allocation.ID)
+	if allocation.ClientStatus != "complete" {
+		stderr, _ := harness.tryAllocStderrLogs(allocation.ID)
+		return fmt.Sprintf("Nomad Docker allocation probe expected complete status, got %q task_state=%+v stdout=%q stderr=%q", allocation.ClientStatus, allocation.TaskStates["task"], stdout, stderr)
+	}
+	taskState := allocation.TaskStates["task"]
+	if taskState.Failed || taskState.exitCode() != 0 {
+		stderr, _ := harness.tryAllocStderrLogs(allocation.ID)
+		return fmt.Sprintf("Nomad Docker allocation probe task failed: task_state=%+v stdout=%q stderr=%q", taskState, stdout, stderr)
+	}
+	if stdoutErr != nil {
+		return fmt.Sprintf("Nomad Docker allocation probe log read failed: %v output=%s", stdoutErr, strings.TrimSpace(stdout))
+	}
+	if !strings.Contains(stdout, "NOMAD-RUNTIME-IDENTITY-SOCKET-PROBE-OK") {
+		return fmt.Sprintf("Nomad Docker allocation probe did not report mounted socket reachability: stdout=%q", stdout)
+	}
+	return ""
+}
+
+func runtimeIdentitySocketProbeScript(successMarker string) string {
+	return `ln -s /runtime/internal/source/spire-agent.sock /runtime/internal-spire-agent.sock
 python3 - <<'PY'
 import socket
 
@@ -1556,17 +1753,20 @@ client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 client.settimeout(5)
 client.connect("/runtime/internal-spire-agent.sock")
 client.close()
-PY`,
-		)
-		output, err := command.CombinedOutput()
-		if err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = fmt.Sprintf("slice 1 runtime identity requires Docker bind-mounting the SPIRE socket source directory into the workload container so the helper can reach the mounted unix socket: %v output=%s", err, strings.TrimSpace(string(output)))
-		}
-	})
+print("` + successMarker + `", flush=True)
+PY`
+}
 
-	if slice1RuntimeIdentityCapabilityProbe.reason != "" {
-		t.Skip(slice1RuntimeIdentityCapabilityProbe.reason)
+func runtimeIdentityCapabilityProbeWorkspace() (string, error) {
+	repoRoot, err := repoRootFromCallerFile()
+	if err != nil {
+		return "", err
 	}
+	workspaceRoot := filepath.Join(repoRoot, ".out")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(workspaceRoot, "runtime-identity-capability-")
 }
 
 func buildSubmitRequestBody(t *testing.T, stack *submitStack) []byte {
@@ -2027,14 +2227,31 @@ func (s nomadTaskState) exitCode() int {
 func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
 	t.Helper()
 
-	httpPort := reserveTCPPort(t)
-	rpcPort := reserveTCPPort(t)
-	serfPort := reserveTCPPort(t)
+	harness, reason := startNomadHarnessForCapabilityProbe(rootDir)
+	if reason != "" {
+		t.Fatalf("%s", reason)
+	}
+	return harness
+}
+
+func startNomadHarnessForCapabilityProbe(rootDir string) (*nomadHarness, string) {
+	httpPort, err := reserveTCPPortValue()
+	if err != nil {
+		return nil, fmt.Sprintf("reserve nomad http port: %v", err)
+	}
+	rpcPort, err := reserveTCPPortValue()
+	if err != nil {
+		return nil, fmt.Sprintf("reserve nomad rpc port: %v", err)
+	}
+	serfPort, err := reserveTCPPortValue()
+	if err != nil {
+		return nil, fmt.Sprintf("reserve nomad serf port: %v", err)
+	}
 	clientCPUOverride := ""
 	if raw := strings.TrimSpace(os.Getenv("NOMAD_CLIENT_CPU_TOTAL_COMPUTE")); raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil || value <= 0 {
-			t.Fatalf("NOMAD_CLIENT_CPU_TOTAL_COMPUTE must be a positive integer, got %q", raw)
+			return nil, fmt.Sprintf("NOMAD_CLIENT_CPU_TOTAL_COMPUTE must be a positive integer, got %q", raw)
 		}
 		clientCPUOverride = fmt.Sprintf("\n  cpu_total_compute = %d", value)
 	}
@@ -2042,7 +2259,7 @@ func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
 	configPath := filepath.Join(rootDir, "nomad.hcl")
 	dataDir := filepath.Join(rootDir, "nomad-data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		t.Fatalf("mkdir nomad data dir: %v", err)
+		return nil, fmt.Sprintf("mkdir nomad data dir: %v", err)
 	}
 	config := fmt.Sprintf(`data_dir = %q
 bind_addr = "127.0.0.1"
@@ -2070,13 +2287,13 @@ advertise {
 }
 `, dataDir, clientCPUOverride, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatalf("write nomad config: %v", err)
+		return nil, fmt.Sprintf("write nomad config: %v", err)
 	}
 
 	outputPath := filepath.Join(rootDir, "nomad.log")
 	logFile, err := os.Create(outputPath)
 	if err != nil {
-		t.Fatalf("create nomad log file: %v", err)
+		return nil, fmt.Sprintf("create nomad log file: %v", err)
 	}
 
 	cmd := exec.Command("nomad", "agent", "-dev", "-config="+configPath)
@@ -2084,10 +2301,11 @@ advertise {
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		t.Fatalf("start nomad agent: %v", err)
+		return nil, fmt.Sprintf("start nomad agent: %v", err)
 	}
 	if err := logFile.Close(); err != nil {
-		t.Fatalf("close nomad log file: %v", err)
+		_ = cmd.Process.Kill()
+		return nil, fmt.Sprintf("close nomad log file: %v", err)
 	}
 
 	harness := &nomadHarness{
@@ -2096,8 +2314,11 @@ advertise {
 		cmd:        cmd,
 		outputPath: outputPath,
 	}
-	harness.waitReady(t)
-	return harness
+	if reason := harness.waitReadyResult(15 * time.Second); reason != "" {
+		harness.stop()
+		return nil, reason
+	}
+	return harness, ""
 }
 
 func (n *nomadHarness) baseURL() string {
@@ -2107,8 +2328,14 @@ func (n *nomadHarness) baseURL() string {
 func (n *nomadHarness) waitReady(t *testing.T) {
 	t.Helper()
 
+	if reason := n.waitReadyResult(15 * time.Second); reason != "" {
+		t.Fatalf("%s", reason)
+	}
+}
+
+func (n *nomadHarness) waitReadyResult(timeout time.Duration) string {
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(timeout)
 	lastReason := "nomad node did not become schedulable"
 	for time.Now().Before(deadline) {
 		leaderResponse, leaderErr := client.Get(n.addr + "/v1/status/leader")
@@ -2129,7 +2356,7 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 					if decodeNodesErr == nil {
 						schedulable, reason := n.readySchedulableNode(client, nodes)
 						if schedulable {
-							return
+							return ""
 						}
 						if reason != "" {
 							lastReason = reason
@@ -2142,7 +2369,7 @@ func (n *nomadHarness) waitReady(t *testing.T) {
 	}
 
 	output, _ := os.ReadFile(n.outputPath)
-	t.Fatalf("%s; logs=%s", lastReason, strings.TrimSpace(string(output)))
+	return fmt.Sprintf("%s; logs=%s", lastReason, strings.TrimSpace(string(output)))
 }
 
 func (n *nomadHarness) readySchedulableNode(client *http.Client, nodes []struct {
@@ -2398,8 +2625,16 @@ func (n *nomadHarness) tryFetchJobDetail(jobID string) (nomadJobDetail, bool) {
 func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nomadAllocationSummary {
 	t.Helper()
 
+	allocation, reason := n.waitForTerminalAllocationResult(jobID, 45*time.Second)
+	if reason != "" {
+		t.Fatalf("%s", reason)
+	}
+	return allocation
+}
+
+func (n *nomadHarness) waitForTerminalAllocationResult(jobID string, timeout time.Duration) (nomadAllocationSummary, string) {
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(45 * time.Second)
+	deadline := time.Now().Add(timeout)
 	var lastObserved *nomadAllocationSummary
 	for time.Now().Before(deadline) {
 		response, err := client.Get(n.addr + "/v1/job/" + jobID + "/allocations")
@@ -2419,7 +2654,7 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 				lastObserved = &alloc
 				switch alloc.ClientStatus {
 				case "complete", "failed", "lost":
-					return alloc
+					return alloc, ""
 				}
 			}
 		}
@@ -2428,10 +2663,9 @@ func (n *nomadHarness) waitForTerminalAllocation(t *testing.T, jobID string) nom
 
 	output, _ := os.ReadFile(n.outputPath)
 	if lastObserved != nil {
-		t.Fatalf("nomad allocation for job %s did not reach a terminal client status; last allocation=%+v logs=%s", jobID, *lastObserved, strings.TrimSpace(string(output)))
+		return nomadAllocationSummary{}, fmt.Sprintf("nomad allocation for job %s did not reach a terminal client status; last allocation=%+v logs=%s", jobID, *lastObserved, strings.TrimSpace(string(output)))
 	}
-	t.Fatalf("nomad allocation for job %s did not reach a terminal state; logs=%s", jobID, strings.TrimSpace(string(output)))
-	return nomadAllocationSummary{}
+	return nomadAllocationSummary{}, fmt.Sprintf("nomad allocation for job %s did not reach a terminal state; logs=%s", jobID, strings.TrimSpace(string(output)))
 }
 
 func (n *nomadHarness) waitForLatestAllocation(t *testing.T, jobID string) nomadAllocationSummary {
@@ -2512,13 +2746,18 @@ func (n *nomadHarness) allocLogs(t *testing.T, allocationID string) string {
 func (n *nomadHarness) allocStderrLogs(t *testing.T, allocationID string) string {
 	t.Helper()
 
+	output, err := n.tryAllocStderrLogs(allocationID)
+	if err != nil {
+		t.Fatalf("fetch allocation stderr logs: %v output=%s", err, strings.TrimSpace(output))
+	}
+	return output
+}
+
+func (n *nomadHarness) tryAllocStderrLogs(allocationID string) (string, error) {
 	command := exec.Command("nomad", "alloc", "logs", "-stderr", allocationID)
 	command.Env = append(os.Environ(), "NOMAD_ADDR="+n.addr)
 	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("fetch allocation stderr logs: %v output=%s", err, strings.TrimSpace(string(output)))
-	}
-	return string(output)
+	return string(output), err
 }
 
 func (n *nomadHarness) tryAllocLogs(allocationID string) (string, error) {
@@ -2565,6 +2804,10 @@ func (n *nomadHarness) waitForExecutionJobTerminalStatus(t *testing.T, runID str
 
 func (n *nomadHarness) shutdown(t *testing.T) {
 	t.Helper()
+	n.stop()
+}
+
+func (n *nomadHarness) stop() {
 	if n == nil || n.cmd == nil || n.cmd.Process == nil {
 		return
 	}
@@ -2781,34 +3024,58 @@ func newExecutionWorkspaceTempDir(t *testing.T, prefix string) string {
 func repoRootFromTestFile(t *testing.T) string {
 	t.Helper()
 
+	root, err := repoRootFromCallerFile()
+	if err != nil {
+		t.Fatalf("resolve test file path: %v", err)
+	}
+	return root
+}
+
+func repoRootFromCallerFile() (string, error) {
 	_, filePath, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatalf("resolve test file path: runtime caller unavailable")
+		return "", fmt.Errorf("runtime caller unavailable")
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", ".."))
+	return filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", "..")), nil
 }
 
 func socketTestRootDir(t *testing.T) string {
 	t.Helper()
 
+	root, err := socketTestRootDirPath()
+	if err != nil {
+		t.Fatalf("resolve socket test root: %v", err)
+	}
+	return root
+}
+
+func socketTestRootDirPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		t.Fatalf("resolve home dir for socket tests: %v", err)
+		return "", fmt.Errorf("resolve home dir for socket tests: %w", err)
 	}
 	root := filepath.Join(homeDir, ".ess")
 	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("create socket test root: %v", err)
+		return "", fmt.Errorf("create socket test root: %w", err)
 	}
-	return root
+	return root, nil
 }
 
 func reserveTCPPort(t *testing.T) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	port, err := reserveTCPPortValue()
 	if err != nil {
 		t.Fatalf("reserve tcp port: %v", err)
 	}
+	return port
+}
+
+func reserveTCPPortValue() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
 	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
+	return listener.Addr().(*net.TCPAddr).Port, nil
 }
