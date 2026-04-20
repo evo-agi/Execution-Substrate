@@ -22,7 +22,7 @@ Authority boundary:
 Use this alongside:
 
 - [Control Plane long-running operator mode contract](../../Control%20Plane/.docs/long-running-operator-mode-contract.md)
-- [Remote Supported-Host Alpha 0.2](system_overview/remote_supported_host_alpha.md)
+- [Remote Supported-Host Alpha 0.3](system_overview/remote_supported_host_alpha.md)
 - [system_overview/contracts.md](system_overview/contracts.md)
 - [system_overview/boundaries.md](system_overview/boundaries.md)
 - [execution_lifecycle/contracts.md](execution_lifecycle/contracts.md)

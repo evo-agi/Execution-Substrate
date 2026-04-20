@@ -226,8 +226,8 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
 
 	for _, required := range []string{
-		"Remote Supported-Host Alpha 0.2 is an intermediate alpha",
-		"Control Plane profile diagnostics and an Infrastructure Manager remote doctor skeleton",
+		"Remote Supported-Host Alpha 0.3 is an intermediate alpha",
+		"Control Plane profile diagnostics and Infrastructure Manager remote-doctor output",
 		"not the final commercial deployment target",
 		"Control Plane API, UI, worker, and Temporal remain on the Mac",
 		"ES, AGS, ARS, EGS, Docker, Nomad, SPIRE, Vault, and runtime support run on one remote Linux host.",
@@ -255,7 +255,7 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 		"ES staging root paths",
 		"ES results root paths",
 		"remote filesystem paths",
-		"Infrastructure Manager may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only",
+		"Infrastructure Manager may emit profile, doctor, support-bundle, and combined readiness-report outputs",
 		"Direct HTTPS/mTLS with matching DNS/IP SANs is the acceptance posture",
 	} {
 		if !strings.Contains(remote, required) {
@@ -263,7 +263,7 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(runbook, "Remote Supported-Host Alpha 0.2") {
+	if !strings.Contains(runbook, "Remote Supported-Host Alpha 0.3") {
 		t.Fatalf("supported-local CP consumer runbook missing remote alpha link")
 	}
 }
@@ -285,7 +285,7 @@ func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
 		"`submit_ready`",
 		"`retained_result_fetch`",
 		"`cp_profile_usable`",
-		"operator diagnostics and support-bundle provenance",
+		"operator diagnostics, readiness-report inputs, and support-bundle provenance",
 		"not ES core lifecycle contracts",
 		"not Control Plane run-control authority",
 		"product blocker codes",
