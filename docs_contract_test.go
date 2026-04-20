@@ -220,3 +220,49 @@ func TestProducerFailurePathDistinctionsAreDocumented(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	for _, required := range []string{
+		"Remote Supported-Host Alpha 0.1 is an intermediate alpha",
+		"not the final commercial deployment target",
+		"Control Plane API, UI, worker, and Temporal remain on the Mac",
+		"ES, AGS, ARS, EGS, Docker, Nomad, SPIRE, Vault, and runtime support run on one remote Linux host.",
+		"CP connects to AGS and ES over direct routable HTTPS with mTLS.",
+		"No shared filesystem is assumed between Mac and remote host.",
+		"Bridge or tunnel mode is a temporary compatibility edge",
+		"AGS and ES listeners can bind routable interfaces",
+		"server certificates include DNS or IP SANs matching the Control Plane profile endpoint hosts",
+		"mTLS accepts the Control Plane service identity",
+		"ES `/health`",
+		"ES `GET /v1/executions:contract`",
+		"AGS `POST /v1/artifacts:publish`",
+		"ES `POST /v1/executions:prepare`",
+		"ES `POST /v1/executions:submit`",
+		"ES `GET /v1/executions/{run_id}/status`",
+		"ES `GET /v1/executions/{run_id}/logs`",
+		"ES `GET /v1/executions/{run_id}/result`",
+		"ES `POST /v1/executions/{run_id}:cancel`",
+		"`execution-substrate.producer-contract/v1`",
+		"`governed-execution-producer/v1`",
+		"`control-plane-normal-shell/v1`",
+		"Nomad APIs",
+		"Vault APIs",
+		"SPIRE sockets",
+		"ES staging root paths",
+		"ES results root paths",
+		"remote filesystem paths",
+		"IM may emit profile and doctor outputs, but it is installer/profile/doctor/support-bundle direction only",
+		"Direct HTTPS/mTLS with matching DNS/IP SANs is the acceptance posture",
+	} {
+		if !strings.Contains(remote, required) {
+			t.Fatalf("remote supported-host alpha doc missing %q", required)
+		}
+	}
+
+	if !strings.Contains(runbook, "Remote Supported-Host Alpha 0.1") {
+		t.Fatalf("supported-local CP consumer runbook missing remote alpha link")
+	}
+}
