@@ -106,6 +106,49 @@ fetch a live retained result, or prove Temporal history. It prepares the next
 live remote-host proof without changing ES admission, lifecycle, runtime,
 retained-result, outcome-evidence, or authority-handoff semantics.
 
+## Support-Bundle Summary Sections
+
+The first support-bundle contract remains IM-owned at the top level, but ES
+owns the bundle's substrate diagnostic summary sections. The intended ES
+shareable evidence files are:
+
+- `evidence/execution-substrate/producer-contract-summary.json`
+- `evidence/execution-substrate/health-readiness-summary.json`
+- `evidence/execution-substrate/probe-summaries.json`
+
+The current ES section schema names are:
+
+- `execution-substrate.producer-contract-summary.v1`
+- `execution-substrate.health-readiness-summary.v1`
+- `execution-substrate.probe-summaries.v1`
+
+Those sections may contribute only bounded summary evidence:
+
+- producer contract compatibility summary
+- health and readiness summary
+- AGS publish probe summary
+- ES prepare, submit, status, and result summaries
+- Nomad, Docker, Vault, and SPIRE structured status summaries
+- blocker codes
+- byte counts
+- digest values
+- non-authority labels
+
+Those sections must not contribute:
+
+- raw logs
+- raw retained-result bundles
+- artifact payload bytes
+- private keys, PEM bodies, Vault tokens, JWT-SVIDs, or API credentials
+- raw Nomad, Docker, Vault, or SPIRE implementation dumps
+- new Control Plane run-control authority
+- new Infrastructure Manager runtime authority
+
+These support-bundle summaries are ES-owned runtime and substrate evidence only.
+They do not change ES lifecycle semantics, retained-result semantics,
+authority-handoff semantics, readiness truth, or the producer declaration
+boundary.
+
 ## Non-Goals
 
 Remote Alpha 0.3 does not add:

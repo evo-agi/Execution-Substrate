@@ -296,3 +296,29 @@ func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaSupportBundleSummarySectionsAreDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+
+	for _, required := range []string{
+		"Support-Bundle Summary Sections",
+		"`evidence/execution-substrate/producer-contract-summary.json`",
+		"`evidence/execution-substrate/health-readiness-summary.json`",
+		"`evidence/execution-substrate/probe-summaries.json`",
+		"`execution-substrate.producer-contract-summary.v1`",
+		"`execution-substrate.health-readiness-summary.v1`",
+		"`execution-substrate.probe-summaries.v1`",
+		"bounded summary evidence",
+		"AGS publish probe summary",
+		"ES prepare, submit, status, and result summaries",
+		"Nomad, Docker, Vault, and SPIRE structured status summaries",
+		"must not contribute: - raw logs",
+		"raw retained-result bundles",
+		"do not change ES lifecycle semantics",
+		"or the producer declaration boundary",
+	} {
+		if !strings.Contains(remote, required) {
+			t.Fatalf("remote supported-host alpha doc missing support-bundle phrase %q", required)
+		}
+	}
+}
