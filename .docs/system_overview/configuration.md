@@ -431,7 +431,44 @@ Readiness still does **not** prove useful downstream credential use by itself. T
 
 Slice `1A` and `1B` now prove platform-owned runtime identity delivery for platform-controlled non-root workloads. In this first workload-identity slice, the platform launches the runtime identity helper as `0:0` and launches the workload as fixed UID:GID `10000:10000` with no supplemental groups and no privilege-escalation path. Root workloads, arbitrary image-user execution, and any mode that gives the workload direct access to raw SPIRE channels are out of scope for this slice. This is a bounded runtime compatibility constraint required to preserve platform-owned identity delivery; it is not a reduction of the workload-identity claim.
 
+On the current Remote Supported-Host Alpha helper proof slice, that `0:0` helper start identity also explains the current persistent SPIRE workload registration shape: the helper proof uses `unix:uid:0` plus `unix:gid:0` for `spiffe://execution.internal/workload` so the installed helper can fetch locally through `/run/spire/sockets/agent.sock` without widening the workload-facing contract. That selector set is broad across root-owned processes and must be treated as Alpha-only proof scope, not product posture. Product hardening must narrow or replace that registration before a broader remote runtime identity claim is accepted, while preserving the current helper-private raw SPIRE boundary and the fixed workload UID:GID `10000:10000` non-exposure rule.
+
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target using the proof Vault CA bundle carried through the workload-zone runtime config, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
+
+For the separate Remote Supported-Host Alpha host-local Vault/workload-auth
+slice, the active repo-derived workload-auth values remain:
+
+- JWT auth mount: `jwt`
+- JWT auth role: `service_execution`
+- JWT audience: `vault`
+- bound subject: `spiffe://execution.internal/workload`
+- bound issuer: `spiffe://execution.internal`
+
+That remote slice may use a single-node Alpha/internal Vault system service
+instead of the supported-local proof-scoped Vault dev/test target, but any
+root-token, unseal, or other privileged bootstrap material must remain root-only
+on the remote host and must not be copied into repo proof workspaces,
+support-bundle summaries, Control Plane artifacts, or Infrastructure Manager
+`.out`.
+
+The repo-owned host-local check path for that remote slice is
+`scripts/remote_alpha_vault_workload_auth_check.sh`. It must be run as root,
+typically through `sudo`, and it writes the bounded host-local summary
+`execution-substrate.remote-alpha.vault-workload-auth-summary.v1` to
+`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`.
+That check validates the current workload-zone Vault config file at
+`/etc/execution-substrate/vault/workload-zone-vault-config.json` against the
+repo-owned workload-zone Vault config shape, records only bounded metadata, and
+must not print or persist JWT-SVIDs, Vault client tokens, root tokens, unseal
+keys, private keys, or secret payloads. Its output is not ES `/health`, not
+submit readiness, and not a producer-contract or retained-result claim.
+The current required auth smoke in that host-local check is JWT fetch, Vault
+JWT login, Vault token self-lookup over the documented `GET
+/auth/token/lookup-self` path, one bounded proof read at
+`proof-secrets/data/runtime-identity-vault-login`, and self-revoke. The check
+records those requirements explicitly in summary metadata so a passing
+`vault_workload_auth_smoke` cannot silently ignore a failed or skipped required
+step.
 
 The bounded Control Plane normal-shell runtime profile is proved as an end-to-end supported-local runtime-contract proof on top of the same path: the profile image is built from the repo-owned reference recipe with a proof-only Codex shim at the configured `EXEC_CODEX_CLI_PATH`, ES selects it only for `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"`, the workload verifies Python, git, narrow shell tooling, obtains proof-scoped Codex credential material through workload-side Vault login using staged CA trust material, invokes the proof Codex shim with stdin prompt input, creates a deterministic workspace mutation, writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts, and fetches plus validates the retained ES result bundle. The proof does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability.
 

@@ -322,3 +322,61 @@ func TestRemoteSupportedHostAlphaSupportBundleSummarySectionsAreDocumented(t *te
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaVaultWorkloadAuthSummarySchemaIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"`execution-substrate.remote-alpha.vault-workload-auth-summary.v1`",
+		"`sudo scripts/remote_alpha_vault_workload_auth_check.sh`",
+		"bounded host-local audit record",
+		"not an ES lifecycle or readiness surface",
+		"`vault_workload_auth_smoke`",
+		"`host_identity`",
+		"`vault.address`",
+		"`vault.auth_mount`",
+		"`vault.role`",
+		"`vault.audience`",
+		"`vault.policy_names`",
+		"`vault.initialized`",
+		"`vault.sealed`",
+		"`vault.storage`",
+		"`spire.trust_domain`",
+		"`spire.socket_path`",
+		"`workload.spiffe_id`",
+		"`workload.registration_selector_scope`",
+		"`workload.registration_alpha_only`",
+		"`auth_smoke.jwt_fetch`",
+		"`auth_smoke.vault_login`",
+		"`auth_smoke.token_lookup`",
+		"`auth_smoke.proof_read`",
+		"`auth_smoke.token_revoked`",
+		"`auth_smoke_requirements.token_lookup_required`",
+		"`auth_smoke_requirements.proof_read_required`",
+		"`auth_smoke_requirements.token_revoked_required`",
+		"`auth_smoke_requirements.proof_read_path`",
+		"`proof-secrets/data/runtime-identity-vault-login`",
+		"`GET /auth/token/lookup-self`",
+		"`security.ds_not_in_docker_group`",
+		"`security.passwordless_sudo_for_ds`",
+		"`security.raw_spire_socket_access_ds`",
+		"`security.raw_spire_socket_access_uid_10000`",
+		"`redaction.jwt_persisted`",
+		"`redaction.vault_client_token_persisted`",
+		"`redaction.root_token_persisted`",
+		"`redaction.secret_payload_persisted`",
+		"`readiness_not_claimed.runtime_profile_ready`",
+		"`readiness_not_claimed.submit_ready`",
+		"`readiness_not_claimed.es_services_healthy`",
+		"`readiness_not_claimed.producer_contract_compatible`",
+		"`readiness_not_claimed.retained_result_fetch`",
+		"`https://172.17.0.1:8200/v1/sys/health`",
+		"`/etc/execution-substrate/vault/workload-zone-vault-config.json`",
+		"must not print or persist JWT-SVIDs, Vault client tokens, root tokens, unseal keys, private keys, or secret payloads",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote Vault/workload-auth schema docs missing %q", required)
+		}
+	}
+}
