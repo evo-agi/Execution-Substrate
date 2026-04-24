@@ -17,16 +17,23 @@ import (
 	"testing"
 )
 
-const remoteAlphaDefaultProofReadPath = "proof-secrets/data/runtime-identity-vault-login"
+const (
+	remoteAlphaDefaultProofReadPath           = "proof-secrets/data/runtime-identity-vault-login"
+	remoteAlphaDefaultProofRuntimeSecretPath  = "proof-secrets/data/codex-runtime-profile"
+	remoteAlphaDefaultProofRuntimeSecretField = "api_key"
+	remoteAlphaDefaultProofRuntimeSecretValue = "proof-runtime-placeholder-token"
+)
 
 type fakeVaultServer struct {
-	t           *testing.T
-	expectedJWT string
-	clientToken string
-	loginFail   bool
-	proofPath   string
-	lookupCalls int
-	revokeCalls int
+	t                  *testing.T
+	expectedJWT        string
+	clientToken        string
+	loginFail          bool
+	proofPath          string
+	runtimeSecretPath  string
+	runtimeSecretField string
+	lookupCalls        int
+	revokeCalls        int
 }
 
 func (f *fakeVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +98,17 @@ func (f *fakeVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"proof": "ok",
 			},
 		})
+	case r.Method == http.MethodGet && f.runtimeSecretPath != "" && r.URL.Path == "/v1/"+strings.TrimPrefix(f.runtimeSecretPath, "/"):
+		if got := r.Header.Get("X-Vault-Token"); got != f.clientToken {
+			f.t.Fatalf("unexpected runtime secret token %q", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"data": map[string]any{
+					f.runtimeSecretField: remoteAlphaDefaultProofRuntimeSecretValue,
+				},
+			},
+		})
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"errors": []string{"not found"}})
 	}
@@ -134,15 +152,17 @@ func writeExecutable(t *testing.T, dir, name, content string) {
 	}
 }
 
-func startFakeVault(t *testing.T, jwt string, loginFail bool, proofPath string) (*httptest.Server, *fakeVaultServer, string) {
+func startFakeVault(t *testing.T, jwt string, loginFail bool, proofPath string, runtimeSecretPath string, runtimeSecretField string) (*httptest.Server, *fakeVaultServer, string) {
 	t.Helper()
 
 	state := &fakeVaultServer{
-		t:           t,
-		expectedJWT: jwt,
-		clientToken: "client-token-1234567890",
-		loginFail:   loginFail,
-		proofPath:   proofPath,
+		t:                  t,
+		expectedJWT:        jwt,
+		clientToken:        "client-token-1234567890",
+		loginFail:          loginFail,
+		proofPath:          proofPath,
+		runtimeSecretPath:  runtimeSecretPath,
+		runtimeSecretField: runtimeSecretField,
 	}
 	server := httptest.NewTLSServer(state)
 	t.Cleanup(server.Close)
@@ -324,7 +344,14 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 	t.Parallel()
 
 	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
-	server, state, caBundlePEM := startFakeVault(t, jwt, false, remoteAlphaDefaultProofReadPath)
+	server, state, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		false,
+		remoteAlphaDefaultProofReadPath,
+		remoteAlphaDefaultProofRuntimeSecretPath,
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
 
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
@@ -409,6 +436,7 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 		"vault_login":           "pass",
 		"token_lookup":          "pass",
 		"proof_read":            "pass",
+		"proof_runtime_secret":  "pass",
 		"token_revoked":         "pass",
 		"jwt_audience_verified": true,
 		"jwt_subject_verified":  true,
@@ -419,13 +447,29 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 	}
 	requirements := jsonMap(t, summary["auth_smoke_requirements"])
 	for field, want := range map[string]any{
-		"token_lookup_required":  true,
-		"proof_read_required":    true,
-		"token_revoked_required": true,
-		"proof_read_path":        remoteAlphaDefaultProofReadPath,
+		"token_lookup_required":         true,
+		"proof_read_required":           true,
+		"proof_runtime_secret_required": true,
+		"token_revoked_required":        true,
+		"proof_read_path":               remoteAlphaDefaultProofReadPath,
+		"proof_runtime_secret_path":     remoteAlphaDefaultProofRuntimeSecretPath,
+		"proof_runtime_secret_field":    remoteAlphaDefaultProofRuntimeSecretField,
 	} {
 		if got := requirements[field]; got != want {
 			t.Fatalf("unexpected auth smoke requirement %s=%v want %v", field, got, want)
+		}
+	}
+	proofRuntimeSecret := jsonMap(t, summary["proof_runtime_secret"])
+	for field, want := range map[string]any{
+		"status":         "pass",
+		"path":           remoteAlphaDefaultProofRuntimeSecretPath,
+		"field":          remoteAlphaDefaultProofRuntimeSecretField,
+		"field_present":  true,
+		"field_nonempty": true,
+		"field_shape":    "string",
+	} {
+		if got := proofRuntimeSecret[field]; got != want {
+			t.Fatalf("unexpected proof runtime secret %s=%v want %v", field, got, want)
 		}
 	}
 
@@ -489,6 +533,9 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 	if strings.Contains(summaryText, state.clientToken) {
 		t.Fatal("summary unexpectedly contained client token material")
 	}
+	if strings.Contains(summaryText, remoteAlphaDefaultProofRuntimeSecretValue) {
+		t.Fatal("summary unexpectedly contained runtime secret material")
+	}
 	if strings.Contains(summaryText, "-----BEGIN CERTIFICATE-----") {
 		t.Fatal("summary unexpectedly contained certificate material")
 	}
@@ -504,7 +551,14 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	t.Parallel()
 
 	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
-	server, state, caBundlePEM := startFakeVault(t, jwt, true, "")
+	server, state, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		true,
+		"",
+		remoteAlphaDefaultProofRuntimeSecretPath,
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
 
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
@@ -537,11 +591,12 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	}
 	authSmoke := jsonMap(t, summary["auth_smoke"])
 	for field, want := range map[string]any{
-		"jwt_fetch":     "pass",
-		"vault_login":   "fail",
-		"token_lookup":  "not_exercised",
-		"proof_read":    "not_exercised",
-		"token_revoked": "not_exercised",
+		"jwt_fetch":            "pass",
+		"vault_login":          "fail",
+		"token_lookup":         "not_exercised",
+		"proof_read":           "not_exercised",
+		"proof_runtime_secret": "not_exercised",
+		"token_revoked":        "not_exercised",
 	} {
 		if got := authSmoke[field]; got != want {
 			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
@@ -550,6 +605,12 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	requirements := jsonMap(t, summary["auth_smoke_requirements"])
 	if got := requirements["proof_read_path"]; got != remoteAlphaDefaultProofReadPath {
 		t.Fatalf("unexpected proof read path %v", got)
+	}
+	if got := requirements["proof_runtime_secret_path"]; got != remoteAlphaDefaultProofRuntimeSecretPath {
+		t.Fatalf("unexpected proof runtime secret path %v", got)
+	}
+	if got := requirements["proof_runtime_secret_field"]; got != remoteAlphaDefaultProofRuntimeSecretField {
+		t.Fatalf("unexpected proof runtime secret field %v", got)
 	}
 
 	if strings.Contains(summaryText, jwt) {
@@ -620,7 +681,14 @@ func TestRemoteAlphaVaultWorkloadAuthCheckFailsWhenRequiredProofReadDoesNotPass(
 	t.Parallel()
 
 	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
-	server, state, caBundlePEM := startFakeVault(t, jwt, false, "")
+	server, state, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		false,
+		"",
+		remoteAlphaDefaultProofRuntimeSecretPath,
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
 
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
@@ -656,6 +724,9 @@ func TestRemoteAlphaVaultWorkloadAuthCheckFailsWhenRequiredProofReadDoesNotPass(
 	if got := authSmoke["proof_read"]; got != "not_exercised" {
 		t.Fatalf("unexpected proof read result %v", got)
 	}
+	if got := authSmoke["proof_runtime_secret"]; got != "pass" {
+		t.Fatalf("unexpected proof runtime secret result %v", got)
+	}
 	failureReasons, ok := summary["failure_reasons"].([]any)
 	if !ok {
 		t.Fatalf("unexpected failure reasons payload %T", summary["failure_reasons"])
@@ -666,6 +737,79 @@ func TestRemoteAlphaVaultWorkloadAuthCheckFailsWhenRequiredProofReadDoesNotPass(
 	}
 	if !strings.Contains(strings.Join(joined, " | "), "proof path was not present") {
 		t.Fatalf("expected proof read failure reason, got %v", joined)
+	}
+	if state.lookupCalls != 1 {
+		t.Fatalf("expected one lookup call, got %d", state.lookupCalls)
+	}
+	if state.revokeCalls != 1 {
+		t.Fatalf("expected one revoke call, got %d", state.revokeCalls)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckFailsWhenRequiredProofRuntimeSecretDoesNotPass(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	server, state, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		false,
+		remoteAlphaDefaultProofReadPath,
+		"",
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeCommands(t, fakeBin, jwt)
+
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "vault-workload-auth-summary.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundlePEM)
+
+	output, err := runSourcedHelper(t, envWithPath(fakeBin,
+		"REMOTE_ALPHA_VAULT_ADDRESS="+server.URL,
+		"REMOTE_ALPHA_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
+		"REMOTE_ALPHA_TEST_PASSWORDLESS_SUDO_FOR_DS=false",
+		"REMOTE_ALPHA_TEST_RAW_SPIRE_SOCKET_ACCESS_DS=false",
+		"REMOTE_ALPHA_TEST_RAW_SPIRE_SOCKET_ACCESS_UID_10000=false",
+	), "remote_alpha_vault_workload_auth_check_main")
+	if err == nil {
+		t.Fatalf("expected proof runtime secret failure, got success\n%s", output)
+	}
+
+	summary := readJSONFile(t, summaryPath)
+	if got := summary["vault_workload_auth_smoke"]; got != "fail" {
+		t.Fatalf("unexpected smoke result %v", got)
+	}
+	authSmoke := jsonMap(t, summary["auth_smoke"])
+	if got := authSmoke["proof_read"]; got != "pass" {
+		t.Fatalf("unexpected proof read result %v", got)
+	}
+	if got := authSmoke["proof_runtime_secret"]; got != "not_exercised" {
+		t.Fatalf("unexpected proof runtime secret result %v", got)
+	}
+	proofRuntimeSecret := jsonMap(t, summary["proof_runtime_secret"])
+	if got := proofRuntimeSecret["path"]; got != remoteAlphaDefaultProofRuntimeSecretPath {
+		t.Fatalf("unexpected proof runtime secret path %v", got)
+	}
+	if got := proofRuntimeSecret["field"]; got != remoteAlphaDefaultProofRuntimeSecretField {
+		t.Fatalf("unexpected proof runtime secret field %v", got)
+	}
+	failureReasons, ok := summary["failure_reasons"].([]any)
+	if !ok {
+		t.Fatalf("unexpected failure reasons payload %T", summary["failure_reasons"])
+	}
+	joined := make([]string, 0, len(failureReasons))
+	for _, item := range failureReasons {
+		joined = append(joined, fmt.Sprint(item))
+	}
+	if !strings.Contains(strings.Join(joined, " | "), "proof runtime secret path was not present") {
+		t.Fatalf("expected proof runtime secret failure reason, got %v", joined)
 	}
 	if state.lookupCalls != 1 {
 		t.Fatalf("expected one lookup call, got %d", state.lookupCalls)

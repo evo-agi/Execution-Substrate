@@ -375,8 +375,10 @@ That slice is intentionally limited to verifying:
 - the issued Vault token can perform the bounded self-verification and proof
   operations this slice treats as required: self-lookup over
   `GET /auth/token/lookup-self`, one proof read at
-  `proof-secrets/data/runtime-identity-vault-login`, and self-revoke, all
-  without persisting the token or secret payload
+  `proof-secrets/data/runtime-identity-vault-login`, one exact proof-runtime
+  secret read at `proof-secrets/data/codex-runtime-profile` for field
+  `api_key`, and self-revoke, all without persisting the token or secret
+  payload
 - non-secret workload-zone Vault configuration material exists for later ES
   startup/config installation
 - non-secret host evidence summaries record only bounded metadata and explicit
@@ -394,6 +396,8 @@ bounded helper identity path:
 - JWT auth method constrained as narrowly as the active repo/runtime supports
 - current JWT audience `vault`
 - current required proof-read path `proof-secrets/data/runtime-identity-vault-login`
+- current required proof-runtime secret path `proof-secrets/data/codex-runtime-profile`
+- current required proof-runtime secret field `api_key`
 
 ### Alpha Vault posture
 
@@ -460,6 +464,7 @@ The current required auth-smoke checks for a passing
 - `auth_smoke.vault_login = pass`
 - `auth_smoke.token_lookup = pass`
 - `auth_smoke.proof_read = pass`
+- `auth_smoke.proof_runtime_secret = pass`
 - `auth_smoke.token_revoked = pass`
 
 `auth_smoke.token_lookup` uses the documented Vault token self-lookup endpoint,
@@ -491,11 +496,21 @@ Required summary fields for
 - `auth_smoke.vault_login`
 - `auth_smoke.token_lookup`
 - `auth_smoke.proof_read`
+- `auth_smoke.proof_runtime_secret`
 - `auth_smoke.token_revoked`
 - `auth_smoke_requirements.token_lookup_required`
 - `auth_smoke_requirements.proof_read_required`
+- `auth_smoke_requirements.proof_runtime_secret_required`
 - `auth_smoke_requirements.token_revoked_required`
 - `auth_smoke_requirements.proof_read_path`
+- `auth_smoke_requirements.proof_runtime_secret_path`
+- `auth_smoke_requirements.proof_runtime_secret_field`
+- `proof_runtime_secret.status`
+- `proof_runtime_secret.path`
+- `proof_runtime_secret.field`
+- `proof_runtime_secret.field_present`
+- `proof_runtime_secret.field_nonempty`
+- `proof_runtime_secret.field_shape`
 - `security.ds_not_in_docker_group`
 - `security.passwordless_sudo_for_ds`
 - `security.raw_spire_socket_access_ds`

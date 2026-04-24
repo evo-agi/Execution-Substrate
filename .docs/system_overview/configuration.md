@@ -465,8 +465,12 @@ submit readiness, and not a producer-contract or retained-result claim.
 The current required auth smoke in that host-local check is JWT fetch, Vault
 JWT login, Vault token self-lookup over the documented `GET
 /auth/token/lookup-self` path, one bounded proof read at
-`proof-secrets/data/runtime-identity-vault-login`, and self-revoke. The check
-records those requirements explicitly in summary metadata so a passing
+`proof-secrets/data/runtime-identity-vault-login`, one exact proof-runtime
+secret read at `proof-secrets/data/codex-runtime-profile` for field `api_key`,
+and self-revoke. The exact proof-runtime secret check records only bounded
+metadata such as path, field name, field presence, field non-empty status, and
+field shape; it must not print or persist the field value. The check records
+those requirements explicitly in summary metadata so a passing
 `vault_workload_auth_smoke` cannot silently ignore a failed or skipped required
 step.
 

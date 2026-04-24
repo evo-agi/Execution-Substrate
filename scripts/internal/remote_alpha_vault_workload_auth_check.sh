@@ -14,6 +14,8 @@ remote_alpha_vault_workload_auth_defaults() {
   REMOTE_ALPHA_SPIRE_AGENT_SERVICE_NAME="${REMOTE_ALPHA_SPIRE_AGENT_SERVICE_NAME:-spire-agent}"
   REMOTE_ALPHA_SPIRE_SERVER_SERVICE_NAME="${REMOTE_ALPHA_SPIRE_SERVER_SERVICE_NAME:-spire-server}"
   REMOTE_ALPHA_PROOF_READ_PATH="${REMOTE_ALPHA_PROOF_READ_PATH:-proof-secrets/data/runtime-identity-vault-login}"
+  REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH="${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH:-proof-secrets/data/codex-runtime-profile}"
+  REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD="${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD:-api_key}"
   REMOTE_ALPHA_CONTAINER_PROBE_IMAGE="${REMOTE_ALPHA_CONTAINER_PROBE_IMAGE:-}"
 }
 
@@ -31,6 +33,8 @@ Optional flags:
   --workload-zone-config-path </path/to/workload-zone-vault-config.json>
   --summary-path </path/to/vault-workload-auth-summary.json>
   --proof-read-path <vault logical path>
+  --proof-runtime-secret-path <vault logical path>
+  --proof-runtime-secret-field <field name>
   --container-probe-image <pre-existing curlimages/curl style image>
   --spire-agent-socket-path </run/spire/sockets/agent.sock>
   --spire-server-socket-path </run/spire/server/private/api.sock>
@@ -71,6 +75,14 @@ remote_alpha_vault_workload_auth_parse_args() {
         ;;
       --proof-read-path)
         REMOTE_ALPHA_PROOF_READ_PATH="$2"
+        shift 2
+        ;;
+      --proof-runtime-secret-path)
+        REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH="$2"
+        shift 2
+        ;;
+      --proof-runtime-secret-field)
+        REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD="$2"
         shift 2
         ;;
       --container-probe-image)
@@ -642,6 +654,113 @@ print(json.dumps(result, sort_keys=True))
 PY
 }
 
+remote_alpha_vault_secret_field_probe() {
+  local vault_address=$1
+  local ca_bundle_path=$2
+  local secret_path=$3
+  local secret_field=$4
+
+  python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${secret_path}" "${secret_field}" 3<<'PY'
+import json
+import ssl
+import sys
+import urllib.error
+import urllib.request
+
+vault_address = sys.argv[1].strip().rstrip("/")
+ca_bundle_path = sys.argv[2].strip()
+secret_path = sys.argv[3].strip().strip("/")
+secret_field = sys.argv[4].strip()
+token = sys.stdin.read().strip()
+
+result = {
+    "status": "fail",
+    "path": secret_path,
+    "field": secret_field,
+    "field_present": False,
+    "field_nonempty": False,
+    "field_shape": "unknown",
+    "error": "",
+}
+
+context = ssl.create_default_context(cafile=ca_bundle_path or None)
+request = urllib.request.Request(
+    vault_address + "/v1/" + secret_path,
+    headers={"Accept": "application/json", "X-Vault-Token": token},
+)
+
+try:
+    with urllib.request.urlopen(request, timeout=10, context=context) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except urllib.error.HTTPError as exc:
+    if exc.code == 404:
+        result["status"] = "not_exercised"
+        result["error"] = "proof runtime secret path was not present"
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
+    result["error"] = f"proof runtime secret read failed with status {exc.code}"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+except Exception as exc:
+    result["error"] = f"proof runtime secret read request failed: {exc}"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+data = payload.get("data")
+if isinstance(data, dict):
+    nested = data.get("data")
+    if isinstance(nested, dict):
+        data = nested
+
+if not isinstance(data, dict):
+    result["error"] = "proof runtime secret response did not include a data object"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if secret_field not in data:
+    result["field_shape"] = "absent"
+    result["error"] = f"proof runtime secret field {secret_field!r} was not present"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+value = data.get(secret_field)
+result["field_present"] = True
+
+if value is None:
+    result["field_shape"] = "null"
+    result["error"] = f"proof runtime secret field {secret_field!r} was null"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if isinstance(value, str):
+    result["field_shape"] = "string"
+    result["field_nonempty"] = bool(value.strip())
+elif isinstance(value, bool):
+    result["field_shape"] = "bool"
+    result["field_nonempty"] = True
+elif isinstance(value, (int, float)):
+    result["field_shape"] = "number"
+    result["field_nonempty"] = True
+elif isinstance(value, dict):
+    result["field_shape"] = "object"
+    result["field_nonempty"] = bool(value)
+elif isinstance(value, list):
+    result["field_shape"] = "array"
+    result["field_nonempty"] = bool(value)
+else:
+    result["field_shape"] = type(value).__name__
+    result["field_nonempty"] = True
+
+if not result["field_nonempty"]:
+    result["error"] = f"proof runtime secret field {secret_field!r} was empty"
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+result["status"] = "pass"
+print(json.dumps(result, sort_keys=True))
+PY
+}
+
 remote_alpha_vault_revoke_self() {
   local vault_address=$1
   local ca_bundle_path=$2
@@ -976,9 +1095,10 @@ remote_alpha_vault_write_summary() {
   local login_meta_path=$5
   local lookup_meta_path=$6
   local proof_read_meta_path=$7
-  local revoke_meta_path=$8
+  local proof_runtime_secret_meta_path=$8
+  local revoke_meta_path=$9
 
-  python3 - "${summary_path}" "${config_meta_path}" "${health_meta_path}" "${jwt_meta_path}" "${login_meta_path}" "${lookup_meta_path}" "${proof_read_meta_path}" "${revoke_meta_path}" <<'PY'
+  python3 - "${summary_path}" "${config_meta_path}" "${health_meta_path}" "${jwt_meta_path}" "${login_meta_path}" "${lookup_meta_path}" "${proof_read_meta_path}" "${proof_runtime_secret_meta_path}" "${revoke_meta_path}" <<'PY'
 import json
 import os
 import sys
@@ -991,7 +1111,8 @@ jwt_meta = json.load(open(sys.argv[4], encoding="utf-8"))
 login_meta = json.load(open(sys.argv[5], encoding="utf-8"))
 lookup_meta = json.load(open(sys.argv[6], encoding="utf-8"))
 proof_read_meta = json.load(open(sys.argv[7], encoding="utf-8"))
-revoke_meta = json.load(open(sys.argv[8], encoding="utf-8"))
+proof_runtime_secret_meta = json.load(open(sys.argv[8], encoding="utf-8"))
+revoke_meta = json.load(open(sys.argv[9], encoding="utf-8"))
 
 def bool_env(name):
     value = os.environ.get(name, "").strip().lower()
@@ -1021,8 +1142,10 @@ selector_scope = json_env("REMOTE_ALPHA_SELECTORS_JSON", [])
 registration_alpha_only = "unix:uid:0" in selector_scope and "unix:gid:0" in selector_scope
 
 proof_status = proof_read_meta.get("status") or "unknown"
+proof_runtime_secret_status = proof_runtime_secret_meta.get("status") or "unknown"
 token_lookup_required = True
 proof_read_required = True
+proof_runtime_secret_required = True
 token_revoke_required = True
 
 policy_names = lookup_meta.get("policy_names") or login_meta.get("policy_names") or []
@@ -1032,12 +1155,18 @@ if token_ttl_seconds is None:
 
 lookup_ok = lookup_meta.get("status") == "pass" if token_lookup_required else lookup_meta.get("status") in {"pass", "not_exercised"}
 proof_ok = proof_status == "pass" if proof_read_required else proof_status in {"pass", "not_exercised"}
+proof_runtime_secret_ok = (
+    proof_runtime_secret_status == "pass"
+    if proof_runtime_secret_required
+    else proof_runtime_secret_status in {"pass", "not_exercised"}
+)
 revoke_ok = revoke_meta.get("status") == "pass" if token_revoke_required else revoke_meta.get("status") in {"pass", "not_exercised"}
 smoke_ok = (
     jwt_meta.get("status") == "pass"
     and login_meta.get("status") == "pass"
     and lookup_ok
     and proof_ok
+    and proof_runtime_secret_ok
     and revoke_ok
 )
 
@@ -1100,6 +1229,7 @@ summary = {
         "vault_login": login_meta.get("status") or "fail",
         "token_lookup": lookup_meta.get("status") or "fail",
         "proof_read": proof_status,
+        "proof_runtime_secret": proof_runtime_secret_status,
         "token_revoked": revoke_meta.get("status") or "fail",
         "jwt_subject_verified": bool(jwt_meta.get("subject_matches_expected")),
         "jwt_audience_verified": bool(jwt_meta.get("audience_matches_expected")),
@@ -1107,8 +1237,19 @@ summary = {
     "auth_smoke_requirements": {
         "token_lookup_required": token_lookup_required,
         "proof_read_required": proof_read_required,
+        "proof_runtime_secret_required": proof_runtime_secret_required,
         "token_revoked_required": token_revoke_required,
         "proof_read_path": os.environ["REMOTE_ALPHA_PROOF_READ_PATH"],
+        "proof_runtime_secret_path": os.environ["REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH"],
+        "proof_runtime_secret_field": os.environ["REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD"],
+    },
+    "proof_runtime_secret": {
+        "status": proof_runtime_secret_status,
+        "path": proof_runtime_secret_meta.get("path") or os.environ["REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH"],
+        "field": proof_runtime_secret_meta.get("field") or os.environ["REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD"],
+        "field_present": bool(proof_runtime_secret_meta.get("field_present")),
+        "field_nonempty": bool(proof_runtime_secret_meta.get("field_nonempty")),
+        "field_shape": proof_runtime_secret_meta.get("field_shape") or "unknown",
     },
     "security": {
         "ds_not_in_docker_group": bool_env("REMOTE_ALPHA_DS_NOT_IN_DOCKER_GROUP"),
@@ -1132,7 +1273,7 @@ summary = {
 }
 
 failure_reasons = []
-for meta in (config_meta, health_meta, jwt_meta, login_meta, lookup_meta, proof_read_meta, revoke_meta):
+for meta in (config_meta, health_meta, jwt_meta, login_meta, lookup_meta, proof_read_meta, proof_runtime_secret_meta, revoke_meta):
     error = str(meta.get("error") or "").strip()
     if error:
         failure_reasons.append(error)
@@ -1152,6 +1293,7 @@ remote_alpha_vault_workload_auth_check_main() {
   local login_meta_path=""
   local lookup_meta_path=""
   local proof_read_meta_path=""
+  local proof_runtime_secret_meta_path=""
   local revoke_meta_path=""
   local summary_tmp_path=""
   local ca_bundle_path=""
@@ -1183,6 +1325,7 @@ remote_alpha_vault_workload_auth_check_main() {
   login_meta_path="${tmp_dir}/login-meta.json"
   lookup_meta_path="${tmp_dir}/lookup-meta.json"
   proof_read_meta_path="${tmp_dir}/proof-read-meta.json"
+  proof_runtime_secret_meta_path="${tmp_dir}/proof-runtime-secret-meta.json"
   revoke_meta_path="${tmp_dir}/revoke-meta.json"
   summary_tmp_path="${tmp_dir}/summary.json"
   ca_bundle_path="${tmp_dir}/vault-ca.pem"
@@ -1245,7 +1388,7 @@ remote_alpha_vault_workload_auth_check_main() {
     overall_ok=false
   fi
   export REMOTE_ALPHA_VAULT_ADDRESS REMOTE_ALPHA_VAULT_AUTH_MOUNT REMOTE_ALPHA_VAULT_ROLE REMOTE_ALPHA_VAULT_AUDIENCE
-  export REMOTE_ALPHA_PROOF_READ_PATH
+  export REMOTE_ALPHA_PROOF_READ_PATH REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD
   export REMOTE_ALPHA_WORKLOAD_SPIFFE_ID REMOTE_ALPHA_WORKLOAD_ZONE_CONFIG_PATH REMOTE_ALPHA_SPIRE_AGENT_SOCKET_PATH
   export REMOTE_ALPHA_TRUST_DOMAIN
   REMOTE_ALPHA_TRUST_DOMAIN="$(remote_alpha_vault_spire_trust_domain 2>/dev/null || true)"
@@ -1260,6 +1403,7 @@ remote_alpha_vault_workload_auth_check_main() {
   REMOTE_ALPHA_LISTENER_ADDRESSES_JSON="$(remote_alpha_vault_collect_listener_addresses "${listener_port}")"
 
   echo '{"status":"not_exercised","error":"proof read not attempted"}' >"${proof_read_meta_path}"
+  echo '{"status":"not_exercised","path":"","field":"","field_present":false,"field_nonempty":false,"field_shape":"unknown","error":"proof runtime secret check not attempted"}' >"${proof_runtime_secret_meta_path}"
   echo '{"status":"not_exercised","error":"token revoke not attempted"}' >"${revoke_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"token lookup not attempted"}' >"${lookup_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"vault login not attempted"}' >"${login_meta_path}"
@@ -1292,6 +1436,14 @@ remote_alpha_vault_workload_auth_check_main() {
           "${REMOTE_ALPHA_PROOF_READ_PATH}" >"${proof_read_meta_path}"
       fi
 
+      if [[ -n "${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH}" && -n "${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD}" ]]; then
+        printf '%s' "${vault_token}" | remote_alpha_vault_secret_field_probe \
+          "${REMOTE_ALPHA_VAULT_ADDRESS}" \
+          "${ca_bundle_path}" \
+          "${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_PATH}" \
+          "${REMOTE_ALPHA_PROOF_RUNTIME_SECRET_FIELD}" >"${proof_runtime_secret_meta_path}"
+      fi
+
       printf '%s' "${vault_token}" | remote_alpha_vault_revoke_self "${REMOTE_ALPHA_VAULT_ADDRESS}" "${ca_bundle_path}" >"${revoke_meta_path}"
     fi
   fi
@@ -1303,6 +1455,9 @@ remote_alpha_vault_workload_auth_check_main() {
     overall_ok=false
   fi
   if [[ "$(remote_alpha_vault_json_field "${proof_read_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
+    overall_ok=false
+  fi
+  if [[ "$(remote_alpha_vault_json_field "${proof_runtime_secret_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
     overall_ok=false
   fi
   if [[ "$(remote_alpha_vault_json_field "${revoke_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
@@ -1345,6 +1500,7 @@ remote_alpha_vault_workload_auth_check_main() {
     "${login_meta_path}" \
     "${lookup_meta_path}" \
     "${proof_read_meta_path}" \
+    "${proof_runtime_secret_meta_path}" \
     "${revoke_meta_path}"
 
   remote_alpha_vault_validate_summary_file "${summary_tmp_path}" "${jwt_value}" "${vault_token}"
