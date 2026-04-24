@@ -470,6 +470,62 @@ records those requirements explicitly in summary metadata so a passing
 `vault_workload_auth_smoke` cannot silently ignore a failed or skipped required
 step.
 
+For the separate Remote Supported-Host Alpha host-local normal-shell runtime
+image slice, the active repo-derived values remain:
+
+- image ref `execution-substrate/control-plane-normal-shell:supported-local`
+- repo-owned build recipe `scripts/remote_alpha_build_normal_shell_runtime_image.sh`
+- configured Codex CLI path `/usr/local/bin/codex`
+- no-real-credential realization `proof`
+
+The exact repo-owned build recipe for that slice is
+`sudo scripts/remote_alpha_build_normal_shell_runtime_image.sh`. It pins the
+current repo-owned recipe and invokes
+`scripts/build_control_plane_normal_shell_image.sh` with:
+
+- `CONTROL_PLANE_NORMAL_SHELL_IMAGE=execution-substrate/control-plane-normal-shell:supported-local`
+- repo-owned Dockerfile `es/runtimeprofiles/control_plane_normal_shell/Dockerfile`
+  resolved under the current repo root
+- `CONTROL_PLANE_NORMAL_SHELL_CODEX_CLI_PATH=/usr/local/bin/codex`
+- `CONTROL_PLANE_NORMAL_SHELL_CODEX_REALIZATION=proof`
+
+Conflicting caller overrides for those recipe-defining variables are outside
+this slice. The wrapper must fail fast instead of silently honoring a different
+image ref, Dockerfile, Codex CLI path, or Codex realization.
+
+The repo-owned host-local check path for that slice is
+`scripts/remote_alpha_normal_shell_runtime_image_check.sh`. It must be run as
+root, typically through `sudo`, because the current M75q posture intentionally
+keeps `ds` out of the Docker group while the check still needs Docker image and
+bounded container-smoke access. It writes the bounded host-local summary
+`execution-substrate.remote-alpha.normal-shell-runtime-image-summary.v1` to
+`/var/tmp/execution-substrate-remote-alpha/normal-shell-runtime-image-summary.json`.
+That check records only bounded non-secret recipe, image, service, and bounded
+container-smoke metadata; it does not build or rebuild the image by default,
+does not install or start ES, AGS, ARS, or EGS, and does not change ES public
+contracts. Its output is not ES `/health`, not runtime-profile readiness, not
+submit readiness, not producer-contract compatibility, and not retained-result
+proof. The required non-claim vocabulary for that summary is
+`readiness_not_claimed.runtime_profile_ready`,
+`readiness_not_claimed.submit_ready`,
+`readiness_not_claimed.es_services_healthy`,
+`readiness_not_claimed.producer_contract_compatible`, and
+`readiness_not_claimed.retained_result_fetch`. The bounded minimal container
+smoke must prove `build.codex_realization = proof`; `placeholder` is not the
+current repo-owned slice posture.
+
+For this sealed Remote Alpha slice, the host-local checker must not accept
+slice-defining overrides through `REMOTE_ALPHA_RUNTIME_IMAGE_REF`,
+`REMOTE_ALPHA_CODEX_CLI_PATH`, `REMOTE_ALPHA_BUILD_SCRIPT`, `--image-ref`, or
+`--codex-cli-path`. Those values are fixed to the repo-owned image ref, Codex
+CLI path, and recipe wrapper above; the checker must fail fast instead of
+silently honoring a non-slice posture.
+
+The summary's build-recipe evidence is current repo-snapshot evidence only. It
+must verify the expected repo-owned wrapper for this slice and record that
+evidence honestly; it must not claim to prove historical build invocation
+unless separate build-time evidence exists.
+
 The bounded Control Plane normal-shell runtime profile is proved as an end-to-end supported-local runtime-contract proof on top of the same path: the profile image is built from the repo-owned reference recipe with a proof-only Codex shim at the configured `EXEC_CODEX_CLI_PATH`, ES selects it only for `invocation.annotations["execution_substrate.runtime_profile"]="control-plane-normal-shell/v1"`, the workload verifies Python, git, narrow shell tooling, obtains proof-scoped Codex credential material through workload-side Vault login using staged CA trust material, invokes the proof Codex shim with stdin prompt input, creates a deterministic workspace mutation, writes runner-style final-message, diff, stdout/stderr, and workspace-archive artifacts, and fetches plus validates the retained ES result bundle. The proof does not prove real upstream Codex service behavior because this repo cannot own a non-sensitive production Codex credential or external Codex service availability.
 
 Supported-host qualification is now achieved on the current local reference host, and the current supported local proof path is now repo-owned through `scripts/72_supported_local_setup.sh`, `scripts/73_supported_local_proof.sh run`, and the existing bring-up and execute-loop helpers. Supported vs bounded-fallback vs unsupported states must remain explicit in bring-up/readiness output.

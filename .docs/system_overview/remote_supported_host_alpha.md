@@ -186,6 +186,173 @@ SVID bodies, private keys, or other secret material. Old ignored
 `.out/es-proof-*` supported-local proof workspaces are not accepted evidence
 for this remote helper slice and must not be used to widen its claims.
 
+## Remote Normal-Shell Runtime Image Slice
+
+Remote Supported-Host Alpha may also record a separate host-local normal-shell
+runtime image slice before any ES services are installed or started.
+
+That slice is intentionally limited to verifying:
+
+- the current repo-derived runtime image reference for
+  `control-plane-normal-shell/v1` is present in the host Docker daemon
+- host Docker service activity plus successful `docker info`
+- host Nomad still reports at least one ready node after the image is loaded
+- a bounded minimal container smoke on the existing image proves Python, git,
+  and the configured Codex CLI path inside that image
+- the current no-real-credential Codex realization posture for this slice can
+  be proved from the bounded recipe evidence plus the bounded container smoke
+- non-secret host evidence summaries
+
+This slice does not prove ES service health, runtime-profile readiness, submit
+readiness, producer-contract compatibility, retained-result readiness, or live
+run compatibility for a Control Plane consumer.
+
+The current repo-derived values for this slice are:
+
+- image ref `execution-substrate/control-plane-normal-shell:supported-local`
+- repo-owned build recipe `scripts/remote_alpha_build_normal_shell_runtime_image.sh`
+- current configured Codex CLI path `/usr/local/bin/codex`
+- current no-real-credential realization `proof`
+
+The repo-owned build recipe for this slice is:
+
+- `sudo scripts/remote_alpha_build_normal_shell_runtime_image.sh`
+
+That wrapper pins the current Remote Alpha recipe and invokes
+`scripts/build_control_plane_normal_shell_image.sh` with the explicit repo-owned
+values:
+
+- `CONTROL_PLANE_NORMAL_SHELL_IMAGE=execution-substrate/control-plane-normal-shell:supported-local`
+- repo-owned Dockerfile `es/runtimeprofiles/control_plane_normal_shell/Dockerfile`
+  resolved under the current repo root
+- `CONTROL_PLANE_NORMAL_SHELL_CODEX_CLI_PATH=/usr/local/bin/codex`
+- `CONTROL_PLANE_NORMAL_SHELL_CODEX_REALIZATION=proof`
+
+Conflicting caller overrides for those recipe-defining variables are not part
+of this slice. The wrapper must fail fast instead of silently honoring a
+different image ref, Dockerfile, Codex CLI path, or Codex realization.
+
+The repo-owned host-local check path for this slice is:
+
+- `sudo scripts/remote_alpha_normal_shell_runtime_image_check.sh`
+
+That command is a host-local check only. It does not build or rebuild the image
+by default, does not install or start ES, AGS, ARS, or EGS, does not call ES
+`:prepare` or `:submit`, and does not change ES public contracts.
+
+For this sealed slice, the host-local checker must not accept
+`REMOTE_ALPHA_RUNTIME_IMAGE_REF`, `REMOTE_ALPHA_CODEX_CLI_PATH`,
+`REMOTE_ALPHA_BUILD_SCRIPT`, `--image-ref`, or `--codex-cli-path` as mutable
+inputs. The checker must fail fast instead of silently honoring a non-slice
+image ref, Codex CLI path, or recipe wrapper.
+
+The summary schema for that host-local record is:
+
+- `execution-substrate.remote-alpha.normal-shell-runtime-image-summary.v1`
+
+The current host-local non-secret evidence summary for this slice is:
+
+- `/var/tmp/execution-substrate-remote-alpha/normal-shell-runtime-image-summary.json`
+
+It is an ES-owned host-local audit record, not an ES lifecycle or readiness
+surface. It must not be treated as:
+
+- ES `/health`
+- ES submit readiness
+- ES service health
+- producer-contract compatibility
+- retained-result readiness
+- Control Plane run-control truth
+
+It is also not yet:
+
+- an Infrastructure Manager doctor stage payload
+- an Infrastructure Manager support-bundle section
+- a combined readiness-report input
+
+Required summary fields for
+`execution-substrate.remote-alpha.normal-shell-runtime-image-summary.v1` are:
+
+- `schema_version`
+- `checked_at`
+- `image.ref`
+- `image.present`
+- `image.image_id`
+- `image.repo_digests`
+- `image.architecture`
+- `image.os`
+- `build.expected_recipe_script`
+- `build.expected_recipe_script_present`
+- `build.expected_recipe_script_sha256`
+- `build.build_context_files`
+- `build.recipe_matches_slice`
+- `build.codex_realization`
+- `build.codex_credential_posture`
+- `build.real_codex_credentials_required_for_build`
+- `host.hostname`
+- `host.docker_service_active`
+- `host.nomad_ready`
+- `validation.image_present`
+- `validation.docker_info_ok`
+- `validation.minimal_container_run.status`
+- `validation.minimal_container_run.safe`
+- `validation.minimal_container_run.stdout_lines`
+- `validation.minimal_container_run.stderr_lines`
+- `validation.codex_realization_expected`
+- `security.ds_not_in_docker_group`
+- `security.passwordless_sudo_for_ds`
+- `security.no_real_codex_credentials_in_build_context`
+- `security.no_api_keys_or_tokens_printed`
+- `readiness_not_claimed.runtime_profile_ready`
+- `readiness_not_claimed.submit_ready`
+- `readiness_not_claimed.es_services_healthy`
+- `readiness_not_claimed.producer_contract_compatible`
+- `readiness_not_claimed.retained_result_fetch`
+
+The current status vocabulary for the summary is:
+
+- `validation.image_present`: `pass` or `fail`
+- `validation.minimal_container_run.status`: `pass`, `fail`, or
+  `not_exercised`
+- `build.recipe_matches_slice`: `true` only when the current repo snapshot
+  still carries the expected repo-owned wrapper for this slice and that wrapper
+  still pins the documented image ref, Dockerfile, Codex CLI path, and
+  realization
+- `build.codex_realization`: literal `proof` for the current repo-owned slice
+- `validation.codex_realization_expected`: `true` only when the bounded minimal
+  container smoke proves the current `proof` realization
+- `readiness_not_claimed.*`: literal `not_claimed`
+
+The summary must record only bounded safe evidence such as:
+
+- image ref plus safe image metadata
+- expected recipe-script path, presence, digest, and bounded build-context file
+  list
+- Codex realization posture
+- Docker service activity and Nomad ready-state summary
+- bounded minimal container smoke output lines for Python, git, and the Codex
+  CLI realization check
+- explicit non-claim vocabulary for readiness surfaces this slice does not
+  prove
+
+That build evidence verifies the expected repo-owned recipe for this slice in
+the current repo snapshot. It does not, by itself, prove that the current image
+was historically built through that wrapper unless separate build-time evidence
+exists.
+
+That summary and any derivative artifacts accepted as evidence for this slice
+must not persist:
+
+- OpenAI or Codex credentials
+- API keys
+- Vault tokens
+- JWT-SVIDs
+- private keys
+- PEM bodies
+- secret payloads
+- raw build logs
+- raw retained-result bundles
+
 ## Remote Vault/Workload-Auth Slice
 
 Remote Supported-Host Alpha may also prove a separate host-local Vault and

@@ -380,3 +380,71 @@ func TestRemoteSupportedHostAlphaVaultWorkloadAuthSummarySchemaIsDocumented(t *t
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaNormalShellRuntimeImageSummarySchemaIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"Remote Normal-Shell Runtime Image Slice",
+		"`execution-substrate.remote-alpha.normal-shell-runtime-image-summary.v1`",
+		"`sudo scripts/remote_alpha_normal_shell_runtime_image_check.sh`",
+		"`/var/tmp/execution-substrate-remote-alpha/normal-shell-runtime-image-summary.json`",
+		"`execution-substrate/control-plane-normal-shell:supported-local`",
+		"`sudo scripts/remote_alpha_build_normal_shell_runtime_image.sh`",
+		"`scripts/remote_alpha_build_normal_shell_runtime_image.sh`",
+		"`scripts/build_control_plane_normal_shell_image.sh`",
+		"`/usr/local/bin/codex`",
+		"`CONTROL_PLANE_NORMAL_SHELL_IMAGE=execution-substrate/control-plane-normal-shell:supported-local`",
+		"`es/runtimeprofiles/control_plane_normal_shell/Dockerfile`",
+		"`CONTROL_PLANE_NORMAL_SHELL_CODEX_CLI_PATH=/usr/local/bin/codex`",
+		"`CONTROL_PLANE_NORMAL_SHELL_CODEX_REALIZATION=proof`",
+		"`image.ref`",
+		"`image.present`",
+		"`image.image_id`",
+		"`build.expected_recipe_script`",
+		"`build.expected_recipe_script_present`",
+		"`build.expected_recipe_script_sha256`",
+		"`build.build_context_files`",
+		"`build.recipe_matches_slice`",
+		"`build.codex_realization`",
+		"`build.codex_credential_posture`",
+		"`build.real_codex_credentials_required_for_build`",
+		"`host.docker_service_active`",
+		"`host.nomad_ready`",
+		"`validation.image_present`",
+		"`validation.docker_info_ok`",
+		"`validation.minimal_container_run.status`",
+		"`validation.codex_realization_expected`",
+		"`security.ds_not_in_docker_group`",
+		"`security.passwordless_sudo_for_ds`",
+		"`security.no_real_codex_credentials_in_build_context`",
+		"`security.no_api_keys_or_tokens_printed`",
+		"`readiness_not_claimed.runtime_profile_ready`",
+		"`readiness_not_claimed.submit_ready`",
+		"`readiness_not_claimed.es_services_healthy`",
+		"`readiness_not_claimed.producer_contract_compatible`",
+		"`readiness_not_claimed.retained_result_fetch`",
+		"does not build or rebuild the image by default",
+		"does not install or start ES, AGS, ARS, or EGS",
+		"not an ES lifecycle or readiness surface",
+		"not yet: - an Infrastructure Manager doctor stage payload",
+		"fail fast instead of silently honoring a different image ref, Dockerfile, Codex CLI path, or Codex realization",
+		"must not accept `REMOTE_ALPHA_RUNTIME_IMAGE_REF`, `REMOTE_ALPHA_CODEX_CLI_PATH`, `REMOTE_ALPHA_BUILD_SCRIPT`, `--image-ref`, or `--codex-cli-path` as mutable inputs",
+		"not runtime-profile readiness",
+		"not submit readiness",
+		"not producer-contract compatibility",
+		"not retained-result proof",
+		"`build.recipe_matches_slice`: `true` only when the current repo snapshot still carries the expected repo-owned wrapper for this slice",
+		"`build.codex_realization`: literal `proof` for the current repo-owned slice",
+		"`placeholder` is not the current repo-owned slice posture",
+		"does not, by itself, prove that the current image was historically built through that wrapper",
+		"must not persist: - OpenAI or Codex credentials",
+		"raw build logs",
+		"raw retained-result bundles",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote normal-shell runtime image schema docs missing %q", required)
+		}
+	}
+}
