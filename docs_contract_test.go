@@ -774,7 +774,7 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 		"preserving the current SPIRE selector posture, SPIRE socket traversal, and Vault/runtime-helper semantics",
 		"preserving the current Nomad task user model",
 		"leaving ES staging and retained-results ownership untouched",
-		"`sudo scripts/remote_alpha_prepare_es_config_tls.sh`",
+		"`scripts/remote_alpha_prepare_es_config_tls.sh`",
 		"`execution-substrate.remote-alpha.es-config-tls-prep-summary.v1`",
 		"`/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`",
 		"`slice.classification`",
@@ -851,7 +851,7 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 		"`result.status`",
 		"`result.ok`",
 		"`result.non_mutating`",
-		"`sudo scripts/remote_alpha_prepare_es_config_tls.sh --check-only`",
+		"`sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`",
 		"`--dry-run` is an accepted alias",
 		"required first step before any live apply",
 		"machine-readable JSON plan/report to stdout",
@@ -906,6 +906,40 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 	} {
 		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) && !strings.Contains(plans, required) {
 			t.Fatalf("remote ES prep docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaESConfigTLSPrepOperatorStagingFlowIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"The remote host does not need a full Execution Substrate repo checkout for this slice.",
+		"transient helper staging from the operator repo into a root-owned staging tree under `/var/tmp/execution-substrate-remote-alpha/helper-staging/`",
+		"the operator must stage the repo-owned wrapper `scripts/remote_alpha_prepare_es_config_tls.sh` and its sourced helper `scripts/internal/remote_alpha_prepare_es_config_tls.sh`",
+		"`/var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh`",
+		"Execution must run from that root-owned staged tree, not from a user-writable upload path.",
+		"Any user-scoped upload directory is transport only and must not be used as the execution path for the live helper invocation.",
+		"The required operator-staged provenance record for that transient helper tree must include:",
+		"the local git commit when available",
+		"the sha256 of each staged helper file",
+		"the remote staged path",
+		"the remote owner/mode proving the staged tree is root-owned rather than a user-writable upload path",
+		"The required operator-staged flow for this slice is:",
+		"Copy only the minimal helper tree from the local operator repo snapshot; a full remote repo checkout is not required.",
+		"Run the staged wrapper with `--check-only` before any live apply.",
+		"Apply may proceed only when `result.ok=true`, `plan.blockers` is empty, `plan.service_identity_would_remain_root_default=true`, and `validation.config_rewrite_scope.status=pass`",
+		"the planned writes must stay limited to `/etc/execution-substrate/es.json`, `/etc/execution-substrate/es-tls`, the files beneath that dedicated TLS directory, and the configured summary path.",
+		"Preserve the apply summary, backup path, rollback notes, live `es.service` identity, and post-apply `/health` plus `GET /v1/executions:contract` status as the bounded post-apply evidence set.",
+		"Remove the transient helper staging tree after that bounded evidence is collected, while preserving the apply backup and summaries under `/var/tmp/execution-substrate-remote-alpha/`.",
+		"Do not run governed proof as part of this staged operator flow.",
+		"This operator-staged flow is ownership prep only. It is not ES de-rooting.",
+		"`sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`",
+		"`sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh`",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote ES prep operator-staging docs missing %q", required)
 		}
 	}
 }

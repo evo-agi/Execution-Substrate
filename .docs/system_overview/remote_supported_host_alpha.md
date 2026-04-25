@@ -874,17 +874,71 @@ Its defining `Temporary compatibility edge` is that live `es.service` remains
 `root(default)` while dedicated `root:es` readable config/TLS material is
 prepared for a later ES de-root slice.
 
-The repo-owned host-local prep command for that slice is:
+The repo-owned entrypoint for that slice remains:
 
-- `sudo scripts/remote_alpha_prepare_es_config_tls.sh`
+- `scripts/remote_alpha_prepare_es_config_tls.sh`
 
-That command must be run as root because the current live Alpha posture keeps
-ES config and the current shared TLS material root-owned before the slice is
-applied, and `ds` must still not rely on passwordless sudo for this path.
+The remote host does not need a full Execution Substrate repo checkout for
+this slice. The current accepted live-host invocation model is transient
+helper staging from the operator repo into a root-owned staging tree under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/`.
+
+At minimum, the operator must stage the repo-owned wrapper
+`scripts/remote_alpha_prepare_es_config_tls.sh` and its sourced helper
+`scripts/internal/remote_alpha_prepare_es_config_tls.sh`, preserving their
+relative layout under that staging tree so the staged wrapper path is:
+
+- `/var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh`
+
+Execution must run from that root-owned staged tree, not from a user-writable
+upload path. Any user-scoped upload directory is transport only and must not
+be used as the execution path for the live helper invocation.
+
+The staged wrapper must still be run as root because the current live Alpha
+posture keeps ES config and the current shared TLS material root-owned before
+the slice is applied, and `ds` must still not rely on passwordless sudo for
+this path.
+
+The required operator-staged provenance record for that transient helper tree
+must include:
+
+- the local git commit when available
+- the sha256 of each staged helper file
+- the remote staged path
+- the remote owner/mode proving the staged tree is root-owned rather than a
+  user-writable upload path
+
+The required operator-staged flow for this slice is:
+
+1. Copy only the minimal helper tree from the local operator repo snapshot; a
+   full remote repo checkout is not required.
+2. Install that helper tree into
+   `/var/tmp/execution-substrate-remote-alpha/helper-staging/` as a root-owned
+   staged tree, record the required provenance above, and execute the staged
+   wrapper from that location.
+3. Run the staged wrapper with `--check-only` before any live apply.
+4. Review the `--check-only` JSON report. Apply may proceed only when
+   `result.ok=true`, `plan.blockers` is empty,
+   `plan.service_identity_would_remain_root_default=true`, and
+   `validation.config_rewrite_scope.status=pass`; the planned writes must stay
+   limited to `/etc/execution-substrate/es.json`,
+   `/etc/execution-substrate/es-tls`, the files beneath that dedicated TLS
+   directory, and the configured summary path.
+5. Run the staged wrapper without `--check-only` only after those gates pass.
+6. Preserve the apply summary, backup path, rollback notes, live
+   `es.service` identity, and post-apply `/health` plus
+   `GET /v1/executions:contract` status as the bounded post-apply evidence
+   set.
+7. Remove the transient helper staging tree after that bounded evidence is
+   collected, while preserving the apply backup and summaries under
+   `/var/tmp/execution-substrate-remote-alpha/`.
+8. Do not run governed proof as part of this staged operator flow.
+
+This operator-staged flow is ownership prep only. It is not ES de-rooting.
 
 The required first step before any live apply is:
 
-- `sudo scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
+- `sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
 
 `--dry-run` is an accepted alias for that same non-mutating repo-side check.
 That check-only path must perform discovery and validation only. It must emit a
@@ -895,7 +949,8 @@ under `/var/tmp/execution-substrate-remote-alpha/`, or restart
 `es.service`. It may inspect current service posture, current config and
 dependency paths, existing owner/mode state, and the planned ES config rewrite
 scope. The live apply step
-`sudo scripts/remote_alpha_prepare_es_config_tls.sh` may be run only after
+`sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh`
+may be run only after
 that check-only report is reviewed and accepted.
 
 Before any apply-mode mutation primitive runs, the helper must create a
