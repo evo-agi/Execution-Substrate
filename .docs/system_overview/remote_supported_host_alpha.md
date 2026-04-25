@@ -353,6 +353,116 @@ must not persist:
 - raw build logs
 - raw retained-result bundles
 
+## Remote AGS Service Hardening Slice
+
+Remote Supported-Host Alpha may also land a separate AGS-only service-account
+hardening slice without widening ES runtime claims or changing the direct
+Control Plane to AGS/ES boundary.
+
+That slice is intentionally limited to:
+
+- moving only `ags.service` from the default root service context to a
+  dedicated non-root `ags:ags` account
+- preserving direct HTTPS/mTLS from the Mac to AGS `/health` and
+  `POST /v1/artifacts:publish`
+- preserving AGS publication to ARS over the current loopback/internal HTTPS
+  dependency path
+- recording a non-secret host-local summary for the slice
+- leaving `ars.service`, `egs.service`, and `es.service` in their current
+  posture for this slice
+- leaving the current SPIRE selector model unchanged for this slice
+- preserving the current no-bridge and no-shared-filesystem remote path facts
+
+This slice does not prove a new remote happy path, does not move ES, ARS, or
+EGS off root, does not change ES public contracts, does not change current
+Control Plane, ES, or Infrastructure Manager ownership boundaries, and does
+not widen the current SPIRE selector model.
+
+The repo-owned host-local hardening command for this slice is:
+
+- `sudo scripts/remote_alpha_harden_ags_service.sh`
+
+That command must be run as root because the current live Alpha posture keeps
+AGS config and TLS material root-owned before the slice is applied, and `ds`
+must still not rely on passwordless sudo for this path.
+
+The summary schema for that host-local record is:
+
+- `execution-substrate.remote-alpha.ags-service-hardening-summary.v1`
+
+The current host-local non-secret evidence summary for this slice is:
+
+- `/var/tmp/execution-substrate-remote-alpha/ags-service-hardening-summary.json`
+
+It is a host-local hardening record, not a new happy-path proof and not an ES
+lifecycle, readiness, runtime-profile, or producer-contract surface.
+
+Required summary fields for
+`execution-substrate.remote-alpha.ags-service-hardening-summary.v1` are:
+
+- `schema_version`
+- `checked_at`
+- `slice.classification`
+- `slice.not_a_new_happy_path_proof`
+- `service.name`
+- `service.user`
+- `service.group`
+- `service.binary_path`
+- `service.config_path`
+- `service.health_url`
+- `service.publish_url`
+- `dependencies.artifact_registry.base_url`
+- `dependencies.server_tls.cert_file`
+- `dependencies.server_tls.key_file`
+- `dependencies.server_tls.client_ca_file`
+- `dependencies.artifact_registry.client_cert_file`
+- `dependencies.artifact_registry.client_key_file`
+- `dependencies.artifact_registry.root_ca_file`
+- `dependencies.signer.material_location`
+- `dependencies.local_state_paths`
+- `dependencies.log_sink`
+- `ownership_model.config_file`
+- `ownership_model.tls_directory`
+- `ownership_model.tls_files`
+- `ownership_model.systemd_dropin`
+- `validation.local_health`
+- `validation.local_publish_probe`
+- `validation.ars_service_posture`
+- `validation.egs_service_posture`
+- `validation.es_service_posture`
+- `validation.mac_health_probe`
+- `validation.mac_publish_probe`
+- `preserved_remote_path.direct_https_mtls`
+- `preserved_remote_path.no_bridge`
+- `preserved_remote_path.no_shared_filesystem`
+- `security.ds_not_in_docker_group`
+- `security.passwordless_sudo_for_ds`
+- `not_claimed.es_runtime_hardening`
+- `not_claimed.submit_runtime_profile_changes`
+- `not_claimed.spire_selector_model_changes`
+- `not_claimed.new_remote_happy_path_proof`
+
+That summary must record only bounded safe evidence such as:
+
+- the AGS service user/group and AGS-only ownership model
+- the exact AGS binary, config, TLS, and ARS dependency file paths AGS needs
+- AGS local `/health` and focused publish-probe results
+- the preserved direct HTTPS/mTLS, no-bridge, and no-shared-filesystem facts
+- explicit non-claim vocabulary for ES runtime hardening, submit/runtime-profile
+  changes, SPIRE selector-model changes, and new happy-path proof claims
+
+That summary and any derivative artifacts accepted as evidence for this slice
+must not persist:
+
+- signer private-key bytes
+- TLS private-key PEM bodies
+- client cert private keys
+- JWT-SVIDs
+- Vault tokens
+- API keys
+- raw secret payloads
+- raw retained-result bundles
+
 ## Remote Vault/Workload-Auth Slice
 
 Remote Supported-Host Alpha may also prove a separate host-local Vault and

@@ -435,6 +435,67 @@ On the current Remote Supported-Host Alpha helper proof slice, that `0:0` helper
 
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target using the proof Vault CA bundle carried through the workload-zone runtime config, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 
+For the separate Remote Supported-Host Alpha AGS service-account hardening
+slice, the active repo-derived AGS runtime inputs remain:
+
+- binary path `/usr/local/lib/execution-substrate/bin/ags`
+- config path `/etc/execution-substrate/ags.json`
+- AGS bind `https://192.168.1.156:8444`
+- AGS server cert `/etc/execution-substrate/tls/ags-server-cert.pem`
+- AGS server key `/etc/execution-substrate/tls/ags-server-key.pem`
+- AGS client CA bundle `/etc/execution-substrate/tls/combined-service-ca-bundle.pem`
+- ARS base URL `https://127.0.0.1:8442`
+- AGS client cert `/etc/execution-substrate/tls/ags-client-cert.pem`
+- AGS client key `/etc/execution-substrate/tls/ags-client-key.pem`
+- ARS root CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- signer material location `/etc/execution-substrate/ags.json`
+- no AGS-local state directory
+- journald/stdout logging only
+- ARS as the only AGS runtime dependency in this slice
+- no EGS dependency on the AGS runtime path
+- no ES dependency on the AGS runtime path
+
+The repo-owned host-local AGS-only hardening command for that slice is
+`scripts/remote_alpha_harden_ags_service.sh`. It must be run as root,
+typically through `sudo`, because the live Alpha posture keeps AGS config and
+TLS material root-owned before the slice is applied and `ds` must still not
+rely on passwordless sudo for this path.
+
+That hardening command must reconfigure only `ags.service` to run as dedicated
+`ags:ags`, must not introduce a shared `execution-substrate` account model,
+must not change ES public contracts, must not change the SPIRE selector model,
+and must leave `ars.service`, `egs.service`, and `es.service` in their current
+posture for this slice.
+
+The AGS-readable ownership model for that slice is:
+
+- config file `/etc/execution-substrate/ags.json` owned as `root:ags` mode
+  `0640`
+- TLS directory `/etc/execution-substrate/tls` traversable for AGS as
+  `root:ags` mode `0710`
+- AGS-readable TLS files owned as `root:ags` mode `0640`:
+  - `/etc/execution-substrate/tls/ags-server-cert.pem`
+  - `/etc/execution-substrate/tls/ags-server-key.pem`
+  - `/etc/execution-substrate/tls/combined-service-ca-bundle.pem`
+  - `/etc/execution-substrate/tls/ags-client-cert.pem`
+  - `/etc/execution-substrate/tls/ags-client-key.pem`
+  - `/etc/execution-substrate/tls/runtime-ca.pem`
+- a systemd drop-in or equivalent unit configuration setting `User=ags` and
+  `Group=ags`
+
+The host-local summary for that slice is
+`execution-substrate.remote-alpha.ags-service-hardening-summary.v1` at
+`/var/tmp/execution-substrate-remote-alpha/ags-service-hardening-summary.json`.
+It is a hardening slice record, not a new happy-path proof. It must record the
+AGS service user, AGS-only ownership model, preserved direct HTTPS/mTLS plus
+no-bridge/no-shared-filesystem facts, local AGS health and publish-probe
+results, and explicit non-claim fields:
+
+- `not_claimed.es_runtime_hardening`
+- `not_claimed.submit_runtime_profile_changes`
+- `not_claimed.spire_selector_model_changes`
+- `not_claimed.new_remote_happy_path_proof`
+
 For the separate Remote Supported-Host Alpha host-local Vault/workload-auth
 slice, the active repo-derived workload-auth values remain:
 

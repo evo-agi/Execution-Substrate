@@ -460,3 +460,75 @@ func TestRemoteSupportedHostAlphaNormalShellRuntimeImageSummarySchemaIsDocumente
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaAGSServiceHardeningSliceIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"Remote AGS Service Hardening Slice",
+		"moving only `ags.service` from the default root service context to a dedicated non-root `ags:ags` account",
+		"preserving direct HTTPS/mTLS from the Mac to AGS `/health` and `POST /v1/artifacts:publish`",
+		"preserving AGS publication to ARS over the current loopback/internal HTTPS dependency path",
+		"leaving `ars.service`, `egs.service`, and `es.service` in their current posture",
+		"leaving the current SPIRE selector model unchanged",
+		"`sudo scripts/remote_alpha_harden_ags_service.sh`",
+		"`execution-substrate.remote-alpha.ags-service-hardening-summary.v1`",
+		"`/var/tmp/execution-substrate-remote-alpha/ags-service-hardening-summary.json`",
+		"`slice.classification`",
+		"`slice.not_a_new_happy_path_proof`",
+		"`service.user`",
+		"`service.group`",
+		"`service.binary_path`",
+		"`service.config_path`",
+		"`dependencies.artifact_registry.base_url`",
+		"`dependencies.server_tls.cert_file`",
+		"`dependencies.server_tls.key_file`",
+		"`dependencies.server_tls.client_ca_file`",
+		"`dependencies.artifact_registry.client_cert_file`",
+		"`dependencies.artifact_registry.client_key_file`",
+		"`dependencies.artifact_registry.root_ca_file`",
+		"`dependencies.signer.material_location`",
+		"`dependencies.local_state_paths`",
+		"`dependencies.log_sink`",
+		"`ownership_model.config_file`",
+		"`ownership_model.tls_directory`",
+		"`ownership_model.tls_files`",
+		"`ownership_model.systemd_dropin`",
+		"`validation.local_health`",
+		"`validation.local_publish_probe`",
+		"`validation.ars_service_posture`",
+		"`validation.egs_service_posture`",
+		"`validation.es_service_posture`",
+		"`validation.mac_health_probe`",
+		"`validation.mac_publish_probe`",
+		"`preserved_remote_path.direct_https_mtls`",
+		"`preserved_remote_path.no_bridge`",
+		"`preserved_remote_path.no_shared_filesystem`",
+		"`security.ds_not_in_docker_group`",
+		"`security.passwordless_sudo_for_ds`",
+		"`not_claimed.es_runtime_hardening`",
+		"`not_claimed.submit_runtime_profile_changes`",
+		"`not_claimed.spire_selector_model_changes`",
+		"`not_claimed.new_remote_happy_path_proof`",
+		"`/usr/local/lib/execution-substrate/bin/ags`",
+		"`/etc/execution-substrate/ags.json`",
+		"`/etc/execution-substrate/tls/ags-server-cert.pem`",
+		"`/etc/execution-substrate/tls/ags-server-key.pem`",
+		"`/etc/execution-substrate/tls/combined-service-ca-bundle.pem`",
+		"`/etc/execution-substrate/tls/ags-client-cert.pem`",
+		"`/etc/execution-substrate/tls/ags-client-key.pem`",
+		"`/etc/execution-substrate/tls/runtime-ca.pem`",
+		"`root:ags` mode `0640`",
+		"`root:ags` mode `0710`",
+		"must not introduce a shared `execution-substrate` account model",
+		"must not change ES public contracts",
+		"must not change the SPIRE selector model",
+		"must not persist: - signer private-key bytes",
+		"raw retained-result bundles",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote AGS hardening docs missing %q", required)
+		}
+	}
+}
