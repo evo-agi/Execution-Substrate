@@ -61,21 +61,47 @@ Current bounded implementation status:
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha service hardening
-tranche is `AGS sealed + ARS de-root`.
+tranche is `AGS sealed + ARS de-root + EGS de-root`.
 
 - AGS is already de-rooted and sealed in this tranche; preserve the landed
   `ags:ags` service posture and its existing host-local summary/evidence shape.
-- ARS is the only service being moved off root in this tranche.
-- This tranche must not move EGS or ES off root.
+- ARS is already de-rooted in this tranche; preserve the landed `ars:ars`
+  service posture, its dedicated TLS/state ownership model, and its existing
+  host-local summary/evidence shape.
+- EGS is the only service being moved off root in this slice.
+- This tranche must not move ES off root.
 - This tranche must not change ES public contracts, the current SPIRE selector
   posture, or Control Plane/Infrastructure Manager ownership boundaries.
 - This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
-  current ARS loopback-only dependency path, and the no-bridge/no-shared-
-  filesystem remote posture.
+  current EGS loopback-only dependency path, the landed AGS/ARS service
+  postures, and the no-bridge/no-shared-filesystem remote posture.
 - This tranche is bounded host/service hardening only. Do not widen it into a
   new hardening tranche or broader proof expansion; rerun only the small
-  verification needed to validate the ARS host-side apply and refresh the
+  verification needed to validate the EGS host-side apply and refresh the
   non-secret summary.
+
+## Current Remote Alpha ES Config/TLS Ownership Prep Slice
+
+`Bounded slice rule`: Remote Supported-Host Alpha may now extend the current
+host-local hardening work with one separate ES config/TLS ownership prep slice.
+
+- This slice introduces a dedicated ES-readable config ownership model and a
+  dedicated ES-readable TLS directory for the current ES runtime config.
+- This slice may create a narrow dedicated `es:es` prep account only to own
+  readable ES config/TLS material for a later ES de-root step; it must not
+  introduce a shared `execution-substrate` Unix-account model.
+- This slice must keep the live `es.service` user/group posture unchanged.
+- This slice must not change ES public contracts, the current SPIRE selector
+  posture, current SPIRE socket traversal, Vault/runtime-helper semantics, or
+  Nomad task user model.
+- This slice must not move ES writable state, including staging and retained
+  results ownership.
+- This slice preserves the current AGS, ARS, and EGS service postures plus the
+  direct Mac -> ES HTTPS+mTLS posture.
+- This slice is bounded host-local config/TLS ownership preparation only. Do
+  not widen it into ES de-root, Control Plane or Infrastructure Manager
+  changes, or broader proof reruns; rerun only the small verification needed to
+  validate the ES host-side apply and refresh the non-secret summary.
 
 ## Current Planning Objective
 
@@ -135,6 +161,9 @@ Temporary compatibility edges to preserve explicitly during this package:
 - the current additive `outcome_evidence` JSON field and successful logs/result outcome-evidence headers while lifecycle/status/result/log/cancel evidence vocabulary remains bounded to the current Nomad/retained-result slice
 - retained `application/gzip` result bundles keyed by public `run_id`
 - supported-local profile-image durability checks, including the Nomad Docker `docker.cleanup.image=false` guardrail for enabled local runtime-profile images
+- the ES config/TLS ownership prep bridge where live `es.service` stays
+  `root(default)` while dedicated `root:es` readable config/TLS material is
+  staged for a later ES de-root slice
 
 Implementation details and current slice constraints not to promote into stable architecture:
 

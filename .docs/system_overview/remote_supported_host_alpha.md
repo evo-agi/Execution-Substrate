@@ -353,35 +353,38 @@ must not persist:
 - raw build logs
 - raw retained-result bundles
 
-## Remote AGS Sealed + ARS De-root Hardening Tranche
+## Remote AGS Sealed + ARS De-root + EGS De-root Hardening Tranche
 
 Remote Supported-Host Alpha currently carries one bounded service hardening
-tranche: `AGS sealed + ARS de-root`.
+tranche: `AGS sealed + ARS de-root + EGS de-root`.
 
-AGS is already de-rooted and sealed in this tranche. ARS is the service being
-moved off root in this tranche.
+AGS and ARS are already de-rooted in this tranche. EGS is the service being
+moved off root in this step.
 
 That tranche is intentionally limited to:
 
 - preserving the landed `ags.service` non-root `ags:ags` posture plus the
   narrowed shared TLS readability needed by AGS
-- moving only `ars.service` from the default root service context to a
-  dedicated non-root `ars:ars` account
+- preserving the landed `ars.service` non-root `ars:ars` posture plus its
+  dedicated TLS and writable-state ownership model
+- moving only `egs.service` from the default root service context to a
+  dedicated non-root `egs:egs` account
 - preserving direct HTTPS/mTLS from the Mac to AGS `/health` and
-  `POST /v1/artifacts:publish`
-- preserving the current ARS internal-only loopback listener at
-  `https://127.0.0.1:8442`
+  `POST /v1/artifacts:publish`, plus direct HTTPS/mTLS from the Mac to ES
+  `/health` and `GET /v1/executions:contract`
+- preserving the current EGS internal-only loopback listener at
+  `https://127.0.0.1:8443`
 - preserving AGS publication to ARS over the current loopback/internal HTTPS
   dependency path
-- recording non-secret host-local summaries for the landed AGS step and the
-  ARS de-root step
-- leaving `egs.service` and `es.service` in their current posture for this
-  tranche
+- preserving ES local `/health` and producer-contract compatibility surfaces
+- recording non-secret host-local summaries for the landed AGS step, the
+  landed ARS step, and the EGS de-root step
+- leaving `es.service` in its current posture for this tranche
 - leaving the current SPIRE selector model unchanged for this tranche
 - preserving the current no-bridge and no-shared-filesystem remote path facts
 
 This tranche does not prove a new remote happy path, does not start a new
-hardening tranche, does not move EGS or ES off root, does not change ES public
+hardening tranche, does not move ES off root, does not change ES public
 contracts, does not change current Control Plane, ES, or Infrastructure
 Manager ownership boundaries, does not widen the current SPIRE selector model,
 and does not widen into broader proof expansion.
@@ -390,7 +393,8 @@ and does not widen into broader proof expansion.
 
 The AGS step in this tranche is already landed. It remains documented because
 the landed helper, summary schema, and ownership model are still part of the
-tranche state that must remain preserved while ARS is de-rooted.
+tranche state that must remain preserved while later service-account steps in
+this tranche land.
 
 The repo-owned host-local hardening command for that landed step is:
 
@@ -503,28 +507,29 @@ The active repo-derived AGS service inputs for that landed step remain:
 - systemd drop-in dir `/etc/systemd/system/ags.service.d`
 - systemd drop-in path `/etc/systemd/system/ags.service.d/10-account.conf`
 
-### ARS De-root Step
+### Landed ARS De-root Step
 
-The ARS step in this tranche is the service-account move still to apply on the
-remote host.
+The ARS step in this tranche is already landed. It remains documented because
+its helper, summary schema, and dedicated ownership model remain part of the
+tranche state that must stay preserved while EGS is de-rooted.
 
 That step is intentionally limited to:
 
-- moving only `ars.service` from the default root service context to a
-  dedicated non-root `ars:ars` account
+- preserving the landed `ars.service` non-root `ars:ars` account
 - preserving the current ARS internal-only loopback listener at
   `https://127.0.0.1:8442`
 - preserving AGS local `/health` plus a focused
   `POST /v1/artifacts:publish` probe through the existing AGS -> ARS loopback
   dependency path
 - preserving the current AGS `ags:ags` posture
-- recording a non-secret host-local summary for the step
-- leaving `egs.service` and `es.service` in their current posture for this
-  tranche
+- recording a non-secret host-local summary for the landed step
+- leaving `egs.service` and `es.service` in their then-current posture for
+  that step
 - leaving the current SPIRE selector model unchanged for this tranche
 - preserving the current no-bridge and no-shared-filesystem remote path facts
 
-The repo-owned host-local hardening command for that ARS de-root step is:
+The repo-owned host-local hardening command for that landed ARS de-root step
+is:
 
 - `sudo scripts/remote_alpha_harden_ars_service.sh`
 
@@ -561,7 +566,7 @@ The current host-local non-secret evidence summary for that ARS step is:
 
 - `/var/tmp/execution-substrate-remote-alpha/ars-service-hardening-summary.json`
 
-It is a host-local hardening record for the ARS de-root step, not a new
+It is a host-local hardening record for the landed ARS de-root step, not a new
 happy-path proof and not an ES lifecycle, readiness, runtime-profile, or
 producer-contract surface.
 
@@ -652,6 +657,402 @@ The active repo-derived ARS service inputs for that ARS step remain:
 - systemd unit path `/etc/systemd/system/ars.service`
 - systemd drop-in dir `/etc/systemd/system/ars.service.d`
 - systemd drop-in path `/etc/systemd/system/ars.service.d/10-account.conf`
+
+### EGS De-root Step
+
+The EGS step in this tranche is the service-account move still to apply on the
+remote host.
+
+That step is intentionally limited to:
+
+- moving only `egs.service` from the default root service context to a
+  dedicated non-root `egs:egs` account
+- preserving the current EGS internal-only loopback listener at
+  `https://127.0.0.1:8443`
+- preserving AGS local `/health` plus a focused
+  `POST /v1/artifacts:publish` probe through the existing AGS -> ARS loopback
+  dependency path
+- preserving local ES `/health` plus
+  `GET /v1/executions:contract` through the current direct HTTPS/mTLS path
+- preserving the current AGS `ags:ags` posture
+- preserving the current ARS `ars:ars` posture
+- recording a non-secret host-local summary for the step
+- leaving `es.service` in its current root posture for this tranche
+- leaving the current SPIRE selector model unchanged for this tranche
+- preserving the current no-bridge and no-shared-filesystem remote path facts
+
+The repo-owned host-local hardening command for that EGS de-root step is:
+
+- `sudo scripts/remote_alpha_harden_egs_service.sh`
+
+That command must be run as root because the current live Alpha posture keeps
+EGS config, the current source TLS material, and the inline signer material in
+that config root-owned before the slice is applied, and `ds` must still not
+rely on passwordless sudo for this path.
+
+If the target host already has an `egs` user/group, the helper must prove that
+the pre-existing service account is still acceptably narrow for this slice
+before it is reused. At minimum, that check must confirm primary group `egs`,
+no supplementary groups, and no unexpected extra members in the `egs` group
+itself; otherwise the helper must fail instead of silently claiming a
+dedicated narrow account/group.
+
+Because the current shared `/etc/execution-substrate/tls` directory remains
+narrowed for the landed AGS seal at `root:ags`, this EGS de-root step must not
+widen that shared TLS directory and must not introduce a shared Unix-account
+model. Instead, it stages only the EGS server cert, EGS server key, and EGS
+client-CA bundle into dedicated EGS-readable paths under
+`/etc/execution-substrate/egs-tls`.
+
+For this sealed EGS de-root step within the current hardening tranche, the
+host-local hardening helper must not accept `REMOTE_ALPHA_SERVICE_NAME`,
+`REMOTE_ALPHA_SERVICE_USER`, `REMOTE_ALPHA_SERVICE_GROUP`,
+`REMOTE_ALPHA_BINARY_PATH`, `REMOTE_ALPHA_CONFIG_PATH`,
+`REMOTE_ALPHA_HEALTHCHECK_ENV_PATH`, `REMOTE_ALPHA_SERVICE_UNIT_PATH`,
+`REMOTE_ALPHA_SERVICE_DROPIN_DIR`, `REMOTE_ALPHA_SERVICE_DROPIN_PATH`,
+`--service-name`, `--service-user`, `--service-group`, `--binary-path`,
+`--config-path`, `--healthcheck-env-path`, `--service-unit-path`,
+`--service-dropin-dir`, or `--service-dropin-path` as mutable inputs. The
+helper must fail fast instead of silently retargeting the EGS de-root step away
+from the repo-owned EGS service posture. Only `--summary-path` and
+`REMOTE_ALPHA_SUMMARY_PATH` may vary for output placement.
+
+The summary schema for that host-local step record is:
+
+- `execution-substrate.remote-alpha.egs-service-hardening-summary.v2`
+
+The current host-local non-secret evidence summary for that EGS step is:
+
+- `/var/tmp/execution-substrate-remote-alpha/egs-service-hardening-summary.json`
+
+It is a host-local hardening record for the EGS de-root step, not a new
+happy-path proof and not an ES lifecycle, readiness, runtime-profile, or
+producer-contract surface.
+
+Required summary fields for
+`execution-substrate.remote-alpha.egs-service-hardening-summary.v2` are:
+
+- `schema_version`
+- `checked_at`
+- `slice.classification`
+- `slice.not_a_new_happy_path_proof`
+- `service.name`
+- `service.user`
+- `service.group`
+- `service.binary_path`
+- `service.config_path`
+- `service.health_url`
+- `dependencies.server_tls.cert_file`
+- `dependencies.server_tls.key_file`
+- `dependencies.server_tls.client_ca_file`
+- `dependencies.signer.material_location`
+- `dependencies.runtime_trust.material_location`
+- `dependencies.publication.material_location`
+- `dependencies.local_state_paths`
+- `dependencies.log_sink`
+- `ownership_model.account.group_members`
+- `ownership_model.config_file`
+- `ownership_model.tls_directory`
+- `ownership_model.tls_files`
+- `ownership_model.runtime_state`
+- `ownership_model.systemd_dropin`
+- `validation.local_egs_health`
+- `validation.local_ags_health`
+- `validation.local_ags_publish_probe`
+- `validation.local_es_health`
+- `validation.local_es_contract_probe`
+- `validation.service_account_narrowness`
+- `validation.service_account_narrowness.group_members`
+- `validation.service_account_narrowness.unexpected_group_members`
+- `validation.ownership`
+- `validation.ags_service_posture`
+- `validation.ars_service_posture`
+- `validation.es_service_posture`
+- `preserved_remote_path.egs_loopback_only`
+- `preserved_remote_path.direct_https_mtls`
+- `preserved_remote_path.no_bridge`
+- `preserved_remote_path.no_shared_filesystem`
+- `security.ds_not_in_docker_group`
+- `security.passwordless_sudo_for_ds`
+- `security.shared_unix_account_model_introduced`
+- `not_claimed.es_de_root`
+- `not_claimed.es_public_contract_changes`
+- `not_claimed.spire_selector_model_changes`
+- `not_claimed.new_remote_happy_path_proof`
+
+For this EGS host-local summary, the preserved-remote/security facts above are
+not all the same kind of evidence:
+
+- `validation.service_account_narrowness` must prove the `egs` account remains
+  narrow for this slice before the summary may describe it as dedicated. At
+  minimum that proof requires primary group `egs`, no supplementary groups, and
+  no unexpected extra members in the `egs` group itself.
+- `validation.service_account_narrowness` must record the actual primary group,
+  supplementary groups, and effective `egs` group members seen by the helper.
+- `preserved_remote_path.direct_https_mtls` must be an inference record
+  derived from current AGS/ES host config plus the host-local HTTPS+mTLS
+  probes. It is not a Mac-side reachability proof.
+- `preserved_remote_path.no_bridge` and
+  `preserved_remote_path.no_shared_filesystem` must be explicit operator
+  assertion records unless a future slice adds proof inputs that can validate
+  them directly.
+- `security.shared_unix_account_model_introduced` must be derived from
+  `validation.service_account_narrowness`. It must not report `false` unless
+  the helper has proved the EGS account remained narrow for this slice.
+
+That summary must record only bounded safe evidence such as:
+
+- the EGS service user/group and EGS config/TLS ownership model
+- the exact EGS binary, config, TLS, and signer/runtime-trust/publication
+  material locations EGS needs
+- the explicit fact that EGS has no dedicated writable state in this slice
+- EGS local `/health`, AGS local `/health`, focused AGS publish-probe, ES local
+  `/health`, and ES local `GET /v1/executions:contract` results after the
+  change
+- the preserved direct HTTPS/mTLS, no-bridge, and no-shared-filesystem facts
+- explicit non-claim vocabulary for ES de-root, ES public-contract changes,
+  SPIRE selector-model changes, and new happy-path proof claims
+
+That summary and any derivative artifacts accepted as evidence for this step
+must not persist:
+
+- signer private-key bytes
+- TLS private-key PEM bodies
+- JWT-SVIDs
+- Vault tokens
+- API keys
+- private keys
+- raw secret payloads
+- raw retained-result bundles
+
+The active repo-derived EGS service inputs for that EGS step remain:
+
+- service name `egs`
+- service user `egs`
+- service group `egs`
+- binary path `/usr/local/lib/execution-substrate/bin/egs`
+- config path `/etc/execution-substrate/egs.json`
+- healthcheck env path `/etc/execution-substrate/healthcheck.env`
+- EGS bind `https://127.0.0.1:8443`
+- current source server cert `/etc/execution-substrate/tls/egs-server-cert.pem`
+- current source server key `/etc/execution-substrate/tls/egs-server-key.pem`
+- current source client CA / runtime root CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- dedicated EGS-readable TLS dir `/etc/execution-substrate/egs-tls`
+- EGS-readable server cert `/etc/execution-substrate/egs-tls/egs-server-cert.pem`
+- EGS-readable server key `/etc/execution-substrate/egs-tls/egs-server-key.pem`
+- EGS-readable client CA / runtime root CA `/etc/execution-substrate/egs-tls/runtime-ca.pem`
+- signer material location `/etc/execution-substrate/egs.json`
+- runtime-trust policy location `/etc/execution-substrate/egs.json`
+- publication metadata location `/etc/execution-substrate/egs.json`
+- no EGS-local writable state paths
+- systemd unit path `/etc/systemd/system/egs.service`
+- systemd drop-in dir `/etc/systemd/system/egs.service.d`
+- systemd drop-in path `/etc/systemd/system/egs.service.d/10-account.conf`
+
+## Remote ES Config/TLS Ownership Prep Slice
+
+Remote Supported-Host Alpha may also apply one separate ES config/TLS
+ownership prep slice without changing the live ES service user.
+
+This slice is intentionally limited to:
+
+- introducing dedicated ES-readable config ownership plus a dedicated
+  ES-readable TLS directory for the current ES runtime config
+- preserving the current direct HTTPS/mTLS ES `/health` and
+  `GET /v1/executions:contract` path
+- preserving the current AGS, ARS, and EGS service postures
+- preserving the current SPIRE selector posture, SPIRE socket traversal, and
+  Vault/runtime-helper semantics
+- preserving the current Nomad task user model
+- leaving ES staging and retained-results ownership untouched
+- recording one non-secret host-local summary for the prep step
+- leaving `es.service` in its current `root(default)` posture for this slice
+- preserving the current no-bridge and no-shared-filesystem remote path facts
+
+This slice is a `Bounded slice rule` on host-local ES-readable ownership only.
+Its defining `Temporary compatibility edge` is that live `es.service` remains
+`root(default)` while dedicated `root:es` readable config/TLS material is
+prepared for a later ES de-root slice.
+
+The repo-owned host-local prep command for that slice is:
+
+- `sudo scripts/remote_alpha_prepare_es_config_tls.sh`
+
+That command must be run as root because the current live Alpha posture keeps
+ES config and the current shared TLS material root-owned before the slice is
+applied, and `ds` must still not rely on passwordless sudo for this path.
+
+If the target host already has an `es` user/group, the helper must prove that
+the pre-existing prep account is still acceptably narrow for this slice before
+it is reused. At minimum, that check must confirm primary group `es` and no
+supplementary groups; otherwise the helper must fail instead of silently
+claiming a dedicated narrow account/group.
+
+For this sealed ES config/TLS prep slice, the host-local helper must not
+accept `REMOTE_ALPHA_SERVICE_NAME`, `REMOTE_ALPHA_PREP_USER`,
+`REMOTE_ALPHA_PREP_GROUP`, `REMOTE_ALPHA_BINARY_PATH`,
+`REMOTE_ALPHA_CONFIG_PATH`, `REMOTE_ALPHA_HEALTHCHECK_ENV_PATH`,
+`REMOTE_ALPHA_SERVICE_UNIT_PATH`, `--service-name`, `--prep-user`,
+`--prep-group`, `--binary-path`, `--config-path`,
+`--healthcheck-env-path`, or `--service-unit-path` as mutable inputs. The
+helper must fail fast instead of silently retargeting the ES prep step away
+from the repo-owned ES posture. Only `--summary-path` and
+`REMOTE_ALPHA_SUMMARY_PATH` may vary for output placement.
+
+The summary schema for that host-local prep record is:
+
+- `execution-substrate.remote-alpha.es-config-tls-prep-summary.v1`
+
+The current host-local non-secret evidence summary for that ES prep step is:
+
+- `/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`
+
+It is a host-local ownership-prep record for the ES config/TLS prep slice, not
+a new happy-path proof and not an ES lifecycle, readiness, runtime-profile, or
+producer-contract surface.
+
+Required summary fields for
+`execution-substrate.remote-alpha.es-config-tls-prep-summary.v1` are:
+
+- `schema_version`
+- `checked_at`
+- `slice.classification`
+- `slice.not_a_new_happy_path_proof`
+- `slice.temporary_compatibility_edge`
+- `service.name`
+- `service.live_user`
+- `service.live_group`
+- `service.binary_path`
+- `service.config_path`
+- `service.health_url`
+- `service.contract_url`
+- `dependencies.server_tls.cert_file`
+- `dependencies.server_tls.key_file`
+- `dependencies.server_tls.client_ca_file`
+- `dependencies.artifact_registry.base_url`
+- `dependencies.artifact_registry.client_cert_file`
+- `dependencies.artifact_registry.client_key_file`
+- `dependencies.artifact_registry.root_ca_file`
+- `dependencies.execution_governance.base_url`
+- `dependencies.execution_governance.client_cert_file`
+- `dependencies.execution_governance.client_key_file`
+- `dependencies.execution_governance.root_ca_file`
+- `dependencies.local_state_paths`
+- `dependencies.log_sink`
+- `ownership_model.prep_account`
+- `ownership_model.config_file`
+- `ownership_model.tls_directory`
+- `ownership_model.tls_files`
+- `ownership_model.live_service_posture`
+- `ownership_model.writable_state`
+- `validation.local_es_health`
+- `validation.local_es_contract_probe`
+- `validation.prep_account_narrowness`
+- `validation.ownership`
+- `validation.config_rewrite_scope`
+- `validation.ags_service_posture`
+- `validation.ars_service_posture`
+- `validation.egs_service_posture`
+- `validation.es_service_posture`
+- `preserved_remote_path.direct_https_mtls`
+- `preserved_remote_path.no_bridge`
+- `preserved_remote_path.no_shared_filesystem`
+- `security.ds_not_in_docker_group`
+- `security.passwordless_sudo_for_ds`
+- `security.shared_unix_account_model_introduced`
+- `not_claimed.es_de_root`
+- `not_claimed.es_public_contract_changes`
+- `not_claimed.spire_selector_model_changes`
+- `not_claimed.spire_socket_traversal_changes`
+- `not_claimed.nomad_task_user_model_changes`
+- `not_claimed.vault_runtime_helper_changes`
+- `not_claimed.staging_or_results_ownership_changes`
+- `not_claimed.new_remote_happy_path_proof`
+
+For this ES host-local summary, the preserved-remote/security facts above are
+not all the same kind of evidence:
+
+- `validation.prep_account_narrowness` must prove the `es` prep account
+  remains narrow for this slice before the summary may describe it as
+  dedicated. At minimum that proof requires primary group `es` and no
+  supplementary groups.
+- `validation.config_rewrite_scope` must prove that only ES config/TLS path
+  fields changed and that `execution.staging_root_dir`,
+  `execution.results_root_dir`, and
+  `execution.spire_workload_api_socket_path` remained unchanged.
+- `validation.es_service_posture` must show the live service still runs as
+  `root(default)` after the prep apply.
+- `preserved_remote_path.direct_https_mtls` must be an inference record
+  derived from current ES host config plus the host-local HTTPS+mTLS probes. It
+  is not a Mac-side reachability proof.
+- `preserved_remote_path.no_bridge` and
+  `preserved_remote_path.no_shared_filesystem` must be explicit operator
+  assertion records unless a future slice adds proof inputs that can validate
+  them directly.
+- `security.shared_unix_account_model_introduced` must be derived from
+  `validation.prep_account_narrowness`. It must not report `false` unless the
+  helper has proved the dedicated `es` prep account remained narrow for this
+  slice.
+
+That summary must record only bounded safe evidence such as:
+
+- the live ES service posture plus the dedicated ES config/TLS ownership model
+- the exact ES binary, config, TLS, ARS dependency, and EGS dependency file
+  paths ES needs after the prep apply
+- the explicit fact that ES staging/results ownership stayed unchanged in this
+  slice
+- ES local `/health` and local `GET /v1/executions:contract` results after the
+  change
+- the preserved direct HTTPS/mTLS, no-bridge, and no-shared-filesystem facts
+- explicit non-claim vocabulary for ES de-root, ES public-contract changes,
+  SPIRE selector-model changes, SPIRE socket traversal changes, Nomad task
+  user-model changes, Vault/runtime-helper changes, staging/results ownership
+  changes, and new happy-path proof claims
+
+That summary and any derivative artifacts accepted as evidence for this step
+must not persist:
+
+- TLS private-key PEM bodies
+- client cert private keys
+- JWT-SVIDs
+- Vault tokens
+- API keys
+- private keys
+- raw secret payloads
+- raw retained-result bundles
+
+The active repo-derived ES service inputs for that ES prep step remain:
+
+- service name `es`
+- prep account user `es`
+- prep account group `es`
+- binary path `/usr/local/lib/execution-substrate/bin/es`
+- config path `/etc/execution-substrate/es.json`
+- healthcheck env path `/etc/execution-substrate/healthcheck.env`
+- current source server cert `/etc/execution-substrate/tls/es-server-cert.pem`
+- current source server key `/etc/execution-substrate/tls/es-server-key.pem`
+- current source client CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- current source ARS client cert `/etc/execution-substrate/tls/es-client-cert.pem`
+- current source ARS client key `/etc/execution-substrate/tls/es-client-key.pem`
+- current source ARS root CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- current source EGS client cert `/etc/execution-substrate/tls/es-client-cert.pem`
+- current source EGS client key `/etc/execution-substrate/tls/es-client-key.pem`
+- current source EGS root CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- dedicated ES-readable TLS dir `/etc/execution-substrate/es-tls`
+- ES-readable server cert `/etc/execution-substrate/es-tls/es-server-cert.pem`
+- ES-readable server key `/etc/execution-substrate/es-tls/es-server-key.pem`
+- ES-readable server client CA `/etc/execution-substrate/es-tls/server-client-ca.pem`
+- ES-readable ARS client cert `/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`
+- ES-readable ARS client key `/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`
+- ES-readable ARS root CA `/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`
+- ES-readable EGS client cert `/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`
+- ES-readable EGS client key `/etc/execution-substrate/es-tls/execution-governance-client-key.pem`
+- ES-readable EGS root CA `/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`
+- the current `execution.staging_root_dir`, `execution.results_root_dir`, and
+  `execution.spire_workload_api_socket_path` remain whatever
+  `/etc/execution-substrate/es.json` already carries; this slice must not move
+  or re-own them
+- systemd unit path `/etc/systemd/system/es.service`
 
 ## Remote Vault/Workload-Auth Slice
 
