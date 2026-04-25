@@ -122,6 +122,17 @@ esac
 `)
 }
 
+func agsHardeningExpectedSliceShell(binaryPath, configPath, healthcheckEnvPath, unitPath, dropInDir, dropInPath string) string {
+	return fmt.Sprintf(`
+remote_alpha_ags_hardening_expected_binary_path=%q
+remote_alpha_ags_hardening_expected_config_path=%q
+remote_alpha_ags_hardening_expected_healthcheck_env_path=%q
+remote_alpha_ags_hardening_expected_service_unit_path=%q
+remote_alpha_ags_hardening_expected_service_dropin_dir=%q
+remote_alpha_ags_hardening_expected_service_dropin_path=%q
+`, binaryPath, configPath, healthcheckEnvPath, unitPath, dropInDir, dropInPath)
+}
+
 func TestRemoteAlphaAGSHardeningPassWritesSummaryAndDropIn(t *testing.T) {
 	t.Parallel()
 
@@ -177,23 +188,23 @@ func TestRemoteAlphaAGSHardeningPassWritesSummaryAndDropIn(t *testing.T) {
   }
 }
 `,
-			filepath.Join(tlsDir, "ags-server-cert.pem"),
-			filepath.Join(tlsDir, "ags-server-key.pem"),
-			filepath.Join(tlsDir, "combined-service-ca-bundle.pem"),
-			filepath.Join(tlsDir, "ags-client-cert.pem"),
-			filepath.Join(tlsDir, "ags-client-key.pem"),
-			filepath.Join(tlsDir, "runtime-ca.pem"),
-		)), 0o600); err != nil {
+		filepath.Join(tlsDir, "ags-server-cert.pem"),
+		filepath.Join(tlsDir, "ags-server-key.pem"),
+		filepath.Join(tlsDir, "combined-service-ca-bundle.pem"),
+		filepath.Join(tlsDir, "ags-client-cert.pem"),
+		filepath.Join(tlsDir, "ags-client-key.pem"),
+		filepath.Join(tlsDir, "runtime-ca.pem"),
+	)), 0o600); err != nil {
 		t.Fatalf("write ags config: %v", err)
 	}
 
 	healthcheckEnvPath := filepath.Join(tmpDir, "healthcheck.env")
 	if err := os.WriteFile(healthcheckEnvPath, []byte(strings.Join([]string{
-			"CA_CERT=" + filepath.Join(tlsDir, "combined-service-ca-bundle.pem"),
-			"OPERATOR_CERT=" + filepath.Join(tlsDir, "operator-client-cert.pem"),
-			"OPERATOR_KEY=" + filepath.Join(tlsDir, "operator-client-key.pem"),
-			"",
-		}, "\n")), 0o600); err != nil {
+		"CA_CERT=" + filepath.Join(tlsDir, "combined-service-ca-bundle.pem"),
+		"OPERATOR_CERT=" + filepath.Join(tlsDir, "operator-client-cert.pem"),
+		"OPERATOR_KEY=" + filepath.Join(tlsDir, "operator-client-key.pem"),
+		"",
+	}, "\n")), 0o600); err != nil {
 		t.Fatalf("write healthcheck env: %v", err)
 	}
 
@@ -214,15 +225,9 @@ ExecStart=%s -config %s
 	setupFakeAGSHardeningCommands(t, fakeBin, unitPath, configPath, binaryPath)
 
 	output, err := runSourcedAGSHardeningHelper(t, envWithPath(fakeBin,
-		"REMOTE_ALPHA_BINARY_PATH="+binaryPath,
-		"REMOTE_ALPHA_CONFIG_PATH="+configPath,
-		"REMOTE_ALPHA_HEALTHCHECK_ENV_PATH="+healthcheckEnvPath,
-		"REMOTE_ALPHA_SERVICE_UNIT_PATH="+unitPath,
-		"REMOTE_ALPHA_SERVICE_DROPIN_DIR="+dropInDir,
-		"REMOTE_ALPHA_SERVICE_DROPIN_PATH="+dropInPath,
 		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
 		"REMOTE_ALPHA_TEST_PASSWORDLESS_SUDO_FOR_DS=false",
-	), "remote_alpha_ags_hardening_main")
+	), agsHardeningExpectedSliceShell(binaryPath, configPath, healthcheckEnvPath, unitPath, dropInDir, dropInPath)+"remote_alpha_ags_hardening_main")
 	if err != nil {
 		t.Fatalf("AGS hardening helper failed: %v\n%s", err, output)
 	}
@@ -324,6 +329,160 @@ ExecStart=%s -config %s
 	}
 	if got := notClaimed["spire_selector_model_changes"]; got != "not_claimed" {
 		t.Fatalf("unexpected spire selector claim %v", got)
+	}
+}
+
+func TestRemoteAlphaAGSHardeningRejectsSliceOverrideEnv(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		env     string
+		snippet string
+	}{
+		{
+			name:    "service name",
+			env:     "REMOTE_ALPHA_SERVICE_NAME=es",
+			snippet: "REMOTE_ALPHA_SERVICE_NAME",
+		},
+		{
+			name:    "service user",
+			env:     "REMOTE_ALPHA_SERVICE_USER=root",
+			snippet: "REMOTE_ALPHA_SERVICE_USER",
+		},
+		{
+			name:    "service group",
+			env:     "REMOTE_ALPHA_SERVICE_GROUP=root",
+			snippet: "REMOTE_ALPHA_SERVICE_GROUP",
+		},
+		{
+			name:    "binary path",
+			env:     "REMOTE_ALPHA_BINARY_PATH=/tmp/not-ags",
+			snippet: "REMOTE_ALPHA_BINARY_PATH",
+		},
+		{
+			name:    "config path",
+			env:     "REMOTE_ALPHA_CONFIG_PATH=/tmp/not-ags.json",
+			snippet: "REMOTE_ALPHA_CONFIG_PATH",
+		},
+		{
+			name:    "healthcheck env path",
+			env:     "REMOTE_ALPHA_HEALTHCHECK_ENV_PATH=/tmp/not-healthcheck.env",
+			snippet: "REMOTE_ALPHA_HEALTHCHECK_ENV_PATH",
+		},
+		{
+			name:    "service unit path",
+			env:     "REMOTE_ALPHA_SERVICE_UNIT_PATH=/tmp/not-ags.service",
+			snippet: "REMOTE_ALPHA_SERVICE_UNIT_PATH",
+		},
+		{
+			name:    "service dropin dir",
+			env:     "REMOTE_ALPHA_SERVICE_DROPIN_DIR=/tmp/not-ags.service.d",
+			snippet: "REMOTE_ALPHA_SERVICE_DROPIN_DIR",
+		},
+		{
+			name:    "service dropin path",
+			env:     "REMOTE_ALPHA_SERVICE_DROPIN_PATH=/tmp/not-ags.service.d/50-not-ags.conf",
+			snippet: "REMOTE_ALPHA_SERVICE_DROPIN_PATH",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tmpDir := t.TempDir()
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+
+			output, err := runSourcedAGSHardeningHelper(t, envWithPath(fakeBin, tc.env), "remote_alpha_ags_hardening_main")
+			if err == nil {
+				t.Fatalf("expected slice override rejection for %s, got success\n%s", tc.name, output)
+			}
+			if !strings.Contains(string(output), tc.snippet) {
+				t.Fatalf("expected output to mention %q, got %q", tc.snippet, output)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaAGSHardeningRejectsSliceOverrideFlags(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		body    string
+		snippet string
+	}{
+		{
+			name:    "service name",
+			body:    "remote_alpha_ags_hardening_main --service-name es",
+			snippet: "--service-name",
+		},
+		{
+			name:    "service user",
+			body:    "remote_alpha_ags_hardening_main --service-user root",
+			snippet: "--service-user",
+		},
+		{
+			name:    "service group",
+			body:    "remote_alpha_ags_hardening_main --service-group root",
+			snippet: "--service-group",
+		},
+		{
+			name:    "binary path",
+			body:    "remote_alpha_ags_hardening_main --binary-path /tmp/not-ags",
+			snippet: "--binary-path",
+		},
+		{
+			name:    "config path",
+			body:    "remote_alpha_ags_hardening_main --config-path /tmp/not-ags.json",
+			snippet: "--config-path",
+		},
+		{
+			name:    "healthcheck env path",
+			body:    "remote_alpha_ags_hardening_main --healthcheck-env-path /tmp/not-healthcheck.env",
+			snippet: "--healthcheck-env-path",
+		},
+		{
+			name:    "service unit path",
+			body:    "remote_alpha_ags_hardening_main --service-unit-path /tmp/not-ags.service",
+			snippet: "--service-unit-path",
+		},
+		{
+			name:    "service dropin dir",
+			body:    "remote_alpha_ags_hardening_main --service-dropin-dir /tmp/not-ags.service.d",
+			snippet: "--service-dropin-dir",
+		},
+		{
+			name:    "service dropin path",
+			body:    "remote_alpha_ags_hardening_main --service-dropin-path /tmp/not-ags.service.d/50-not-ags.conf",
+			snippet: "--service-dropin-path",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tmpDir := t.TempDir()
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+
+			output, err := runSourcedAGSHardeningHelper(t, envWithPath(fakeBin), tc.body)
+			if err == nil {
+				t.Fatalf("expected slice flag rejection for %s, got success\n%s", tc.name, output)
+			}
+			if !strings.Contains(string(output), tc.snippet) {
+				t.Fatalf("expected output to mention %q, got %q", tc.snippet, output)
+			}
+		})
 	}
 }
 

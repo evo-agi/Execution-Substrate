@@ -5,18 +5,60 @@ fi
 
 remote_alpha_ags_hardening_summary_schema_version="execution-substrate.remote-alpha.ags-service-hardening-summary.v1"
 
+remote_alpha_ags_hardening_init_expected_slice_inputs() {
+  remote_alpha_ags_hardening_expected_service_name="${remote_alpha_ags_hardening_expected_service_name:-ags}"
+  remote_alpha_ags_hardening_expected_service_user="${remote_alpha_ags_hardening_expected_service_user:-ags}"
+  remote_alpha_ags_hardening_expected_service_group="${remote_alpha_ags_hardening_expected_service_group:-ags}"
+  remote_alpha_ags_hardening_expected_binary_path="${remote_alpha_ags_hardening_expected_binary_path:-/usr/local/lib/execution-substrate/bin/ags}"
+  remote_alpha_ags_hardening_expected_config_path="${remote_alpha_ags_hardening_expected_config_path:-/etc/execution-substrate/ags.json}"
+  remote_alpha_ags_hardening_expected_healthcheck_env_path="${remote_alpha_ags_hardening_expected_healthcheck_env_path:-/etc/execution-substrate/healthcheck.env}"
+  remote_alpha_ags_hardening_expected_service_unit_path="${remote_alpha_ags_hardening_expected_service_unit_path:-/etc/systemd/system/ags.service}"
+  remote_alpha_ags_hardening_expected_service_dropin_dir="${remote_alpha_ags_hardening_expected_service_dropin_dir:-/etc/systemd/system/ags.service.d}"
+  remote_alpha_ags_hardening_expected_service_dropin_path="${remote_alpha_ags_hardening_expected_service_dropin_path:-/etc/systemd/system/ags.service.d/10-account.conf}"
+}
+
 remote_alpha_ags_hardening_defaults() {
-  REMOTE_ALPHA_SERVICE_NAME="${REMOTE_ALPHA_SERVICE_NAME:-ags}"
-  REMOTE_ALPHA_SERVICE_USER="${REMOTE_ALPHA_SERVICE_USER:-ags}"
-  REMOTE_ALPHA_SERVICE_GROUP="${REMOTE_ALPHA_SERVICE_GROUP:-ags}"
-  REMOTE_ALPHA_BINARY_PATH="${REMOTE_ALPHA_BINARY_PATH:-/usr/local/lib/execution-substrate/bin/ags}"
-  REMOTE_ALPHA_CONFIG_PATH="${REMOTE_ALPHA_CONFIG_PATH:-/etc/execution-substrate/ags.json}"
-  REMOTE_ALPHA_HEALTHCHECK_ENV_PATH="${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH:-/etc/execution-substrate/healthcheck.env}"
-  REMOTE_ALPHA_SERVICE_UNIT_PATH="${REMOTE_ALPHA_SERVICE_UNIT_PATH:-/etc/systemd/system/ags.service}"
-  REMOTE_ALPHA_SERVICE_DROPIN_DIR="${REMOTE_ALPHA_SERVICE_DROPIN_DIR:-/etc/systemd/system/ags.service.d}"
-  REMOTE_ALPHA_SERVICE_DROPIN_PATH="${REMOTE_ALPHA_SERVICE_DROPIN_PATH:-/etc/systemd/system/ags.service.d/10-account.conf}"
+  remote_alpha_ags_hardening_init_expected_slice_inputs
+  REMOTE_ALPHA_SERVICE_NAME="${remote_alpha_ags_hardening_expected_service_name}"
+  REMOTE_ALPHA_SERVICE_USER="${remote_alpha_ags_hardening_expected_service_user}"
+  REMOTE_ALPHA_SERVICE_GROUP="${remote_alpha_ags_hardening_expected_service_group}"
+  REMOTE_ALPHA_BINARY_PATH="${remote_alpha_ags_hardening_expected_binary_path}"
+  REMOTE_ALPHA_CONFIG_PATH="${remote_alpha_ags_hardening_expected_config_path}"
+  REMOTE_ALPHA_HEALTHCHECK_ENV_PATH="${remote_alpha_ags_hardening_expected_healthcheck_env_path}"
+  REMOTE_ALPHA_SERVICE_UNIT_PATH="${remote_alpha_ags_hardening_expected_service_unit_path}"
+  REMOTE_ALPHA_SERVICE_DROPIN_DIR="${remote_alpha_ags_hardening_expected_service_dropin_dir}"
+  REMOTE_ALPHA_SERVICE_DROPIN_PATH="${remote_alpha_ags_hardening_expected_service_dropin_path}"
   REMOTE_ALPHA_SUMMARY_PATH="${REMOTE_ALPHA_SUMMARY_PATH:-/var/tmp/execution-substrate-remote-alpha/ags-service-hardening-summary.json}"
   REMOTE_ALPHA_SUMMARY_DIR="$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+}
+
+remote_alpha_ags_hardening_reject_slice_override_env() {
+  local name=$1
+  local expected=$2
+  local actual=""
+
+  actual="$(printenv "${name}" 2>/dev/null || true)"
+  if [[ -z "${actual}" ]]; then
+    return 0
+  fi
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf 'remote alpha AGS hardening does not accept %s override for this sealed AGS step within the current AGS sealed + ARS de-root tranche; expected repo-owned value %q (got %q)\n' "${name}" "${expected}" "${actual}" >&2
+    return 1
+  fi
+  return 0
+}
+
+remote_alpha_ags_hardening_require_pinned_slice_inputs() {
+  remote_alpha_ags_hardening_init_expected_slice_inputs
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_NAME" "${remote_alpha_ags_hardening_expected_service_name}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_USER" "${remote_alpha_ags_hardening_expected_service_user}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_GROUP" "${remote_alpha_ags_hardening_expected_service_group}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_BINARY_PATH" "${remote_alpha_ags_hardening_expected_binary_path}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_CONFIG_PATH" "${remote_alpha_ags_hardening_expected_config_path}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_HEALTHCHECK_ENV_PATH" "${remote_alpha_ags_hardening_expected_healthcheck_env_path}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_UNIT_PATH" "${remote_alpha_ags_hardening_expected_service_unit_path}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_DROPIN_DIR" "${remote_alpha_ags_hardening_expected_service_dropin_dir}" || return 1
+  remote_alpha_ags_hardening_reject_slice_override_env "REMOTE_ALPHA_SERVICE_DROPIN_PATH" "${remote_alpha_ags_hardening_expected_service_dropin_path}" || return 1
 }
 
 remote_alpha_ags_hardening_usage() {
@@ -33,6 +75,42 @@ EOF
 remote_alpha_ags_hardening_parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --service-name)
+        echo "remote alpha AGS hardening does not accept --service-name for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --service-user)
+        echo "remote alpha AGS hardening does not accept --service-user for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --service-group)
+        echo "remote alpha AGS hardening does not accept --service-group for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --binary-path)
+        echo "remote alpha AGS hardening does not accept --binary-path for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --config-path)
+        echo "remote alpha AGS hardening does not accept --config-path for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --healthcheck-env-path)
+        echo "remote alpha AGS hardening does not accept --healthcheck-env-path for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --service-unit-path)
+        echo "remote alpha AGS hardening does not accept --service-unit-path for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --service-dropin-dir)
+        echo "remote alpha AGS hardening does not accept --service-dropin-dir for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
+      --service-dropin-path)
+        echo "remote alpha AGS hardening does not accept --service-dropin-path for this sealed AGS step within the current AGS sealed + ARS de-root tranche" >&2
+        return 2
+        ;;
       --summary-path)
         REMOTE_ALPHA_SUMMARY_PATH="$2"
         REMOTE_ALPHA_SUMMARY_DIR="$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
@@ -547,8 +625,9 @@ import json
 import pathlib
 import sys
 
-# Use a host-local-specific probe identity so this AGS-only hardening slice
-# does not collide with the existing Mac-side control-plane publish probe.
+# Use a host-local-specific probe identity so this landed AGS seal step in the
+# current hardening tranche does not collide with the existing Mac-side
+# control-plane publish probe.
 payload = b'#!/bin/sh\necho remote-alpha-ags-publish-probe-host-local\n'
 build_log = b'remote-alpha-ags-publish-probe-host-local\n'
 
@@ -817,6 +896,7 @@ remote_alpha_ags_hardening_main() {
   local passwordless_sudo_for_ds=""
   local overall_ok=true
 
+  remote_alpha_ags_hardening_require_pinned_slice_inputs || return 1
   remote_alpha_ags_hardening_defaults
   remote_alpha_ags_hardening_parse_args "$@" || return $?
   remote_alpha_ags_hardening_require_root || return 1

@@ -58,6 +58,25 @@ Current bounded implementation status:
 - The supported-local proof realization for that profile now uses a repo-owned deterministic proof Codex shim at the configured `EXEC_CODEX_CLI_PATH`, invokes it through the bounded normal-shell profile path, proves workload-side Vault credential acquisition, creates a deterministic workspace mutation and runner-style artifacts, fetches the retained ES result bundle, and validates the expected proof artifacts without depending on a live upstream Codex service.
 - Remote Supported-Host Alpha may now extend the narrower helper-install proof with a separate host-local Vault/workload-auth proof slice: install a single-node Alpha/internal Vault system service on the remote Linux host, constrain it to the helper SPIFFE identity JWT path needed by future ES runtime identity, and record only non-secret host evidence without claiming `runtime_profile_ready`, `submit_ready`, `es_services_healthy`, `producer_contract_compatible`, or retained-result readiness.
 
+## Current Remote Alpha Hardening Tranche
+
+`Bounded slice rule`: the current Remote Supported-Host Alpha service hardening
+tranche is `AGS sealed + ARS de-root`.
+
+- AGS is already de-rooted and sealed in this tranche; preserve the landed
+  `ags:ags` service posture and its existing host-local summary/evidence shape.
+- ARS is the only service being moved off root in this tranche.
+- This tranche must not move EGS or ES off root.
+- This tranche must not change ES public contracts, the current SPIRE selector
+  posture, or Control Plane/Infrastructure Manager ownership boundaries.
+- This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
+  current ARS loopback-only dependency path, and the no-bridge/no-shared-
+  filesystem remote posture.
+- This tranche is bounded host/service hardening only. Do not widen it into a
+  new hardening tranche or broader proof expansion; rerun only the small
+  verification needed to validate the ARS host-side apply and refresh the
+  non-secret summary.
+
 ## Current Planning Objective
 
 The repository is no longer in rewrite-by-default mode.

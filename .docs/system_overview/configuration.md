@@ -435,11 +435,22 @@ On the current Remote Supported-Host Alpha helper proof slice, that `0:0` helper
 
 Useful credential flow is now also proved on top of that slice: one workload uses `EXEC_WORKLOAD_IDENTITY_ENDPOINT` to fetch a bounded real SPIRE-backed JWT-SVID for `workload_vault`, performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target using the proof Vault CA bundle carried through the workload-zone runtime config, and reads one secret without reintroducing workload-authored identity bridging or platform-owned Vault token brokerage.
 
-For the separate Remote Supported-Host Alpha AGS service-account hardening
-slice, the active repo-derived AGS runtime inputs remain:
+For the current Remote Supported-Host Alpha service hardening tranche, scoped
+honestly as `AGS sealed + ARS de-root`:
+
+- AGS is already de-rooted and sealed.
+- ARS is the only service being moved off root in this tranche.
+- EGS and ES remain on root in this tranche.
+- ES public contracts, the current SPIRE selector posture, current Control
+  Plane/Infrastructure Manager ownership boundaries, and the direct
+  no-bridge/no-shared-filesystem remote path facts remain unchanged.
+
+For the landed AGS seal step within that current tranche, the active
+repo-derived AGS runtime inputs remain:
 
 - binary path `/usr/local/lib/execution-substrate/bin/ags`
 - config path `/etc/execution-substrate/ags.json`
+- healthcheck env path `/etc/execution-substrate/healthcheck.env`
 - AGS bind `https://192.168.1.156:8444`
 - AGS server cert `/etc/execution-substrate/tls/ags-server-cert.pem`
 - AGS server key `/etc/execution-substrate/tls/ags-server-key.pem`
@@ -451,11 +462,14 @@ slice, the active repo-derived AGS runtime inputs remain:
 - signer material location `/etc/execution-substrate/ags.json`
 - no AGS-local state directory
 - journald/stdout logging only
+- systemd unit path `/etc/systemd/system/ags.service`
+- systemd drop-in dir `/etc/systemd/system/ags.service.d`
+- systemd drop-in path `/etc/systemd/system/ags.service.d/10-account.conf`
 - ARS as the only AGS runtime dependency in this slice
 - no EGS dependency on the AGS runtime path
 - no ES dependency on the AGS runtime path
 
-The repo-owned host-local AGS-only hardening command for that slice is
+The repo-owned host-local hardening command for that landed AGS step is
 `scripts/remote_alpha_harden_ags_service.sh`. It must be run as root,
 typically through `sudo`, because the live Alpha posture keeps AGS config and
 TLS material root-owned before the slice is applied and `ds` must still not
@@ -466,6 +480,19 @@ That hardening command must reconfigure only `ags.service` to run as dedicated
 must not change ES public contracts, must not change the SPIRE selector model,
 and must leave `ars.service`, `egs.service`, and `es.service` in their current
 posture for this slice.
+
+For this sealed AGS step within the current hardening tranche, the host-local
+hardening helper must not accept `REMOTE_ALPHA_SERVICE_NAME`,
+`REMOTE_ALPHA_SERVICE_USER`, `REMOTE_ALPHA_SERVICE_GROUP`,
+`REMOTE_ALPHA_BINARY_PATH`, `REMOTE_ALPHA_CONFIG_PATH`,
+`REMOTE_ALPHA_HEALTHCHECK_ENV_PATH`, `REMOTE_ALPHA_SERVICE_UNIT_PATH`,
+`REMOTE_ALPHA_SERVICE_DROPIN_DIR`, `REMOTE_ALPHA_SERVICE_DROPIN_PATH`,
+`--service-name`, `--service-user`, `--service-group`, `--binary-path`,
+`--config-path`, `--healthcheck-env-path`, `--service-unit-path`,
+`--service-dropin-dir`, or `--service-dropin-path` as mutable inputs. The
+helper must fail fast instead of silently retargeting the landed AGS step away
+from the repo-owned AGS service posture. Only `--summary-path` and
+`REMOTE_ALPHA_SUMMARY_PATH` may vary for output placement.
 
 The AGS-readable ownership model for that slice is:
 
@@ -487,7 +514,7 @@ The host-local summary for that slice is
 `execution-substrate.remote-alpha.ags-service-hardening-summary.v1` at
 `/var/tmp/execution-substrate-remote-alpha/ags-service-hardening-summary.json`.
 It is a hardening slice record, not a new happy-path proof. It must record the
-AGS service user, AGS-only ownership model, preserved direct HTTPS/mTLS plus
+AGS service user, AGS ownership model, preserved direct HTTPS/mTLS plus
 no-bridge/no-shared-filesystem facts, local AGS health and publish-probe
 results, and explicit non-claim fields:
 
@@ -495,6 +522,96 @@ results, and explicit non-claim fields:
 - `not_claimed.submit_runtime_profile_changes`
 - `not_claimed.spire_selector_model_changes`
 - `not_claimed.new_remote_happy_path_proof`
+
+For the ARS de-root step within that same current tranche, the active
+repo-derived ARS runtime inputs remain:
+
+- binary path `/usr/local/lib/execution-substrate/bin/ars`
+- config path `/etc/execution-substrate/ars.json`
+- healthcheck env path `/etc/execution-substrate/healthcheck.env`
+- ARS bind `https://127.0.0.1:8442`
+- current source server cert `/etc/execution-substrate/tls/ars-server-cert.pem`
+- current source server key `/etc/execution-substrate/tls/ars-server-key.pem`
+- current source client CA / runtime root CA `/etc/execution-substrate/tls/runtime-ca.pem`
+- dedicated ARS-readable TLS dir `/etc/execution-substrate/ars-tls`
+- ARS-readable server cert `/etc/execution-substrate/ars-tls/ars-server-cert.pem`
+- ARS-readable server key `/etc/execution-substrate/ars-tls/ars-server-key.pem`
+- ARS-readable client CA / runtime root CA `/etc/execution-substrate/ars-tls/runtime-ca.pem`
+- blob storage root `/var/lib/execution-substrate/ars/blobs`
+- index file `/var/lib/execution-substrate/ars/index.json`
+- journald/stdout logging only
+- no ARS runtime dependency on AGS, EGS, or ES
+- AGS remains the current downstream runtime dependency on ARS
+- systemd unit path `/etc/systemd/system/ars.service`
+- systemd drop-in dir `/etc/systemd/system/ars.service.d`
+- systemd drop-in path `/etc/systemd/system/ars.service.d/10-account.conf`
+
+The repo-owned host-local hardening command for that ARS de-root step is
+`scripts/remote_alpha_harden_ars_service.sh`. It must be run as root,
+typically through `sudo`, because the live Alpha posture keeps ARS config, the
+current source TLS material, and ARS writable state root-owned before the slice
+is applied and `ds` must still not rely on passwordless sudo for this path.
+
+That hardening command must reconfigure only `ars.service` to run as dedicated
+`ars:ars`, must preserve the current ARS loopback-only listener posture, must
+preserve the current AGS `ags:ags` posture plus AGS publish path through ARS,
+must not widen `/etc/execution-substrate/tls`, must not introduce a shared
+`execution-substrate` account model, must not change ES public contracts, must
+not change the SPIRE selector model, and must leave `egs.service` and
+`es.service` in their current posture for this slice.
+
+For this sealed ARS de-root step within the current hardening tranche, the
+host-local hardening helper must not accept `REMOTE_ALPHA_SERVICE_NAME`,
+`REMOTE_ALPHA_SERVICE_USER`, `REMOTE_ALPHA_SERVICE_GROUP`,
+`REMOTE_ALPHA_BINARY_PATH`, `REMOTE_ALPHA_CONFIG_PATH`,
+`REMOTE_ALPHA_HEALTHCHECK_ENV_PATH`, `REMOTE_ALPHA_SERVICE_UNIT_PATH`,
+`REMOTE_ALPHA_SERVICE_DROPIN_DIR`, `REMOTE_ALPHA_SERVICE_DROPIN_PATH`,
+`--service-name`, `--service-user`, `--service-group`, `--binary-path`,
+`--config-path`, `--healthcheck-env-path`, `--service-unit-path`,
+`--service-dropin-dir`, or `--service-dropin-path` as mutable inputs. The
+helper must fail fast instead of silently retargeting the ARS de-root step away
+from the repo-owned ARS service posture. Only `--summary-path` and
+`REMOTE_ALPHA_SUMMARY_PATH` may vary for output placement.
+
+Because the current shared `/etc/execution-substrate/tls` directory is already
+owned as `root:ags` for the landed AGS seal in the same tranche, ARS must not
+reuse that shared directory as its readable runtime TLS path. The ARS-readable
+ownership model for this step is:
+
+- config file `/etc/execution-substrate/ars.json` owned as `root:ars` mode
+  `0640`
+- dedicated TLS directory `/etc/execution-substrate/ars-tls` owned as
+  `root:ars` mode `0710`
+- ARS-readable TLS files owned as `root:ars` mode `0640`:
+  - `/etc/execution-substrate/ars-tls/ars-server-cert.pem`
+  - `/etc/execution-substrate/ars-tls/ars-server-key.pem`
+  - `/etc/execution-substrate/ars-tls/runtime-ca.pem`
+- writable state root `/var/lib/execution-substrate/ars` owned as `ars:ars`
+  mode `0750`
+- writable blob root `/var/lib/execution-substrate/ars/blobs` owned as
+  `ars:ars` mode `0750`
+- writable index file `/var/lib/execution-substrate/ars/index.json` owned as
+  `ars:ars` mode `0600`
+- a systemd drop-in or equivalent unit configuration setting `User=ars`,
+  `Group=ars`, and `UMask=0027`
+
+The host-local summary for that slice is
+`execution-substrate.remote-alpha.ars-service-hardening-summary.v1` at
+`/var/tmp/execution-substrate-remote-alpha/ars-service-hardening-summary.json`.
+It is a hardening slice record, not a new happy-path proof. It must record the
+ARS service user, ARS config/TLS/state ownership model, preserved direct
+HTTPS/mTLS plus no-bridge/no-shared-filesystem facts, local ARS health plus
+local AGS health and publish-probe results, and explicit non-claim fields:
+
+- `not_claimed.es_or_egs_hardening`
+- `not_claimed.es_public_contract_changes`
+- `not_claimed.spire_selector_model_changes`
+- `not_claimed.new_remote_happy_path_proof`
+
+That summary must not persist JWT-SVIDs, Vault tokens, TLS private-key PEM
+bodies, API keys, private keys, or secret payloads. Its output is not ES
+`/health`, not runtime-profile readiness, not submit readiness, and not a new
+happy-path proof.
 
 For the separate Remote Supported-Host Alpha host-local Vault/workload-auth
 slice, the active repo-derived workload-auth values remain:
