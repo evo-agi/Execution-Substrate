@@ -7,6 +7,7 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
 fi
 
 remote_alpha_es_config_tls_prep_summary_schema_version="execution-substrate.remote-alpha.es-config-tls-prep-summary.v1"
+remote_alpha_es_config_tls_prep_backup_root_dir_default="/var/tmp/execution-substrate-remote-alpha"
 
 remote_alpha_es_config_tls_prep_init_expected_slice_inputs() {
   remote_alpha_es_config_tls_prep_expected_service_name="${remote_alpha_es_config_tls_prep_expected_service_name:-es}"
@@ -41,6 +42,7 @@ remote_alpha_es_config_tls_prep_defaults() {
   REMOTE_ALPHA_EXECUTION_GOVERNANCE_ROOT_CA_PATH="${REMOTE_ALPHA_TLS_DIR}/execution-governance-root-ca.pem"
   REMOTE_ALPHA_SUMMARY_PATH="${REMOTE_ALPHA_SUMMARY_PATH:-/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json}"
   REMOTE_ALPHA_SUMMARY_DIR="$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
+  remote_alpha_es_config_tls_prep_backup_root_dir="${REMOTE_ALPHA_TEST_BACKUP_ROOT:-${remote_alpha_es_config_tls_prep_backup_root_dir_default}}"
 }
 
 remote_alpha_es_config_tls_prep_reject_slice_override_env() {
@@ -705,6 +707,187 @@ destination.write_bytes(source.read_bytes())
 PY
 }
 
+remote_alpha_es_config_tls_prep_backup_timestamp() {
+  if [[ -n "${REMOTE_ALPHA_TEST_BACKUP_TIMESTAMP:-}" ]]; then
+    printf '%s' "${REMOTE_ALPHA_TEST_BACKUP_TIMESTAMP}"
+    return 0
+  fi
+
+  python3 - <<'PY'
+from datetime import datetime, timezone
+
+print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+PY
+}
+
+remote_alpha_es_config_tls_prep_create_backup_snapshot() {
+  local backup_meta_path=$1
+  local source_runtime_meta_path=$2
+  local source_config_path=$3
+  local pre_service_account_meta_path=$4
+  local pre_service_meta_path=$5
+  local backup_timestamp=""
+  local backup_dir=""
+  local config_backup_path=""
+  local snapshot_manifest_path=""
+
+  backup_timestamp="$(remote_alpha_es_config_tls_prep_backup_timestamp)"
+  backup_dir="$(python3 - "${remote_alpha_es_config_tls_prep_backup_root_dir}" "${backup_timestamp}" <<'PY'
+from pathlib import Path
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+timestamp = sys.argv[2].strip()
+root.mkdir(parents=True, exist_ok=True)
+print(tempfile.mkdtemp(prefix=f"es-config-tls-prep-{timestamp}-", dir=str(root)))
+PY
+)"
+  if [[ -z "${backup_dir}" ]]; then
+    echo "failed to create ES config/TLS prep backup directory" >&2
+    return 1
+  fi
+
+  config_backup_path="${backup_dir}/es.json"
+  snapshot_manifest_path="${backup_dir}/pre-apply-snapshot.json"
+  remote_alpha_es_config_tls_prep_capture_config_copy "${source_config_path}" "${config_backup_path}"
+
+  python3 - \
+    "${backup_meta_path}" \
+    "${snapshot_manifest_path}" \
+    "${backup_dir}" \
+    "${remote_alpha_es_config_tls_prep_backup_root_dir}" \
+    "${config_backup_path}" \
+    "${source_runtime_meta_path}" \
+    "${pre_service_account_meta_path}" \
+    "${pre_service_meta_path}" \
+    "${REMOTE_ALPHA_CONFIG_PATH}" \
+    "${REMOTE_ALPHA_TLS_DIR}" \
+    "${REMOTE_ALPHA_PREP_USER}" \
+    "${REMOTE_ALPHA_PREP_GROUP}" <<'PY'
+import grp
+import hashlib
+import json
+import pathlib
+import pwd
+import stat as statmod
+import sys
+
+backup_meta_path = pathlib.Path(sys.argv[1])
+snapshot_manifest_path = pathlib.Path(sys.argv[2])
+backup_dir = pathlib.Path(sys.argv[3])
+backup_parent_dir = pathlib.Path(sys.argv[4])
+config_backup_path = pathlib.Path(sys.argv[5])
+source_runtime = json.loads(pathlib.Path(sys.argv[6]).read_text(encoding="utf-8"))
+pre_service_account = json.loads(pathlib.Path(sys.argv[7]).read_text(encoding="utf-8"))
+pre_service = json.loads(pathlib.Path(sys.argv[8]).read_text(encoding="utf-8"))
+live_config_path = sys.argv[9]
+dedicated_tls_dir = sys.argv[10]
+prep_user = sys.argv[11]
+prep_group = sys.argv[12]
+
+tls_sources = [
+    ("tls.cert_file", source_runtime.get("tls", {}).get("cert_file", "")),
+    ("tls.key_file", source_runtime.get("tls", {}).get("key_file", "")),
+    ("tls.client_ca_file", source_runtime.get("tls", {}).get("client_ca_file", "")),
+    ("dependencies.artifact_registry.client_cert_file", source_runtime.get("artifact_registry", {}).get("client_cert_file", "")),
+    ("dependencies.artifact_registry.client_key_file", source_runtime.get("artifact_registry", {}).get("client_key_file", "")),
+    ("dependencies.artifact_registry.root_ca_file", source_runtime.get("artifact_registry", {}).get("root_ca_file", "")),
+    ("dependencies.execution_governance.client_cert_file", source_runtime.get("execution_governance", {}).get("client_cert_file", "")),
+    ("dependencies.execution_governance.client_key_file", source_runtime.get("execution_governance", {}).get("client_key_file", "")),
+    ("dependencies.execution_governance.root_ca_file", source_runtime.get("execution_governance", {}).get("root_ca_file", "")),
+]
+
+
+def owner_name(uid: int) -> str:
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return str(uid)
+
+
+def group_name(gid: int) -> str:
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def file_record(field: str, raw_path: str) -> dict[str, object]:
+    path = pathlib.Path(str(raw_path or "").strip())
+    data = path.read_bytes()
+    st = path.stat()
+    return {
+        "field": field,
+        "path": str(path),
+        "size_bytes": len(data),
+        "owner": owner_name(st.st_uid),
+        "group": group_name(st.st_gid),
+        "mode": format(statmod.S_IMODE(st.st_mode), "04o"),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def rollback_notes() -> list[str]:
+    notes = [
+        f"Restore {live_config_path} from {config_backup_path} before restarting es.service.",
+        f"Use {snapshot_manifest_path} to verify the pre-apply source TLS paths, owner/group, mode, size, and sha256 before removing or replacing {dedicated_tls_dir}.",
+        "Keep es.service User=/Group= unchanged during rollback; this slice does not de-root ES.",
+    ]
+    if pre_service_account.get("user_exists") is True or pre_service_account.get("group_exists") is True:
+        notes.append(
+            f"The pre-apply snapshot recorded {prep_user}:{prep_group} as pre-existing; do not remove that prep account/group as part of rollback."
+        )
+    else:
+        notes.append(
+            f"The pre-apply snapshot recorded {prep_user}:{prep_group} as absent before apply; remove the dedicated prep account/group only if you are explicitly undoing this prep slice and no later step depends on it."
+        )
+    notes.append("Restart es.service after restoring the pre-apply config/TLS posture.")
+    return notes
+
+
+snapshot = {
+    "status": "created",
+    "created": True,
+    "parent_dir": str(backup_parent_dir),
+    "path": str(backup_dir),
+    "pre_apply_config_path": live_config_path,
+    "pre_apply_config_copy": str(config_backup_path),
+    "snapshot_manifest_path": str(snapshot_manifest_path),
+    "pre_apply_source_tls": [file_record(field, path) for field, path in tls_sources],
+    "pre_apply_prep_account": {
+        "user": prep_user,
+        "group": prep_group,
+        "status": pre_service_account.get("status", ""),
+        "user_exists": pre_service_account.get("user_exists") is True,
+        "group_exists": pre_service_account.get("group_exists") is True,
+        "would_create_user": pre_service_account.get("would_create_user") is True,
+        "would_create_group": pre_service_account.get("would_create_group") is True,
+    },
+    "pre_apply_service": {
+        "name": pre_service.get("service", "es"),
+        "user": pre_service.get("user", ""),
+        "group": pre_service.get("group", ""),
+        "effective_user": pre_service.get("effective_user", ""),
+        "effective_group": pre_service.get("effective_group", ""),
+        "active_state": pre_service.get("active_state", ""),
+        "sub_state": pre_service.get("sub_state", ""),
+    },
+    "rollback_notes": rollback_notes(),
+}
+
+snapshot_manifest_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+backup_meta_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+  if [[ -n "${REMOTE_ALPHA_TEST_BACKUP_PATH_FILE:-}" ]]; then
+    printf '%s\n' "${backup_dir}" > "${REMOTE_ALPHA_TEST_BACKUP_PATH_FILE}"
+  fi
+  if [[ -n "${REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH:-}" ]]; then
+    printf '%s\n' "${snapshot_manifest_path}" > "${REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH}"
+  fi
+}
+
 remote_alpha_es_config_tls_prep_prepare_tls_material() {
   local runtime_meta_path=$1
   local server_cert_source server_key_source server_ca_source
@@ -1009,6 +1192,7 @@ values = {
     "exec_start": "",
     "fragment_path": "",
     "active": False,
+    "active_state": "",
     "enabled": enabled,
     "sub_state": "",
     "effective_user": "root(default)",
@@ -1030,6 +1214,7 @@ for raw in show_output.splitlines():
     elif key == "FragmentPath":
         values["fragment_path"] = value
     elif key == "ActiveState":
+        values["active_state"] = value
         values["active"] = value == "active"
     elif key == "SubState":
         values["sub_state"] = value
@@ -1239,13 +1424,17 @@ remote_alpha_es_config_tls_prep_write_summary() {
   local es_contract_meta_path=${10}
   local ownership_meta_path=${11}
   local service_account_meta_path=${12}
-  local rewrite_scope_meta_path=${13}
-  local ds_not_in_docker_group=${14}
-  local passwordless_sudo_for_ds=${15}
-  local operation_mode=${16}
-  local planned_summary_path=${17}
-  local healthcheck_env_path=${18}
-  local service_unit_path=${19}
+  local pre_service_account_meta_path=${13}
+  local rewrite_scope_meta_path=${14}
+  local ds_not_in_docker_group=${15}
+  local passwordless_sudo_for_ds=${16}
+  local operation_mode=${17}
+  local planned_summary_path=${18}
+  local healthcheck_env_path=${19}
+  local service_unit_path=${20}
+  local pre_service_meta_path=${21}
+  local backup_meta_path=${22}
+  local backup_parent_dir=${23}
 
   python3 - "${summary_path}" \
     "${source_runtime_meta_path}" \
@@ -1259,6 +1448,7 @@ remote_alpha_es_config_tls_prep_write_summary() {
     "${es_contract_meta_path}" \
     "${ownership_meta_path}" \
     "${service_account_meta_path}" \
+    "${pre_service_account_meta_path}" \
     "${rewrite_scope_meta_path}" \
     "${ds_not_in_docker_group}" \
     "${passwordless_sudo_for_ds}" \
@@ -1266,6 +1456,9 @@ remote_alpha_es_config_tls_prep_write_summary() {
     "${planned_summary_path}" \
     "${healthcheck_env_path}" \
     "${service_unit_path}" \
+    "${pre_service_meta_path}" \
+    "${backup_meta_path}" \
+    "${backup_parent_dir}" \
     "${REMOTE_ALPHA_PREP_USER}" \
     "${REMOTE_ALPHA_PREP_GROUP}" \
     "${remote_alpha_es_config_tls_prep_summary_schema_version}" <<'PY'
@@ -1288,16 +1481,20 @@ es_health = json.loads(pathlib.Path(sys.argv[9]).read_text(encoding="utf-8"))
 es_contract = json.loads(pathlib.Path(sys.argv[10]).read_text(encoding="utf-8"))
 ownership = json.loads(pathlib.Path(sys.argv[11]).read_text(encoding="utf-8"))
 service_account = json.loads(pathlib.Path(sys.argv[12]).read_text(encoding="utf-8"))
-rewrite_scope = json.loads(pathlib.Path(sys.argv[13]).read_text(encoding="utf-8"))
-ds_not_in_docker_group = sys.argv[14]
-passwordless_sudo_for_ds = sys.argv[15]
-operation_mode = sys.argv[16].strip()
-planned_summary_path = sys.argv[17].strip()
-healthcheck_env_path = sys.argv[18].strip()
-service_unit_path = sys.argv[19].strip()
-prep_user = sys.argv[20]
-prep_group = sys.argv[21]
-schema_version = sys.argv[22]
+pre_service_account = json.loads(pathlib.Path(sys.argv[13]).read_text(encoding="utf-8"))
+rewrite_scope = json.loads(pathlib.Path(sys.argv[14]).read_text(encoding="utf-8"))
+ds_not_in_docker_group = sys.argv[15]
+passwordless_sudo_for_ds = sys.argv[16]
+operation_mode = sys.argv[17].strip()
+planned_summary_path = sys.argv[18].strip()
+healthcheck_env_path = sys.argv[19].strip()
+service_unit_path = sys.argv[20].strip()
+pre_es_meta = json.loads(pathlib.Path(sys.argv[21]).read_text(encoding="utf-8"))
+backup_meta_path = pathlib.Path(sys.argv[22].strip()) if sys.argv[22].strip() else None
+backup_parent_dir = sys.argv[23].strip()
+prep_user = sys.argv[24]
+prep_group = sys.argv[25]
+schema_version = sys.argv[26]
 non_mutating = operation_mode == "check_only"
 
 
@@ -1449,7 +1646,39 @@ paths_written = unique_strings([
     planned_summary_path,
 ])
 
-service_identity_root_default = es_meta.get("effective_user") == "root(default)" and es_meta.get("effective_group") == "root(default)"
+service_identity_root_default = pre_es_meta.get("effective_user") == "root(default)" and pre_es_meta.get("effective_group") == "root(default)"
+post_service_identity_root_default = es_meta.get("effective_user") == "root(default)" and es_meta.get("effective_group") == "root(default)"
+
+backup = {
+    "status": "not_run" if non_mutating else "not_created",
+    "created": False,
+    "parent_dir": backup_parent_dir,
+    "path": "",
+    "pre_apply_config_copy": "",
+    "snapshot_manifest_path": "",
+    "pre_apply_source_tls": [],
+    "pre_apply_prep_account": {
+        "user": prep_user,
+        "group": prep_group,
+        "status": pre_service_account.get("status", ""),
+        "user_exists": pre_service_account.get("user_exists") is True,
+        "group_exists": pre_service_account.get("group_exists") is True,
+        "would_create_user": pre_service_account.get("would_create_user") is True,
+        "would_create_group": pre_service_account.get("would_create_group") is True,
+    },
+    "pre_apply_service": {
+        "name": pre_es_meta.get("service", "es"),
+        "user": pre_es_meta.get("user", ""),
+        "group": pre_es_meta.get("group", ""),
+        "effective_user": pre_es_meta.get("effective_user", ""),
+        "effective_group": pre_es_meta.get("effective_group", ""),
+        "active_state": pre_es_meta.get("active_state", ""),
+        "sub_state": pre_es_meta.get("sub_state", ""),
+    },
+    "rollback_notes": [],
+}
+if backup_meta_path is not None and backup_meta_path.exists():
+    backup = json.loads(backup_meta_path.read_text(encoding="utf-8"))
 
 warnings = []
 blockers = []
@@ -1459,8 +1688,8 @@ if ds_not_in_docker_group != "true":
 if passwordless_sudo_for_ds != "false":
     warnings.append("passwordless_sudo_for_ds could not be proved false for the current host posture")
 
-if service_account.get("blocker") is True or service_account.get("status") == "fail":
-    blockers.append(service_account.get("error") or "ES prep account state is not acceptable for this slice")
+if pre_service_account.get("blocker") is True or pre_service_account.get("status") == "fail":
+    blockers.append(pre_service_account.get("error") or "ES prep account state is not acceptable for this slice")
 if rewrite_scope.get("status") != "pass":
     blockers.append("planned ES config rewrite scope is broader than the allowed config/TLS path rewrite slice")
 if not non_mutating and ownership.get("status") != "pass":
@@ -1513,20 +1742,21 @@ summary = {
         "prep_account": {
             "user": prep_user,
             "group": prep_group,
-            "user_exists": service_account.get("user_exists") is True,
-            "group_exists": service_account.get("group_exists") is True,
-            "exists": service_account.get("narrow_dedicated_account") is True,
-            "would_create_user": service_account.get("would_create_user") is True,
-            "would_create_group": service_account.get("would_create_group") is True,
-            "status": service_account.get("status", ""),
-            "apply_ready": service_account.get("apply_ready") is True,
-            "blocker": service_account.get("blocker") is True,
+            "user_exists": pre_service_account.get("user_exists") is True,
+            "group_exists": pre_service_account.get("group_exists") is True,
+            "exists": pre_service_account.get("narrow_dedicated_account") is True,
+            "would_create_user": pre_service_account.get("would_create_user") is True,
+            "would_create_group": pre_service_account.get("would_create_group") is True,
+            "status": pre_service_account.get("status", ""),
+            "apply_ready": pre_service_account.get("apply_ready") is True,
+            "blocker": pre_service_account.get("blocker") is True,
         },
         "service_identity_would_remain_root_default": service_identity_root_default,
         "restart_required_in_apply_mode": True,
         "warnings": warnings,
         "blockers": blockers,
     },
+    "backup": backup,
     "dependencies": {
         "server_tls": runtime["tls"],
         "artifact_registry": runtime["artifact_registry"],
@@ -1556,7 +1786,7 @@ summary = {
         "live_service_posture": {
             "user": es_meta["effective_user"],
             "group": es_meta["effective_group"],
-            "unchanged_root_default": service_identity_root_default,
+            "unchanged_root_default": service_identity_root_default and post_service_identity_root_default,
         },
         "writable_state": {
             "changed": False,
@@ -1627,12 +1857,13 @@ PY
 
 remote_alpha_es_config_tls_prep_main() {
   local source_config_copy_path source_runtime_meta_path runtime_meta_path health_env_meta_path
-  local es_meta_path ags_meta_path ars_meta_path egs_meta_path
+  local es_meta_path pre_es_meta_path ags_meta_path ars_meta_path egs_meta_path
   local planned_config_path check_only_report_path
   local es_health_result_path es_health_error_path
   local es_contract_result_path es_contract_error_path
   local es_health_meta_path es_contract_meta_path
-  local ownership_meta_path service_account_meta_path rewrite_scope_meta_path
+  local ownership_meta_path service_account_meta_path pre_service_account_meta_path rewrite_scope_meta_path
+  local backup_meta_path
   local tmpdir=""
   local ds_not_in_docker_group=""
   local passwordless_sudo_for_ds=""
@@ -1666,6 +1897,7 @@ remote_alpha_es_config_tls_prep_main() {
   planned_config_path="${tmpdir}/planned-es-config.json"
   health_env_meta_path="${tmpdir}/health-env.json"
   es_meta_path="${tmpdir}/es-service.json"
+  pre_es_meta_path="${tmpdir}/pre-es-service.json"
   ags_meta_path="${tmpdir}/ags-service.json"
   ars_meta_path="${tmpdir}/ars-service.json"
   egs_meta_path="${tmpdir}/egs-service.json"
@@ -1677,8 +1909,10 @@ remote_alpha_es_config_tls_prep_main() {
   es_contract_meta_path="${tmpdir}/es-contract-meta.json"
   ownership_meta_path="${tmpdir}/ownership.json"
   service_account_meta_path="${tmpdir}/service-account.json"
+  pre_service_account_meta_path="${tmpdir}/pre-service-account.json"
   rewrite_scope_meta_path="${tmpdir}/rewrite-scope.json"
   check_only_report_path="${tmpdir}/check-only-report.json"
+  backup_meta_path="${tmpdir}/backup.json"
 
   remote_alpha_es_config_tls_prep_runtime_meta >"${source_runtime_meta_path}"
   if [[ "$(remote_alpha_es_config_tls_prep_json_field "${source_runtime_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
@@ -1696,12 +1930,14 @@ remote_alpha_es_config_tls_prep_main() {
   remote_alpha_es_config_tls_prep_assert_unit_execstart || return 1
   remote_alpha_es_config_tls_prep_capture_config_copy "${REMOTE_ALPHA_CONFIG_PATH}" "${source_config_copy_path}"
 
-  remote_alpha_es_config_tls_prep_service_account_meta >"${service_account_meta_path}"
-  service_account_status="$(remote_alpha_es_config_tls_prep_json_field "${service_account_meta_path}" "status" 2>/dev/null || true)"
+  remote_alpha_es_config_tls_prep_service_account_meta >"${pre_service_account_meta_path}"
+  service_account_status="$(remote_alpha_es_config_tls_prep_json_field "${pre_service_account_meta_path}" "status" 2>/dev/null || true)"
   if [[ "${REMOTE_ALPHA_OPERATION_MODE}" != "check_only" && "${service_account_status}" == "fail" ]]; then
-    cat "${service_account_meta_path}" >&2
+    cat "${pre_service_account_meta_path}" >&2
     return 1
   fi
+
+  remote_alpha_es_config_tls_prep_service_meta "${REMOTE_ALPHA_SERVICE_NAME}" >"${pre_es_meta_path}"
 
   remote_alpha_es_config_tls_prep_render_rewritten_config "${REMOTE_ALPHA_CONFIG_PATH}" "${planned_config_path}" || return 1
   remote_alpha_es_config_tls_prep_runtime_meta "${planned_config_path}" "${REMOTE_ALPHA_CONFIG_PATH}" >"${runtime_meta_path}"
@@ -1748,14 +1984,18 @@ remote_alpha_es_config_tls_prep_main() {
       "${es_health_meta_path}" \
       "${es_contract_meta_path}" \
       "${ownership_meta_path}" \
-      "${service_account_meta_path}" \
+      "${pre_service_account_meta_path}" \
+      "${pre_service_account_meta_path}" \
       "${rewrite_scope_meta_path}" \
       "${ds_not_in_docker_group}" \
       "${passwordless_sudo_for_ds}" \
       "${REMOTE_ALPHA_OPERATION_MODE}" \
       "${REMOTE_ALPHA_SUMMARY_PATH}" \
       "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" \
-      "${REMOTE_ALPHA_SERVICE_UNIT_PATH}"
+      "${REMOTE_ALPHA_SERVICE_UNIT_PATH}" \
+      "${pre_es_meta_path}" \
+      "" \
+      "${remote_alpha_es_config_tls_prep_backup_root_dir}"
 
     cat "${check_only_report_path}"
     check_only_ok="$(remote_alpha_es_config_tls_prep_json_field "${check_only_report_path}" "result.ok" 2>/dev/null || true)"
@@ -1764,6 +2004,13 @@ remote_alpha_es_config_tls_prep_main() {
     fi
     return 0
   fi
+
+  remote_alpha_es_config_tls_prep_create_backup_snapshot \
+    "${backup_meta_path}" \
+    "${source_runtime_meta_path}" \
+    "${REMOTE_ALPHA_CONFIG_PATH}" \
+    "${pre_service_account_meta_path}" \
+    "${pre_es_meta_path}" || return 1
 
   remote_alpha_es_config_tls_prep_ensure_group || return 1
   remote_alpha_es_config_tls_prep_ensure_user || return 1
@@ -1848,13 +2095,17 @@ remote_alpha_es_config_tls_prep_main() {
     "${es_contract_meta_path}" \
     "${ownership_meta_path}" \
     "${service_account_meta_path}" \
+    "${pre_service_account_meta_path}" \
     "${rewrite_scope_meta_path}" \
     "${ds_not_in_docker_group}" \
     "${passwordless_sudo_for_ds}" \
     "${REMOTE_ALPHA_OPERATION_MODE}" \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
     "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" \
-    "${REMOTE_ALPHA_SERVICE_UNIT_PATH}"
+    "${REMOTE_ALPHA_SERVICE_UNIT_PATH}" \
+    "${pre_es_meta_path}" \
+    "${backup_meta_path}" \
+    "${remote_alpha_es_config_tls_prep_backup_root_dir}"
 
   chmod 0644 "${REMOTE_ALPHA_SUMMARY_PATH}" 2>/dev/null || true
 

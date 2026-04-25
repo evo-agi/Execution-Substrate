@@ -806,12 +806,23 @@ The required first step before any live apply is:
 That check-only path must perform discovery and validation only. It must emit a
 machine-readable JSON plan/report to stdout and must not create users or
 groups, call `chown` or `chmod`, rewrite `/etc/execution-substrate/es.json`,
-create or replace `/etc/execution-substrate/es-tls`, or restart
+create or replace `/etc/execution-substrate/es-tls`, create a backup directory
+under `/var/tmp/execution-substrate-remote-alpha/`, or restart
 `es.service`. It may inspect current service posture, current config and
 dependency paths, existing owner/mode state, and the planned ES config rewrite
 scope. The live apply step
 `sudo scripts/remote_alpha_prepare_es_config_tls.sh` may be run only after
 that check-only report is reviewed and accepted.
+
+Before any apply-mode mutation primitive runs, the helper must create a
+timestamped backup directory under
+`/var/tmp/execution-substrate-remote-alpha/`. That backup directory must
+contain a copied pre-apply `es.json` plus a `pre-apply-snapshot.json` record
+covering the pre-apply source TLS path, size, owner, group, mode, and sha256
+for each current ES TLS/dependency input path, whether the `es` prep user and
+group existed before apply, the current `es.service` `User`, `Group`,
+`ActiveState`, and `SubState`, and rollback notes for restoring the pre-apply
+ES config/TLS posture.
 
 If the target host already has an `es` user/group, the helper must prove that
 the pre-existing prep account is still acceptably narrow for this slice before
@@ -891,6 +902,19 @@ For that ES prep summary:
   ownership slice.
 - `plan.warnings` and `plan.blockers` must capture advisory host-posture facts
   plus any reasons the current host is not ready for a bounded live apply.
+- `backup.status`, `backup.parent_dir`, and `backup.path` must label whether
+  apply created the timestamped backup and where it lives.
+- `backup.pre_apply_config_copy` and `backup.snapshot_manifest_path` must point
+  to the copied pre-apply config and the snapshot manifest inside the backup
+  directory.
+- `backup.pre_apply_source_tls` must record the pre-apply source TLS/dependency
+  paths plus size, owner, group, mode, and sha256 for each source file.
+- `backup.pre_apply_prep_account` must record whether the `es` prep user/group
+  existed before apply.
+- `backup.pre_apply_service` must record the pre-apply `es.service` `User`,
+  `Group`, `ActiveState`, and `SubState`.
+- `backup.rollback_notes` must tell the operator how to restore the pre-apply
+  config/TLS posture without changing `es.service` `User=` or `Group=`.
 - `validation.prep_account_narrowness` must prove the `es` prep account
   remains narrow for this slice before the summary may describe it as
   dedicated.
