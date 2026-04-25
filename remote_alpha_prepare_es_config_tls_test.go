@@ -1,6 +1,7 @@
 package executionsubstrate_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,38 +20,58 @@ func runSourcedESConfigTLSPrepHelper(t *testing.T, env []string, shellBody strin
 	return cmd.CombinedOutput()
 }
 
-func setupFakeESConfigTLSPrepCommands(t *testing.T, dir, esUnitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, esGroups string, ownerships map[string]string) {
+func setupFakeESConfigTLSPrepCommands(t *testing.T, dir, esUnitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, esGroups, dsGroups string, ownerships map[string]string) {
 	t.Helper()
 
 	writeExecutable(t, dir, "id", fmt.Sprintf(`#!/bin/sh
+prep_state="${REMOTE_ALPHA_TEST_FAKE_PREP_ACCOUNT_STATE:-present}"
 if [ "$1" = "-u" ] && [ $# -eq 1 ]; then
   echo 0
   exit 0
 fi
 if [ "$1" = "-u" ] && [ "$2" = "es" ]; then
+  if [ "$prep_state" = "missing" ]; then
+    exit 1
+  fi
   echo 994
   exit 0
 fi
 if [ "$1" = "-gn" ] && [ "$2" = "es" ]; then
+  if [ "$prep_state" = "missing" ]; then
+    exit 1
+  fi
   echo es
   exit 0
 fi
 if [ "$1" = "-nG" ] && [ "$2" = "es" ]; then
+  if [ "$prep_state" = "missing" ]; then
+    exit 1
+  fi
   echo %q
   exit 0
 fi
 if [ "$1" = "-nG" ] && [ "$2" = "ds" ]; then
-  echo "ds adm wheel"
+  echo %q
   exit 0
 fi
 exec /usr/bin/id "$@"
-`, esGroups))
+`, esGroups, dsGroups))
 	writeExecutable(t, dir, "getent", `#!/bin/sh
+prep_state="${REMOTE_ALPHA_TEST_FAKE_PREP_ACCOUNT_STATE:-present}"
 if [ "$1" = "group" ] && [ "$2" = "es" ]; then
+  if [ "$prep_state" = "missing" ]; then
+    exit 2
+  fi
   echo "es:x:994:"
   exit 0
 fi
 if [ "$1" = "passwd" ]; then
+  if [ "$prep_state" = "missing" ]; then
+    cat <<'EOF'
+root:x:0:0:root:/root:/bin/bash
+EOF
+    exit 0
+  fi
   cat <<'EOF'
 root:x:0:0:root:/root:/bin/bash
 es:x:994:994::/nonexistent:/usr/sbin/nologin
@@ -59,13 +80,41 @@ EOF
 fi
 exit 2
 `)
-	writeExecutable(t, dir, "groupadd", "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, dir, "useradd", "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, dir, "chown", "#!/bin/sh\nexit 0\n")
-	writeExecutable(t, dir, "chmod", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, dir, "groupadd", `#!/bin/sh
+if [ "${REMOTE_ALPHA_TEST_FORBID_MUTATIONS:-false}" = "true" ]; then
+  echo "groupadd should not be called in check-only mode" >&2
+  exit 97
+fi
+exit 0
+`)
+	writeExecutable(t, dir, "useradd", `#!/bin/sh
+if [ "${REMOTE_ALPHA_TEST_FORBID_MUTATIONS:-false}" = "true" ]; then
+  echo "useradd should not be called in check-only mode" >&2
+  exit 97
+fi
+exit 0
+`)
+	writeExecutable(t, dir, "chown", `#!/bin/sh
+if [ "${REMOTE_ALPHA_TEST_FORBID_MUTATIONS:-false}" = "true" ]; then
+  echo "chown should not be called in check-only mode" >&2
+  exit 97
+fi
+exit 0
+`)
+	writeExecutable(t, dir, "chmod", `#!/bin/sh
+if [ "${REMOTE_ALPHA_TEST_FORBID_MUTATIONS:-false}" = "true" ]; then
+  echo "chmod should not be called in check-only mode" >&2
+  exit 97
+fi
+exit 0
+`)
 	writeExecutable(t, dir, "systemctl", fmt.Sprintf(`#!/bin/sh
 case "$1" in
   restart)
+    if [ "${REMOTE_ALPHA_TEST_FORBID_MUTATIONS:-false}" = "true" ]; then
+      echo "systemctl restart should not be called in check-only mode" >&2
+      exit 97
+    fi
     exit 0
     ;;
   is-enabled)
@@ -175,6 +224,15 @@ remote_alpha_es_config_tls_prep_expected_healthcheck_env_path=%q
 remote_alpha_es_config_tls_prep_expected_service_unit_path=%q
 remote_alpha_es_config_tls_prep_expected_tls_dir=%q
 `, binaryPath, configPath, healthcheckEnvPath, unitPath, tlsDir)
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRemoteAlphaESConfigTLSPrepPassWritesSummaryAndRewritesConfig(t *testing.T) {
@@ -386,7 +444,7 @@ ExecStart=%s -config %s
 		filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem"):     fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem")),
 	}
 
-	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es", ownerships)
+	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es", "ds adm wheel", ownerships)
 
 	output, err := runSourcedESConfigTLSPrepHelper(t, envWithPath(fakeBin,
 		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
@@ -577,6 +635,271 @@ ExecStart=%s -config %s
 	}
 }
 
+func TestRemoteAlphaESConfigTLSPrepCheckOnlyDoesNotMutateOrRestart(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	esBinaryPath := filepath.Join(tmpDir, "fake-es")
+	if err := os.WriteFile(esBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write es binary: %v", err)
+	}
+	agsBinaryPath := filepath.Join(tmpDir, "fake-ags")
+	if err := os.WriteFile(agsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write ags binary: %v", err)
+	}
+	arsBinaryPath := filepath.Join(tmpDir, "fake-ars")
+	if err := os.WriteFile(arsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write ars binary: %v", err)
+	}
+	egsBinaryPath := filepath.Join(tmpDir, "fake-egs")
+	if err := os.WriteFile(egsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write egs binary: %v", err)
+	}
+
+	sourceTLSDir := filepath.Join(tmpDir, "tls")
+	if err := os.MkdirAll(sourceTLSDir, 0o755); err != nil {
+		t.Fatalf("mkdir source tls dir: %v", err)
+	}
+	for _, name := range []string{
+		"es-server-cert.pem",
+		"es-server-key.pem",
+		"es-client-cert.pem",
+		"es-client-key.pem",
+		"runtime-ca.pem",
+		"combined-service-ca-bundle.pem",
+		"operator-client-cert.pem",
+		"operator-client-key.pem",
+	} {
+		if err := os.WriteFile(filepath.Join(sourceTLSDir, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatalf("write tls file %s: %v", name, err)
+		}
+	}
+
+	esConfigPath := filepath.Join(tmpDir, "es.json")
+	originalConfig := fmt.Sprintf(`{
+  "dependencies": {
+    "artifact_registry": {
+      "base_url": "https://127.0.0.1:8442",
+      "client_cert_file": %q,
+      "client_key_file": %q,
+      "root_ca_file": %q
+    },
+    "execution_governance": {
+      "base_url": "https://127.0.0.1:8443",
+      "client_cert_file": %q,
+      "client_key_file": %q,
+      "root_ca_file": %q
+    }
+  },
+  "execution": {
+    "results_root_dir": "/var/lib/execution-substrate/es-results",
+    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock",
+    "staging_root_dir": "/var/lib/execution-substrate/es-staging"
+  },
+  "http": {
+    "bind_address": "192.168.1.156",
+    "port": 8445
+  },
+  "tls": {
+    "cert_file": %q,
+    "client_ca_file": %q,
+    "key_file": %q
+  }
+}
+`,
+		filepath.Join(sourceTLSDir, "es-client-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-client-key.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-client-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-client-key.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-server-cert.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-server-key.pem"),
+	)
+	if err := os.WriteFile(esConfigPath, []byte(originalConfig), 0o600); err != nil {
+		t.Fatalf("write es config: %v", err)
+	}
+
+	agsConfigPath := filepath.Join(tmpDir, "ags.json")
+	if err := os.WriteFile(agsConfigPath, []byte(`{"http":{"bind_address":"192.168.1.156","port":8444}}`), 0o600); err != nil {
+		t.Fatalf("write ags config: %v", err)
+	}
+	arsConfigPath := filepath.Join(tmpDir, "ars.json")
+	if err := os.WriteFile(arsConfigPath, []byte(`{"http":{"bind_address":"127.0.0.1","port":8442}}`), 0o600); err != nil {
+		t.Fatalf("write ars config: %v", err)
+	}
+	egsConfigPath := filepath.Join(tmpDir, "egs.json")
+	if err := os.WriteFile(egsConfigPath, []byte(`{"http":{"bind_address":"127.0.0.1","port":8443}}`), 0o600); err != nil {
+		t.Fatalf("write egs config: %v", err)
+	}
+
+	healthcheckEnvPath := filepath.Join(tmpDir, "healthcheck.env")
+	if err := os.WriteFile(healthcheckEnvPath, []byte(strings.Join([]string{
+		"CA_CERT=" + filepath.Join(sourceTLSDir, "combined-service-ca-bundle.pem"),
+		"OPERATOR_CERT=" + filepath.Join(sourceTLSDir, "operator-client-cert.pem"),
+		"OPERATOR_KEY=" + filepath.Join(sourceTLSDir, "operator-client-key.pem"),
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write healthcheck env: %v", err)
+	}
+
+	unitPath := filepath.Join(tmpDir, "es.service")
+	if err := os.WriteFile(unitPath, []byte(fmt.Sprintf("[Service]\nExecStart=%s -config %s\n", esBinaryPath, esConfigPath)), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+
+	dedicatedTLSDir := filepath.Join(tmpDir, "es-tls")
+	summaryPath := filepath.Join(tmpDir, "es-config-tls-prep-summary.json")
+	ownerships := map[string]string{
+		esConfigPath: fmt.Sprintf("root:es 640 %s", esConfigPath),
+	}
+
+	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es", "ds adm wheel", ownerships)
+
+	output, err := runSourcedESConfigTLSPrepHelper(t, envWithPath(fakeBin,
+		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
+		"REMOTE_ALPHA_TEST_PASSWORDLESS_SUDO_FOR_DS=false",
+		"REMOTE_ALPHA_TEST_FAKE_PREP_ACCOUNT_STATE=missing",
+		"REMOTE_ALPHA_TEST_FORBID_MUTATIONS=true",
+	), esConfigTLSPrepExpectedSliceShell(esBinaryPath, esConfigPath, healthcheckEnvPath, unitPath, dedicatedTLSDir)+"remote_alpha_es_config_tls_prep_main --check-only")
+	if err != nil {
+		t.Fatalf("ES config/TLS prep check-only should succeed without mutations: %v\n%s", err, output)
+	}
+
+	if _, err := os.Stat(summaryPath); !os.IsNotExist(err) {
+		t.Fatalf("check-only should not write apply summary path %s, err=%v", summaryPath, err)
+	}
+	if got := mustRead(t, esConfigPath); got != originalConfig {
+		t.Fatalf("check-only mutated ES config:\nwant=%s\ngot=%s", originalConfig, got)
+	}
+	if _, err := os.Stat(dedicatedTLSDir); !os.IsNotExist(err) {
+		t.Fatalf("check-only should not create dedicated TLS dir %s, err=%v", dedicatedTLSDir, err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(output, &report); err != nil {
+		t.Fatalf("check-only output should be JSON, got %q: %v", output, err)
+	}
+
+	mode := jsonMap(t, report["mode"])
+	if got := mode["name"]; got != "check_only" {
+		t.Fatalf("unexpected mode name %v", got)
+	}
+	if got := mode["non_mutating"]; got != true {
+		t.Fatalf("expected non-mutating mode, got %v", got)
+	}
+	if got := mode["output"]; got != "stdout_json" {
+		t.Fatalf("unexpected mode output %v", got)
+	}
+
+	plan := jsonMap(t, report["plan"])
+	prepAccount := jsonMap(t, plan["prep_account"])
+	if got := prepAccount["user_exists"]; got != false {
+		t.Fatalf("expected missing prep user, got %v", got)
+	}
+	if got := prepAccount["group_exists"]; got != false {
+		t.Fatalf("expected missing prep group, got %v", got)
+	}
+	if got := prepAccount["would_create_user"]; got != true {
+		t.Fatalf("expected check-only plan to create prep user, got %v", got)
+	}
+	if got := prepAccount["would_create_group"]; got != true {
+		t.Fatalf("expected check-only plan to create prep group, got %v", got)
+	}
+	if got := prepAccount["apply_ready"]; got != true {
+		t.Fatalf("expected check-only plan to remain apply-ready, got %v", got)
+	}
+	if got := prepAccount["blocker"]; got != false {
+		t.Fatalf("expected no prep-account blocker, got %v", got)
+	}
+	if got := plan["service_identity_would_remain_root_default"]; got != true {
+		t.Fatalf("expected ES service identity to remain root(default), got %v", got)
+	}
+	if got := plan["restart_required_in_apply_mode"]; got != true {
+		t.Fatalf("expected restart to be required in apply mode, got %v", got)
+	}
+
+	pathsRead := jsonStringSlice(t, plan["paths_read"])
+	for _, expected := range []string{
+		esBinaryPath,
+		esConfigPath,
+		healthcheckEnvPath,
+		filepath.Join(sourceTLSDir, "es-server-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-server-key.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-client-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-client-key.pem"),
+	} {
+		if !slicesContain(pathsRead, expected) {
+			t.Fatalf("paths_read missing %q: %v", expected, pathsRead)
+		}
+	}
+
+	pathsWritten := jsonStringSlice(t, plan["paths_written"])
+	for _, expected := range []string{
+		esConfigPath,
+		dedicatedTLSDir,
+		filepath.Join(dedicatedTLSDir, "es-server-cert.pem"),
+		filepath.Join(dedicatedTLSDir, "artifact-registry-client-cert.pem"),
+		filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem"),
+		summaryPath,
+	} {
+		if !slicesContain(pathsWritten, expected) {
+			t.Fatalf("paths_written missing %q: %v", expected, pathsWritten)
+		}
+	}
+
+	ownershipChanges, ok := plan["ownership_changes"].([]any)
+	if !ok {
+		t.Fatalf("ownership_changes has unexpected type %T", plan["ownership_changes"])
+	}
+	if len(ownershipChanges) == 0 {
+		t.Fatal("ownership_changes should not be empty")
+	}
+	dedicatedDirPlanned := false
+	for _, raw := range ownershipChanges {
+		change := jsonMap(t, raw)
+		if change["path"] != dedicatedTLSDir {
+			continue
+		}
+		dedicatedDirPlanned = true
+		if got := change["planned_owner"]; got != "root:es" {
+			t.Fatalf("unexpected planned owner for dedicated TLS dir %v", got)
+		}
+		if got := change["planned_mode"]; got != "0710" {
+			t.Fatalf("unexpected planned mode for dedicated TLS dir %v", got)
+		}
+		if got := change["change_required"]; got != true {
+			t.Fatalf("expected dedicated TLS dir change_required, got %v", got)
+		}
+	}
+	if !dedicatedDirPlanned {
+		t.Fatalf("ownership_changes missing dedicated TLS dir plan: %v", ownershipChanges)
+	}
+
+	validation := jsonMap(t, report["validation"])
+	if got := jsonMap(t, validation["ownership"])["status"]; got != "needs_change" {
+		t.Fatalf("expected ownership inspection to show needs_change, got %v", got)
+	}
+
+	result := jsonMap(t, report["result"])
+	if got := result["status"]; got != "pass" {
+		t.Fatalf("unexpected check-only result status %v", got)
+	}
+	if got := result["ok"]; got != true {
+		t.Fatalf("expected check-only result ok=true, got %v", got)
+	}
+	if got := result["non_mutating"]; got != true {
+		t.Fatalf("expected check-only result to be non-mutating, got %v", got)
+	}
+}
+
 func TestRemoteAlphaESConfigTLSPrepRejectsPreexistingBroadPrepAccount(t *testing.T) {
 	t.Parallel()
 
@@ -709,7 +1032,7 @@ func TestRemoteAlphaESConfigTLSPrepRejectsPreexistingBroadPrepAccount(t *testing
 		filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem"):     fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem")),
 	}
 
-	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es docker", ownerships)
+	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es docker", "ds adm wheel", ownerships)
 
 	output, err := runSourcedESConfigTLSPrepHelper(t, envWithPath(fakeBin,
 		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
@@ -720,6 +1043,250 @@ func TestRemoteAlphaESConfigTLSPrepRejectsPreexistingBroadPrepAccount(t *testing
 	}
 	if !strings.Contains(string(output), "supplementary groups present: docker") {
 		t.Fatalf("expected supplementary group rejection, got %q", output)
+	}
+}
+
+func TestRemoteAlphaESConfigTLSPrepRecordsDSSecurityWarningsWithoutFailing(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	esBinaryPath := filepath.Join(tmpDir, "fake-es")
+	if err := os.WriteFile(esBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write es binary: %v", err)
+	}
+	agsBinaryPath := filepath.Join(tmpDir, "fake-ags")
+	if err := os.WriteFile(agsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write ags binary: %v", err)
+	}
+	arsBinaryPath := filepath.Join(tmpDir, "fake-ars")
+	if err := os.WriteFile(arsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write ars binary: %v", err)
+	}
+	egsBinaryPath := filepath.Join(tmpDir, "fake-egs")
+	if err := os.WriteFile(egsBinaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write egs binary: %v", err)
+	}
+
+	sourceTLSDir := filepath.Join(tmpDir, "tls")
+	if err := os.MkdirAll(sourceTLSDir, 0o755); err != nil {
+		t.Fatalf("mkdir source tls dir: %v", err)
+	}
+	for _, name := range []string{
+		"es-server-cert.pem",
+		"es-server-key.pem",
+		"es-client-cert.pem",
+		"es-client-key.pem",
+		"runtime-ca.pem",
+		"combined-service-ca-bundle.pem",
+		"operator-client-cert.pem",
+		"operator-client-key.pem",
+	} {
+		if err := os.WriteFile(filepath.Join(sourceTLSDir, name), []byte(name+"\n"), 0o600); err != nil {
+			t.Fatalf("write tls file %s: %v", name, err)
+		}
+	}
+
+	esConfigPath := filepath.Join(tmpDir, "es.json")
+	if err := os.WriteFile(esConfigPath, []byte(fmt.Sprintf(`{
+  "authorization": {
+    "allowed_spiffe_path_prefixes": [
+      "operator"
+    ]
+  },
+  "dependencies": {
+    "artifact_registry": {
+      "base_url": "https://127.0.0.1:8442",
+      "client_cert_file": %q,
+      "client_key_file": %q,
+      "root_ca_file": %q,
+      "server_name": "server.artifact-registry.internal",
+      "timeout_seconds": 5
+    },
+    "execution_governance": {
+      "base_url": "https://127.0.0.1:8443",
+      "client_cert_file": %q,
+      "client_key_file": %q,
+      "root_ca_file": %q,
+      "server_name": "server.execution-governance.internal",
+      "timeout_seconds": 5
+    }
+  },
+  "execution": {
+    "base_image": "alpine:3.20",
+    "results_root_dir": "/var/lib/execution-substrate/es-results",
+    "runtime_support_binary": "/usr/local/bin/es-runtime-support",
+    "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock",
+    "staging_root_dir": "/var/lib/execution-substrate/es-staging"
+  },
+  "http": {
+    "bind_address": "192.168.1.156",
+    "port": 8445
+  },
+  "nomad": {
+    "base_url": "http://127.0.0.1:4646",
+    "datacenter": "dc1",
+    "timeout_seconds": 5
+  },
+  "runtime_config": {
+    "workload_zone_vault_config_ref": {
+      "digest": "sha256:test-workload-zone-config"
+    }
+  },
+  "security": {
+    "bootstrap_issuer_common_name": "Bootstrap Root CA Example"
+  },
+  "tls": {
+    "cert_file": %q,
+    "client_ca_file": %q,
+    "key_file": %q
+  },
+  "verification": {
+    "derivation_attestation": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    },
+    "provenance": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    },
+    "trust_model": {
+      "algorithm": "ed25519",
+      "key_id": "egs-key-1",
+      "public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce"
+    },
+    "workload_identity_binding": {
+      "algorithm": "ed25519",
+      "key_id": "ags-key-1",
+      "public_key_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+    }
+  },
+  "workload_vault_auth": {
+    "default_mode": "vault_identity_jwt"
+  }
+}
+`,
+		filepath.Join(sourceTLSDir, "es-client-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-client-key.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-client-cert.pem"),
+		filepath.Join(sourceTLSDir, "es-client-key.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-server-cert.pem"),
+		filepath.Join(sourceTLSDir, "runtime-ca.pem"),
+		filepath.Join(sourceTLSDir, "es-server-key.pem"),
+	)), 0o600); err != nil {
+		t.Fatalf("write es config: %v", err)
+	}
+
+	agsConfigPath := filepath.Join(tmpDir, "ags.json")
+	if err := os.WriteFile(agsConfigPath, []byte(`{
+  "http": {
+    "bind_address": "192.168.1.156",
+    "port": 8444
+  }
+}
+`), 0o600); err != nil {
+		t.Fatalf("write ags config: %v", err)
+	}
+
+	arsConfigPath := filepath.Join(tmpDir, "ars.json")
+	if err := os.WriteFile(arsConfigPath, []byte(`{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8442
+  }
+}
+`), 0o600); err != nil {
+		t.Fatalf("write ars config: %v", err)
+	}
+
+	egsConfigPath := filepath.Join(tmpDir, "egs.json")
+	if err := os.WriteFile(egsConfigPath, []byte(`{
+  "http": {
+    "bind_address": "127.0.0.1",
+    "port": 8443
+  }
+}
+`), 0o600); err != nil {
+		t.Fatalf("write egs config: %v", err)
+	}
+
+	healthcheckEnvPath := filepath.Join(tmpDir, "healthcheck.env")
+	if err := os.WriteFile(healthcheckEnvPath, []byte(strings.Join([]string{
+		"CA_CERT=" + filepath.Join(sourceTLSDir, "combined-service-ca-bundle.pem"),
+		"OPERATOR_CERT=" + filepath.Join(sourceTLSDir, "operator-client-cert.pem"),
+		"OPERATOR_KEY=" + filepath.Join(sourceTLSDir, "operator-client-key.pem"),
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write healthcheck env: %v", err)
+	}
+
+	unitPath := filepath.Join(tmpDir, "es.service")
+	if err := os.WriteFile(unitPath, []byte(fmt.Sprintf(`[Unit]
+Description=Execution Substrate Execution Service
+
+[Service]
+ExecStart=%s -config %s
+`, esBinaryPath, esConfigPath)), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+
+	dedicatedTLSDir := filepath.Join(tmpDir, "es-tls")
+	summaryPath := filepath.Join(tmpDir, "es-config-tls-prep-summary.json")
+
+	ownerships := map[string]string{
+		esConfigPath:    fmt.Sprintf("root:es 640 %s", esConfigPath),
+		dedicatedTLSDir: fmt.Sprintf("root:es 710 %s", dedicatedTLSDir),
+		filepath.Join(dedicatedTLSDir, "es-server-cert.pem"):                   fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "es-server-cert.pem")),
+		filepath.Join(dedicatedTLSDir, "es-server-key.pem"):                    fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "es-server-key.pem")),
+		filepath.Join(dedicatedTLSDir, "server-client-ca.pem"):                 fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "server-client-ca.pem")),
+		filepath.Join(dedicatedTLSDir, "artifact-registry-client-cert.pem"):    fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "artifact-registry-client-cert.pem")),
+		filepath.Join(dedicatedTLSDir, "artifact-registry-client-key.pem"):     fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "artifact-registry-client-key.pem")),
+		filepath.Join(dedicatedTLSDir, "artifact-registry-root-ca.pem"):        fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "artifact-registry-root-ca.pem")),
+		filepath.Join(dedicatedTLSDir, "execution-governance-client-cert.pem"): fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "execution-governance-client-cert.pem")),
+		filepath.Join(dedicatedTLSDir, "execution-governance-client-key.pem"):  fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "execution-governance-client-key.pem")),
+		filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem"):     fmt.Sprintf("root:es 640 %s", filepath.Join(dedicatedTLSDir, "execution-governance-root-ca.pem")),
+	}
+
+	setupFakeESConfigTLSPrepCommands(t, fakeBin, unitPath, esConfigPath, esBinaryPath, agsBinaryPath, agsConfigPath, arsBinaryPath, arsConfigPath, egsBinaryPath, egsConfigPath, "es", "ds adm wheel docker", ownerships)
+
+	output, err := runSourcedESConfigTLSPrepHelper(t, envWithPath(fakeBin,
+		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
+		"REMOTE_ALPHA_TEST_PASSWORDLESS_SUDO_FOR_DS=true",
+	), esConfigTLSPrepExpectedSliceShell(esBinaryPath, esConfigPath, healthcheckEnvPath, unitPath, dedicatedTLSDir)+"remote_alpha_es_config_tls_prep_main")
+	if err != nil {
+		t.Fatalf("ES config/TLS prep helper should record ds security warnings without failing: %v\n%s", err, output)
+	}
+
+	if got := strings.TrimSpace(string(output)); got != summaryPath {
+		t.Fatalf("unexpected summary path output %q", got)
+	}
+
+	summary := readJSONFile(t, summaryPath)
+	security := jsonMap(t, summary["security"])
+	if got := security["ds_not_in_docker_group"]; got != "false" {
+		t.Fatalf("unexpected ds_not_in_docker_group %v", got)
+	}
+	if got := security["passwordless_sudo_for_ds"]; got != "true" {
+		t.Fatalf("unexpected passwordless_sudo_for_ds %v", got)
+	}
+
+	validation := jsonMap(t, summary["validation"])
+	if got := jsonMap(t, validation["prep_account_narrowness"])["status"]; got != "pass" {
+		t.Fatalf("unexpected prep account narrowness status %v", got)
+	}
+	if got := jsonMap(t, validation["config_rewrite_scope"])["status"]; got != "pass" {
+		t.Fatalf("unexpected rewrite scope status %v", got)
+	}
+	if got := jsonMap(t, validation["es_service_posture"])["effective_user"]; got != "root(default)" {
+		t.Fatalf("unexpected es posture %v", got)
 	}
 }
 

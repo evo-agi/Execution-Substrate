@@ -21,6 +21,7 @@ remote_alpha_es_config_tls_prep_init_expected_slice_inputs() {
 
 remote_alpha_es_config_tls_prep_defaults() {
   remote_alpha_es_config_tls_prep_init_expected_slice_inputs
+  REMOTE_ALPHA_OPERATION_MODE="apply"
   REMOTE_ALPHA_SERVICE_NAME="${remote_alpha_es_config_tls_prep_expected_service_name}"
   REMOTE_ALPHA_PREP_USER="${remote_alpha_es_config_tls_prep_expected_prep_user}"
   REMOTE_ALPHA_PREP_GROUP="${remote_alpha_es_config_tls_prep_expected_prep_group}"
@@ -73,8 +74,11 @@ remote_alpha_es_config_tls_prep_usage() {
   cat <<'EOF'
 Usage:
   sudo scripts/remote_alpha_prepare_es_config_tls.sh
+  sudo scripts/remote_alpha_prepare_es_config_tls.sh --check-only
 
 Optional flags:
+  --check-only
+  --dry-run
   --summary-path </path/to/es-config-tls-prep-summary.json>
   --help
 EOF
@@ -115,6 +119,10 @@ remote_alpha_es_config_tls_prep_parse_args() {
         REMOTE_ALPHA_SUMMARY_PATH="$2"
         REMOTE_ALPHA_SUMMARY_DIR="$(dirname "${REMOTE_ALPHA_SUMMARY_PATH}")"
         shift 2
+        ;;
+      --check-only|--dry-run)
+        REMOTE_ALPHA_OPERATION_MODE="check_only"
+        shift
         ;;
       --help|-h)
         remote_alpha_es_config_tls_prep_usage
@@ -240,6 +248,12 @@ result = {
     "error": "",
     "user": user,
     "uid": "",
+    "user_exists": False,
+    "group_exists": False,
+    "would_create_user": False,
+    "would_create_group": False,
+    "apply_ready": False,
+    "blocker": False,
     "expected_primary_group": expected_group,
     "primary_group": "",
     "group_names": [],
@@ -257,111 +271,98 @@ def run_id(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["id", *args], check=False, capture_output=True, text=True)
 
 
-uid_proc = run_id("-u", user)
-if uid_proc.returncode != 0:
-    result["error"] = f"ES prep account user {user} does not exist"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-result["uid"] = uid_proc.stdout.strip()
-
-primary_group_proc = run_id("-gn", user)
-if primary_group_proc.returncode != 0:
-    result["error"] = f"failed to read primary group for ES prep account user {user}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-result["primary_group"] = primary_group_proc.stdout.strip()
-
-group_names_proc = run_id("-nG", user)
-if group_names_proc.returncode != 0:
-    result["error"] = f"failed to read group list for ES prep account user {user}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-
-group_names = []
-for item in group_names_proc.stdout.split():
-    if item and item not in group_names:
-        group_names.append(item)
-result["group_names"] = group_names
-result["supplementary_groups"] = [group for group in group_names if group != result["primary_group"]]
-
-if result["primary_group"] != expected_group:
-    result["error"] = f"existing ES prep account user {user} does not use primary group {expected_group}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-
-if expected_group not in group_names:
-    result["error"] = f"existing ES prep account user {user} is missing expected group {expected_group} in id -nG output"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-
-if result["supplementary_groups"]:
-    joined = ", ".join(result["supplementary_groups"])
-    result["error"] = (
-        f"existing ES prep account user {user} is broader than this slice allows; "
-        f"supplementary groups present: {joined}"
-    )
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
-
 group_proc = subprocess.run(["getent", "group", expected_group], check=False, capture_output=True, text=True)
-if group_proc.returncode != 0:
-    result["error"] = f"failed to read ES prep group entry for {expected_group}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
+if group_proc.returncode == 0:
+    result["group_exists"] = True
 
 group_line = ""
-for raw in group_proc.stdout.splitlines():
-    line = raw.strip()
-    if line:
-        group_line = line
-        break
+if result["group_exists"]:
+    for raw in group_proc.stdout.splitlines():
+        line = raw.strip()
+        if line:
+            group_line = line
+            break
+    group_fields = group_line.split(":")
+    if len(group_fields) < 4:
+        result["error"] = f"failed to parse ES prep group entry for {expected_group}"
+        result["blocker"] = True
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
 
-group_fields = group_line.split(":")
-if len(group_fields) < 4:
-    result["error"] = f"failed to parse ES prep group entry for {expected_group}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
+    result["group_gid"] = group_fields[2].strip()
+    group_entry_members = []
+    for member in group_fields[3].split(","):
+        member = member.strip()
+        if member and member not in group_entry_members:
+            group_entry_members.append(member)
+    result["group_entry_members"] = group_entry_members
 
-result["group_gid"] = group_fields[2].strip()
-group_entry_members = []
-for member in group_fields[3].split(","):
-    member = member.strip()
-    if member and member not in group_entry_members:
-        group_entry_members.append(member)
-result["group_entry_members"] = group_entry_members
+    passwd_proc = subprocess.run(["getent", "passwd"], check=False, capture_output=True, text=True)
+    if passwd_proc.returncode != 0:
+        result["error"] = f"failed to enumerate passwd entries while checking ES prep group {expected_group}"
+        result["blocker"] = True
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
 
-passwd_proc = subprocess.run(["getent", "passwd"], check=False, capture_output=True, text=True)
-if passwd_proc.returncode != 0:
-    result["error"] = f"failed to enumerate passwd entries while checking ES prep group {expected_group}"
-    print(json.dumps(result, sort_keys=True))
-    sys.exit(0)
+    primary_group_users = []
+    for raw in passwd_proc.stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        fields = line.split(":")
+        if len(fields) < 4:
+            continue
+        member_name = fields[0].strip()
+        member_gid = fields[3].strip()
+        if member_name and member_gid == result["group_gid"] and member_name not in primary_group_users:
+            primary_group_users.append(member_name)
+    result["primary_group_users"] = primary_group_users
 
-primary_group_users = []
-for raw in passwd_proc.stdout.splitlines():
-    line = raw.strip()
-    if not line:
-        continue
-    fields = line.split(":")
-    if len(fields) < 4:
-        continue
-    member_name = fields[0].strip()
-    member_gid = fields[3].strip()
-    if member_name and member_gid == result["group_gid"] and member_name not in primary_group_users:
-        primary_group_users.append(member_name)
-result["primary_group_users"] = primary_group_users
+    group_members = []
+    for member in primary_group_users + group_entry_members:
+        if member and member not in group_members:
+            group_members.append(member)
+    result["group_members"] = group_members
+    result["unexpected_group_members"] = [member for member in group_members if member != user]
 
-group_members = []
-for member in primary_group_users + group_entry_members:
-    if member and member not in group_members:
-        group_members.append(member)
-result["group_members"] = group_members
-result["unexpected_group_members"] = [member for member in group_members if member != user]
+uid_proc = run_id("-u", user)
+if uid_proc.returncode == 0:
+    result["user_exists"] = True
+    result["uid"] = uid_proc.stdout.strip()
 
-if user not in group_members:
-    result["error"] = (
-        f"failed to prove ES prep group {expected_group} membership for {user}; "
-        "group enumeration did not include the prep account user"
-    )
+if result["user_exists"]:
+    primary_group_proc = run_id("-gn", user)
+    if primary_group_proc.returncode != 0:
+        result["error"] = f"failed to read primary group for ES prep account user {user}"
+        result["blocker"] = True
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
+    result["primary_group"] = primary_group_proc.stdout.strip()
+
+    group_names_proc = run_id("-nG", user)
+    if group_names_proc.returncode != 0:
+        result["error"] = f"failed to read group list for ES prep account user {user}"
+        result["blocker"] = True
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
+
+    group_names = []
+    for item in group_names_proc.stdout.split():
+        if item and item not in group_names:
+            group_names.append(item)
+    result["group_names"] = group_names
+    result["supplementary_groups"] = [group for group in group_names if group != result["primary_group"]]
+
+if not result["group_exists"]:
+    if result["user_exists"]:
+        result["error"] = f"existing ES prep account user {user} exists but group {expected_group} does not"
+        result["blocker"] = True
+        print(json.dumps(result, sort_keys=True))
+        sys.exit(0)
+    result["status"] = "missing"
+    result["would_create_user"] = True
+    result["would_create_group"] = True
+    result["apply_ready"] = True
     print(json.dumps(result, sort_keys=True))
     sys.exit(0)
 
@@ -371,9 +372,49 @@ if result["unexpected_group_members"]:
         f"existing ES prep group {expected_group} is broader than this slice allows; "
         f"unexpected group members present: {joined}"
     )
+    result["blocker"] = True
     print(json.dumps(result, sort_keys=True))
     sys.exit(0)
 
+if not result["user_exists"]:
+    result["status"] = "missing"
+    result["would_create_user"] = True
+    result["apply_ready"] = True
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if result["primary_group"] != expected_group:
+    result["error"] = f"existing ES prep account user {user} does not use primary group {expected_group}"
+    result["blocker"] = True
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if expected_group not in result["group_names"]:
+    result["error"] = f"existing ES prep account user {user} is missing expected group {expected_group} in id -nG output"
+    result["blocker"] = True
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if result["supplementary_groups"]:
+    joined = ", ".join(result["supplementary_groups"])
+    result["error"] = (
+        f"existing ES prep account user {user} is broader than this slice allows; "
+        f"supplementary groups present: {joined}"
+    )
+    result["blocker"] = True
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+if user not in result["group_members"]:
+    result["error"] = (
+        f"failed to prove ES prep group {expected_group} membership for {user}; "
+        "group enumeration did not include the prep account user"
+    )
+    result["blocker"] = True
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0)
+
+result["apply_ready"] = True
 result["narrow_dedicated_account"] = True
 result["status"] = "pass"
 print(json.dumps(result, sort_keys=True))
@@ -381,19 +422,23 @@ PY
 }
 
 remote_alpha_es_config_tls_prep_runtime_meta() {
-  python3 - "${REMOTE_ALPHA_CONFIG_PATH}" "${REMOTE_ALPHA_BINARY_PATH}" <<'PY'
+  local config_read_path="${1:-${REMOTE_ALPHA_CONFIG_PATH}}"
+  local reported_config_path="${2:-${config_read_path}}"
+
+  python3 - "${config_read_path}" "${REMOTE_ALPHA_BINARY_PATH}" "${reported_config_path}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
 binary_path = sys.argv[2]
+reported_config_path = sys.argv[3]
 
 result = {
     "status": "fail",
     "error": "",
     "binary_path": binary_path,
-    "config_path": str(config_path),
+    "config_path": str(reported_config_path),
     "bind_address": "",
     "port": 0,
     "health_url": "",
@@ -720,9 +765,13 @@ PY
   done
 }
 
-remote_alpha_es_config_tls_prep_rewrite_config() {
+remote_alpha_es_config_tls_prep_render_rewritten_config() {
+  local source_config_path=$1
+  local destination_config_path=$2
+
   python3 - \
-    "${REMOTE_ALPHA_CONFIG_PATH}" \
+    "${source_config_path}" \
+    "${destination_config_path}" \
     "${REMOTE_ALPHA_SERVER_CERT_PATH}" \
     "${REMOTE_ALPHA_SERVER_KEY_PATH}" \
     "${REMOTE_ALPHA_SERVER_CLIENT_CA_PATH}" \
@@ -733,19 +782,19 @@ remote_alpha_es_config_tls_prep_rewrite_config() {
     "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_KEY_PATH}" \
     "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_ROOT_CA_PATH}" <<'PY'
 import json
-import os
 import sys
 
 config_path = sys.argv[1]
-server_cert = sys.argv[2]
-server_key = sys.argv[3]
-server_ca = sys.argv[4]
-ars_client_cert = sys.argv[5]
-ars_client_key = sys.argv[6]
-ars_root_ca = sys.argv[7]
-egs_client_cert = sys.argv[8]
-egs_client_key = sys.argv[9]
-egs_root_ca = sys.argv[10]
+destination_path = sys.argv[2]
+server_cert = sys.argv[3]
+server_key = sys.argv[4]
+server_ca = sys.argv[5]
+ars_client_cert = sys.argv[6]
+ars_client_key = sys.argv[7]
+ars_root_ca = sys.argv[8]
+egs_client_cert = sys.argv[9]
+egs_client_key = sys.argv[10]
+egs_root_ca = sys.argv[11]
 
 with open(config_path, encoding="utf-8") as f:
     payload = json.load(f)
@@ -766,11 +815,21 @@ execution_governance["client_cert_file"] = egs_client_cert
 execution_governance["client_key_file"] = egs_client_key
 execution_governance["root_ca_file"] = egs_root_ca
 
-temp_path = config_path + ".tmp"
-with open(temp_path, "w", encoding="utf-8") as f:
+with open(destination_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2, sort_keys=True)
     f.write("\n")
-os.replace(temp_path, config_path)
+PY
+}
+
+remote_alpha_es_config_tls_prep_rewrite_config() {
+  local temp_path="${REMOTE_ALPHA_CONFIG_PATH}.tmp"
+
+  remote_alpha_es_config_tls_prep_render_rewritten_config "${REMOTE_ALPHA_CONFIG_PATH}" "${temp_path}"
+  python3 - "${temp_path}" "${REMOTE_ALPHA_CONFIG_PATH}" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
 PY
 
   chown root:"${REMOTE_ALPHA_PREP_GROUP}" "${REMOTE_ALPHA_CONFIG_PATH}"
@@ -860,6 +919,70 @@ print(json.dumps({
     "tracked_state_paths": tracked_state,
 }, sort_keys=True))
 PY
+}
+
+remote_alpha_es_config_tls_prep_assert_runtime_path_equals() {
+  local runtime_meta_path=$1
+  local field=$2
+  local expected=$3
+  local description=$4
+  local actual=""
+
+  actual="$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "${field}" 2>/dev/null || true)"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "ES config did not switch to dedicated ${description} path ${expected}" >&2
+    return 1
+  fi
+}
+
+remote_alpha_es_config_tls_prep_assert_dedicated_runtime_paths() {
+  local runtime_meta_path=$1
+
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "tls.cert_file" \
+    "${REMOTE_ALPHA_SERVER_CERT_PATH}" \
+    "server cert" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "tls.key_file" \
+    "${REMOTE_ALPHA_SERVER_KEY_PATH}" \
+    "server key" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "tls.client_ca_file" \
+    "${REMOTE_ALPHA_SERVER_CLIENT_CA_PATH}" \
+    "server client CA" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "artifact_registry.client_cert_file" \
+    "${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_CERT_PATH}" \
+    "artifact-registry client cert" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "artifact_registry.client_key_file" \
+    "${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_KEY_PATH}" \
+    "artifact-registry client key" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "artifact_registry.root_ca_file" \
+    "${REMOTE_ALPHA_ARTIFACT_REGISTRY_ROOT_CA_PATH}" \
+    "artifact-registry root CA" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "execution_governance.client_cert_file" \
+    "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_CERT_PATH}" \
+    "execution-governance client cert" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "execution_governance.client_key_file" \
+    "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_KEY_PATH}" \
+    "execution-governance client key" || return 1
+  remote_alpha_es_config_tls_prep_assert_runtime_path_equals \
+    "${runtime_meta_path}" \
+    "execution_governance.root_ca_file" \
+    "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_ROOT_CA_PATH}" \
+    "execution-governance root CA" || return 1
 }
 
 remote_alpha_es_config_tls_prep_service_meta() {
@@ -1033,11 +1156,13 @@ PY
 
 remote_alpha_es_config_tls_prep_ownership_meta() {
   local runtime_meta_path=$1
+  local mode="${2:-validate}"
   local config_path tls_dir
   config_path="$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "config_path")"
   tls_dir="${REMOTE_ALPHA_TLS_DIR}"
 
   python3 - \
+    "${mode}" \
     "${config_path}" "root:${REMOTE_ALPHA_PREP_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${config_path}" 2>/dev/null || true)" \
     "${tls_dir}" "root:${REMOTE_ALPHA_PREP_GROUP}" "0710" "$(stat -c '%U:%G %a %n' "${tls_dir}" 2>/dev/null || true)" \
     "${REMOTE_ALPHA_SERVER_CERT_PATH}" "root:${REMOTE_ALPHA_PREP_GROUP}" "0640" "$(stat -c '%U:%G %a %n' "${REMOTE_ALPHA_SERVER_CERT_PATH}" 2>/dev/null || true)" \
@@ -1052,6 +1177,7 @@ remote_alpha_es_config_tls_prep_ownership_meta() {
 import json
 import sys
 
+mode = sys.argv[1].strip() or "validate"
 
 def normalize_mode(mode: str) -> str:
     mode = (mode or "").strip()
@@ -1062,7 +1188,7 @@ def normalize_mode(mode: str) -> str:
 
 items = []
 overall_ok = True
-args = sys.argv[1:]
+args = sys.argv[2:]
 for i in range(0, len(args), 4):
     path = args[i]
     expected_owner = args[i + 1]
@@ -1075,8 +1201,12 @@ for i in range(0, len(args), 4):
         if len(parts) >= 2:
             actual_owner = parts[0]
             actual_mode = normalize_mode(parts[1])
-    status = "pass" if actual_owner == expected_owner and actual_mode == expected_mode else "fail"
-    if status != "pass":
+    matches_expected = actual_owner == expected_owner and actual_mode == expected_mode
+    if mode == "inspect":
+        status = "matches" if matches_expected else "needs_change"
+    else:
+        status = "pass" if matches_expected else "fail"
+    if not matches_expected:
         overall_ok = False
     items.append({
         "path": path,
@@ -1084,11 +1214,13 @@ for i in range(0, len(args), 4):
         "expected_mode": expected_mode,
         "actual_owner": actual_owner,
         "actual_mode": actual_mode,
+        "change_required": not matches_expected,
         "status": status,
     })
 
 print(json.dumps({
-    "status": "pass" if overall_ok else "fail",
+    "status": ("pass" if overall_ok else "needs_change") if mode == "inspect" else ("pass" if overall_ok else "fail"),
+    "inspection_mode": mode,
     "items": items,
 }, sort_keys=True))
 PY
@@ -1096,21 +1228,29 @@ PY
 
 remote_alpha_es_config_tls_prep_write_summary() {
   local summary_path=$1
-  local runtime_meta_path=$2
-  local es_meta_path=$3
-  local ags_meta_path=$4
-  local ars_meta_path=$5
-  local egs_meta_path=$6
-  local es_health_meta_path=$7
-  local es_contract_meta_path=$8
-  local ownership_meta_path=$9
-  local service_account_meta_path=${10}
-  local rewrite_scope_meta_path=${11}
-  local ds_not_in_docker_group=${12}
-  local passwordless_sudo_for_ds=${13}
+  local source_runtime_meta_path=$2
+  local runtime_meta_path=$3
+  local health_env_meta_path=$4
+  local es_meta_path=$5
+  local ags_meta_path=$6
+  local ars_meta_path=$7
+  local egs_meta_path=$8
+  local es_health_meta_path=$9
+  local es_contract_meta_path=${10}
+  local ownership_meta_path=${11}
+  local service_account_meta_path=${12}
+  local rewrite_scope_meta_path=${13}
+  local ds_not_in_docker_group=${14}
+  local passwordless_sudo_for_ds=${15}
+  local operation_mode=${16}
+  local planned_summary_path=${17}
+  local healthcheck_env_path=${18}
+  local service_unit_path=${19}
 
   python3 - "${summary_path}" \
+    "${source_runtime_meta_path}" \
     "${runtime_meta_path}" \
+    "${health_env_meta_path}" \
     "${es_meta_path}" \
     "${ags_meta_path}" \
     "${ars_meta_path}" \
@@ -1122,6 +1262,10 @@ remote_alpha_es_config_tls_prep_write_summary() {
     "${rewrite_scope_meta_path}" \
     "${ds_not_in_docker_group}" \
     "${passwordless_sudo_for_ds}" \
+    "${operation_mode}" \
+    "${planned_summary_path}" \
+    "${healthcheck_env_path}" \
+    "${service_unit_path}" \
     "${REMOTE_ALPHA_PREP_USER}" \
     "${REMOTE_ALPHA_PREP_GROUP}" \
     "${remote_alpha_es_config_tls_prep_summary_schema_version}" <<'PY'
@@ -1133,21 +1277,28 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 summary_path = pathlib.Path(sys.argv[1])
-runtime = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
-es_meta = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
-ags_meta = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
-ars_meta = json.loads(pathlib.Path(sys.argv[5]).read_text(encoding="utf-8"))
-egs_meta = json.loads(pathlib.Path(sys.argv[6]).read_text(encoding="utf-8"))
-es_health = json.loads(pathlib.Path(sys.argv[7]).read_text(encoding="utf-8"))
-es_contract = json.loads(pathlib.Path(sys.argv[8]).read_text(encoding="utf-8"))
-ownership = json.loads(pathlib.Path(sys.argv[9]).read_text(encoding="utf-8"))
-service_account = json.loads(pathlib.Path(sys.argv[10]).read_text(encoding="utf-8"))
-rewrite_scope = json.loads(pathlib.Path(sys.argv[11]).read_text(encoding="utf-8"))
-ds_not_in_docker_group = sys.argv[12]
-passwordless_sudo_for_ds = sys.argv[13]
-prep_user = sys.argv[14]
-prep_group = sys.argv[15]
-schema_version = sys.argv[16]
+source_runtime = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+runtime = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+health_env = json.loads(pathlib.Path(sys.argv[4]).read_text(encoding="utf-8"))
+es_meta = json.loads(pathlib.Path(sys.argv[5]).read_text(encoding="utf-8"))
+ags_meta = json.loads(pathlib.Path(sys.argv[6]).read_text(encoding="utf-8"))
+ars_meta = json.loads(pathlib.Path(sys.argv[7]).read_text(encoding="utf-8"))
+egs_meta = json.loads(pathlib.Path(sys.argv[8]).read_text(encoding="utf-8"))
+es_health = json.loads(pathlib.Path(sys.argv[9]).read_text(encoding="utf-8"))
+es_contract = json.loads(pathlib.Path(sys.argv[10]).read_text(encoding="utf-8"))
+ownership = json.loads(pathlib.Path(sys.argv[11]).read_text(encoding="utf-8"))
+service_account = json.loads(pathlib.Path(sys.argv[12]).read_text(encoding="utf-8"))
+rewrite_scope = json.loads(pathlib.Path(sys.argv[13]).read_text(encoding="utf-8"))
+ds_not_in_docker_group = sys.argv[14]
+passwordless_sudo_for_ds = sys.argv[15]
+operation_mode = sys.argv[16].strip()
+planned_summary_path = sys.argv[17].strip()
+healthcheck_env_path = sys.argv[18].strip()
+service_unit_path = sys.argv[19].strip()
+prep_user = sys.argv[20]
+prep_group = sys.argv[21]
+schema_version = sys.argv[22]
+non_mutating = operation_mode == "check_only"
 
 
 def url_host(url: str) -> str:
@@ -1167,6 +1318,15 @@ def is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+def unique_strings(items):
+    values = []
+    for item in items:
+        item = str(item or "").strip()
+        if item and item not in values:
+            values.append(item)
+    return values
 
 
 direct_https_urls = {
@@ -1251,9 +1411,82 @@ tls_files = [
     },
 ]
 
+ownership_changes = []
+for item in ownership.get("items") or []:
+    ownership_changes.append({
+        "path": item.get("path", ""),
+        "current_owner": item.get("actual_owner", ""),
+        "current_mode": item.get("actual_mode", ""),
+        "planned_owner": item.get("expected_owner", ""),
+        "planned_mode": item.get("expected_mode", ""),
+        "change_required": item.get("change_required") is True,
+        "status": item.get("status", ""),
+    })
+
+paths_read = unique_strings([
+    source_runtime.get("binary_path", ""),
+    source_runtime.get("config_path", ""),
+    healthcheck_env_path,
+    source_runtime.get("tls", {}).get("cert_file", ""),
+    source_runtime.get("tls", {}).get("key_file", ""),
+    source_runtime.get("tls", {}).get("client_ca_file", ""),
+    source_runtime.get("artifact_registry", {}).get("client_cert_file", ""),
+    source_runtime.get("artifact_registry", {}).get("client_key_file", ""),
+    source_runtime.get("artifact_registry", {}).get("root_ca_file", ""),
+    source_runtime.get("execution_governance", {}).get("client_cert_file", ""),
+    source_runtime.get("execution_governance", {}).get("client_key_file", ""),
+    source_runtime.get("execution_governance", {}).get("root_ca_file", ""),
+    health_env.get("ca_cert", ""),
+    health_env.get("operator_cert", ""),
+    health_env.get("operator_key", ""),
+    service_unit_path,
+    *[item.get("path", "") for item in ownership.get("items") or []],
+])
+
+paths_written = unique_strings([
+    runtime.get("config_path", ""),
+    *[item.get("path", "") for item in ownership.get("items") or []],
+    planned_summary_path,
+])
+
+service_identity_root_default = es_meta.get("effective_user") == "root(default)" and es_meta.get("effective_group") == "root(default)"
+
+warnings = []
+blockers = []
+
+if ds_not_in_docker_group != "true":
+    warnings.append("ds_not_in_docker_group could not be proved true for the current host posture")
+if passwordless_sudo_for_ds != "false":
+    warnings.append("passwordless_sudo_for_ds could not be proved false for the current host posture")
+
+if service_account.get("blocker") is True or service_account.get("status") == "fail":
+    blockers.append(service_account.get("error") or "ES prep account state is not acceptable for this slice")
+if rewrite_scope.get("status") != "pass":
+    blockers.append("planned ES config rewrite scope is broader than the allowed config/TLS path rewrite slice")
+if not non_mutating and ownership.get("status") != "pass":
+    blockers.append("applied ES config/TLS ownership does not match the required root:es ownership model")
+if not service_identity_root_default:
+    blockers.append("es.service does not currently resolve to root(default), so this slice would not preserve the required live service posture")
+if es_health.get("status") != "pass":
+    blockers.append("current ES /health probe did not pass")
+if es_contract.get("status") != "pass":
+    blockers.append("current ES producer-contract probe did not pass")
+
+if blockers:
+    result_status = "fail"
+elif warnings:
+    result_status = "warn"
+else:
+    result_status = "pass"
+
 summary = {
     "schema_version": schema_version,
     "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "mode": {
+        "name": operation_mode,
+        "non_mutating": non_mutating,
+        "output": "stdout_json" if non_mutating else "summary_file",
+    },
     "slice": {
         "name": "remote-alpha-es-config-tls-prep",
         "classification": "ownership_prep_slice",
@@ -1272,6 +1505,27 @@ summary = {
         "enabled": es_meta["enabled"],
         "fragment_path": es_meta["fragment_path"],
         "exec_start": es_meta["exec_start"],
+    },
+    "plan": {
+        "paths_read": paths_read,
+        "paths_written": paths_written,
+        "ownership_changes": ownership_changes,
+        "prep_account": {
+            "user": prep_user,
+            "group": prep_group,
+            "user_exists": service_account.get("user_exists") is True,
+            "group_exists": service_account.get("group_exists") is True,
+            "exists": service_account.get("narrow_dedicated_account") is True,
+            "would_create_user": service_account.get("would_create_user") is True,
+            "would_create_group": service_account.get("would_create_group") is True,
+            "status": service_account.get("status", ""),
+            "apply_ready": service_account.get("apply_ready") is True,
+            "blocker": service_account.get("blocker") is True,
+        },
+        "service_identity_would_remain_root_default": service_identity_root_default,
+        "restart_required_in_apply_mode": True,
+        "warnings": warnings,
+        "blockers": blockers,
     },
     "dependencies": {
         "server_tls": runtime["tls"],
@@ -1302,7 +1556,7 @@ summary = {
         "live_service_posture": {
             "user": es_meta["effective_user"],
             "group": es_meta["effective_group"],
-            "unchanged_root_default": es_meta["effective_user"] == "root(default)" and es_meta["effective_group"] == "root(default)",
+            "unchanged_root_default": service_identity_root_default,
         },
         "writable_state": {
             "changed": False,
@@ -1359,6 +1613,11 @@ summary = {
         "staging_or_results_ownership_changes": "not_claimed",
         "new_remote_happy_path_proof": "not_claimed",
     },
+    "result": {
+        "status": result_status,
+        "ok": not blockers,
+        "non_mutating": non_mutating,
+    },
 }
 
 summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1369,12 +1628,16 @@ PY
 remote_alpha_es_config_tls_prep_main() {
   local source_config_copy_path source_runtime_meta_path runtime_meta_path health_env_meta_path
   local es_meta_path ags_meta_path ars_meta_path egs_meta_path
+  local planned_config_path check_only_report_path
   local es_health_result_path es_health_error_path
   local es_contract_result_path es_contract_error_path
+  local es_health_meta_path es_contract_meta_path
   local ownership_meta_path service_account_meta_path rewrite_scope_meta_path
   local tmpdir=""
   local ds_not_in_docker_group=""
   local passwordless_sudo_for_ds=""
+  local service_account_status=""
+  local check_only_ok=""
   local overall_ok=true
 
   remote_alpha_es_config_tls_prep_require_pinned_slice_inputs || return 1
@@ -1386,12 +1649,13 @@ remote_alpha_es_config_tls_prep_main() {
   remote_alpha_es_config_tls_prep_require_command curl || return 1
   remote_alpha_es_config_tls_prep_require_command systemctl || return 1
   remote_alpha_es_config_tls_prep_require_command getent || return 1
-  remote_alpha_es_config_tls_prep_require_command groupadd || return 1
-  remote_alpha_es_config_tls_prep_require_command useradd || return 1
-  remote_alpha_es_config_tls_prep_require_command chown || return 1
-  remote_alpha_es_config_tls_prep_require_command chmod || return 1
-  remote_alpha_es_config_tls_prep_require_command mkdir || return 1
   remote_alpha_es_config_tls_prep_require_command stat || return 1
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" != "check_only" ]]; then
+    remote_alpha_es_config_tls_prep_require_command groupadd || return 1
+    remote_alpha_es_config_tls_prep_require_command useradd || return 1
+    remote_alpha_es_config_tls_prep_require_command chown || return 1
+    remote_alpha_es_config_tls_prep_require_command chmod || return 1
+  fi
 
   tmpdir="$(mktemp -d)"
   trap "rm -rf -- '${tmpdir}'" EXIT
@@ -1399,6 +1663,7 @@ remote_alpha_es_config_tls_prep_main() {
   source_config_copy_path="${tmpdir}/source-es-config.json"
   source_runtime_meta_path="${tmpdir}/source-runtime.json"
   runtime_meta_path="${tmpdir}/runtime.json"
+  planned_config_path="${tmpdir}/planned-es-config.json"
   health_env_meta_path="${tmpdir}/health-env.json"
   es_meta_path="${tmpdir}/es-service.json"
   ags_meta_path="${tmpdir}/ags-service.json"
@@ -1406,13 +1671,14 @@ remote_alpha_es_config_tls_prep_main() {
   egs_meta_path="${tmpdir}/egs-service.json"
   es_health_result_path="${tmpdir}/es-health-response.json"
   es_health_error_path="${tmpdir}/es-health-error.txt"
+  es_health_meta_path="${tmpdir}/es-health-meta.json"
   es_contract_result_path="${tmpdir}/es-contract-response.json"
   es_contract_error_path="${tmpdir}/es-contract-error.txt"
+  es_contract_meta_path="${tmpdir}/es-contract-meta.json"
   ownership_meta_path="${tmpdir}/ownership.json"
   service_account_meta_path="${tmpdir}/service-account.json"
   rewrite_scope_meta_path="${tmpdir}/rewrite-scope.json"
-
-  remote_alpha_es_config_tls_prep_capture_config_copy "${REMOTE_ALPHA_CONFIG_PATH}" "${source_config_copy_path}"
+  check_only_report_path="${tmpdir}/check-only-report.json"
 
   remote_alpha_es_config_tls_prep_runtime_meta >"${source_runtime_meta_path}"
   if [[ "$(remote_alpha_es_config_tls_prep_json_field "${source_runtime_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
@@ -1428,6 +1694,76 @@ remote_alpha_es_config_tls_prep_main() {
 
   remote_alpha_es_config_tls_prep_verify_runtime_paths "${source_runtime_meta_path}" "${health_env_meta_path}" || return 1
   remote_alpha_es_config_tls_prep_assert_unit_execstart || return 1
+  remote_alpha_es_config_tls_prep_capture_config_copy "${REMOTE_ALPHA_CONFIG_PATH}" "${source_config_copy_path}"
+
+  remote_alpha_es_config_tls_prep_service_account_meta >"${service_account_meta_path}"
+  service_account_status="$(remote_alpha_es_config_tls_prep_json_field "${service_account_meta_path}" "status" 2>/dev/null || true)"
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" != "check_only" && "${service_account_status}" == "fail" ]]; then
+    cat "${service_account_meta_path}" >&2
+    return 1
+  fi
+
+  remote_alpha_es_config_tls_prep_render_rewritten_config "${REMOTE_ALPHA_CONFIG_PATH}" "${planned_config_path}" || return 1
+  remote_alpha_es_config_tls_prep_runtime_meta "${planned_config_path}" "${REMOTE_ALPHA_CONFIG_PATH}" >"${runtime_meta_path}"
+  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
+    cat "${runtime_meta_path}" >&2
+    return 1
+  fi
+  remote_alpha_es_config_tls_prep_assert_dedicated_runtime_paths "${runtime_meta_path}" || return 1
+  remote_alpha_es_config_tls_prep_config_rewrite_scope_meta "${source_config_copy_path}" "${planned_config_path}" >"${rewrite_scope_meta_path}"
+
+  if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "check_only" ]]; then
+    remote_alpha_es_config_tls_prep_service_meta "${REMOTE_ALPHA_SERVICE_NAME}" >"${es_meta_path}"
+    remote_alpha_es_config_tls_prep_service_meta "ags" >"${ags_meta_path}"
+    remote_alpha_es_config_tls_prep_service_meta "ars" >"${ars_meta_path}"
+    remote_alpha_es_config_tls_prep_service_meta "egs" >"${egs_meta_path}"
+
+    remote_alpha_es_config_tls_prep_health_probe_meta \
+      "$(remote_alpha_es_config_tls_prep_json_field "${source_runtime_meta_path}" "health_url" 2>/dev/null || true)" \
+      "${health_env_meta_path}" \
+      "${es_health_result_path}" \
+      "${es_health_error_path}" \
+      "artifact_registry" >"${es_health_meta_path}" || true
+
+    remote_alpha_es_config_tls_prep_contract_probe_meta \
+      "${source_runtime_meta_path}" \
+      "${health_env_meta_path}" \
+      "${es_contract_result_path}" \
+      "${es_contract_error_path}" >"${es_contract_meta_path}" || true
+
+    remote_alpha_es_config_tls_prep_ownership_meta "${runtime_meta_path}" inspect >"${ownership_meta_path}"
+
+    ds_not_in_docker_group="$(remote_alpha_es_config_tls_prep_ds_not_in_docker_group)"
+    passwordless_sudo_for_ds="$(remote_alpha_es_config_tls_prep_passwordless_sudo_for_ds)"
+
+    remote_alpha_es_config_tls_prep_write_summary \
+      "${check_only_report_path}" \
+      "${source_runtime_meta_path}" \
+      "${runtime_meta_path}" \
+      "${health_env_meta_path}" \
+      "${es_meta_path}" \
+      "${ags_meta_path}" \
+      "${ars_meta_path}" \
+      "${egs_meta_path}" \
+      "${es_health_meta_path}" \
+      "${es_contract_meta_path}" \
+      "${ownership_meta_path}" \
+      "${service_account_meta_path}" \
+      "${rewrite_scope_meta_path}" \
+      "${ds_not_in_docker_group}" \
+      "${passwordless_sudo_for_ds}" \
+      "${REMOTE_ALPHA_OPERATION_MODE}" \
+      "${REMOTE_ALPHA_SUMMARY_PATH}" \
+      "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" \
+      "${REMOTE_ALPHA_SERVICE_UNIT_PATH}"
+
+    cat "${check_only_report_path}"
+    check_only_ok="$(remote_alpha_es_config_tls_prep_json_field "${check_only_report_path}" "result.ok" 2>/dev/null || true)"
+    if [[ "${check_only_ok}" != "true" ]]; then
+      return 1
+    fi
+    return 0
+  fi
 
   remote_alpha_es_config_tls_prep_ensure_group || return 1
   remote_alpha_es_config_tls_prep_ensure_user || return 1
@@ -1445,43 +1781,7 @@ remote_alpha_es_config_tls_prep_main() {
     cat "${runtime_meta_path}" >&2
     return 1
   fi
-
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "tls.cert_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_SERVER_CERT_PATH}" ]]; then
-    echo "ES config did not switch to dedicated server cert path ${REMOTE_ALPHA_SERVER_CERT_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "tls.key_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_SERVER_KEY_PATH}" ]]; then
-    echo "ES config did not switch to dedicated server key path ${REMOTE_ALPHA_SERVER_KEY_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "tls.client_ca_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_SERVER_CLIENT_CA_PATH}" ]]; then
-    echo "ES config did not switch to dedicated server client CA path ${REMOTE_ALPHA_SERVER_CLIENT_CA_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "artifact_registry.client_cert_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_CERT_PATH}" ]]; then
-    echo "ES config did not switch to dedicated artifact-registry client cert path ${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_CERT_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "artifact_registry.client_key_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_KEY_PATH}" ]]; then
-    echo "ES config did not switch to dedicated artifact-registry client key path ${REMOTE_ALPHA_ARTIFACT_REGISTRY_CLIENT_KEY_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "artifact_registry.root_ca_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_ARTIFACT_REGISTRY_ROOT_CA_PATH}" ]]; then
-    echo "ES config did not switch to dedicated artifact-registry root CA path ${REMOTE_ALPHA_ARTIFACT_REGISTRY_ROOT_CA_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "execution_governance.client_cert_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_CERT_PATH}" ]]; then
-    echo "ES config did not switch to dedicated execution-governance client cert path ${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_CERT_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "execution_governance.client_key_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_KEY_PATH}" ]]; then
-    echo "ES config did not switch to dedicated execution-governance client key path ${REMOTE_ALPHA_EXECUTION_GOVERNANCE_CLIENT_KEY_PATH}" >&2
-    return 1
-  fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${runtime_meta_path}" "execution_governance.root_ca_file" 2>/dev/null || true)" != "${REMOTE_ALPHA_EXECUTION_GOVERNANCE_ROOT_CA_PATH}" ]]; then
-    echo "ES config did not switch to dedicated execution-governance root CA path ${REMOTE_ALPHA_EXECUTION_GOVERNANCE_ROOT_CA_PATH}" >&2
-    return 1
-  fi
+  remote_alpha_es_config_tls_prep_assert_dedicated_runtime_paths "${runtime_meta_path}" || return 1
 
   remote_alpha_es_config_tls_prep_config_rewrite_scope_meta "${source_config_copy_path}" "${REMOTE_ALPHA_CONFIG_PATH}" >"${rewrite_scope_meta_path}"
   if [[ "$(remote_alpha_es_config_tls_prep_json_field "${rewrite_scope_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
@@ -1510,18 +1810,18 @@ remote_alpha_es_config_tls_prep_main() {
     "${health_env_meta_path}" \
     "${es_health_result_path}" \
     "${es_health_error_path}" \
-    "artifact_registry" >"${tmpdir}/es-health-meta.json" || overall_ok=false
+    "artifact_registry" >"${es_health_meta_path}" || overall_ok=false
 
   remote_alpha_es_config_tls_prep_contract_probe_meta \
     "${runtime_meta_path}" \
     "${health_env_meta_path}" \
     "${es_contract_result_path}" \
-    "${es_contract_error_path}" >"${tmpdir}/es-contract-meta.json" || overall_ok=false
+    "${es_contract_error_path}" >"${es_contract_meta_path}" || overall_ok=false
 
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${tmpdir}/es-health-meta.json" "status" 2>/dev/null || true)" != "pass" ]]; then
+  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${es_health_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
     overall_ok=false
   fi
-  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${tmpdir}/es-contract-meta.json" "status" 2>/dev/null || true)" != "pass" ]]; then
+  if [[ "$(remote_alpha_es_config_tls_prep_json_field "${es_contract_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
     overall_ok=false
   fi
 
@@ -1532,27 +1832,29 @@ remote_alpha_es_config_tls_prep_main() {
 
   ds_not_in_docker_group="$(remote_alpha_es_config_tls_prep_ds_not_in_docker_group)"
   passwordless_sudo_for_ds="$(remote_alpha_es_config_tls_prep_passwordless_sudo_for_ds)"
-  if [[ "${ds_not_in_docker_group}" != "true" ]]; then
-    overall_ok=false
-  fi
-  if [[ "${passwordless_sudo_for_ds}" != "false" ]]; then
-    overall_ok=false
-  fi
+  # Record broader host-posture facts in the summary, but do not make them a
+  # correctness precondition for this ES config/TLS ownership prep slice.
 
   remote_alpha_es_config_tls_prep_write_summary \
     "${REMOTE_ALPHA_SUMMARY_PATH}" \
+    "${source_runtime_meta_path}" \
     "${runtime_meta_path}" \
+    "${health_env_meta_path}" \
     "${es_meta_path}" \
     "${ags_meta_path}" \
     "${ars_meta_path}" \
     "${egs_meta_path}" \
-    "${tmpdir}/es-health-meta.json" \
-    "${tmpdir}/es-contract-meta.json" \
+    "${es_health_meta_path}" \
+    "${es_contract_meta_path}" \
     "${ownership_meta_path}" \
     "${service_account_meta_path}" \
     "${rewrite_scope_meta_path}" \
     "${ds_not_in_docker_group}" \
-    "${passwordless_sudo_for_ds}"
+    "${passwordless_sudo_for_ds}" \
+    "${REMOTE_ALPHA_OPERATION_MODE}" \
+    "${REMOTE_ALPHA_SUMMARY_PATH}" \
+    "${REMOTE_ALPHA_HEALTHCHECK_ENV_PATH}" \
+    "${REMOTE_ALPHA_SERVICE_UNIT_PATH}"
 
   chmod 0644 "${REMOTE_ALPHA_SUMMARY_PATH}" 2>/dev/null || true
 

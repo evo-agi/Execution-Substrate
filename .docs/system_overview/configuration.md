@@ -798,6 +798,21 @@ typically through `sudo`, because the live Alpha posture keeps ES config and
 shared TLS material root-owned before the slice is applied and `ds` must still
 not rely on passwordless sudo for this path.
 
+The required first step before any live apply is:
+
+- `sudo scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
+
+`--dry-run` is an accepted alias for that same non-mutating repo-side check.
+That check-only path must perform discovery and validation only. It must emit a
+machine-readable JSON plan/report to stdout and must not create users or
+groups, call `chown` or `chmod`, rewrite `/etc/execution-substrate/es.json`,
+create or replace `/etc/execution-substrate/es-tls`, or restart
+`es.service`. It may inspect current service posture, current config and
+dependency paths, existing owner/mode state, and the planned ES config rewrite
+scope. The live apply step
+`sudo scripts/remote_alpha_prepare_es_config_tls.sh` may be run only after
+that check-only report is reviewed and accepted.
+
 If the target host already has an `es` user/group, the helper must prove that
 the pre-existing prep account is still acceptably narrow for this slice before
 it is reused. At minimum, that check must confirm primary group `es` and no
@@ -836,14 +851,17 @@ The ES-readable ownership model for this prep slice is:
 - current staging and retained-results ownership remain unchanged in this
   slice
 
-The host-local summary for that prep slice is
+The host-local apply summary for that prep slice is
 `execution-substrate.remote-alpha.es-config-tls-prep-summary.v1` at
 `/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`.
-It is a host-local ownership-prep record, not a new happy-path proof. It must
-record the live ES service posture, the dedicated ES config/TLS ownership
-model, preserved direct HTTPS/mTLS plus no-bridge/no-shared-filesystem facts,
-post-apply ES `/health` and producer-contract probe results, and explicit
-non-claim fields:
+Apply mode writes that file. Check-only must not create it; instead it must
+emit the same schema shape as stdout JSON with `mode.output` set to
+`stdout_json` and the configured summary path recorded under
+`plan.paths_written`. This is a host-local ownership-prep record, not a new
+happy-path proof. It must record the live ES service posture, the dedicated ES
+config/TLS ownership model, preserved direct HTTPS/mTLS plus
+no-bridge/no-shared-filesystem facts, post-apply ES `/health` and
+producer-contract probe results, and explicit non-claim fields:
 
 - `not_claimed.es_de_root`
 - `not_claimed.es_public_contract_changes`
@@ -856,6 +874,23 @@ non-claim fields:
 
 For that ES prep summary:
 
+- `mode.name`, `mode.non_mutating`, and `mode.output` must explicitly label
+  whether the record came from non-mutating check-only or live apply mode.
+- `plan.paths_read` must enumerate the current ES config/dependency/service
+  inputs and the ownership-inspection paths read by this slice.
+- `plan.paths_written` must enumerate the config, dedicated ES TLS paths, and
+  configured summary path that apply mode would write.
+- `plan.ownership_changes` must describe current owner/mode state plus planned
+  `root:es` owner/mode targets for the config file and dedicated ES TLS paths.
+- `plan.prep_account` must say whether `es:es` already exists or would be
+  created in apply mode.
+- `plan.service_identity_would_remain_root_default` must state whether the
+  current `es.service` posture would remain `root(default)` through this slice.
+- `plan.restart_required_in_apply_mode` must remain `true` because the live
+  apply path still restarts `es.service` once after rewriting the config/TLS
+  ownership slice.
+- `plan.warnings` and `plan.blockers` must capture advisory host-posture facts
+  plus any reasons the current host is not ready for a bounded live apply.
 - `validation.prep_account_narrowness` must prove the `es` prep account
   remains narrow for this slice before the summary may describe it as
   dedicated.
@@ -872,9 +907,16 @@ For that ES prep summary:
   `preserved_remote_path.no_shared_filesystem` must be explicit operator
   assertion records unless a later slice adds proof inputs that can validate
   them directly.
+- `security.ds_not_in_docker_group` and
+  `security.passwordless_sudo_for_ds` are host-posture observations recorded
+  in the summary. They must not, by themselves, turn an otherwise-valid ES
+  config/TLS ownership prep apply into a failed slice result.
 - `security.shared_unix_account_model_introduced` must be derived from
   `validation.prep_account_narrowness`. It must not report `false` unless that
   check proves the dedicated `es` prep account remained narrow for this slice.
+- `result.status`, `result.ok`, and `result.non_mutating` must summarize the
+  machine-readable outcome without implying that check-only performed any live
+  mutation.
 
 That summary must not persist TLS private-key PEM bodies, client-cert private
 keys, JWT-SVIDs, Vault tokens, API keys, private keys, secret payloads, or raw
