@@ -132,6 +132,24 @@ checker for a future non-root readiness gate. That explicit gate is still
 check-only and non-mutating; it does not change the live ES service user and
 it is not approval to implement ES de-rooting.
 
+The preferred repo-side operator wrapper for staging that checker onto a
+Remote Alpha host is
+`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`. That
+wrapper stages only
+`scripts/remote_alpha_check_es_writable_state_readiness.sh` plus
+`scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`,
+executes the staged checker only from a root-owned staged path under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, writes
+the Infrastructure Manager-compatible local artifacts
+`es-writable-state-readiness.json` and
+`es-writable-state-readiness-helper-staging-record.json`, and records the
+staged helper provenance needed to prove the checker ran from a root-owned
+path rather than a user upload directory. That wrapper is non-mutating except
+for temporary checker staging. It is readiness evidence only, not governed
+proof, and not approval to de-root ES. Explicit
+`--mode future-non-root-required` blocker findings remain expected until the
+service-user migration is approved and measured on a live host.
+
 Current branch status for this ownership model:
 
 - `Design-only`: this document now supplies the authoritative staging/results

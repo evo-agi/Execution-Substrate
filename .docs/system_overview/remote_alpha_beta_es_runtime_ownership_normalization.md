@@ -335,6 +335,22 @@ The checker now exposes two explicit non-mutating modes:
   - does not change `es.service` identity, run governed proof, or approve ES
     de-rooting by itself
 
+When the repo needs operator-staged host evidence rather than a direct
+host-local invocation, prefer the repo-side wrapper
+`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host>`.
+That wrapper stages only the public checker wrapper and its sourced internal
+helper, executes the staged checker only from a root-owned path under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, keeps
+the collection non-mutating except for temporary checker staging, and writes
+the local Infrastructure Manager-compatible evidence artifacts
+`es-writable-state-readiness.json` and
+`es-writable-state-readiness-helper-staging-record.json`. It is readiness
+evidence only, not proof, and not approval to de-root ES. Valid
+`overall_classification=blocker` output from
+`--mode future-non-root-required` must still be preserved as honest
+measurement evidence rather than treated as proof of mutation or wrapper
+failure by itself.
+
 ### 5.4 Retained-result packaging preflight
 
 Before packaging a retained bundle, ES should validate:

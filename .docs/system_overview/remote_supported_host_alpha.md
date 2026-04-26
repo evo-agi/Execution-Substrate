@@ -979,6 +979,138 @@ The required first step before any live apply is:
 
 - `sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
 
+## Remote ES Writable-State Readiness Evidence Flow
+
+Remote Supported-Host Alpha may also record one separate ES writable-state
+readiness evidence flow without mutating the live ES host state.
+
+This flow is intentionally limited to:
+
+- staging only the minimal repo-owned checker helper tree needed to run the
+  current non-mutating writable-state readiness checker
+- preserving the current live `es.service` `root(default)` posture
+- preserving the current AGS, ARS, and EGS service postures
+- preserving the current SPIRE selector posture, SPIRE socket traversal, and
+  Vault/runtime-helper semantics
+- preserving the current Nomad task user model
+- collecting readiness evidence and staging provenance only
+- leaving ES config/TLS ownership, staging ownership, retained results, and
+  service identity unchanged
+- preserving the current no-bridge and no-shared-filesystem remote path facts
+
+This flow is `Checker-backed` operator evidence only. It is non-mutating
+except for temporary checker staging under the helper staging tree. It is
+readiness evidence only. It is not governed proof. It is not approval to
+de-root ES.
+
+The preferred repo-side operator wrapper for this flow is:
+
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`
+
+The remote staged helper entrypoint for this flow remains:
+
+- `scripts/remote_alpha_check_es_writable_state_readiness.sh`
+
+The checker's sourced internal helper remains:
+
+- `scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`
+
+The remote host does not need a full Execution Substrate repo checkout for
+this evidence flow. The current accepted live-host invocation model is
+transient helper staging from the operator repo into a root-owned staging tree
+under `/var/tmp/execution-substrate-remote-alpha/helper-staging/`.
+
+At minimum, the operator must stage only:
+
+- `scripts/remote_alpha_check_es_writable_state_readiness.sh`
+- `scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`
+
+The staged helper layout must preserve those relative paths under the
+root-owned staging tree so the staged checker path is:
+
+- `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/scripts/remote_alpha_check_es_writable_state_readiness.sh`
+
+Execution must run from that root-owned staged tree, not from a user-writable
+upload path. Any user-scoped upload directory is transport only and must not
+be used as the execution path for the staged checker invocation.
+
+The staged checker must still be run as root because the accepted Alpha
+posture keeps live ES writable-state and runtime-helper semantics in the
+current root-compatible model, and the operator must not assume passwordless
+`sudo` for this path.
+
+The wrapper must default to `--mode alpha-compat`. Operators must request
+explicit `--mode future-non-root-required` when they want a non-mutating
+future-readiness gate. Blocker findings in that future mode are expected until
+service-user migration is approved and measured on a live host, and those
+blockers remain valid readiness evidence rather than wrapper failure by
+themselves.
+
+The required operator-staged provenance record for this transient helper flow
+must include:
+
+- the local git commit when available
+- the sha256 of each staged helper file
+- the remote staged path
+- the remote owner/mode proving the staged tree is root-owned rather than a
+  user-writable upload path
+- the requested checker mode
+- whether staging occurred
+- whether the checker ran
+- whether transient staging was removed
+- any sudo or preflight blocker if staging could not proceed
+
+The required operator-staged flow for this evidence slice is:
+
+1. Prefer the repo-side wrapper
+   `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host>`
+   from a visible terminal so any remote `sudo` prompt is visible to the
+   operator. That wrapper must stage only the minimal helper tree from the
+   local operator repo snapshot; a full remote repo checkout is not required.
+2. Install that helper tree into
+   `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/` as a
+   root-owned staged tree, record the required provenance above, and execute
+   the staged checker from that location.
+3. Run the wrapper's default `--mode alpha-compat` flow when collecting
+   current Alpha-compatible readiness evidence.
+4. Use `--mode future-non-root-required` only when the repo wants an explicit
+   non-mutating future readiness gate. A checker result with
+   `overall_classification=blocker` is still valid measurement evidence when
+   the JSON is structurally valid and honest.
+5. Review the local `es-writable-state-readiness.json` artifact. Collection
+   must fail closed only when the staged helper tree is not root-owned, staged
+   files are group-writable or world-writable, checker output is malformed,
+   checker output claims mutation, or checker output does not match the
+   requested mode.
+6. Preserve the local
+   `es-writable-state-readiness-helper-staging-record.json` artifact as
+   provenance only. That staging record is not proof and is not readiness by
+   itself.
+7. Remove the transient helper staging tree after successful collection.
+   `--keep-staging-on-failure` may retain it for diagnostics.
+8. Do not run governed proof as part of this staged operator flow.
+
+This operator-staged flow is readiness evidence only. It is not proof. It is
+not approval to de-root ES.
+
+The preferred productized operator commands are:
+
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host>`
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host> --mode future-non-root-required`
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host> --output-dir .out/remote-alpha-m75q`
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host> --output-dir .out/remote-alpha-m75q --keep-staging-on-failure`
+
+When `--output-dir` points at an Infrastructure Manager profile directory such
+as `.out/remote-alpha-m75q`, the wrapper must write predictable local evidence
+artifacts with the filenames Infrastructure Manager consumes directly:
+
+- `es-writable-state-readiness.json`
+- `es-writable-state-readiness-helper-staging-record.json`
+
+Those local artifacts are readiness evidence and provenance only. They are not
+a governed proof, they do not authorize a wider ES writable-state slice, and
+they do not approve changing `es.service` away from `root(default)`.
+
 `--dry-run` is an accepted alias for that same non-mutating repo-side check.
 That check-only path must perform discovery and validation only. It must emit a
 machine-readable JSON plan/report to stdout and must not create users or

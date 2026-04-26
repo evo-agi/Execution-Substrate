@@ -943,3 +943,42 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepOperatorStagingFlowIsDocumented(
 		}
 	}
 }
+
+func TestRemoteSupportedHostAlphaESWritableStateReadinessOperatorFlowIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	ownership := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
+	normalization := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md"))
+
+	for _, required := range []string{
+		"Remote ES Writable-State Readiness Evidence Flow",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"`scripts/remote_alpha_check_es_writable_state_readiness.sh`",
+		"`scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`",
+		"`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/scripts/remote_alpha_check_es_writable_state_readiness.sh`",
+		"The remote host does not need a full Execution Substrate repo checkout for this evidence flow.",
+		"At minimum, the operator must stage only:",
+		"Execution must run from that root-owned staged tree, not from a user-writable upload path.",
+		"transient helper staging from the operator repo into a root-owned staging tree under `/var/tmp/execution-substrate-remote-alpha/helper-staging/`",
+		"The wrapper must default to `--mode alpha-compat`.",
+		"Operators must request explicit `--mode future-non-root-required` when they want a non-mutating future-readiness gate.",
+		"Blocker findings in that future mode are expected until service-user migration is approved and measured on a live host",
+		"`es-writable-state-readiness.json`",
+		"`es-writable-state-readiness-helper-staging-record.json`",
+		"the requested checker mode",
+		"whether staging occurred",
+		"whether the checker ran",
+		"whether transient staging was removed",
+		"any sudo or preflight blocker if staging could not proceed",
+		"`overall_classification=blocker` is still valid measurement evidence",
+		"Collection must fail closed only when the staged helper tree is not root-owned, staged files are group-writable or world-writable, checker output is malformed, checker output claims mutation, or checker output does not match the requested mode.",
+		"`--keep-staging-on-failure` may retain it for diagnostics.",
+		"Do not run governed proof as part of this staged operator flow.",
+		"This operator-staged flow is readiness evidence only. It is not proof. It is not approval to de-root ES.",
+		"That wrapper is non-mutating except for temporary checker staging.",
+		"Valid `overall_classification=blocker` output from `--mode future-non-root-required` must still be preserved as honest measurement evidence",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(ownership, required) && !strings.Contains(normalization, required) {
+			t.Fatalf("remote ES writable-state readiness operator docs missing %q", required)
+		}
+	}
+}
