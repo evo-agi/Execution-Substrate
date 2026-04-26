@@ -93,7 +93,10 @@ func (s *Service) retainTerminalResult(locator executionLocator) (bool, error) {
 	}
 
 	layout := newExecutionPackageLayout(s.cfg, locator)
-	if hasFiles, err := resultDirectoryHasFiles(layout.resultStageDir); err != nil || !hasFiles {
+	if hasFiles, err := preflightRetainedResultSource(layout.resultStageDir, layout.platformStageDir, ownershipNormalizationMarkerExpectations{
+		RunID:         locator.RunID,
+		RequireMarker: false,
+	}); err != nil || !hasFiles {
 		return false, err
 	}
 
@@ -149,35 +152,6 @@ func (s *Service) readRetainedResultBundle(locator executionLocator) (ExecutionR
 
 func (s *Service) retainedResultBundlePath(locator executionLocator) string {
 	return filepath.Join(s.cfg.Execution.ResultsRootDir, locator.RunID, resultBundleFileName)
-}
-
-func resultDirectoryHasFiles(root string) (bool, error) {
-	info, err := os.Stat(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.IsDir() {
-		return false, fmt.Errorf("result path is not a directory")
-	}
-
-	hasFiles := false
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == root {
-			return nil
-		}
-		if !entry.IsDir() {
-			hasFiles = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return hasFiles, err
 }
 
 func writeResultBundle(writer io.Writer, root string) error {

@@ -256,7 +256,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestControlPlaneStaticScriptAPIPathRejectsDisallowedCaller(t *testing.T) {
-	stack := startSubmitStackWithOptions(t, submitStackOptions{
+	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{
 		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
 		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
 	})

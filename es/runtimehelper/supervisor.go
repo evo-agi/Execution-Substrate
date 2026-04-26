@@ -18,13 +18,21 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"execution-substrate/es/internal/ownershipnorm"
 )
 
 const (
 	helperReadinessTimeout = 10 * time.Second
 	processKillTimeout     = 5 * time.Second
 	workloadTimeoutExit    = 124
+	markerFileMode         = 0o640
+	normalizedDirMode      = 0o750
+	normalizedFileMode     = 0o640
+	normalizedExecFileMode = 0o750
 )
+
+var writeMarkerFile = os.WriteFile
 
 func runSupervisor(args []string) error {
 	cfg, err := parseSupervisorArgs(args)
@@ -99,12 +107,11 @@ func runSupervisor(args []string) error {
 			}
 			return fmt.Errorf("runtime identity helper exited: %w", helperErr)
 		case workloadErr := <-workloadErrCh:
-			if err := finalizeResultTree(cfg.resultDir); err != nil {
-				fmt.Fprintf(os.Stderr, "runtime result finalization failed: %v\n", err)
-			}
+			workloadOutcome := workloadExitError(workloadErr)
+			normalizationErr := postWorkloadNormalizationPhase(cfg)
 			terminateProcess(helperCmd.Process)
 			<-helperErrCh
-			return workloadExitError(workloadErr)
+			return combineWorkloadAndNormalizationError(workloadOutcome, normalizationErr)
 		case sig := <-signalCh:
 			terminateProcess(workloadCmd.Process)
 			terminateProcess(helperCmd.Process)
@@ -237,38 +244,206 @@ func prepareResultDir(resultDir string) error {
 	return nil
 }
 
-func finalizeResultTree(resultDir string) error {
-	info, err := os.Stat(resultDir)
+func postWorkloadNormalizationPhase(cfg supervisorConfig) error {
+	targetUID := os.Geteuid()
+	targetGID := os.Getegid()
+	if targetUID < 0 || targetGID < 0 {
+		return fmt.Errorf("runtime normalization target owner is invalid")
+	}
+
+	runID, err := requireEnv("EXEC_RUN_ID")
 	if err != nil {
-		if isNotExist(err) {
-			return nil
-		}
+		return err
+	}
+	platformDir := filepath.Join(filepath.Dir(cfg.workDir), "platform")
+	if err := normalizePostWorkloadTree(platformDir, targetUID, targetGID); err != nil {
+		return fmt.Errorf("normalize platform runtime dir: %w", err)
+	}
+	if err := normalizePostWorkloadTree(cfg.workDir, targetUID, targetGID); err != nil {
+		return fmt.Errorf("normalize workload runtime dir: %w", err)
+	}
+	if err := normalizePostWorkloadTree(cfg.resultDir, targetUID, targetGID); err != nil {
+		return fmt.Errorf("normalize workload result dir: %w", err)
+	}
+	if err := writeOwnershipNormalizationMarker(platformDir, strings.TrimSpace(runID), targetUID, targetGID); err != nil {
+		return fmt.Errorf("write ownership-normalization marker: %w", err)
+	}
+	return nil
+}
+
+func normalizePostWorkloadTree(root string, targetUID int, targetGID int) error {
+	info, err := os.Lstat(root)
+	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("workload result path is not a directory")
+		return fmt.Errorf("path is not a directory")
 	}
 
-	return filepath.WalkDir(resultDir, func(path string, entry os.DirEntry, walkErr error) error {
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		info, err := entry.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
+
+		if err := os.Lchown(path, targetUID, targetGID); err != nil {
+			return fmt.Errorf("set ownership on %s: %w", path, err)
+		}
 		switch {
 		case info.IsDir():
-			if err := os.Chmod(path, info.Mode().Perm()|0o555); err != nil {
-				return fmt.Errorf("make result directory readable %s: %w", path, err)
+			if err := os.Chmod(path, normalizedDirMode); err != nil {
+				return fmt.Errorf("set directory mode on %s: %w", path, err)
 			}
 		case info.Mode().IsRegular():
-			if err := os.Chmod(path, info.Mode().Perm()|0o444); err != nil {
-				return fmt.Errorf("make result file readable %s: %w", path, err)
+			if err := os.Chmod(path, normalizedRegularMode(info.Mode())); err != nil {
+				return fmt.Errorf("set file mode on %s: %w", path, err)
 			}
+		case info.Mode()&os.ModeSymlink != 0:
+			return nil
+		default:
+			return fmt.Errorf("path %s uses unsupported file mode %s", path, info.Mode().String())
 		}
 		return nil
 	})
+}
+
+func writeOwnershipNormalizationMarker(platformDir string, runID string, targetUID int, targetGID int) error {
+	markerPath := ownershipnorm.MarkerPath(platformDir)
+	marker := ownershipnorm.NewNormalizedMarker(runID, targetUID, targetGID, time.Now())
+
+	if err := ensureMarkerAuthorityBoundary(platformDir, "", workloadUID, workloadGID); err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(marker)
+	if err != nil {
+		return fmt.Errorf("marshal marker: %w", err)
+	}
+	if err := writeMarkerFile(markerPath, append(payload, '\n'), markerFileMode); err != nil {
+		return err
+	}
+	if err := os.Lchown(markerPath, targetUID, targetGID); err != nil {
+		return fmt.Errorf("set marker ownership: %w", err)
+	}
+	if err := os.Chmod(markerPath, markerFileMode); err != nil {
+		return fmt.Errorf("set marker mode: %w", err)
+	}
+	if err := ensureMarkerAuthorityBoundary(platformDir, markerPath, workloadUID, workloadGID); err != nil {
+		return err
+	}
+	if err := ownershipnorm.Validate(marker, ownershipnorm.ValidationOptions{
+		RunID:       runID,
+		ExpectedUID: &targetUID,
+		ExpectedGID: &targetGID,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureMarkerAuthorityBoundary(platformDir string, markerPath string, uid int, gid int) error {
+	platformInfo, err := os.Stat(platformDir)
+	if err != nil {
+		return fmt.Errorf("stat platform marker directory: %w", err)
+	}
+	if !platformInfo.IsDir() {
+		return fmt.Errorf("platform marker directory is not a directory")
+	}
+	if err := ensurePathIsNotWorkloadForgeable(platformDir, platformInfo, uid, gid, true); err != nil {
+		return err
+	}
+	if strings.TrimSpace(markerPath) == "" {
+		return nil
+	}
+
+	markerInfo, err := os.Lstat(markerPath)
+	if err != nil {
+		return fmt.Errorf("stat ownership-normalization marker: %w", err)
+	}
+	if !markerInfo.Mode().IsRegular() {
+		return fmt.Errorf("ownership-normalization marker is not a regular file")
+	}
+	return ensurePathIsNotWorkloadForgeable(markerPath, markerInfo, uid, gid, false)
+}
+
+func ensurePathIsNotWorkloadForgeable(path string, info os.FileInfo, uid int, gid int, directory bool) error {
+	pathUID, pathGID, err := fileOwnerIDs(info)
+	if err != nil {
+		return fmt.Errorf("read ownership for %s: %w", path, err)
+	}
+	if pathUID == uid || pathGID == gid {
+		return fmt.Errorf("%s must not be workload-owned", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s must not be group- or world-writable", path)
+	}
+	if directory {
+		if directoryWritableByUser(info, pathUID, pathGID, uid, gid) {
+			return fmt.Errorf("%s remains workload-writable", path)
+		}
+		return nil
+	}
+	if fileWritableByUser(info, pathUID, pathGID, uid, gid) {
+		return fmt.Errorf("%s remains workload-writable", path)
+	}
+	return nil
+}
+
+func fileOwnerIDs(info os.FileInfo) (int, int, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
+		return 0, 0, fmt.Errorf("unsupported file ownership metadata")
+	}
+	return int(stat.Uid), int(stat.Gid), nil
+}
+
+func directoryWritableByUser(info os.FileInfo, pathUID int, pathGID int, uid int, gid int) bool {
+	perm := info.Mode().Perm()
+	switch {
+	case pathUID == uid:
+		return perm&0o300 == 0o300
+	case pathGID == gid:
+		return perm&0o030 == 0o030
+	default:
+		return perm&0o003 == 0o003
+	}
+}
+
+func fileWritableByUser(info os.FileInfo, pathUID int, pathGID int, uid int, gid int) bool {
+	perm := info.Mode().Perm()
+	switch {
+	case pathUID == uid:
+		return perm&0o200 != 0
+	case pathGID == gid:
+		return perm&0o020 != 0
+	default:
+		return perm&0o002 != 0
+	}
+}
+
+func normalizedRegularMode(mode os.FileMode) os.FileMode {
+	if mode.Perm()&0o111 != 0 {
+		return normalizedExecFileMode
+	}
+	return normalizedFileMode
+}
+
+func combineWorkloadAndNormalizationError(workloadErr error, normalizationErr error) error {
+	if normalizationErr == nil {
+		return workloadErr
+	}
+	if workloadErr == nil {
+		return newExitError(1, fmt.Errorf("post-workload normalization failed: %w", normalizationErr))
+	}
+
+	var exitErr *exitError
+	if errors.As(workloadErr, &exitErr) {
+		return newExitError(exitErr.code, fmt.Errorf("%s; post-workload normalization failed: %v", exitErr.Error(), normalizationErr))
+	}
+	return fmt.Errorf("%w; post-workload normalization failed: %v", workloadErr, normalizationErr)
 }
 
 func materializeHelperPrivateSPIRESocket(paths runtimePaths) error {

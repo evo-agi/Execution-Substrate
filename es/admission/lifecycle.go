@@ -271,6 +271,13 @@ func (s *Service) maybeCleanupSuccessfulStageRoot(locator executionLocator, allo
 	}
 
 	layout := newExecutionPackageLayout(s.cfg, locator)
+	if err := preflightSuccessfulStageCleanup(layout.stageRootDir, layout.platformStageDir, ownershipNormalizationMarkerExpectations{
+		RunID:         locator.RunID,
+		RequireMarker: false,
+	}); err != nil {
+		log.Printf("es successful stage cleanup skipped run_id=%s path=%s err=%v", locator.RunID, layout.stageRootDir, err)
+		return
+	}
 	if err := os.RemoveAll(layout.stageRootDir); err != nil {
 		log.Printf("es successful stage cleanup failed run_id=%s path=%s err=%v", locator.RunID, layout.stageRootDir, err)
 	}

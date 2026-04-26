@@ -184,7 +184,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestExecutionLifecycleRejectsInvalidRunID(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := doJSONRequest(
 		t,
@@ -202,7 +202,7 @@ func TestExecutionLifecycleRejectsInvalidRunID(t *testing.T) {
 }
 
 func TestExecutionLifecycleMissingJobReturns404(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithNomadHandler(t, submitStackOptions{}, missingExecutionNomadHandler("run-deadbeefdeadbeef"))
 
 	response := doJSONRequest(
 		t,
@@ -240,7 +240,7 @@ func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 }
 
 func TestExecutionLogsReturns403WhenCallerIsDisallowed(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := doJSONRequest(
 		t,

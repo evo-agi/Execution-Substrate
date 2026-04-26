@@ -77,7 +77,7 @@ func TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput(t *tes
 }
 
 func TestExecutionResultReturns403WhenCallerIsDisallowed(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := executionResultRequestWithCaller(t, stack, "run-deadbeefdeadbeef", "service/deployment")
 	defer response.Body.Close()

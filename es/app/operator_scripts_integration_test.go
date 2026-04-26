@@ -527,7 +527,7 @@ func TestGenerateControlPlaneDockerfile(t *testing.T) {
 }
 
 func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "10_health_check.sh")
@@ -851,7 +851,7 @@ func runWorkloadZoneVaultBlobReadinessWithFakeCurl(t *testing.T, repoRoot string
 }
 
 func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "10_health_check.sh")
@@ -1152,7 +1152,7 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 }
 
 func TestDiagnosticsScriptRuntimeConfigCategoryBundleAcceptsSurfacedFailureLabel(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "70_diagnostics.sh")
@@ -1348,7 +1348,7 @@ exit 7
 }
 
 func TestDiagnosticsSummaryScriptPrintsCompactBundleSummary(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	collectorPath := filepath.Join(repoRoot, "scripts", "70_diagnostics.sh")
@@ -1457,7 +1457,7 @@ func TestDiagnosticsSummaryScriptPrintsCompactBundleSummary(t *testing.T) {
 }
 
 func TestPublishScriptCategorizesAuthorizationFailure(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "20_publish.sh")
@@ -1579,8 +1579,7 @@ func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
 }
 
 func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
-	stack := startSubmitStack(t)
-	stack.nomad.shutdown(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	repoRoot := executionPlatformRepoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "40_submit.sh")

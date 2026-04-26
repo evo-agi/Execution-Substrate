@@ -792,7 +792,15 @@ The active repo-derived ES runtime inputs for this prep slice remain:
   `/etc/execution-substrate/es.json` already carries; this slice must not move
   or re-own them
 
-The repo-owned entrypoint for that slice remains
+The preferred repo-side operator wrapper for that slice is
+`scripts/remote_alpha_stage_es_config_tls_prep.sh`.
+
+That productized wrapper runs from the operator repo, stages only the minimal
+helper tree onto the remote host, defaults to non-mutating check-only, records
+the required staging provenance, executes only from the root-owned staged
+helper path, and requires `--apply` before any live mutation is attempted.
+
+The remote staged helper entrypoint for that slice remains
 `scripts/remote_alpha_prepare_es_config_tls.sh`.
 
 The remote host does not need a full Execution Substrate repo checkout for
@@ -826,7 +834,12 @@ must include:
 
 The required operator-staged flow for this slice is:
 
-1. Copy only the minimal helper tree from the local operator repo snapshot; a
+1. Prefer the repo-side wrapper
+   `scripts/remote_alpha_stage_es_config_tls_prep.sh --ssh-target <user@host>`
+   for the default non-mutating check-only path. That wrapper must stage only
+   the minimal helper tree from the local operator repo snapshot; a full
+   remote repo checkout is not required.
+   Copy only the minimal helper tree from the local operator repo snapshot; a
    full remote repo checkout is not required.
 2. Install that helper tree into
    `/var/tmp/execution-substrate-remote-alpha/helper-staging/` as a root-owned
@@ -851,6 +864,31 @@ The required operator-staged flow for this slice is:
 8. Do not run governed proof as part of this staged operator flow.
 
 This operator-staged flow is ownership prep only. It is not ES de-rooting.
+
+The preferred productized operator commands are:
+
+- `scripts/remote_alpha_stage_es_config_tls_prep.sh --ssh-target <user@host>`
+- `scripts/remote_alpha_stage_es_config_tls_prep.sh --ssh-target <user@host> --apply`
+- `scripts/remote_alpha_stage_es_config_tls_prep.sh --ssh-target <user@host> --output-dir .out/remote-alpha-m75q`
+- `scripts/remote_alpha_stage_es_config_tls_prep.sh --ssh-target <user@host> --output-dir .out/remote-alpha-m75q --apply`
+
+The wrapper's default invocation above must remain check-only. The second form
+must run apply only after the wrapper's repo-side gate validation accepts the
+check-only JSON report for this slice.
+
+When `--output-dir` points at an Infrastructure Manager profile directory such
+as `.out/remote-alpha-m75q`, the wrapper must write predictable local evidence
+artifacts with the filenames Infrastructure Manager consumes directly:
+
+- `es-config-tls-check-only.json`
+- `es-config-tls-helper-staging-record.json`
+- `es-config-tls-apply-summary.json` when `--apply` is used
+- `es-config-tls-apply-stdout.txt` when `--apply` is used
+
+Those local artifacts are hardening evidence/provenance only. They are not a
+new governed proof, they do not authorize a wider ES prep slice, and they do
+not change the host-local apply summary contract under
+`/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`.
 
 The required first step before any live apply is:
 

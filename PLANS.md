@@ -103,6 +103,38 @@ host-local hardening work with one separate ES config/TLS ownership prep slice.
   changes, or broader proof reruns; rerun only the small verification needed to
   validate the ES host-side apply and refresh the non-secret summary.
 
+## Future ES Privilege-Boundary Design Track
+
+`Reopened redesign seam`: full ES de-root beyond the current config/TLS
+ownership prep bridge is a future structural design track, not the next local
+hardening task.
+
+- This future track covers the long-lived ES service privilege model, Nomad
+  task user model, runtime-helper/supervisor ownership, SPIRE selector posture,
+  SPIRE socket traversal, staging/results ownership, retained-result
+  materialization, and operator maintenance/rollback model as one boundary
+  package rather than as implicit follow-on hardening.
+- The current accepted Alpha posture remains ES `root(default)` plus the
+  bounded config/TLS ownership prep bridge. Do not treat that bridge as proof
+  that ES is already de-rooted.
+- The current branch now carries design-only and branch-local readiness inputs
+  for parts of Option B: the privileged-operation matrix, writable-state
+  ownership model, runtime ownership-normalization contract, non-mutating
+  writable-state readiness checker with `alpha-compat` and
+  `future-non-root-required` modes, and repo-local normalized-run lifecycle
+  tests covering success, failed, lost, canceled, invalid-marker,
+  missing-marker Alpha compatibility, and future non-root-required preflight
+  behavior.
+- That branch-local readiness is strong for parts of Option B, but it is not
+  live-host proof: real `es:es` ownership of staging/results on Remote Alpha
+  remains unmeasured, the long-lived service-user migration remains
+  unimplemented, the current root-start runtime-helper/Nomad/SPIRE
+  compatibility edges remain explicit, and no approval exists to flip
+  `es.service` away from `root(default)`.
+- Design assessment for Remote Alpha -> Beta may compare alternative
+  architectures, but implementation work must not proceed until the chosen
+  boundary model and required evidence are documented explicitly.
+
 ## Current Planning Objective
 
 The repository is no longer in rewrite-by-default mode.

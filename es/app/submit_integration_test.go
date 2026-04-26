@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path"
@@ -55,8 +56,20 @@ const (
 	helperCapsLogPrefix            = "RUNTIME-HELPER-CAPS"
 	workloadBoundaryLogPrefix      = "RUNTIME-WORKLOAD-BOUNDARY"
 
-	runtimeIdentityCapabilitySkipPrefix = "runtime identity integration requires Linux/Nomad/Docker substrate with bind-mounted SPIRE Workload API Unix socket support"
+	dockerDaemonCapabilitySkipPrefix      = "integration test requires healthy Docker daemon"
+	dockerBackedNomadCapabilitySkipPrefix = "integration test requires healthy Docker-backed Nomad client"
+	runtimeIdentityCapabilitySkipPrefix   = "runtime identity integration requires Linux/Nomad/Docker substrate with bind-mounted SPIRE Workload API Unix socket support"
 )
+
+var dockerDaemonCapabilityProbe struct {
+	once   sync.Once
+	reason string
+}
+
+var dockerBackedNomadCapabilityProbe struct {
+	once   sync.Once
+	reason string
+}
 
 var slice1RuntimeIdentityCapabilityProbe struct {
 	once   sync.Once
@@ -324,7 +337,7 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 }
 
 func TestSubmitReturns403WhenCallerIsDisallowed(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := submitExecutionRequestWithCaller(t, stack, "service/execution", buildSubmitRequestBody(t, stack))
 	defer response.Body.Close()
@@ -338,7 +351,7 @@ func TestSubmitReturns403WhenCallerIsDisallowed(t *testing.T) {
 }
 
 func TestSubmitReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := submitExecutionRequestWithCaller(t, stack, "service/deployment", buildSubmitRequestBody(t, stack))
 	defer response.Body.Close()
@@ -453,6 +466,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestWorkloadCanCreateAndUseLocalRuntimeIdentityEndpointFromTmpfsWorkspace(t *testing.T) {
+	requireHealthyDockerDaemon(t)
+
 	const endpointEnvValue = "unix:///runtime-identity-smoke/endpoint"
 	command := exec.Command(
 		"docker", "run", "--rm",
@@ -1048,7 +1063,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 }
 
 func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1074,7 +1089,7 @@ func TestSubmitRejectsMountArtifactWhenEvidenceBlobIsMissing(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1097,7 +1112,7 @@ func TestSubmitRejectsMountArtifactWithPathTraversalArchive(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1121,7 +1136,7 @@ func TestSubmitRejectsMountArtifactWithSymlinkEscape(t *testing.T) {
 }
 
 func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -1144,7 +1159,7 @@ func TestSubmitRejectsMountArtifactThatExceedsSizeLimit(t *testing.T) {
 }
 
 func TestSubmitRejectsOverlappingMountTargets(t *testing.T) {
-	stack := startSubmitStack(t)
+	stack := startSubmitStackWithoutNomad(t)
 
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{
 		{
@@ -1172,8 +1187,9 @@ type submitStack struct {
 	publishCallerPath   string
 	executionCallerPath string
 
-	nomad     *nomadHarness
-	mockSPIRE *mockWorkloadAPIServer
+	nomad       *nomadHarness
+	nomadServer *httptest.Server
+	mockSPIRE   *mockWorkloadAPIServer
 
 	ars *arsapp.App
 	egs *egsapp.App
@@ -1209,6 +1225,7 @@ type submitStackOptions struct {
 	allowedExecutionCallerPrefixes []string
 	publishCallerPath              string
 	executionCallerPath            string
+	nomadHandler                   http.Handler
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -1219,11 +1236,38 @@ func startSubmitStackWithNetworkAccess(t *testing.T, networkAccess bool) *submit
 	return startSubmitStackWithOptions(t, submitStackOptions{networkAccess: networkAccess})
 }
 
+func startSubmitStackWithoutNomad(t *testing.T) *submitStack {
+	t.Helper()
+	return startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{})
+}
+
+func startSubmitStackWithOptionsWithoutNomad(t *testing.T, opts submitStackOptions) *submitStack {
+	t.Helper()
+	opts.nomadHandler = unexpectedNomadDependencyHandler()
+	return startSubmitStackWithOptions(t, opts)
+}
+
+func startSubmitStackWithNomadHandler(t *testing.T, opts submitStackOptions, handler http.Handler) *submitStack {
+	t.Helper()
+	opts.nomadHandler = handler
+	return startSubmitStackWithOptions(t, opts)
+}
+
 func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitStack {
 	t.Helper()
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
 	fixture := newTLSFixture(t)
-	nomad := startNomadHarness(t, rootDir)
+	var nomad *nomadHarness
+	var nomadServer *httptest.Server
+	nomadBaseURL := ""
+	if opts.nomadHandler != nil {
+		nomadServer = httptest.NewServer(opts.nomadHandler)
+		nomadBaseURL = nomadServer.URL
+	} else {
+		requireHealthyDockerBackedNomadClient(t)
+		nomad = startNomadHarness(t, rootDir)
+		nomadBaseURL = nomad.baseURL()
+	}
 	runtimeSupportBinary := buildRuntimeSupportBinary(t, rootDir)
 	mockSPIRE := startMockWorkloadAPIServer(t, rootDir, mockWorkloadAPIServerOptions{
 		jwtTTL:    firstNonZeroDuration(opts.mockSPIREJWTTTL, 20*time.Second),
@@ -1272,6 +1316,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		publishCallerPath:       publishCallerPath,
 		executionCallerPath:     executionCallerPath,
 		nomad:                   nomad,
+		nomadServer:             nomadServer,
 		mockSPIRE:               mockSPIRE,
 		intentDigest:            labeledDigest("aa"),
 		derivationSpecDigest:    labeledDigest("bb"),
@@ -1467,7 +1512,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			DefaultMode: esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
 		},
 		Nomad: esconfig.NomadConfig{
-			BaseURL:        stack.nomad.baseURL(),
+			BaseURL:        nomadBaseURL,
 			Datacenter:     "dc1",
 			TimeoutSeconds: 5,
 		},
@@ -1526,23 +1571,69 @@ func startRuntimeIdentitySubmitStackWithNetworkAccess(t *testing.T, networkAcces
 	return startSubmitStackWithNetworkAccess(t, networkAccess)
 }
 
-func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
+func requireHealthyDockerDaemon(t *testing.T) {
 	t.Helper()
 
-	slice1RuntimeIdentityCapabilityProbe.once.Do(func() {
-		if _, err := exec.LookPath("docker"); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("docker binary lookup failed: %v", err))
-			return
-		}
-		if _, err := exec.LookPath("nomad"); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("nomad binary lookup failed: %v", err))
-			return
-		}
-		if output, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
-			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("docker daemon probe failed: %v output=%s", err, strings.TrimSpace(string(output))))
-			return
-		}
+	if reason := dockerDaemonCapabilityReason(); reason != "" {
+		t.Skip(dockerDaemonCapabilitySkipReason(reason))
+	}
+}
 
+func dockerDaemonCapabilityReason() string {
+	dockerDaemonCapabilityProbe.once.Do(func() {
+		dockerDaemonCapabilityProbe.reason = probeHealthyDockerDaemonCapability()
+	})
+	return dockerDaemonCapabilityProbe.reason
+}
+
+func requireHealthyDockerBackedNomadClient(t *testing.T) {
+	t.Helper()
+
+	dockerBackedNomadCapabilityProbe.once.Do(func() {
+		dockerBackedNomadCapabilityProbe.reason = probeHealthyDockerBackedNomadClientCapability()
+	})
+	if reason := dockerBackedNomadCapabilityProbe.reason; reason != "" {
+		t.Skip(reason)
+	}
+}
+
+func probeHealthyDockerDaemonCapability() string {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Sprintf("docker binary lookup failed: %v", err)
+	}
+	if output, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
+		return fmt.Sprintf("docker daemon probe failed: %v output=%s", err, strings.TrimSpace(string(output)))
+	}
+	return ""
+}
+
+func probeHealthyDockerBackedNomadClientCapability() string {
+	if reason := dockerDaemonCapabilityReason(); reason != "" {
+		return reason
+	}
+	if _, err := exec.LookPath("nomad"); err != nil {
+		return fmt.Sprintf("nomad binary lookup failed: %v", err)
+	}
+
+	probeWorkspace, err := runtimeIdentityCapabilityProbeWorkspace()
+	if err != nil {
+		return fmt.Sprintf("create Nomad capability probe workspace: %v", err)
+	}
+	defer os.RemoveAll(probeWorkspace)
+
+	harness, reason := startNomadHarnessForCapabilityProbe(probeWorkspace)
+	if reason != "" {
+		return reason
+	}
+	harness.stop()
+	return ""
+}
+
+func requireSlice1RuntimeIdentityCapabilities(t *testing.T) {
+	t.Helper()
+	requireHealthyDockerBackedNomadClient(t)
+
+	slice1RuntimeIdentityCapabilityProbe.once.Do(func() {
 		probeRoot, err := socketTestRootDirPath()
 		if err != nil {
 			slice1RuntimeIdentityCapabilityProbe.reason = runtimeIdentityCapabilitySkipReason(fmt.Sprintf("socket probe root unavailable: %v", err))
@@ -1602,11 +1693,42 @@ func runtimeIdentityCapabilitySkipReason(detail string) string {
 	return runtimeIdentityCapabilitySkipPrefix + "; capability probe failed: " + detail
 }
 
+func dockerBackedNomadCapabilitySkipReason(detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return dockerBackedNomadCapabilitySkipPrefix + "; capability probe failed"
+	}
+	return dockerBackedNomadCapabilitySkipPrefix + "; capability probe failed: " + detail
+}
+
+func dockerDaemonCapabilitySkipReason(detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return dockerDaemonCapabilitySkipPrefix + "; capability probe failed"
+	}
+	return dockerDaemonCapabilitySkipPrefix + "; capability probe failed: " + detail
+}
+
 func runtimeIdentityProbeLooksLikeDockerDesktopMacOS(detail string) bool {
 	lower := strings.ToLower(detail)
 	return strings.Contains(detail, "OSError: [Errno 95]") ||
 		strings.Contains(detail, "Errno 95") ||
 		strings.Contains(lower, "not supported")
+}
+
+func unexpectedNomadDependencyHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "test unexpectedly reached Nomad dependency; this scenario should not require a healthy Docker-backed Nomad client", http.StatusServiceUnavailable)
+	})
+}
+
+func missingExecutionNomadHandler(runID string) http.Handler {
+	jobID := "exec-" + strings.TrimSpace(runID)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/job/"+jobID {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "test unexpectedly reached Nomad dependency; this scenario should only probe a missing execution lookup", http.StatusServiceUnavailable)
+	})
 }
 
 func acceptRuntimeIdentitySocketProbeConnections(listener net.Listener) {
@@ -2850,6 +2972,10 @@ func (s *submitStack) shutdownAll(t *testing.T) {
 	}
 	if s.mockSPIRE != nil {
 		s.mockSPIRE.stop()
+	}
+	if s.nomadServer != nil {
+		s.nomadServer.Close()
+		s.nomadServer = nil
 	}
 	s.nomad.shutdown(t)
 }
