@@ -9,8 +9,9 @@ It inventories the current privileged or potentially privileged ES operations
 that still matter after the accepted Remote Supported-Host Alpha config/TLS
 ownership prep slice.
 
-It does not authorize implementation by itself. It does not claim that the full
-ES/runtime privilege boundary is solved. It describes the accepted Alpha
+This matrix does not authorize additional live host changes by itself. It does
+not claim that the full ES/runtime privilege boundary is solved. It describes
+the accepted Alpha
 posture where:
 
 - `Current invariant`: AGS, ARS, and EGS are already de-rooted.
@@ -56,8 +57,9 @@ To keep the matrix readable, some requested fields are grouped:
 
 The matrix is scoped to the recommended **Option B** direction:
 
-- de-root the long-lived ES service for Beta if the ownership model is
-  explicitly re-derived and tested
+- preserve the completed long-lived `es.service` service-user migration as the
+  accepted bounded slice, with that completed migration remaining limited to
+  `es.service` only
 - keep the current root-start runtime helper/task model explicit as a bounded
   compatibility edge initially
 - defer full runtime-boundary re-derivation to later **Option C** work
@@ -227,7 +229,8 @@ The current conclusion for Option B readiness is:
 Non-goals of this document are:
 
 - claiming full ES/runtime de-root
-- changing `es.service` `User=` or `Group=` on a live host
+- authorizing or performing additional live `es.service` `User=` or `Group=`
+  changes beyond the completed bounded `es.service` service-user migration
 - changing the current Nomad task user model
 - changing the current root-start runtime helper or supervisor implementation
 - changing the current SPIRE selector posture
@@ -239,9 +242,12 @@ Non-goals of this document are:
 
 ## 10. Approval boundary
 
-This matrix is not approval to run live ES de-root apply.
+This matrix does not authorize additional live host changes by itself.
 
-It is a design input only. Implementation work still requires updated
+Further runtime-boundary changes require separate approval, updated
 authoritative docs for the chosen architecture, explicit compatibility-edge
 labeling, tests, migration steps, rollback steps, and bounded evidence
 requirements before any code or host change is treated as accepted.
+
+The completed long-lived service-user migration remains bounded to
+`es.service` only.
