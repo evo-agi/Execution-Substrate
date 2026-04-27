@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,7 +19,7 @@ import (
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
-func TestValidateExecutionRuntimeInputsAcceptsRegularBinaryAndUnixSocket(t *testing.T) {
+func TestValidateExecutionRuntimeInputsAcceptsRegularBinaryWithoutLiveSPIRESocketAccess(t *testing.T) {
 	rootDir, err := os.MkdirTemp("/tmp", "es-admission-")
 	if err != nil {
 		t.Fatalf("mkdir temp root: %v", err)
@@ -34,23 +33,39 @@ func TestValidateExecutionRuntimeInputsAcceptsRegularBinaryAndUnixSocket(t *test
 		t.Fatalf("write runtime support binary: %v", err)
 	}
 
-	socketPath := filepath.Join(rootDir, "spire.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	defer listener.Close()
-
 	err = validateExecutionRuntimeInputs(esconfig.ExecutionConfig{
 		RuntimeSupportBinary:       binaryPath,
-		SPIREWorkloadAPISocketPath: socketPath,
+		SPIREWorkloadAPISocketPath: filepath.Join(rootDir, "missing-spire.sock"),
 	})
 	if err != nil {
 		t.Fatalf("expected runtime inputs to validate, got %v", err)
 	}
 }
 
-func TestValidateExecutionRuntimeInputsRejectsNonSocketPath(t *testing.T) {
+func TestValidateExecutionRuntimeInputsRejectsNonRegularBinary(t *testing.T) {
+	rootDir, err := os.MkdirTemp("/tmp", "es-admission-")
+	if err != nil {
+		t.Fatalf("mkdir temp root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(rootDir)
+	})
+
+	binaryPath := filepath.Join(rootDir, "runtime-support-dir")
+	if err := os.MkdirAll(binaryPath, 0o755); err != nil {
+		t.Fatalf("mkdir runtime support dir: %v", err)
+	}
+
+	err = validateExecutionRuntimeInputs(esconfig.ExecutionConfig{
+		RuntimeSupportBinary:       binaryPath,
+		SPIREWorkloadAPISocketPath: filepath.Join(rootDir, "ignored-spire.sock"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected regular file validation error, got %v", err)
+	}
+}
+
+func TestValidateExecutionRuntimeInputsRejectsNonAbsoluteSPIRESocketPath(t *testing.T) {
 	rootDir, err := os.MkdirTemp("/tmp", "es-admission-")
 	if err != nil {
 		t.Fatalf("mkdir temp root: %v", err)
@@ -63,17 +78,13 @@ func TestValidateExecutionRuntimeInputsRejectsNonSocketPath(t *testing.T) {
 	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write runtime support binary: %v", err)
 	}
-	nonSocketPath := filepath.Join(rootDir, "not-a-socket")
-	if err := os.WriteFile(nonSocketPath, []byte("plain file"), 0o600); err != nil {
-		t.Fatalf("write non-socket file: %v", err)
-	}
 
 	err = validateExecutionRuntimeInputs(esconfig.ExecutionConfig{
 		RuntimeSupportBinary:       binaryPath,
-		SPIREWorkloadAPISocketPath: nonSocketPath,
+		SPIREWorkloadAPISocketPath: "relative/spire.sock",
 	})
-	if err == nil || !strings.Contains(err.Error(), "path must be a unix socket") {
-		t.Fatalf("expected unix socket validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "spire_workload_api_socket_path") {
+		t.Fatalf("expected SPIRE path shape validation error, got %v", err)
 	}
 }
 

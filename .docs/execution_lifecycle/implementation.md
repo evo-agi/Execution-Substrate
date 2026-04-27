@@ -95,6 +95,9 @@ Dependency wiring:
   - workload identity binding
 - It creates the Nomad client only when submit is configured.
 - If submit is configured, it creates the local staging root and retained-results root on startup.
+- The long-lived ES startup path validates the staged runtime-support binary as a service-owned execution input and may validate only the syntax/config shape of `execution.spire_workload_api_socket_path`, but it does not `stat(2)` or traverse the raw host SPIRE Workload API socket directly.
+- The configured `execution.spire_workload_api_socket_path` remains a submit/runtime input used to build the helper-private mount model, and operator/readiness tooling remains responsible for proving that host path is a real Unix socket before submit-ready or service-user apply is claimed.
+- The runtime helper remains the only current component that consumes the helper-private raw SPIRE path at runtime, and failure to reach or validate that socket stays explicit and fail closed rather than degrading to workload-visible raw SPIRE access.
 
 **Implementation invariants**
 
@@ -187,6 +190,8 @@ Where ES stops and Nomad takes over:
 - Failed submits remove the staging root immediately through deferred cleanup.
 - Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
+- Submit-time staging, mount staging, trust-material staging, retained-result expectations, and internal `EXEC_PLATFORM_STATE_OWNER_*` injection now require `execution.staging_root_dir` and `execution.results_root_dir` to resolve to the same target owner UID:GID before ES will submit the run.
+- Submit-time runtime mount assembly uses the configured SPIRE socket source directory as a string input to the helper-private mount model; it does not require the long-lived ES process itself to open the raw host SPIRE socket.
 - If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
 - `control-plane-normal-shell/v1` uses the same execution-package layout, runtime helper, runtime identity endpoint, and retained-result path as the current `static-script` slice. The selected profile changes the runtime image and adds non-secret runtime metadata; it does not add ES-owned CP lifecycle or result semantics.
 - The `authority_handoff` returned by submit is assembled from submit-time facts only. It does not observe whether the workload later uses the endpoint, receives a JWT-SVID, logs in to Vault, reads Codex credential material, or holds a live lease.
@@ -401,8 +406,9 @@ How Docker appears in the implementation:
 **Observed current implementation path**
 
 - `executionpackage.go` reserves host path `<staging_root>/<run_id>/run/result` and container path `/execution/run/result`.
-- The runtime supervisor creates the result directory as workload-writable before launching the fixed non-root workload process, then performs the current post-workload normalization phase after workload exit.
-- That post-workload normalization phase now restores the helper-managed host-backed `run/work` and `run/result` trees to the current target owner, which still matches the accepted Alpha root-run service posture today, keeps `run/platform` as the stable marker authority, and emits `run/platform/ownership-normalization.json` only after the phase succeeds.
+- The runtime supervisor creates the result directory as workload-writable before launching the fixed non-root workload process, temporarily widens only the bind-mounted `/execution/run` traversal and the workload-facing non-secret trust-file readability needed for the current `10000:10000` no-supplemental-groups boundary, then performs the current post-workload normalization phase after workload exit.
+- That post-workload normalization phase now restores the helper-managed host-backed `run/work` and `run/result` trees to the target owner carried in reserved internal `EXEC_PLATFORM_STATE_OWNER_*` runtime env when present, otherwise falling back to the current process owner, keeps `run/platform` as the stable marker authority, and emits `run/platform/ownership-normalization.json` only after the phase succeeds.
+- The same post-workload normalization phase also restores the active runtime widening on the bind-mounted `/execution/run` parent and the staged non-secret trust files under `run/platform` before ES retained-result or cleanup preflights treat the stage root as future non-root evidence.
 - If marker write or marker validation fails after normalization, the supervisor treats the post-workload normalization phase as failed.
 - The shared ownership-normalization validator now exposes two documented modes: current Alpha compatibility mode allows missing marker and accepts structurally valid present-marker evidence without requiring target-owner proof, while future non-root-required mode requires marker presence plus expected-owner verification against `target_uid` and `target_gid`.
 - `Status` attempts retention whenever it observes terminal execution.
@@ -410,14 +416,23 @@ How Docker appears in the implementation:
 - `Result` first serves an already retained bundle if one exists, then falls back to Nomad-backed terminal lookup and one idempotent retention attempt.
 - Retention now performs a repo-local filesystem preflight before bundle creation so unreadable or unsupported result trees fail closed before ES writes a retained bundle.
 - That retained-result preflight now also validates the ownership-normalization marker when the marker is present under `run/platform`, but current Alpha-compatible behavior still accepts a missing marker and does not require expected owner verification by default.
-- Retention packages result directory contents into `<results_root>/<run_id>/result.tar.gz`.
+- Retention now derives the retained-result target owner from the stable results-root stat, packages result directory contents into `<results_root>/<run_id>/result.tar.gz`, preserves validated normalization evidence as `<results_root>/<run_id>/ownership-normalization.json` before successful cleanup can remove the staging copy, and fails closed if that narrow retained artifact set cannot be normalized to the target owner. Submit-side staging now also refuses to proceed if the stable staging root and stable results root do not resolve to that same target owner model in the first place.
+- Repeat retained-result reads may also perform the same narrow retained-artifact reconciliation on the run-scoped results directory, opaque bundle, and preserved normalization evidence sidecar. This is bounded retained-result upkeep only; it does not recurse through arbitrary result trees and does not reinterpret bundle contents.
 - Empty or missing result directories do not produce a bundle.
 - Successful-stage cleanup now performs a repo-local cleanup-readiness preflight before `RemoveAll` so ES skips cleanup rather than partially deleting a blocked tree.
 - That cleanup preflight also validates the ownership-normalization marker when present, but it does not make the marker mandatory in current Alpha mode and does not require expected owner verification by default.
 - When future non-root-required expectations are supplied, the same preflights also require marker presence, require `target_uid` and `target_gid` to match the expected ES owner, and require stat-based proof that the packaged or deleted tree is owned by that same expected ES UID:GID.
 - The repo-owned writable-state readiness checker now exposes explicit `--mode alpha-compat` and `--mode future-non-root-required` entrypoints. Default Alpha mode remains non-mutating compatibility reporting, while explicit future mode is a readiness gate only and does not change service identity or approve ES de-rooting by itself.
 - That checker also distinguishes verified, mismatch, and unverified target-owner states: verified means marker `target_uid` and `target_gid` matched the discovered `es` UID:GID, mismatch is a blocker in future mode, and unverified means the marker was structurally valid but no expected ES owner was required or available so the checker reports evidence only, not future non-root-ready proof.
-- These repo-local preflights, validators, checker modes, and normalized-run tests are readiness evidence for a future non-root long-lived ES slice only. They do not prove live-host `es:es` ownership, do not change `es.service` away from `root(default)`, and do not approve ES de-rooting.
+- These repo-local preflights, validators, checker modes, and normalized-run
+  tests were readiness evidence for the bounded long-lived ES service-user
+  slice and remain design inputs for later runtime-boundary work. By
+  themselves they do not prove the full live-host runtime boundary, they do
+  not by themselves claim full ES/runtime de-root, and they do not supersede
+  the separate bounded live evidence that now records applied config/TLS prep,
+  prepared writable-state roots, the `User=es` / `Group=es` service-user
+  change, post-apply lowest-cost happy-path success, and future writable-state
+  readiness success.
 - The retained bundle is served as `application/gzip` with outcome evidence that labels the source as the ES retained-result store, observation as `retained_result_bundle`, and access class as `opaque_result_bundle`.
 
 **Implementation invariants**
@@ -438,7 +453,9 @@ The most important implementation facts are backed by integration tests:
 
 - `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
 - `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
-- `es/admission/writablestate_readiness_test.go` covers repo-local non-root writable-state readiness using owner-only temp-dir permissions as the future `es:es` stand-in, including submit-side staging, retained-result fail-closed behavior, successful, failed, lost, and canceled terminal-state staging semantics, repeat retained-result reads after stage cleanup, cleanup-preflight blocking without partial deletion, current Alpha-compatible ownership-normalization marker validation, and future non-root-required marker plus expected-owner enforcement.
+- `es/admission/writablestate_readiness_test.go` covers repo-local non-root writable-state readiness using owner-only temp-dir permissions as the future `es:es` stand-in, including submit-side staging, retained-result fail-closed behavior, successful, failed, lost, and canceled terminal-state staging semantics, repeat retained-result reads after stage cleanup, preserved normalization evidence after successful cleanup, cleanup-preflight blocking without partial deletion, current Alpha-compatible ownership-normalization marker validation, and future non-root-required marker plus expected-owner enforcement.
+- The submit-side staging implementation now reconciles the run-scoped stage root itself to the owner model derived from `execution.staging_root_dir`; future writable-state readiness depends on `<staging_root>/<run_id>` being ES-traversable and ES-deletable, not only on the child `run/platform`, `run/work`, and `run/result` directories.
+- The bounded writable-state ownership helper may now repair only direct retained-result artifacts that already carry preserved normalization evidence and may quarantine incompatible legacy retained run directories or inactive run-scoped stage roots outside the live roots, but it still must not recurse through arbitrary retained/debug trees or fabricate missing normalization evidence.
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
 - The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, full submit-ready state, and missing configured runtime-profile images instead of treating ES `/health` as sufficient on its own.
 - Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.

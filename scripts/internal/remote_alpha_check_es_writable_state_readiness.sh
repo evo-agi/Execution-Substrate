@@ -536,6 +536,57 @@ def inspect_root_status(path_value, label, es_account):
     )
 
 
+def inspect_target_owner_consistency(staging_root_status, results_root_status):
+    staging_exists = staging_root_status.get("path_exists")
+    results_exists = results_root_status.get("path_exists")
+    staging_uid = staging_root_status.get("owner_uid")
+    staging_gid = staging_root_status.get("owner_gid")
+    results_uid = results_root_status.get("owner_uid")
+    results_gid = results_root_status.get("owner_gid")
+
+    if not staging_exists or not results_exists:
+        return make_status(
+            "not_observed",
+            "staging/results target owner consistency could not be compared because one or both roots were not observed",
+            staging_root_path=staging_root_status.get("path"),
+            results_root_path=results_root_status.get("path"),
+            same_target_owner=None,
+        )
+    if None in {staging_uid, staging_gid, results_uid, results_gid}:
+        return make_status(
+            future_gate_classification(),
+            (
+                "staging/results target owner consistency could not be compared because one or both roots did not expose owner UID:GID"
+                if future_non_root_required()
+                else "staging/results target owner consistency could not be fully compared in alpha-compatible mode because one or both roots did not expose owner UID:GID"
+            ),
+            staging_root_path=staging_root_status.get("path"),
+            results_root_path=results_root_status.get("path"),
+            same_target_owner=None,
+        )
+
+    same_target_owner = staging_uid == results_uid and staging_gid == results_gid
+    classification = "pass" if same_target_owner else future_gate_classification()
+    summary = (
+        f"execution.staging_root_dir and execution.results_root_dir resolve to the same target owner UID:GID {staging_uid}:{staging_gid}"
+        if same_target_owner
+        else (
+            f"execution.staging_root_dir resolves to {staging_uid}:{staging_gid} but execution.results_root_dir resolves to {results_uid}:{results_gid}; future non-root ES requires one shared target owner model"
+            if future_non_root_required()
+            else f"execution.staging_root_dir resolves to {staging_uid}:{staging_gid} but execution.results_root_dir resolves to {results_uid}:{results_gid}; alpha-compatible mode keeps this as evidence only and does not claim future non-root readiness"
+        )
+    )
+    return make_status(
+        classification,
+        summary,
+        staging_root_path=staging_root_status.get("path"),
+        results_root_path=results_root_status.get("path"),
+        staging_root_owner={"uid": staging_uid, "gid": staging_gid},
+        results_root_owner={"uid": results_uid, "gid": results_gid},
+        same_target_owner=same_target_owner,
+    )
+
+
 def discover_retained_bundles(results_root):
     root = pathlib.Path(results_root)
     if not root.is_dir():
@@ -546,6 +597,13 @@ def discover_retained_bundles(results_root):
         if bundle_path.exists():
             bundles.append(bundle_path)
     return bundles
+
+
+def discover_retained_run_dirs(results_root):
+    root = pathlib.Path(results_root)
+    if not root.is_dir():
+        return []
+    return [child for child in sorted(root.iterdir()) if child.is_dir()]
 
 
 def inspect_retained_results(results_root_status, es_account):
@@ -769,6 +827,130 @@ def marker_validation(marker_path, platform_dir, access_account, run_id, expecte
     return payload
 
 
+def preserved_marker_validation(marker_path, results_dir, access_account, run_id, expected_owner=None, require_marker=False):
+    validation_mode = "non_root_required" if require_marker else "alpha_compatibility"
+    access_uid = access_account["uid"] if access_account is not None else os.getuid()
+    access_gid = access_account["gid"] if access_account is not None else os.getgid()
+    access = inspect_file_access(marker_path, access_uid, access_gid)
+    payload = {
+        "marker_path": os.fspath(marker_path),
+        "marker_exists": access["path_exists"],
+        "marker_access": access,
+        "validation_mode": validation_mode,
+        "require_marker": require_marker,
+        "expected_uid": None if expected_owner is None else expected_owner["uid"],
+        "expected_gid": None if expected_owner is None else expected_owner["gid"],
+        "target_owner_checked": False,
+        "target_owner_verified": False,
+        "target_owner_status": "not_observed",
+        "classification": "pass",
+        "issues": [],
+        "payload": None,
+        "evidence_source": "retained_result_preserved_marker",
+    }
+    if not access["path_exists"]:
+        payload["target_owner_status"] = "not_observed"
+        if require_marker:
+            payload["classification"] = "blocker"
+            payload["issues"].append(
+                "preserved normalization evidence is required for future non-root ES readiness but was not observed"
+            )
+        else:
+            payload["classification"] = "warning"
+            payload["issues"].append(
+                "preserved normalization evidence not observed; Alpha compatibility mode still accepts marker absence"
+            )
+        return payload
+    if access["file_type"] != "regular file":
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence is not a regular file")
+        return payload
+
+    try:
+        marker_payload = json.loads(pathlib.Path(marker_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        payload["classification"] = "blocker"
+        payload["issues"].append(f"preserved normalization evidence is not valid JSON: {exc}")
+        return payload
+
+    payload["payload"] = marker_payload
+    if marker_payload.get("schema_version") != MARKER_SCHEMA_VERSION:
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence schema_version is invalid")
+    if marker_payload.get("status") != "normalized":
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence status is not normalized")
+    marker_run_id = str(marker_payload.get("run_id") or "").strip()
+    if marker_run_id == "":
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence run_id is missing")
+    elif marker_run_id != run_id:
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence run_id does not match the retained-result directory")
+    try:
+        parse_rfc3339(marker_payload.get("completed_at"))
+    except Exception as exc:
+        payload["classification"] = "blocker"
+        payload["issues"].append(f"preserved normalization evidence completed_at is invalid: {exc}")
+
+    normalized_paths = marker_payload.get("paths_normalized")
+    if not isinstance(normalized_paths, list):
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence paths_normalized is not a list")
+    else:
+        observed_paths = {str(item).strip() for item in normalized_paths if str(item).strip()}
+        missing_paths = sorted(REQUIRED_MARKER_PATHS - observed_paths)
+        if missing_paths:
+            payload["classification"] = "blocker"
+            payload["issues"].append(
+                "preserved normalization evidence is missing required paths: " + ", ".join(missing_paths)
+            )
+
+    results_access = inspect_directory_access(results_dir, access_uid, access_gid)
+    payload["results_dir_access"] = results_access
+    if not results_access["path_exists"] or results_access["file_type"] != "directory":
+        payload["classification"] = "blocker"
+        payload["issues"].append("retained-result directory is missing for preserved normalization evidence")
+    else:
+        if expected_owner is not None and (
+            results_access["owner_uid"] != expected_owner["uid"]
+            or results_access["owner_gid"] != expected_owner["gid"]
+        ):
+            payload["classification"] = "blocker"
+            payload["issues"].append("retained-result directory is not ES-owned")
+        if results_access["mode_bits"] & 0o022 != 0:
+            payload["classification"] = "blocker"
+            payload["issues"].append("retained-result directory is group- or world-writable")
+
+    if access["mode_bits"] & 0o022 != 0:
+        payload["classification"] = "blocker"
+        payload["issues"].append("preserved normalization evidence is group- or world-writable")
+
+    if expected_owner is None:
+        payload["target_owner_status"] = "unverified"
+        if payload["classification"] == "pass":
+            payload["classification"] = "warning"
+        payload["issues"].append(
+            "preserved normalization evidence target owner was not checked; this is evidence only, not future non-root-ready proof"
+        )
+        return payload
+
+    payload["target_owner_checked"] = True
+    if marker_payload.get("target_uid") != expected_owner["uid"]:
+        payload["classification"] = "blocker"
+        payload["target_owner_status"] = "mismatch"
+        payload["issues"].append("preserved normalization evidence target_uid does not match expected es UID")
+    if marker_payload.get("target_gid") != expected_owner["gid"]:
+        payload["classification"] = "blocker"
+        payload["target_owner_status"] = "mismatch"
+        payload["issues"].append("preserved normalization evidence target_gid does not match expected es GID")
+    if payload["target_owner_status"] == "not_observed":
+        payload["target_owner_status"] = "verified"
+        payload["target_owner_verified"] = True
+
+    return payload
+
+
 def append_future_gap(run_blockers, run_warnings, message):
     if future_non_root_required():
         run_blockers.append(message)
@@ -790,34 +972,57 @@ def inspect_completed_run_candidates(staging_root_status, results_root_status, e
             observed_runs=[],
         )
     staging_root = pathlib.Path(staging_root_status["path"])
+    results_root = pathlib.Path(results_root_status["path"]) if results_root_status.get("path") else None
     if not es_account.get("present"):
         observed_runs = []
+        candidate_ids = set()
         for run_dir in sorted(p for p in staging_root.iterdir() if p.is_dir()):
+            candidate_ids.add(run_dir.name)
+        if results_root is not None:
+            for retained_run_dir in discover_retained_run_dirs(results_root):
+                candidate_ids.add(retained_run_dir.name)
+        for run_id in sorted(candidate_ids):
+            run_dir = staging_root / run_id
             marker_path = run_dir / "run" / "platform" / MARKER_NAME
             platform_dir = run_dir / "run" / "platform"
-            retained_bundle = None
-            if results_root_status.get("path"):
-                retained_bundle = pathlib.Path(results_root_status["path"]) / run_dir.name / RESULT_BUNDLE_NAME
-            marker_exists = marker_path.exists()
+            retained_run_dir = results_root / run_id if results_root is not None else None
+            preserved_marker_path = retained_run_dir / MARKER_NAME if retained_run_dir is not None else None
+            retained_bundle = retained_run_dir / RESULT_BUNDLE_NAME if retained_run_dir is not None else None
+            marker_exists = marker_path.exists() if run_dir.is_dir() else False
+            preserved_marker_exists = preserved_marker_path.exists() if preserved_marker_path is not None else False
             bundle_exists = retained_bundle is not None and retained_bundle.exists()
-            if not marker_exists and not bundle_exists:
+            evidence_exists = marker_exists or preserved_marker_exists or bundle_exists
+            if not evidence_exists:
                 continue
-            marker_info = marker_validation(
-                marker_path,
-                platform_dir,
-                None,
-                run_dir.name,
-                expected_owner=None,
-                require_marker=False,
-            )
+            if marker_exists:
+                marker_info = marker_validation(
+                    marker_path,
+                    platform_dir,
+                    None,
+                    run_id,
+                    expected_owner=None,
+                    require_marker=False,
+                )
+                summary = "marker evidence is present but target-owner proof is unverified because es UID:GID is unavailable"
+            else:
+                marker_info = preserved_marker_validation(
+                    preserved_marker_path,
+                    retained_run_dir,
+                    None,
+                    run_id,
+                    expected_owner=None,
+                    require_marker=False,
+                )
+                summary = "preserved retained-result evidence is present but target-owner proof is unverified because es UID:GID is unavailable"
             observed_runs.append(
                 {
-                    "run_id": run_dir.name,
+                    "run_id": run_id,
                     "classification": "warning",
-                    "summary": "marker evidence is present but target-owner proof is unverified because es UID:GID is unavailable",
+                    "summary": summary,
                     "marker": marker_info,
                     "retained_bundle_path": os.fspath(retained_bundle) if retained_bundle is not None else "",
                     "retained_bundle_exists": bundle_exists,
+                    "stage_root_present": run_dir.is_dir(),
                 }
             )
         if not observed_runs:
@@ -844,74 +1049,101 @@ def inspect_completed_run_candidates(staging_root_status, results_root_status, e
     blocking = False
     warning = False
 
+    candidate_ids = set()
     for run_dir in sorted(p for p in staging_root.iterdir() if p.is_dir()):
+        candidate_ids.add(run_dir.name)
+    if results_root is not None:
+        for retained_run_dir in discover_retained_run_dirs(results_root):
+            candidate_ids.add(retained_run_dir.name)
+
+    for run_id in sorted(candidate_ids):
+        run_dir = staging_root / run_id
         marker_path = run_dir / "run" / "platform" / MARKER_NAME
         platform_dir = run_dir / "run" / "platform"
         work_dir = run_dir / "run" / "work"
         result_dir = run_dir / "run" / "result"
-        retained_bundle = None
-        if results_root_status.get("path"):
-            retained_bundle = pathlib.Path(results_root_status["path"]) / run_dir.name / RESULT_BUNDLE_NAME
+        retained_run_dir = results_root / run_id if results_root is not None else None
+        preserved_marker_path = retained_run_dir / MARKER_NAME if retained_run_dir is not None else None
+        retained_bundle = retained_run_dir / RESULT_BUNDLE_NAME if retained_run_dir is not None else None
 
-        marker_exists = marker_path.exists()
+        stage_root_present = run_dir.is_dir()
+        marker_exists = marker_path.exists() if stage_root_present else False
+        preserved_marker_exists = preserved_marker_path.exists() if preserved_marker_path is not None else False
         bundle_exists = retained_bundle is not None and retained_bundle.exists()
-        completed_candidate = marker_exists or bundle_exists
+        completed_candidate = marker_exists or preserved_marker_exists or bundle_exists
         if not completed_candidate:
             continue
 
         run_issues = []
         run_warnings = []
-        stage_access = inspect_directory_access(run_dir, es_account["uid"], es_account["gid"])
-        if not (
-            stage_access["path_exists"]
-            and stage_access["owner_uid"] == es_account["uid"]
-            and stage_access["owner_gid"] == es_account["gid"]
-            and stage_access["es_can_manage_entries"]
-        ):
-            append_future_gap(run_issues, run_warnings, "run-scoped stage root is not ES-owned and deletable")
+        stage_access = None
+        work_access = None
+        result_access = None
+        if stage_root_present:
+            stage_access = inspect_directory_access(run_dir, es_account["uid"], es_account["gid"])
+            if not (
+                stage_access["path_exists"]
+                and stage_access["owner_uid"] == es_account["uid"]
+                and stage_access["owner_gid"] == es_account["gid"]
+                and stage_access["es_can_manage_entries"]
+            ):
+                append_future_gap(run_issues, run_warnings, "run-scoped stage root is not ES-owned and deletable")
 
-        marker_info = marker_validation(
-            marker_path,
-            platform_dir,
-            es_account,
-            run_dir.name,
-            expected_owner={"uid": es_account["uid"], "gid": es_account["gid"]} if future_non_root_required() else None,
-            require_marker=future_non_root_required(),
-        )
+        if marker_exists:
+            marker_info = marker_validation(
+                marker_path,
+                platform_dir,
+                es_account,
+                run_id,
+                expected_owner={"uid": es_account["uid"], "gid": es_account["gid"]} if future_non_root_required() else None,
+                require_marker=future_non_root_required(),
+            )
+        else:
+            marker_info = preserved_marker_validation(
+                preserved_marker_path,
+                retained_run_dir,
+                es_account,
+                run_id,
+                expected_owner={"uid": es_account["uid"], "gid": es_account["gid"]} if future_non_root_required() else None,
+                require_marker=future_non_root_required(),
+            )
         if marker_info["classification"] == "blocker":
             run_issues.extend(marker_info["issues"])
         elif marker_info["classification"] == "warning":
             run_warnings.extend(marker_info["issues"])
 
-        work_access = inspect_directory_access(work_dir, es_account["uid"], es_account["gid"])
-        if not work_access["path_exists"]:
-            append_future_gap(run_issues, run_warnings, "run/work is missing for a completed run candidate")
-        elif not (
-            work_access["owner_uid"] == es_account["uid"]
-            and work_access["owner_gid"] == es_account["gid"]
-            and work_access["es_can_manage_entries"]
-            and work_access["es_can_read"]
-        ):
-            append_future_gap(
-                run_issues,
-                run_warnings,
-                "run/work is not normalized to ES-owned readable/deletable state",
-            )
+        if stage_root_present:
+            work_access = inspect_directory_access(work_dir, es_account["uid"], es_account["gid"])
+            if not work_access["path_exists"]:
+                append_future_gap(run_issues, run_warnings, "run/work is missing for a completed run candidate")
+            elif not (
+                work_access["owner_uid"] == es_account["uid"]
+                and work_access["owner_gid"] == es_account["gid"]
+                and work_access["es_can_manage_entries"]
+                and work_access["es_can_read"]
+            ):
+                append_future_gap(
+                    run_issues,
+                    run_warnings,
+                    "run/work is not normalized to ES-owned readable/deletable state",
+                )
 
-        result_access = inspect_directory_access(result_dir, es_account["uid"], es_account["gid"])
-        if not result_access["path_exists"]:
-            append_future_gap(run_issues, run_warnings, "run/result is missing for a completed run candidate")
-        elif not (
-            result_access["owner_uid"] == es_account["uid"]
-            and result_access["owner_gid"] == es_account["gid"]
-            and result_access["es_can_read"]
-            and result_access["es_can_traverse"]
-        ):
-            append_future_gap(
-                run_issues,
-                run_warnings,
-                "run/result is not normalized to ES-owned readable state",
-            )
+            result_access = inspect_directory_access(result_dir, es_account["uid"], es_account["gid"])
+            if not result_access["path_exists"]:
+                append_future_gap(run_issues, run_warnings, "run/result is missing for a completed run candidate")
+            elif not (
+                result_access["owner_uid"] == es_account["uid"]
+                and result_access["owner_gid"] == es_account["gid"]
+                and result_access["es_can_read"]
+                and result_access["es_can_traverse"]
+            ):
+                append_future_gap(
+                    run_issues,
+                    run_warnings,
+                    "run/result is not normalized to ES-owned readable state",
+                )
+        elif not bundle_exists:
+            append_future_gap(run_issues, run_warnings, "retained-result bundle is missing for preserved normalization evidence")
 
         run_classification = "blocker" if run_issues else "warning" if run_warnings else "pass"
         if run_classification == "blocker":
@@ -921,10 +1153,10 @@ def inspect_completed_run_candidates(staging_root_status, results_root_status, e
 
         observed_runs.append(
             {
-                "run_id": run_dir.name,
+                "run_id": run_id,
                 "classification": run_classification,
                 "summary": (
-                    "completed run shows normalization evidence compatible with future non-root ES, including verified marker target ownership"
+                    "completed run shows normalization evidence compatible with future non-root ES, including verified target ownership"
                     if run_classification == "pass"
                     else "; ".join(run_issues if run_issues else run_warnings)
                 ),
@@ -934,13 +1166,14 @@ def inspect_completed_run_candidates(staging_root_status, results_root_status, e
                 "marker": marker_info,
                 "retained_bundle_path": os.fspath(retained_bundle) if retained_bundle is not None else "",
                 "retained_bundle_exists": bundle_exists,
+                "stage_root_present": stage_root_present,
             }
         )
 
     if not observed_runs:
         return make_status(
             "not_observed",
-            "no completed-run normalization evidence was observed under execution.staging_root_dir",
+            "no completed-run normalization evidence was observed under staging or preserved retained-result evidence",
             observed_runs=[],
         )
 
@@ -1092,6 +1325,7 @@ results_root = execution.get("results_root_dir") or ""
 
 staging_root_status = inspect_root_status(staging_root, "execution.staging_root_dir", es_account_status)
 results_root_status = inspect_root_status(results_root, "execution.results_root_dir", es_account_status)
+target_owner_consistency_status = inspect_target_owner_consistency(staging_root_status, results_root_status)
 retained_result_status = inspect_retained_results(results_root_status, es_account_status)
 runtime_status = inspect_completed_run_candidates(staging_root_status, results_root_status, es_account_status)
 cleanup_status = build_cleanup_status(staging_root_status, runtime_status)
@@ -1124,6 +1358,7 @@ overall = overall_classification(
     es_account_status,
     staging_root_status,
     results_root_status,
+    target_owner_consistency_status,
     retained_result_status,
     cleanup_status,
     runtime_status,
@@ -1135,6 +1370,7 @@ blockers, warnings = collect_findings(
         ("es_account_status", es_account_status),
         ("staging_root_status", staging_root_status),
         ("results_root_status", results_root_status),
+        ("target_owner_consistency_status", target_owner_consistency_status),
         ("retained_result_readiness_status", retained_result_status),
         ("cleanup_readiness_status", cleanup_status),
         ("runtime_normalization_contract_status", runtime_status),
@@ -1159,6 +1395,7 @@ payload = {
     "es_account_status": es_account_status,
     "staging_root_status": staging_root_status,
     "results_root_status": results_root_status,
+    "target_owner_consistency_status": target_owner_consistency_status,
     "retained_result_readiness_status": retained_result_status,
     "cleanup_readiness_status": cleanup_status,
     "runtime_normalization_contract_status": runtime_status,

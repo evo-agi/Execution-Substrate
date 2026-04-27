@@ -1,6 +1,10 @@
 package admission
 
 import (
+	"fmt"
+	"os"
+	"path"
+	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
@@ -24,7 +28,7 @@ func TestBuildRuntimeEnvironmentPreservesInvocationEnvAndInjectsPlatformFields(t
 		JWTAudience: "vault",
 	}, executionRuntimeProfile{}, stagedWorkloadTrustMaterial{}, map[string]string{
 		"USER_DEFINED": "1",
-	})
+	}, &executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 
 	if env["USER_DEFINED"] != "1" {
 		t.Fatalf("expected invocation env to be preserved, got %#v", env)
@@ -40,6 +44,15 @@ func TestBuildRuntimeEnvironmentPreservesInvocationEnvAndInjectsPlatformFields(t
 	}
 	if env["VAULT_ADDR"] != "https://vault.internal:8200" {
 		t.Fatalf("expected vault address injection, got %#v", env["VAULT_ADDR"])
+	}
+	if env[platformStateOwnerUIDEnvKey] != fmt.Sprintf("%d", os.Getuid()) {
+		t.Fatalf("expected platform state owner uid injection, got %#v", env[platformStateOwnerUIDEnvKey])
+	}
+	if env[platformStateOwnerGIDEnvKey] != fmt.Sprintf("%d", os.Getgid()) {
+		t.Fatalf("expected platform state owner gid injection, got %#v", env[platformStateOwnerGIDEnvKey])
+	}
+	if env[platformStateOwnerSchemaEnvKey] != platformStateOwnerSchemaV1 {
+		t.Fatalf("expected platform state owner schema injection, got %#v", env[platformStateOwnerSchemaEnvKey])
 	}
 }
 
@@ -63,7 +76,7 @@ func TestBuildRuntimeEnvironmentInjectsWorkloadVaultTrustMaterial(t *testing.T) 
 	}, executionRuntimeProfile{}, stagedWorkloadTrustMaterial{
 		vaultCACert:       true,
 		workloadTLSBundle: true,
-	}, nil)
+	}, nil, &executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 
 	if env["VAULT_CACERT"] != "/execution/run/platform/workload-vault-ca.pem" {
 		t.Fatalf("expected VAULT_CACERT injection, got %#v", env["VAULT_CACERT"])
@@ -97,7 +110,7 @@ func TestBuildRuntimeEnvironmentInjectsControlPlaneNormalShellProfileMetadata(t 
 			"EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH":  "proof-secrets/data/codex-runtime-profile",
 			"EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD": "api_key",
 		},
-	}, stagedWorkloadTrustMaterial{}, nil)
+	}, stagedWorkloadTrustMaterial{}, nil, &executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 
 	if env["EXEC_CODEX_CLI_PATH"] != "/usr/local/bin/codex" {
 		t.Fatalf("expected codex CLI metadata, got %#v", env)
@@ -228,5 +241,69 @@ func TestBuildNomadJobSpecUsesSelectedRuntimeProfileImage(t *testing.T) {
 	config := task["Config"].(map[string]any)
 	if config["image"] != "execution-substrate/control-plane-normal-shell:test" {
 		t.Fatalf("expected selected runtime profile image, got %#v", config["image"])
+	}
+}
+
+func TestBuildNomadJobSpecKeepsRawSPIRESocketPathHelperPrivateAndOutOfWorkloadEnv(t *testing.T) {
+	cfg := esconfig.Config{
+		Nomad: esconfig.NomadConfig{
+			Datacenter: "dc1",
+		},
+		Execution: esconfig.ExecutionConfig{
+			BaseImage:                  "alpine:3.20",
+			SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		},
+	}
+	stage := stagedExecutionInputs{
+		layout: executionPackageLayout{
+			payloadStageDir:    "/tmp/stage/payload",
+			runStageDir:        "/tmp/stage/run",
+			runtimePayloadRoot: executionRuntimePayloadRoot,
+			runtimeRunRoot:     executionRuntimeRunRoot,
+			runtimeWorkDir:     executionRuntimeWorkDir,
+			runtimeResultDir:   executionRuntimeResultDir,
+			runtimeEntrypoint:  executionRuntimeEntrypointPath,
+			runtimeIdentity: runtimeIdentityHandoff{
+				endpointEnvKey: runtimeIdentityEndpointEnvKey,
+				endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/public.sock",
+			},
+		},
+	}
+	env := buildRuntimeEnvironment(stage.layout, "sha256:artifact", esconfig.ResolvedWorkloadVaultAuthPlan{
+		Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+		Address:     "https://vault.internal:8200",
+		AuthMount:   "jwt",
+		AuthRole:    "execution",
+		JWTAudience: "vault",
+	}, executionRuntimeProfile{}, stagedWorkloadTrustMaterial{}, nil, &executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
+
+	jobSpec := buildNomadJobSpec(cfg, "exec-run-0123456789abcdef", "run-0123456789abcdef", stage, PrepareRequest{}, true, defaultSubmitCPU, defaultSubmitMemoryMB, env, executionRuntimeProfile{
+		name:  runtimeProfileDefaultStaticScript,
+		image: "alpine:3.20",
+	})
+
+	job := jobSpec["Job"].(map[string]any)
+	taskGroups := job["TaskGroups"].([]any)
+	group := taskGroups[0].(map[string]any)
+	tasks := group["Tasks"].([]any)
+	task := tasks[0].(map[string]any)
+	taskEnv := task["Env"].(map[string]string)
+	for key, value := range taskEnv {
+		if strings.Contains(value, cfg.Execution.SPIREWorkloadAPISocketPath) {
+			t.Fatalf("did not expect workload env %q to expose raw SPIRE path: %q", key, value)
+		}
+		if strings.Contains(value, runtimeIdentitySPIRESocketName) {
+			t.Fatalf("did not expect workload env %q to expose helper-private SPIRE alias: %q", key, value)
+		}
+	}
+
+	config := task["Config"].(map[string]any)
+	mounts := config["mounts"].([]any)
+	spireMount := mounts[3].(map[string]any)
+	if spireMount["source"] != path.Dir(cfg.Execution.SPIREWorkloadAPISocketPath) {
+		t.Fatalf("expected raw SPIRE source dir mount, got %#v", spireMount["source"])
+	}
+	if spireMount["target"] != path.Join(stage.layout.runtimeIdentity.internalDir(), runtimeIdentitySPIRESourceDir) {
+		t.Fatalf("expected helper-private SPIRE mount target, got %#v", spireMount["target"])
 	}
 }

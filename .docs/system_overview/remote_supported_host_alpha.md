@@ -854,6 +854,32 @@ The active repo-derived EGS service inputs for that EGS step remain:
 Remote Supported-Host Alpha may also apply one separate ES config/TLS
 ownership prep slice without changing the live ES service user.
 
+Current live bounded ES state on Remote Alpha is now:
+
+- ES config/TLS prep is applied.
+- ES stable writable-state roots are prepared.
+- the current live long-lived `es.service` now runs as `User=es`,
+  `Group=es`, `UMask=0027`.
+- post-apply `/health`, `GET /v1/executions:contract`, the retained-result
+  fetch/materialization flow, and the current lowest-cost existing happy path
+  all passed.
+- future writable-state readiness passed with the long-lived service already at
+  `es:es`.
+- Infrastructure Manager readiness is accepted.
+- this does not claim full ES/runtime de-root.
+- the root-start runtime helper, Nomad task `User: "0:0"`, helper-private
+  SPIRE traversal, broad selector posture, and Vault/workload-zone handoff
+  remain bounded compatibility edges.
+- old root-era staging/results roots remain preserved as rollback/debug/evidence
+  state until a later explicit cleanup/archive action after the rollback window
+  expires; they must not be recursively re-owned or deleted by the migration.
+
+The config/TLS, binary-deployment, and writable-state subsections below still
+describe earlier bounded slices whose own apply summaries intentionally record
+`root(default)` at those earlier steps. That historical wording remains true
+for those slice-specific artifacts and should not be read as the current live
+service posture after the later bounded `User=es` service-user migration.
+
 This slice is intentionally limited to:
 
 - introducing dedicated ES-readable config ownership plus a dedicated
@@ -866,13 +892,14 @@ This slice is intentionally limited to:
 - preserving the current Nomad task user model
 - leaving ES staging and retained-results ownership untouched
 - recording one non-secret host-local summary for the prep step
-- leaving `es.service` in its current `root(default)` posture for this slice
+- leaving `es.service` in its then-live `root(default)` posture for this
+  earlier slice
 - preserving the current no-bridge and no-shared-filesystem remote path facts
 
 This slice is a `Bounded slice rule` on host-local ES-readable ownership only.
-Its defining `Temporary compatibility edge` is that live `es.service` remains
-`root(default)` while dedicated `root:es` readable config/TLS material is
-prepared for a later ES de-root slice.
+Its defining `Temporary compatibility edge` is that, at that earlier step, live
+`es.service` remained `root(default)` while dedicated `root:es` readable
+config/TLS material was prepared for the later ES de-root slice.
 
 The preferred repo-side operator wrapper for that slice is:
 
@@ -975,6 +1002,12 @@ new governed proof, they do not authorize a wider ES prep slice, and they do
 not change the host-local apply summary contract under
 `/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`.
 
+That machine-readable prep record must keep the live bridge explicit through
+`slice.classification`, `slice.not_a_new_happy_path_proof`, and
+`slice.temporary_compatibility_edge`; the last field must continue to name the
+active `root(default)` service-user posture as the temporary compatibility edge
+for this ownership-prep-only slice.
+
 The required first step before any live apply is:
 
 - `sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
@@ -988,7 +1021,7 @@ This flow is intentionally limited to:
 
 - staging only the minimal repo-owned checker helper tree needed to run the
   current non-mutating writable-state readiness checker
-- preserving the current live `es.service` `root(default)` posture
+- preserving the then-live `es.service` `root(default)` posture
 - preserving the current AGS, ARS, and EGS service postures
 - preserving the current SPIRE selector posture, SPIRE socket traversal, and
   Vault/runtime-helper semantics
@@ -1036,15 +1069,25 @@ be used as the execution path for the staged checker invocation.
 
 The staged checker must still be run as root because the accepted Alpha
 posture keeps live ES writable-state and runtime-helper semantics in the
-current root-compatible model, and the operator must not assume passwordless
-`sudo` for this path.
+current root-compatible model. The default wrapper path must perform a
+noninteractive `sudo -n` preflight and fail cleanly with structured
+`sudo_unavailable` evidence if passwordless sudo is not available. An explicit
+`--interactive-sudo` mode may be used only from a visible terminal when a
+bounded password handoff is authorized. Batch execution must stay bounded and
+must not rely on a forced-PTY heredoc path. Interactive collection must write
+stage-stat and checker outputs to user-owned remote artifact files and fetch
+them afterward rather than redirecting tty-backed SSH stdout directly into the
+local evidence files. The interactive privileged portion of the staged checker
+flow should complete within one visible sudo-backed SSH session so the
+operator does not need to re-enter the password for separate staged-install,
+stage-stat, and checker legs.
 
 The wrapper must default to `--mode alpha-compat`. Operators must request
 explicit `--mode future-non-root-required` when they want a non-mutating
-future-readiness gate. Blocker findings in that future mode are expected until
-service-user migration is approved and measured on a live host, and those
-blockers remain valid readiness evidence rather than wrapper failure by
-themselves.
+future-readiness gate. Those blocker findings were expected before the
+now-applied long-lived service-user migration, and they remain valid readiness
+evidence rather than wrapper failure by themselves when the gate is rerun
+against later host drift or rollback-window changes.
 
 The required operator-staged provenance record for this transient helper flow
 must include:
@@ -1055,22 +1098,34 @@ must include:
 - the remote owner/mode proving the staged tree is root-owned rather than a
   user-writable upload path
 - the requested checker mode
+- the sudo mode used for staged execution
 - whether staging occurred
 - whether the checker ran
 - whether transient staging was removed
+- whether `sudo_unavailable` blocked noninteractive root-owned staging
+- whether `wrapper_tooling_error` blocked execution before checker evidence was
+  accepted
 - any sudo or preflight blocker if staging could not proceed
 
 The required operator-staged flow for this evidence slice is:
 
 1. Prefer the repo-side wrapper
    `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh --ssh-target <user@host>`
-   from a visible terminal so any remote `sudo` prompt is visible to the
-   operator. That wrapper must stage only the minimal helper tree from the
-   local operator repo snapshot; a full remote repo checkout is not required.
+   for the default noninteractive path. That wrapper must stage only the
+   minimal helper tree from the local operator repo snapshot; a full remote
+   repo checkout is not required.
+   Use `--interactive-sudo` only when the default noninteractive `sudo -n`
+   preflight reports `sudo_unavailable` and a visible terminal is available
+   for the bounded password handoff.
 2. Install that helper tree into
    `/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/` as a
    root-owned staged tree, record the required provenance above, and execute
-   the staged checker from that location.
+   the staged checker from that location. Batch execution must use bounded
+   remote commands that terminate and must not drop into an interactive shell.
+   Interactive runs must keep sudo prompts on the visible terminal instead of
+   hiding them behind local stdout redirection, and should not reopen separate
+   password-backed SSH legs for staged install, stage-stat capture, and
+   checker execution.
 3. Run the wrapper's default `--mode alpha-compat` flow when collecting
    current Alpha-compatible readiness evidence.
 4. Use `--mode future-non-root-required` only when the repo wants an explicit
@@ -1108,269 +1163,487 @@ artifacts with the filenames Infrastructure Manager consumes directly:
 - `es-writable-state-readiness-helper-staging-record.json`
 
 Those local artifacts are readiness evidence and provenance only. They are not
-a governed proof, they do not authorize a wider ES writable-state slice, and
-they do not approve changing `es.service` away from `root(default)`.
+a governed proof, they did not by themselves authorize the later bounded
+service-user migration, and they do not claim full ES/runtime de-root.
+
+## Remote ES Binary Deployment Surface
+
+Remote Supported-Host Alpha may now carry one bounded repo-side operator
+surface for resolving live ES/runtime-helper binary parity against the current
+repo snapshot before any writable-state or service-user mutation is attempted.
+
+This surface is intentionally limited to:
+
+- the live `es` binary at `/usr/local/lib/execution-substrate/bin/es`
+- the live runtime helper binary at `/usr/local/bin/es-runtime-support`
+- default non-mutating `--check-only` plus explicit `--apply` for any later
+  live operator use
+- preserving the accepted ES config/TLS ownership prep bridge
+- preserving the then-live `es.service` `root(default)` posture during this
+  earlier slice
+- preserving ES public contracts, lifecycle semantics, retained-result
+  semantics, `authority_handoff`, staging/results ownership, and all current
+  bounded runtime compatibility edges
+- refusing to run governed proof as part of the helper flow
+
+The preferred public repo-side/operator surface is:
+
+- `scripts/remote_alpha_deploy_es_binaries.sh`
+
+Its sourced internal implementation is:
+
+- `scripts/internal/remote_alpha_deploy_es_binaries.sh`
+
+When remote staging is used through `--ssh-target`, the helper must stage only
+the minimal helper files plus the built linux/amd64 binary payloads required
+for this surface:
+
+- `scripts/remote_alpha_deploy_es_binaries.sh`
+- `scripts/internal/remote_alpha_deploy_es_binaries.sh`
+- one staged payload file for `/usr/local/lib/execution-substrate/bin/es`
+- one staged payload file for `/usr/local/bin/es-runtime-support`
+- one staged payload provenance file `payload/build-provenance.json`
+
+The repo-side upload step must preserve the exact remote relative paths the
+root-owned install step later consumes:
+
+- `<upload-root>/scripts/remote_alpha_deploy_es_binaries.sh`
+- `<upload-root>/scripts/internal/remote_alpha_deploy_es_binaries.sh`
+- `<upload-root>/payload/es`
+- `<upload-root>/payload/es-runtime-support`
+- `<upload-root>/payload/build-provenance.json`
+
+Execution must still run only from a root-owned staged path under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, not from
+a user-writable upload directory, and the staged provenance record must include
+the local git commit when available, whether the worktree was dirty, the
+sha256 of each staged helper or payload file, the remote staged path, and the
+remote owner or mode proving the staged tree was root-owned before execution.
+
+The required operator flow for this binary-deployment surface is:
+
+1. Run `scripts/remote_alpha_deploy_es_binaries.sh --ssh-target <user@host>`
+   first. That default invocation must remain non-mutating `--check-only`.
+   The default staged-wrapper path must perform a noninteractive `sudo -n`
+   preflight and fail cleanly with structured `sudo_unavailable` evidence
+   before any helper upload or root-owned staging when passwordless sudo is
+   unavailable. An explicit `--interactive-sudo` mode may be used only from a
+   visible terminal when a bounded password handoff is authorized. Interactive
+   staged execution must fetch check-only/apply outputs from user-owned remote
+   artifact files rather than redirecting tty-backed SSH stdout directly into
+   the local evidence files. The wrapper must validate the local staged upload
+   tree before upload and treat any missing staged helper or payload path as
+   structured `wrapper_tooling_error` evidence rather than surfacing a raw
+   root-owned `install: cannot stat` failure.
+2. Treat check-only as planning evidence only. It must build or locate the
+   repo-owned linux/amd64 artifacts through the established repo build path,
+   record dirty-worktree or build provenance, compare local and live hashes,
+   and report hash differences as `deployment_needed` rather than as a failed
+   host mutation.
+3. Use `--apply` only after explicit approval and after the helper reports no
+   blockers other than `deployment_needed`.
+4. Preserve the apply summary, backup path, rollback notes, exact changed
+   binary paths, preserved `es.service` identity, and post-restart `/health`
+   plus `GET /v1/executions:contract` validation as the bounded post-apply
+   evidence set. The helper staging record must distinguish
+   `sudo_unavailable` from `wrapper_tooling_error`, record whether staging
+   occurred, whether the check-only helper ran, and whether transient staging
+   was removed.
+5. Remove transient staging after collection unless
+   `--keep-staging-on-failure` is requested. Deferred cleanup must remove the
+   user-owned remote upload root, the user-owned remote artifact root, and any
+   root-owned helper staging root that was created for the run.
+6. Do not widen this helper flow into service-user changes, config/TLS
+   rewrites, staging/results ownership changes, Nomad task-user changes,
+   helper or selector redesign, Vault handoff redesign, or governed proof.
+
+When `--output-dir` points at an Infrastructure Manager profile directory such
+as `.out/remote-alpha-m75q`, the wrapper must write predictable local
+artifacts:
+
+- `es-binary-deployment-check-only.json`
+- `es-binary-deployment-helper-staging-record.json`
+- `es-binary-deployment-apply-summary.json` when `--apply` is used
+
+Those local artifacts are deployment evidence and provenance only. They are
+not governed proof, they preserve the earlier slice-specific fact that
+`es.service` still ran as `root(default)` at that step, and they did not by
+themselves authorize the later writable-state or service-user mutations.
+
+## Remote ES Writable-State Ownership Surface
+
+Remote Supported-Host Alpha may now carry one bounded repo-side operator
+surface for preparing only the stable staging/results roots required before the
+long-lived `es.service` can later run as `es:es`.
+
+This surface is intentionally limited to:
+
+- `execution.staging_root_dir` from `/etc/execution-substrate/es.json`
+- `execution.results_root_dir` from `/etc/execution-substrate/es.json`
+- default non-mutating `--check-only` plus explicit `--apply` for any later
+  live operator use
+- preserving the then-live `es.service` `root(default)` posture during this
+  earlier slice
+- preserving ES public contracts, lifecycle semantics, retained-result
+  semantics, `authority_handoff`, and the root-start runtime compatibility
+  edges
+- refusing to recursively re-owner retained run or debug trees
+- refusing to run governed proof as part of this helper flow
+- allowing a separate explicit non-empty-root maintenance window to stop/start
+  `es.service` once while preserving the then-live `root(default)` identity for
+  that earlier slice
+
+The preferred public repo-side/operator surface is:
+
+- `scripts/remote_alpha_prepare_es_writable_state_ownership.sh`
+
+Its sourced internal implementation is:
+
+- `scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`
+
+When remote staging is used through `--ssh-target`, the helper must stage only
+the minimal helper files required for this surface:
+
+- `scripts/remote_alpha_prepare_es_writable_state_ownership.sh`
+- `scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`
+
+The repo-side upload step must preserve the exact remote relative paths the
+root-owned install step later consumes:
+
+- `<upload-root>/scripts/remote_alpha_prepare_es_writable_state_ownership.sh`
+- `<upload-root>/scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`
+
+Execution must still run only from a root-owned staged path under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, not from
+a user-writable upload directory, and the staged provenance record must include
+the local git commit when available, the sha256 of each staged helper file, the
+remote staged path, and the remote owner or mode proving the staged tree was
+root-owned before execution.
+
+The required operator flow for this writable-state ownership surface is:
+
+1. Run
+   `scripts/remote_alpha_prepare_es_writable_state_ownership.sh --ssh-target <user@host>`
+   first. That default invocation must remain non-mutating `--check-only`.
+   The default staged-wrapper path must perform a noninteractive `sudo -n`
+   preflight and fail cleanly with structured `sudo_unavailable` evidence
+   before any helper upload or root-owned staging when passwordless sudo is
+   unavailable. An explicit `--interactive-sudo` mode may be used only from a
+   visible terminal when a bounded password handoff is authorized. Interactive
+   staged execution must fetch check-only/apply outputs from user-owned remote
+   artifact files rather than redirecting tty-backed SSH stdout directly into
+   the local evidence files.
+2. Review the machine-readable check-only JSON before any later live apply.
+   Apply readiness must stay blocked unless the helper reports:
+   - a narrow `es:es` account/group
+   - exact target paths from `es.json`
+   - current owner/mode state for both stable roots
+   - current owner/mode/manageability state for the minimal common parent
+     traversal directory or directories needed to reach those roots
+   - empty roots or an explicit `--rotate-nonempty-roots`
+     maintenance-window path proving no retained run/debug content would be
+     re-owned implicitly
+   - no active-run or drain ambiguity the helper cannot classify safely
+   - any legacy run directories without retained-result or normalization-
+     marker evidence are classified read-only through the existing configured
+     Nomad connection only, using the current internal locator mapping
+     `run_id -> exec-<run_id>`
+   - any scheduler-backed stale/orphan acceptance remains an explicit
+     maintenance-window decision rather than a silent quarantine default
+   - any later bounded artifact reconciliation plan is limited to direct
+     retained-result artifacts under `execution.results_root_dir` and direct
+     run-scoped stage roots under `execution.staging_root_dir`, with explicit
+     quarantine targets for anything that cannot be repaired in place without
+     fabricating evidence
+   - a rollback path
+3. Treat check-only as planning evidence only. It is not proof and it is not a
+   host mutation.
+4. Use `--apply` only after explicit approval and after the helper reports no
+   blockers. Apply must change only the two stable roots to the documented
+   `es:es` ownership model, must not recursively `chown` arbitrary run/debug
+   trees, and must not delete retained staging or result content. When
+   non-empty roots require explicit maintenance-window rotation, apply may:
+   - stop `es.service` while it remains `root(default)`
+   - move the old configured roots aside to timestamped root-owned quarantine
+     paths
+   - create fresh live roots at the configured paths as `es:es` `0750`
+   - start `es.service` again and require `/health` plus
+     `GET /v1/executions:contract` validation
+   If legacy run directories remain only as terminal or stale/orphan
+   filesystem state, apply must require explicit `--rotate-nonempty-roots`
+   plus explicit `--accept-stale-orphaned-runs`; default behavior must remain
+   blocked.
+   When the roots already match `es:es` but the shared traversal parent still
+   blocks future non-root ES, apply may use a separate explicit parent-chain
+   flag such as `--fix-parent-chain` only to preserve the existing parent
+   owner and grant group `es` mode `0750` traversal access. Under the current
+   live layout that means `/var/lib/execution-substrate/es` becomes
+   `root:es` `0750`. That parent-only apply must not revisit old quarantined
+   roots and should avoid any `es.service` restart unless a measured host
+   proves it is required.
+   When the live roots already match the documented owner model but specific
+   legacy retained-result or run-scoped staging artifacts still block future
+   readiness, apply may use a separate explicit flag such as
+   `--reconcile-artifacts` only to:
+   - repair the retained run directory, retained bundle, and preserved
+     normalization sidecar when that direct bounded set already exists
+   - quarantine legacy retained run directories that still lack preserved
+     normalization evidence outside the live results root instead of
+     fabricating a new sidecar
+   - quarantine inactive incompatible run-scoped stage roots outside the live
+     staging root instead of recursively re-owning arbitrary descendants
+   - preserve rollback notes, exact changed/quarantined paths, and explicit
+     confirmation that no service restart occurred unless a measured host
+     proves one is required
+5. Preserve the apply summary, backup path, rollback notes, exact changed
+   root paths, preserved `es.service` identity, explicit confirmation that old
+   roots were preserved rather than recursively re-owned, and either explicit
+   confirmation that no service restart occurred or the bounded maintenance-
+   window stop/start record when non-empty-root rotation was used as the
+   bounded post-apply evidence set. Parent-only traversal apply must likewise
+   report the exact changed parent path or paths, preserved owner strategy,
+   unchanged quarantined roots, and whether any restart occurred. Bounded
+   artifact-reconciliation apply must likewise report the exact repaired or
+   quarantined retained/stage paths, the evidence that each stage-root
+   quarantine was inactive, and the fact that no recursive ownership rewrite
+   occurred. The helper
+   staging record must distinguish
+   `sudo_unavailable` from `wrapper_tooling_error`, record whether staging
+   occurred, whether the check-only helper ran, and whether transient staging
+   was removed.
+6. Remove transient staging after collection unless
+   `--keep-staging-on-failure` is requested.
+7. Do not widen this helper flow into recursive retained-run ownership
+   migration, config/TLS rewrites, service-user changes, Nomad task-user
+   changes, helper or selector redesign, Vault handoff redesign, or governed
+   proof.
+
+When `--output-dir` points at an Infrastructure Manager profile directory such
+as `.out/remote-alpha-m75q`, the wrapper must write predictable local
+artifacts:
+
+- `es-writable-state-ownership-check-only.json`
+- `es-writable-state-ownership-helper-staging-record.json`
+- `es-writable-state-ownership-apply-summary.json` when `--apply` is used
+
+Those local artifacts are ownership evidence and provenance only. They are not
+governed proof, they preserve the earlier slice-specific fact that
+`es.service` still ran as `root(default)` at that step, and they did not by
+themselves authorize or prove the later `es.service` user flip.
+
+## Remote ES Service-User Migration Surface
+
+Remote Supported-Host Alpha may now carry one bounded repo-side operator
+migration surface for the long-lived `es.service` user flip.
+
+This surface is intentionally limited to:
+
+- the long-lived `es.service` only
+- default non-mutating `--check-only` plus explicit `--apply` for any later
+  live operator use
+- preserving the accepted ES config/TLS ownership prep bridge
+- preserving the documented writable-state ownership model and runtime
+  ownership-normalization contract as readiness inputs
+- preserving ES public contracts, lifecycle semantics, retained-result
+  semantics, and `authority_handoff`
+- preserving the root-start runtime helper, Nomad task `User: "0:0"`,
+  helper-private SPIRE traversal, broad root selector scope, and
+  Vault/workload-zone handoff semantics as bounded compatibility edges
+- refusing to claim full ES/runtime de-root
+- refusing to run governed proof as part of the helper flow
+
+The preferred public repo-side/operator surface is:
+
+- `scripts/remote_alpha_migrate_es_service_user.sh`
+
+Its sourced internal implementation is:
+
+- `scripts/internal/remote_alpha_migrate_es_service_user.sh`
+
+When remote staging is used through `--ssh-target`, the helper must stage only
+the minimal helper files required for this migration surface:
+
+- `scripts/remote_alpha_migrate_es_service_user.sh`
+- `scripts/internal/remote_alpha_migrate_es_service_user.sh`
+- `scripts/remote_alpha_check_es_writable_state_readiness.sh`
+- `scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`
+
+The repo-side upload step must preserve the exact remote relative paths the
+root-owned install step later consumes:
+
+- `<upload-root>/scripts/remote_alpha_migrate_es_service_user.sh`
+- `<upload-root>/scripts/internal/remote_alpha_migrate_es_service_user.sh`
+- `<upload-root>/scripts/remote_alpha_check_es_writable_state_readiness.sh`
+- `<upload-root>/scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`
+
+Execution must still run only from a root-owned staged path under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, not from
+a user-writable upload directory, and the staged provenance record must include
+the local git commit when available, the sha256 of each staged helper file, the
+remote staged path, and the remote owner/mode proving the staged tree was
+root-owned before execution.
+
+The required operator flow for this migration surface is:
+
+1. Run `scripts/remote_alpha_migrate_es_service_user.sh --ssh-target <user@host>`
+   first. That default invocation must remain non-mutating `--check-only`.
+   The default staged-wrapper path must perform a noninteractive `sudo -n`
+   preflight and fail cleanly with structured `sudo_unavailable` evidence
+   before any helper upload or root-owned staging when passwordless sudo is
+   unavailable. An explicit `--interactive-sudo` mode may be used only from a
+   visible terminal when a bounded password handoff is authorized. Interactive
+   staged execution must fetch check-only/apply outputs from user-owned remote
+   artifact files rather than redirecting tty-backed SSH stdout directly into
+   the local evidence files, and interactive check-only should avoid reopening
+   multiple password-backed SSH legs for staged install, stage-stat capture,
+   and helper execution.
+2. Review the machine-readable check-only JSON before any later live apply.
+   Apply readiness must stay blocked unless the helper reports:
+   - a narrow `es:es` account/group
+   - readable ES config/TLS material for `es:es`
+   - passing long-lived ES startup validation for the target service user
+   - manageable `execution.staging_root_dir` and
+     `execution.results_root_dir` for `es:es`
+   - no active runs and no runs that cannot be ruled out safely
+   - passing `future-non-root-required` writable-state readiness evidence
+   - a valid helper-private SPIRE runtime input path proved as operator-side readiness evidence rather than as a direct `es:es` raw-socket read requirement
+   - a plannable systemd service-user change and rollback path
+3. Treat check-only as planning evidence only. It is not proof and it is not a
+   host mutation.
+4. Use `--apply` only after explicit approval, rollback readiness, and the
+   check-only gate above all pass.
+5. Preserve the apply summary, backup path, rollback notes, exact
+   `es.service` drop-in change, unchanged bounded compatibility edges, and
+   post-apply `/health` plus `GET /v1/executions:contract` validation as the
+   bounded post-apply evidence set.
+   The helper staging record must distinguish `sudo_unavailable` from
+   `wrapper_tooling_error`, record whether staging occurred, whether the
+   check-only helper ran, and whether transient staging was removed.
+6. Remove transient staging after collection unless
+   `--keep-staging-on-failure` is requested.
+7. Do not widen this helper flow into Nomad task-user changes, helper or
+   selector redesign, Vault handoff redesign, or governed proof.
+
+When `--output-dir` points at an Infrastructure Manager profile directory such
+as `.out/remote-alpha-m75q`, the wrapper must write predictable local
+artifacts:
+
+- `es-service-user-migration-check-only.json`
+- `es-service-user-migration-helper-staging-record.json`
+- `es-service-user-migration-apply-summary.json` when `--apply` is used
+- `es-service-user-migration-apply-stdout.txt` when `--apply` is used
+
+Those local artifacts are migration evidence and provenance only. They are not
+governed proof, they do not prove full ES/runtime de-root, and they do not
+change the accepted Alpha fact that the root-start helper, Nomad task user
+model, helper-private SPIRE traversal, broad selector scope, and workload-zone
+Vault handoff remain bounded compatibility edges until a later redesign slice
+changes them explicitly.
+
+The current bounded live state after that later apply is now the converse of
+the earlier check-only posture: the long-lived `es.service` is already running
+as `User=es`, `Group=es`, `UMask=0027`; ES config/TLS prep is applied; stable
+writable-state roots are prepared; post-apply `/health`,
+`GET /v1/executions:contract`, the current lowest-cost existing happy path, and
+future writable-state readiness all passed; and the old root-era staging/results
+roots remain preserved as rollback/debug/evidence state. This still does not
+claim full ES/runtime de-root.
 
 `--dry-run` is an accepted alias for that same non-mutating repo-side check.
 That check-only path must perform discovery and validation only. It must emit a
 machine-readable JSON plan/report to stdout and must not create users or
-groups, call `chown` or `chmod`, rewrite `/etc/execution-substrate/es.json`,
-create or replace `/etc/execution-substrate/es-tls`, create a backup directory
-under `/var/tmp/execution-substrate-remote-alpha/`, or restart
-`es.service`. It may inspect current service posture, current config and
-dependency paths, existing owner/mode state, and the planned ES config rewrite
-scope. The live apply step
-`sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh`
-may be run only after
-that check-only report is reviewed and accepted.
+groups, call `chown` or `chmod`, rewrite systemd units or drop-ins, create a
+backup directory under `/var/tmp/execution-substrate-remote-alpha/`, restart
+`es.service`, delete staging/results, or run governed proof. It may inspect the
+current `es.service` posture, current config/TLS dependency paths, writable
+state owner/mode state, active-run evidence, and the
+`future-non-root-required` writable-state readiness checker output.
 
 Before any apply-mode mutation primitive runs, the helper must create a
 timestamped backup directory under
 `/var/tmp/execution-substrate-remote-alpha/`. That backup directory must:
 
-- copy the pre-apply `/etc/execution-substrate/es.json` into `es.json`
+- copy the pre-apply ES config into `es.json`
+- copy the current `es.service` unit fragment plus any current drop-ins
 - write `pre-apply-snapshot.json`
-- record the pre-apply source TLS path, size, owner, group, mode, and sha256
-  for each current ES TLS/dependency input path
-- record whether the `es` prep user and group existed before apply
+- record the pre-apply config/TLS path, owner, group, mode, and sha256 for
+  each current ES TLS/dependency input path
 - record the current `es.service` `User`, `Group`, `ActiveState`, and
   `SubState` before apply
-- record rollback notes for restoring the pre-apply ES config/TLS posture
+- record staging/results root owner/mode summary plus active-run evidence
+- record rollback notes for restoring the pre-apply service-user posture
 
 If the target host already has an `es` user/group, the helper must prove that
-the pre-existing prep account is still acceptably narrow for this slice before
+the pre-existing service account is still acceptably narrow for this slice before
 it is reused. At minimum, that check must confirm primary group `es` and no
 supplementary groups; otherwise the helper must fail instead of silently
 claiming a dedicated narrow account/group.
 
-For this sealed ES config/TLS prep slice, the host-local helper must not
-accept `REMOTE_ALPHA_SERVICE_NAME`, `REMOTE_ALPHA_PREP_USER`,
-`REMOTE_ALPHA_PREP_GROUP`, `REMOTE_ALPHA_BINARY_PATH`,
+For this sealed ES service-user migration slice, the host-local helper must not
+accept `REMOTE_ALPHA_SERVICE_NAME`, `REMOTE_ALPHA_SERVICE_USER`,
+`REMOTE_ALPHA_SERVICE_GROUP`, `REMOTE_ALPHA_BINARY_PATH`,
 `REMOTE_ALPHA_CONFIG_PATH`, `REMOTE_ALPHA_HEALTHCHECK_ENV_PATH`,
-`REMOTE_ALPHA_SERVICE_UNIT_PATH`, `--service-name`, `--prep-user`,
-`--prep-group`, `--binary-path`, `--config-path`,
-`--healthcheck-env-path`, or `--service-unit-path` as mutable inputs. The
-helper must fail fast instead of silently retargeting the ES prep step away
-from the repo-owned ES posture. Only `--summary-path` and
-`REMOTE_ALPHA_SUMMARY_PATH` may vary for output placement.
+`REMOTE_ALPHA_SERVICE_UNIT_PATH`, `REMOTE_ALPHA_SERVICE_DROPIN_DIR`,
+`REMOTE_ALPHA_SERVICE_DROPIN_PATH`, `--service-name`, `--service-user`,
+`--service-group`, `--binary-path`, `--config-path`,
+`--healthcheck-env-path`, `--service-unit-path`, `--service-dropin-dir`, or
+`--service-dropin-path` as mutable inputs. The helper must fail fast instead of
+silently retargeting the service-user migration away from the repo-owned ES
+posture. Only `--summary-path` and `REMOTE_ALPHA_SUMMARY_PATH` may vary for
+apply output placement.
 
-The summary schema for that host-local prep record is:
+The summary schema for this host-local migration record is:
 
-- `execution-substrate.remote-alpha.es-config-tls-prep-summary.v1`
+- `execution-substrate.remote-alpha.es-service-user-migration-summary.v1`
 
-The current host-local non-secret apply summary for that ES prep step is:
+The current host-local non-secret apply summary for that migration step is:
 
-- `/var/tmp/execution-substrate-remote-alpha/es-config-tls-prep-summary.json`
+- `/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-summary.json`
 
 Apply mode writes that file. Check-only must not create it; instead it must
-emit the same schema shape as stdout JSON with `mode.output` set to
-`stdout_json` and the configured summary path recorded under
-`plan.paths_written`. This is a host-local ownership-prep record for the ES
-config/TLS prep slice, not a new happy-path proof and not an ES lifecycle,
-readiness, runtime-profile, or producer-contract surface.
+emit stdout JSON in the same schema family with `mode.name=check_only`,
+`mode.non_mutating=true`, `proof.check_only_is_not_proof=true`,
+`proof.host_mutation_performed=false`, a boolean `plan.apply_ready`, a
+`bounded_compatibility_edges` array, and
+`not_claimed.full_es_runtime_deroot=true`. Apply may change only the bounded
+`es.service` account drop-in needed to set `User=es`, `Group=es`, and
+`UMask=0027`, run `systemctl daemon-reload`, restart `es.service` at most once,
+and validate `User=es`, `Group=es`, `/health`, and
+`GET /v1/executions:contract` afterward. This is a bounded service-user
+migration record only; it is not governed proof, not full ES/runtime de-root
+evidence, and not a redesign of the accepted compatibility edges above.
 
-Required summary fields for
-`execution-substrate.remote-alpha.es-config-tls-prep-summary.v1` are:
+The summary must stay limited to bounded safe evidence such as:
 
-- `schema_version`
-- `checked_at`
-- `mode.name`
-- `mode.non_mutating`
-- `mode.output`
-- `slice.classification`
-- `slice.not_a_new_happy_path_proof`
-- `slice.temporary_compatibility_edge`
-- `service.name`
-- `service.live_user`
-- `service.live_group`
-- `service.binary_path`
-- `service.config_path`
-- `service.health_url`
-- `service.contract_url`
-- `dependencies.server_tls.cert_file`
-- `dependencies.server_tls.key_file`
-- `dependencies.server_tls.client_ca_file`
-- `dependencies.artifact_registry.base_url`
-- `dependencies.artifact_registry.client_cert_file`
-- `dependencies.artifact_registry.client_key_file`
-- `dependencies.artifact_registry.root_ca_file`
-- `dependencies.execution_governance.base_url`
-- `dependencies.execution_governance.client_cert_file`
-- `dependencies.execution_governance.client_key_file`
-- `dependencies.execution_governance.root_ca_file`
-- `dependencies.local_state_paths`
-- `dependencies.log_sink`
-- `plan.paths_read`
-- `plan.paths_written`
-- `plan.ownership_changes`
-- `plan.prep_account`
-- `plan.service_identity_would_remain_root_default`
-- `plan.restart_required_in_apply_mode`
-- `plan.warnings`
-- `plan.blockers`
-- `backup.status`
-- `backup.parent_dir`
-- `backup.path`
-- `backup.pre_apply_config_copy`
-- `backup.snapshot_manifest_path`
-- `backup.pre_apply_source_tls`
-- `backup.pre_apply_prep_account`
-- `backup.pre_apply_service`
-- `backup.rollback_notes`
-- `ownership_model.prep_account`
-- `ownership_model.config_file`
-- `ownership_model.tls_directory`
-- `ownership_model.tls_files`
-- `ownership_model.live_service_posture`
-- `ownership_model.writable_state`
-- `validation.local_es_health`
-- `validation.local_es_contract_probe`
-- `validation.prep_account_narrowness`
-- `validation.ownership`
-- `validation.config_rewrite_scope`
-- `validation.ags_service_posture`
-- `validation.ars_service_posture`
-- `validation.egs_service_posture`
-- `validation.es_service_posture`
-- `preserved_remote_path.direct_https_mtls`
-- `preserved_remote_path.no_bridge`
-- `preserved_remote_path.no_shared_filesystem`
-- `security.ds_not_in_docker_group`
-- `security.passwordless_sudo_for_ds`
-- `security.shared_unix_account_model_introduced`
-- `not_claimed.es_de_root`
-- `not_claimed.es_public_contract_changes`
-- `not_claimed.spire_selector_model_changes`
-- `not_claimed.spire_socket_traversal_changes`
-- `not_claimed.nomad_task_user_model_changes`
-- `not_claimed.vault_runtime_helper_changes`
-- `not_claimed.staging_or_results_ownership_changes`
-- `not_claimed.new_remote_happy_path_proof`
-- `result.status`
-- `result.ok`
-- `result.non_mutating`
-
-For this ES host-local summary, the preserved-remote/security facts above are
-not all the same kind of evidence:
-
-- `mode.name`, `mode.non_mutating`, and `mode.output` must explicitly label
-  whether the record came from non-mutating check-only or live apply mode.
-- `plan.paths_read` must enumerate the current ES config/dependency/service
-  inputs and the ownership-inspection paths read by this slice.
-- `plan.paths_written` must enumerate the config, dedicated ES TLS paths, and
-  configured summary path that apply mode would write.
-- `plan.ownership_changes` must describe current owner/mode state plus planned
-  `root:es` owner/mode targets for the config file and dedicated ES TLS paths.
-- `plan.prep_account` must say whether `es:es` already exists or would be
-  created in apply mode.
-- `plan.service_identity_would_remain_root_default` must state whether the
-  current `es.service` posture would remain `root(default)` through this slice.
-- `plan.restart_required_in_apply_mode` must remain `true` because the live
-  apply path still restarts `es.service` once after rewriting the config/TLS
-  ownership slice.
-- `plan.warnings` and `plan.blockers` must capture advisory host-posture facts
-  plus any reasons the current host is not ready for a bounded live apply.
-- `backup.status`, `backup.parent_dir`, and `backup.path` must label whether
-  apply created the timestamped backup and where it lives.
-- `backup.pre_apply_config_copy` and `backup.snapshot_manifest_path` must point
-  to the copied pre-apply config and the pre-apply snapshot manifest inside the
-  backup directory.
-- `backup.pre_apply_source_tls` must record the pre-apply source TLS/dependency
-  paths plus size, owner, group, mode, and sha256 for each source file.
-- `backup.pre_apply_prep_account` must record whether the `es` prep user/group
-  existed before apply.
-- `backup.pre_apply_service` must record the pre-apply `es.service` `User`,
-  `Group`, `ActiveState`, and `SubState`.
-- `backup.rollback_notes` must tell the operator how to restore the pre-apply
-  config/TLS posture without changing `es.service` `User=` or `Group=`.
-- `validation.prep_account_narrowness` must prove the `es` prep account
-  remains narrow for this slice before the summary may describe it as
-  dedicated. At minimum that proof requires primary group `es` and no
-  supplementary groups.
-- `validation.config_rewrite_scope` must prove that only ES config/TLS path
-  fields changed and that `execution.staging_root_dir`,
-  `execution.results_root_dir`, and
-  `execution.spire_workload_api_socket_path` remained unchanged.
-- `validation.es_service_posture` must show the live service still runs as
-  `root(default)` after the prep apply.
-- `preserved_remote_path.direct_https_mtls` must be an inference record
-  derived from current ES host config plus the host-local HTTPS+mTLS probes. It
-  is not a Mac-side reachability proof.
-- `preserved_remote_path.no_bridge` and
-  `preserved_remote_path.no_shared_filesystem` must be explicit operator
-  assertion records unless a future slice adds proof inputs that can validate
-  them directly.
-- `security.ds_not_in_docker_group` and
-  `security.passwordless_sudo_for_ds` are host-posture observations recorded
-  in the summary. They must not, by themselves, turn an otherwise-valid ES
-  config/TLS ownership prep apply into a failed slice result.
-- `security.shared_unix_account_model_introduced` must be derived from
-  `validation.prep_account_narrowness`. It must not report `false` unless the
-  helper has proved the dedicated `es` prep account remained narrow for this
-  slice.
-- `result.status`, `result.ok`, and `result.non_mutating` must summarize the
-  machine-readable outcome without implying that check-only performed any live
-  mutation.
-
-That summary must record only bounded safe evidence such as:
-
-- the live ES service posture plus the dedicated ES config/TLS ownership model
-- the exact ES binary, config, TLS, ARS dependency, and EGS dependency file
-  paths ES needs after the prep apply
-- the explicit fact that ES staging/results ownership stayed unchanged in this
-  slice
-- ES local `/health` and local `GET /v1/executions:contract` results after the
-  change
-- the preserved direct HTTPS/mTLS, no-bridge, and no-shared-filesystem facts
-- explicit non-claim vocabulary for ES de-root, ES public-contract changes,
-  SPIRE selector-model changes, SPIRE socket traversal changes, Nomad task
-  user-model changes, Vault/runtime-helper changes, staging/results ownership
-  changes, and new happy-path proof claims
+- preflight blocker and warning classification for service-account narrowness,
+  config/TLS readability, target-service-user startup-validation readiness,
+  helper-private SPIRE runtime-input validation, writable-state
+  manageability, active-run/drain evidence, future-non-root-required
+  readiness evidence, and the plannable systemd drop-in change
+- the explicit list of bounded compatibility edges left unchanged
+- the pre-mutation backup path plus rollback notes
+- the exact `es.service` drop-in lines applied in live mode
+- post-apply `User=es`, `Group=es`, `/health`, and
+  `GET /v1/executions:contract` validation results
+- explicit non-claim vocabulary for full ES/runtime de-root, Nomad task-user
+  changes, helper-private SPIRE traversal changes, selector-model changes,
+  Vault/workload-zone handoff changes, and governed proof
 
 That summary and any derivative artifacts accepted as evidence for this step
-must not persist:
+must not persist TLS private keys, JWT-SVIDs, Vault tokens, API keys, other
+secret payloads, or raw retained-result bundles.
 
-- TLS private-key PEM bodies
-- client cert private keys
-- JWT-SVIDs
-- Vault tokens
-- API keys
-- private keys
-- raw secret payloads
-- raw retained-result bundles
-
-The active repo-derived ES service inputs for that ES prep step remain:
+The active repo-derived inputs for this migration helper remain:
 
 - service name `es`
-- prep account user `es`
-- prep account group `es`
+- service account user `es`
+- service account group `es`
 - binary path `/usr/local/lib/execution-substrate/bin/es`
 - config path `/etc/execution-substrate/es.json`
 - healthcheck env path `/etc/execution-substrate/healthcheck.env`
-- current source server cert `/etc/execution-substrate/tls/es-server-cert.pem`
-- current source server key `/etc/execution-substrate/tls/es-server-key.pem`
-- current source client CA `/etc/execution-substrate/tls/runtime-ca.pem`
-- current source ARS client cert `/etc/execution-substrate/tls/es-client-cert.pem`
-- current source ARS client key `/etc/execution-substrate/tls/es-client-key.pem`
-- current source ARS root CA `/etc/execution-substrate/tls/runtime-ca.pem`
-- current source EGS client cert `/etc/execution-substrate/tls/es-client-cert.pem`
-- current source EGS client key `/etc/execution-substrate/tls/es-client-key.pem`
-- current source EGS root CA `/etc/execution-substrate/tls/runtime-ca.pem`
-- dedicated ES-readable TLS dir `/etc/execution-substrate/es-tls`
-- ES-readable server cert `/etc/execution-substrate/es-tls/es-server-cert.pem`
-- ES-readable server key `/etc/execution-substrate/es-tls/es-server-key.pem`
-- ES-readable server client CA `/etc/execution-substrate/es-tls/server-client-ca.pem`
-- ES-readable ARS client cert `/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`
-- ES-readable ARS client key `/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`
-- ES-readable ARS root CA `/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`
-- ES-readable EGS client cert `/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`
-- ES-readable EGS client key `/etc/execution-substrate/es-tls/execution-governance-client-key.pem`
-- ES-readable EGS root CA `/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`
-- the current `execution.staging_root_dir`, `execution.results_root_dir`, and
-  `execution.spire_workload_api_socket_path` remain whatever
-  `/etc/execution-substrate/es.json` already carries; this slice must not move
-  or re-own them
 - systemd unit path `/etc/systemd/system/es.service`
+- systemd drop-in dir `/etc/systemd/system/es.service.d`
+- systemd drop-in path `/etc/systemd/system/es.service.d/10-account.conf`
 
 ## Remote Vault/Workload-Auth Slice
 

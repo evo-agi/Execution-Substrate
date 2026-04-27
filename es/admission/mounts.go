@@ -122,12 +122,12 @@ func stagedRuntimeMountTargets(mounts []stagedRuntimeMount) []string {
 	return targets
 }
 
-func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, layout executionPackageLayout, mounts []RuntimeMount) ([]stagedRuntimeMount, *Error) {
+func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, layout executionPackageLayout, mounts []RuntimeMount, owner executionPlatformStateOwner) ([]stagedRuntimeMount, *Error) {
 	if len(mounts) == 0 {
 		return nil, nil
 	}
 
-	if err := os.MkdirAll(layout.mountsStageRootDir, 0o755); err != nil {
+	if err := ensureOwnedDirectory(layout.mountsStageRootDir, stableStageDirMode, owner); err != nil {
 		return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging root failed")
 	}
 
@@ -161,15 +161,18 @@ func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.Ru
 
 		mountArchivePath := layout.mountArchivePath(index)
 		mountContentsDir := layout.mountContentsDir(index)
-		if err := os.MkdirAll(mountContentsDir, 0o755); err != nil {
+		if err := ensureOwnedDirectory(mountContentsDir, stableStageDirMode, owner); err != nil {
 			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging directory failed")
 		}
-		if err := os.WriteFile(mountArchivePath, payloadBytes, 0o600); err != nil {
+		if err := os.WriteFile(mountArchivePath, payloadBytes, retainedResultBundleFileMode); err != nil {
 			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "write runtime mount payload failed")
+		}
+		if err := reconcileOwnedPath(mountArchivePath, owner, retainedResultBundleFileMode); err != nil {
+			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "prepare runtime mount payload ownership failed")
 		}
 
 		remainingTotalBytes := maxRuntimeMountTotalBytes - totalExtractedBytes
-		extractedBytes, extractErr := extractRuntimeMountArchive(mountContentsDir, payloadBytes, maxRuntimeMountBytes, remainingTotalBytes)
+		extractedBytes, extractErr := extractRuntimeMountArchive(mountContentsDir, payloadBytes, maxRuntimeMountBytes, remainingTotalBytes, owner)
 		if extractErr != nil {
 			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, extractErr.Error())
 		}
@@ -239,7 +242,7 @@ func remapMountArtifactPreparationError(err *Error) *Error {
 	}
 }
 
-func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, perMountLimit int64, remainingTotalLimit int64) (int64, error) {
+func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, perMountLimit int64, remainingTotalLimit int64, owner executionPlatformStateOwner) (int64, error) {
 	if remainingTotalLimit <= 0 {
 		return 0, fmt.Errorf("mount payloads exceed the total size limit")
 	}
@@ -276,48 +279,51 @@ func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, per
 		}
 
 		switch header.Typeflag {
-			case tar.TypeDir:
-				if err := os.MkdirAll(absolutePath, 0o755); err != nil {
-					return 0, fmt.Errorf("mount payload directory creation failed")
-				}
-				if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-					return 0, err
-				}
-			case tar.TypeReg, tar.TypeRegA:
-				if header.Size < 0 {
-					return 0, fmt.Errorf("mount payload archive contains an invalid file size")
-				}
-				extractedBytes += header.Size
-				if extractedBytes > perMountLimit {
-					return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
-				}
-				if extractedBytes > remainingTotalLimit {
-					return 0, fmt.Errorf("mount payloads exceed the total size limit")
-				}
+		case tar.TypeDir:
+			if err := ensureOwnedDirectory(absolutePath, stableStageDirMode, owner); err != nil {
+				return 0, fmt.Errorf("mount payload directory creation failed")
+			}
+			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
+				return 0, err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if header.Size < 0 {
+				return 0, fmt.Errorf("mount payload archive contains an invalid file size")
+			}
+			extractedBytes += header.Size
+			if extractedBytes > perMountLimit {
+				return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
+			}
+			if extractedBytes > remainingTotalLimit {
+				return 0, fmt.Errorf("mount payloads exceed the total size limit")
+			}
 
-				if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
-					return 0, fmt.Errorf("mount payload directory creation failed")
-				}
-				file, err := os.OpenFile(absolutePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, header.FileInfo().Mode().Perm())
-				if err != nil {
-					return 0, fmt.Errorf("mount payload file creation failed")
-				}
-				if _, err := io.CopyN(file, tarReader, header.Size); err != nil {
-					file.Close()
-					return 0, fmt.Errorf("mount payload file extraction failed")
-				}
-				if err := file.Close(); err != nil {
-					return 0, fmt.Errorf("mount payload file extraction failed")
-				}
-				if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-					return 0, err
-				}
-			case tar.TypeSymlink, tar.TypeLink:
-				return 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
-			case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-				return 0, fmt.Errorf("mount payload archive contains unsupported special files")
-			default:
-				return 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
+			if err := ensureOwnedDirectory(filepath.Dir(absolutePath), stableStageDirMode, owner); err != nil {
+				return 0, fmt.Errorf("mount payload directory creation failed")
+			}
+			file, err := os.OpenFile(absolutePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, normalizedStableStageFileMode(header.FileInfo().Mode()))
+			if err != nil {
+				return 0, fmt.Errorf("mount payload file creation failed")
+			}
+			if _, err := io.CopyN(file, tarReader, header.Size); err != nil {
+				file.Close()
+				return 0, fmt.Errorf("mount payload file extraction failed")
+			}
+			if err := file.Close(); err != nil {
+				return 0, fmt.Errorf("mount payload file extraction failed")
+			}
+			if err := reconcileOwnedPath(absolutePath, owner, normalizedStableStageFileMode(header.FileInfo().Mode())); err != nil {
+				return 0, fmt.Errorf("mount payload ownership normalization failed")
+			}
+			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
+				return 0, err
+			}
+		case tar.TypeSymlink, tar.TypeLink:
+			return 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
+		case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+			return 0, fmt.Errorf("mount payload archive contains unsupported special files")
+		default:
+			return 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
 		}
 	}
 

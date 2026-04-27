@@ -181,28 +181,60 @@ done
 target="$1"
 shift
 printf 'target=%%s args=%%s\n' "$target" "$*" >> %q
-if [[ "${1:-}" != "/bin/bash" || "${2:-}" != "-s" ]]; then
-  echo "unexpected ssh invocation: $*" >&2
-  exit 64
-fi
-shift 2
-if [[ "${1:-}" == "--" ]]; then
-  shift
-fi
-mapped_args=()
-for arg in "$@"; do
-  if [[ "$arg" == /* ]]; then
-    mapped_args+=("${FAKE_REMOTE_ROOT}${arg}")
-  else
-    mapped_args+=("$arg")
+export PATH="${FAKE_REMOTE_BIN}:${PATH}"
+if [[ "${1:-}" == "/bin/bash" && "${2:-}" == "-s" ]]; then
+  shift 2
+  if [[ "${1:-}" == "--" ]]; then
+    shift
   fi
-done
-script_path="$(mktemp)"
-cat >"${script_path}"
-PATH="${FAKE_REMOTE_BIN}:${PATH}" /bin/bash "${script_path}" "${mapped_args[@]}"
-status=$?
-rm -f "${script_path}"
-exit "${status}"
+  mapped_args=()
+  for arg in "$@"; do
+    if [[ "$arg" == /* ]]; then
+      mapped_args+=("${FAKE_REMOTE_ROOT}${arg}")
+    else
+      mapped_args+=("$arg")
+    fi
+  done
+  script_path="$(mktemp)"
+  cat >"${script_path}"
+  if ((${#mapped_args[@]} > 0)); then
+    /bin/bash "${script_path}" "${mapped_args[@]}"
+  else
+    /bin/bash "${script_path}"
+  fi
+  status=$?
+  rm -f "${script_path}"
+  exit "${status}"
+fi
+if [[ "$#" -eq 1 ]]; then
+  mapped_command="$(python3 - "$1" <<'PY'
+import os
+import shlex
+import sys
+
+command = sys.argv[1]
+parts = shlex.split(command)
+if len(parts) >= 4 and parts[0] == "/bin/bash" and parts[1] == "-c":
+    fake_root = os.environ.get("FAKE_REMOTE_ROOT", "")
+    mapped = parts[:4]
+    for arg in parts[4:]:
+        if arg.startswith("/"):
+            mapped.append(fake_root + arg)
+        else:
+            mapped.append(arg)
+    print(" ".join(shlex.quote(part) for part in mapped))
+else:
+    print(command)
+PY
+)"
+  eval "$mapped_command"
+  if [[ "${FAKE_SSH_EMIT_CONNECTION_CLOSED:-0}" == "1" ]]; then
+    printf 'Connection to 192.0.2.10 closed.\n'
+  fi
+  exit $?
+fi
+echo "unexpected ssh invocation: $*" >&2
+exit 64
 `, h.sshLogPath, h.sshLogPath))
 
 	writeExecutable(t, localBin, "scp", fmt.Sprintf(`#!/usr/bin/env bash
@@ -383,8 +415,20 @@ unmap_path() {
   printf '%%s' "${path#"${FAKE_REMOTE_ROOT}"}"
 }
 
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+fi
+
+if [[ "${1:-}" == "-v" ]]; then
+  exit "${FAKE_REMOTE_SUDO_PREFLIGHT_EXIT:-0}"
+fi
+
+if [[ "${1:-}" == "true" ]]; then
+  exit "${FAKE_REMOTE_SUDO_PREFLIGHT_EXIT:-0}"
+fi
+
 if [[ "${1:-}" == */scripts/remote_alpha_check_es_writable_state_readiness.sh ]]; then
-  if [[ ! -f %q ]]; then
+  if [[ ! -f %q ]] && ! compgen -G "${FAKE_REMOTE_ROOT}/tmp/execution-substrate-remote-alpha-helper-artifacts-*/stage-stat.txt" >/dev/null; then
     echo "checker execution started before root-owned staging verification" >&2
     exit 97
   fi
@@ -505,6 +549,65 @@ func TestRemoteAlphaStageESWritableStateReadinessFutureModeIsPassedThrough(t *te
 	helperLog := mustRead(t, h.helperLogPath)
 	if !strings.Contains(helperLog, "checker\tfuture-non-root-required\t/etc/execution-substrate/es.json") {
 		t.Fatalf("expected future-mode checker invocation, got %q", helperLog)
+	}
+}
+
+func TestRemoteAlphaStageESWritableStateReadinessDefaultBatchPathDoesNotForceTTY(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "checker-report.json")
+	writeWritableStateStageReport(t, reportPath, goodWritableStateStageReport("alpha-compat", "pass"))
+
+	h := setupFakeRemoteWritableStateStageHarness(t, reportPath)
+	outputDir := filepath.Join(tmpDir, "output")
+
+	if output, err := runRemoteAlphaWritableStateStageWrapper(t, h.env("FAKE_REMOTE_CHECKER_REPORT="+reportPath), "--ssh-target", "ds@m75q-test", "--run-id", "no-tty", "--output-dir", outputDir); err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, output)
+	}
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if strings.Contains(sshLog, "tty=") {
+		t.Fatalf("default batch path should not force a tty, got %q", sshLog)
+	}
+}
+
+func TestRemoteAlphaStageESWritableStateReadinessInteractiveSudoFetchesRemoteArtifacts(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "checker-report.json")
+	writeWritableStateStageReport(t, reportPath, goodWritableStateStageReport("future-non-root-required", "pass"))
+
+	h := setupFakeRemoteWritableStateStageHarness(t, reportPath)
+	outputDir := filepath.Join(tmpDir, "output")
+
+	if output, err := runRemoteAlphaWritableStateStageWrapper(t, h.env(
+		"FAKE_REMOTE_CHECKER_REPORT="+reportPath,
+		"FAKE_SSH_EMIT_CONNECTION_CLOSED=1",
+	), "--ssh-target", "ds@m75q-test", "--run-id", "interactive-artifacts", "--output-dir", outputDir, "--mode", "future-non-root-required", "--interactive-sudo"); err != nil {
+		t.Fatalf("interactive wrapper failed: %v\n%s", err, output)
+	}
+
+	readiness := readJSONFile(t, filepath.Join(outputDir, remoteAlphaStageWritableStateArtifactName))
+	if got := readiness["checker_mode"]; got != "future-non-root-required" {
+		t.Fatalf("expected checker_mode=future-non-root-required, got %v", got)
+	}
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty="); got != 1 {
+		t.Fatalf("expected exactly one tty-backed interactive ssh leg, got %d log=%q", got, sshLog)
+	}
+
+	provenance := readJSONFile(t, filepath.Join(outputDir, remoteAlphaStageWritableStateHelperStagingRecordName))
+	if got := provenance["sudo_mode"]; got != "interactive" {
+		t.Fatalf("expected sudo_mode=interactive, got %v", got)
+	}
+	if got := provenance["staging_occurred"]; got != true {
+		t.Fatalf("expected staging_occurred=true, got %v", got)
+	}
+	if got := provenance["transient_staging_removed"]; got != true {
+		t.Fatalf("expected transient_staging_removed=true, got %v", got)
 	}
 }
 
@@ -696,6 +799,12 @@ func TestRemoteAlphaStageESWritableStateReadinessPreservesBlockerEvidence(t *tes
 	if got := provenance["wrapper_exit_code"]; got != float64(0) {
 		t.Fatalf("expected wrapper_exit_code=0, got %v", got)
 	}
+	if got := provenance["sudo_unavailable"]; got != false {
+		t.Fatalf("expected sudo_unavailable=false, got %v", got)
+	}
+	if got := provenance["wrapper_tooling_error"]; got != false {
+		t.Fatalf("expected wrapper_tooling_error=false, got %v", got)
+	}
 	checker := jsonMap(t, provenance["checker"])
 	if got := checker["overall_classification"]; got != "blocker" {
 		t.Fatalf("expected blocker evidence in checker summary, got %v", got)
@@ -732,6 +841,9 @@ func TestRemoteAlphaStageESWritableStateReadinessMalformedJSONFailsClosed(t *tes
 	}
 	if got := provenance["wrapper_exit_code"]; got != float64(1) {
 		t.Fatalf("expected wrapper_exit_code=1, got %v", got)
+	}
+	if got := provenance["wrapper_tooling_error"]; got != true {
+		t.Fatalf("expected wrapper_tooling_error=true, got %v", got)
 	}
 }
 
@@ -796,9 +908,58 @@ func TestRemoteAlphaStageESWritableStateReadinessStageOwnershipFailureFails(t *t
 	if got := provenance["sudo_or_preflight_blocker"]; got == "" {
 		t.Fatalf("expected sudo_or_preflight_blocker to be recorded, got %v", got)
 	}
+	if got := provenance["sudo_unavailable"]; got != false {
+		t.Fatalf("expected sudo_unavailable=false, got %v", got)
+	}
+	if got := provenance["wrapper_tooling_error"]; got != true {
+		t.Fatalf("expected wrapper_tooling_error=true, got %v", got)
+	}
 	remoteStaging := jsonMap(t, provenance["remote_staging"])
 	if got := remoteStaging["root_owned_before_execution"]; got != false {
 		t.Fatalf("expected root_owned_before_execution=false, got %v", got)
+	}
+}
+
+func TestRemoteAlphaStageESWritableStateReadinessSudoUnavailableIsStructured(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "checker-report.json")
+	writeWritableStateStageReport(t, reportPath, goodWritableStateStageReport("alpha-compat", "pass"))
+
+	h := setupFakeRemoteWritableStateStageHarness(t, reportPath)
+	outputDir := filepath.Join(tmpDir, "output")
+
+	output, err := runRemoteAlphaWritableStateStageWrapper(t, h.env(
+		"FAKE_REMOTE_CHECKER_REPORT="+reportPath,
+		"FAKE_REMOTE_SUDO_PREFLIGHT_EXIT=1",
+	), "--ssh-target", "ds@m75q-test", "--run-id", "sudo-unavailable", "--output-dir", outputDir)
+	if err == nil {
+		t.Fatalf("expected noninteractive sudo preflight failure\noutput=%q", output)
+	}
+
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run when sudo preflight fails: %v", err)
+	}
+	if _, err := os.Stat(h.installLogPath); !os.IsNotExist(err) {
+		t.Fatalf("remote install should not run when sudo preflight fails: %v", err)
+	}
+
+	provenance := readJSONFile(t, filepath.Join(outputDir, remoteAlphaStageWritableStateHelperStagingRecordName))
+	if got := provenance["staging_occurred"]; got != false {
+		t.Fatalf("expected staging_occurred=false, got %v", got)
+	}
+	if got := provenance["checker_ran"]; got != false {
+		t.Fatalf("expected checker_ran=false, got %v", got)
+	}
+	if got := provenance["sudo_unavailable"]; got != true {
+		t.Fatalf("expected sudo_unavailable=true, got %v", got)
+	}
+	if got := provenance["wrapper_tooling_error"]; got != false {
+		t.Fatalf("expected wrapper_tooling_error=false, got %v", got)
+	}
+	if got := provenance["failure_classification"]; got != "sudo_unavailable" {
+		t.Fatalf("expected failure_classification=sudo_unavailable, got %v", got)
 	}
 }
 

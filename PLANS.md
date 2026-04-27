@@ -60,37 +60,66 @@ Current bounded implementation status:
 
 ## Current Remote Alpha Hardening Tranche
 
-`Bounded slice rule`: the current Remote Supported-Host Alpha service hardening
-tranche is `AGS sealed + ARS de-root + EGS de-root`.
+`Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
+posture is `AGS sealed + ARS de-root + EGS de-root + ES config/TLS prep
+applied + ES stable writable-state prep applied + long-lived es.service de-root
+applied`.
 
 - AGS is already de-rooted and sealed in this tranche; preserve the landed
   `ags:ags` service posture and its existing host-local summary/evidence shape.
 - ARS is already de-rooted in this tranche; preserve the landed `ars:ars`
   service posture, its dedicated TLS/state ownership model, and its existing
   host-local summary/evidence shape.
-- EGS is the only service being moved off root in this slice.
-- This tranche must not move ES off root.
-- This tranche must not change ES public contracts, the current SPIRE selector
-  posture, or Control Plane/Infrastructure Manager ownership boundaries.
+- EGS is already de-rooted in this tranche; preserve the landed `egs:egs`
+  service posture and its existing host-local summary/evidence shape.
+- ES config/TLS prep is applied and productized for the live host.
+- ES writable-state roots are prepared under the documented stable `es:es`
+  ownership model, and future writable-state readiness has passed.
+- The current live long-lived `es.service` now runs as `User=es`,
+  `Group=es`, `UMask=0027`.
+- Post-apply `/health`, `GET /v1/executions:contract`, and the current
+  lowest-cost existing post-apply happy path all passed after the bounded live
+  service-user change, and Infrastructure Manager readiness is accepted.
+- This tranche does not claim full ES/runtime de-root.
+- The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
+  SPIRE traversal, broad root selector posture, and Vault/workload-zone
+  handoff remain bounded compatibility edges.
+- The long-lived ES startup path keeps
+  `execution.spire_workload_api_socket_path` as a config-shape and submit
+  input only; operator/readiness tooling remains responsible for proving the
+  host path is a real Unix socket, and runtime-helper failure to use that
+  helper-private raw SPIRE path must remain explicit and fail closed.
+- Future writable-state readiness and service-user migration check-only now
+  require `execution.staging_root_dir` and `execution.results_root_dir` to
+  resolve to one shared target owner UID:GID; mismatched stable-root owner
+  models are honest blockers rather than compatibility noise.
+- Old root-era staging/results roots remain preserved as rollback/debug/evidence
+  state until a later explicit cleanup/archive action after the rollback window
+  expires; they must not be recursively re-owned or deleted by inertia.
+- This tranche must not change ES public contracts or Control
+  Plane/Infrastructure Manager ownership boundaries.
 - This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
   current EGS loopback-only dependency path, the landed AGS/ARS service
   postures, and the no-bridge/no-shared-filesystem remote posture.
 - This tranche is bounded host/service hardening only. Do not widen it into a
-  new hardening tranche or broader proof expansion; rerun only the small
-  verification needed to validate the EGS host-side apply and refresh the
-  non-secret summary.
+  runtime-boundary redesign or broader proof expansion.
 
 ## Current Remote Alpha ES Config/TLS Ownership Prep Slice
 
 `Bounded slice rule`: Remote Supported-Host Alpha may now extend the current
 host-local hardening work with one separate ES config/TLS ownership prep slice.
 
+`Current invariant`: this earlier bounded slice is already applied on the live
+host and remains the source of truth for the dedicated `root:es` readable
+config/TLS model consumed by the current `User=es` long-lived ES service.
+
 - This slice introduces a dedicated ES-readable config ownership model and a
   dedicated ES-readable TLS directory for the current ES runtime config.
 - This slice may create a narrow dedicated `es:es` prep account only to own
   readable ES config/TLS material for a later ES de-root step; it must not
   introduce a shared `execution-substrate` Unix-account model.
-- This slice must keep the live `es.service` user/group posture unchanged.
+- At apply time, this slice kept the live `es.service` user/group posture
+  unchanged.
 - This slice must not change ES public contracts, the current SPIRE selector
   posture, current SPIRE socket traversal, Vault/runtime-helper semantics, or
   Nomad task user model.
@@ -105,18 +134,24 @@ host-local hardening work with one separate ES config/TLS ownership prep slice.
 
 ## Future ES Privilege-Boundary Design Track
 
-`Reopened redesign seam`: full ES de-root beyond the current config/TLS
-ownership prep bridge is a future structural design track, not the next local
-hardening task.
+`Reopened redesign seam`: full ES/runtime de-root beyond the now-landed
+long-lived `es.service` user flip remains a future structural design track.
 
 - This future track covers the long-lived ES service privilege model, Nomad
   task user model, runtime-helper/supervisor ownership, SPIRE selector posture,
   SPIRE socket traversal, staging/results ownership, retained-result
   materialization, and operator maintenance/rollback model as one boundary
   package rather than as implicit follow-on hardening.
-- The current accepted Alpha posture remains ES `root(default)` plus the
-  bounded config/TLS ownership prep bridge. Do not treat that bridge as proof
-  that ES is already de-rooted.
+- One bounded implementation slice on this seam is now landed: the repo-side
+  binary-deployment helper, stable writable-state ownership helper, and
+  long-lived `es.service` migration helper were all exercised in bounded
+  sequence to reach the current live service-user posture.
+- The current accepted Alpha posture now includes bounded long-lived ES
+  service-user de-root: ES config/TLS prep is applied, stable writable-state
+  roots are prepared, live `es.service` runs as `User=es`, `Group=es`,
+  `UMask=0027`, post-apply lowest-cost happy path passed, and future
+  writable-state readiness passed. Do not treat that bounded slice as proof
+  that the full ES/runtime privilege boundary is solved.
 - The current branch now carries design-only and branch-local readiness inputs
   for parts of Option B: the privileged-operation matrix, writable-state
   ownership model, runtime ownership-normalization contract, non-mutating
@@ -125,12 +160,23 @@ hardening task.
   tests covering success, failed, lost, canceled, invalid-marker,
   missing-marker Alpha compatibility, and future non-root-required preflight
   behavior.
-- That branch-local readiness is strong for parts of Option B, but it is not
-  live-host proof: real `es:es` ownership of staging/results on Remote Alpha
-  remains unmeasured, the long-lived service-user migration remains
-  unimplemented, the current root-start runtime-helper/Nomad/SPIRE
-  compatibility edges remain explicit, and no approval exists to flip
-  `es.service` away from `root(default)`.
+- That repo-local readiness was necessary but not sufficient: the bounded live
+  rollout also required host-side ES/runtime-helper binary parity, stable
+  writable-state preparation, an explicit `future-non-root-required`
+  readiness pass, and then the bounded long-lived service-user apply. Those
+  helper flows are live-host evidence for their own bounded slices, not by
+  themselves proof that the runtime/task/SPIRE boundary is fully de-rooted.
+- The bounded rollout sequence that led to the current live posture was:
+  resolve live ES/runtime-helper binary parity first, then prepare only the
+  stable staging/results roots plus any bounded parent-traversal or
+  legacy-artifact reconciliation needed to make those live roots future
+  non-root-manageable, then rerun the explicit
+  `future-non-root-required` writable-state gate, then use the long-lived
+  `es.service` migration helper check-only path immediately before the
+  bounded live service-user apply.
+- The helper-private raw SPIRE socket path remains a privileged runtime
+  dependency and must stay operator-validated rather than being treated as a
+  direct long-lived ES service-user read requirement.
 - Design assessment for Remote Alpha -> Beta may compare alternative
   architectures, but implementation work must not proceed until the chosen
   boundary model and required evidence are documented explicitly.

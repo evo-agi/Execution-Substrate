@@ -3,6 +3,7 @@ package runtimehelper
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,8 @@ func TestPostWorkloadNormalizationPhaseEmitsMarkerAfterSuccessfulNormalization(t
 
 	runID := "run-0123456789abcdef"
 	cfg, platformDir := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv("VAULT_CACERT", filepath.Join(platformDir, "workload-vault-ca.pem"))
+	t.Setenv("SSL_CERT_FILE", filepath.Join(platformDir, "workload-ca-bundle.pem"))
 	markerPath := ownershipnorm.MarkerPath(platformDir)
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
 		t.Fatalf("expected marker to be absent before normalization, got %v", err)
@@ -39,6 +42,27 @@ func TestPostWorkloadNormalizationPhaseEmitsMarkerAfterSuccessfulNormalization(t
 	if markerInfo.Mode().Perm() != markerFileMode {
 		t.Fatalf("expected marker mode %o, got %o", markerFileMode, markerInfo.Mode().Perm())
 	}
+	runDirInfo, err := os.Stat(filepath.Dir(cfg.workDir))
+	if err != nil {
+		t.Fatalf("stat run dir: %v", err)
+	}
+	if runDirInfo.Mode().Perm() != normalizedDirMode {
+		t.Fatalf("expected run dir mode %o, got %o", normalizedDirMode, runDirInfo.Mode().Perm())
+	}
+	platformInfo, err := os.Stat(platformDir)
+	if err != nil {
+		t.Fatalf("stat platform dir: %v", err)
+	}
+	if platformInfo.Mode().Perm() != normalizedDirMode {
+		t.Fatalf("expected platform dir mode %o, got %o", normalizedDirMode, platformInfo.Mode().Perm())
+	}
+	trustInfo, err := os.Stat(filepath.Join(platformDir, "workload-ca-bundle.pem"))
+	if err != nil {
+		t.Fatalf("stat workload trust bundle: %v", err)
+	}
+	if trustInfo.Mode().Perm() != normalizedFileMode {
+		t.Fatalf("expected workload trust bundle mode %o, got %o", normalizedFileMode, trustInfo.Mode().Perm())
+	}
 	if err := ensureMarkerAuthorityBoundary(platformDir, markerPath, workloadUID, workloadGID); err != nil {
 		t.Fatalf("expected emitted marker boundary to remain workload-safe: %v", err)
 	}
@@ -60,11 +84,59 @@ func TestPostWorkloadNormalizationPhaseEmitsMarkerAfterSuccessfulNormalization(t
 	}
 }
 
+func TestPostWorkloadNormalizationPhaseUsesDeclaredPlatformStateOwner(t *testing.T) {
+	skipIfCurrentIdentityMatchesWorkloadBoundary(t)
+
+	runID := "run-0f0f0f0f0f0f0f0f"
+	cfg, platformDir := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv("VAULT_CACERT", filepath.Join(platformDir, "workload-vault-ca.pem"))
+	t.Setenv("SSL_CERT_FILE", filepath.Join(platformDir, "workload-ca-bundle.pem"))
+	t.Setenv(platformStateOwnerSchemaEnvKey, platformStateOwnerSchemaV1)
+	t.Setenv(platformStateOwnerUIDEnvKey, intToString(os.Getuid()))
+	t.Setenv(platformStateOwnerGIDEnvKey, intToString(os.Getgid()))
+
+	if err := postWorkloadNormalizationPhase(cfg); err != nil {
+		t.Fatalf("post-workload normalization phase: %v", err)
+	}
+
+	payload, err := os.ReadFile(ownershipnorm.MarkerPath(platformDir))
+	if err != nil {
+		t.Fatalf("read emitted marker: %v", err)
+	}
+	var marker ownershipnorm.Marker
+	if err := json.Unmarshal(payload, &marker); err != nil {
+		t.Fatalf("decode emitted marker: %v", err)
+	}
+	if marker.TargetUID == nil || *marker.TargetUID != os.Getuid() {
+		t.Fatalf("expected marker target uid %d, got %+v", os.Getuid(), marker.TargetUID)
+	}
+	if marker.TargetGID == nil || *marker.TargetGID != os.Getgid() {
+		t.Fatalf("expected marker target gid %d, got %+v", os.Getgid(), marker.TargetGID)
+	}
+}
+
+func TestPostWorkloadNormalizationPhaseFailsWhenDeclaredPlatformStateOwnerIsMalformed(t *testing.T) {
+	skipIfCurrentIdentityMatchesWorkloadBoundary(t)
+
+	runID := "run-badbadbadbadbadb"
+	cfg, _ := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv(platformStateOwnerSchemaEnvKey, platformStateOwnerSchemaV1)
+	t.Setenv(platformStateOwnerUIDEnvKey, "not-a-number")
+	t.Setenv(platformStateOwnerGIDEnvKey, intToString(os.Getgid()))
+
+	err := postWorkloadNormalizationPhase(cfg)
+	if err == nil || !strings.Contains(err.Error(), "runtime platform state owner uid is invalid") {
+		t.Fatalf("expected malformed declared owner to fail closed, got %v", err)
+	}
+}
+
 func TestPostWorkloadNormalizationPhaseFailsWhenMarkerCannotBeWritten(t *testing.T) {
 	skipIfCurrentIdentityMatchesWorkloadBoundary(t)
 
 	runID := "run-deadbeefdeadbeef"
 	cfg, platformDir := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv("VAULT_CACERT", filepath.Join(platformDir, "workload-vault-ca.pem"))
+	t.Setenv("SSL_CERT_FILE", filepath.Join(platformDir, "workload-ca-bundle.pem"))
 	markerPath := ownershipnorm.MarkerPath(platformDir)
 
 	restore := writeMarkerFile
@@ -101,6 +173,60 @@ func TestCombineWorkloadAndNormalizationErrorMarksSuccessfulWorkloadAsFailed(t *
 	}
 }
 
+func TestPrepareActiveWorkloadVisibilityMakesRunRootTraversableAndTrustFilesReadable(t *testing.T) {
+	runID := "run-1111222233334444"
+	cfg, platformDir := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv("VAULT_CACERT", filepath.Join(platformDir, "workload-vault-ca.pem"))
+	t.Setenv("SSL_CERT_FILE", filepath.Join(platformDir, "workload-ca-bundle.pem"))
+
+	if err := prepareActiveWorkloadVisibility(cfg.workDir, platformDir); err != nil {
+		t.Fatalf("prepare active workload visibility: %v", err)
+	}
+
+	runDirInfo, err := os.Stat(filepath.Dir(cfg.workDir))
+	if err != nil {
+		t.Fatalf("stat run dir: %v", err)
+	}
+	if runDirInfo.Mode().Perm() != activeRunTraversalDirMode {
+		t.Fatalf("expected run dir mode %o, got %o", activeRunTraversalDirMode, runDirInfo.Mode().Perm())
+	}
+
+	platformInfo, err := os.Stat(platformDir)
+	if err != nil {
+		t.Fatalf("stat platform dir: %v", err)
+	}
+	if platformInfo.Mode().Perm() != activePlatformTraversalDirMode {
+		t.Fatalf("expected platform dir mode %o, got %o", activePlatformTraversalDirMode, platformInfo.Mode().Perm())
+	}
+
+	trustInfo, err := os.Stat(filepath.Join(platformDir, "workload-ca-bundle.pem"))
+	if err != nil {
+		t.Fatalf("stat workload trust bundle: %v", err)
+	}
+	if trustInfo.Mode().Perm() != activeTrustFileMode {
+		t.Fatalf("expected workload trust bundle mode %o, got %o", activeTrustFileMode, trustInfo.Mode().Perm())
+	}
+
+	runtimeSupportInfo, err := os.Stat(filepath.Join(platformDir, "es-runtime-support"))
+	if err != nil {
+		t.Fatalf("stat runtime support binary: %v", err)
+	}
+	if runtimeSupportInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("expected runtime support mode to stay 0755 in the fixture, got %o", runtimeSupportInfo.Mode().Perm())
+	}
+}
+
+func TestPrepareActiveWorkloadVisibilityFailsWhenTrustPathEscapesPlatformDir(t *testing.T) {
+	runID := "run-5555666677778888"
+	cfg, platformDir := newPostWorkloadNormalizationFixture(t, runID)
+	t.Setenv("VAULT_CACERT", filepath.Join(filepath.Dir(platformDir), "not-under-platform.pem"))
+
+	err := prepareActiveWorkloadVisibility(cfg.workDir, platformDir)
+	if err == nil || !strings.Contains(err.Error(), "VAULT_CACERT must remain under") {
+		t.Fatalf("expected trust path escape to fail closed, got %v", err)
+	}
+}
+
 func newPostWorkloadNormalizationFixture(t *testing.T, runID string) (supervisorConfig, string) {
 	t.Helper()
 
@@ -122,6 +248,9 @@ func newPostWorkloadNormalizationFixture(t *testing.T, runID string) (supervisor
 	}
 	if err := os.WriteFile(filepath.Join(platformDir, "es-runtime-support"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write platform binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(platformDir, "workload-vault-ca.pem"), []byte("vault\n"), 0o644); err != nil {
+		t.Fatalf("write workload vault ca file: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(platformDir, "workload-ca-bundle.pem"), []byte("bundle\n"), 0o644); err != nil {
 		t.Fatalf("write platform file: %v", err)
@@ -155,4 +284,8 @@ func skipIfCurrentIdentityMatchesWorkloadBoundary(t *testing.T) {
 
 func intPtrForTest(value int) *int {
 	return &value
+}
+
+func intToString(value int) string {
+	return fmt.Sprintf("%d", value)
 }

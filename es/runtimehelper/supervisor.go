@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,13 +24,20 @@ import (
 )
 
 const (
-	helperReadinessTimeout = 10 * time.Second
-	processKillTimeout     = 5 * time.Second
-	workloadTimeoutExit    = 124
-	markerFileMode         = 0o640
-	normalizedDirMode      = 0o750
-	normalizedFileMode     = 0o640
-	normalizedExecFileMode = 0o750
+	helperReadinessTimeout         = 10 * time.Second
+	processKillTimeout             = 5 * time.Second
+	workloadTimeoutExit            = 124
+	markerFileMode                 = 0o640
+	activeRunTraversalDirMode      = 0o711
+	activePlatformTraversalDirMode = 0o711
+	activeTrustFileMode            = 0o644
+	normalizedDirMode              = 0o750
+	normalizedFileMode             = 0o640
+	normalizedExecFileMode         = 0o750
+	platformStateOwnerUIDEnvKey    = "EXEC_PLATFORM_STATE_OWNER_UID"
+	platformStateOwnerGIDEnvKey    = "EXEC_PLATFORM_STATE_OWNER_GID"
+	platformStateOwnerSchemaEnvKey = "EXEC_PLATFORM_STATE_OWNER_SCHEMA"
+	platformStateOwnerSchemaV1     = "v1"
 )
 
 var writeMarkerFile = os.WriteFile
@@ -167,6 +175,10 @@ func parseSupervisorArgs(args []string) (supervisorConfig, error) {
 }
 
 func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
+	targetUID, targetGID, err := runtimePlatformStateOwner()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(paths.workspaceRoot, 0o711); err != nil {
 		return fmt.Errorf("create runtime identity workspace root: %w", err)
 	}
@@ -199,11 +211,11 @@ func prepareRuntimeFilesystem(cfg supervisorConfig, paths runtimePaths) error {
 	}
 
 	platformDir := filepath.Join(filepath.Dir(cfg.workDir), "platform")
-	if err := os.Chown(platformDir, 0, 0); err != nil {
-		return fmt.Errorf("chown platform runtime dir: %w", err)
+	if err := validateStablePlatformDir(platformDir, targetUID, targetGID); err != nil {
+		return fmt.Errorf("validate platform runtime dir: %w", err)
 	}
-	if err := os.Chmod(platformDir, 0o755); err != nil {
-		return fmt.Errorf("chmod platform runtime dir: %w", err)
+	if err := prepareActiveWorkloadVisibility(cfg.workDir, platformDir); err != nil {
+		return err
 	}
 
 	if err := prepareResultDir(cfg.resultDir); err != nil {
@@ -244,9 +256,71 @@ func prepareResultDir(resultDir string) error {
 	return nil
 }
 
+func prepareActiveWorkloadVisibility(workDir string, platformDir string) error {
+	runRoot := filepath.Dir(workDir)
+	if err := os.Chmod(runRoot, activeRunTraversalDirMode); err != nil {
+		return fmt.Errorf("prepare workload traversal for run root: %w", err)
+	}
+
+	workloadTrustPaths, err := workloadVisibleTrustPaths(platformDir)
+	if err != nil {
+		return err
+	}
+	if len(workloadTrustPaths) == 0 {
+		return nil
+	}
+	if err := os.Chmod(platformDir, activePlatformTraversalDirMode); err != nil {
+		return fmt.Errorf("prepare workload traversal for platform dir: %w", err)
+	}
+	for _, trustPath := range workloadTrustPaths {
+		info, err := os.Lstat(trustPath)
+		if err != nil {
+			return fmt.Errorf("prepare workload trust file %s: %w", trustPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("prepare workload trust file %s: symlinks are unsupported", trustPath)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("prepare workload trust file %s: path is not a regular file", trustPath)
+		}
+		if err := os.Chmod(trustPath, activeTrustFileMode); err != nil {
+			return fmt.Errorf("prepare workload trust file %s: %w", trustPath, err)
+		}
+	}
+	return nil
+}
+
+func workloadVisibleTrustPaths(platformDir string) ([]string, error) {
+	cleanPlatformDir := filepath.Clean(platformDir)
+	seen := map[string]struct{}{}
+	paths := make([]string, 0, 2)
+	for _, envKey := range []string{"VAULT_CACERT", "SSL_CERT_FILE"} {
+		value := strings.TrimSpace(os.Getenv(envKey))
+		if value == "" {
+			continue
+		}
+		cleanValue := filepath.Clean(value)
+		if cleanValue == cleanPlatformDir {
+			continue
+		}
+		if filepath.Dir(cleanValue) != cleanPlatformDir {
+			return nil, fmt.Errorf("%s must remain under %s", envKey, cleanPlatformDir)
+		}
+		if _, ok := seen[cleanValue]; ok {
+			continue
+		}
+		seen[cleanValue] = struct{}{}
+		paths = append(paths, cleanValue)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
 func postWorkloadNormalizationPhase(cfg supervisorConfig) error {
-	targetUID := os.Geteuid()
-	targetGID := os.Getegid()
+	targetUID, targetGID, err := runtimePlatformStateOwner()
+	if err != nil {
+		return err
+	}
 	if targetUID < 0 || targetGID < 0 {
 		return fmt.Errorf("runtime normalization target owner is invalid")
 	}
@@ -265,8 +339,77 @@ func postWorkloadNormalizationPhase(cfg supervisorConfig) error {
 	if err := normalizePostWorkloadTree(cfg.resultDir, targetUID, targetGID); err != nil {
 		return fmt.Errorf("normalize workload result dir: %w", err)
 	}
+	if err := restoreStableRunRoot(filepath.Dir(cfg.workDir), targetUID, targetGID); err != nil {
+		return fmt.Errorf("normalize runtime run dir: %w", err)
+	}
 	if err := writeOwnershipNormalizationMarker(platformDir, strings.TrimSpace(runID), targetUID, targetGID); err != nil {
 		return fmt.Errorf("write ownership-normalization marker: %w", err)
+	}
+	return nil
+}
+
+func restoreStableRunRoot(runRoot string, targetUID int, targetGID int) error {
+	info, err := os.Lstat(runRoot)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory")
+	}
+	if err := os.Lchown(runRoot, targetUID, targetGID); err != nil {
+		return fmt.Errorf("set ownership on %s: %w", runRoot, err)
+	}
+	if err := os.Chmod(runRoot, normalizedDirMode); err != nil {
+		return fmt.Errorf("set directory mode on %s: %w", runRoot, err)
+	}
+	return nil
+}
+
+func runtimePlatformStateOwner() (int, int, error) {
+	targetUID := os.Geteuid()
+	targetGID := os.Getegid()
+
+	schemaValue := strings.TrimSpace(os.Getenv(platformStateOwnerSchemaEnvKey))
+	uidValue := strings.TrimSpace(os.Getenv(platformStateOwnerUIDEnvKey))
+	gidValue := strings.TrimSpace(os.Getenv(platformStateOwnerGIDEnvKey))
+	if schemaValue == "" && uidValue == "" && gidValue == "" {
+		return targetUID, targetGID, nil
+	}
+	if schemaValue != platformStateOwnerSchemaV1 {
+		return 0, 0, fmt.Errorf("runtime platform state owner schema must be %q", platformStateOwnerSchemaV1)
+	}
+	if uidValue == "" || gidValue == "" {
+		return 0, 0, fmt.Errorf("runtime platform state owner uid and gid are required together")
+	}
+
+	parsedUID, err := strconv.Atoi(uidValue)
+	if err != nil || parsedUID < 0 {
+		return 0, 0, fmt.Errorf("runtime platform state owner uid is invalid")
+	}
+	parsedGID, err := strconv.Atoi(gidValue)
+	if err != nil || parsedGID < 0 {
+		return 0, 0, fmt.Errorf("runtime platform state owner gid is invalid")
+	}
+	return parsedUID, parsedGID, nil
+}
+
+func validateStablePlatformDir(platformDir string, targetUID int, targetGID int) error {
+	info, err := os.Stat(platformDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("platform runtime dir is not a directory")
+	}
+	uid, gid, err := fileOwnerIDs(info)
+	if err != nil {
+		return err
+	}
+	if uid != targetUID || gid != targetGID {
+		return fmt.Errorf("platform runtime dir is not owned by target uid:gid %d:%d (got %d:%d)", targetUID, targetGID, uid, gid)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("platform runtime dir must not be group- or world-writable")
 	}
 	return nil
 }

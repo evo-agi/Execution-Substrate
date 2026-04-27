@@ -25,6 +25,7 @@ type fakeRemoteStageHarness struct {
 	remoteRoot       string
 	sshLogPath       string
 	scpLogPath       string
+	uploadLogPath    string
 	sudoLogPath      string
 	installLogPath   string
 	helperLogPath    string

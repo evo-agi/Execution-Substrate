@@ -25,7 +25,7 @@ type ownershipNormalizationMarker = ownershipnorm.Marker
 type ownershipNormalizationMarkerExpectations = ownershipnorm.ValidationOptions
 
 func preflightRetainedResultSource(root string, platformDir string, expectations ownershipNormalizationMarkerExpectations) (bool, error) {
-	if _, err := preflightOptionalOwnershipNormalizationMarker(platformDir, expectations); err != nil {
+	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(ownershipnorm.MarkerPath(platformDir), platformDir, expectations); err != nil {
 		return false, err
 	}
 
@@ -98,7 +98,7 @@ func preflightSuccessfulStageCleanup(root string, platformDir string, expectatio
 		return err
 	}
 
-	if _, err := preflightOptionalOwnershipNormalizationMarker(platformDir, expectations); err != nil {
+	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(ownershipnorm.MarkerPath(platformDir), platformDir, expectations); err != nil {
 		return err
 	}
 
@@ -126,48 +126,54 @@ func preflightSuccessfulStageCleanup(root string, platformDir string, expectatio
 }
 
 func preflightOptionalOwnershipNormalizationMarker(platformDir string, expectations ownershipNormalizationMarkerExpectations) (bool, error) {
-	markerPath := ownershipnorm.MarkerPath(platformDir)
+	marker, _, _, err := loadValidatedOwnershipNormalizationMarker(ownershipnorm.MarkerPath(platformDir), platformDir, expectations)
+	return marker != nil, err
+}
+
+func loadValidatedOwnershipNormalizationMarker(markerPath string, authorityDir string, expectations ownershipNormalizationMarkerExpectations) (*ownershipNormalizationMarker, []byte, string, error) {
 	markerInfo, err := os.Lstat(markerPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if _, validateErr := ownershipnorm.ValidateState(nil, expectations); validateErr != nil {
-				return false, validateErr
+				return nil, nil, markerPath, validateErr
 			}
-			return false, nil
+			return nil, nil, markerPath, nil
 		}
-		return false, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
 	}
 	if !markerInfo.Mode().IsRegular() {
-		return true, fmt.Errorf("ownership-normalization marker is not a regular file")
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not a regular file")
 	}
 	if markerInfo.Mode().Perm()&0o022 != 0 {
-		return true, fmt.Errorf("ownership-normalization marker is group- or world-writable")
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is group- or world-writable")
 	}
 
-	platformInfo, err := os.Stat(platformDir)
-	if err != nil {
-		return true, fmt.Errorf("ownership-normalization platform directory is not readable: %w", err)
-	}
-	if !platformInfo.IsDir() {
-		return true, fmt.Errorf("ownership-normalization platform directory is not a directory")
-	}
-	if platformInfo.Mode().Perm()&0o022 != 0 {
-		return true, fmt.Errorf("ownership-normalization platform directory is group- or world-writable")
+	if authorityDir != "" {
+		authorityInfo, err := os.Stat(authorityDir)
+		if err != nil {
+			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not readable: %w", err)
+		}
+		if !authorityInfo.IsDir() {
+			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not a directory")
+		}
+		if authorityInfo.Mode().Perm()&0o022 != 0 {
+			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is group- or world-writable")
+		}
 	}
 
 	payloadBytes, err := os.ReadFile(markerPath)
 	if err != nil {
-		return true, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
 	}
 
 	var marker ownershipNormalizationMarker
 	if err := json.Unmarshal(payloadBytes, &marker); err != nil {
-		return true, fmt.Errorf("ownership-normalization marker is not valid JSON: %w", err)
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not valid JSON: %w", err)
 	}
 	if err := validateOwnershipNormalizationMarker(marker, expectations); err != nil {
-		return true, err
+		return nil, nil, markerPath, err
 	}
-	return true, nil
+	return &marker, payloadBytes, markerPath, nil
 }
 
 func validateOwnershipNormalizationMarker(marker ownershipNormalizationMarker, expectations ownershipNormalizationMarkerExpectations) error {

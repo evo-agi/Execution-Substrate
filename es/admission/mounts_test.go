@@ -40,7 +40,7 @@ func TestExtractRuntimeMountArchiveExtractsRegularFilesWithinLimits(t *testing.T
 		runtimeMountArchiveEntry{name: "config/settings.env", body: []byte("KEY=value\n"), typeflag: tar.TypeReg, mode: 0o644},
 	)
 
-	extractedBytes, err := extractRuntimeMountArchive(destinationRoot, archiveBytes, maxRuntimeMountBytes, maxRuntimeMountTotalBytes)
+	extractedBytes, err := extractRuntimeMountArchive(destinationRoot, archiveBytes, maxRuntimeMountBytes, maxRuntimeMountTotalBytes, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 	if err != nil {
 		t.Fatalf("extract runtime mount archive: %v", err)
 	}
@@ -54,6 +54,11 @@ func TestExtractRuntimeMountArchiveExtractsRegularFilesWithinLimits(t *testing.T
 	}
 	if string(content) != "KEY=value\n" {
 		t.Fatalf("expected extracted file contents to round-trip, got %q", string(content))
+	}
+	if info, err := os.Stat(filepath.Join(destinationRoot, "config", "settings.env")); err != nil {
+		t.Fatalf("stat extracted file: %v", err)
+	} else if info.Mode().Perm() != stableStageFileMode {
+		t.Fatalf("expected extracted file mode %o, got %o", stableStageFileMode, info.Mode().Perm())
 	}
 }
 
@@ -82,7 +87,7 @@ func TestExtractRuntimeMountArchiveRejectsPathTraversalAndSymlinks(t *testing.T)
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := extractRuntimeMountArchive(t.TempDir(), tc.archive, maxRuntimeMountBytes, maxRuntimeMountTotalBytes)
+			_, err := extractRuntimeMountArchive(t.TempDir(), tc.archive, maxRuntimeMountBytes, maxRuntimeMountTotalBytes, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 			if err == nil {
 				t.Fatalf("expected archive extraction to fail for %s", tc.name)
 			}

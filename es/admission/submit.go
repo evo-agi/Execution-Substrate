@@ -17,8 +17,12 @@ import (
 )
 
 const (
-	defaultSubmitCPU      = 10
-	defaultSubmitMemoryMB = 128
+	defaultSubmitCPU               = 10
+	defaultSubmitMemoryMB          = 128
+	platformStateOwnerUIDEnvKey    = "EXEC_PLATFORM_STATE_OWNER_UID"
+	platformStateOwnerGIDEnvKey    = "EXEC_PLATFORM_STATE_OWNER_GID"
+	platformStateOwnerSchemaEnvKey = "EXEC_PLATFORM_STATE_OWNER_SCHEMA"
+	platformStateOwnerSchemaV1     = "v1"
 )
 
 type nomadClient struct {
@@ -96,7 +100,20 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	stage, stageErr := s.stageExecutionInputs(locator, payloadBytes)
+	platformStateOwner, ownerErr := resolveExecutionPlatformStateOwnerModel(
+		s.cfg.Execution.StagingRootDir,
+		s.cfg.Execution.ResultsRootDir,
+		nil,
+	)
+	if ownerErr != nil {
+		return SubmitResult{}, &Error{
+			Status:  http.StatusInternalServerError,
+			Code:    codeSubmissionFailed,
+			Message: fmt.Sprintf("derive execution platform state owner failed: %v", ownerErr),
+		}
+	}
+
+	stage, stageErr := s.stageExecutionInputs(locator, payloadBytes, platformStateOwner)
 	if stageErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
@@ -118,7 +135,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	// success is observed. The reserved runtime-identity workspace is provisioned
 	// as tmpfs and is no longer host-backed by the submit path.
 
-	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, req.Invocation.Mounts)
+	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, req.Invocation.Mounts, platformStateOwner)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -131,7 +148,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	}
 
 	var trustErr error
-	stage.trustMaterial, trustErr = stage.layout.stageWorkloadVaultTrustMaterial(prepared.workloadVaultPlan)
+	stage.trustMaterial, trustErr = stage.layout.stageWorkloadVaultTrustMaterial(prepared.workloadVaultPlan, platformStateOwner)
 	if trustErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
@@ -140,7 +157,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, stage.trustMaterial, req.Invocation.Env)
+	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, stage.trustMaterial, req.Invocation.Env, &platformStateOwner)
 	authorityHandoff := buildExecutionAuthorityHandoff(
 		runtimeProfile,
 		stage.layout.runtimeIdentity,
@@ -225,8 +242,8 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
-func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, trustMaterial stagedWorkloadTrustMaterial, invocationEnv map[string]string) map[string]string {
-	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+13)
+func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, trustMaterial stagedWorkloadTrustMaterial, invocationEnv map[string]string, platformStateOwner *executionPlatformStateOwner) map[string]string {
+	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+16)
 	for key, value := range invocationEnv {
 		env[key] = value
 	}
@@ -250,6 +267,11 @@ func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest strin
 	env["EXEC_WORKLOAD_VAULT_AUTH_MOUNT"] = workloadVaultPlan.AuthMount
 	env["EXEC_WORKLOAD_VAULT_AUTH_ROLE"] = workloadVaultPlan.AuthRole
 	env["EXEC_WORKLOAD_VAULT_JWT_AUDIENCE"] = workloadVaultPlan.JWTAudience
+	if platformStateOwner != nil {
+		env[platformStateOwnerUIDEnvKey] = fmt.Sprintf("%d", platformStateOwner.UID)
+		env[platformStateOwnerGIDEnvKey] = fmt.Sprintf("%d", platformStateOwner.GID)
+		env[platformStateOwnerSchemaEnvKey] = platformStateOwnerSchemaV1
+	}
 	return env
 }
 

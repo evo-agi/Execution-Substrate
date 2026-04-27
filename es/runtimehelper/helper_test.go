@@ -2,6 +2,7 @@ package runtimehelper
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -154,5 +155,15 @@ func TestWaitForHelperReadinessReturnsWhenEndpointServesJWT(t *testing.T) {
 
 	if err := waitForHelperReadiness(socketPath, make(chan error)); err != nil {
 		t.Fatalf("wait for helper readiness: %v", err)
+	}
+}
+
+func TestWaitForSPIRESocketReadyFailsClosedWhenSocketNeverAppears(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	err := waitForSPIRESocketReady(ctx, filepath.Join(t.TempDir(), "missing.sock"))
+	if err == nil {
+		t.Fatal("expected wait for missing SPIRE socket to fail")
 	}
 }

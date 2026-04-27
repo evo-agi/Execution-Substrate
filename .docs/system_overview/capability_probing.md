@@ -126,13 +126,15 @@ For the bounded slice-1 runtime-identity delivery slice:
 - static validation must prove:
   - caller mounts do not overlap the reserved runtime-identity workspace and paths
   - the configured runtime-support binary path is absolute and readable
-  - the configured SPIRE Workload API socket path is absolute and refers to a local Unix socket
+  - the configured SPIRE Workload API socket path is absolute in config
 - startup-only runtime capability probes may prove:
   - the platform-owned helper can bind and serve the public endpoint inside the reserved runtime workspace
+  - operator/readiness tooling can still prove the configured host SPIRE Workload API path refers to a local Unix socket before submit-ready or service-user apply is claimed
   - the actual runtime mount form in use can carry the helper-private SPIRE source directory into the container so the helper can reach the mounted unix socket
   - the helper-private SPIRE socket remains reachable to the helper and not workload-readable after the runtime boundary is established
   - the workload launch model can drop to the fixed non-root UID/GID with no supplemental groups and no privilege-escalation path
-- these checks belong at startup only; if the slice cannot prove those runtime conditions, it must fail closed instead of degrading to workload-owned SPIRE access
+- long-lived ES startup does not need direct read/traverse authority on the raw host SPIRE socket; it only needs the configured path string so submit can build the helper-private mount model
+- these checks must still fail closed instead of degrading to workload-owned SPIRE access
 
 This keeps the slice behavior-based, deterministic, and consistent across environments without introducing OS-based branching.
 

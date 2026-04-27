@@ -18,6 +18,8 @@ func TestStageExecutionInputsSucceedsWithOwnerOnlyStagingRoot(t *testing.T) {
 	rootDir := t.TempDir()
 	stagingRootDir := filepath.Join(rootDir, "stage")
 	mkdirWithMode(t, stagingRootDir, 0o700)
+	resultsRootDir := filepath.Join(rootDir, "results")
+	mkdirWithMode(t, resultsRootDir, 0o700)
 
 	runtimeSupportBinary := filepath.Join(rootDir, "es-runtime-support")
 	writeFileWithMode(t, runtimeSupportBinary, []byte("#!/bin/sh\n"), 0o700)
@@ -26,13 +28,14 @@ func TestStageExecutionInputsSucceedsWithOwnerOnlyStagingRoot(t *testing.T) {
 		cfg: esconfig.Config{
 			Execution: esconfig.ExecutionConfig{
 				StagingRootDir:       stagingRootDir,
+				ResultsRootDir:       resultsRootDir,
 				RuntimeSupportBinary: runtimeSupportBinary,
 			},
 		},
 	}
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 
-	stage, err := service.stageExecutionInputs(locator, []byte("payload"))
+	stage, err := service.stageExecutionInputs(locator, []byte("payload"), executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 	if err != nil {
 		t.Fatalf("stage execution inputs: %v", err)
 	}
@@ -43,6 +46,46 @@ func TestStageExecutionInputsSucceedsWithOwnerOnlyStagingRoot(t *testing.T) {
 	requirePathExists(t, stage.layout.platformStageDir)
 	requirePathExists(t, stage.layout.resultStageDir)
 	requirePathExists(t, stage.layout.runtimeSupportPath)
+	if info, err := os.Stat(stage.layout.stageRootDir); err != nil {
+		t.Fatalf("stat %s: %v", stage.layout.stageRootDir, err)
+	} else {
+		if info.Mode().Perm() != stableStageDirMode {
+			t.Fatalf("expected %s mode %o, got %o", stage.layout.stageRootDir, stableStageDirMode, info.Mode().Perm())
+		}
+		uid, gid, err := ownershipIDsFromInfo(info)
+		if err != nil {
+			t.Fatalf("ownership for %s: %v", stage.layout.stageRootDir, err)
+		}
+		if uid != os.Getuid() || gid != os.Getgid() {
+			t.Fatalf("expected %s owner %d:%d, got %d:%d", stage.layout.stageRootDir, os.Getuid(), os.Getgid(), uid, gid)
+		}
+	}
+	for _, dir := range []string{
+		stage.layout.payloadStageDir,
+		stage.layout.runStageDir,
+		stage.layout.platformStageDir,
+		stage.layout.resultStageDir,
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode().Perm() != stableStageDirMode {
+			t.Fatalf("expected %s mode %o, got %o", dir, stableStageDirMode, info.Mode().Perm())
+		}
+		uid, gid, err := ownershipIDsFromInfo(info)
+		if err != nil {
+			t.Fatalf("ownership for %s: %v", dir, err)
+		}
+		if uid != os.Getuid() || gid != os.Getgid() {
+			t.Fatalf("expected %s owner %d:%d, got %d:%d", dir, os.Getuid(), os.Getgid(), uid, gid)
+		}
+	}
+	if info, err := os.Stat(stage.layout.runtimeSupportPath); err != nil {
+		t.Fatalf("stat runtime support: %v", err)
+	} else if info.Mode().Perm() != stableStageExecFileMode {
+		t.Fatalf("expected runtime support mode %o, got %o", stableStageExecFileMode, info.Mode().Perm())
+	}
 }
 
 func TestRuntimeMountExtractionSucceedsWithOwnerOnlyMountStageRoot(t *testing.T) {
@@ -59,7 +102,7 @@ func TestRuntimeMountExtractionSucceedsWithOwnerOnlyMountStageRoot(t *testing.T)
 	contentsDir := filepath.Join(stageRootDir, "contents")
 	mkdirWithMode(t, contentsDir, 0o700)
 
-	extractedBytes, err := extractRuntimeMountArchive(contentsDir, archiveBytes, maxRuntimeMountBytes, maxRuntimeMountTotalBytes)
+	extractedBytes, err := extractRuntimeMountArchive(contentsDir, archiveBytes, maxRuntimeMountBytes, maxRuntimeMountTotalBytes, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 	if err != nil {
 		t.Fatalf("extract runtime mount archive: %v", err)
 	}
@@ -169,6 +212,36 @@ func TestResultServesRetainedBundleAfterStageCleanup(t *testing.T) {
 	}
 }
 
+func TestReadRetainedResultBundleReconcilesExistingRetainedArtifacts(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+
+	resultDir := service.retainedResultRunDir(locator)
+	mkdirWithMode(t, resultDir, 0o777)
+	writeFileWithMode(t, service.retainedResultBundlePath(locator), []byte("already retained"), 0o644)
+
+	bundle, ok, resultErr := service.readRetainedResultBundle(locator)
+	if resultErr != nil {
+		t.Fatalf("read retained result bundle: %+v", resultErr)
+	}
+	if !ok {
+		t.Fatal("expected retained result bundle to remain readable")
+	}
+	if string(bundle.Payload) != "already retained" {
+		t.Fatalf("unexpected retained payload %q", string(bundle.Payload))
+	}
+
+	if info, err := os.Stat(resultDir); err != nil {
+		t.Fatalf("stat retained result dir: %v", err)
+	} else if info.Mode().Perm() != retainedResultRunDirMode {
+		t.Fatalf("expected retained result dir mode %o, got %o", retainedResultRunDirMode, info.Mode().Perm())
+	}
+	if info, err := os.Stat(service.retainedResultBundlePath(locator)); err != nil {
+		t.Fatalf("stat retained result bundle: %v", err)
+	} else if info.Mode().Perm() != retainedResultBundleFileMode {
+		t.Fatalf("expected retained result bundle mode %o, got %o", retainedResultBundleFileMode, info.Mode().Perm())
+	}
+}
+
 func TestStatusTerminalSuccessWithValidNormalizationMarkerRetainsResultCleansStageAndServesRepeatFetch(t *testing.T) {
 	fixture := newSyntheticNormalizedRunFixture(t, "run-1111111111111111")
 	fixture.service.nomadClient = terminalSuccessNomadClient(t, fixture.locator.JobID())
@@ -199,6 +272,17 @@ func TestStatusTerminalSuccessWithValidNormalizationMarkerRetainsResultCleansSta
 	}
 	if !bytes.Equal(first.Payload, second.Payload) {
 		t.Fatalf("expected repeat retained-result fetch to stay stable")
+	}
+	evidencePath := fixture.service.retainedNormalizationEvidencePath(fixture.locator)
+	if _, err := os.Stat(evidencePath); err != nil {
+		t.Fatalf("expected preserved normalization evidence after cleanup: %v", err)
+	}
+	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(
+		evidencePath,
+		fixture.service.retainedResultRunDir(fixture.locator),
+		ownershipExpectationsForRun(fixture.locator.RunID, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()}, false),
+	); err != nil {
+		t.Fatalf("expected preserved normalization evidence to validate, got %v", err)
 	}
 
 	entries := readAdmissionResultBundleEntries(t, first.Payload)
@@ -233,6 +317,31 @@ func TestStatusTerminalSuccessWithoutNormalizationMarkerRemainsAlphaCompatible(t
 	entries := readAdmissionResultBundleEntries(t, bundle.Payload)
 	if entries["summary.txt"] != "synthetic-ok\n" {
 		t.Fatalf("unexpected summary entry %q", entries["summary.txt"])
+	}
+	if _, err := os.Stat(fixture.service.retainedNormalizationEvidencePath(fixture.locator)); !os.IsNotExist(err) {
+		t.Fatalf("did not expect preserved normalization evidence without a marker, got %v", err)
+	}
+}
+
+func TestResultFailsClosedWhenPreservedNormalizationEvidenceIsInvalid(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+
+	resultDir := service.retainedResultRunDir(locator)
+	mkdirWithMode(t, resultDir, retainedResultRunDirMode)
+	writeFileWithMode(t, service.retainedResultBundlePath(locator), []byte("already retained"), retainedResultBundleFileMode)
+	writeOwnershipNormalizationMarker(t, resultDir, ownershipNormalizationMarker{
+		SchemaVersion:   ownershipNormalizationMarkerSchemaVersion,
+		Status:          ownershipNormalizationMarkerStatus,
+		RunID:           "run-deadbeefdeadbeef",
+		TargetUID:       intPtr(os.Getuid()),
+		TargetGID:       intPtr(os.Getgid()),
+		PathsNormalized: append([]string(nil), ownershipNormalizationRequiredPaths...),
+		CompletedAt:     "2026-04-25T12:00:00Z",
+	}, retainedNormalizationEvidenceFileMode)
+
+	_, err := service.Result(context.Background(), locator.RunID)
+	if err == nil || err.Status != http.StatusConflict || err.Code != codeResultUnavailable {
+		t.Fatalf("expected invalid preserved normalization evidence to fail closed, got %+v", err)
 	}
 }
 
@@ -458,6 +567,7 @@ func TestMaybeCleanupSuccessfulStageRootRemovesOwnerOnlyServiceTreeWithoutNormal
 			},
 		},
 	}
+	mkdirWithMode(t, service.cfg.Execution.ResultsRootDir, 0o700)
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)
 
@@ -499,6 +609,7 @@ func TestMaybeCleanupSuccessfulStageRootRetainsTreeWhenPresentNormalizationMarke
 			},
 		},
 	}
+	mkdirWithMode(t, service.cfg.Execution.ResultsRootDir, 0o700)
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)
 
@@ -532,6 +643,7 @@ func TestMaybeCleanupSuccessfulStageRootRetainsUndeletableTreeWithoutPartialRemo
 			},
 		},
 	}
+	mkdirWithMode(t, service.cfg.Execution.ResultsRootDir, 0o700)
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)
 
@@ -800,6 +912,9 @@ func newSyntheticNormalizedRunFixture(t *testing.T, runID string) syntheticNorma
 				ResultsRootDir: filepath.Join(t.TempDir(), "results"),
 			},
 		},
+	}
+	if err := os.MkdirAll(service.cfg.Execution.ResultsRootDir, 0o700); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
 	}
 	locator := newExecutionLocatorFromRunID(runID)
 	return syntheticNormalizedRunFixture{

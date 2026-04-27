@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"execution-substrate/es/internal/ownershipnorm"
 )
 
 const (
@@ -85,23 +87,37 @@ func (s *Service) maybeRetainTerminalResult(locator executionLocator, allocation
 }
 
 func (s *Service) retainTerminalResult(locator executionLocator) (bool, error) {
+	targetOwner, err := executionPlatformStateOwnerFromPath(s.cfg.Execution.ResultsRootDir)
+	if err != nil {
+		return false, err
+	}
+	layout := newExecutionPackageLayout(s.cfg, locator)
+	expectations := ownershipExpectationsForRun(locator.RunID, targetOwner, false)
+	stageMarker, stageMarkerBytes, _, err := loadValidatedOwnershipNormalizationMarker(
+		ownershipnorm.MarkerPath(layout.platformStageDir),
+		layout.platformStageDir,
+		expectations,
+	)
+	if err != nil {
+		return false, err
+	}
+
 	bundlePath := s.retainedResultBundlePath(locator)
 	if _, err := os.Stat(bundlePath); err == nil {
+		if err := s.reconcileRetainedResultArtifacts(locator, targetOwner, stageMarker, stageMarkerBytes); err != nil {
+			return false, err
+		}
 		return true, nil
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
 
-	layout := newExecutionPackageLayout(s.cfg, locator)
-	if hasFiles, err := preflightRetainedResultSource(layout.resultStageDir, layout.platformStageDir, ownershipNormalizationMarkerExpectations{
-		RunID:         locator.RunID,
-		RequireMarker: false,
-	}); err != nil || !hasFiles {
+	if hasFiles, err := preflightRetainedResultSource(layout.resultStageDir, layout.platformStageDir, expectations); err != nil || !hasFiles {
 		return false, err
 	}
 
-	resultDir := filepath.Dir(bundlePath)
-	if err := os.MkdirAll(resultDir, 0o755); err != nil {
+	resultDir := s.retainedResultRunDir(locator)
+	if err := ensureOwnedDirectory(resultDir, retainedResultRunDirMode, targetOwner); err != nil {
 		return false, err
 	}
 
@@ -127,16 +143,38 @@ func (s *Service) retainTerminalResult(locator executionLocator) (bool, error) {
 
 	if err := os.Link(tempPath, bundlePath); err != nil {
 		if errors.Is(err, os.ErrExist) {
+			if err := s.reconcileRetainedResultArtifacts(locator, targetOwner, stageMarker, stageMarkerBytes); err != nil {
+				return false, err
+			}
 			return true, nil
 		}
 		return false, err
 	}
-	cleanupTemp = true
+	if err := reconcileOwnedPath(bundlePath, targetOwner, retainedResultBundleFileMode); err != nil {
+		return false, err
+	}
+	if err := s.reconcileRetainedResultArtifacts(locator, targetOwner, stageMarker, stageMarkerBytes); err != nil {
+		return false, err
+	}
+	cleanupTemp = false
 	return true, nil
 }
 
 func (s *Service) readRetainedResultBundle(locator executionLocator) (ExecutionResultBundle, bool, *Error) {
-	payload, err := os.ReadFile(s.retainedResultBundlePath(locator))
+	bundlePath := s.retainedResultBundlePath(locator)
+	if _, err := os.Stat(bundlePath); err == nil {
+		targetOwner, ownerErr := executionPlatformStateOwnerFromPath(s.cfg.Execution.ResultsRootDir)
+		if ownerErr != nil {
+			return ExecutionResultBundle{}, false, resultUnavailableError("execution result bundle is not readable")
+		}
+		if err := s.reconcileRetainedResultArtifacts(locator, targetOwner, nil, nil); err != nil {
+			return ExecutionResultBundle{}, false, resultUnavailableError("execution result bundle is not readable")
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		return ExecutionResultBundle{}, false, nil
+	}
+
+	payload, err := os.ReadFile(bundlePath)
 	if err == nil {
 		return ExecutionResultBundle{
 			MediaType:       resultBundleMediaType,
@@ -151,7 +189,57 @@ func (s *Service) readRetainedResultBundle(locator executionLocator) (ExecutionR
 }
 
 func (s *Service) retainedResultBundlePath(locator executionLocator) string {
-	return filepath.Join(s.cfg.Execution.ResultsRootDir, locator.RunID, resultBundleFileName)
+	return filepath.Join(s.retainedResultRunDir(locator), resultBundleFileName)
+}
+
+func (s *Service) retainedResultRunDir(locator executionLocator) string {
+	return filepath.Join(s.cfg.Execution.ResultsRootDir, locator.RunID)
+}
+
+func (s *Service) retainedNormalizationEvidencePath(locator executionLocator) string {
+	return filepath.Join(s.retainedResultRunDir(locator), ownershipNormalizationMarkerName)
+}
+
+func (s *Service) reconcileRetainedResultArtifacts(
+	locator executionLocator,
+	targetOwner executionPlatformStateOwner,
+	stageMarker *ownershipNormalizationMarker,
+	stageMarkerBytes []byte,
+) error {
+	resultDir := s.retainedResultRunDir(locator)
+	if err := ensureOwnedDirectory(resultDir, retainedResultRunDirMode, targetOwner); err != nil {
+		return err
+	}
+
+	bundlePath := s.retainedResultBundlePath(locator)
+	if _, err := os.Stat(bundlePath); err == nil {
+		if err := reconcileOwnedPath(bundlePath, targetOwner, retainedResultBundleFileMode); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	evidencePath := s.retainedNormalizationEvidencePath(locator)
+	if stageMarker != nil && len(stageMarkerBytes) > 0 {
+		if _, err := os.Stat(evidencePath); errors.Is(err, os.ErrNotExist) {
+			if err := os.WriteFile(evidencePath, stageMarkerBytes, retainedNormalizationEvidenceFileMode); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(evidencePath, resultDir, ownershipExpectationsForRun(locator.RunID, targetOwner, false)); err != nil {
+		return err
+	}
+	if _, err := os.Stat(evidencePath); err == nil {
+		if err := reconcileOwnedPath(evidencePath, targetOwner, retainedNormalizationEvidenceFileMode); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func writeResultBundle(writer io.Writer, root string) error {

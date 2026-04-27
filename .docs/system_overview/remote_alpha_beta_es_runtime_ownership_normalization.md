@@ -4,8 +4,8 @@
 
 The current accepted Alpha posture is:
 
-- `Temporary compatibility edge`: live `es.service` still runs as
-  `root(default)`.
+- `Bounded slice rule`: the long-lived `es.service` now runs as `User=es`,
+  `Group=es`, `UMask=0027`.
 - `Temporary compatibility edge`: the runtime companion starts as root inside
   the Nomad Docker task.
 - `Current invariant`: the workload runs as fixed non-root `10000:10000` with
@@ -26,16 +26,16 @@ The current accepted Alpha posture is:
   `run/platform` subtree.
 - `Current blocker`: the remaining blocker is no longer absence of a
   normalization contract or repo-local validation. The current branch now has
-  the design contract, repo-local tests, and a non-mutating readiness checker,
-  but the accepted Alpha posture still runs the long-lived ES service as
-  `root(default)`, the runtime companion still normalizes to its current
-  target owner, real live-host `es:es` ownership has not been measured, and no
-  service-user flip is approved.
+  the design contract, repo-local tests, a non-mutating readiness checker, and
+  bounded live-host evidence for the long-lived `User=es` service slice, but
+  the runtime companion still starts as root, retained-result evidence must
+  survive successful staging cleanup, old root-era roots remain intentionally
+  preserved, and no current evidence set claims full ES/runtime de-root.
 
 This means the current implementation now has a documented design contract for
-the future non-root ES ownership bridge, but the accepted Alpha posture still
-does not prove that bridge on a live host with a non-root long-lived ES
-service.
+the non-root ES ownership bridge, and the accepted Alpha posture now proves the
+bounded long-lived service cut line on a live host, but it still does not prove
+that the full runtime/task/helper boundary is de-rooted.
 
 ### 1.1 Current branch readiness status
 
@@ -47,18 +47,20 @@ service.
   and current Alpha-compatible missing-marker behavior.
 - `Checker-backed`: the host-local readiness checker now exposes explicit
   `alpha-compat` and `future-non-root-required` modes.
-- `Live-host unmeasured`: no current branch evidence proves that a real Remote
-  Alpha host already satisfies expected-owner proof for `run/platform`,
-  `run/work`, and `run/result` as `es:es`.
-- `Blocked`: changing the long-lived ES service user remains unimplemented and
-  unapproved. The consolidated readiness ledger lives in
+- `Live-host partially evidenced`: the bounded live rollout plus the explicit
+  future writable-state readiness pass prove the stable live roots and the
+  long-lived `User=es` service cut line, but they do not by themselves prove a
+  full runtime-boundary redesign for every runtime-owned descendant state.
+- `Live-host service-user slice evidenced`: the staged operator migration
+  helper is no longer only design input; the bounded long-lived ES service-user
+  apply is now live-host evidenced. The consolidated readiness ledger lives in
   `.docs/system_overview/remote_alpha_beta_es_privileged_operation_matrix.md`.
 
 ## 2. Target Option B state
 
 Under the recommended Option B direction:
 
-- the long-lived ES service may eventually run as `es:es`
+- the long-lived ES service now runs as `es:es`
 - the root-start runtime companion may remain a bounded compatibility edge
 - stable ES writable state remains `es:es`
 - host-backed paths that the runtime companion or workload transiently owns
@@ -89,7 +91,7 @@ the future non-root long-lived ES service.
 
 | Path | Before task start | While workload runs | After workload exits | Who performs transition | Root required | Expected failure behavior |
 | --- | --- | --- | --- | --- | --- | --- |
-| `run/platform` | Host-backed subtree under `<staging_root>/<run_id>/run/platform` is already ES-owned. Required owner or mode: target ES numeric UID:GID, directory `0750`, non-secret files `0640`, runtime support binary `0750`. | It stays ES-owned while the workload runs. The root-start runtime companion may read or execute from it, but it must not reclassify it as a stable root-owned subtree. | It remains ES-owned. No post-run ownership flip is allowed here. | ES stages the subtree before submit. The runtime companion only validates that the stable ES-owned contract still holds. | Transition itself: no. Validation may run as root inside the companion because the current companion already starts as root. | If the companion observes that `run/platform` is not already owned by the target ES UID:GID before workload start, it must fail closed before workload exec. On terminal success, cleanup must not proceed if ES later sees that `run/platform` is not ES-deletable. |
+| `run/platform` | Host-backed subtree under `<staging_root>/<run_id>/run/platform` is already ES-owned. Required stable owner or mode before and after the active task window: target ES numeric UID:GID, directory `0750`, non-secret files `0640`, runtime support binary `0750`. | It stays ES-owned while the workload runs, but the current fixed non-root workload boundary still needs one bounded active-visibility exception: the parent `/execution/run` must remain workload-traversable, `run/platform` must remain workload-traversable, and the non-secret trust files surfaced through `VAULT_CACERT` and `SSL_CERT_FILE` must remain workload-readable. The root-start runtime companion may widen only those active runtime modes; it must not make `run/platform` workload-writable or reclassify it as a stable root-owned subtree. | It remains ES-owned and returns to the stable ES-owned restrictive mode before ES retained-result or cleanup preflights run. No post-run ownership flip is allowed here. | ES stages the subtree before submit. The runtime companion validates that the stable ES-owned owner contract holds, applies only the bounded active workload-visibility widening needed for the current fixed non-root workload boundary, and restores the stable ES-owned modes after workload exit. | Transition itself: no for ownership. Validation and the bounded active mode widening may run as root inside the companion because the current companion already starts as root. | If the companion observes that `run/platform` is not already owned by the target ES UID:GID before workload start, it must fail closed before workload exec. If the companion cannot preserve workload traversal to `/execution/run/work` or workload readability for the staged non-secret trust files, it must fail before or during workload start rather than silently breaking the run. On terminal success, cleanup must not proceed if ES later sees that `run/platform` is not ES-deletable. |
 | `run/work` | Absent or an ES-owned placeholder under `<staging_root>/<run_id>/run/work`. If present before task start, it must already be ES-owned and deletable. | Runtime-owned transient subtree. The supervisor creates it, sanitizes the extracted workload tree, and the active tree becomes workload-owned `10000:10000` with sanitized workload modes. | Normalized back to ES-owned state: target ES UID:GID, directories `0750`, regular files `0640`, executable files `0750` only where needed for bounded debugging or later inspection. | Root-start supervisor. It creates the active transient subtree before workload exec and restores ES ownership after workload exit. | Yes under the current Option B helper model, because the current supervisor already starts as root and performs ownership transitions across host-backed bind mounts. | If normalization fails or is partial, ES must not treat `run/work` as cleanup-ready. Successful cleanup is blocked and the full stage root remains retained. Failed or canceled runs remain retained for debugging, with the normalization failure recorded as operator evidence. |
 | `run/result` | ES-owned placeholder under `<staging_root>/<run_id>/run/result`, target ES UID:GID, directory `0750`. | Runtime-owned transient result subtree. The supervisor recreates it for the workload. Required active owner: workload `10000:10000`. Required active directory mode: owner-writable and not world-writable. | Normalized back to ES-owned retained-result source tree: target ES UID:GID, directories `0750`, regular files `0640`, executable files `0750` only if an allowed result artifact truly requires execute bits. Unsupported file types remain forbidden. | Root-start supervisor. It creates the active transient result subtree before workload exec and restores ES ownership after workload exit. | Yes under the current Option B helper model. | If normalization fails, retained-result packaging must fail closed, successful cleanup must be skipped, and the run-scoped stage root must remain retained. `GET /result` may return `result_unavailable` until a readable retained bundle exists, or `result_not_found` only if the result tree is valid but empty. |
 | Retained-result source tree | Not a separate path before task start. This is the semantic view of `run/result` once the workload has exited and the subtree has been normalized back to ES ownership. | Not applicable while the workload still runs because the source tree is not yet in the post-exit state ES can trust. | ES-owned, readable, and deletable source tree rooted at `<staging_root>/<run_id>/run/result`. This is the only host-backed tree ES may package into an opaque retained bundle. | Root-start supervisor produces it by normalizing `run/result`. ES validates it before packaging. | Supervisor normalization: yes under current compatibility edge. ES validation: no. | Missing or invalid source-tree readiness blocks retained-result packaging and blocks successful cleanup. The stage root remains retained. |
@@ -104,6 +106,23 @@ Transition rule:
 
 Any third state is contract failure.
 
+Bounded active-runtime visibility rule:
+
+- `Current invariant`: the fixed workload still runs as `10000:10000` with no
+  supplemental groups.
+- `Bounded slice rule`: any host-backed runtime path that the workload must
+  traverse or read during that active task window must stay compatible with
+  that boundary without relying on `es` group membership.
+- For the current workload-vault handoff, that means the parent
+  `/execution/run` must be workload-traversable and the non-secret trust files
+  staged under `run/platform` and surfaced through `VAULT_CACERT` or
+  `SSL_CERT_FILE` must be workload-readable while the workload runs.
+- Those active-path widenings are compatibility behavior only. They must stay
+  narrow, must not make the stable platform subtree workload-writable, and
+  must be restored to the stable ES-owned restrictive modes after workload
+  exit before ES treats the stage root as retained-result or cleanup-ready
+  evidence.
+
 ## 4. UID/GID model
 
 The recommended UID:GID model is numeric and host-derived.
@@ -114,10 +133,23 @@ The long-lived ES service is the authority for the target ES numeric UID:GID.
 
 Recommended source:
 
-- after the future service-user flip, ES derives the target owner from its own
-  process credentials:
+- during pre-apply planning or bounded rollback analysis, ES may derive the
+  target owner from the stable writable-state owner it already controls,
+  but future non-root-required readiness and submit-time staging now require
+  the stat owner of `execution.staging_root_dir` and
+  `execution.results_root_dir` to agree first
+- in the current live posture after the landed service-user flip, ES may derive
+  the same target owner from its own process credentials:
   - `os.Geteuid()`
   - `os.Getegid()`
+
+Fail-closed invariant:
+
+- ES must not treat staging-owner facts and retained-result owner facts as two
+  different target-owner models for the same run.
+- If `execution.staging_root_dir` and `execution.results_root_dir` resolve to
+  different UID:GID values, submit-time staging and future readiness must fail
+  explicitly until operators realign the stable roots.
 
 Recommended carrier:
 
@@ -154,6 +186,8 @@ This fits the current design because:
 - the `EXEC_` prefix is already reserved from caller input
 - the runtime companion already consumes runtime env and runtime paths from the
   task environment
+- the same carrier can bridge the current Alpha root-run ES posture to the
+  future `es:es` target owner without redefining the runtime helper boundary
 
 ### 4.3 Is container-side name lookup allowed?
 
@@ -247,7 +281,24 @@ Two validation modes are required:
    - `<staging_root>/<run_id>/run/platform/ownership-normalization.json`
    - that marker must remain helper-private evidence under the stable platform
      subtree; it must not be writable or forgeable by the workload
-3. ES performs a retained-result or cleanup preflight before using that result.
+3. Before successful staging cleanup can remove the staging copy, ES preserves
+   the validated normalization evidence into retained-result-owned state, for
+   example:
+   - `<results_root>/<run_id>/ownership-normalization.json`
+   - the preserved copy or summary must be created only from already validated
+     marker evidence
+   - the preserved copy or summary must be owned and readable under the same
+     target owner model as the retained bundle
+   - if an older retained run directory lacks that preserved evidence, a
+     bounded operator reconciliation helper may quarantine the retained run
+     directory outside the live results root, but ES must not fabricate a new
+     sidecar without trusted staging-side evidence
+   - repeat retained-result reads may also perform the same narrow target-owner
+     reconciliation on the retained bundle, preserved normalization evidence,
+     and their immediate run-scoped parent directory when those retained
+     artifacts already exist; this is bounded retained-result upkeep only and
+     must not recurse through arbitrary result trees or quarantined roots
+4. ES performs a retained-result or cleanup preflight before using that result.
 4. ES trusts normalization only if:
    - in current Alpha compatibility mode, a missing marker may still pass as a
      temporary compatibility edge
@@ -268,6 +319,10 @@ Current Alpha compatibility bridge:
   absent
 - a later non-root-required slice may tighten this bridge and make the marker
   mandatory for the non-root ES path
+- future non-root cleanup readiness also depends on the run-scoped staging
+  root itself remaining ES-owned and ES-deletable; child-directory
+  normalization alone is not sufficient if `<staging_root>/<run_id>` remains
+  root-owned
 
 ### 5.2 Recommended marker contents
 
@@ -294,7 +349,10 @@ Recommended exact values and formats:
 
 Recommended marker location rule:
 
-- the marker stays inside the stable ES-owned `run/platform` subtree
+- the marker stays inside the stable ES-owned `run/platform` subtree while the
+  stage root exists
+- the retained-result preservation copy stays under `<results_root>/<run_id>/`
+  because successful cleanup may later remove the staging copy
 - the marker path and its parents must not be workload-writable
 - the marker must not become a workload-authored success signal
 
@@ -332,6 +390,8 @@ The checker now exposes two explicit non-mutating modes:
   - acts as a readiness gate only
   - requires discovered `es` UID:GID, marker presence, target-owner match, and
     stat-backed ES ownership or readability or deletability proofs
+  - may satisfy the completed-run evidence requirement from preserved
+    retained-result normalization evidence after successful staging cleanup
   - does not change `es.service` identity, run governed proof, or approve ES
     de-rooting by itself
 
@@ -367,6 +427,9 @@ Current Alpha-compatible preflight rule:
 - a structurally valid present marker may remain accepted even when
   `target_uid` and `target_gid` were not checked against an expected ES owner
 - a present invalid marker blocks packaging before bundle creation
+- if ES has enough information to derive the retained-result target owner and
+  the packaged bundle or preserved marker copy cannot be normalized to that
+  target, packaging must fail closed
 
 Future non-root-required preflight rule:
 
@@ -375,6 +438,8 @@ Future non-root-required preflight rule:
   service UID:GID
 - `run/result` and the entries ES will package must be owned by that same
   expected UID:GID and remain traversable or readable to ES
+- the retained bundle and any preserved normalization evidence copy must also
+  land under that same expected UID:GID
 - a present invalid marker blocks packaging before bundle creation
 
 ### 5.5 Successful-cleanup preflight
@@ -392,6 +457,9 @@ Current Alpha-compatible preflight rule:
 - a structurally valid present marker may remain accepted even when
   `target_uid` and `target_gid` were not checked against an expected ES owner
 - a present invalid marker blocks cleanup and retains the full stage root
+- successful cleanup may remove the original `run/platform` marker location, so
+  any future-readiness evidence that must survive cleanup has to be preserved
+  under retained-result-owned state first
 
 Future non-root-required preflight rule:
 
@@ -484,9 +552,9 @@ prove it.
 
 Required tests before any implementation slice is approved:
 
-The current branch now satisfies several repo-local items in this plan, but
-that evidence remains branch-local readiness only. It does not prove live-host
-expected-owner state and it does not approve a service-user flip.
+The current branch now satisfies several repo-local items in this plan, and the
+bounded live rollout now also proves the long-lived `User=es` service cut line.
+That evidence still does not prove full runtime-boundary redesign.
 
 - successful retained-result packaging as non-root ES
 - successful retained-result fetch as non-root ES
@@ -514,7 +582,7 @@ Helpful additional coverage:
 
 ### 8.1 Migration implications
 
-Before a service-user flip:
+Before the landed bounded service-user flip, the rollout had to:
 
 - migrate stable `execution.staging_root_dir` and `execution.results_root_dir`
   to `es:es` as defined in the writable-state ownership model
@@ -524,19 +592,25 @@ Before a service-user flip:
   ownership instead of converting it to persistent root-only state
 - prove the normalization marker plus ES preflight checks work under the future
   non-root ES service account
+- require the repo-side migration helper to run the explicit
+  `future-non-root-required` writable-state readiness gate, to block on active
+  runs or runs that cannot be ruled out safely, and to preserve the current
+  root-start helper, Nomad task `User: "0:0"`, helper-private SPIRE traversal,
+  and broad root selector scope as bounded compatibility edges
 
 ### 8.2 Rollback implications
 
-Rollback to the accepted Alpha posture stays straightforward:
+Rollback to the earlier pre-service-user root-era posture stays
+straightforward:
 
 - revert the long-lived ES service to `root(default)`
 - keep retained stage roots and retained bundles in place
 - a root-run ES service can still read or delete `es:es` state, so rollback
   does not require immediate reownership before service recovery
 
-### 8.3 Evidence required before a service-user flip
+### 8.3 Evidence that was required before the service-user flip
 
-Before any future service-user flip, the repo should require:
+Before the landed bounded service-user flip, the repo required:
 
 - updated authoritative docs for this normalization contract and the writable
   state model
@@ -552,8 +626,9 @@ Before any future service-user flip, the repo should require:
 
 Non-goals of this document are:
 
-- ES de-root implementation
-- changing `es.service` `User=` or `Group=` today
+- claiming full ES/runtime de-root
+- silently changing `es.service` `User=` or `Group=` on a live host outside the
+  bounded documented helper flow
 - redesigning the Nomad task user model
 - redesigning SPIRE selectors
 - redesigning helper-private raw SPIRE traversal

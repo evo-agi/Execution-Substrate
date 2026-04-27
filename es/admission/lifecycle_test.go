@@ -53,6 +53,9 @@ func TestMaybeCleanupSuccessfulStageRootRemovesOnlySuccessfulRuns(t *testing.T) 
 			},
 		},
 	}
+	if err := os.MkdirAll(service.cfg.Execution.ResultsRootDir, 0o700); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
+	}
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)
 
@@ -110,6 +113,9 @@ func TestStatusRetainsLostStageRootForDebugging(t *testing.T) {
 				t.Fatalf("unexpected path %q", r.URL.Path)
 			}
 		})),
+	}
+	if err := os.MkdirAll(service.cfg.Execution.ResultsRootDir, 0o700); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
 	}
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)

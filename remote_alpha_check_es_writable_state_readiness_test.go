@@ -185,7 +185,7 @@ fi`, path, fmt.Sprintf("%d", override.UID), fmt.Sprintf("%d", override.GID), ove
 	}
 	sort.Strings(statLines)
 	writeExecutable(t, dir, "stat", fmt.Sprintf(`#!/bin/sh
-if [ "$1" != "-c" ] || [ "$2" != "%%u\t%%g\t%%a\t%%F" ] || [ "$#" -ne 3 ]; then
+if [ "$1" != "-c" ] || [ "$#" -ne 3 ]; then
   exit 1
 fi
 %s
@@ -712,6 +712,125 @@ func TestRemoteAlphaESWritableStateReadinessValidMarkerPasses(t *testing.T) {
 	}
 }
 
+func TestRemoteAlphaESWritableStateReadinessUsesPreservedRetainedEvidenceAfterCleanup(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	stagingRoot := filepath.Join(tmpDir, "staging")
+	resultsRoot := filepath.Join(tmpDir, "results")
+	runID := "run-458-cleaned"
+	if err := os.MkdirAll(stagingRoot, 0o750); err != nil {
+		t.Fatalf("mkdir staging root: %v", err)
+	}
+	retainedRunDir := filepath.Join(resultsRoot, runID)
+	if err := os.MkdirAll(retainedRunDir, 0o750); err != nil {
+		t.Fatalf("mkdir retained run dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(retainedRunDir, "result.tar.gz"), []byte("bundle"), 0o600); err != nil {
+		t.Fatalf("write retained bundle: %v", err)
+	}
+	writeWritableStateNormalizationMarker(t, retainedRunDir, runID, nil)
+
+	configPath := filepath.Join(tmpDir, "es.json")
+	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
+
+	setupFakeWritableStateReadinessCommands(t, fakeBin, fakeWritableStateAccount{
+		Present:   true,
+		UID:       os.Getuid(),
+		GID:       os.Getgid(),
+		GroupName: "es",
+	}, nil, filepath.Join(tmpDir, "mutations.log"))
+
+	output, err := runESWritableStateReadinessScript(
+		t,
+		append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH")),
+		"--config-path",
+		configPath,
+		"--mode",
+		"future-non-root-required",
+	)
+	if err != nil {
+		t.Fatalf("expected preserved retained evidence to pass, got err=%v\noutput=%s", err, string(output))
+	}
+
+	payload := parseWritableStateReadinessOutput(t, output)
+	if got := nestedClassification(t, payload, "runtime_normalization_contract_status"); got != "pass" {
+		t.Fatalf("expected pass runtime_normalization_contract_status, got %q", got)
+	}
+	runtimeStatus := nestedMap(t, payload, "runtime_normalization_contract_status")
+	observedRuns, ok := runtimeStatus["observed_runs"].([]any)
+	if !ok || len(observedRuns) != 1 {
+		t.Fatalf("expected one observed run, got %#v", runtimeStatus["observed_runs"])
+	}
+	runPayload := observedRuns[0].(map[string]any)
+	if runPayload["stage_root_present"] != false {
+		t.Fatalf("expected cleaned stage root evidence, got %v", runPayload["stage_root_present"])
+	}
+	markerPayload := runPayload["marker"].(map[string]any)
+	if markerPayload["evidence_source"] != "retained_result_preserved_marker" {
+		t.Fatalf("expected preserved retained evidence source, got %v", markerPayload["evidence_source"])
+	}
+}
+
+func TestRemoteAlphaESWritableStateReadinessInvalidPreservedRetainedEvidenceBlocks(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	stagingRoot := filepath.Join(tmpDir, "staging")
+	resultsRoot := filepath.Join(tmpDir, "results")
+	runID := "run-459-cleaned"
+	if err := os.MkdirAll(stagingRoot, 0o750); err != nil {
+		t.Fatalf("mkdir staging root: %v", err)
+	}
+	retainedRunDir := filepath.Join(resultsRoot, runID)
+	if err := os.MkdirAll(retainedRunDir, 0o750); err != nil {
+		t.Fatalf("mkdir retained run dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(retainedRunDir, "result.tar.gz"), []byte("bundle"), 0o600); err != nil {
+		t.Fatalf("write retained bundle: %v", err)
+	}
+	writeWritableStateNormalizationMarker(t, retainedRunDir, runID, map[string]any{
+		"completed_at": "not-a-timestamp",
+	})
+
+	configPath := filepath.Join(tmpDir, "es.json")
+	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
+
+	setupFakeWritableStateReadinessCommands(t, fakeBin, fakeWritableStateAccount{
+		Present:   true,
+		UID:       os.Getuid(),
+		GID:       os.Getgid(),
+		GroupName: "es",
+	}, nil, filepath.Join(tmpDir, "mutations.log"))
+
+	output, err := runESWritableStateReadinessScript(
+		t,
+		append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH")),
+		"--config-path",
+		configPath,
+		"--mode",
+		"future-non-root-required",
+	)
+	if err == nil {
+		t.Fatalf("expected blocker for invalid preserved retained evidence\noutput=%s", string(output))
+	}
+
+	payload := parseWritableStateReadinessOutput(t, output)
+	if got := nestedClassification(t, payload, "runtime_normalization_contract_status"); got != "blocker" {
+		t.Fatalf("expected blocker runtime_normalization_contract_status, got %q", got)
+	}
+}
+
 func TestRemoteAlphaESWritableStateReadinessInvalidPresentMarkerBlocks(t *testing.T) {
 	t.Parallel()
 
@@ -918,6 +1037,62 @@ func TestRemoteAlphaESWritableStateReadinessReportsMarkerEvidenceAsUnverifiedWit
 	}
 }
 
+func TestRemoteAlphaESWritableStateReadinessBlocksRootOwnerModelMismatchInFutureNonRootRequiredMode(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	stagingRoot := filepath.Join(tmpDir, "staging")
+	resultsRoot := filepath.Join(tmpDir, "results")
+	if err := os.MkdirAll(stagingRoot, 0o750); err != nil {
+		t.Fatalf("mkdir staging root: %v", err)
+	}
+	if err := os.MkdirAll(resultsRoot, 0o750); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "es.json")
+	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
+
+	setupFakeWritableStateReadinessCommands(t, fakeBin, fakeWritableStateAccount{
+		Present:   true,
+		UID:       os.Getuid(),
+		GID:       os.Getgid(),
+		GroupName: "es",
+	}, map[string]fakeWritableStateStat{
+		stagingRoot: {UID: os.Getuid(), GID: os.Getgid(), Mode: "0750", FileType: "directory"},
+		resultsRoot: {UID: os.Getuid(), GID: os.Getgid() + 1, Mode: "0750", FileType: "directory"},
+	}, filepath.Join(tmpDir, "mutations.log"))
+
+	output, err := runESWritableStateReadinessScript(
+		t,
+		append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH")),
+		"--config-path",
+		configPath,
+		"--mode",
+		"future-non-root-required",
+	)
+	if err == nil {
+		t.Fatalf("expected blocker for staging/results owner-model mismatch\noutput=%s", string(output))
+	}
+
+	payload := parseWritableStateReadinessOutput(t, output)
+	if got := nestedClassification(t, payload, "target_owner_consistency_status"); got != "blocker" {
+		t.Fatalf("expected blocker target_owner_consistency_status, got %q", got)
+	}
+	status := nestedMap(t, payload, "target_owner_consistency_status")
+	if status["same_target_owner"] != false {
+		t.Fatalf("expected same_target_owner=false, got %v", status["same_target_owner"])
+	}
+	if !strings.Contains(status["summary"].(string), "future non-root ES requires one shared target owner model") {
+		t.Fatalf("expected actionable mismatch summary, got %v", status["summary"])
+	}
+}
+
 func TestRemoteAlphaESWritableStateReadinessFutureModeBlocksStatOwnershipMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -1077,6 +1252,7 @@ func TestRemoteAlphaESWritableStateReadinessJSONShapeStable(t *testing.T) {
 		"runtime_normalization_contract_status",
 		"schema_version",
 		"staging_root_status",
+		"target_owner_consistency_status",
 		"target_owner_verification",
 		"warnings",
 	}

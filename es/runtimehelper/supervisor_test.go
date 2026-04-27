@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,32 @@ func TestMaterializeHelperPrivateSPIRESocketCreatesStableAliasForMountedSourceDi
 	}
 	if info.Mode()&os.ModeSocket == 0 {
 		t.Fatalf("expected helper-private alias to resolve to a unix socket, got mode %v", info.Mode())
+	}
+}
+
+func TestMaterializeHelperPrivateSPIRESocketFailsClosedWhenMountedSourceDirHasNoSocket(t *testing.T) {
+	rootDir := t.TempDir()
+	internalDir := filepath.Join(rootDir, "internal")
+	if err := os.MkdirAll(internalDir, 0o700); err != nil {
+		t.Fatalf("mkdir internal dir: %v", err)
+	}
+	sourceDir := filepath.Join(internalDir, "source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "note.txt"), []byte("not a socket"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	err := materializeHelperPrivateSPIRESocket(runtimePaths{
+		internalDir:    internalDir,
+		spireSourceDir: sourceDir,
+		spireSocket:    filepath.Join(internalDir, spireSocketName),
+	})
+	if err == nil {
+		t.Fatal("expected missing SPIRE socket source to fail")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, "does not contain a unix socket") {
+		t.Fatalf("expected explicit missing-socket error, got %v", err)
 	}
 }

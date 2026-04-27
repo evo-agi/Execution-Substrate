@@ -31,36 +31,45 @@ The accepted Alpha posture is:
   - `scripts/remote_alpha_prepare_es_config_tls.sh`
   - `scripts/remote_alpha_stage_es_config_tls_prep.sh`
   - Infrastructure Manager support-bundle/checkpoint evidence
-- `Temporary compatibility edge`: live `es.service` still runs as
-  `root(default)`.
-- `Temporary compatibility edge`: the ES config file and dedicated ES TLS
-  material are prepared under `root:es` readability for a later non-root step,
-  while current runtime behavior stays unchanged.
+- `Bounded slice rule`: the ES stable writable-state ownership slice is applied
+  and the explicit `future-non-root-required` writable-state gate has passed.
+- `Bounded slice rule`: the long-lived `es.service` now runs as `User=es`,
+  `Group=es`, `UMask=0027`, with post-apply `/health`,
+  `GET /v1/executions:contract`, and the current lowest-cost existing happy
+  path all passing.
 - `Temporary compatibility edge`: the remote helper proof still depends on the
   broad root selector scope `unix:uid:0` plus `unix:gid:0` for
   `spiffe://execution.internal/workload`.
+- `Temporary compatibility edge`: the root-start runtime helper, Nomad task
+  `User: "0:0"`, helper-private SPIRE traversal, and Vault/workload-zone
+  handoff remain intentionally compatibility-labeled rather than solved
+  runtime-boundary architecture.
 - `Current invariant`: the raw SPIRE Workload API socket remains helper-private
   and the workload remains fixed non-root `10000:10000` with no supplemental
   groups or privilege-escalation path.
+- `Current invariant`: old root-era staging/results roots are preserved as
+  rollback/debug/evidence state until a later explicit cleanup/archive action
+  after the rollback window expires; they were not recursively re-owned or
+  deleted during the migration.
 - `Current invariant`: no current Alpha hardening evidence, support bundle,
-  checkpoint, or ES config/TLS prep summary claims that ES is de-rooted.
+  checkpoint, or apply summary claims full ES/runtime de-root.
 
-The important implication is that Alpha now has a cleaner config/TLS ownership
-bridge, but the remaining ES privilege issues are still structural
+The important implication is that Alpha now has landed bounded long-lived ES
+service de-root, but the remaining ES privilege issues are still structural
 runtime-boundary issues rather than just file-permission cleanup.
 
 ## 3. Dependency map
 
 | Dependency | Current fact | Classification | Why it is not solved by config/TLS prep alone |
 | --- | --- | --- | --- |
-| Staging/results ownership | ES still owns submit-time host staging under `execution.staging_root_dir`, retains opaque result bundles under `execution.results_root_dir`, and cleans successful staging only after terminal observation. | structural/runtime-boundary | This is tied to ES submit, lifecycle cleanup, opaque retained-result semantics, and host/runtime ownership rather than only startup config readability. |
-| SPIRE socket traversal | ES still depends on `execution.spire_workload_api_socket_path`, bind-mounts the containing directory into the helper-private runtime subtree, and the supervisor materializes the helper-private socket alias there. | structural/runtime-boundary | The helper-private raw SPIRE path is part of the runtime boundary and capability model, not just a host permission setting. |
+| Staging/results ownership | ES still owns submit-time host staging under `execution.staging_root_dir`, retains opaque result bundles under `execution.results_root_dir`, and cleans successful staging only after terminal observation. Submit-time staging now fails closed if those two stable roots do not resolve to the same target owner UID:GID. | structural/runtime-boundary | This is tied to ES submit, lifecycle cleanup, opaque retained-result semantics, and host/runtime ownership rather than only startup config readability. |
+| SPIRE socket traversal | ES still depends on `execution.spire_workload_api_socket_path`, bind-mounts the containing directory into the helper-private runtime subtree, and the supervisor materializes the helper-private socket alias there. The long-lived ES startup path keeps that path as config-shape and submit input only; operator/readiness flows validate the host socket and the runtime helper consumes the helper-private raw SPIRE path fail-closed at runtime. | structural/runtime-boundary | The helper-private raw SPIRE path is part of the runtime boundary and capability model, not just a host permission setting. |
 | SPIRE selectors / root workload registration | Remote Alpha helper proof still uses the broad root selector scope `unix:uid:0` plus `unix:gid:0` for `spiffe://execution.internal/workload`. | mixed | The current selector set is an Alpha-only compatibility edge, but replacing it safely depends on the future helper identity and task-launch model. |
 | Runtime-helper root-start model | `es-runtime-support supervisor` and `helper` require `0:0` at start, then the helper drops steady-state capabilities and the workload is exec'd as `10000:10000`. | structural/runtime-boundary | This is the core platform-owned runtime identity boundary today. It is not just a hardening detail. |
 | Nomad task user model | ES currently submits one Docker task with `User: "0:0"` and relies on the runtime support binary to create the workload boundary inside the task. | structural/runtime-boundary | Changing this touches Nomad, Docker, helper launch, workload launch, and the SPIRE/Vault runtime contract together. |
 | Vault/workload-zone runtime-config handoff | ES resolves typed workload-zone Vault config, stages optional CA material, and injects only non-secret workload-vault metadata plus `EXEC_WORKLOAD_IDENTITY_ENDPOINT`. | mixed | The typed runtime-config handoff is already explicit, but its safe ownership split depends on the future ES/helper/task privilege model. |
 | Filesystem ownership and retained-result materialization | The supervisor prepares `/execution/run`, chowns `/execution/run/result` to `10000:10000`, finalizes result readability, and ES later packages opaque retained bundles. | unknown / needs measurement | The current behavior is documented, but the exact ownership/readability/cleanup model for a non-root ES service plus the current runtime helper/task model is not yet derived or measured. |
-| Service restart / operator maintenance model | Current host-local maintenance and rollback evidence assume `es.service` remains `root(default)` and treat the config/TLS prep step as ownership-prep only. | implementation-only | This matters for rollout, rollback, packaging, and operator ergonomics, but it should follow the chosen architecture rather than define it. |
+| Service restart / operator maintenance model | Current host-local maintenance and rollback evidence now covers the applied config/TLS prep slice, the applied writable-state ownership slice, the bounded `User=es` service-user migration, preserved old roots, and the remaining compatibility edges. | implementation-only | This matters for rollout, rollback, packaging, and operator ergonomics, but it should follow the chosen architecture rather than define it. |
 
 ## 4. Structural reading of the dependency map
 
@@ -78,8 +87,8 @@ The dependency map separates into three clusters:
    Nomad task `User: "0:0"`, the fixed workload UID:GID `10000:10000`, staged
    runtime filesystem ownership, and retained-result materialization.
 
-The ES config/TLS prep slice addressed cluster 1 only partially. It did not
-re-derive clusters 2 and 3.
+The bounded rollout has now addressed cluster 1 for the long-lived ES service,
+but it did not re-derive clusters 2 and 3.
 
 ## 5. Viable future architectures
 
@@ -126,12 +135,12 @@ Rollback complexity:
 
 What changes:
 
-- Move the long-lived ES API/service process off `root(default)`, using the
+- The long-lived ES API/service process is moved off `root(default)`, using the
   already-prepared `root:es` readable config/TLS model as one input.
-- Reassign or explicitly provision stage/results ownership so the non-root ES
-  service can still submit, observe, retain results, and perform successful
-  staging cleanup.
-- Keep the current runtime helper/task model explicit for now:
+- Stage/results ownership is explicitly provisioned so the non-root ES service
+  can still submit, observe, retain results, and perform successful staging
+  cleanup.
+- The current runtime helper/task model stays explicit for now:
   - Nomad task still starts `0:0`
   - same-container supervisor/helper remains
   - helper-private SPIRE path remains
@@ -156,7 +165,7 @@ Compatibility risk:
 
 Migration complexity:
 
-- Medium. This requires a deliberate ownership model for writable ES state and
+- Medium. This required a deliberate ownership model for writable ES state and
   explicit rollout/rollback rules.
 
 Test/proof impact:
@@ -218,46 +227,49 @@ Rollback complexity:
 
 ## 6. Design conclusion
 
-The repo should not treat “ES de-root” as equivalent to “flip `es.service`
-away from root and call the privilege problem solved.”
+The repo should not treat “bounded long-lived ES service de-root” as equivalent
+to “the full ES privilege boundary is now solved.”
 
 The current root dependencies are split:
 
-- the long-lived ES service is still root
+- the long-lived ES service is now non-root
 - the runtime helper/task model still relies on root start
 - the remote helper proof still relies on a broad root selector scope
-- the stage/results/readability/cleanup model is still coupled to those choices
+- the stage/results/readability/cleanup model is improved and live-measured at
+  the stable-root boundary, but it is still coupled to those runtime choices
 
-The config/TLS ownership prep slice usefully prepared one input for a later
-change, but it did not settle the runtime-boundary design.
+The config/TLS ownership prep slice and the later writable-state plus
+service-user slices usefully landed the long-lived service cut line, but they
+did not settle the runtime-boundary design.
 
 ## 7. Recommended future architecture
 
-The recommended direction is **Option B for Beta planning, with Option C left
-explicitly open as a later structural redesign track**.
+The recommended direction remains **Option B as the currently landed Beta cut
+line, with Option C left explicitly open as a later structural redesign
+track**.
 
 Reason:
 
-- Option A leaves the highest-value long-lived privilege unchanged.
+- Option A leaves or restores the highest-value long-lived privilege unchanged.
 - Option C is the cleanest end-state candidate, but it reopens too many seams
   at once for the next bounded step.
-- Option B gives a meaningful security improvement by removing root from the
-  long-lived ES API/service surface while keeping the current runtime task
-  model explicit and compatibility-labeled instead of pretending it is solved.
+- Option B has already delivered a meaningful security improvement by removing
+  root from the long-lived ES API/service surface while keeping the current
+  runtime task model explicit and compatibility-labeled instead of pretending
+  it is solved.
 
 That recommendation is intentionally narrow:
 
-- Beta may de-root the long-lived ES service only if the runtime helper/task
-  root-start model remains explicitly documented as a bounded compatibility
-  edge.
+- The landed Beta cut line keeps the runtime helper/task root-start model
+  explicitly documented as a bounded compatibility edge.
 - Beta must not claim that the full ES privilege boundary is solved while the
   broad root selector scope, Nomad task `User: "0:0"`, and current root-start
   runtime helper model remain.
 
 ## 8. Smallest safe next readiness step
 
-The earlier smallest safe next design spike is now landed on the current
-branch as:
+The earlier bounded rollout package is now landed on the current branch and on
+the live host as:
 
 - the privileged-operation matrix for ES and the runtime companion path
 - the writable-state ownership model
@@ -265,36 +277,44 @@ branch as:
 - the non-mutating writable-state readiness checker
 - repo-local normalized-run lifecycle coverage for retained-result and cleanup
   semantics
+- the bounded binary-deployment helper
+- the bounded stable writable-state ownership helper
+- the bounded long-lived `es.service` migration helper
+- live host evidence that the long-lived `User=es` service, post-apply
+  lowest-cost happy path, and future writable-state readiness all passed
 
-The next safe step is therefore not implementation. It is to treat those
-design, repo-local test, and checker-backed artifacts as readiness inputs
-only, then require check-only and live measurement evidence plus rollback
-gating before any future service-user migration is approved.
+The next safe step is therefore sealing and governance only:
 
-This next step must still not change `es.service`, Nomad task users, runtime
-helper code, SPIRE selectors, or remote host state.
+- keep the current live long-lived ES service-user posture as the accepted
+  bounded cut line
+- treat any further privilege-boundary change as explicit Option C or another
+  separately documented bounded slice
+- preserve the old root-era staging/results roots until an explicit later
+  cleanup/archive action is approved after the rollback window
 
-## 9. Hard blockers to full ES de-root
+## 9. Hard blockers to full ES/runtime de-root
 
-The hard blockers to a full ES de-root implementation are:
+The hard blockers to a full ES/runtime de-root implementation are:
 
 - the ownership split for root-only operations versus long-lived ES service
-  operations is now documented, but it remains design-only until live-host
-  service-user conditions are measured
+  operations is now documented and the long-lived service cut line is
+  live-measured, but the runtime/task/helper boundary is still only partially
+  re-derived
 - current runtime helper and supervisor require root start
 - current Nomad task model is still `User: "0:0"`
 - current Remote Alpha helper proof still depends on a broad root selector
   scope
 - the non-root ownership/readability/cleanup model for staging and retained
-  results is now documented and has repo-local readiness coverage, but live
-  `es:es` ownership remains unmeasured
-- moving `es.service` away from `root(default)` remains unimplemented,
-  unapproved, and without a live-rehearsed rollout package even though the
-  migration/rollback shape is now documented
+  results is now documented, repo-local test-backed, and bounded live-host
+  evidenced at the stable-root/service-user cut line, but the deeper
+  runtime-boundary redesign remains unfinished
+- old root-era staging/results roots are intentionally preserved for
+  rollback/debug/evidence state until a later explicit cleanup/archive action
 
-## 10. Required evidence before approving implementation
+## 10. Required evidence before approving further implementation
 
-Before approving any ES de-root implementation work, the repo should require:
+Before approving any further ES/runtime privilege-boundary change beyond the
+landed long-lived service-user slice, the repo should require:
 
 - updated authoritative docs that describe the chosen architecture and mark the
   retained compatibility edges explicitly
@@ -319,7 +339,7 @@ Before approving any ES de-root implementation work, the repo should require:
 
 This assessment does not:
 
-- authorize ES de-root implementation
+- claim full ES/runtime de-root
 - authorize changes to Nomad task users
 - authorize selector changes
 - authorize runtime helper redesign

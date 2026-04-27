@@ -100,23 +100,16 @@ func reservedExecutionRuntimePaths() []string {
 	}
 }
 
-func (l executionPackageLayout) stagePayload(payloadBytes []byte) error {
-	if err := os.MkdirAll(l.payloadStageDir, 0o755); err != nil {
+func (l executionPackageLayout) stagePayload(payloadBytes []byte, owner executionPlatformStateOwner) error {
+	for _, dir := range []string{l.stageRootDir, l.payloadStageDir, l.runStageDir, l.platformStageDir, l.resultStageDir} {
+		if err := ensureOwnedDirectory(dir, stableStageDirMode, owner); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(l.payloadArchivePath, payloadBytes, retainedResultBundleFileMode); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(l.runStageDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(l.platformStageDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(l.resultStageDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(l.payloadArchivePath, payloadBytes, 0o600); err != nil {
-		return err
-	}
-	return nil
+	return reconcileOwnedPath(l.payloadArchivePath, owner, retainedResultBundleFileMode)
 }
 
 func (l executionPackageLayout) mountStageDir(index int) string {
@@ -160,7 +153,7 @@ func (l executionPackageLayout) workloadTLSBundleRuntimePath() string {
 	return pathJoin(l.runtimePlatformDir, executionWorkloadTLSBundleName)
 }
 
-func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(plan esconfig.ResolvedWorkloadVaultAuthPlan) (stagedWorkloadTrustMaterial, error) {
+func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(plan esconfig.ResolvedWorkloadVaultAuthPlan, owner executionPlatformStateOwner) (stagedWorkloadTrustMaterial, error) {
 	caBundle := normalizePEMForRuntimeFile(plan.CABundlePEM)
 	if len(caBundle) == 0 {
 		return stagedWorkloadTrustMaterial{}, nil
@@ -170,13 +163,19 @@ func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(plan esconfig.Re
 		return stagedWorkloadTrustMaterial{}, err
 	}
 
-	if err := os.MkdirAll(l.platformStageDir, 0o755); err != nil {
+	if err := ensureOwnedDirectory(l.platformStageDir, stableStageDirMode, owner); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
-	if err := os.WriteFile(l.workloadVaultCACertStagePath(), caBundle, 0o644); err != nil {
+	if err := os.WriteFile(l.workloadVaultCACertStagePath(), caBundle, stableStageFileMode); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
-	if err := os.WriteFile(l.workloadTLSBundleStagePath(), appendPEMBundle(systemBundle, caBundle), 0o644); err != nil {
+	if err := reconcileOwnedPath(l.workloadVaultCACertStagePath(), owner, stableStageFileMode); err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+	if err := os.WriteFile(l.workloadTLSBundleStagePath(), appendPEMBundle(systemBundle, caBundle), stableStageFileMode); err != nil {
+		return stagedWorkloadTrustMaterial{}, err
+	}
+	if err := reconcileOwnedPath(l.workloadTLSBundleStagePath(), owner, stableStageFileMode); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
 	return stagedWorkloadTrustMaterial{
@@ -222,14 +221,14 @@ func readSystemCABundle() ([]byte, error) {
 	return nil, fmt.Errorf("system CA bundle not found for workload TLS bundle")
 }
 
-func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string) error {
+func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string, owner executionPlatformStateOwner) error {
 	sourceFile, err := os.Open(filepath.Clean(sourcePath))
 	if err != nil {
 		return err
 	}
 	defer sourceFile.Close()
 
-	destinationFile, err := os.OpenFile(l.runtimeSupportPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	destinationFile, err := os.OpenFile(l.runtimeSupportPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, stableStageExecFileMode)
 	if err != nil {
 		return err
 	}
@@ -238,7 +237,10 @@ func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string) err
 	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
 		return err
 	}
-	return destinationFile.Close()
+	if err := destinationFile.Close(); err != nil {
+		return err
+	}
+	return reconcileOwnedPath(l.runtimeSupportPath, owner, stableStageExecFileMode)
 }
 
 func pathJoin(elements ...string) string {
@@ -286,12 +288,12 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 	return mounts
 }
 
-func (s *Service) stageExecutionInputs(locator executionLocator, payloadBytes []byte) (stagedExecutionInputs, error) {
+func (s *Service) stageExecutionInputs(locator executionLocator, payloadBytes []byte, owner executionPlatformStateOwner) (stagedExecutionInputs, error) {
 	layout := newExecutionPackageLayout(s.cfg, locator)
-	if err := layout.stagePayload(payloadBytes); err != nil {
+	if err := layout.stagePayload(payloadBytes, owner); err != nil {
 		return stagedExecutionInputs{}, err
 	}
-	if err := layout.stageRuntimeSupportBinary(s.cfg.Execution.RuntimeSupportBinary); err != nil {
+	if err := layout.stageRuntimeSupportBinary(s.cfg.Execution.RuntimeSupportBinary, owner); err != nil {
 		return stagedExecutionInputs{}, err
 	}
 	return stagedExecutionInputs{

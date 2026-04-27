@@ -226,6 +226,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 }
 
 func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
+	if err := validateSPIREWorkloadAPISocketPathConfigShape(cfg.SPIREWorkloadAPISocketPath); err != nil {
+		return err
+	}
 	resolvedBinaryPath, err := filepath.EvalSymlinks(filepath.Clean(cfg.RuntimeSupportBinary))
 	if err != nil {
 		return fmt.Errorf("validate execution.runtime_support_binary: %w", err)
@@ -237,13 +240,16 @@ func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
 	if !binaryInfo.Mode().IsRegular() {
 		return fmt.Errorf("validate execution.runtime_support_binary: path must resolve to a regular file")
 	}
+	return nil
+}
 
-	socketInfo, err := os.Stat(filepath.Clean(cfg.SPIREWorkloadAPISocketPath))
-	if err != nil {
-		return fmt.Errorf("validate execution.spire_workload_api_socket_path: %w", err)
+func validateSPIREWorkloadAPISocketPathConfigShape(path string) error {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return fmt.Errorf("validate execution.spire_workload_api_socket_path: path is required")
 	}
-	if socketInfo.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("validate execution.spire_workload_api_socket_path: path must be a unix socket")
+	if !filepath.IsAbs(trimmed) {
+		return fmt.Errorf("validate execution.spire_workload_api_socket_path: path must be absolute")
 	}
 	return nil
 }

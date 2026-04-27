@@ -112,7 +112,7 @@ func TestStageWorkloadVaultTrustMaterialWritesVaultAndCombinedBundles(t *testing
 	}
 	staged, err := layout.stageWorkloadVaultTrustMaterial(esconfig.ResolvedWorkloadVaultAuthPlan{
 		CABundlePEM: "-----BEGIN CERTIFICATE-----\nvault\n-----END CERTIFICATE-----",
-	})
+	}, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
 	if err != nil {
 		t.Fatalf("stage workload vault trust material: %v", err)
 	}
@@ -134,6 +134,16 @@ func TestStageWorkloadVaultTrustMaterialWritesVaultAndCombinedBundles(t *testing
 	}
 	if !strings.Contains(string(combinedBundle), "system") || !strings.Contains(string(combinedBundle), "vault") {
 		t.Fatalf("expected combined bundle to contain system and Vault material, got %q", string(combinedBundle))
+	}
+	if info, err := os.Stat(layout.platformStageDir); err != nil {
+		t.Fatalf("stat platform stage dir: %v", err)
+	} else if info.Mode().Perm() != stableStageDirMode {
+		t.Fatalf("expected platform stage dir mode %o, got %o", stableStageDirMode, info.Mode().Perm())
+	}
+	if info, err := os.Stat(layout.workloadVaultCACertStagePath()); err != nil {
+		t.Fatalf("stat vault CA bundle: %v", err)
+	} else if info.Mode().Perm() != stableStageFileMode {
+		t.Fatalf("expected vault CA bundle mode %o, got %o", stableStageFileMode, info.Mode().Perm())
 	}
 	if layout.workloadVaultCACertRuntimePath() != "/execution/run/platform/workload-vault-ca.pem" {
 		t.Fatalf("unexpected runtime Vault CA path %q", layout.workloadVaultCACertRuntimePath())

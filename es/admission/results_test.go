@@ -134,6 +134,9 @@ func newResultTestService(t *testing.T) (*Service, executionLocator, executionPa
 			},
 		},
 	}
+	if err := os.MkdirAll(service.cfg.Execution.ResultsRootDir, 0o700); err != nil {
+		t.Fatalf("mkdir results root: %v", err)
+	}
 	layout := newExecutionPackageLayout(service.cfg, locator)
 	return service, locator, layout
 }

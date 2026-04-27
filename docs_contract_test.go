@@ -467,13 +467,14 @@ func TestRemoteSupportedHostAlphaAGSServiceHardeningSliceIsDocumented(t *testing
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 
 	for _, required := range []string{
-		"`AGS sealed + ARS de-root + EGS de-root`",
+		"`AGS sealed + ARS de-root + EGS de-root + ES config/TLS prep applied + ES stable writable-state prep applied + long-lived es.service de-root applied`",
 		"AGS is already de-rooted and sealed",
 		"ARS is already de-rooted",
-		"EGS is the only service being moved off root in this slice",
-		"must not move ES off root",
+		"EGS is already de-rooted",
+		"The current live long-lived `es.service` now runs as `User=es`, `Group=es`, `UMask=0027`",
+		"does not claim full ES/runtime de-root",
 		"must not change ES public contracts",
-		"does not widen into broader proof expansion",
+		"Old root-era staging/results roots remain preserved as rollback/debug/evidence state",
 	} {
 		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
 			t.Fatalf("remote alpha tranche docs missing %q", required)
@@ -754,7 +755,7 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 		"Remote Supported-Host Alpha may now extend the current host-local hardening work with one separate ES config/TLS ownership prep slice",
 		"introduces a dedicated ES-readable config ownership model and a dedicated ES-readable TLS directory",
 		"may create a narrow dedicated `es:es` prep account",
-		"must keep the live `es.service` user/group posture unchanged",
+			"At apply time, this slice kept the live `es.service` user/group posture unchanged",
 		"must not change ES public contracts, the current SPIRE selector posture, current SPIRE socket traversal, Vault/runtime-helper semantics, or Nomad task user model",
 		"must not move ES writable state, including staging and retained results ownership",
 		"preserves the current AGS, ARS, and EGS service postures plus the direct Mac -> ES HTTPS+mTLS posture",
@@ -769,7 +770,8 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepSliceIsDocumented(t *testing.T) 
 	for _, required := range []string{
 		"Remote ES Config/TLS Ownership Prep Slice",
 		"`Bounded slice rule`: this slice prepares only ES-readable config/TLS ownership for a later non-root ES step.",
-		"`Temporary compatibility edge`: the live `es.service` user/group remain `root(default)` while the ES config file and dedicated ES TLS directory are prepared under `root:es` readability for a later de-root slice.",
+			"`Temporary compatibility edge`: at that earlier step, the live `es.service` user/group remained `root(default)` while the ES config file and dedicated ES TLS directory were prepared under `root:es` readability for a later de-root slice.",
+			"The config/TLS, binary-deployment, and writable-state subsections below still describe earlier bounded slices whose own apply summaries intentionally record `root(default)` at those earlier steps.",
 		"preserving the current direct HTTPS/mTLS ES `/health` and `GET /v1/executions:contract` path",
 		"preserving the current SPIRE selector posture, SPIRE socket traversal, and Vault/runtime-helper semantics",
 		"preserving the current Nomad task user model",
@@ -961,14 +963,20 @@ func TestRemoteSupportedHostAlphaESWritableStateReadinessOperatorFlowIsDocumente
 		"transient helper staging from the operator repo into a root-owned staging tree under `/var/tmp/execution-substrate-remote-alpha/helper-staging/`",
 		"The wrapper must default to `--mode alpha-compat`.",
 		"Operators must request explicit `--mode future-non-root-required` when they want a non-mutating future-readiness gate.",
-		"Blocker findings in that future mode are expected until service-user migration is approved and measured on a live host",
+			"Those blocker findings were expected before the now-applied long-lived service-user migration",
 		"`es-writable-state-readiness.json`",
 		"`es-writable-state-readiness-helper-staging-record.json`",
 		"the requested checker mode",
+		"the sudo mode used for staged execution",
 		"whether staging occurred",
 		"whether the checker ran",
 		"whether transient staging was removed",
+		"whether `sudo_unavailable` blocked noninteractive root-owned staging",
+		"whether `wrapper_tooling_error` blocked execution before checker evidence was accepted",
 		"any sudo or preflight blocker if staging could not proceed",
+		"The default wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
+		"An explicit `--interactive-sudo` mode may be used only from a visible terminal when a bounded password handoff is authorized.",
+		"must not rely on a forced-PTY heredoc path",
 		"`overall_classification=blocker` is still valid measurement evidence",
 		"Collection must fail closed only when the staged helper tree is not root-owned, staged files are group-writable or world-writable, checker output is malformed, checker output claims mutation, or checker output does not match the requested mode.",
 		"`--keep-staging-on-failure` may retain it for diagnostics.",
@@ -979,6 +987,94 @@ func TestRemoteSupportedHostAlphaESWritableStateReadinessOperatorFlowIsDocumente
 	} {
 		if !strings.Contains(remote, required) && !strings.Contains(ownership, required) && !strings.Contains(normalization, required) {
 			t.Fatalf("remote ES writable-state readiness operator docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaESServiceUserMigrationOperatorFlowIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"Remote ES Service-User Migration Surface",
+		"`scripts/remote_alpha_migrate_es_service_user.sh`",
+		"`scripts/internal/remote_alpha_migrate_es_service_user.sh`",
+		"`<upload-root>/scripts/remote_alpha_migrate_es_service_user.sh`",
+		"`<upload-root>/scripts/internal/remote_alpha_migrate_es_service_user.sh`",
+		"`<upload-root>/scripts/remote_alpha_check_es_writable_state_readiness.sh`",
+		"`<upload-root>/scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`",
+			"`es-service-user-migration-check-only.json`",
+			"`es-service-user-migration-helper-staging-record.json`",
+			"`es-service-user-migration-apply-summary.json`",
+			"`es-service-user-migration-apply-stdout.txt`",
+			"The current live bounded state after that later helper apply is now:",
+			"the long-lived `es.service` runs as `User=es`, `Group=es`, `UMask=0027`",
+			"future writable-state readiness passed",
+			"old root-era staging/results roots remain preserved as rollback/debug/evidence state",
+			"The default staged-wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
+		"`--interactive-sudo` may be used only from a visible terminal when a bounded password handoff is explicitly authorized",
+		"must still use bounded remote commands rather than a forced-PTY heredoc path",
+		"The helper staging record must distinguish `sudo_unavailable` from `wrapper_tooling_error`",
+		"record whether staging occurred, whether the check-only helper ran, and whether transient staging was removed",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote ES service-user migration docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaESBinaryDeploymentOperatorFlowIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"Remote ES Binary Deployment Surface",
+		"`scripts/remote_alpha_deploy_es_binaries.sh`",
+		"`scripts/internal/remote_alpha_deploy_es_binaries.sh`",
+		"`/usr/local/lib/execution-substrate/bin/es`",
+		"`/usr/local/bin/es-runtime-support`",
+		"`<upload-root>/scripts/remote_alpha_deploy_es_binaries.sh`",
+		"`<upload-root>/scripts/internal/remote_alpha_deploy_es_binaries.sh`",
+		"`es-binary-deployment-check-only.json`",
+		"`es-binary-deployment-helper-staging-record.json`",
+		"`es-binary-deployment-apply-summary.json`",
+		"dirty-worktree",
+		"`deployment_needed`",
+		"The default staged-wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
+		"An explicit `--interactive-sudo` mode may be used only from a visible terminal when a bounded password handoff is authorized.",
+		"`install: cannot stat`",
+		"keep `validation.es_service_posture` at `root(default)`",
+		"restart `es.service` at most once",
+		"validate `/health` plus `GET /v1/executions:contract` afterward",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote ES binary deployment docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaESWritableStateOwnershipOperatorFlowIsDocumented(t *testing.T) {
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"Remote ES Writable-State Ownership Surface",
+		"`scripts/remote_alpha_prepare_es_writable_state_ownership.sh`",
+		"`scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`",
+		"`<upload-root>/scripts/remote_alpha_prepare_es_writable_state_ownership.sh`",
+		"`<upload-root>/scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`",
+		"`es-writable-state-ownership-check-only.json`",
+		"`es-writable-state-ownership-helper-staging-record.json`",
+		"`es-writable-state-ownership-apply-summary.json`",
+		"target owner `es:es` mode `0750` for both stable roots",
+		"block by default when either stable root is non-empty",
+		"must not recursively re-owner retained run/debug trees",
+		"must not restart `es.service`",
+		"The default staged-wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
+		"An explicit `--interactive-sudo` mode may be used only from a visible terminal when a bounded password handoff is authorized.",
+	} {
+		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote ES writable-state ownership docs missing %q", required)
 		}
 	}
 }
