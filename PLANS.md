@@ -57,6 +57,7 @@ Current bounded implementation status:
 - The supported-local runtime surface for enabled local runtime-profile images now also owns the narrow Nomad/Docker image-lifecycle guardrail needed for repeated client runs from the same prepared environment: the supported single-node Nomad baseline disables Nomad Docker image cleanup through `client.options["docker.cleanup.image"]="false"`, and submit-readiness for enabled runtime-profile images refuses to claim ready when that guardrail is absent. This is a bounded slice rule for local image durability, not a general registry or image-cache architecture.
 - The supported-local proof realization for that profile now uses a repo-owned deterministic proof Codex shim at the configured `EXEC_CODEX_CLI_PATH`, invokes it through the bounded normal-shell profile path, proves workload-side Vault credential acquisition, creates a deterministic workspace mutation and runner-style artifacts, fetches the retained ES result bundle, and validates the expected proof artifacts without depending on a live upstream Codex service.
 - Remote Supported-Host Alpha may now extend the narrower helper-install proof with a separate host-local Vault/workload-auth proof slice: install a single-node Alpha/internal Vault system service on the remote Linux host, constrain it to the helper SPIFFE identity JWT path needed by future ES runtime identity, and record only non-secret host evidence without claiming `runtime_profile_ready`, `submit_ready`, `es_services_healthy`, `producer_contract_compatible`, or retained-result readiness.
+- Remote Supported-Host Alpha may now also use one separate operator-owned Vault service-user migration helper slice: default `check_only`, require explicit `--apply`, stay bounded to the dedicated Vault service account, the Vault systemd drop-in, and the minimum config/storage/log/audit/TLS ownership or readability changes needed for Vault, record backup plus rollback evidence before mutation, and run honest post-apply Vault plus ES health or contract checks. That helper must preserve workload-side Vault JWT login, the ES-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` handoff, and the no-ES-Vault-token-brokerage rule; it does not claim `runtime_profile_ready`, `submit_ready`, Vault production readiness, governed execution proof, full ES/runtime de-root, full Nomad client de-root, or SPIRE redesign.
 
 ## Current Remote Alpha Hardening Tranche
 
@@ -108,8 +109,66 @@ applied`.
 - This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
   current EGS loopback-only dependency path, the landed AGS/ARS service
   postures, and the no-bridge/no-shared-filesystem remote posture.
+- This tranche may now use one separate operator-owned Vault service-user
+  migration helper. That helper must stay check-only by default, explicit
+  apply only, bounded to Vault host/service hardening, and must not widen into
+  ES public API changes, Nomad task-user changes, SPIRE boundary changes, or
+  Vault token brokerage.
 - This tranche is bounded host/service hardening only. Do not widen it into a
   runtime-boundary redesign or broader proof expansion.
+
+## Milestone 1: Least-Privilege Runtime/Security Boundary Closeout
+
+`Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security
+boundary closeout`.
+
+`Current invariant`: the landed long-lived `es.service` service-user change is
+already on the least-privilege side of this milestone baseline:
+`User=es`, `Group=es`, `UMask=0027`, with post-apply `/health`,
+`GET /v1/executions:contract`, the current lowest-cost existing happy path,
+and future writable-state readiness all passing.
+
+Do not call this milestone `rootless everything` or full ES/runtime de-root.
+
+Milestone 1 preserves these current boundaries:
+
+- Nomad remains lifecycle authority after ES submission.
+- ES remains a lifecycle projector, not a parallel scheduler.
+- The raw SPIRE Workload API socket remains helper-private.
+- Workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload
+  API socket.
+- Workload-side Vault credential acquisition remains preserved.
+- ES does not fetch, mint, broker, store, rotate, parse, or validate Vault
+  tokens.
+- Infrastructure Manager support bundles and readiness/support artifacts remain
+  evidence/projection/diagnostics only. They are not authority and are not
+  governed execution proof by themselves.
+
+Milestone 1 boundary posture matrix:
+
+| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
+| --- | --- | --- | --- | --- | --- |
+| Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper tests that keep the raw SPIRE path out of workload env, the remote runtime-identity helper summary, and the service-user migration check-only gate that validates helper-private runtime input without making `es:es` a raw-socket reader. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
+| ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
+| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
+| Evidence/support artifacts | `accepted MVP compatibility edge` | Privilege-sensitive host evidence collection may still be necessary, but it must stay outside ES/CP authority boundaries and must not backdoor a broader runtime claim. | Remote doctor output, support-bundle summaries, staged-helper records, and apply summaries are all already documented as evidence/projection/provenance only. | Revisit only if later operator tooling reduces privileged collection without weakening the non-authority and non-proof boundary. | Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves. |
+
+Milestone 1 now also carries one repo-owned Remote Alpha runtime/security
+boundary posture checker as a bounded host-local evidence surface:
+
+- `scripts/remote_alpha_runtime_security_boundary_check.sh`
+- `scripts/internal/remote_alpha_runtime_security_boundary_check.sh`
+
+That checker must default to `check_only`, stay non-mutating, classify the
+current Nomad/runtime-helper/SPIRE/Vault/evidence posture honestly, and fail
+closed if its output contains secret-like material or overclaim text. By
+default it must not SSH, mutate services, change ownership, restart services,
+archive files, or delete anything. It records evidence/projection only; it
+does not change ES submit behavior, runtime-helper behavior, the current Nomad
+task user, the helper-private raw SPIRE boundary, Vault token brokerage, or
+governed execution proof claims.
 
 ## Current Remote Alpha ES Config/TLS Ownership Prep Slice
 

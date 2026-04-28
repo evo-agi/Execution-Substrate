@@ -221,6 +221,122 @@ func TestProducerFailurePathDistinctionsAreDocumented(t *testing.T) {
 	}
 }
 
+func TestMilestone1LeastPrivilegeBoundaryCloseoutIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+
+	for _, required := range []string{
+		"Milestone 1: Least-Privilege Runtime/Security Boundary Closeout",
+		"Do not call this milestone `rootless everything` or full ES/runtime de-root.",
+		"Nomad remains lifecycle authority after ES submission.",
+		"ES remains a lifecycle projector, not a parallel scheduler.",
+		"The raw SPIRE Workload API socket remains helper-private.",
+		"Workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload API socket.",
+		"Workload-side Vault credential acquisition remains preserved.",
+		"ES does not fetch, mint, broker, store, rotate, parse, or validate Vault tokens.",
+		"Infrastructure Manager support bundles and readiness/support artifacts remain evidence/projection/diagnostics only. They are not authority and are not governed execution proof by themselves.",
+	} {
+		if !strings.Contains(plans, required) || !strings.Contains(remote, required) {
+			t.Fatalf("Milestone 1 least-privilege boundary docs missing %q", required)
+		}
+	}
+}
+
+func TestMilestone1BoundaryPostureMatrixIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+
+	for _, required := range []string{
+		"Milestone 1 boundary posture matrix:",
+		"Nomad host client/server substrate",
+		"`blocker`",
+		"Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout.",
+		"SPIRE raw-socket traversal and selector posture",
+		"`accepted MVP compatibility edge`",
+		"Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege.",
+		"Vault workload-side auth / workload-zone handoff",
+		"the intended direction is a dedicated unprivileged Vault service account rather than root",
+		"ES runtime helper",
+		"Nomad task user",
+		"Evidence/support artifacts",
+		"Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves.",
+	} {
+		if !strings.Contains(plans, required) || !strings.Contains(remote, required) {
+			t.Fatalf("Milestone 1 posture matrix docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaRuntimeSecurityBoundaryCheckerIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"`scripts/remote_alpha_runtime_security_boundary_check.sh`",
+		"`scripts/internal/remote_alpha_runtime_security_boundary_check.sh`",
+		"`execution-substrate.remote-alpha.runtime-security-boundary-check.v1`",
+		"`runtime-security-boundary-check.json`",
+		"default to `check_only`",
+		"non-mutating",
+		"must not SSH by default",
+		"mutate services",
+		"change ownership",
+		"restart services",
+		"archive files",
+		"delete anything",
+		"`mode`",
+		"`non_mutating`",
+		"`schema`",
+		"`generated_at`",
+		"`host`",
+		"`surfaces`",
+		"`accepted_compatibility_edges`",
+		"`least_privilege_findings`",
+		"`blockers`",
+		"`not_evaluated`",
+		"`redaction`",
+		"`non_authority_labels`",
+		"`explicit_non_claims`",
+		"`nomad_roles_detected`",
+		"`evaluation_source`",
+		"`independently_evaluated`",
+		"`combined_single_node_service`",
+		"`role_evidence`",
+		"Nomad server privilege posture",
+		"Nomad client privilege posture",
+		"independently evaluated or are only one combined-service reading",
+		"accepted MVP substrate dependency",
+		"combined_nomad_systemd_unit",
+		"one combined service unit does not prove separate server/client posture",
+		"Nomad task `User: \"0:0\"` remains an accepted MVP compatibility edge",
+		"root-start ES runtime helper/supervisor remains an accepted MVP compatibility edge",
+		"the raw SPIRE Workload API socket remains helper-private",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT`",
+		"ES Vault token brokerage must remain false",
+		"support bundles and related evidence artifacts remain non-authoritative",
+		"JWT-SVID material",
+		"Vault tokens",
+		"root tokens",
+		"unseal keys",
+		"PEM private keys",
+		"API keys",
+		"Codex credentials",
+		"raw secret payloads",
+		"`full ES/runtime de-root`",
+		"`rootless Nomad client`",
+		"`governed execution proof`",
+		"`Vault production readiness`",
+		"`workload credential success`",
+		"`support-bundle authority`",
+		"honest `blockers` or `not_evaluated` entries",
+	} {
+		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote runtime/security boundary checker docs missing %q", required)
+		}
+	}
+}
+
 func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
@@ -389,6 +505,53 @@ func TestRemoteSupportedHostAlphaVaultWorkloadAuthSummarySchemaIsDocumented(t *t
 	} {
 		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
 			t.Fatalf("remote Vault/workload-auth schema docs missing %q", required)
+		}
+	}
+}
+
+func TestRemoteSupportedHostAlphaVaultServiceUserMigrationSurfaceIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+
+	for _, required := range []string{
+		"`scripts/remote_alpha_migrate_vault_service_user.sh`",
+		"`scripts/internal/remote_alpha_migrate_vault_service_user.sh`",
+		"`execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`",
+		"`/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-check-only.json`",
+		"`/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-apply-summary.json`",
+		"`check_only`",
+		"non-mutating",
+		"explicit `--apply`",
+		"dedicated Vault service account",
+		"current Vault service identity",
+		"planned Vault systemd drop-in",
+		"local storage path",
+		"log path",
+		"audit-device path",
+		"TLS read paths",
+		"backup evidence",
+		"rollback notes",
+		"Vault `/v1/sys/health`",
+		"ES `/health`",
+		"ES `GET /v1/executions:contract`",
+		"`skipped`, not passed",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT`",
+		"`es_vault_token_brokerage=false`",
+		"`not_vault_production_ready`",
+		"`not_governed_execution_proof`",
+		"`not_full_es_runtime_deroot`",
+		"`not_full_nomad_client_deroot`",
+		"`not_spire_redesign`",
+		"`sudo -n true`",
+		"`collection_status = \"preflight_blocked\"`",
+		"`apply_performed = false`",
+		"`governed_smoke_performed = false`",
+		"`skipped_checks`",
+		"`non_authority_labels`",
+	} {
+		if !strings.Contains(plans, required) && !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
+			t.Fatalf("remote Vault service-user migration docs missing %q", required)
 		}
 	}
 }

@@ -1469,6 +1469,65 @@ those requirements explicitly in summary metadata so a passing
 `vault_workload_auth_smoke` cannot silently ignore a failed or skipped required
 step.
 
+For the separate Remote Supported-Host Alpha host-local Vault service-user
+migration slice, the repo-owned public wrapper is
+`scripts/remote_alpha_migrate_vault_service_user.sh`, with sourced
+implementation `scripts/internal/remote_alpha_migrate_vault_service_user.sh`.
+Default behavior is `check_only`, non-mutating, and writes
+`execution-substrate.remote-alpha.vault-service-user-migration-summary.v1` to
+`/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-check-only.json`
+unless the operator overrides the summary path. The bounded apply path requires
+explicit `--apply`, requires a successful check-ready preflight artifact or
+equivalent rerun of the same checks, writes
+`/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-apply-summary.json`
+by default, creates backup plus rollback evidence before any mutation, applies
+only the minimum Vault service-account or drop-in or path-owner changes needed
+for Vault, and then runs honest post-apply Vault `/v1/sys/health` or
+equivalent local health, ES `/health`, and ES `GET /v1/executions:contract`
+checks. Lowest-cost governed execution smoke must run only when the operator
+supplies the documented smoke profile plus command; otherwise the apply summary
+must record that smoke as `skipped`, not passed. This helper must preserve
+workload-side Vault JWT login through `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, must
+keep `es_vault_token_brokerage=false`, must fail closed if its summary would
+persist Vault tokens, root tokens, unseal keys, JWT-SVIDs, PEM private keys,
+API keys, Codex credentials, or raw secret payloads, and must keep explicit
+non-claims as labels such as `not_vault_production_ready`,
+`not_governed_execution_proof`, `not_full_es_runtime_deroot`,
+`not_full_nomad_client_deroot`, and `not_spire_redesign`.
+
+For the separate Milestone 1 runtime/security boundary posture surface, the
+repo-owned host-local checker is
+`scripts/remote_alpha_runtime_security_boundary_check.sh`, with sourced
+implementation
+`scripts/internal/remote_alpha_runtime_security_boundary_check.sh`. Default
+behavior is `check_only`, non-mutating, and writes
+`execution-substrate.remote-alpha.runtime-security-boundary-check.v1` to stdout
+or to a caller-selected artifact path such as
+`runtime-security-boundary-check.json`. That checker must not SSH by default,
+mutate services, change ownership, restart services, archive files, or delete
+anything. It must classify the current Nomad server/client posture, the
+accepted MVP Nomad-client root dependency, the current Nomad task
+`User: "0:0"` edge, the root-start runtime helper/supervisor posture, the
+helper-private raw SPIRE traversal boundary, the broad root selector posture,
+the workload-visible `EXEC_WORKLOAD_IDENTITY_ENDPOINT` contract, Vault service
+account posture, Vault root/unseal/client-token leakage checks, the
+workload-zone handoff posture, the no-ES-Vault-token-brokerage rule, and the
+non-authority status of support/evidence artifacts. Missing local tools or
+unavailable observations must become honest `blockers` or `not_evaluated`
+entries rather than false pass output. The checker must fail closed if its
+summary would persist JWT-SVIDs, Vault tokens, root tokens, unseal keys, PEM
+private keys, API keys, Codex credentials, raw secret payloads, or overclaim
+text such as `full ES/runtime de-root`. Nomad server/client posture reporting
+must stay role-aware and honest: one combined `nomad.service` observation is
+not separate server/client proof by itself. When the checker uses one combined
+service unit as the privilege evidence path for both surfaces, it must record
+`independently_evaluated=false`, set
+`evaluation_source=combined_nomad_systemd_unit`, and explain that one combined
+service unit does not prove separate server/client posture. Stable Nomad
+posture fields may include `nomad_roles_detected`, `evaluation_source`,
+`independently_evaluated`, `combined_single_node_service`, and
+`role_evidence`.
+
 For the separate Remote Supported-Host Alpha host-local normal-shell runtime
 image slice, the active repo-derived values remain:
 

@@ -13,6 +13,178 @@ Status classification:
 - The current `execution_substrate.runtime_profile` annotation, `control-plane-normal-shell/v1`, producer contract version, outcome evidence, lifecycle projection, retained-result behavior, and authority handoff remain unchanged.
 - The combined readiness report is pre-live fixture reporting, not ES service health, submit readiness, retained-result proof, lifecycle truth, runtime authority, or run authority.
 
+## Milestone 1 Boundary Reading
+
+Remote Supported-Host Alpha is the current host/operator reading of
+Milestone 1: Least-Privilege Runtime/Security Boundary Closeout.
+
+`Current invariant`: the landed long-lived `es.service` posture is already on
+the least-privilege side of this milestone baseline: `User=es`, `Group=es`,
+`UMask=0027`, with post-apply `/health`,
+`GET /v1/executions:contract`, the current lowest-cost existing happy path,
+and future writable-state readiness all passing.
+
+Do not call this milestone `rootless everything` or full ES/runtime de-root.
+
+Milestone 1 preserves these current boundaries:
+
+- Nomad remains lifecycle authority after ES submission.
+- ES remains a lifecycle projector, not a parallel scheduler.
+- The raw SPIRE Workload API socket remains helper-private.
+- Workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload
+  API socket.
+- Workload-side Vault credential acquisition remains preserved.
+- ES does not fetch, mint, broker, store, rotate, parse, or validate Vault
+  tokens.
+- Infrastructure Manager support bundles and readiness/support artifacts remain
+  evidence/projection/diagnostics only. They are not authority and are not
+  governed execution proof by themselves.
+
+Milestone 1 boundary posture matrix:
+
+| Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
+| --- | --- | --- | --- | --- | --- |
+| Nomad host client/server substrate | `blocker` | Remote Alpha still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Remote Alpha doctor vocabulary still treats `nomad_ready` as an environment gate, the supported-path docs still require a pre-managed Nomad baseline, and the landed ES happy paths still hand lifecycle authority to Nomad. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | The runtime-identity helper proof slice, runtime-helper tests that keep the raw SPIRE path out of workload env, and the service-user migration check-only gate all preserve this helper-private boundary. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. Remote Alpha preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `sudo scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
+| ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | The runtime-identity helper proof slice, helper-death/task-fatal behavior, and the remote helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
+| Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The current remote/runtime helper proof and the landed ES happy path still rely on the present task-start contract, and the docs keep `User: "0:0"` explicit rather than implied. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
+| Evidence/support artifacts | `accepted MVP compatibility edge` | Privilege-sensitive host evidence collection may still be necessary, but it must stay outside ES/CP authority boundaries and must not backdoor a broader runtime claim. | Remote doctor output, support-bundle summaries, staged-helper records, apply summaries, and the combined readiness report are all already documented as evidence/projection/provenance only. | Revisit only if later operator tooling reduces privileged collection without weakening the non-authority and non-proof boundary. | Support bundles, readiness reports, and apply summaries are not ES/CP/IM authority and are not governed execution proof by themselves. |
+
+## Remote Runtime/Security Boundary Checker
+
+Remote Supported-Host Alpha now also carries one bounded host-local
+runtime/security boundary posture checker for Milestone 1.
+
+The repo-owned public wrapper is:
+
+- `scripts/remote_alpha_runtime_security_boundary_check.sh`
+
+The sourced internal implementation is:
+
+- `scripts/internal/remote_alpha_runtime_security_boundary_check.sh`
+
+This checker is evidence/projection only. Default behavior is `check_only`,
+non-mutating, and must not SSH by default, mutate services, change ownership,
+restart services, archive files, or delete anything.
+
+The current schema name for that checker is:
+
+- `execution-substrate.remote-alpha.runtime-security-boundary-check.v1`
+
+The suggested output artifact name is:
+
+- `runtime-security-boundary-check.json`
+
+Required top-level fields for
+`execution-substrate.remote-alpha.runtime-security-boundary-check.v1` are:
+
+- `mode`
+- `non_mutating`
+- `schema`
+- `generated_at`
+- `host`
+- `surfaces`
+- `accepted_compatibility_edges`
+- `least_privilege_findings`
+- `blockers`
+- `not_evaluated`
+- `redaction`
+- `non_authority_labels`
+- `explicit_non_claims`
+
+The checker must classify these current surfaces explicitly:
+
+- Nomad server privilege posture
+- Nomad client privilege posture
+- whether those Nomad server/client surfaces were independently evaluated or
+  are only one combined-service reading
+- whether the current Nomad client root posture remains an accepted MVP
+  substrate dependency
+- Nomad task user posture, including the current `User: "0:0"` edge
+- ES runtime helper/supervisor root-start posture
+- SPIRE helper-private socket traversal
+- broad root selector posture
+- workload-visible identity endpoint contract through
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
+- Vault service account posture
+- Vault root/unseal/client-token leakage checks
+- workload-zone handoff posture
+- whether ES is brokering Vault tokens, which must remain false
+- whether support/evidence artifacts remain non-authoritative
+
+The current expected classifications for the active Alpha posture are:
+
+- Nomad host client/server least-privilege closeout remains a `blocker`
+- Nomad client root is an accepted MVP substrate dependency, not a de-rooted
+  client claim
+- Nomad task `User: "0:0"` remains an accepted MVP compatibility edge
+- the root-start ES runtime helper/supervisor remains an accepted MVP
+  compatibility edge
+- the raw SPIRE Workload API socket remains helper-private
+- workloads see `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, not the raw SPIRE Workload
+  API socket
+- workload-side Vault credential acquisition and workload-zone handoff remain
+  explicit compatibility-heavy handoff posture
+- ES Vault token brokerage must remain false
+- support bundles and related evidence artifacts remain non-authoritative
+
+Nomad server/client posture reporting must stay role-aware and honest.
+
+- When safely available, the checker may use local role evidence such as
+  readable Nomad config values like `server.enabled` and `client.enabled`,
+  plus other local non-mutating Nomad role observations, to identify whether
+  the current host is acting as a server, a client, or one co-located
+  single-node server+client service.
+- A single combined `nomad.service` privilege observation is not by itself
+  proof of separate server and client least-privilege posture.
+- When one combined service unit is the privilege evidence path for both
+  server and client posture, the checker must mark those surfaces
+  `independently_evaluated=false`, set
+  `evaluation_source=combined_nomad_systemd_unit`, and explain that one
+  combined service unit does not prove separate server/client posture.
+- Stable Nomad posture fields may include:
+  - `nomad_roles_detected`
+  - `evaluation_source`
+  - `independently_evaluated`
+  - `combined_single_node_service`
+  - `role_evidence`
+- If safe local role evidence is unavailable, the checker must emit an honest
+  `not_evaluated` posture or blocker entry rather than reusing one
+  `systemctl show nomad` observation as if it independently proved both
+  surfaces.
+
+The checker must report missing local tools or unavailable host observations as
+honest `blockers` or `not_evaluated` entries. It must not silently convert a
+missing observation into a pass.
+
+The checker must fail closed if the emitted output would contain:
+
+- JWT-SVID material
+- Vault tokens
+- root tokens
+- unseal keys
+- PEM private keys
+- API keys
+- Codex credentials
+- raw secret payloads
+
+The checker must also fail closed if the emitted output contains overclaim text
+such as:
+
+- `full ES/runtime de-root`
+- `rootless Nomad client`
+- `governed execution proof`
+- `Vault production readiness`
+- `workload credential success`
+- `support-bundle authority`
+
+The `non_authority_labels` and `explicit_non_claims` fields must keep the
+surface honest: this checker is not runtime-profile readiness, not submit
+readiness, not service health, not producer-contract compatibility, not
+retained-result proof, not workload credential success proof, not Vault
+production readiness, and not support-bundle authority.
+
 ## Topology
 
 For Remote Alpha 0.3:
@@ -1806,6 +1978,104 @@ The current required auth-smoke checks for a passing
 `GET /auth/token/lookup-self`, and therefore requires `read` capability on that
 path. The current intended source for that capability is Vault's attached
 `default` policy rather than an extra compatibility policy stanza.
+
+### Remote Vault service-user migration
+
+Remote Supported-Host Alpha may also use one separate bounded Vault
+service-user migration surface without changing ES public contracts, Nomad
+task-user behavior, SPIRE socket exposure, or Vault token brokerage.
+
+The repo-owned public wrapper for that surface is:
+
+- `scripts/remote_alpha_migrate_vault_service_user.sh`
+
+Its sourced implementation is:
+
+- `scripts/internal/remote_alpha_migrate_vault_service_user.sh`
+
+The summary schema for both the check-only and apply artifacts is:
+
+- `execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`
+
+The default local artifact names for that surface are:
+
+- `/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-check-only.json`
+- `/var/tmp/execution-substrate-remote-alpha/vault-service-user-migration-apply-summary.json`
+
+Default behavior must stay `check_only` and non-mutating. That preflight must:
+
+- validate the target dedicated Vault service account, typically `vault:vault`
+  or a configured equivalent
+- inspect the current Vault service identity without mutating it
+- inspect the planned Vault systemd drop-in or equivalent unit changes
+- validate the Vault config read path, any local storage path, any log path,
+  any audit-device path, and TLS read paths needed by Vault
+- fail closed if the summary would persist Vault tokens, root tokens, unseal
+  keys, JWT-SVIDs, PEM private keys, API keys, Codex credentials, or raw
+  secret payloads
+- preserve workload-side Vault JWT login through
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT`
+- preserve `es_vault_token_brokerage=false`
+
+When that non-mutating check-only collection cannot actually run because the
+documented root prerequisite is missing, the helper must still emit the same
+canonical check-only artifact as honest blocked evidence instead of silently
+omitting Vault evidence or claiming success.
+
+- if `id -u != 0`, the helper must probe noninteractive root with a behavioral
+  check such as `sudo -n true`
+- if that prerequisite probe fails, the helper must emit
+  `vault-service-user-migration-check-only.json` in the same schema family with
+  `collection_status = "preflight_blocked"` or equivalent
+- that blocked artifact must record the exact missing prerequisite, the
+  attempted prerequisite command, `mode.name = "check_only"`,
+  `mode.non_mutating = true`, `plan.apply_ready = false`,
+  `apply_performed = false`, `governed_smoke_performed = false`, `blockers`,
+  `skipped_checks`, `redaction`, `non_authority_labels`, and the explicit
+  non-claim labels below
+- the blocked artifact must not claim that Vault service-user migration passed,
+  that apply ran, that Vault is production-ready, that governed execution was
+  proved, that full ES/runtime de-root or a rootless Nomad client was reached,
+  or that ES brokers Vault tokens
+- if noninteractive root is available later, the existing real check-only
+  behavior must remain intact and must continue to produce the same canonical
+  check-only artifact path with real discovery results
+
+Apply for that surface must require explicit `--apply` and a successful
+check-ready preflight artifact or equivalent rerun of the same checks. Before
+mutation it must create backup evidence and rollback notes. The mutation scope
+must stay limited to the dedicated Vault service account posture, the Vault
+systemd drop-in, and the minimum config or storage or log or audit or TLS
+ownership or readability changes needed for Vault.
+
+The apply summary must record changed paths, backups, rollback path,
+post-apply checks, skipped checks, redaction status, and explicit non-claims.
+Required post-apply checks are Vault `/v1/sys/health` or an equivalent local
+health check, ES `/health`, and ES `GET /v1/executions:contract`. Lowest-cost
+governed execution smoke must run only when the operator supplies the
+documented smoke profile plus command; otherwise the summary must record that
+smoke as `skipped`, not passed.
+
+The explicit non-claims for that surface must stay label-based and include:
+
+- `not_vault_production_ready`
+- `not_governed_execution_proof`
+- `not_full_es_runtime_deroot`
+- `not_full_nomad_client_deroot`
+- `not_spire_redesign`
+
+Required non-authority labels for the check-only artifact, including the
+blocked prerequisite case, must stay label-based and include at least:
+
+- `not_service_health`
+- `not_submit_readiness`
+- `not_runtime_profile_readiness`
+- `not_producer_contract_compatibility`
+- `not_retained_result_readiness`
+- `not_governed_proof`
+- `not_workload_credential_success_proof`
+- `not_vault_production_ready`
+- `not_support_bundle_authority`
 
 Required summary fields for
 `execution-substrate.remote-alpha.vault-workload-auth-summary.v1` are:
