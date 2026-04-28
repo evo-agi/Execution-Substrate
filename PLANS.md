@@ -268,6 +268,11 @@ The current ES work is foundational boundary and contract work, and that is real
 
 Control Plane is an important first non-operator consumer. It improves ergonomics and governance around ES, but it does not define ES core contracts. Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.
 
+Milestone 0 MVP claim freeze is recorded in `.docs/mvp.md`. That document is a
+planning and documentation freeze only: it captures the current MVP claim,
+surface classifications, and explicit non-claims without widening ES contracts
+or promoting proof-harness behavior into architecture.
+
 The next milestone package is **ES Admission And Runtime Boundary Realignment**.
 
 That package is ES-owned. It should deliver a coherent ES milestone by:
