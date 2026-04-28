@@ -80,6 +80,8 @@ applied`.
 - Post-apply `/health`, `GET /v1/executions:contract`, and the current
   lowest-cost existing post-apply happy path all passed after the bounded live
   service-user change, and Infrastructure Manager readiness is accepted.
+- The repo-local rollback rehearsal/check-only evidence set for that landed
+  service-user slice now passes and remains non-mutating evidence only.
 - This tranche does not claim full ES/runtime de-root.
 - The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad root selector posture, and Vault/workload-zone
@@ -185,6 +187,62 @@ long-lived `es.service` user flip remains a future structural design track.
 - Design assessment for Remote Alpha -> Beta may compare alternative
   architectures, but implementation work must not proceed until the chosen
   boundary model and required evidence are documented explicitly.
+
+## Explicit Deferred Post-Migration Actions
+
+The current branch-level milestone for the completed long-lived `es.service`
+service-user migration is now:
+
+- ES config/TLS prep applied
+- stable writable-state prep applied
+- live `es.service` running as `User=es`, `Group=es`, `UMask=0027`
+- post-apply `/health` and `GET /v1/executions:contract` passed
+- post-apply lowest-cost existing happy path passed
+- future writable-state readiness passed
+- rollback rehearsal/check-only evidence passed
+- old-root cleanup/archive planner present as a repo-local non-mutating
+  planning surface only
+
+`Current invariant`: that branch-level milestone does not claim full
+ES/runtime de-root.
+
+`Bounded slice rule`: old root-era cleanup/archive execution is explicitly
+deferred.
+
+- Any later implementation must be a separate live-mutating operator action,
+  not a side effect of the writable-state or service-user helpers.
+- Preconditions are explicit:
+  - the rollback window is explicitly closed
+  - preserved old-root evidence is archived elsewhere or explicitly deemed
+    unnecessary
+  - operator signoff is recorded
+- If productized later, the surface should expose explicit `check-only` and
+  `apply` modes.
+- That later action must not recursively `chown` old roots and must not
+  delete by default.
+
+`Bounded slice rule`: an optional rollback execution helper is explicitly
+deferred.
+
+- It is not needed while the current `es:es` service posture is healthy.
+- It must remain recovery-only rather than routine maintenance.
+- Any future implementation must be bounded, must expose explicit
+  `check-only` and `apply` modes, and must not run live rollback unless
+  operationally necessary.
+
+`Reopened redesign seam`: Option C runtime-boundary redesign remains a
+separate architecture track, not a cleanup follow-on.
+
+- Any future work on the root-start runtime helper, Nomad task `User: "0:0"`,
+  helper-private SPIRE traversal, broad root selector posture, or
+  Vault/workload-zone handoff must proceed only as that separately documented
+  redesign track.
+
+`Current invariant`: the completed branch-level milestone does not imply a
+`master` merge.
+
+- Merge remains a human milestone decision after review of the bounded
+  evidence set and governance posture.
 
 ## Current Planning Objective
 

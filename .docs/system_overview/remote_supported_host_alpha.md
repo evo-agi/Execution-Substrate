@@ -1550,6 +1550,14 @@ not SSH, must not use `sudo`, must not mutate the live host, and must not
 archive or delete anything. While the rollback window remains active, its
 default recommendation must stay `retain`.
 
+The current branch does not yet implement a live preserved-root
+cleanup/archive executor. Any later operator helper for that action must stay
+separate from this planner, must require explicit `check-only` and `apply`
+modes, must run only after the rollback window is explicitly closed and
+preserved old-root evidence is archived elsewhere or explicitly deemed
+unnecessary, must require operator signoff, must not recursively `chown` old
+roots, and must not delete by default.
+
 The current bounded live state after that later apply is now the converse of
 the earlier check-only posture: the long-lived `es.service` is already running
 as `User=es`, `Group=es`, `UMask=0027`; ES config/TLS prep is applied; stable
@@ -1577,6 +1585,12 @@ binary-deployment backup plus writable-state backup/quarantine paths are
 referenced, old root-era staging/results roots remain preserved as
 rollback/debug/evidence state, and no recorded rollback instruction requires
 recursive chown or broad deletion.
+
+The current branch does not require or implement a live rollback executor
+while the current `User=es`, `Group=es`, `UMask=0027` service posture remains
+healthy. Any later rollback execution helper must remain recovery-only, must
+stay bounded with explicit `check-only` and `apply` modes, and must not be run
+live unless operationally necessary.
 
 `--dry-run` is an accepted alias for that same non-mutating repo-side check.
 That check-only path must perform discovery and validation only. It must emit a

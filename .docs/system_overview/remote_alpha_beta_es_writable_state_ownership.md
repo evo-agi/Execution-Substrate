@@ -315,7 +315,8 @@ passed, the long-lived `User=es` / `Group=es` service-user apply passed, the
 current lowest-cost existing post-apply happy path passed, and the old
 root-era staging/results roots remain preserved as rollback/debug/evidence
 state until a later explicit cleanup/archive action after the rollback window
-expires.
+expires. The repo-local rollback rehearsal/check-only evidence set for that
+completed slice now also passes as non-mutating evidence only.
 
 The preferred repo-side operator surface for that bounded migration package is:
 
@@ -413,6 +414,21 @@ retain/archive/delete-later plan only. It must not SSH, use `sudo`,
 recursively `chown` preserved roots, archive live-host content, or delete
 anything.
 
+The current branch does not yet implement the later live cleanup/archive
+executor for those preserved roots.
+
+If a later operator helper is added for that action, it must:
+
+- remain a separate live-mutating slice, not an implied follow-on to the
+  writable-state or service-user helpers
+- run only after the rollback window is explicitly closed
+- run only after preserved old-root evidence is archived elsewhere or
+  explicitly deemed unnecessary
+- require explicit operator signoff
+- expose explicit `check-only` and `apply` modes
+- never recursively `chown` the preserved old roots
+- never delete by default
+
 ## 6. Rollback plan
 
 Recommended rollback package back to the earlier pre-service-user root-era
@@ -439,6 +455,20 @@ well:
    - retained result bundle directories and files
 5. Preserve retained failed or canceled stage roots during rollback; do not
    delete debugging evidence as part of the service-user rollback itself.
+
+### 6.1 Deferred rollback-execution helper
+
+The current healthy `User=es` service posture does not require a live rollback
+execution helper.
+
+If a later operator helper is added to execute rollback, it must:
+
+- remain recovery-only rather than routine maintenance
+- be treated as a separately approved bounded slice
+- expose explicit `check-only` and `apply` modes
+- avoid live rollback unless operationally necessary
+- preserve the same no-recursive-`chown` and no-broad-deletion rollback
+  discipline documented above
 
 ## 7. Required test plan before implementation
 
