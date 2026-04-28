@@ -96,6 +96,11 @@ applied`.
 - Old root-era staging/results roots remain preserved as rollback/debug/evidence
   state until a later explicit cleanup/archive action after the rollback window
   expires; they must not be recursively re-owned or deleted by inertia.
+- Future cleanup/archive planning for those preserved roots is a repo-local,
+  non-mutating evidence step only: consume local apply-summary artifacts,
+  keep rollback-window status explicit, and do not SSH, use `sudo`,
+  recursively re-owner preserved contents, archive live-host content, or
+  delete anything by default.
 - This tranche must not change ES public contracts or Control
   Plane/Infrastructure Manager ownership boundaries.
 - This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the

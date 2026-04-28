@@ -1,0 +1,20 @@
+{
+  "backup": {
+    "path": "/var/tmp/execution-substrate-remote-alpha/es-writable-state-ownership-20260427T041411Z",
+    "rollback_notes": [
+      "Restore the pre-apply owner/group/mode snapshot for any retained run directory, retained bundle, or preserved normalization sidecar that was repaired in place.",
+      "Move each quarantined retained-result or stage-root directory back only if the original live path is absent and the operator has confirmed the restored path is still safe to expose.",
+      "Do not recursively re-owner arbitrary retained/debug trees as part of rollback for this bounded artifact-reconciliation slice.",
+      "Confirm es.service remains root(default); bounded artifact reconciliation should not require a restart."
+    ],
+    "snapshot": {
+      "quarantined_roots_observed": [
+        {
+          "path": "/var/lib/execution-substrate/es/results.pre-es-writable-state-ownership-20260427T012922Z",
+          "summary": "old root was preserved for rollback/debug evidence"
+        }
+      ]
+    }
+  },
+  "schema_version": "execution-substrate.remote-alpha.es-writable-state-ownership-summary.v1"
+}

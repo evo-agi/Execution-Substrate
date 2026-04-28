@@ -337,6 +337,82 @@ Important migration rule:
   preserve or restore ES-deletable ownership on host-backed descendants that ES
   must read or delete after workload exit
 
+### 5.1 Future old-root cleanup/archive policy
+
+The old roots preserved by the bounded writable-state and service-user rollout
+are a `Current invariant` for the accepted Alpha posture until a later
+separately approved cleanup/archive slice exists.
+
+Why those roots were preserved:
+
+- the bounded rotation needed a real rollback path from the live `es:es`
+  writable-state posture back to the earlier pre-service-user root-era stable
+  roots
+- the preserved trees are also the least-lossy record of the actual
+  pre-service-user owner/mode/content posture observed on the host during the
+  2026-04-27 migration window
+- the current branch still does not claim a full rollback rehearsal for the
+  landed long-lived `User=es` service posture, so deleting the old roots would
+  silently narrow the accepted rollback model
+
+Evidence those preserved roots may contain:
+
+- the earlier root-era `execution.staging_root_dir` and
+  `execution.results_root_dir` contents moved aside during maintenance-window
+  root rotation
+- retained failed/canceled debug trees that were intentionally kept outside the
+  fresh live `es:es` roots
+- retained-result bundles or preserved normalization evidence that existed
+  before the live roots changed ownership
+- later reconciliation quarantine roots created for incompatible retained-run
+  directories or incompatible run-scoped stage roots
+- repo-local apply summaries, backup snapshots, and rollback notes that
+  reference the preserved roots as migration evidence
+
+Why preserved roots must not be recursively re-owned:
+
+- recursive `chown` would destroy the historical owner/mode evidence that the
+  migration intentionally preserved
+- it would widen a bounded stable-root slice into arbitrary retained/debug
+  trees and quarantine content that were never approved for in-place
+  normalization
+- it would make later archive or rollback evidence less trustworthy because the
+  preserved tree would no longer reflect the real root-era posture that was
+  observed on the host
+
+Why preserved roots must not be deleted as part of the migration:
+
+- the accepted service-user slice depended on keeping those roots available for
+  rollback, debugging, and migration evidence
+- deleting them would silently change the operator rollback model without an
+  explicit later approval
+- the current branch treats cleanup/archive as later operator work, not as a
+  side effect of the writable-state or service-user helpers
+
+When cleanup/archive may be considered later:
+
+- only as a later separately approved slice after the rollback window is
+  explicitly closed
+- only after the local apply summary, backup snapshot, rollback notes, and any
+  required support-bundle or checkpoint evidence are retained outside the live
+  host
+- only after operators confirm no active, unknown, or debug-required state
+  still depends on the preserved roots
+- only after the desired archive layout and delete ordering are documented
+  explicitly; deletion remains later and must not be folded into the current
+  migration helpers
+
+The repo-local planning surface for that later action is:
+
+- `scripts/remote_alpha_plan_old_root_cleanup.sh`
+
+That helper must consume only local `*-apply-summary.json` artifacts,
+especially the writable-state ownership apply summaries that record
+`preserved_roots`, `quarantine_paths`, or both. It must emit a non-mutating
+retain/archive/delete-later plan only. It must not SSH, use `sudo`,
+recursively `chown` preserved roots, archive live-host content, or delete
+anything.
+
 ## 6. Rollback plan
 
 Recommended rollback package back to the earlier pre-service-user root-era

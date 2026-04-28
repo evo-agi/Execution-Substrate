@@ -1,0 +1,13 @@
+{
+  "backup": {
+    "path": "/var/tmp/execution-substrate-remote-alpha/es-binary-deployment-20260427T215803Z",
+    "pre_apply_es_binary_copy": "/var/tmp/execution-substrate-remote-alpha/es-binary-deployment-20260427T215803Z/es.pre-apply",
+    "pre_apply_runtime_support_copy": "/var/tmp/execution-substrate-remote-alpha/es-binary-deployment-20260427T215803Z/es-runtime-support.pre-apply",
+    "rollback_notes": [
+      "Install /var/tmp/execution-substrate-remote-alpha/es-binary-deployment-20260427T215803Z/es.pre-apply back to /usr/local/lib/execution-substrate/bin/es as root:root mode 0755.",
+      "Install /var/tmp/execution-substrate-remote-alpha/es-binary-deployment-20260427T215803Z/es-runtime-support.pre-apply back to /usr/local/bin/es-runtime-support as root:root mode 0755.",
+      "Restart es.service once after restoring the old binaries."
+    ]
+  },
+  "schema_version": "execution-substrate.remote-alpha.es-binary-deployment-summary.v1"
+}

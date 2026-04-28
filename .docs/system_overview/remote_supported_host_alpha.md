@@ -1540,6 +1540,16 @@ model, helper-private SPIRE traversal, broad selector scope, and workload-zone
 Vault handoff remain bounded compatibility edges until a later redesign slice
 changes them explicitly.
 
+For later preserved-root cleanup/archive planning only, the repo-local helper
+surface is:
+
+- `scripts/remote_alpha_plan_old_root_cleanup.sh`
+
+That helper must consume only local `*-apply-summary.json` artifacts. It must
+not SSH, must not use `sudo`, must not mutate the live host, and must not
+archive or delete anything. While the rollback window remains active, its
+default recommendation must stay `retain`.
+
 The current bounded live state after that later apply is now the converse of
 the earlier check-only posture: the long-lived `es.service` is already running
 as `User=es`, `Group=es`, `UMask=0027`; ES config/TLS prep is applied; stable
@@ -1548,6 +1558,25 @@ writable-state roots are prepared; post-apply `/health`,
 future writable-state readiness all passed; and the old root-era staging/results
 roots remain preserved as rollback/debug/evidence state. This still does not
 claim full ES/runtime de-root.
+
+For bounded rollback rehearsal after that completed service-user change, the
+repo now carries the local-only checker
+`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`. Its default
+input is `.out/remote-alpha-m75q`, and it emits:
+
+- `es-service-user-rollback-rehearsal.json`
+- `es-service-user-rollback-rehearsal.md`
+
+That rehearsal is non-mutating and local-evidence-only. It must not SSH, use
+`sudo`, mutate the live host, execute rollback, run ES apply, run governed
+proof, or do PR/merge prep. It must classify findings as `pass`, `warning`, or
+`blocker` while verifying that the service-user backup path is recorded, the
+previous service unit/drop-in state is recorded, the bounded drop-in remains
+limited to `User=es`, `Group=es`, and `UMask=0027`, rollback notes exist, the
+binary-deployment backup plus writable-state backup/quarantine paths are
+referenced, old root-era staging/results roots remain preserved as
+rollback/debug/evidence state, and no recorded rollback instruction requires
+recursive chown or broad deletion.
 
 `--dry-run` is an accepted alias for that same non-mutating repo-side check.
 That check-only path must perform discovery and validation only. It must emit a

@@ -391,6 +391,25 @@ The current live bounded state after that later helper apply is now:
   state until a later explicit cleanup/archive action after the rollback window
   expires; they must not be recursively re-owned or deleted by the migration
 
+For bounded rollback rehearsal after that completed service-user change, the
+repo now carries the local-only checker
+`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`. Its default
+input is `.out/remote-alpha-m75q`, and it emits:
+
+- `es-service-user-rollback-rehearsal.json`
+- `es-service-user-rollback-rehearsal.md`
+
+That rehearsal is non-mutating and local-evidence-only. It must not SSH, use
+`sudo`, mutate the live host, execute rollback, run ES apply, run governed
+proof, or do PR/merge prep. It must classify findings as `pass`, `warning`, or
+`blocker` while verifying that the service-user backup path is recorded, the
+previous service unit/drop-in state is recorded, the bounded drop-in remains
+limited to `User=es`, `Group=es`, and `UMask=0027`, rollback notes exist, the
+binary-deployment backup plus writable-state backup/quarantine paths are
+referenced, old root-era staging/results roots remain preserved as
+rollback/debug/evidence state, and no recorded rollback instruction requires
+recursive chown or broad deletion.
+
 ## CGS
 
 ### Required config groups

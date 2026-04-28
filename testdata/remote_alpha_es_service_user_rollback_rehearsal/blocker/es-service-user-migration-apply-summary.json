@@ -1,0 +1,37 @@
+{
+  "backup": {
+    "config_backup_path": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/es.json",
+    "dropin_backup_dir": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/dropins",
+    "path": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0",
+    "rollback_notes": [
+      "Restore /etc/execution-substrate/es.json from /var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/es.json if ES config drift is introduced outside this helper.",
+      "Restore or remove /etc/systemd/system/es.service.d/10-account.conf from the live drop-in path before restarting es.service.",
+      "Recursively chown /var/lib/execution-substrate/es/staging and delete all retained roots before rollback."
+    ],
+    "service_unit_backup_dir": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/systemd",
+    "snapshot": {
+      "copied_dropins": [],
+      "dropin_backup_dir": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/dropins",
+      "pre_mutation_service": {
+        "effective_group": "root(default)",
+        "effective_user": "root(default)",
+        "fragment_path": "/etc/systemd/system/es.service",
+        "service": "es.service"
+      },
+      "service_unit_backup_dir": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/systemd"
+    },
+    "snapshot_path": "/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-20260427T220837Z-0b1qt8_0/pre-apply-snapshot.json"
+  },
+  "changes": {
+    "dropin": {
+      "applied_lines": [
+        "[Service]",
+        "User=es",
+        "Group=es",
+        "UMask=0027"
+      ],
+      "path": "/etc/systemd/system/es.service.d/10-account.conf"
+    }
+  },
+  "schema_version": "execution-substrate.remote-alpha.es-service-user-migration-summary.v1"
+}

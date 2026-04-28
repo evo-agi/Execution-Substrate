@@ -1,0 +1,20 @@
+{
+  "plan": {
+    "planned_service_dropin_lines": [
+      "[Service]",
+      "User=es",
+      "Group=es",
+      "UMask=0027"
+    ],
+    "planned_service_dropin_path": "/etc/systemd/system/es.service.d/10-account.conf"
+  },
+  "schema_version": "execution-substrate.remote-alpha.es-service-user-migration-summary.v1",
+  "service_unit_plan_status": {
+    "plan": {
+      "rollback_notes": [
+        "Restore or remove /etc/systemd/system/es.service.d/10-account.conf using the backup snapshot before restarting es.service.",
+        "Keep Nomad task User: \"0:0\", the root-start runtime helper, helper-private SPIRE traversal, broad root selector scope, and Vault/workload-zone handoff unchanged during rollback."
+      ]
+    }
+  }
+}
