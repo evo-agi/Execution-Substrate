@@ -604,6 +604,94 @@ func TestRemoteAlphaRuntimeSecurityBoundaryValidateSummaryRejectsSecretLikeMater
 	}
 }
 
+func TestRemoteAlphaRuntimeSecurityBoundaryValidateSummaryRejectsLabeledSecretLikeMaterial(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "root token label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","root_token":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "unseal key label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","unseal_key":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "client token label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","client_token":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "raw secret payload label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","raw_secret_payload":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "codex credential label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","codex_credential":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "codex token label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","codex_token":"supersecretvalue1234"}`,
+		},
+		{
+			name:    "codex api key label",
+			payload: `{"schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1","codex_api_key":"supersecretvalue1234"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tmpDir := t.TempDir()
+			summaryPath := filepath.Join(tmpDir, "summary.json")
+			if err := os.WriteFile(summaryPath, []byte(tt.payload), 0o600); err != nil {
+				t.Fatalf("write summary: %v", err)
+			}
+
+			output, err := runSourcedRuntimeSecurityBoundaryHelper(t, os.Environ(), fmt.Sprintf(
+				"remote_alpha_runtime_security_boundary_validate_summary_file %q",
+				summaryPath,
+			))
+			if err == nil {
+				t.Fatalf("expected validator to fail for labeled secret-like material")
+			}
+			if !strings.Contains(string(output), "summary contains secret-like material") {
+				t.Fatalf("unexpected validator output %q", output)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryValidateSummaryAllowsBooleanRedactionFlags(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	summaryPath := filepath.Join(tmpDir, "summary.json")
+	safeSummary := `{
+  "schema":"execution-substrate.remote-alpha.runtime-security-boundary-check.v1",
+  "redaction":{
+    "root_tokens_persisted":false,
+    "unseal_keys_persisted":false,
+    "raw_secret_payloads_persisted":false,
+    "codex_credentials_persisted":false
+  }
+}`
+	if err := os.WriteFile(summaryPath, []byte(safeSummary), 0o600); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+
+	output, err := runSourcedRuntimeSecurityBoundaryHelper(t, os.Environ(), fmt.Sprintf(
+		"remote_alpha_runtime_security_boundary_validate_summary_file %q",
+		summaryPath,
+	))
+	if err != nil {
+		t.Fatalf("expected validator to allow boolean redaction flags, got err=%v output=%s", err, string(output))
+	}
+}
+
 func TestRemoteAlphaRuntimeSecurityBoundaryValidateSummaryRejectsOverclaimText(t *testing.T) {
 	t.Parallel()
 

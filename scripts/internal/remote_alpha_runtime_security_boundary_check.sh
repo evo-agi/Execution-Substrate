@@ -78,6 +78,9 @@ secret_patterns = [
     re.compile(r"(?:^|[^A-Za-z0-9])(?:hvs|s|b)\.[A-Za-z0-9._-]{12,}"),
     re.compile(r"sk-[A-Za-z0-9]{20,}"),
     re.compile(r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----"),
+    re.compile(r'(?i)(?:unseal[_ -]?key|root[_ -]?token|client[_ -]?token)["' + "'" + r']?\s*[:=]\s*["' + "'" + r']?[A-Za-z0-9+/=._-]{8,}'),
+    re.compile(r'(?i)raw[_ -]?secret[_ -]?payload["' + "'" + r']?\s*[:=]\s*["' + "'" + r']?[A-Za-z0-9+/=._-]{8,}'),
+    re.compile(r'(?i)codex.{0,16}(?:credential|token|api[_ -]?key)["' + "'" + r']?\s*[:=]\s*["' + "'" + r']?[A-Za-z0-9+/=._-]{8,}'),
 ]
 overclaim_patterns = [
     re.compile(r"full ES/runtime de-root", re.IGNORECASE),
