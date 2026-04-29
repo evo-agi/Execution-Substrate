@@ -2,6 +2,8 @@ package admission
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -365,15 +367,15 @@ func (c *nomadClient) fetchProjectedAllocation(ctx context.Context, jobID string
 }
 
 func lifecycleProjectionFromNomad(indices ...uint64) LifecycleProjection {
-	var maxIndex uint64
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("nomad-lifecycle-projection/v1\n"))
 	for _, index := range indices {
-		if index > maxIndex {
-			maxIndex = index
-		}
+		_, _ = fmt.Fprintf(hasher, "%d\n", index)
 	}
+	sum := hasher.Sum(nil)
 	return LifecycleProjection{
 		Source:   lifecycleProjectionSourceNomad,
-		Revision: fmt.Sprintf("nomad-index:%d", maxIndex),
+		Revision: hex.EncodeToString(sum),
 	}
 }
 

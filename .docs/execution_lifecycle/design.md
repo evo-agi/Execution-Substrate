@@ -10,6 +10,10 @@ Foundational ES lifecycle and runtime-boundary clarification is primary Executio
 
 This file stays design-level. Detailed endpoint and response rules belong in `.docs/execution_lifecycle/contracts.md`. Current implementation behavior belongs in `.docs/execution_lifecycle/implementation.md`.
 
+The authoritative Workstream C classification of ES public execution surfaces,
+admission composition, scheduler handoff, compatibility edges, and reopened
+seams lives in `es_execution_admission_model.md`.
+
 ## 2. How to read this document
 
 - **Observed current lifecycle model**: The phase structure and authority split implemented in the current Go repo.
@@ -46,7 +50,7 @@ Current slice summary:
 
 | Lifecycle stage | Primary authority | Role of other components |
 | --- | --- | --- |
-| Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preflight result. ARS is authoritative for runtime-facing artifact discovery, evidence and payload blob reads, secondary manifest support reads when needed, and workload-zone vault blob reads. EGS is authoritative for runtime-trust publication. |
+| Before submission | ES | ES validates the request, composes startup-owned workload-zone Vault config references, ARS, and EGS inputs, and returns a bounded preflight result. ARS is authoritative for runtime-facing artifact discovery, evidence and payload blob reads, and workload-zone vault blob reads. Descriptor/manifest support data remain secondary publication detail rather than current ES hot-path admission inputs. EGS is authoritative for runtime-trust publication. |
 | At submission | ES hands off to Nomad | ES reuses preparation, stages the payload and runtime mounts, reserves runtime-identity workspace, builds one Nomad batch job, and submits it. Nomad becomes the execution backend for the submitted run. |
 | After submission | Nomad | Nomad is authoritative for submitted job and allocation state. ES does not become a parallel lifecycle owner. Docker remains the task runtime under Nomad. |
 | Runtime identity handoff | ES owns the handoff boundary only | ES reserves runtime paths, injects endpoint-discovery environment conventions, and may expose bounded non-secret `authority_handoff` facts about the submitted handoff. It does not populate token material, implement the workload-side endpoint, or mint runtime credentials. |
@@ -67,8 +71,11 @@ At a design level, it currently does four things:
 
 - validates the incoming execution request and runtime constraints
 - requires the registered runtime-facing artifact discovery record from ARS and follows it to aggregate evidence for admission
+- does not require ARS descriptor or manifest support data on the current hot path
 - verifies publish-time evidence and trust requirements using the active shared evidence kernel and the loaded EGS trust model
 - resolves workload-zone vault metadata through the configured runtime-config reference and ARS, then returns bounded preflight success
+
+`.docs/system_overview/artifact_publication_storage.md` records the authoritative Workstream B publication/storage/discoverability decision that this lifecycle design consumes. The preparation phase follows ARS discovery plus explicit evidence/payload references, keeps descriptor/manifest support paths as secondary compatibility support rather than current ES hot-path public grammar, and preserves the explicit separation between `artifact_digest` and `payload_digest`.
 
 The result is intentionally bounded. It proves preflight success after admission composition, but it does not create a run ID, scheduler record, proto-execution state, or a public bundle of internal composition detail.
 
@@ -103,7 +110,7 @@ After submission, lifecycle is projected from Nomad.
 At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
-- `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is opaque to callers
+- `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is an opaque same-run read-coordination token
 - `status` also returns additive `outcome_evidence` that labels which current Nomad observation family backed the served projection and references the same opaque lifecycle projection token
 - `status` may also return `authority_handoff` by recovering ES-submitted non-secret runtime handoff facts from the submitted runtime spec
 - `logs` reads stdout for the selected task from Nomad and labels successful bodies as current Nomad task stdout
@@ -111,7 +118,7 @@ At a design level:
 - `cancel` asks Nomad to stop the job and labels the receipt as an accepted stop request without turning ES into a broader control-plane owner or claiming observed termination
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
-The lifecycle projection revision lets consumers compare status observations without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract.
+The lifecycle projection revision lets consumers compare equality or change for the same run without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract. It is not parseable or orderable scheduler state.
 The outcome evidence descriptors let consumers distinguish what ES observed or retained for the current response without treating those labels as scheduler IDs, write preconditions, log/result revisions, policy truth, credential truth, or a global ES run revision.
 The authority handoff fact lets consumers see the ES-selected runtime authority path without treating it as live credential state, scheduler identity, or Control Plane orchestration truth.
 
@@ -136,7 +143,7 @@ This is intentionally not a general output platform. It does not create callback
 - Nomad is authoritative for submitted execution lifecycle after `:submit`.
 - ES does not become the scheduler.
 - Lifecycle responses are projections of Nomad state, not ES-owned execution state.
-- The status `lifecycle_projection.revision` is an opaque read-coordination token derived from Nomad observation, not a write precondition or an ES lifecycle-state version.
+- The status `lifecycle_projection.revision` is an opaque same-run read-coordination token derived from Nomad observation, not a write precondition, ordering token, Nomad identifier or index, or an ES lifecycle-state version.
 - `outcome_evidence` is read-only response evidence. It does not add scheduler identifiers, result-content interpretation, log completeness guarantees, cancellation completion truth, or write coordination.
 - `:submit` returns a bounded submission receipt rather than a durable run model.
 - ES does not own lifecycle persistence, lifecycle reconciliation, or a parallel run registry.
@@ -153,11 +160,12 @@ This is intentionally not a general output platform. It does not create callback
 - `POST /v1/executions:prepare` is active today as a bounded milestone/public slice surface.
 - `GET /v1/executions:contract` is active today as a bounded producer-side compatibility declaration, not as a broad capability registry.
 - Submission is currently async-only.
-- `control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime/tooling and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.
+- `control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime-profile-selection and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.
 - The current slice assumes one meaningful allocation per execution.
-- Lifecycle projection currently uses an explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex`.
+- ES keeps one explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex` for detailed status/log lookup only; that internal rule does not define public `lifecycle_projection.revision` semantics.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
 - The current result surface is intentionally narrow: a retained tar.gz bundle of `/execution/run/result` for the `static-script` slice.
+- The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and opaque tar.gz bundle encoding remain the bounded compatibility retrieval path for that retained bundle surface.
 - The current outcome-evidence descriptor vocabulary is intentionally narrow: Nomad status projection depth, Nomad task stdout, accepted Nomad stop request, and ES-retained opaque result bundle labels.
 - The current lifecycle model is intentionally minimal rather than a broad orchestration API.
 - Retries and reschedule behavior are not part of the current ES slice.
@@ -206,7 +214,7 @@ ES currently reserves and/or stages these runtime areas as part of submission:
 Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
-- For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
+- For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI location metadata, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
 - The read-side `authority_handoff` surface may report those same non-secret facts and the selected workload-zone Vault config digest. It does not assert that endpoint use, JWT-SVID retrieval, Vault login, secret read, or token lease state succeeded.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.

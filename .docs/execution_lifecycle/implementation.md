@@ -207,13 +207,13 @@ Where ES stops and Nomad takes over:
 - `fetchJob` reads the Nomad job summary.
 - `fetchProjectedAllocation` reads the job's allocations and applies the explicit current projected-allocation policy.
 - `fetchAllocation` retrieves the detailed allocation record.
-- The status path derives the public `lifecycle_projection` fact from the observed Nomad job and selected allocation modify indexes, without exposing Nomad job IDs or allocation IDs.
+- The status path derives the public `lifecycle_projection` fact from implementation-private Nomad lifecycle observation inputs, without exposing Nomad job IDs, allocation IDs, or backend revision structure.
 - The lifecycle/result paths attach additive outcome-evidence descriptors for current response facts without exposing Nomad IDs, task IDs, host paths, result filesystem paths, or result payload contents.
 
 Status path:
 
 - Fetch job summary.
-- Build a minimal `ExecutionStatusResult` with `lifecycle_projection.source = "nomad"` and an opaque `lifecycle_projection.revision`.
+- Build a minimal `ExecutionStatusResult` with `lifecycle_projection.source = "nomad"` and an opaque same-run read-coordination `lifecycle_projection.revision`.
 - Add `outcome_evidence` with `source = "nomad"`, the current observation label (`nomad_job_projection`, `nomad_projected_allocation`, or `nomad_task_state_projection`), the same lifecycle projection token, and whether provider terminal state was observed.
 - Recover `authority_handoff` from the submitted runtime spec when the internal ES handoff metadata and submitted environment are present.
 - Resolve the currently projected allocation if present.
@@ -245,7 +245,7 @@ Cancel path:
 - ES does not consult any ES-owned run store for lifecycle lookup.
 - Latest-allocation selection is the only allocation-selection logic in the current implementation.
 - Post-submit lifecycle reads are read-through from Nomad rather than reconstructed from staging directories or ES memory.
-- The lifecycle projection revision is a status read token only; no lifecycle write path accepts it as a precondition.
+- The lifecycle projection revision is a same-run status read token only; callers may compare it for the same run, and no lifecycle write path accepts it as a precondition.
 - Outcome-evidence descriptors are response labels only; no lifecycle write path accepts them as preconditions and no descriptor is a scheduler identifier.
 - Status `authority_handoff` recovery is also read-through from the submitted runtime spec. It does not add ES run persistence, and it does not expose backend job/allocation IDs.
 

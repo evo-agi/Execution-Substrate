@@ -6,12 +6,13 @@ This document inventories the current cross-service contracts in the Go reposito
 
 A system contract, for this document, is any rule, DTO, route, shared payload, or ownership boundary that crosses service or runtime boundaries and that another component can rely on.
 
-Authoritative sources, in order, are:
+Authority for this document follows the repo-wide authority hierarchy:
 
-1. `PLANS.md`
-2. `.docs/system_overview/`
-3. `.docs/execution_lifecycle/`
-4. current Go code and tests
+1. `AGENTS.md` for agent operating rules
+2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
+3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
+4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
+5. current Go code and tests for factual implemented behavior
 
 This document describes the repo's active cross-service behavior in the current bounded platform phase. A contract may be active today without being treated as a permanent endpoint.
 
@@ -41,6 +42,11 @@ The labels are intentionally different:
 
 Describe the current shared kernel that multiple services use directly today.
 
+The authoritative Workstream A classification of kernel-level shared contract,
+service-owned contract, temporary compatibility edge,
+implementation-only/current-slice detail, and reopened seam lives in
+`shared_kernel.md`.
+
 ### Current producers / consumers
 
 - `AGS` produces aggregate artifact evidence using `internal/contracts/evidence/v1` for the publish path.
@@ -65,6 +71,11 @@ Describe the current shared kernel that multiple services use directly today.
   - `identity`
   - `publication`
 - The aggregate evidence claims carry explicit `artifact_digest` and `payload_digest` fields inside `claims.package.identity`.
+- `claims.package.identity` is the current kernel-level shared package-identity surface for the `AGS -> ARS -> ES` path.
+- `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.
+- `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
+- `claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
+
 ### Current invariants
 
 `Current invariant`
@@ -79,6 +90,7 @@ Describe the current shared kernel that multiple services use directly today.
 - The aggregate evidence canonicalization is typed and normalizes current set-like collections such as:
   - publication `policy_decisions`
   - runtime allowlists and capability lists
+- `artifact_digest` and `payload_digest` remain separate facts. ES cross-checks payload discoverability against evidence claims; it does not assume package identity and payload identity are the same thing.
 - EGS runtime-trust signing is a separate contract and must not be conflated with either artifact kernel.
 
 ### Ownership boundary
@@ -153,6 +165,11 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 ### Purpose
 
 Accept bounded publication input, assemble the canonical aggregate evidence record, and publish the resulting artifact package through ARS.
+
+The authoritative Workstream B classification of AGS publish-time ownership,
+ARS storage/discoverability authority, canonical runtime-discoverable
+surfaces, secondary publication/support detail, and reopened seams lives in
+`artifact_publication_storage.md`.
 
 ### Current producers / consumers
 
@@ -246,7 +263,11 @@ Provide content-addressed blob storage, integrity enforcement, artifact registra
 ### Current producers / consumers
 
 - `AGS` is the fixed writer for the current ARS write boundary.
-- `ES` consumes ARS for runtime-facing discovery, evidence and payload blob reads, manifest support reads when needed, and workload-zone vault blob reads.
+- `ES` consumes ARS for runtime-facing discovery, evidence and payload blob
+  reads, and workload-zone vault blob reads.
+- Descriptor/manifest support data remain ARS-owned secondary publication
+  detail for publication/support reads; they are not required ES admission
+  inputs on the current hot path.
 - Other read callers may access ARS if their SPIFFE path matches configured allowed prefixes.
 
 ### Public surface
@@ -292,7 +313,7 @@ Current registration record is discovery-centered:
 - ARS serves the registered discovery record as the first-class artifact discoverability surface at `/v1/artifacts/{artifact_digest}/discovery`.
 - ARS requires `discovery_digest` for artifact registration.
 - `descriptor_digest` is optional secondary support data for descriptor and manifest reads.
-- ARS resolves `/evidence` reads through the registered discovery record and `/manifest` reads through the secondary descriptor support path when present.
+- ARS resolves `/evidence` reads through the registered discovery record and `/manifest` reads through the secondary descriptor support path when present, using the current descriptor `package.supporting[name=manifest]` reference.
 - Registration validates every referenced digest by:
   - checking digest syntax
   - validating discovery structure and identity fields
@@ -311,7 +332,8 @@ Current registration record is discovery-centered:
 
 `Temporary compatibility edge`
 
-- None on the current ARS artifact contract.
+- Descriptor read/support path (`GET /v1/artifacts/{artifact_digest}/descriptor`, optional `descriptor_digest`) is a system-visible compatibility edge retained so publication/support consumers can keep the current secondary descriptor read while the ARS discovery record stays canonical for runtime discoverability. Scope: support-only descriptor registration and reads, not ES hot-path admission or ES public grammar. Removal condition: replace only with a documented support-surface migration, deprecation path, or explicit versioning plan first. See `artifact_publication_storage.md` for the full Workstream B metadata.
+- Manifest read/support path (`GET /v1/artifacts/{artifact_digest}/manifest` through descriptor `package.supporting[name=manifest]`) is a system-visible compatibility edge retained so current publication/support consumers can keep manifest reads without treating manifest as canonical runtime discoverability. Scope: secondary manifest support data only, not ES hot-path admission or ES public grammar. Removal condition: replace only with a documented support-surface or descriptor-layout migration, deprecation path, or explicit versioning plan first. See `artifact_publication_storage.md` for the full Workstream B metadata.
 
 ### Reopened seams
 
@@ -326,11 +348,19 @@ Current registration record is discovery-centered:
 
 Compose startup-owned runtime-config references, ARS, and EGS into governed admission and one bounded execution submit path, then project lifecycle state from Nomad.
 
+The authoritative Workstream C classification of ES public execution surfaces,
+admission composition, scheduler handoff, runtime-package resolution,
+retained-result ownership, runtime-profile handling, and compatibility edges
+lives in `.docs/execution_lifecycle/es_execution_admission_model.md`.
+
 ### Current producers / consumers
 
 - ES consumes:
   - the configured workload-zone Vault config reference
-  - ARS artifact evidence, manifest support data when needed, and payload/blob reads
+  - ARS discovery, artifact evidence, and payload/blob reads on the current
+    hot path
+  - ARS descriptor/manifest support data only as secondary
+    publication/support detail, not as required ES admission inputs
   - EGS runtime-trust publication
   - Nomad job and allocation APIs
 
@@ -340,10 +370,10 @@ Compose startup-owned runtime-config references, ARS, and EGS into governed admi
 
 Stable semantic contracts for the ES Admission And Runtime Boundary Realignment package:
 
-- ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle retrieval, and runtime handoff boundary enforcement.
+- ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.
 - ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
 - Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
-- ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque equality token for status reads, not a scheduler ID, write precondition, or ES-owned lifecycle record.
+- ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque same-run read-coordination token for status reads; callers may compare equality/change for the same run only. It is not parseable or orderable scheduler state, a scheduler ID, a write precondition, or an ES-owned lifecycle record.
 - ES lifecycle/status/result/log/cancel surfaces may expose additive `outcome_evidence` descriptors for evidence ES directly observed or retained: Nomad-backed status projection depth, accepted Nomad stop requests, Nomad task stdout, and opaque ES-retained result bundles. These descriptors are read-only evidence labels, not lifecycle ownership, scheduler identifiers, policy truth, credential truth, or write preconditions.
 - ES submit/status expose a bounded `authority_handoff` read fact for submitted runs when ES can recover the submitted runtime handoff. It contains only non-secret facts ES selected or derived during admission/runtime handoff: runtime profile, workload identity endpoint handoff, workload-vault auth plan metadata, selected workload-zone Vault config digest, and bounded profile credential-location metadata. It is not live credential, lease, token-expiry, approval, scheduler-ID, or lifecycle-store state.
 - ES-retained result bundles are opaque output material. They are not logs wrappers, CP checkpoints, review decisions, finalization records, or ES-owned orchestration state.
@@ -508,7 +538,7 @@ Current successful response shapes:
   - requires `network_access=true`
   - requires explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
   - uses the configured profile image instead of `execution.base_image`
-  - guarantees the profile image contract for Python, git, narrow shell utilities, and configured Codex CLI availability through that configured image plus the repo-owned supported-local reference image/proof path
+  - keeps any profile-image tool contents, supported-local image checks, and proof-only shims outside the ES public execution contract; those remain current-slice runtime support and proof scaffolding only
   - for the repo-owned supported-local runtime surface, requires the configured local profile image to remain available across repeated client runs by disabling Nomad Docker image cleanup in the supported single-node Nomad baseline and by refusing submit-ready when that guardrail is absent
   - injects `EXEC_CODEX_CLI_PATH`, `EXEC_CODEX_CREDENTIAL_SOURCE`, `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`, and `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD` as non-secret runtime metadata
   - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, `EXEC_WORKLOAD_VAULT_AUTH_*`, and workload-zone Vault CA trust handoff for workload-side Vault login and credential-material reads
@@ -524,7 +554,7 @@ Current successful response shapes:
 - ES currently fetches payload bytes via the explicit payload reference carried in the ARS discovery record and cross-checks that reference against aggregate evidence.
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
 - ES reserves `/execution/run/result` as the current bounded workload-authored terminal result directory for the `static-script` slice, then stores non-empty terminal result contents as an opaque tar.gz bundle under `execution.results_root_dir`.
-- `GET /v1/executions/{run_id}/result` returns the retained opaque result bundle as `application/gzip`; it is not a logs wrapper, checkpoint API, or Control Plane state surface.
+- ES serves retained opaque result bundles without interpreting checkpoint, review, finalization, or other Control Plane state semantics from their contents. The current result route is not a logs wrapper, checkpoint API, or Control Plane state surface.
 - ES attempts result retention before successful staging cleanup so retained bundles survive removal of `execution.staging_root_dir/<run_id>`.
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
@@ -571,6 +601,7 @@ Current successful response shapes:
 - `GET /v1/executions:contract` is a current compatibility-gate declaration for CP/IM consumers; it is not a broad capability registry or replacement for readiness checks.
 - The current container path conventions under `/execution/...` and the current runtime environment variable names are active today, but should not be treated as permanent by default.
 - The current `/execution/run/result` convention and retained tar.gz bundle shape are active for the bounded terminal-result slice, but should not be treated as a general runtime-output platform by default.
+- The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are the active CP-consumed compatibility path for the bounded terminal-result slice.
 - The current internal execution-locator policy (`run_id -> exec-<run_id>`) and projected-allocation model are current slice mechanics, not a general scheduler abstraction.
 - The current `authority_handoff` JSON field layout, evidence-source labels, and current endpoint/path/env names are compatibility-heavy read vocabulary on reopened request/runtime-identity seams.
 - The current `outcome_evidence` JSON field layout, successful logs/result evidence headers, and observation labels are current-slice read vocabulary, not durable scheduler, log, result, or cancellation architecture.

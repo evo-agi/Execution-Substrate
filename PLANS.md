@@ -347,7 +347,7 @@ Stable semantic contracts for this next package:
 
 - ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
 - Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
-- ES may expose a bounded lifecycle projection revision on status responses as an opaque read-coordination fact derived from Nomad observation. That revision is not a scheduler identifier, not an ordering promise across scheduler backends, not a write precondition for cancel/result/logs, and not evidence of an ES-owned lifecycle store.
+- ES may expose a bounded lifecycle projection revision on status responses as an opaque same-run read-coordination fact derived from Nomad observation. Callers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write precondition for cancel/result/logs, or treat it as a Nomad identifier or index. It is not evidence of an ES-owned lifecycle store.
 - ES may expose a bounded `authority_handoff` read surface on submission/status responses for non-secret runtime authority facts ES actually selected and handed off for a run: effective runtime profile, workload-visible identity endpoint handoff, workload-vault auth metadata, selected workload-zone Vault config reference, and bounded profile credential-location metadata. This surface is read-only evidence of the submitted runtime handoff, not live credential state, lease state, scheduler identity, policy approval state, or a Control Plane lifecycle record.
 - ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
 - ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
@@ -394,7 +394,7 @@ The following are useful current implementation facts and should remain visible 
 - CGS currently loads explicit subject policy records from startup `id.conf` input and returns bounded authorization decisions through `POST /v1/credential/authorize`.
 - EGS currently publishes a signed runtime-trust payload with signer policy and artifact revocation policy, alongside separate EGS-owned publication metadata.
 - ES currently exposes a narrow read-only producer compatibility declaration at `GET /v1/executions:contract`, a bounded preflight `POST /v1/executions:prepare`, a primary public execution handoff at `POST /v1/executions:submit`, and minimal Nomad-backed lifecycle endpoints whose current `run_id` lookup and projected-allocation rules are explicit ES-internal slice policy rather than public contract.
-- ES status now includes a bounded lifecycle projection fact, `lifecycle_projection`, whose `source` is the current lifecycle authority and whose `revision` is an opaque equality token derived from Nomad modify indexes. This is a read coordination surface for consumers, not a write coordination API or a durable ES run record.
+- ES status now includes a bounded lifecycle projection fact, `lifecycle_projection`, whose `source` is the current lifecycle authority and whose `revision` is an opaque same-run read-coordination token produced from implementation-private Nomad observation during the status read. Consumers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write guard, or treat it as a Nomad identifier or index. This is a read coordination surface for consumers, not a write coordination API or a durable ES run record.
 - ES lifecycle/status/result/log/cancel surfaces now expose a smallest additive `outcome_evidence` descriptor family for facts ES can directly source today: status labels the Nomad observation family behind the projection and references the opaque lifecycle projection token, cancel labels the accepted Nomad stop request without claiming observed termination, logs label successful bodies as current Nomad task stdout, and result labels successful bodies as opaque ES-retained bundles. These descriptors are read-only current-slice evidence labels, not scheduler identifiers, write preconditions, policy truth, credential truth, or a global ES run revision.
 - The producer compatibility declaration names the current governed-execution producer contract and the required status/cancel/logs/result outcome-evidence carriers without proving service health, submit readiness, run existence, credential possession, lifecycle write coordination, policy decisions, or scheduler internals.
 - ES submit/status now include a bounded `authority_handoff` fact for new submissions. It is derived from ES-selected submit-time handoff facts and the submitted runtime spec, and it exposes only non-secret runtime authority facts: selected runtime profile, workload identity endpoint URI/env, workload-vault auth metadata, workload-zone Vault config digest, and the bounded Control Plane normal-shell Codex credential-location metadata when that profile is selected.
@@ -509,6 +509,13 @@ Success condition:
 - Future agents can tell which contracts are kernel-level versus service-level without inferring from package reuse.
 - Future agents can tell which shared-kernel rules are stable ES admission semantics, which are temporary compatibility edges, and which are merely current slice implementation detail.
 
+Current bounded decision status for Milestone 2A.1:
+
+- The Workstream A shared-kernel decision is recorded in `.docs/system_overview/shared_kernel.md`.
+- `internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.
+- Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.
+- AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere; Workstream A does not widen them into the kernel.
+
 Dependencies:
 
 - No upstream workstream dependency beyond this `PLANS.md` reset.
@@ -543,6 +550,29 @@ Dependencies:
 
 - Workstream A
 
+Current bounded decision status for Milestone 2B.1:
+
+- The Workstream B publication/storage/discoverability decision is recorded in
+  `.docs/system_overview/artifact_publication_storage.md`.
+- AGS owns publish-time fact assembly, caller-bound publication semantics,
+  aggregate evidence assembly, signing, payload/support upload, and
+  registration into ARS.
+- ARS owns blob storage, content-addressed integrity, artifact registration,
+  runtime-facing discovery records, and the read surfaces ES may later
+  consume.
+- The current ARS discovery record remains the canonical runtime-discoverable
+  surface for the current slice. Descriptor/manifest support remains secondary
+  publication detail, and the current index entry shape remains
+  implementation-only/current-slice detail.
+- Payload identity and artifact identity remain separate:
+  `payload_digest` content-addresses bytes, while `artifact_digest` is
+  package-facing identity derived from `payload_digest`, `artifact_type`, and
+  `intent_digest`.
+- The current discovery/register JSON shapes are retained only as bounded
+  slice rules, the secondary descriptor support path remains a temporary
+  compatibility edge, and the long-term discovery/index/publication-support
+  model remains reopened.
+
 ### Workstream C - Execution And Admission Reset
 
 Purpose:
@@ -574,6 +604,26 @@ Dependencies:
 
 - Workstream A, as the shared-kernel gate needed for ES admission ownership
 - Workstream B, as the AGS/ARS input-boundary gate needed for ES payload and evidence ownership
+
+Current bounded decision status for Milestone 2C.1:
+
+- The Workstream C ES public admission/execution model decision is recorded in
+  `.docs/execution_lifecycle/es_execution_admission_model.md`.
+- `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
+  temporary compatibility edges for the current CP/IM consumer path, while
+  `POST /v1/executions:submit` remains the real ES execution handoff surface.
+- Nomad remains authoritative for submitted execution lifecycle. ES status,
+  logs, and cancel remain bounded read-through projections, and result
+  retrieval remains ES-owned opaque bundle access.
+- ES admission composition remains limited to caller auth/allowlist plus ARS
+  discovery/evidence/payload refs, narrow `internal/contracts/evidence/v1`
+  execution claims, EGS runtime-trust output, and the configured workload-zone
+  Vault runtime-config reference/blob.
+- `invocation.annotations["execution_substrate.runtime_profile"]`,
+  `control-plane-normal-shell/v1`, the current `/execution/...` conventions,
+  the current `authority_handoff` vocabulary, the current `outcome_evidence`
+  vocabulary, and retained `application/gzip` result bundles keyed by `run_id`
+  remain explicit compatibility edges rather than settled architecture.
 
 ### Workstream D - Policy And Authorization Reset
 

@@ -6,6 +6,10 @@ This document defines the current ES lifecycle and public execution contract in 
 
 Some lifecycle endpoints are live today but intentionally bounded. This file is authoritative for current endpoint, response, error, and lookup semantics. `.docs/execution_lifecycle/design.md` is the higher-level lifecycle design map, and `.docs/execution_lifecycle/implementation.md` records lower-level implementation behavior.
 
+The authoritative Workstream C classification of ES public execution surfaces,
+admission composition, compatibility edges, and reopened seams lives in
+`es_execution_admission_model.md`.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 
 ## 2. How to read this document
@@ -186,6 +190,7 @@ Runtime-profile disabled reasons are part of the current declaration shape:
 - `invocation.artifact_digest` must be a labeled SHA-256 digest.
 - `invocation.derivation_spec_digest` must be a labeled SHA-256 digest.
 - `invocation.output_id` is required.
+- `invocation.derivation_spec_digest` and `invocation.output_id` are the only currently shared derivation authorization inputs ES compares against aggregate artifact evidence during `:prepare`.
 - `timeout_seconds` must be non-negative.
 - If `resources` is present, both CPU and memory must be greater than zero.
 - If `mode` is present, it must be `sync` or `async`.
@@ -212,10 +217,17 @@ Successful response is `200` JSON with these contract fields:
 **Current contract invariants**
 
 - `:prepare` reads the registered artifact discovery record from ARS and follows it to the aggregate artifact-evidence blob.
+- `:prepare` treats the ARS discovery record as an upstream discoverability
+  input, not as ES public execution grammar.
 - `:prepare` requires aggregate artifact evidence and verifies that record before success.
+- `:prepare` does not require ARS descriptor or manifest support data on the
+  current hot path.
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
+- `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
+- `.docs/system_overview/artifact_publication_storage.md` records the authoritative Workstream B publication/storage/discoverability decision that this prepare contract consumes. On the current hot path ES follows ARS discovery plus explicit evidence/payload references, keeps descriptor/manifest support paths as secondary compatibility support rather than ES public grammar, and preserves the explicit separation between `artifact_digest` and `payload_digest`.
 - `:prepare` does not surface EGS publication metadata or internal composition detail as part of its preparation result.
+- `:prepare` does not treat Control Plane orchestration, review, checkpoint, finalization, task-attempt, or proof-harness metadata as shared admission facts.
 - Successful `:prepare` returns bounded preflight success only, not execution state.
 
 ### Explicit non-effects
@@ -248,6 +260,7 @@ Successful response is `200` JSON with these contract fields:
 
 **Bounded slice contract**
 
+- `POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.
 - `:prepare` is active today but intentionally bounded.
 - It proves preflight success only.
 - It does not create a long-lived execution object, scheduler record, or wider lifecycle surface.
@@ -285,7 +298,7 @@ Successful response is `200` JSON with these contract fields:
   - explicit ES config under `execution.runtime_profiles.control_plane_normal_shell`
   - `network_access=true`
   - a configured profile image
-  - an absolute configured Codex CLI path in that image
+  - an absolute configured Codex CLI path metadata value
   - configured workload-vault secret path and field metadata for Codex credential material
 - In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
@@ -399,9 +412,9 @@ Successful response is `200` JSON with these current fields:
 
 - Status is a Nomad-backed projection.
 - `lifecycle_projection.source` is `nomad` in the current contract because Nomad is the submitted-execution lifecycle authority.
-- `lifecycle_projection.revision` is an opaque equality token derived from the Nomad job and selected-allocation modify indexes observed while serving the status request.
+- `lifecycle_projection.revision` is an opaque same-run read-coordination token produced by ES from implementation-private lifecycle observation inputs while serving the status request.
 - Callers may compare `lifecycle_projection.revision` values for the same `run_id` to detect that ES observed a different lifecycle projection.
-- Callers must not parse or order `lifecycle_projection.revision`, treat it as a Nomad job/allocation identifier, or use it as a write precondition for `logs`, `result`, or `cancel`.
+- Callers must not parse or order `lifecycle_projection.revision`, infer scheduler or backend state from it, treat it as a Nomad job/allocation identifier or index, or use it as a write precondition for `logs`, `result`, or `cancel`.
 - `authority_handoff`, when present, is recovered from the submitted runtime spec and remains a bounded non-secret read fact. It does not make status a run store, scheduler abstraction, live credential observation, or Control Plane orchestration record.
 - If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
 - Once an allocation is selected and not terminal, status returns `status = "running"`.
@@ -603,6 +616,7 @@ Successful response is:
 - Retained result bundles are stored outside `execution.staging_root_dir` under `execution.results_root_dir`.
 - Retained bundles are keyed by `run_id`.
 - The retained bundle is a tar.gz archive of the reserved result directory contents.
+- The current route shape, public `run_id` lookup, `application/gzip` encoding, and successful outcome-evidence headers are the active bounded compatibility retrieval path for those ES-owned bundles.
 - Result retention is idempotent:
   - repeated terminal `status`, `logs`, and `result` calls are safe
   - if the bundle already exists, ES reuses it
@@ -720,7 +734,7 @@ Successful response is `200` JSON with these fields:
 **Current contract invariant**
 
 - This internal locator policy is currently authoritative for lifecycle lookup because ES does not own a separate run registry or lifecycle store.
-- The status projection revision is derived after this lookup from Nomad observation, and it does not make the locator mapping public contract.
+- The status projection revision is produced after this lookup from implementation-private Nomad observation inputs, and it does not make the locator mapping public contract.
 
 **What this contract does not imply**
 
@@ -736,11 +750,12 @@ Successful response is `200` JSON with these fields:
 
 **Observed current contract**
 
-- ES uses one explicit internal projected-allocation policy that currently selects the latest Nomad allocation by `ModifyIndex`.
+- ES uses one explicit internal projected-allocation policy that currently selects the latest Nomad allocation by `ModifyIndex` for detailed status/log lookup.
 
 **Current contract invariant**
 
 - Current logs and detailed status fields are derived from that selected allocation.
+- That allocation-selection rule does not define public `lifecycle_projection.revision` semantics or a scheduler ordering promise.
 
 **Bounded slice contract**
 

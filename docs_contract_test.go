@@ -19,6 +19,128 @@ func compactText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+func authorityHierarchyLines(t *testing.T) []string {
+	t.Helper()
+
+	lines := make([]string, 0, 5)
+	capture := false
+	for _, line := range strings.Split(mustRead(t, "AGENTS.md"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "## 3. Authority hierarchy" {
+			capture = true
+			continue
+		}
+		if !capture {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "1. "),
+			strings.HasPrefix(trimmed, "2. "),
+			strings.HasPrefix(trimmed, "3. "),
+			strings.HasPrefix(trimmed, "4. "),
+			strings.HasPrefix(trimmed, "5. "):
+			lines = append(lines, trimmed)
+			if len(lines) == 5 {
+				return lines
+			}
+		}
+	}
+
+	t.Fatalf("AGENTS.md authority hierarchy not found")
+	return nil
+}
+
+func assertDocIncludesAuthorityHierarchy(t *testing.T, doc string, label string) {
+	t.Helper()
+
+	lastIndex := -1
+	for _, required := range authorityHierarchyLines(t) {
+		idx := strings.Index(doc, required)
+		if idx == -1 {
+			t.Fatalf("%s missing authority phrase %q", label, required)
+		}
+		if idx <= lastIndex {
+			t.Fatalf("%s authority phrase %q is out of order", label, required)
+		}
+		lastIndex = idx
+	}
+}
+
+func docSection(t *testing.T, doc string, start string, end string) string {
+	t.Helper()
+
+	startIndex := strings.Index(doc, start)
+	if startIndex == -1 {
+		t.Fatalf("document section start %q not found", start)
+	}
+	section := doc[startIndex:]
+	if end == "" {
+		return section
+	}
+	endIndex := strings.Index(section, end)
+	if endIndex == -1 {
+		t.Fatalf("document section end %q not found after %q", end, start)
+	}
+	return section[:endIndex]
+}
+
+func compactDocSection(t *testing.T, doc string, start string, end string) string {
+	t.Helper()
+	return compactText(docSection(t, doc, start, end))
+}
+
+func assertContainsAll(t *testing.T, label string, text string, required ...string) {
+	t.Helper()
+
+	for _, phrase := range required {
+		if !strings.Contains(text, phrase) {
+			t.Fatalf("%s missing %q", label, phrase)
+		}
+	}
+}
+
+func assertContainsNone(t *testing.T, label string, text string, forbidden ...string) {
+	t.Helper()
+
+	for _, phrase := range forbidden {
+		if strings.Contains(text, phrase) {
+			t.Fatalf("%s must not contain %q", label, phrase)
+		}
+	}
+}
+
+func assertOmitsLifecycleProjectionSchedulerDerivation(t *testing.T, label string, text string) {
+	t.Helper()
+
+	assertContainsNone(t, label, text,
+		"ModifyIndex",
+		"modify index",
+		"modify-index",
+		"nomad-index",
+		"job modify index",
+		"selected-allocation modify index",
+		"max ModifyIndex",
+		"backend ordering",
+		"scheduler ordering",
+	)
+}
+
+func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
+	for _, doc := range []struct {
+		label string
+		path  string
+	}{
+		{label: "system contracts doc", path: ".docs/system_overview/contracts.md"},
+		{label: "system boundaries doc", path: ".docs/system_overview/boundaries.md"},
+	} {
+		text := mustRead(t, doc.path)
+		assertDocIncludesAuthorityHierarchy(t, text, doc.label)
+		if !strings.Contains(text, "Authority for this document follows the repo-wide authority hierarchy:") {
+			t.Fatalf("%s missing repo-wide authority preface", doc.label)
+		}
+	}
+}
+
 func TestSupportedLocalCPConsumerRunbookPreservesControlPlaneBoundaries(t *testing.T) {
 	readme := compactText(mustRead(t, "README.md"))
 	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
@@ -71,12 +193,18 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 		"Control Plane documents may describe how CP consumes accepted ES surfaces; they must not widen ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness ownership.",
 		"Workstream A and Workstream B are gates that keep ES input contracts honest; Workstream C is the delivered ES milestone.",
 		"keeping the current `execution_substrate.runtime_profile` annotation and `control-plane-normal-shell/v1` profile as accepted bounded compatibility",
-		"ES may expose a bounded lifecycle projection revision on status responses as an opaque read-coordination fact derived from Nomad observation.",
+		"ES may expose a bounded lifecycle projection revision on status responses as an opaque same-run read-coordination fact derived from Nomad observation.",
 	} {
 		if !strings.Contains(plans, required) {
 			t.Fatalf("PLANS missing %q", required)
 		}
 	}
+	assertContainsAll(t, "PLANS lifecycle projection invariant", plans,
+		"Callers may compare equality/change for the same run only.",
+		"They must not parse or order it, infer scheduler or backend state from it",
+		"or treat it as a Nomad identifier or index.",
+	)
+	assertOmitsLifecycleProjectionSchedulerDerivation(t, "PLANS lifecycle projection authority", plans)
 
 	for _, required := range []string{
 		"Execution Substrate is the primary governed execution system in this repository.",
@@ -111,14 +239,33 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 	if !strings.Contains(lifecycle, "CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts.") {
 		t.Fatalf("lifecycle contracts doc missing ES ownership authority note")
 	}
+	lifecycleStatusSection := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/contracts.md"), "## 7. Status contract", "### Authority handoff read surface")
 	for _, required := range []string{
 		"`lifecycle_projection.source` is `nomad`",
-		"`lifecycle_projection.revision` is an opaque equality token",
+		"same-run read-coordination token",
+		"opaque",
+		"compare `lifecycle_projection.revision` values for the same `run_id`",
 		"Callers must not parse or order `lifecycle_projection.revision`",
 	} {
-		if !strings.Contains(lifecycle, required) {
+		if !strings.Contains(lifecycleStatusSection, required) {
 			t.Fatalf("lifecycle contracts doc missing %q", required)
 		}
+	}
+	assertOmitsLifecycleProjectionSchedulerDerivation(t, "lifecycle projection status contract section", lifecycleStatusSection)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "system contracts lifecycle projection authority", text: contracts},
+		{label: "system boundaries lifecycle projection authority", text: boundaries},
+		{label: "mvp lifecycle projection authority", text: compactText(mustRead(t, ".docs/mvp.md"))},
+		{label: "execution admission decision lifecycle projection authority", text: compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))},
+		{label: "execution lifecycle design projection phase", text: compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "### 5.3 Lifecycle projection phase", "### 5.4 Terminal result materialization phase")},
+		{label: "execution lifecycle design invariants", text: compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 6. Current lifecycle invariants", "## 7. Bounded slice rules")},
+		{label: "execution lifecycle implementation authority", text: compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))},
+	} {
+		assertOmitsLifecycleProjectionSchedulerDerivation(t, doc.label, doc.text)
 	}
 
 	if !strings.Contains(runbook, "This runbook documents how CP consumes an accepted ES-owned surface; it is not the source of truth for ES core contracts.") {
@@ -129,6 +276,606 @@ func TestPrimaryMilestoneRealignmentPreservesESOwnership(t *testing.T) {
 	}
 	if !strings.Contains(runbook, "`GET /v1/executions:contract` is the current producer-side compatibility") {
 		t.Fatalf("CP consumer runbook missing producer contract gate note")
+	}
+}
+
+func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	sharedKernel := compactText(mustRead(t, ".docs/system_overview/shared_kernel.md"))
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	lifecycle := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+
+	assertDocIncludesAuthorityHierarchy(t, sharedKernel, "shared-kernel decision doc")
+	if !strings.Contains(sharedKernel, "Authority for this document follows the repo-wide authority hierarchy:") {
+		t.Fatalf("shared-kernel decision doc missing authority preface")
+	}
+	if strings.Contains(sharedKernel, "Authority for this document is, in order: 1. `PLANS.md`") {
+		t.Fatalf("shared-kernel decision doc must not define a conflicting authority order that omits AGENTS.md")
+	}
+
+	for _, required := range []string{
+		"Workstream A shared-contract and shared-kernel decision",
+		"`internal/contracts/evidence/v1` is the only active shared artifact evidence kernel",
+		"`internal/contracts/evidence/v1` is not a standalone service boundary",
+		"`claims.package.identity`",
+		"`claims.package.publication`",
+		"`claims.admission.authorization.derivation`",
+		"`derivation_spec_digest` and `output_id`",
+		"`claims.admission.execution`",
+		"Do not absorb CP orchestration, review, checkpoint, finalization, task-attempt, proof-harness, or retained-result semantics into shared execution/runtime claims.",
+		"Payload identity and artifact identity remain separate.",
+		"`execution_substrate.runtime_profile`",
+		"`control-plane-normal-shell/v1`",
+		"Reason",
+		"Scope",
+		"Removal condition",
+		"AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere",
+	} {
+		if !strings.Contains(sharedKernel, required) {
+			t.Fatalf("shared-kernel decision doc missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"The Workstream A shared-kernel decision is recorded in `.docs/system_overview/shared_kernel.md`.",
+		"`internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.",
+		"Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.",
+	} {
+		if !strings.Contains(plans, required) {
+			t.Fatalf("PLANS missing Workstream A shared-kernel decision phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`shared_kernel.md`",
+		"`claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record",
+		"`claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`",
+		"`claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`",
+		"`artifact_digest` and `payload_digest` remain separate facts.",
+	} {
+		if !strings.Contains(contracts, required) {
+			t.Fatalf("system contracts doc missing shared-kernel phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`shared_kernel.md`",
+		"`claims.package.identity`, narrow derivation request-binding authorization, the narrow execution/runtime claims ES actually enforces, and `seal` verification are the kernel-level shared surface.",
+		"`claims.package.publication` remains AGS-owned publication meaning carried inside the signed record.",
+		"ARS runtime-facing discovery, descriptor, and index shapes are ARS-owned discoverability contracts.",
+	} {
+		if !strings.Contains(boundaries, required) {
+			t.Fatalf("system boundaries doc missing shared-kernel phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`invocation.derivation_spec_digest` and `invocation.output_id` are the only currently shared derivation authorization inputs ES compares against aggregate artifact evidence during `:prepare`.",
+		"`:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.",
+		"`:prepare` does not treat Control Plane orchestration, review, checkpoint, finalization, task-attempt, or proof-harness metadata as shared admission facts.",
+	} {
+		if !strings.Contains(lifecycle, required) {
+			t.Fatalf("execution lifecycle contracts doc missing shared-kernel phrase %q", required)
+		}
+	}
+}
+
+func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/system_overview/artifact_publication_storage.md")
+	decision := compactText(decisionRaw)
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	contracts := compactText(contractsRaw)
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	boundaries := compactText(boundariesRaw)
+	lifecycleRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycle := compactText(lifecycleRaw)
+	designRaw := mustRead(t, ".docs/execution_lifecycle/design.md")
+	design := compactText(designRaw)
+	decisionCompatibility := compactDocSection(t, decisionRaw, "### 4C. Temporary compatibility edge metadata", "### 4D. Current relationship map")
+	arsContractSection := compactDocSection(t, contractsRaw, "## 6. ARS Storage And Discoverability Contract", "## 7. ES Admission And Execution Contract")
+	arsBoundarySection := compactDocSection(t, boundariesRaw, "## 6. ARS boundary", "## 7. AGS boundary")
+	lifecyclePrepareSection := compactDocSection(t, lifecycleRaw, "## 5. Prepare contract", "## 6. Submit contract")
+	designPreparationSection := compactDocSection(t, designRaw, "### 5.1 Preparation phase", "### 5.2 Submission phase")
+
+	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "artifact publication/storage decision doc")
+	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
+		t.Fatalf("artifact publication/storage decision doc missing authority preface")
+	}
+
+	for _, required := range []string{
+		"Workstream B artifact publication/storage/discoverability decision",
+		"AGS publish-time ownership",
+		"ARS post-publication ownership",
+		"ES consumer boundary",
+		"`payload_digest` addresses payload bytes.",
+		"`artifact_digest` is package-facing identity derived from `payload_digest`, `artifact_type`, and `intent_digest`.",
+		"The current ARS discovery record is the canonical runtime-discoverable surface",
+		"`POST /v1/artifacts:register` with required `discovery_digest` and optional `descriptor_digest`",
+		"Descriptor support data remains optional and secondary.",
+		"Reason",
+		"Scope",
+		"Affected contract or boundary",
+		"Visibility",
+		"Removal condition",
+		"system-visible",
+		"Descriptor read/support path",
+		"Manifest read/support path",
+		"descriptor `package.supporting[name=manifest]`",
+		"The current discovery/register JSON shape is a `Bounded slice rule`, not a temporary compatibility edge.",
+		"`ars/index.Entry` plus `KindDiscovery`, `KindDescriptor`, `KindEvidence`, and `KindManifest` remain `Implementation-only/current-slice detail`, not compatibility surfaces.",
+		"`ars/index.Entry` plus `KindDiscovery`, `KindDescriptor`, `KindEvidence`, and `KindManifest`",
+		"ES public grammar must not inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane examples/probes",
+		"AGS writes payload, aggregate evidence, discovery, descriptor, and manifest blobs to ARS",
+	} {
+		if !strings.Contains(decision, required) {
+			t.Fatalf("artifact publication/storage decision doc missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"The Workstream B publication/storage/discoverability decision is recorded in `.docs/system_overview/artifact_publication_storage.md`.",
+		"The current ARS discovery record remains the canonical runtime-discoverable surface for the current slice.",
+		"the secondary descriptor support path remains a temporary compatibility edge",
+	} {
+		if !strings.Contains(plans, required) {
+			t.Fatalf("PLANS missing Workstream B decision phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`artifact_publication_storage.md`",
+		"Descriptor/manifest support data remain ARS-owned secondary publication detail",
+		"ARS discovery, artifact evidence, and payload/blob reads on the current hot path",
+	} {
+		if !strings.Contains(contracts, required) {
+			t.Fatalf("system contracts doc missing Workstream B phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`artifact_publication_storage.md`",
+		"The current ARS discovery record is the canonical runtime-discoverable surface for the current slice",
+		"but not descriptor/manifest support data on the current hot path",
+	} {
+		if !strings.Contains(boundaries, required) {
+			t.Fatalf("system boundaries doc missing Workstream B phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`:prepare` treats the ARS discovery record as an upstream discoverability input, not as ES public execution grammar.",
+		"`:prepare` does not require ARS descriptor or manifest support data on the current hot path.",
+	} {
+		if !strings.Contains(lifecycle, required) {
+			t.Fatalf("execution lifecycle contracts doc missing Workstream B phrase %q", required)
+		}
+	}
+
+	if !strings.Contains(design, "Descriptor/manifest support data remain secondary publication detail rather than current ES hot-path admission inputs.") {
+		t.Fatalf("execution lifecycle design doc missing ES hot-path discoverability boundary note")
+	}
+	for _, section := range []struct {
+		label string
+		text  string
+	}{
+		{label: "execution lifecycle prepare contract section", text: lifecyclePrepareSection},
+		{label: "execution lifecycle preparation design section", text: designPreparationSection},
+	} {
+		assertContainsAll(t, section.label, section.text,
+			"`.docs/system_overview/artifact_publication_storage.md`",
+			"Workstream B publication/storage/discoverability decision",
+			"ARS discovery plus explicit evidence/payload references",
+			"descriptor/manifest support paths as secondary compatibility support",
+			"explicit separation between `artifact_digest` and `payload_digest`",
+		)
+	}
+
+	if !strings.Contains(decisionCompatibility, "Descriptor read/support path") || !strings.Contains(decisionCompatibility, "Manifest read/support path") {
+		t.Fatalf("artifact publication/storage decision doc missing explicit Workstream B compatibility-edge metadata section")
+	}
+	if !strings.Contains(arsContractSection, "Descriptor read/support path") || !strings.Contains(arsContractSection, "Manifest read/support path") {
+		t.Fatalf("ARS contracts section missing descriptor/manifest compatibility-edge alignment")
+	}
+	if !strings.Contains(arsBoundarySection, "Descriptor read/support path") || !strings.Contains(arsBoundarySection, "Manifest read/support path") {
+		t.Fatalf("ARS boundary section missing descriptor/manifest compatibility-edge alignment")
+	}
+}
+
+func TestWorkstreamBArtifactCompatibilityEdgesStayConsistent(t *testing.T) {
+	decisionRaw := mustRead(t, ".docs/system_overview/artifact_publication_storage.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+
+	decisionSurfaces := compactDocSection(t, decisionRaw, "### 4B. Publication, storage, and discoverability surfaces", "### 4C. Temporary compatibility edge metadata")
+	decisionCompatibility := compactDocSection(t, decisionRaw, "### 4C. Temporary compatibility edge metadata", "### 4D. Current relationship map")
+	arsContractSection := compactDocSection(t, contractsRaw, "## 6. ARS Storage And Discoverability Contract", "## 7. ES Admission And Execution Contract")
+	arsContractCompatibility := compactDocSection(t, arsContractSection, "### Temporary compatibility edges", "### Reopened seams")
+	arsBoundarySection := compactDocSection(t, boundariesRaw, "## 6. ARS boundary", "## 7. AGS boundary")
+	arsBoundaryCompatibility := compactDocSection(t, arsBoundarySection, "**Temporary compatibility edges**", "**Reopened seams**")
+
+	if strings.Contains(decisionSurfaces, "Artifact descriptor plus `/descriptor` read surface | support/secondary publication detail | `Temporary compatibility edge`") ||
+		strings.Contains(decisionSurfaces, "Manifest support path plus `/manifest` read surface | support/secondary publication detail | `Temporary compatibility edge`") {
+		if strings.Contains(arsContractCompatibility, "None on the current ARS artifact contract.") {
+			t.Fatalf("ARS contracts section still claims no compatibility edges while Workstream B classifies descriptor/manifest support as compatibility-only")
+		}
+		if strings.Contains(arsBoundaryCompatibility, "None on the current ARS boundary.") {
+			t.Fatalf("ARS boundary section still claims no compatibility edges while Workstream B classifies descriptor/manifest support as compatibility-only")
+		}
+	}
+
+	for _, required := range []string{
+		"Reason",
+		"Scope",
+		"Affected contract or boundary",
+		"Visibility",
+		"Removal condition",
+		"Descriptor read/support path",
+		"Manifest read/support path",
+		"system-visible",
+		"outside the ES hot path and outside ES public grammar",
+		"`package.supporting[name=manifest]` reference",
+		"`Bounded slice rule`, not a temporary compatibility edge",
+		"`Implementation-only/current-slice detail`, not compatibility surfaces",
+	} {
+		if !strings.Contains(decisionCompatibility, required) {
+			t.Fatalf("artifact publication/storage compatibility section missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"Descriptor read/support path",
+		"Manifest read/support path",
+		"system-visible compatibility edge",
+		"not ES hot-path admission or ES public grammar",
+		"artifact_publication_storage.md",
+	} {
+		if !strings.Contains(arsContractCompatibility, required) {
+			t.Fatalf("ARS contracts compatibility section missing %q", required)
+		}
+		if !strings.Contains(arsBoundaryCompatibility, required) {
+			t.Fatalf("ARS boundary compatibility section missing %q", required)
+		}
+	}
+
+	for _, section := range []struct {
+		label string
+		text  string
+	}{
+		{label: "ARS contracts section", text: arsContractSection},
+		{label: "ARS boundary section", text: arsBoundarySection},
+	} {
+		if !strings.Contains(section.text, "secondary publication detail") {
+			t.Fatalf("%s must keep descriptor/manifest support secondary", section.label)
+		}
+		if strings.Contains(section.text, "descriptor/manifest support data are the canonical runtime-discoverable surface") {
+			t.Fatalf("%s must not promote descriptor/manifest support into canonical runtime discoverability", section.label)
+		}
+		if strings.Contains(section.text, "descriptor/manifest support data define ES public grammar") {
+			t.Fatalf("%s must not promote descriptor/manifest support into ES public grammar", section.label)
+		}
+	}
+}
+
+func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	publicSurfaceSection := compactDocSection(t, decisionRaw, "### 4A. Public execution surfaces", "### 4B. Admission, handoff, and projection ownership surfaces")
+	compatibilitySection := compactDocSection(t, decisionRaw, "### 4C. Temporary compatibility edge metadata", "### 4D. Current relationship map")
+
+	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "workstream C execution-admission decision doc")
+	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
+		t.Fatalf("workstream C execution-admission decision doc missing authority preface")
+	}
+
+	for _, required := range []string{
+		"Workstream C ES public admission/execution model decision",
+		"Workstream D policy/authorization redesign",
+		"Workstream E runtime-config ownership redesign",
+		"Workstream F runtime-identity redesign",
+		"ES owns admission composition, prepare-time preflight, submit-time execution handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.",
+		"`internal/contracts/evidence/v1`",
+		"`artifact_digest` as the payload locator by hidden equality",
+		"`lifecycle_projection`",
+		"`authority_handoff`",
+		"`outcome_evidence`",
+		"`GET /v1/executions:contract`",
+		"`POST /v1/executions:prepare`",
+		"`POST /v1/executions:submit`",
+		"`GET /v1/executions/{run_id}/status`",
+		"`GET /v1/executions/{run_id}/logs`",
+		"`GET /v1/executions/{run_id}/result`",
+		"`POST /v1/executions/{run_id}:cancel`",
+		"Nomad remains authoritative for submitted execution lifecycle.",
+		"runtime credential minting/brokerage/storage",
+		"opaque output bundles",
+	} {
+		if !strings.Contains(decision, required) {
+			t.Fatalf("workstream C execution-admission decision doc missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`GET /v1/executions:contract` | `temporary compatibility edge`",
+		"`POST /v1/executions:prepare` | `temporary compatibility edge`",
+		"`POST /v1/executions:submit` | `stable contract`",
+		"`GET /v1/executions/{run_id}/status` | `stable contract`",
+		"`GET /v1/executions/{run_id}/logs` | `bounded slice rule`",
+		"`GET /v1/executions/{run_id}/result` | `temporary compatibility edge`",
+		"`POST /v1/executions/{run_id}:cancel` | `bounded slice rule`",
+	} {
+		if !strings.Contains(publicSurfaceSection, required) {
+			t.Fatalf("workstream C public surface classification missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"The Workstream C ES public admission/execution model decision is recorded in `.docs/execution_lifecycle/es_execution_admission_model.md`.",
+		"`GET /v1/executions:contract` and `POST /v1/executions:prepare` remain temporary compatibility edges",
+		"Nomad remains authoritative for submitted execution lifecycle.",
+		"caller auth/allowlist plus ARS discovery/evidence/payload refs",
+		"`application/gzip` result bundles keyed by `run_id` remain explicit compatibility edges",
+	} {
+		if !strings.Contains(plans, required) {
+			t.Fatalf("PLANS missing Workstream C decision phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`.docs/execution_lifecycle/es_execution_admission_model.md`",
+		"retained opaque result-bundle ownership",
+		"`authority_handoff` read fact",
+	} {
+		if !strings.Contains(contracts, required) {
+			t.Fatalf("system contracts doc missing Workstream C phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`.docs/execution_lifecycle/es_execution_admission_model.md`",
+		"Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace",
+		"Current CP compatibility for publish -> prepare -> submit -> status/logs/result/cancel is a retained consumer edge.",
+	} {
+		if !strings.Contains(boundaries, required) {
+			t.Fatalf("system boundaries doc missing Workstream C phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`es_execution_admission_model.md`",
+		"`authority_handoff` is additive and read-only.",
+		"`POST /v1/executions:prepare` is an active milestone surface, not a declared long-term public execution API.",
+	} {
+		if !strings.Contains(lifecycleContracts, required) {
+			t.Fatalf("execution lifecycle contracts doc missing Workstream C phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"`es_execution_admission_model.md`",
+		"`:submit` is the real execution-submission surface in the current slice.",
+		"Terminal result retrieval is bounded to an ES-retained opaque bundle",
+	} {
+		if !strings.Contains(lifecycleDesign, required) {
+			t.Fatalf("execution lifecycle design doc missing Workstream C phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"Reason",
+		"Scope",
+		"Affected contract or boundary",
+		"Visibility",
+		"Removal condition",
+		"Current CP governed execution consumer path",
+		"`GET /v1/executions:contract` producer declaration",
+		"`POST /v1/executions:prepare` bounded preflight surface",
+		"`invocation.annotations[\"execution_substrate.runtime_profile\"]` plus `control-plane-normal-shell/v1` and the current `static-script` overlay",
+		"Current `/execution/staged`, `/execution/run`, `/execution/run/result`, and run-scoped runtime-identity path conventions",
+		"Current `authority_handoff` field names and evidence-source labels",
+		"Current `outcome_evidence` JSON field layout and successful logs/result evidence headers",
+		"Current `GET /v1/executions/{run_id}/result` route plus retained `application/gzip` bundles keyed by public `run_id`",
+		"`system-visible`",
+		"`local-runtime-only`",
+	} {
+		if !strings.Contains(compatibilitySection, required) {
+			t.Fatalf("workstream C compatibility-edge section missing %q", required)
+		}
+	}
+}
+
+func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {
+	mvpRaw := mustRead(t, ".docs/mvp.md")
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	lifecycleRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleDesignRaw := mustRead(t, ".docs/execution_lifecycle/design.md")
+
+	mvpExecutionSubstrate := compactDocSection(t, mvpRaw, "### Execution Substrate", "### Control Plane")
+	decisionPublic := compactDocSection(t, decisionRaw, "### 4A. Public execution surfaces", "### 4B. Admission, handoff, and projection ownership surfaces")
+	decisionOwnership := compactDocSection(t, decisionRaw, "### 4B. Admission, handoff, and projection ownership surfaces", "### 4C. Temporary compatibility edge metadata")
+	decisionCompatibility := compactDocSection(t, decisionRaw, "### 4C. Temporary compatibility edge metadata", "### 4D. Current relationship map")
+	esContracts := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8. EGS Policy Contract")
+	esStableContracts := compactDocSection(t, esContracts, "Stable semantic contracts for the ES Admission And Runtime Boundary Realignment package:", "`Temporary compatibility edge`")
+	esCompatibilityContracts := compactDocSection(t, esContracts, "Compatibility edges to preserve during the next package unless a coordinated migration/versioning note says otherwise:", "`Observed current contract`")
+	esTemporaryCompatibilityEdges := compactDocSection(t, esContracts, "### Temporary compatibility edges", "### Reopened seams")
+	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	esBoundaryCompatibility := compactDocSection(t, esBoundary, "**Temporary compatibility edges**", "**Reopened seams**")
+	resultContract := compactDocSection(t, lifecycleRaw, "## 9. Result contract", "## 10. Cancel contract")
+	resultRuntimeOutput := compactDocSection(t, resultContract, "### Runtime output convention", "### Lookup and retention contract")
+	resultLookup := compactDocSection(t, resultContract, "### Lookup and retention contract", "### Response contract")
+	designTerminalResult := compactDocSection(t, lifecycleDesignRaw, "### 5.4 Terminal result materialization phase", "## 6. Current lifecycle invariants")
+	designBoundedSliceRules := compactDocSection(t, lifecycleDesignRaw, "## 7. Bounded slice rules", "## 8. Deliberate absences")
+
+	assertContainsAll(t, "mvp retained-result compatibility row", mvpExecutionSubstrate,
+		"`GET /v1/executions/{run_id}/logs`, `GET /v1/executions/{run_id}/result`, and `POST /v1/executions/{run_id}:cancel` current consumer path | `compatibility edge`",
+		"Preserve the current CP-consumed lifecycle, logs, result, and cancel path for MVP continuity without promoting it into a broader orchestration or scheduler contract.",
+	)
+	assertContainsNone(t, "mvp retained-result compatibility row", mvpExecutionSubstrate,
+		"`GET /v1/executions/{run_id}/logs`, `GET /v1/executions/{run_id}/result`, and `POST /v1/executions/{run_id}:cancel` current consumer path | `stable contract`",
+	)
+	assertContainsAll(t, "mvp retained-result ownership row", mvpExecutionSubstrate,
+		"ES-retained opaque result bundles | `stable contract` | Freeze the ownership rule that ES retains opaque output bundles and CP interprets them semantically.",
+	)
+	assertContainsNone(t, "mvp retained-result ownership row", mvpExecutionSubstrate,
+		"ES-retained opaque result bundles | `compatibility edge`",
+	)
+
+	assertContainsAll(t, "workstream C decision public result surface", decisionPublic,
+		"`GET /v1/executions/{run_id}/result` | `temporary compatibility edge`",
+		"Current retained-result retrieval route for ES-owned opaque bundles keyed by public `run_id`.",
+	)
+	assertContainsNone(t, "workstream C decision public result surface", decisionPublic,
+		"`GET /v1/executions/{run_id}/result` | `stable contract`",
+	)
+
+	assertContainsAll(t, "workstream C decision retained-result ownership surface", decisionOwnership,
+		"Retained opaque result bundles | `stable contract` | ES retains opaque output bundles outside staging and serves them through the current bounded result surface without interpreting their contents as CP state.",
+	)
+	assertContainsAll(t, "workstream C decision retained-result compatibility edge", decisionCompatibility,
+		"Current `GET /v1/executions/{run_id}/result` route plus retained `application/gzip` bundles keyed by public `run_id`",
+		"Public result-route path, `run_id`-keyed lookup, `application/gzip` media type, opaque tar.gz result-bundle behavior, and the current CP-consumed result retrieval path only.",
+	)
+
+	assertContainsAll(t, "system contracts retained-result ownership section", esStableContracts,
+		"retained opaque result-bundle ownership",
+		"ES-retained result bundles are opaque output material.",
+	)
+	assertContainsNone(t, "system contracts retained-result ownership section", esStableContracts,
+		"retained opaque result-bundle retrieval",
+	)
+	assertContainsAll(t, "system contracts retained-result compatibility section", esCompatibilityContracts,
+		"retained `application/gzip` result bundles keyed by public `run_id`",
+	)
+	assertContainsAll(t, "system contracts retained-result temporary-compatibility edges", esTemporaryCompatibilityEdges,
+		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are the active CP-consumed compatibility path for the bounded terminal-result slice.",
+	)
+
+	assertContainsAll(t, "system boundaries retained-result compatibility section", esBoundaryCompatibility,
+		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform.",
+	)
+
+	assertContainsAll(t, "execution lifecycle retained-result ownership section", resultRuntimeOutput,
+		"ES packages retained result content opaquely and does not parse Control Plane semantics, checkpoint decisions, review outcomes, or finalization metadata from those files.",
+	)
+	assertContainsAll(t, "execution lifecycle retained-result lookup section", resultLookup,
+		"The current route shape, public `run_id` lookup, `application/gzip` encoding, and successful outcome-evidence headers are the active bounded compatibility retrieval path for those ES-owned bundles.",
+	)
+	assertContainsAll(t, "execution lifecycle design retained-result materialization", designTerminalResult,
+		"ES treats the directory contents as opaque output material",
+	)
+	assertContainsAll(t, "execution lifecycle design retained-result bounded-slice rule", designBoundedSliceRules,
+		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and opaque tar.gz bundle encoding remain the bounded compatibility retrieval path for that retained bundle surface.",
+	)
+}
+
+func TestWorkstreamCRuntimeProfileBoundaryStaysNarrow(t *testing.T) {
+	mvpRaw := mustRead(t, ".docs/mvp.md")
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleDesignRaw := mustRead(t, ".docs/execution_lifecycle/design.md")
+
+	mvpExecutionSubstrate := compactDocSection(t, mvpRaw, "### Execution Substrate", "### Control Plane")
+	decisionRuntimeProfile := compactDocSection(t, decisionRaw, "| Runtime-profile selection |", "| `authority_handoff` read surface |")
+	decisionRuntimeProfileCompatibility := compactDocSection(t, decisionRaw, "| `invocation.annotations[\"execution_substrate.runtime_profile\"]` plus `control-plane-normal-shell/v1` and the current `static-script` overlay |", "| Current `/execution/staged`, `/execution/run`, `/execution/run/result`, and run-scoped runtime-identity path conventions |")
+	esContracts := compactDocSection(t, contractsRaw, "## 7. ES Admission And Execution Contract", "## 8. EGS Policy Contract")
+	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	submitContract := compactDocSection(t, lifecycleContractsRaw, "## 6. Submit contract", "## 7. Status contract")
+	runtimeIdentityContract := compactDocSection(t, lifecycleContractsRaw, "## 14. Runtime identity and lifecycle edge", "## 15. Bounded slice rules")
+	boundedSliceRules := compactDocSection(t, lifecycleContractsRaw, "## 15. Bounded slice rules", "## 16. Deliberate absences")
+	designBoundedSliceRules := compactDocSection(t, lifecycleDesignRaw, "## 7. Bounded slice rules", "## 8. Deliberate absences")
+	runtimeIdentityDesign := compactDocSection(t, lifecycleDesignRaw, "## 10. Runtime identity and lifecycle interaction", "## 11. Relationship to other docs")
+
+	assertContainsAll(t, "mvp runtime-profile compatibility row", mvpExecutionSubstrate,
+		"`control-plane-normal-shell/v1` plus `execution_substrate.runtime_profile` compatibility | `compatibility edge` | Keep this as the accepted opt-in CP normal-shell runtime edge for the MVP. It is not a general package-kind redesign or a transfer of CP control semantics into ES.",
+	)
+	assertContainsNone(t, "mvp runtime-profile compatibility row", mvpExecutionSubstrate,
+		"`control-plane-normal-shell/v1` plus `execution_substrate.runtime_profile` compatibility | `stable contract`",
+	)
+	assertContainsAll(t, "workstream C decision runtime-profile row", decisionRuntimeProfile,
+		"| Runtime-profile selection | `temporary compatibility edge` | `invocation.annotations[\"execution_substrate.runtime_profile\"]` plus `control-plane-normal-shell/v1` remains the current opt-in `static-script` runtime overlay. Unsupported or disabled selection fails `:prepare`/`:submit`. |",
+	)
+	assertContainsNone(t, "workstream C decision runtime-profile row", decisionRuntimeProfile,
+		"| Runtime-profile selection | `stable contract` |",
+	)
+	assertContainsAll(t, "workstream C decision runtime-profile compatibility row", decisionRuntimeProfileCompatibility,
+		"Preserve the accepted CP normal-shell runtime selection path without widening it into a package-kind redesign or CP control-plane transfer.",
+	)
+
+	assertContainsAll(t, "system contracts runtime-profile boundary", esContracts,
+		"The bounded `control-plane-normal-shell/v1` runtime profile is an explicit prepare/submit-time opt-in using `invocation.annotations[\"execution_substrate.runtime_profile\"]`.",
+		"keeps any profile-image tool contents, supported-local image checks, and proof-only shims outside the ES public execution contract; those remain current-slice runtime support and proof scaffolding only",
+		"`control-plane-normal-shell/v1` is a bounded compatibility-heavy runtime contract for one CP-owned normal-shell attempt path. It should not be generalized into an arbitrary image/toolchain marketplace or used to absorb CP orchestration semantics into ES.",
+	)
+	assertContainsAll(t, "system boundaries runtime-profile boundary", esBoundary,
+		"`control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.",
+	)
+	assertContainsAll(t, "execution lifecycle submit runtime-profile boundary", submitContract,
+		"`invocation.annotations[\"execution_substrate.runtime_profile\"]=\"control-plane-normal-shell/v1\"` selects the bounded Control Plane normal-shell runtime profile.",
+		"an absolute configured Codex CLI path metadata value",
+	)
+	assertContainsAll(t, "execution lifecycle runtime-profile failure boundary", lifecycleContractsRaw,
+		"Unsupported or disabled profile selections fail during `:prepare` before any run ID exists.",
+		"`control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.",
+	)
+	assertContainsAll(t, "execution lifecycle bounded-slice runtime-profile boundary", boundedSliceRules,
+		"`control-plane-normal-shell/v1` is a bounded runtime-profile slice rule layered on the current `static-script` package/runtime path.",
+	)
+	assertContainsAll(t, "execution lifecycle design runtime-profile boundary", designBoundedSliceRules,
+		"`control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime-profile-selection and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.",
+	)
+	assertContainsAll(t, "execution lifecycle runtime-identity design boundary", runtimeIdentityDesign,
+		"For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI location metadata, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material.",
+	)
+
+	for _, section := range []struct {
+		label string
+		text  string
+	}{
+		{label: "mvp runtime-profile compatibility row", text: mvpExecutionSubstrate},
+		{label: "workstream C decision runtime-profile row", text: decisionRuntimeProfile},
+		{label: "workstream C decision runtime-profile compatibility row", text: decisionRuntimeProfileCompatibility},
+		{label: "system contracts runtime-profile boundary", text: esContracts},
+		{label: "execution lifecycle submit runtime-profile boundary", text: submitContract},
+		{label: "execution lifecycle design runtime-profile boundary", text: designBoundedSliceRules},
+		{label: "execution lifecycle runtime-identity design boundary", text: runtimeIdentityDesign},
+	} {
+		assertContainsNone(t, section.label, section.text,
+			"general developer image contract",
+			"developer image contract",
+			"general tooling guarantee",
+		)
+	}
+
+	for _, section := range []struct {
+		label string
+		text  string
+	}{
+		{label: "mvp runtime-profile compatibility row", text: mvpExecutionSubstrate},
+		{label: "workstream C decision runtime-profile row", text: decisionRuntimeProfile},
+		{label: "workstream C decision runtime-profile compatibility row", text: decisionRuntimeProfileCompatibility},
+		{label: "system contracts runtime-profile boundary", text: esContracts},
+		{label: "system boundaries runtime-profile boundary", text: esBoundary},
+		{label: "execution lifecycle submit runtime-profile boundary", text: submitContract},
+		{label: "execution lifecycle runtime-identity boundary", text: runtimeIdentityContract},
+		{label: "execution lifecycle design runtime-profile boundary", text: designBoundedSliceRules},
+		{label: "execution lifecycle runtime-identity design boundary", text: runtimeIdentityDesign},
+	} {
+		assertContainsNone(t, section.label, section.text,
+			"guarantees the profile image contract",
+			"Python, git, narrow shell utilities",
+			"configured Codex CLI availability",
+			"tooling guarantee",
+		)
 	}
 }
 

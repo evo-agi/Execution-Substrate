@@ -5,10 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
 )
+
+var opaqueLifecycleProjectionRevisionPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func TestStatusReturnsSubmittedWhenNoAllocationExistsYet(t *testing.T) {
 	service := Service{
@@ -32,9 +36,11 @@ func TestStatusReturnsSubmittedWhenNoAllocationExistsYet(t *testing.T) {
 	if result.Status != executionLifecycleStatusSubmitted || result.Terminal {
 		t.Fatalf("expected submitted non-terminal result, got %+v", result)
 	}
-	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:11" {
-		t.Fatalf("expected job-derived lifecycle projection, got %+v", result.LifecycleProjection)
+	expectedProjection := lifecycleProjectionFromNomad(11)
+	if result.LifecycleProjection != expectedProjection {
+		t.Fatalf("expected job-derived lifecycle projection %+v, got %+v", expectedProjection, result.LifecycleProjection)
 	}
+	assertOpaqueLifecycleProjectionRevision(t, result.LifecycleProjection.Revision)
 	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
 		result.OutcomeEvidence.Observation != outcomeObservationNomadJobProjection ||
 		result.OutcomeEvidence.LifecycleProjection == nil ||
@@ -69,9 +75,11 @@ func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) 
 	if result.Status != executionLifecycleStatusTerminal || !result.Terminal || result.ExitCode == nil || *result.ExitCode != 7 {
 		t.Fatalf("expected terminal status with exit code, got %+v", result)
 	}
-	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad || result.LifecycleProjection.Revision != "nomad-index:25" {
-		t.Fatalf("expected allocation-derived lifecycle projection, got %+v", result.LifecycleProjection)
+	expectedProjection := lifecycleProjectionFromNomad(10, 25)
+	if result.LifecycleProjection != expectedProjection {
+		t.Fatalf("expected allocation-derived lifecycle projection %+v, got %+v", expectedProjection, result.LifecycleProjection)
 	}
+	assertOpaqueLifecycleProjectionRevision(t, result.LifecycleProjection.Revision)
 	if result.OutcomeEvidence.Source != outcomeEvidenceSourceNomad ||
 		result.OutcomeEvidence.Observation != outcomeObservationNomadTaskStateProjection ||
 		result.OutcomeEvidence.LifecycleProjection == nil ||
@@ -82,13 +90,21 @@ func TestStatusReturnsTerminalWithExitCodeFromProjectedAllocation(t *testing.T) 
 	}
 }
 
-func TestLifecycleProjectionFromNomadUsesHighestObservedModifyIndex(t *testing.T) {
+func TestLifecycleProjectionFromNomadIsOpaqueStableAndChangeDetecting(t *testing.T) {
 	projection := lifecycleProjectionFromNomad(7, 3, 19, 12)
 	if projection.Source != lifecycleProjectionSourceNomad {
 		t.Fatalf("expected nomad projection source, got %q", projection.Source)
 	}
-	if projection.Revision != "nomad-index:19" {
-		t.Fatalf("expected highest observed modify index in opaque revision, got %q", projection.Revision)
+	assertOpaqueLifecycleProjectionRevision(t, projection.Revision)
+
+	if same := lifecycleProjectionFromNomad(7, 3, 19, 12); projection != same {
+		t.Fatalf("expected stable lifecycle projection for identical observation, got %+v and %+v", projection, same)
+	}
+	if changed := lifecycleProjectionFromNomad(7, 3, 20, 12); projection.Revision == changed.Revision {
+		t.Fatalf("expected lifecycle projection revision to change when observation changes: %+v vs %+v", projection, changed)
+	}
+	if changedShape := lifecycleProjectionFromNomad(19); projection.Revision == changedShape.Revision {
+		t.Fatalf("expected lifecycle projection revision to distinguish different observation inputs: %+v vs %+v", projection, changedShape)
 	}
 }
 
@@ -214,5 +230,28 @@ func minimalLifecycleConfig(t *testing.T) esconfig.Config {
 			StagingRootDir: t.TempDir(),
 			ResultsRootDir: t.TempDir(),
 		},
+	}
+}
+
+func assertOpaqueLifecycleProjectionRevision(t *testing.T, revision string) {
+	t.Helper()
+
+	if revision == "" {
+		t.Fatal("expected non-empty lifecycle projection revision")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(revision) {
+		t.Fatalf("expected opaque hex lifecycle projection revision, got %q", revision)
+	}
+	for _, forbidden := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(revision, forbidden) {
+			t.Fatalf("expected lifecycle projection revision to omit %q, got %q", forbidden, revision)
+		}
 	}
 }

@@ -6,12 +6,13 @@ A boundary in this repository is an ownership line: which service is authoritati
 
 This document records the repository's current service ownership in the bounded platform phase described in `PLANS.md`. The boundaries below are real and active today, but they are not automatically permanent architecture. Where the current split is serving a bounded slice, compatibility need, or inherited choreography, that is called out explicitly.
 
-Authoritative sources for this document are, in order:
+Authority for this document follows the repo-wide authority hierarchy:
 
-1. `PLANS.md`
-2. `.docs/system_overview/*`
-3. `.docs/execution_lifecycle/*`
-4. current Go code and tests
+1. `AGENTS.md` for agent operating rules
+2. `PLANS.md` for allowed redesign work, active workstreams, priorities, and reopened seams
+3. `.docs/system_overview/*` for architecture, contracts, boundaries, and change-governance rules
+4. `.docs/execution_lifecycle/*` for lifecycle design, contract, and implementation guidance
+5. current Go code and tests for factual implemented behavior
 
 When prose and code disagree, code and tests win.
 
@@ -50,6 +51,13 @@ Those absences are current facts, not design commitments.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
 - `internal/contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
 - `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
+- The Workstream A classification of what is kernel-level shared meaning versus service-owned contract lives in `shared_kernel.md`.
+- The Workstream B classification of AGS publication ownership, ARS
+  storage/discoverability authority, canonical runtime-discoverable surfaces,
+  and secondary publication/support detail lives in
+  `artifact_publication_storage.md`.
+- In the current evidence record, `claims.package.identity`, narrow derivation request-binding authorization, the narrow execution/runtime claims ES actually enforces, and `seal` verification are the kernel-level shared surface. `claims.package.publication` remains AGS-owned publication meaning carried inside the signed record.
+- ARS runtime-facing discovery, descriptor, and index shapes are ARS-owned discoverability contracts. ES may consume them, but they are not the shared kernel and must not become ES public grammar by reuse.
 - ES-owned admission, submission, lifecycle projection, runtime-profile, runtime-identity, retained-result, and readiness semantics are defined by this repository's planning and boundary docs.
 - Control Plane is a consumer of accepted AGS and ES surfaces, not an owner of ES core contracts. CP documents, examples, probes, or proof-harness expectations must be treated as consumer compatibility inputs unless `PLANS.md` explicitly promotes a rule into ES-owned semantics.
 
@@ -150,12 +158,16 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 **Boundary pressure points**
 
 - The current runtime-facing discovery record shapes what AGS must publish and what ES can later discover through ARS.
+- The current ARS discovery record is the canonical runtime-discoverable
+  surface for the current slice, while descriptor/manifest support data remain
+  secondary publication detail.
 - Artifact discoverability is not independent of the registration/index model; downstream services still inherit that model.
 - AGS now publishes distinct artifact and payload identities. ARS discoverability and ES consumption both depend on the runtime-facing payload reference plus evidence-claim cross-checks rather than on any hidden digest equality.
 
 **Temporary compatibility edges**
 
-- None on the current ARS boundary.
+- Descriptor read/support path (`GET /v1/artifacts/{artifact_digest}/descriptor`, optional `descriptor_digest`) is a system-visible compatibility edge on the current ARS boundary. Reason: preserve publication/support descriptor reads while the discovery record remains the canonical runtime-discoverable surface. Scope: secondary descriptor registration and support reads only; not ES hot-path admission or ES public grammar. Affected boundary: ARS boundary and ARS storage/discoverability contract. Removal condition: change only with a documented support-surface migration, deprecation path, or explicit versioning plan first. Full Workstream B metadata lives in `artifact_publication_storage.md`.
+- Manifest read/support path (`GET /v1/artifacts/{artifact_digest}/manifest` through descriptor `package.supporting[name=manifest]`) is a system-visible compatibility edge on the current ARS boundary. Reason: preserve publication/support manifest reads without promoting manifest into canonical runtime discoverability or ES admission semantics. Scope: secondary manifest support data plus the current descriptor-carried manifest reference only; not ES hot-path admission or ES public grammar. Affected boundary: ARS boundary, the ARS storage/discoverability contract, and the current AGS/ARS support-data choreography. Removal condition: change only with a documented support-surface or descriptor-layout migration, deprecation path, or explicit versioning plan first. Full Workstream B metadata lives in `artifact_publication_storage.md`.
 
 **Reopened seams**
 
@@ -194,7 +206,9 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 - The first repo-owned non-operator governed-execution caller activation path is Control Plane at `spiffe://execution.internal/service/control-plane`
 - The current repo-owned direct API example for that caller lives at `.examples/control_plane_static_script/run.sh`
 - ARS is AGS's publication sink
-- ES later consumes the aggregate evidence and payloads AGS published through ARS, but ES does not call AGS on the runtime path
+- ES later consumes the aggregate evidence and payloads AGS published through
+  ARS, but not descriptor/manifest support data on the current hot path, and
+  ES does not call AGS on the runtime path
 
 **Boundary pressure points**
 
@@ -218,6 +232,11 @@ Assemble the publish-time aggregate evidence record, bind publication to the aut
 **Purpose**
 
 Own admission, compose upstream contract checks into an execution decision, submit work to Nomad, project execution status/logs, and retain bounded terminal result bundles without taking ownership of underlying lifecycle state or orchestration decisions.
+
+The authoritative Workstream C classification of ES public execution surfaces,
+admission composition, scheduler handoff, retained-result ownership,
+runtime-profile handling, and compatibility edges lives in
+`.docs/execution_lifecycle/es_execution_admission_model.md`.
 
 **Current ownership**
 
@@ -283,7 +302,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
-- ES status now exposes only the bounded `lifecycle_projection.source` and opaque `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, or task-state detail as public lifecycle contract.
+- ES status now exposes only the bounded `lifecycle_projection.source` and opaque same-run read-coordination `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, task-state detail, or scheduler sequencing semantics as public lifecycle contract.
 - ES status/cancel JSON and successful logs/result responses now include additive outcome/evidence descriptors that label what ES observed or retained without promoting the current scheduler lookup, projected-allocation rule, stdout path, or retained-result storage layout into broader public contract.
 - ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.
@@ -300,7 +319,7 @@ Own admission, compose upstream contract checks into an execution decision, subm
 - The `authority_handoff` field layout and evidence labels are current read vocabulary for the bounded handoff slice, not a durable policy or lifecycle model.
 - The `outcome_evidence` JSON field layout, successful logs/result evidence headers, and observation labels are current read vocabulary for the bounded Nomad/retained-result slice, not durable scheduler, result, log, cancellation, or lifecycle architecture.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
-- `GET /v1/executions/{run_id}/result` is a bounded retained opaque bundle surface for the current slice, not a broad output platform.
+- The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform.
 - `control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.
 - Current CP compatibility for publish -> prepare -> submit -> status/logs/result/cancel is a retained consumer edge. Breaking it requires an explicit compatibility, drain, migration, or versioning plan rather than an implied ES boundary change.
 
