@@ -584,8 +584,8 @@ rely on passwordless sudo for this path.
 That hardening command must reconfigure only `ags.service` to run as dedicated
 `ags:ags`, must not introduce a shared `execution-substrate` account model,
 must not change ES public contracts, must not change the SPIRE selector model,
-and must leave `ars.service`, `egs.service`, and `es.service` in their
-then-current posture for that step.
+and on any current rerun must preserve the current ARS `ars:ars`, EGS
+`egs:egs`, and ES `User=es`, `Group=es`, `UMask=0027` service postures.
 
 For this sealed AGS step within the current hardening tranche, the host-local
 hardening helper must not accept `REMOTE_ALPHA_SERVICE_NAME`,
@@ -663,8 +663,9 @@ That hardening command must reconfigure only `ars.service` to run as dedicated
 preserve the current AGS `ags:ags` posture plus AGS publish path through ARS,
 must not widen `/etc/execution-substrate/tls`, must not introduce a shared
 `execution-substrate` account model, must not change ES public contracts, must
-not change the SPIRE selector model, and must leave `egs.service` and
-`es.service` in their then-current posture for that step.
+not change the SPIRE selector model, and on any current rerun must preserve
+the current EGS `egs:egs` and ES `User=es`, `Group=es`, `UMask=0027`
+service postures.
 
 For this sealed ARS de-root step within the current hardening tranche, the
 host-local hardening helper must not accept `REMOTE_ALPHA_SERVICE_NAME`,
@@ -719,7 +720,7 @@ bodies, API keys, private keys, or secret payloads. Its output is not ES
 `/health`, not runtime-profile readiness, not submit readiness, and not a new
 happy-path proof.
 
-For the EGS de-root step within that same current tranche, the active
+For the landed EGS de-root step within that same current tranche, the active
 repo-derived EGS runtime inputs remain:
 
 - binary path `/usr/local/lib/execution-substrate/bin/egs`
@@ -764,8 +765,8 @@ preserve the landed AGS `ags:ags` and ARS `ars:ars` service postures, must
 preserve local AGS `/health` plus focused AGS publish through ARS, must
 preserve local ES `/health` plus `GET /v1/executions:contract`, must not widen
 `/etc/execution-substrate/tls`, must not change ES public contracts, must not
-change the SPIRE selector model, and must leave `es.service` in its current
-root posture for this slice.
+change the SPIRE selector model, and on any current rerun must preserve the
+current ES `User=es`, `Group=es`, `UMask=0027` posture.
 
 If a pre-existing `egs` user/group already exists on the host, the helper must
 prove that the account remains acceptably narrow for this slice before it is
@@ -1204,11 +1205,22 @@ work with one separate ES binary-parity deployment slice.
 binary parity against the repo snapshot before the later writable-state and
 service-user steps.
 
-`Temporary compatibility edge`: at that earlier step, the live `es.service`
-user/group remained `root(default)` while only the binaries at the accepted
-live paths were updated to a repo-built linux/amd64 snapshot. This slice must
-not rewrite ES config, TLS ownership, staging/results ownership, or the
-accepted runtime-helper design.
+`Current invariant`: binary-parity refresh must preserve the accepted live
+`es.service` identity for the current host slice and must not change
+`User=`, `Group=`, or `UMask=` while only the binaries at the accepted live
+paths are updated to a repo-built linux/amd64 snapshot.
+
+`Historical bounded evidence`: the earlier live-host-evidenced apply for this
+slice happened before the later bounded service-user migration, so those
+earlier apply summaries honestly record `root(default)` at that step. Current
+post-migration reruns must instead preserve the accepted `User=es`,
+`Group=es`, `UMask=0027` posture and must not treat that accepted service
+identity as drift.
+
+`Current invariant`: this helper no longer accepts a root-like live
+`es.service` identity. If operators ever need to return to a root-era service
+posture, that must happen through a separate rollback/service-user surface
+rather than through binary deployment.
 
 This slice must:
 
@@ -1217,8 +1229,8 @@ This slice must:
 - compare those local artifact hashes and sizes to the live host binaries
 - treat a live hash mismatch as `deployment_needed`, not as a host failure by
   itself
-- keep the then-live `es.service` posture at `root(default)` through this
-  earlier slice
+- preserve the accepted live `es.service` identity for the current host slice
+  through the binary refresh
 - preserve the current AGS, ARS, and EGS service postures
 - preserve the current direct HTTPS/mTLS ES `/health` plus
   `GET /v1/executions:contract` path
@@ -1283,11 +1295,19 @@ and a boolean `plan.deployment_needed`. Apply may change only:
 - `/usr/local/bin/es-runtime-support`
 
 Apply must install both binaries atomically as `root:root` mode `0755`, create
-a pre-mutation backup, restart `es.service` at most once, keep
-`validation.es_service_posture` at `root(default)`, and validate `/health`
-plus `GET /v1/executions:contract` afterward. This is a bounded binary
-deployment record only; it is not governed proof, not writable-state evidence,
-and not service-user migration evidence.
+a pre-mutation backup, restart `es.service` at most once, preserve the
+accepted live `es.service` identity for the current host slice, and validate
+`/health` plus `GET /v1/executions:contract` afterward. Historical earlier
+apply evidence may still show `root(default)` because that slice ran before
+service-user migration; current post-migration apply evidence must preserve
+`User=es`, `Group=es`, `UMask=0027` instead of treating it as drift. This is
+a bounded binary deployment record only; it is not governed proof, not
+writable-state evidence, and not service-user migration evidence.
+
+Check-only and apply summaries for the current helper should expose
+`plan.service_identity_matches_current_supported_posture=true` when the live
+service remains `User=es`, `Group=es`. Root-like service identity must block
+the helper instead of being treated as an accepted posture.
 
 Before any apply-mode mutation primitive runs, the helper must create a
 timestamped backup directory under

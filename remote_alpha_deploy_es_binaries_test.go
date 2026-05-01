@@ -145,8 +145,8 @@ case "$1" in
     exit 0
     ;;
   show)
-    user="${REMOTE_ALPHA_TEST_SYSTEMCTL_USER:-}"
-    group="${REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP:-}"
+    user="${REMOTE_ALPHA_TEST_SYSTEMCTL_USER:-es}"
+    group="${REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP:-es}"
     cat <<EOF
 ExecStart={ path=%s ; argv[]=%s -config %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
 User=$user
@@ -332,7 +332,11 @@ remote_alpha_deploy_es_binaries_main --apply --summary-path %q
 `, summaryPath)
 	output, err := runSourcedESBinaryDeploymentHelper(
 		t,
-		envWithPath(fakeBin, "REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+fixture.MutationLogPath),
+		envWithPath(
+			fakeBin,
+			"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+fixture.MutationLogPath,
+			"REMOTE_ALPHA_TEST_BACKUP_ROOT="+filepath.Join(tmpDir, "backup-root"),
+		),
 		shellBody,
 	)
 	if err != nil {
@@ -402,8 +406,8 @@ remote_alpha_deploy_es_binaries_main --apply --summary-path %q
 
 	postApply := nestedMap(t, payload, "post_apply_validation")
 	posture := nestedMap(t, postApply, "es_service_posture")
-	if posture["effective_user"] != "root(default)" || posture["effective_group"] != "root(default)" {
-		t.Fatalf("expected root(default) posture after apply, got %+v", posture)
+	if posture["effective_user"] != "es" || posture["effective_group"] != "es" {
+		t.Fatalf("expected es:es posture after apply, got %+v", posture)
 	}
 	if nestedMap(t, postApply, "health")["classification"] != "pass" {
 		t.Fatalf("expected health validation pass, got %+v", nestedMap(t, postApply, "health"))
@@ -421,7 +425,60 @@ remote_alpha_deploy_es_binaries_main --apply --summary-path %q
 	}
 }
 
-func TestRemoteAlphaESBinaryDeploymentBlocksWhenServicePostureIsNotRootDefault(t *testing.T) {
+func TestRemoteAlphaESBinaryDeploymentApplyPreservesAcceptedCurrentESServiceUserPosture(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	fixture := setupESBinaryDeploymentFixture(t, tmpDir)
+	setupFakeESBinaryDeploymentCommands(t, fakeBin, fixture)
+
+	summaryPath := filepath.Join(tmpDir, "apply-summary.json")
+	shellBody := esBinaryDeploymentExpectedSliceShell(fixture) + fmt.Sprintf(`
+remote_alpha_deploy_es_binaries_main --apply --summary-path %q
+`, summaryPath)
+	output, err := runSourcedESBinaryDeploymentHelper(
+		t,
+		envWithPath(
+			fakeBin,
+			"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+fixture.MutationLogPath,
+			"REMOTE_ALPHA_TEST_BACKUP_ROOT="+filepath.Join(tmpDir, "backup-root"),
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_USER=es",
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP=es",
+		),
+		shellBody,
+	)
+	if err != nil {
+		t.Fatalf("apply helper failed: %v\noutput=%s", err, string(output))
+	}
+
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read apply summary: %v", err)
+	}
+	payload := parseESBinaryDeploymentOutput(t, summaryBytes)
+	if payload["overall_classification"] != "pass" {
+		t.Fatalf("expected overall pass, got %v\noutput=%s", payload["overall_classification"], string(summaryBytes))
+	}
+	postApply := nestedMap(t, payload, "post_apply_validation")
+	posture := nestedMap(t, postApply, "es_service_posture")
+	if posture["effective_user"] != "es" || posture["effective_group"] != "es" {
+		t.Fatalf("expected es:es posture after apply, got %+v", posture)
+	}
+
+	mutationLogBytes, err := os.ReadFile(fixture.MutationLogPath)
+	if err != nil {
+		t.Fatalf("read mutation log: %v", err)
+	}
+	if got := strings.Count(string(mutationLogBytes), "systemctl restart"); got != 1 {
+		t.Fatalf("expected exactly one restart, got %d in %q", got, string(mutationLogBytes))
+	}
+}
+
+func TestRemoteAlphaESBinaryDeploymentBlocksWhenServicePostureIsNotAccepted(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -437,10 +494,16 @@ remote_alpha_deploy_es_binaries_main
 `
 	output, err := runSourcedESBinaryDeploymentHelper(
 		t,
-		envWithPath(fakeBin, "REMOTE_ALPHA_TEST_SYSTEMCTL_ACTIVE_STATE=active", "REMOTE_ALPHA_TEST_SYSTEMCTL_SUB_STATE=running", "REMOTE_ALPHA_TEST_SYSTEMCTL_USER=es"),
+		envWithPath(
+			fakeBin,
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_ACTIVE_STATE=active",
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_SUB_STATE=running",
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_USER=root",
+			"REMOTE_ALPHA_TEST_SYSTEMCTL_GROUP=root",
+		),
 		shellBody,
 	)
 	if err == nil {
-		t.Fatalf("expected helper to fail when service posture is not root(default), output=%s", string(output))
+		t.Fatalf("expected helper to fail when service posture is not the current supported es:es posture, output=%s", string(output))
 	}
 }

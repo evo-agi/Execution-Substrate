@@ -75,12 +75,32 @@ ActiveState=active
 SubState=running
 EOF
         ;;
-      ars.service|egs.service|es.service)
+      ars.service)
         cat <<'EOF'
-User=
-Group=
-ExecStart={ path=/tmp/fake-service ; argv[]=/tmp/fake-service ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
-FragmentPath=/etc/systemd/system/fake.service
+User=ars
+Group=ars
+ExecStart={ path=/tmp/fake-ars ; argv[]=/tmp/fake-ars ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+FragmentPath=/etc/systemd/system/ars.service
+ActiveState=active
+SubState=running
+EOF
+        ;;
+      egs.service)
+        cat <<'EOF'
+User=egs
+Group=egs
+ExecStart={ path=/tmp/fake-egs ; argv[]=/tmp/fake-egs ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+FragmentPath=/etc/systemd/system/egs.service
+ActiveState=active
+SubState=running
+EOF
+        ;;
+      es.service)
+        cat <<'EOF'
+User=es
+Group=es
+ExecStart={ path=/tmp/fake-es ; argv[]=/tmp/fake-es ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+FragmentPath=/etc/systemd/system/es.service
 ActiveState=active
 SubState=running
 EOF
@@ -290,12 +310,25 @@ ExecStart=%s -config %s
 		t.Fatalf("unexpected local publish status %v", got)
 	}
 	arsPosture := jsonMap(t, validation["ars_service_posture"])
-	if got := arsPosture["effective_user"]; got != "root(default)" {
+	if got := arsPosture["effective_user"]; got != "ars" {
 		t.Fatalf("unexpected ars posture %v", got)
 	}
+	if got := arsPosture["effective_group"]; got != "ars" {
+		t.Fatalf("unexpected ars group posture %v", got)
+	}
+	egsPosture := jsonMap(t, validation["egs_service_posture"])
+	if got := egsPosture["effective_user"]; got != "egs" {
+		t.Fatalf("unexpected egs posture %v", got)
+	}
+	if got := egsPosture["effective_group"]; got != "egs" {
+		t.Fatalf("unexpected egs group posture %v", got)
+	}
 	esPosture := jsonMap(t, validation["es_service_posture"])
-	if got := esPosture["effective_user"]; got != "root(default)" {
+	if got := esPosture["effective_user"]; got != "es" {
 		t.Fatalf("unexpected es posture %v", got)
+	}
+	if got := esPosture["effective_group"]; got != "es" {
+		t.Fatalf("unexpected es group posture %v", got)
 	}
 	if got := validation["mac_health_probe"]; got != "not_exercised" {
 		t.Fatalf("unexpected mac health probe status %v", got)

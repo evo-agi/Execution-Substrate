@@ -240,6 +240,11 @@ long-lived `es.service` user flip remains a future structural design track.
   `future-non-root-required` writable-state gate, then use the long-lived
   `es.service` migration helper check-only path immediately before the
   bounded live service-user apply.
+- Post-migration ES/runtime-helper binary refreshes now remain bounded to the
+  current accepted live `User=es`, `Group=es`, `UMask=0027` host slice. The
+  binary-deployment helper is no longer a root-like service-posture surface;
+  any return to a root-era long-lived service identity must happen through a
+  separate rollback/service-user action rather than through binary deployment.
 - The helper-private raw SPIRE socket path remains a privileged runtime
   dependency and must stay operator-validated rather than being treated as a
   direct long-lived ES service-user read requirement.

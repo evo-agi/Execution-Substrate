@@ -93,12 +93,22 @@ ActiveState=active
 SubState=running
 EOF
         ;;
-      egs.service|es.service)
+      egs.service)
         cat <<'EOF'
-User=
-Group=
-ExecStart={ path=/tmp/fake-service ; argv[]=/tmp/fake-service ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
-FragmentPath=/etc/systemd/system/fake.service
+User=egs
+Group=egs
+ExecStart={ path=/tmp/fake-egs ; argv[]=/tmp/fake-egs ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+FragmentPath=/etc/systemd/system/egs.service
+ActiveState=active
+SubState=running
+EOF
+        ;;
+      es.service)
+        cat <<'EOF'
+User=es
+Group=es
+ExecStart={ path=/tmp/fake-es ; argv[]=/tmp/fake-es ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+FragmentPath=/etc/systemd/system/es.service
 ActiveState=active
 SubState=running
 EOF
@@ -295,14 +305,14 @@ ExecStart=%s -config %s
 	summaryPath := filepath.Join(tmpDir, "ars-service-hardening-summary.json")
 
 	ownerships := map[string]string{
-		arsConfigPath:                                fmt.Sprintf("root:ars 640 %s", arsConfigPath),
-		dedicatedTLSDir:                             fmt.Sprintf("root:ars 710 %s", dedicatedTLSDir),
-		filepath.Join(dedicatedTLSDir, "ars-server-cert.pem"):            fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "ars-server-cert.pem")),
-		filepath.Join(dedicatedTLSDir, "ars-server-key.pem"):             fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "ars-server-key.pem")),
-		filepath.Join(dedicatedTLSDir, "runtime-ca.pem"):                 fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "runtime-ca.pem")),
-		stateRootDir:                                fmt.Sprintf("ars:ars 750 %s", stateRootDir),
-		storageRootDir:                              fmt.Sprintf("ars:ars 750 %s", storageRootDir),
-		indexFile:                                   fmt.Sprintf("ars:ars 600 %s", indexFile),
+		arsConfigPath:   fmt.Sprintf("root:ars 640 %s", arsConfigPath),
+		dedicatedTLSDir: fmt.Sprintf("root:ars 710 %s", dedicatedTLSDir),
+		filepath.Join(dedicatedTLSDir, "ars-server-cert.pem"): fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "ars-server-cert.pem")),
+		filepath.Join(dedicatedTLSDir, "ars-server-key.pem"):  fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "ars-server-key.pem")),
+		filepath.Join(dedicatedTLSDir, "runtime-ca.pem"):      fmt.Sprintf("root:ars 640 %s", filepath.Join(dedicatedTLSDir, "runtime-ca.pem")),
+		stateRootDir:   fmt.Sprintf("ars:ars 750 %s", stateRootDir),
+		storageRootDir: fmt.Sprintf("ars:ars 750 %s", storageRootDir),
+		indexFile:      fmt.Sprintf("ars:ars 600 %s", indexFile),
 	}
 
 	setupFakeARSHardeningCommands(t, fakeBin, unitPath, arsConfigPath, arsBinaryPath, agsBinaryPath, agsConfigPath, ownerships)
@@ -414,9 +424,22 @@ ExecStart=%s -config %s
 	if got := agsPosture["effective_user"]; got != "ags" {
 		t.Fatalf("unexpected ags posture %v", got)
 	}
+	if got := agsPosture["effective_group"]; got != "ags" {
+		t.Fatalf("unexpected ags group posture %v", got)
+	}
+	egsPosture := jsonMap(t, validation["egs_service_posture"])
+	if got := egsPosture["effective_user"]; got != "egs" {
+		t.Fatalf("unexpected egs posture %v", got)
+	}
+	if got := egsPosture["effective_group"]; got != "egs" {
+		t.Fatalf("unexpected egs group posture %v", got)
+	}
 	esPosture := jsonMap(t, validation["es_service_posture"])
-	if got := esPosture["effective_user"]; got != "root(default)" {
+	if got := esPosture["effective_user"]; got != "es" {
 		t.Fatalf("unexpected es posture %v", got)
+	}
+	if got := esPosture["effective_group"]; got != "es" {
+		t.Fatalf("unexpected es group posture %v", got)
 	}
 
 	preserved := jsonMap(t, summary["preserved_remote_path"])

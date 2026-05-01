@@ -530,8 +530,9 @@ must not persist:
 Remote Supported-Host Alpha currently carries one bounded service hardening
 tranche: `AGS sealed + ARS de-root + EGS de-root`.
 
-AGS and ARS are already de-rooted in this tranche. EGS is the service being
-moved off root in this step.
+AGS, ARS, and EGS are already de-rooted in this tranche. The EGS helper and
+summary schema remain documented because they still define preserved tranche
+state that later ES slices must not disturb.
 
 That tranche is intentionally limited to:
 
@@ -550,7 +551,7 @@ That tranche is intentionally limited to:
   dependency path
 - preserving ES local `/health` and producer-contract compatibility surfaces
 - recording non-secret host-local summaries for the landed AGS step, the
-  landed ARS step, and the EGS de-root step
+  landed ARS step, and the landed EGS de-root step
 - leaving `es.service` in its current posture for this tranche
 - leaving the current SPIRE selector model unchanged for this tranche
 - preserving the current no-bridge and no-shared-filesystem remote path facts
@@ -655,6 +656,10 @@ That summary must record only bounded safe evidence such as:
 - explicit non-claim vocabulary for ES runtime hardening, submit/runtime-profile
   changes, SPIRE selector-model changes, and new happy-path proof claims
 
+Current reruns of the landed AGS step must preserve the current ARS `ars:ars`,
+EGS `egs:egs`, and ES `User=es`, `Group=es`, `UMask=0027` service postures
+while recording validation only as bounded hardening evidence.
+
 That summary and any derivative artifacts accepted as evidence for this step
 must not persist:
 
@@ -695,8 +700,8 @@ That step is intentionally limited to:
   dependency path
 - preserving the current AGS `ags:ags` posture
 - recording a non-secret host-local summary for the landed step
-- leaving `egs.service` and `es.service` in their then-current posture for
-  that step
+- preserving the current EGS `egs:egs` posture and the current ES `User=es`,
+  `Group=es`, `UMask=0027` posture on any current rerun of this landed step
 - leaving the current SPIRE selector model unchanged for this tranche
 - preserving the current no-bridge and no-shared-filesystem remote path facts
 
@@ -832,8 +837,9 @@ The active repo-derived ARS service inputs for that ARS step remain:
 
 ### EGS De-root Step
 
-The EGS step in this tranche is the service-account move still to apply on the
-remote host.
+The EGS step in this tranche is already landed. It remains documented because
+its helper, summary schema, and preserved evidence shape still define tranche
+state that later ES slices must not disturb.
 
 That step is intentionally limited to:
 
@@ -848,8 +854,8 @@ That step is intentionally limited to:
   `GET /v1/executions:contract` through the current direct HTTPS/mTLS path
 - preserving the current AGS `ags:ags` posture
 - preserving the current ARS `ars:ars` posture
-- recording a non-secret host-local summary for the step
-- leaving `es.service` in its current root posture for this tranche
+- recording a non-secret host-local summary for the landed step
+- preserving the current ES `User=es`, `Group=es`, `UMask=0027` posture
 - leaving the current SPIRE selector model unchanged for this tranche
 - preserving the current no-bridge and no-shared-filesystem remote path facts
 
@@ -984,6 +990,10 @@ That summary must record only bounded safe evidence such as:
 - the preserved direct HTTPS/mTLS, no-bridge, and no-shared-filesystem facts
 - explicit non-claim vocabulary for ES de-root, ES public-contract changes,
   SPIRE selector-model changes, and new happy-path proof claims
+
+Current reruns of the landed EGS step must preserve the current AGS `ags:ags`,
+ARS `ars:ars`, and ES `User=es`, `Group=es`, `UMask=0027` service postures
+while recording validation only as bounded hardening evidence.
 
 That summary and any derivative artifacts accepted as evidence for this step
 must not persist:
@@ -1351,12 +1361,25 @@ This surface is intentionally limited to:
 - default non-mutating `--check-only` plus explicit `--apply` for any later
   live operator use
 - preserving the accepted ES config/TLS ownership prep bridge
-- preserving the then-live `es.service` `root(default)` posture during this
-  earlier slice
+- preserving the accepted live `es.service` identity for the current host
+  slice without changing `User=`, `Group=`, or `UMask=`
 - preserving ES public contracts, lifecycle semantics, retained-result
   semantics, `authority_handoff`, staging/results ownership, and all current
   bounded runtime compatibility edges
 - refusing to run governed proof as part of the helper flow
+
+Historical note:
+
+- the earlier live-host-evidenced binary-parity apply happened before the
+  later bounded service-user migration, so those earlier apply summaries
+  honestly record `root(default)`
+- current post-migration binary refreshes must instead preserve the accepted
+  long-lived `User=es`, `Group=es`, `UMask=0027` posture and must not treat
+  that accepted service identity as drift
+- current post-migration binary refreshes must block any root-like service
+  identity instead of silently preserving it; if operators ever need to return
+  to a root-era service posture, that is a separate rollback/service-user
+  surface rather than a binary-deployment helper mode
 
 The preferred public repo-side/operator surface is:
 
@@ -1413,11 +1436,12 @@ The required operator flow for this binary-deployment surface is:
    and report hash differences as `deployment_needed` rather than as a failed
    host mutation.
 3. Use `--apply` only after explicit approval and after the helper reports no
-   blockers other than `deployment_needed`.
+   blockers other than `deployment_needed`, with
+   `plan.service_identity_matches_current_supported_posture=true`.
 4. Preserve the apply summary, backup path, rollback notes, exact changed
-   binary paths, preserved `es.service` identity, and post-restart `/health`
-   plus `GET /v1/executions:contract` validation as the bounded post-apply
-   evidence set. The helper staging record must distinguish
+   binary paths, preserved live `es.service` identity, and post-restart
+   `/health` plus `GET /v1/executions:contract` validation as the bounded
+   post-apply evidence set. The helper staging record must distinguish
    `sudo_unavailable` from `wrapper_tooling_error`, record whether staging
    occurred, whether the check-only helper ran, and whether transient staging
    was removed.
@@ -1438,9 +1462,11 @@ artifacts:
 - `es-binary-deployment-apply-summary.json` when `--apply` is used
 
 Those local artifacts are deployment evidence and provenance only. They are
-not governed proof, they preserve the earlier slice-specific fact that
-`es.service` still ran as `root(default)` at that step, and they did not by
-themselves authorize the later writable-state or service-user mutations.
+not governed proof. Historical earlier-slice artifacts may preserve the then
+live `root(default)` service identity, while current post-migration artifacts
+must preserve the accepted `User=es`, `Group=es`, `UMask=0027` service
+identity instead of treating it as drift. Those artifacts still do not by
+themselves authorize writable-state or service-user mutation.
 
 ## Remote ES Writable-State Ownership Surface
 

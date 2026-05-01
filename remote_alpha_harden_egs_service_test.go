@@ -107,8 +107,8 @@ EOF
         ;;
       es.service)
         cat <<'EOF'
-User=
-Group=
+User=es
+Group=es
 ExecStart={ path=/tmp/fake-es ; argv[]=/tmp/fake-es ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
 FragmentPath=/etc/systemd/system/es.service
 ActiveState=active
@@ -518,9 +518,15 @@ ExecStart=%s -config %s
 	if got := arsPosture["effective_user"]; got != "ars" {
 		t.Fatalf("unexpected ars posture %v", got)
 	}
+	if got := arsPosture["effective_group"]; got != "ars" {
+		t.Fatalf("unexpected ars group posture %v", got)
+	}
 	esPosture := jsonMap(t, validation["es_service_posture"])
-	if got := esPosture["effective_user"]; got != "root(default)" {
+	if got := esPosture["effective_user"]; got != "es" {
 		t.Fatalf("unexpected es posture %v", got)
+	}
+	if got := esPosture["effective_group"]; got != "es" {
+		t.Fatalf("unexpected es group posture %v", got)
 	}
 
 	preserved := jsonMap(t, summary["preserved_remote_path"])

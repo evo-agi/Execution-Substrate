@@ -266,6 +266,7 @@ HEALTHCHECK_ENV_PATH = sys.argv[8]
 SERVICE_UNIT_PATH = sys.argv[9]
 BACKUP_ROOT_DIR = sys.argv[10]
 REPO_ROOT = pathlib.Path(sys.argv[11])
+CURRENT_SUPPORTED_SERVICE_IDENTITY = ("es", "es")
 
 
 def utc_now():
@@ -344,6 +345,10 @@ def stat_path(path):
     }
 
 
+def service_identity_is_accepted(effective_user, effective_group):
+    return (effective_user, effective_group) == CURRENT_SUPPORTED_SERVICE_IDENTITY
+
+
 def parse_systemctl_show():
     unit_name = SERVICE_NAME if SERVICE_NAME.endswith(".service") else SERVICE_NAME + ".service"
     proc = run_command(
@@ -396,17 +401,23 @@ def parse_systemctl_show():
         blockers.append(f"service fragment path mismatch: {fields['fragment_path']}")
     if BINARY_PATH not in fields["exec_start"] or CONFIG_PATH not in fields["exec_start"]:
         blockers.append("service ExecStart does not match the pinned binary/config path")
-    if fields["effective_user"] not in {"root(default)", "root"}:
-        blockers.append(f"service user is not root(default): {fields['effective_user']}")
-    if fields["effective_group"] not in {"root(default)", "root"}:
-        blockers.append(f"service group is not root(default): {fields['effective_group']}")
+    if not service_identity_is_accepted(fields["effective_user"], fields["effective_group"]):
+        blockers.append(
+            "service identity is not the current supported binary-deployment posture: "
+            f"expected es:es, got {fields['effective_user']}:{fields['effective_group']}"
+        )
     if fields["active_state"] != "active" or fields["sub_state"] != "running":
         blockers.append(
             f"service is not active/running: {fields['active_state'] or 'unknown'}/{fields['sub_state'] or 'unknown'}"
         )
     if blockers:
         return make_status("blocker", blockers[0], blockers=blockers, **fields)
-    return make_status("pass", "es.service matches the pinned root(default) binary slice posture", blockers=[], **fields)
+    return make_status(
+        "pass",
+        "es.service matches the pinned binary slice posture and preserves the current supported es:es service identity",
+        blockers=[],
+        **fields,
+    )
 
 
 def load_healthcheck_env():
@@ -665,8 +676,8 @@ def compute_check_summary():
         "deployment_needed": deployment_needed,
         "apply_ready": not blockers,
         "restart_required_in_apply_mode": True,
-        "service_identity_would_remain_root_default": service_status.get("effective_user") in {"root(default)", "root"}
-        and service_status.get("effective_group") in {"root(default)", "root"},
+        "service_identity_matches_current_supported_posture": service_status.get("effective_user") == "es"
+        and service_status.get("effective_group") == "es",
         "target_paths": [BINARY_PATH, RUNTIME_SUPPORT_PATH],
         "backup_parent_dir": BACKUP_ROOT_DIR,
         "blockers": blockers,

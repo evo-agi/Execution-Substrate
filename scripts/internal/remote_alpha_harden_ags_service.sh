@@ -968,13 +968,22 @@ remote_alpha_ags_hardening_main() {
     overall_ok=false
   fi
 
-  if [[ "$(remote_alpha_ags_hardening_json_field "${ars_meta_path}" "effective_user" 2>/dev/null || true)" != "root(default)" ]]; then
+  if [[ "$(remote_alpha_ags_hardening_json_field "${ars_meta_path}" "effective_user" 2>/dev/null || true)" != "ars" ]]; then
     overall_ok=false
   fi
-  if [[ "$(remote_alpha_ags_hardening_json_field "${egs_meta_path}" "effective_user" 2>/dev/null || true)" != "root(default)" ]]; then
+  if [[ "$(remote_alpha_ags_hardening_json_field "${ars_meta_path}" "effective_group" 2>/dev/null || true)" != "ars" ]]; then
     overall_ok=false
   fi
-  if [[ "$(remote_alpha_ags_hardening_json_field "${es_meta_path}" "effective_user" 2>/dev/null || true)" != "root(default)" ]]; then
+  if [[ "$(remote_alpha_ags_hardening_json_field "${egs_meta_path}" "effective_user" 2>/dev/null || true)" != "egs" ]]; then
+    overall_ok=false
+  fi
+  if [[ "$(remote_alpha_ags_hardening_json_field "${egs_meta_path}" "effective_group" 2>/dev/null || true)" != "egs" ]]; then
+    overall_ok=false
+  fi
+  if [[ "$(remote_alpha_ags_hardening_json_field "${es_meta_path}" "effective_user" 2>/dev/null || true)" != "es" ]]; then
+    overall_ok=false
+  fi
+  if [[ "$(remote_alpha_ags_hardening_json_field "${es_meta_path}" "effective_group" 2>/dev/null || true)" != "es" ]]; then
     overall_ok=false
   fi
 
