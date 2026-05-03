@@ -660,6 +660,15 @@ Dependencies:
 - Workstream A
 - Workstream C
 
+Current bounded planning direction:
+
+- Treat the current `POST /v1/credential/authorize` request/response shape as a CGS v1 compatibility surface and the current `GET /v1/trust-model` route plus wrapper/payload shape as an EGS v1 compatibility surface.
+- Do not semantically widen either current v1 surface in place. Semantic expansion requires explicit versioning before implementation.
+- Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.
+- Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.
+- Preserve ES CGS-independence in D1. If ES later consumes CGS output, it must do so through a separately versioned bounded authorization fact such as allow/deny plus opaque decision reference and expiry rather than by reusing the current CGS v1 shape or `id.conf`-derived subject grammar.
+- D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
+
 ### Workstream E - Lookup And Config Indirection Reset
 
 Purpose:

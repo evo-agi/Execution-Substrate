@@ -318,6 +318,12 @@ runtime-profile handling, and compatibility edges lives in
   `verification.workload_identity_binding.*` config/startup verifier shapes are
   residue from earlier admission forms. They do not add active shared-kernel
   authorization meaning or CGS coupling to the current ES hot path.
+- D1 keeps ES consuming no CGS facts. If a later slice adds a CGS-derived ES
+  admission input, it must use a separately versioned bounded authorization
+  fact such as allow/deny plus opaque decision reference and expiry rather than
+  the current CGS v1 request/response shape, subject grammar, role fields,
+  `audit.policy_version`, runtime auth-plan material, workload-vault fields,
+  runtime-config refs, credential material, or identity-handoff facts.
 
 **Temporary compatibility edges**
 
@@ -377,6 +383,9 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 **Temporary compatibility edges**
 
 - The route remains `GET /v1/trust-model` even though the signed shared payload is now the narrower `runtime_trust` contract plus separate publication metadata.
+- The current route plus wrapper/payload shape are the live EGS v1 compatibility surface.
+- `publication.version` and `publication.update_revision` are EGS publication metadata, not trust-contract/schema/API versioning for that surface.
+- Semantic expansion of the EGS trust surface requires explicit wrapper/payload versioning before implementation; do not widen the current v1 surface in place.
 
 **Reopened seams**
 
@@ -416,15 +425,19 @@ Provide a separate authorize-only decision surface for workload credential acces
 **Boundary pressure points**
 
 - `id.conf` still strongly influences CGS's current explicit subject grammar and policy-input shape.
-- CGS's request and decision logic now center on workload principal identity instead of path-derived workload location.
+- CGS's request and decision logic now center on caller/workload identity interpretation instead of path-derived workload location.
 - CGS must stay separate from ES-owned workload-vault auth resolution and runtime identity handling.
 
 **Temporary compatibility edges**
 
+- The current request/response shape is the live CGS v1 compatibility surface.
+- `audit.policy_version` is CGS audit/evaluation metadata, not transport/schema/API versioning.
+- `id.conf` remains current-CGS-v1 compatibility/config residue even while it is active today.
 - `id.conf` remains active as the current explicit subject-policy grammar even though its long-term role is reopened.
 - The repo ships a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It exists to make the current `id.conf` dependency explicit and testable.
   - It does not expand `id.conf` into a declared complete production policy grammar or final policy architecture.
+- Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
 
 **Reopened seams**
 
@@ -449,7 +462,7 @@ These layers can create coupling pressure without owning domain responsibilities
 - ES, ARS, and the runtime-config surface currently participate in a tight choreography around reference resolution, artifact retrieval, trust validation, and execution preparation. ES carries the composition burden, but the split is still under redesign pressure.
 - The ARS runtime-facing discovery record and secondary descriptor support path constrain both AGS publication and ES discoverability. That storage-facing model still reaches further into service interaction than a pure storage boundary would.
 - ES runtime identity handoff currently depends on reserved runtime workspace paths and environment conventions, including a temporary legacy alias. Those conventions are real, but they should not be mistaken for a settled ownership split between ES and runtime-side components.
-- CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and workload vault configuration shapes.
+- CGS's authorize surface is narrow, but its DTO and policy inputs remain coupled to compatibility-oriented `id.conf` and caller/workload identity interpretation.
 - The workload-zone Vault config reference and blob schema are now explicit, but the long-term owner of that surface is still a redesign pressure point.
 
 ## 13. Temporary compatibility-heavy edges

@@ -120,6 +120,16 @@ EGS and CGS occupy different roles today.
   caller/workload identity matching and explicit `id.conf` subject records.
 - CGS responses remain bounded to decision and audit facts; they do not become
   runtime auth plans or ES runtime handoff facts.
+- The current `GET /v1/trust-model` and `POST /v1/credential/authorize`
+  surfaces are v1 compatibility surfaces. `publication.version` and
+  `audit.policy_version` are service-owned metadata, not trust-contract or
+  transport/API versioning.
+- D1 preserves that ES consumes no CGS facts. If a later slice lets ES consume
+  CGS output, it must do so through a separately versioned, bounded
+  authorization fact such as allow/deny plus opaque decision reference and
+  expiry, not through the current CGS v1 subject grammar, role/audit fields,
+  runtime auth plans, workload-vault fields, runtime-config refs, credential
+  material, or identity-handoff facts.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
 

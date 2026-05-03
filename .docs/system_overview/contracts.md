@@ -672,6 +672,9 @@ Current `publication` metadata shape:
 - EGS publication metadata remains outside the signed `runtime_trust` payload.
   `publication.version` and `publication.update_revision` are EGS-owned
   metadata, not signed runtime-trust facts.
+- `publication.version` and `publication.update_revision` are EGS-owned
+  publication metadata. They are not trust-contract, schema, or API
+  versioning for the current EGS surface.
 - ES verifies the EGS signature and then enforces:
   - provenance signer allow-list
   - provenance signer revocation
@@ -689,6 +692,8 @@ Current `publication` metadata shape:
 `Temporary compatibility edge`
 
 - The route remains `GET /v1/trust-model` even though the shared runtime contract is now the narrower `runtime_trust` payload plus separate EGS-owned publication metadata.
+- The current route plus wrapper/payload shape are the live EGS v1 compatibility surface.
+- Semantic expansion of the EGS trust surface requires explicit wrapper/payload versioning before implementation; do not widen the current v1 surface in place.
 
 ### Reopened seams
 
@@ -763,6 +768,9 @@ Current response shape:
   - `role`
   - optional decision constraints
 - Current authorize responses include no secret material and no runtime auth-plan payload.
+- `audit.policy_version` inside `audit` is CGS audit/evaluation metadata. It
+  is not transport, schema, or API versioning for the current authorize
+  surface.
 
 ### Ownership boundary
 
@@ -773,9 +781,13 @@ Current response shape:
 
 `Temporary compatibility edge`
 
+- The current request/response shape is the live CGS v1 compatibility surface.
+- `audit.policy_version` is audit/evaluation metadata, not transport/schema/API versioning.
+- `id.conf` remains current-CGS-v1 compatibility/config residue even while it is active today.
 - `id.conf` is an active local policy input and current authorize-shape
   dependency, but it should not be mistaken for a permanent repo-wide policy
   architecture just because it is currently in use.
+- Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
 
 ### Reopened seams
 

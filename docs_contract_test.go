@@ -770,9 +770,13 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 		"Direct authorize-only decisions for current requested capabilities",
 		"Workload-bound caller/workload identity matching on the live request path",
 		"CGS is active today, but it is not part of the current ES hot path",
+		"caller/workload identity interpretation",
 		"Runtime auth-plan shaping",
 		"Credential material, Vault token material, or JWT-SVID material",
 		"declared complete production policy grammar or final policy architecture",
+	)
+	assertContainsNone(t, "CGS boundary section", cgsBoundarySection,
+		"workload vault configuration shapes",
 	)
 
 	assertContainsAll(t, "ES boundary section", esBoundarySection,
@@ -796,7 +800,7 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 
 	assertContainsAll(t, "admission model policy split", admissionModel,
 		"ES admission composition remains CGS-independent in the current hot path.",
-		"this decision does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+		"This decision does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
 		"CGS authorize remains outside the current hot path.",
 	)
 
@@ -811,6 +815,91 @@ func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *test
 	assertContainsAll(t, "lifecycle contracts producer non-authority", lifecycleContracts,
 		"`not_policy_truth`",
 		"The declaration must not expose Nomad job IDs, allocation IDs, task IDs, host paths, result filesystem paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, or policy approval state.",
+	)
+}
+
+func TestWorkstreamDVersioningGuardrailBeforeSemanticExpansionIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
+	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
+	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	egsBoundarySection := compactDocSection(t, boundariesRaw, "## 9. EGS boundary", "## 10. CGS boundary")
+	cgsBoundarySection := compactDocSection(t, boundariesRaw, "## 10. CGS boundary", "## 11. Cross-cutting packages that are not service boundaries")
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+
+	assertContainsAll(t, "Workstream D versioning direction", workstreamD,
+		"CGS v1 compatibility surface",
+		"EGS v1 compatibility surface",
+		"Semantic expansion requires explicit versioning before implementation.",
+		"`audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.",
+		"`id.conf` as current-CGS-v1 compatibility/config residue",
+		"allow/deny plus opaque decision reference and expiry",
+		"D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "EGS contracts versioning guardrail", egsContractSection,
+		"`publication.version` and `publication.update_revision` are EGS-owned publication metadata. They are not trust-contract, schema, or API versioning for the current EGS surface.",
+		"The current route plus wrapper/payload shape are the live EGS v1 compatibility surface.",
+		"Semantic expansion of the EGS trust surface requires explicit wrapper/payload versioning before implementation; do not widen the current v1 surface in place.",
+	)
+
+	assertContainsAll(t, "CGS contracts versioning guardrail", cgsContractSection,
+		"`audit.policy_version` inside `audit` is CGS audit/evaluation metadata. It is not transport, schema, or API versioning for the current authorize surface.",
+		"The current request/response shape is the live CGS v1 compatibility surface.",
+		"`id.conf` remains current-CGS-v1 compatibility/config residue even while it is active today.",
+		"Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.",
+	)
+
+	assertContainsAll(t, "EGS boundary versioning guardrail", egsBoundarySection,
+		"The current route plus wrapper/payload shape are the live EGS v1 compatibility surface.",
+		"`publication.version` and `publication.update_revision` are EGS publication metadata, not trust-contract/schema/API versioning for that surface.",
+		"Semantic expansion of the EGS trust surface requires explicit wrapper/payload versioning before implementation; do not widen the current v1 surface in place.",
+	)
+
+	assertContainsAll(t, "CGS boundary versioning guardrail", cgsBoundarySection,
+		"The current request/response shape is the live CGS v1 compatibility surface.",
+		"`audit.policy_version` is CGS audit/evaluation metadata, not transport/schema/API versioning.",
+		"`id.conf` remains current-CGS-v1 compatibility/config residue even while it is active today.",
+		"Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.",
+	)
+
+	assertContainsAll(t, "architecture D1 versioning guardrail", architecture,
+		"The current `GET /v1/trust-model` and `POST /v1/credential/authorize` surfaces are v1 compatibility surfaces.",
+		"`publication.version` and `audit.policy_version` are service-owned metadata, not trust-contract or transport/API versioning.",
+		"D1 preserves that ES consumes no CGS facts.",
+		"allow/deny plus opaque decision reference and expiry",
+		"runtime auth plans, workload-vault fields, runtime-config refs, credential material, or identity-handoff facts.",
+	)
+
+	assertContainsAll(t, "configuration D1 residue note", configuration,
+		"current-CGS-v1 compatibility/config residue for the current authorize surface",
+		"not documented as transport/schema/API versioning or final repo-wide policy language",
+	)
+
+	assertContainsAll(t, "ES boundary D1 guardrail", esBoundarySection,
+		"D1 keeps ES consuming no CGS facts.",
+		"separately versioned bounded authorization fact such as allow/deny plus opaque decision reference and expiry",
+		"`audit.policy_version`",
+		"runtime auth-plan material",
+		"workload-vault fields",
+		"runtime-config refs",
+		"identity-handoff facts",
+	)
+
+	assertContainsAll(t, "admission model D1 guardrail", admissionModel,
+		"D1a preserves that ES consumes no CGS facts.",
+		"any later ES-consumed authorization fact must be separately versioned and bounded",
+		"current CGS v1 authorize shape, subject grammar, or audit fields.",
+		"This decision does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
 	)
 }
 

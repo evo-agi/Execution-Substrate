@@ -50,9 +50,12 @@ the code and tests win and this document must be realigned.
   reference/blob, and caller authentication plus the configured SPIFFE
   allowlist.
 - ES admission composition remains CGS-independent in the current hot path.
-  Workstream D may later redesign policy/authorization ownership, but this
-  decision does not settle Workstream E runtime-config ownership or Workstream
-  F runtime-identity handoff ownership.
+  D1a preserves that ES consumes no CGS facts. Workstream D may later redesign
+  policy/authorization ownership, but any later ES-consumed authorization fact
+  must be separately versioned and bounded rather than a reuse of the current
+  CGS v1 authorize shape, subject grammar, or audit fields. This decision does
+  not settle Workstream E runtime-config ownership or Workstream F
+  runtime-identity handoff ownership.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or

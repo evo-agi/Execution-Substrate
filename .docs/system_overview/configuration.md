@@ -437,6 +437,8 @@ recursive chown or broad deletion.
 - that checked-in file is a current baseline only
   - it is derived from current Go-repo tests/examples
   - it is not documented as complete production policy or final long-term grammar
+- that checked-in file and `policy.id_conf_path` are current-CGS-v1 compatibility/config residue for the current authorize surface
+  - they are not documented as transport/schema/API versioning or final repo-wide policy language
 - the current `id.conf` grammar uses explicit `subject` records with:
   - `type`
   - `principal`
