@@ -619,7 +619,8 @@ Current successful response shapes:
 
 ### Purpose
 
-Publish the signed runtime-trust payload that ES enforces at admission time.
+Publish the signed runtime-trust payload that ES enforces at admission time for
+signer/artifact trust only.
 
 ### Current producers / consumers
 
@@ -660,11 +661,17 @@ Current `publication` metadata shape:
 `Current invariant`
 
 - EGS signs the canonical runtime-trust payload, not artifact facts.
+- The signed `runtime_trust` payload is intentionally limited to signer and
+  artifact trust policy. It does not carry authorization decisions, runtime
+  auth-plan material, or ES runtime handoff facts.
 - Current canonical runtime-trust signing covers:
   - `signer_policy`
   - `artifact_policy`
 - Runtime-trust list fields are normalized deterministically before digest and signature generation.
 - `payload_digest` and `signature` are the authoritative trust signals in the current contract.
+- EGS publication metadata remains outside the signed `runtime_trust` payload.
+  `publication.version` and `publication.update_revision` are EGS-owned
+  metadata, not signed runtime-trust facts.
 - ES verifies the EGS signature and then enforces:
   - provenance signer allow-list
   - provenance signer revocation
@@ -672,7 +679,9 @@ Current `publication` metadata shape:
 
 ### Ownership boundary
 
-- EGS owns runtime-trust publication and signing.
+- EGS owns runtime-trust publication and signing only.
+- EGS-owned publication metadata remains outside the signed runtime-trust
+  payload.
 - EGS does not own artifact signing, artifact retrieval, runtime execution, or lifecycle state.
 
 ### Temporary compatibility edges
@@ -692,7 +701,8 @@ Current `publication` metadata shape:
 
 ### Purpose
 
-Provide a separate authorization decision boundary for credential-related access.
+Provide a direct authorize-only decision boundary for credential-related
+access.
 
 ### Current producers / consumers
 
@@ -727,6 +737,9 @@ Current response shape:
 - CGS exposes only `POST /v1/credential/authorize` in the current Go contract.
 - CGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - The authenticated caller identity must equal `workload.workload_identity_id`.
+- CGS is a direct authorize-only boundary. The current request/response surface
+  does not carry runtime auth-plan fields, credential material, Vault token
+  material, JWT-SVID material, or ES runtime handoff facts.
 - CGS currently depends only on:
   - `workload.type`
   - `workload.workload_identity_id`
@@ -753,21 +766,25 @@ Current response shape:
 
 ### Ownership boundary
 
-- CGS owns the current authorization decision surface only.
+- CGS owns the current direct authorize-only decision surface only.
 - CGS does not own artifact publication, EGS runtime-trust publication, scheduler state, or the current ES admission path.
 
 ### Temporary compatibility edges
 
 `Temporary compatibility edge`
 
-- `id.conf` is an active local policy input, but it should not be mistaken for a permanent repo-wide policy architecture just because it is currently in use.
+- `id.conf` is an active local policy input and current authorize-shape
+  dependency, but it should not be mistaken for a permanent repo-wide policy
+  architecture just because it is currently in use.
 
 ### Reopened seams
 
 `Reopened redesign seam`
 
 - The CGS authorize DTO and `id.conf` policy-input model are explicitly reopened in `PLANS.md`.
-- CGS remains live today, but its current wire and policy-input shape must not be treated as the final core authorization contract.
+- CGS remains live today, but its current wire and policy-input shape must not
+  be treated as the final core authorization contract or final policy
+  architecture.
 
 ## 10. Runtime Identity Handoff Contract
 

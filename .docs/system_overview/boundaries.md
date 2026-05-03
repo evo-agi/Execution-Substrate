@@ -30,8 +30,8 @@ When prose and code disagree, code and tests win.
 | --- | --- | --- |
 | ARS | Storage and artifact discoverability service | Blob storage, integrity enforcement, evidence-centered artifact registration, and canonical artifact retrieval |
 | AGS | Artifact publication service | Evidence-first publication assembly, caller-bound publication claims, and publication into ARS |
-| EGS | Trust model publication service | Signed trust model publication for execution-time trust decisions |
-| CGS | Authorization service | Authorize-only decision surface backed by caller/workload identity checks and explicit `id.conf` subject policy |
+| EGS | Trust model publication service | Signed signer/artifact runtime-trust publication plus separate EGS-owned publication metadata |
+| CGS | Authorization service | Direct authorize-only decision surface backed by caller/workload identity checks and explicit `id.conf` subject policy |
 | ES | Admission, submission, and lifecycle projection service | Execution request validation, composition across upstream services, Nomad submission, and bounded execution status/log projection |
 
 Important absences in the current Go repo:
@@ -46,8 +46,12 @@ Those absences are current facts, not design commitments.
 
 - ES is the main composition boundary. It consumes startup-owned runtime-config references, ARS artifact evidence/records and blobs, and EGS trust policy during admission and submission.
 - AGS depends on ARS as the publication sink. AGS publishes through ARS rather than owning artifact storage or discoverability itself.
-- EGS publishes trust policy; ES consumes that policy. EGS does not sit in the runtime execution path after ES has loaded and verified the trust model.
-- CGS is a separate authorization boundary. It is active today, but it is not part of the current ES hot path.
+- EGS publishes signed signer/artifact trust policy; ES consumes that policy.
+  Separate EGS-owned publication metadata remains outside the signed
+  runtime-trust payload. EGS does not sit in the runtime execution path after
+  ES has loaded and verified the trust model.
+- CGS is a direct authorize-only boundary. It is active today, but it is not
+  part of the current ES hot path.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
 - `internal/contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
 - `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
@@ -249,7 +253,7 @@ runtime-profile handling, and compatibility edges lives in
   - `/v1/executions/{run_id}/result`
   - `/v1/executions/{run_id}:cancel`
 - Admission validation and execution request shaping
-- Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit
+- Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit, with CGS explicitly outside the current hot path
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state, including the bounded status `lifecycle_projection` read-coordination fact
@@ -281,6 +285,7 @@ runtime-profile handling, and compatibility edges lives in
 - Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - Scheduler identifiers, backend allocation/task IDs, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, or write-precondition semantics behind the `outcome_evidence` descriptor surface
 - Service health, submit readiness, run authority, credential truth, lifecycle write coordination, policy truth, or scheduler API semantics behind the producer compatibility declaration
+- CGS authorize decisions, policy-approval state, or runtime auth-plan truth as ES hot-path admission inputs, `authority_handoff` facts, `outcome_evidence`, or producer-contract truth
 - Policy publication or broader governance decisions that belong upstream
 - Control Plane normal-shell orchestration, task-attempt progression, review, accept/revise/fail branching, checkpoint promotion, hold/resume/reject semantics, or finalization
 - Codex token brokerage, Codex token minting, Codex token rotation, Codex service invocation ownership, or semantic interpretation of Codex outputs
@@ -309,6 +314,10 @@ runtime-profile handling, and compatibility edges lives in
 - ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
 - ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
+- The current `verification.derivation_attestation.*` and
+  `verification.workload_identity_binding.*` config/startup verifier shapes are
+  residue from earlier admission forms. They do not add active shared-kernel
+  authorization meaning or CGS coupling to the current ES hot path.
 
 **Temporary compatibility edges**
 
@@ -340,8 +349,9 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 **Current ownership**
 
 - `GET /v1/trust-model`
+- Signed signer/artifact runtime-trust publication plus separate EGS-owned publication metadata
 - Current runtime-trust and publication-metadata shape in `egs/model/trustmodel.go`
-- Signing the runtime-trust payload returned to consumers
+- Signing the runtime-trust payload returned to consumers, with publication metadata remaining separate and outside the signed payload
 - Publication of allowed signers, revoked signers, and revoked artifacts as the signed runtime-trust payload
 - Publication of version and update revision as separate EGS-owned metadata
 
@@ -349,8 +359,10 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 
 - Artifact signing
 - Artifact publication
+- Authorization decisions or runtime auth-plan shaping
 - Execution request validation
 - Runtime lifecycle state
+- ES runtime handoff facts
 - Runtime credential delivery
 
 **Current consumers / collaborators**
@@ -380,9 +392,10 @@ Provide a separate authorize-only decision surface for workload credential acces
 **Current ownership**
 
 - `POST /v1/credential/authorize`
-- Bounded authorization decisions for current requested capabilities
+- Direct authorize-only decisions for current requested capabilities
 - Policy loading from `id.conf`
 - Mapping authenticated callers and workload principals into authorization decisions
+- Workload-bound caller/workload identity matching on the live request path
 
 **Explicit non-ownership**
 
@@ -390,6 +403,9 @@ Provide a separate authorize-only decision surface for workload credential acces
 - Trust model publication
 - ES scheduler submission or lifecycle state
 - General execution admission
+- Runtime auth-plan shaping
+- ES runtime handoff facts
+- Credential material, Vault token material, or JWT-SVID material
 - Vault token issuance or workload-vault auth-plan shaping
 
 **Current consumers / collaborators**
@@ -408,7 +424,7 @@ Provide a separate authorize-only decision surface for workload credential acces
 - `id.conf` remains active as the current explicit subject-policy grammar even though its long-term role is reopened.
 - The repo ships a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It exists to make the current `id.conf` dependency explicit and testable.
-  - It does not expand `id.conf` into a declared complete production policy grammar.
+  - It does not expand `id.conf` into a declared complete production policy grammar or final policy architecture.
 
 **Reopened seams**
 

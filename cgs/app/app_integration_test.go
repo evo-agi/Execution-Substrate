@@ -424,6 +424,49 @@ func TestAuthorizeAllowsScriptWorkload(t *testing.T) {
 	}
 }
 
+func TestAuthorizeAllowResponseOmitsRuntimeAuthPlanAndRuntimeHandoffFields(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service := startTestApp(t, fixture, checkedInIDConfContents(t))
+
+	body := map[string]any{
+		"workload": map[string]any{
+			"type":                 "service",
+			"workload_identity_id": "spiffe://execution.internal/service/execution",
+		},
+		"requested_capabilities": []string{"vault:read"},
+	}
+
+	response := doJSONRequest(t, service.Addr(), http.MethodPost, "/v1/credential/authorize", body, fixture.clientTLSConfig(t, "service/execution"))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	payloadText := string(mustReadBody(t, response.Body))
+	if !strings.Contains(payloadText, `"role":"worker"`) {
+		t.Fatalf("expected bounded decision role in allow response, got %s", payloadText)
+	}
+	for _, forbidden := range []string{
+		`"runtime_auth_plan"`,
+		`"auth_mode"`,
+		`"auth_mount"`,
+		`"auth_role"`,
+		`"jwt_audience"`,
+		`"authority_handoff"`,
+		`"identity_handoff"`,
+		`"runtime_config_refs"`,
+		`"policy_approval"`,
+		`"vault_token"`,
+		`"jwt_svid"`,
+		`"endpoint_uri"`,
+	} {
+		if strings.Contains(payloadText, forbidden) {
+			t.Fatalf("authorize response must omit %s: %s", forbidden, payloadText)
+		}
+	}
+}
+
 func TestAuthorizeRejectsRemovedRequestedByField(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, checkedInIDConfContents(t))

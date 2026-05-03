@@ -93,6 +93,12 @@ Dependency wiring:
   - provenance
   - derivation attestation
   - workload identity binding
+- The current `verification.derivation_attestation` and
+  `verification.workload_identity_binding` config groups remain startup
+  verifier residue from earlier admission shapes. In the current hot path they
+  do not add active shared-kernel authorization meaning, CGS policy meaning,
+  Workstream E runtime-config ownership, or Workstream F runtime-identity
+  ownership.
 - It creates the Nomad client only when submit is configured.
 - If submit is configured, it creates the local staging root and retained-results root on startup.
 - The long-lived ES startup path validates the staged runtime-support binary as a service-owned execution input and may validate only the syntax/config shape of `execution.spire_workload_api_socket_path`, but it does not `stat(2)` or traverse the raw host SPIRE Workload API socket directly.
@@ -136,12 +142,14 @@ What `Prepare` reads:
 - ARS runtime-facing discovery plus aggregate artifact evidence from ARS
 - the validated workload-zone Vault config reference from ES startup config
 - Runtime-trust state loaded from EGS at startup
+- CGS is not a current read dependency of `Prepare` or `Submit`
 
 **Implementation invariants**
 
 - `Prepare` does not create a run ID.
 - `Prepare` does not build or submit a Nomad job.
 - `Prepare` does not create local staging directories.
+- `Prepare` does not call CGS or consume a CGS authorize response.
 - `Prepare` returns a bounded result assembled in memory after verification and resolution steps complete.
 - The richer signer/workload/workload-vault composition data stays internal to the shared admission helper instead of leaking through the public `PrepareResult`.
 
@@ -195,6 +203,9 @@ Where ES stops and Nomad takes over:
 - If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
 - `control-plane-normal-shell/v1` uses the same execution-package layout, runtime helper, runtime identity endpoint, and retained-result path as the current `static-script` slice. The selected profile changes the runtime image and adds non-secret runtime metadata; it does not add ES-owned CP lifecycle or result semantics.
 - The `authority_handoff` returned by submit is assembled from submit-time facts only. It does not observe whether the workload later uses the endpoint, receives a JWT-SVID, logs in to Vault, reads Codex credential material, or holds a live lease.
+- `Submit` does not call CGS, and `authority_handoff` remains assembled from
+  ES-selected runtime facts rather than CGS authorize output or policy-approval
+  state.
 
 ## 8. Lifecycle projection implementation
 
@@ -374,8 +385,10 @@ Current job-spec assumptions:
 - restart attempts: `0`
 - reschedule attempts: `0`
 - network mode:
-  - `none` when attestation says `network_access=false`
-  - `bridge` when `network_access=true`
+  - `none` when signed aggregate evidence execution claims carry
+    `network_access=false`
+  - `bridge` when signed aggregate evidence execution claims carry
+    `network_access=true`
 - image:
   - default executions use `execution.base_image`
   - `control-plane-normal-shell/v1` executions use `execution.runtime_profiles.control_plane_normal_shell.image`

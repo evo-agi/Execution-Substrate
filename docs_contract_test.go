@@ -690,6 +690,130 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 	}
 }
 
+func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	implementationRaw := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+
+	plans := compactText(plansRaw)
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+	implementation := compactText(implementationRaw)
+	lifecycleContracts := compactText(lifecycleContractsRaw)
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+
+	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
+	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
+	egsBoundarySection := compactDocSection(t, boundariesRaw, "## 9. EGS boundary", "## 10. CGS boundary")
+	cgsBoundarySection := compactDocSection(t, boundariesRaw, "## 10. CGS boundary", "## 11. Cross-cutting packages that are not service boundaries")
+	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+
+	dIndex := strings.Index(plansRaw, "### Workstream D - Policy And Authorization Reset")
+	eIndex := strings.Index(plansRaw, "### Workstream E - Lookup And Config Indirection Reset")
+	fIndex := strings.Index(plansRaw, "### Workstream F - Runtime Identity Handoff Reset")
+	if dIndex == -1 || eIndex == -1 || fIndex == -1 {
+		t.Fatalf("expected Workstream D/E/F headings in PLANS")
+	}
+	if !(dIndex < eIndex && eIndex < fIndex) {
+		t.Fatalf("expected Workstream D to remain ordered before E and F")
+	}
+
+	assertContainsAll(t, "PLANS Workstream D ordering", plans,
+		"Workstream D - Policy And Authorization Reset",
+		"Workstream E - Lookup And Config Indirection Reset",
+		"Workstream F - Runtime Identity Handoff Reset",
+	)
+	assertContainsAll(t, "Workstream D section", workstreamD,
+		"Dependencies: - Workstream A - Workstream C",
+	)
+	assertContainsAll(t, "Workstream E section", workstreamE,
+		"Dependencies: - Workstream A - Workstream B - Workstream C - Workstream D",
+	)
+	assertContainsAll(t, "Workstream F section", workstreamF,
+		"Dependencies: - Workstream C - Workstream D - Workstream E",
+	)
+
+	assertContainsAll(t, "EGS contracts section", egsContractSection,
+		"Publish the signed runtime-trust payload that ES enforces at admission time for signer/artifact trust only.",
+		"EGS owns runtime-trust publication and signing only.",
+		"EGS publication metadata remains outside the signed `runtime_trust` payload.",
+		"It does not carry authorization decisions, runtime auth-plan material, or ES runtime handoff facts.",
+	)
+
+	assertContainsAll(t, "CGS contracts section", cgsContractSection,
+		"Provide a direct authorize-only decision boundary for credential-related access.",
+		"ES is not a current CGS consumer in the active ES hot path.",
+		"CGS is a direct authorize-only boundary.",
+		"The authenticated caller identity must equal `workload.workload_identity_id`.",
+		"`requested_capabilities` currently allows only `vault:read`.",
+		"Current authorize responses include no secret material and no runtime auth-plan payload.",
+		"`id.conf` is an active local policy input and current authorize-shape dependency",
+		"final core authorization contract or final policy architecture.",
+	)
+
+	assertContainsAll(t, "EGS boundary section", egsBoundarySection,
+		"Signed signer/artifact runtime-trust publication plus separate EGS-owned publication metadata",
+		"publication metadata remaining separate and outside the signed payload",
+		"Authorization decisions or runtime auth-plan shaping",
+		"ES runtime handoff facts",
+	)
+
+	assertContainsAll(t, "CGS boundary section", cgsBoundarySection,
+		"Direct authorize-only decisions for current requested capabilities",
+		"Workload-bound caller/workload identity matching on the live request path",
+		"CGS is active today, but it is not part of the current ES hot path",
+		"Runtime auth-plan shaping",
+		"Credential material, Vault token material, or JWT-SVID material",
+		"declared complete production policy grammar or final policy architecture",
+	)
+
+	assertContainsAll(t, "ES boundary section", esBoundarySection,
+		"Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit, with CGS explicitly outside the current hot path",
+		"CGS authorize decisions, policy-approval state, or runtime auth-plan truth as ES hot-path admission inputs, `authority_handoff` facts, `outcome_evidence`, or producer-contract truth",
+		"`verification.derivation_attestation.*` and `verification.workload_identity_binding.*` config/startup verifier shapes are residue from earlier admission forms.",
+	)
+
+	assertContainsAll(t, "architecture policy flow", architecture,
+		"EGS publishes signed runtime trust for signer and artifact trust only, plus separate EGS-owned publication metadata outside the signed payload.",
+		"CGS provides a direct authorize-only surface backed by authenticated caller/workload identity matching and explicit `id.conf` subject records.",
+		"CGS responses remain bounded to decision and audit facts; they do not become runtime auth plans or ES runtime handoff facts.",
+		"CGS is active, but it is intentionally not part of the current ES hot path.",
+		"This current split clarifies today’s boundary only. It does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+	)
+
+	assertContainsAll(t, "configuration residue note", configuration,
+		"`verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes",
+		"those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff",
+	)
+
+	assertContainsAll(t, "admission model policy split", admissionModel,
+		"ES admission composition remains CGS-independent in the current hot path.",
+		"this decision does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+		"CGS authorize remains outside the current hot path.",
+	)
+
+	assertContainsAll(t, "implementation residue and independence", implementation,
+		"The current `verification.derivation_attestation` and `verification.workload_identity_binding` config groups remain startup verifier residue from earlier admission shapes.",
+		"they do not add active shared-kernel authorization meaning, CGS policy meaning, Workstream E runtime-config ownership, or Workstream F runtime-identity ownership.",
+		"CGS is not a current read dependency of `Prepare` or `Submit`",
+		"`Prepare` does not call CGS or consume a CGS authorize response.",
+		"`Submit` does not call CGS, and `authority_handoff` remains assembled from ES-selected runtime facts rather than CGS authorize output or policy-approval state.",
+	)
+
+	assertContainsAll(t, "lifecycle contracts producer non-authority", lifecycleContracts,
+		"`not_policy_truth`",
+		"The declaration must not expose Nomad job IDs, allocation IDs, task IDs, host paths, result filesystem paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, or policy approval state.",
+	)
+}
+
 func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {
 	mvpRaw := mustRead(t, ".docs/mvp.md")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")

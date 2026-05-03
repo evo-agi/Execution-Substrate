@@ -219,6 +219,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call the ES execution and lifecycle APIs
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
+- `verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes
+- those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES

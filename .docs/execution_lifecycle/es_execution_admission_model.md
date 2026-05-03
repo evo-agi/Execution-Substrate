@@ -49,6 +49,10 @@ the code and tests win and this document must be realigned.
   runtime-trust output, the configured workload-zone Vault runtime-config
   reference/blob, and caller authentication plus the configured SPIFFE
   allowlist.
+- ES admission composition remains CGS-independent in the current hot path.
+  Workstream D may later redesign policy/authorization ownership, but this
+  decision does not settle Workstream E runtime-config ownership or Workstream
+  F runtime-identity handoff ownership.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or
@@ -93,7 +97,7 @@ the code and tests win and this document must be realigned.
 
 | Surface | Class | Current rule |
 | --- | --- | --- |
-| ES admission composition at `:prepare`/`:submit` | `stable contract` | ES composes ARS discovery plus evidence/payload refs, aggregate evidence verification, narrow shared execution/runtime claims from `internal/contracts/evidence/v1`, EGS runtime-trust output, the configured workload-zone Vault runtime-config reference/blob, and caller authentication plus configured SPIFFE allowlist authorization. |
+| ES admission composition at `:prepare`/`:submit` | `stable contract` | ES composes ARS discovery plus evidence/payload refs, aggregate evidence verification, narrow shared execution/runtime claims from `internal/contracts/evidence/v1`, EGS runtime-trust output, the configured workload-zone Vault runtime-config reference/blob, and caller authentication plus configured SPIFFE allowlist authorization. CGS authorize remains outside the current hot path. |
 | Scheduler handoff after `:submit` | `stable contract` | Successful submit hands execution to Nomad. ES keeps only the bounded receipt and read-through projection responsibilities after that handoff. |
 | `lifecycle_projection` | `bounded slice rule` | `source` and `revision` are opaque same-run read-coordination facts derived from Nomad observation only. |
 | Payload/runtime package resolution | `stable contract` | ES resolves payload bytes through designed ARS discovery plus explicit evidence/payload relationships, cross-checks those facts against aggregate evidence, and keeps descriptor/manifest support outside ES hot-path public grammar. |

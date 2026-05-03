@@ -156,6 +156,37 @@ func TestValidTrustModelFetchReturnsVerifiableSignedPayload(t *testing.T) {
 	}
 }
 
+func TestTrustModelResponseOmitsAuthorizationAndRuntimeHandoffFields(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service := startTestApp(t, fixture, buildConfig(fixture))
+
+	response := doRequest(t, service.Addr(), http.MethodGet, "/v1/trust-model", fixture.clientTLSConfig(t, "service/execution", false))
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	body := string(mustReadBody(t, response.Body))
+	for _, forbidden := range []string{
+		`"allowed"`,
+		`"decision"`,
+		`"audit"`,
+		`"runtime_auth_plan"`,
+		`"policy_approval"`,
+		`"authority_handoff"`,
+		`"identity_handoff"`,
+		`"endpoint_uri"`,
+		`"jwt_svid"`,
+		`"jwt_svid_target"`,
+		`"vault_token"`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("trust-model response must omit %s: %s", forbidden, body)
+		}
+	}
+}
+
 func TestUnauthorizedCallerFailsTLSHandshake(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, buildConfig(fixture))

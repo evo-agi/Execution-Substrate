@@ -114,10 +114,18 @@ ES exposes lifecycle and log endpoints, but it does so by deriving state from No
 
 EGS and CGS occupy different roles today.
 
-- EGS publishes signed runtime trust policy that ES verifies and enforces during admission, plus separate EGS-owned publication metadata.
-- CGS provides a separate authorize-only surface backed by authenticated caller interpretation and explicit `id.conf` subject records.
+- EGS publishes signed runtime trust for signer and artifact trust only, plus
+  separate EGS-owned publication metadata outside the signed payload.
+- CGS provides a direct authorize-only surface backed by authenticated
+  caller/workload identity matching and explicit `id.conf` subject records.
+- CGS responses remain bounded to decision and audit facts; they do not become
+  runtime auth plans or ES runtime handoff facts.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
+
+This current split clarifies today’s boundary only. It does not settle
+Workstream E runtime-config ownership or Workstream F runtime-identity handoff
+ownership.
 
 ### Runtime identity / execution handoff flow
 
