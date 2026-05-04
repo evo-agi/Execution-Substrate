@@ -64,6 +64,28 @@ the code and tests win and this document must be realigned.
   facts, runtime-config refs, workload-zone Vault ownership facts,
   identity-handoff facts, or Control Plane
   review/approval/checkpoint/finalization semantics.
+- D1c keeps any future EGS versioned runtime-trust wrapper design-only. ES
+  continues to consume EGS only for signed signer/artifact runtime trust, and
+  EGS publication metadata remains outside the signed payload and outside ES
+  hot-path admission facts.
+- Any future EGS semantic expansion must use explicit
+  wrapper/payload/versioning before implementation and must not import CGS
+  decisions, runtime-config ownership, runtime identity handoff, AGS/ARS
+  artifact-publication authority, or Control Plane orchestration semantics
+  into the EGS trust surface.
+- D1c does not change the accepted Workstream B artifact
+  publication/storage/discoverability semantics or the accepted Workstream C
+  ES admission/runtime public model. This decision still does not settle
+  Workstream E runtime-config ownership or Workstream F runtime-identity
+  handoff ownership.
+- D1d keeps `id.conf`, the current CGS v1 subject grammar, and
+  `policy.id_conf_path` outside the ES admission model. They remain
+  CGS-local current-v1 compatibility/config residue, not ES admission policy
+  truth, runtime-config ownership input, or runtime-identity handoff input.
+- D1d does not implement CGS v2, does not change EGS trust semantics, does
+  not change ES admission behavior, and still does not settle Workstream E
+  runtime-config ownership or Workstream F runtime-identity handoff
+  ownership.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or

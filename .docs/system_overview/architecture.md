@@ -138,6 +138,36 @@ EGS and CGS occupy different roles today.
   JWT-SVIDs, credential payloads, scheduler facts, ES lifecycle/admission
   facts, workload-zone Vault ownership facts, or Control Plane
   review/approval/checkpoint/finalization semantics.
+- D1c keeps any future EGS versioned runtime-trust wrapper design-only. The
+  current `GET /v1/trust-model` route plus wrapper/payload shape remain the
+  EGS v1 compatibility surface until an explicitly versioned replacement
+  exists.
+- Any future EGS versioned trust wrapper must distinguish signed
+  runtime-trust payload facts, unsigned publication/discovery metadata,
+  compatibility routing or API version, and non-authoritative service
+  metadata.
+- That hypothetical future wrapper must not carry CGS authorization
+  decisions, Control Plane review/approval/checkpoint/finalization semantics,
+  runtime auth plans, Vault token material, JWT-SVIDs, credential payloads,
+  scheduler truth, ES lifecycle/admission truth, runtime-config refs,
+  workload-zone Vault ownership facts, runtime identity handoff facts, or
+  AGS/ARS artifact-publication authority.
+- D1c keeps ES consuming EGS only for signer/artifact runtime trust from the
+  signed payload and keeps ES consuming no CGS facts. D1c does not change the
+  accepted Workstream B artifact publication/storage/discoverability
+  semantics, does not change the accepted Workstream C ES admission/runtime
+  public model, and does not settle Workstream E runtime-config ownership or
+  Workstream F runtime-identity handoff ownership.
+- D1d keeps `id.conf`, the current CGS v1 subject grammar, and
+  `policy.id_conf_path` as current-CGS-v1 compatibility/config residue local
+  to CGS v1 evaluation only. They are not a shared policy language, not ES
+  admission policy input, not EGS trust input, not Control Plane
+  review/approval/checkpoint/finalization policy input, and not
+  Infrastructure Manager readiness/profile/support-bundle authority input.
+- D1d keeps `id.conf` out of Workstream E runtime-config ownership and
+  Workstream F runtime-identity handoff. Future policy-input redesign requires
+  explicit Workstream D follow-up and a versioned CGS contract if CGS
+  semantics change.
 - D1b does not expand EGS beyond signer/artifact runtime-trust publication.
 
 CGS is active, but it is intentionally not part of the current ES hot path.

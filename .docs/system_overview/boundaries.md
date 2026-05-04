@@ -331,6 +331,20 @@ runtime-profile handling, and compatibility edges lives in
 - That hypothetical future fact must not carry JWT-SVIDs, credential payloads,
   scheduler facts, ES lifecycle/admission facts, workload-zone Vault ownership
   facts, or Control Plane review/approval/checkpoint/finalization semantics.
+- D1c keeps ES consuming EGS only for signed signer/artifact runtime trust.
+  EGS publication metadata remains outside the signed payload and outside ES
+  hot-path admission facts.
+- D1c keeps any future EGS versioned runtime-trust wrapper design-only and
+  requires explicit wrapper/payload/versioning before implementation.
+- D1c does not change the Workstream B AGS/ARS artifact
+  publication/storage/discoverability decision, does not change the
+  Workstream C ES admission/runtime public model, does not reopen the accepted
+  Workstream A/B/C decisions, and does not settle Workstream E runtime-config
+  ownership or Workstream F runtime-identity handoff.
+- D1d keeps `id.conf`, the current CGS v1 subject grammar, and
+  `policy.id_conf_path` outside the ES admission model. They remain
+  CGS-local current-v1 compatibility/config residue, not ES admission policy
+  truth, runtime-config ownership input, or runtime-identity handoff input.
 
 **Temporary compatibility edges**
 
@@ -388,6 +402,10 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 - EGS signs its own runtime-trust payload format rather than reusing the AGS/ES shared signing kernel, which keeps the boundary narrow but makes the EGS contract family distinct.
 - D1b does not expand the EGS boundary. EGS remains signer/artifact
   runtime-trust publication plus separate EGS-owned publication metadata only.
+- D1c keeps any future EGS versioned trust wrapper design-only. ES continues
+  to consume EGS only for signed signer/artifact runtime trust, while EGS
+  publication metadata remains unsigned service-owned metadata outside that
+  payload.
 
 **Temporary compatibility edges**
 
@@ -398,6 +416,20 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 - D1b keeps that surface design-stable at signer/artifact runtime trust only;
   it does not add authorization, runtime-config, runtime-identity, or
   orchestration semantics to EGS.
+- D1c is design-only and docs/tests-only. It does not implement EGS v2 or
+  change the current `GET /v1/trust-model` route, wrapper, signed
+  `runtime_trust` payload, or signing behavior.
+- Any future EGS semantic expansion requires explicit
+  wrapper/payload/versioning before implementation.
+- Any future versioned EGS trust wrapper must distinguish signed runtime-trust
+  payload facts, unsigned publication/discovery metadata, compatibility
+  routing or API version, and non-authoritative service metadata.
+- That future wrapper must not carry CGS authorization decisions, Control
+  Plane review/approval/checkpoint/finalization semantics, runtime auth plans,
+  Vault token material, JWT-SVIDs, credential payloads, scheduler truth, ES
+  lifecycle/admission truth, runtime-config refs, workload-zone Vault
+  ownership facts, runtime identity handoff facts, or AGS/ARS
+  artifact-publication authority.
 
 **Reopened seams**
 
@@ -453,11 +485,23 @@ Provide a separate authorize-only decision surface for workload credential acces
 - The repo ships a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It exists to make the current `id.conf` dependency explicit and testable.
   - It does not expand `id.conf` into a declared complete production policy grammar or final policy architecture.
+- D1d keeps `id.conf`, the current CGS v1 subject grammar, and
+  `policy.id_conf_path` as CGS-local current-v1 compatibility/config residue
+  rather than a shared policy language or repo-wide policy registry.
+- D1d keeps those surfaces out of ES admission policy truth, EGS trust truth,
+  Control Plane review/approval/checkpoint/finalization policy truth, and
+  Infrastructure Manager readiness/profile/support-bundle authority truth.
+- D1d keeps `id.conf` out of Workstream E runtime-config ownership and
+  Workstream F runtime-identity handoff.
 - Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
 - D1b is design-only and docs/tests-only. The current `POST /v1/credential/authorize` shape remains CGS v1 compatibility, and any future CGS v2 authorize contract must be explicitly versioned before behavior changes land.
 - D1b keeps ES as a non-consumer. Any hypothetical future ES-consumed CGS fact must stay version-gated and limited to allow/deny, opaque decision reference, expiry or another bounded freshness indicator if justified, and audit/evaluation metadata that remains non-authoritative outside CGS.
 - That future fact must not become runtime auth plans, scheduler facts, ES lifecycle/admission facts, runtime-config refs, workload-zone Vault ownership facts, identity-handoff facts, or Control Plane review/approval/checkpoint/finalization semantics.
 - D1b does not rewrite the current `id.conf` grammar or evaluation and does not expand EGS beyond signer/artifact runtime-trust publication.
+- D1d is design-only and docs/tests-only. It does not change current
+  `POST /v1/credential/authorize` behavior, does not implement CGS v2, and
+  does not change EGS trust semantics, ES admission behavior, Workstream E
+  runtime-config ownership, or Workstream F runtime-identity handoff.
 
 **Reopened seams**
 

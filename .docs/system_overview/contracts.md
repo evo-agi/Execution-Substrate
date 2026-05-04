@@ -666,6 +666,12 @@ Current `publication` metadata shape:
   auth-plan material, or ES runtime handoff facts.
 - D1b does not expand this EGS surface. EGS remains signer/artifact
   runtime-trust publication plus separate EGS-owned publication metadata only.
+- D1c is design-only and docs/tests-only. It does not implement EGS v2 or
+  change the current `GET /v1/trust-model` route, wrapper, signed
+  `runtime_trust` payload shape, or signing behavior.
+- The current `GET /v1/trust-model` route plus wrapper/payload shape therefore
+  remains the live EGS v1 compatibility surface until an explicitly versioned
+  replacement exists.
 - Current canonical runtime-trust signing covers:
   - `signer_policy`
   - `artifact_policy`
@@ -677,6 +683,26 @@ Current `publication` metadata shape:
 - `publication.version` and `publication.update_revision` are EGS-owned
   publication metadata. They are not trust-contract, schema, or API
   versioning for the current EGS surface.
+- Future EGS semantic expansion requires explicit wrapper/payload/versioning
+  before implementation.
+- If a future EGS versioned trust wrapper is implemented, it must distinguish:
+  - signed runtime-trust payload facts
+  - unsigned publication/discovery metadata
+  - compatibility routing or API version
+  - non-authoritative service metadata
+- That future wrapper must not carry:
+  - CGS authorization decisions
+  - Control Plane review/approval/checkpoint/finalization semantics
+  - runtime auth plans
+  - Vault token material
+  - JWT-SVIDs
+  - credential payloads
+  - scheduler truth
+  - ES lifecycle/admission truth
+  - runtime-config refs
+  - workload-zone Vault ownership facts
+  - runtime identity handoff facts
+  - AGS/ARS artifact-publication authority
 - ES verifies the EGS signature and then enforces:
   - provenance signer allow-list
   - provenance signer revocation
@@ -765,6 +791,15 @@ Current response shape:
 - The repo now carries a minimal checked-in baseline at `cgs/policy/id.conf`.
   - It is grounded in current Go-repo tests/examples only.
   - It must not be mistaken for a complete production policy file or final long-term policy grammar.
+- `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path`
+  remain local to current CGS v1 evaluation only. They are not a shared
+  policy language, not ES admission policy truth, not EGS trust truth, not
+  Control Plane review/approval/checkpoint/finalization policy truth, and not
+  Infrastructure Manager readiness/profile/support-bundle authority truth.
+- `policy.id_conf_path` remains a CGS-local configuration pointer for current
+  v1 only. It is not a repo-wide policy registry.
+- `id.conf` must not move into runtime-config ownership before Workstream E
+  and must not fold into runtime-identity handoff before Workstream F.
 - Allow and deny both return `200` in the current boundary.
 - Allow responses currently return:
   - `role`
@@ -789,6 +824,8 @@ Current response shape:
 - `id.conf` is an active local policy input and current authorize-shape
   dependency, but it should not be mistaken for a permanent repo-wide policy
   architecture just because it is currently in use.
+- The checked-in `cgs/policy/id.conf` baseline is implementation/config
+  residue, not future product policy architecture.
 - Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
 
 ### D1b design-only future versioned boundary
@@ -823,6 +860,26 @@ Current response shape:
 - D1b does not expand EGS beyond signer/artifact runtime-trust publication and
   does not settle Workstream E runtime-config ownership or Workstream F
   runtime-identity handoff.
+
+### D1d design-only policy-input seam
+
+- D1d is design-only and docs/tests-only. It does not change current
+  `POST /v1/credential/authorize` behavior, does not implement CGS v2, and
+  does not change the current `id.conf` grammar, `policy.id_conf_path`, or
+  checked-in `cgs/policy/id.conf` baseline.
+- `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path`
+  remain current-CGS-v1 compatibility/config residue local to current CGS v1
+  evaluation only.
+- They are not a shared policy language, not ES admission policy truth, not
+  EGS trust truth, not Control Plane
+  review/approval/checkpoint/finalization policy truth, and not
+  Infrastructure Manager readiness/profile/support-bundle authority truth.
+- `policy.id_conf_path` remains a CGS-local current-v1 configuration pointer,
+  not a repo-wide policy registry.
+- `id.conf` must not be moved into runtime-config ownership before Workstream
+  E or folded into runtime-identity handoff before Workstream F.
+- Future policy-input redesign requires explicit Workstream D follow-up and,
+  if it changes CGS semantics, a versioned CGS contract.
 
 ### Reopened seams
 

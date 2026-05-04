@@ -922,7 +922,7 @@ func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
 	admissionModel := compactText(admissionModelRaw)
 
 	assertContainsAll(t, "Workstream D1b design-only plan", workstreamD,
-		"D1b is the next docs/tests-only slice on that seam",
+		"D1b is an accepted docs/tests-only slice on that seam",
 		"keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility",
 		"define any future CGS v2 authorize contract only at design level",
 		"require explicit versioning before any behavior change lands",
@@ -1040,6 +1040,209 @@ func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
 		"D1b does not expand the EGS boundary.",
 		"EGS remains signer/artifact runtime-trust publication plus separate EGS-owned publication metadata only.",
 		"D1b keeps that surface design-stable at signer/artifact runtime trust only",
+	)
+}
+
+func TestWorkstreamD1cEGSVersionedRuntimeTrustWrapperDesignIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
+	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	egsBoundarySection := compactDocSection(t, boundariesRaw, "## 9. EGS boundary", "## 10. CGS boundary")
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+
+	assertContainsAll(t, "Workstream D1c design-only plan", workstreamD,
+		"D1c is an accepted docs/tests-only slice on that seam",
+		"keep the current `GET /v1/trust-model` route plus wrapper/payload shape as EGS v1 compatibility",
+		"define any future EGS versioned runtime-trust wrapper only at design level",
+		"require explicit wrapper/payload/versioning before any semantic expansion lands",
+		"EGS v1 publishing signed `runtime_trust` signer/artifact trust only",
+		"EGS publication metadata remains outside the signed runtime-trust payload",
+		"`publication.version` remains service-owned publication metadata rather than trust-contract/schema/API versioning",
+		"signed runtime-trust payload facts, unsigned publication/discovery metadata, compatibility routing or API version, and non-authoritative service metadata",
+		"CGS authorization decisions",
+		"runtime auth plans",
+		"Vault token material",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler truth",
+		"ES lifecycle/admission truth",
+		"runtime-config refs",
+		"workload-zone Vault ownership facts",
+		"runtime identity handoff facts",
+		"AGS/ARS artifact-publication authority",
+		"ES consuming EGS only for signer/artifact runtime trust",
+		"ES consuming no CGS facts",
+		"does not reopen the accepted Workstream A/B/C decisions",
+		"does not change the Workstream B AGS/ARS artifact publication/storage/discoverability decision or the Workstream C ES admission/runtime public model",
+		"does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "EGS D1c contract design", egsContractSection,
+		"D1c is design-only and docs/tests-only.",
+		"It does not implement EGS v2 or change the current `GET /v1/trust-model` route, wrapper, signed `runtime_trust` payload shape, or signing behavior.",
+		"The current `GET /v1/trust-model` route plus wrapper/payload shape therefore remains the live EGS v1 compatibility surface until an explicitly versioned replacement exists.",
+		"EGS publication metadata remains outside the signed `runtime_trust` payload.",
+		"`publication.version` and `publication.update_revision` are EGS-owned metadata, not signed runtime-trust facts.",
+		"`publication.version` and `publication.update_revision` are EGS-owned publication metadata. They are not trust-contract, schema, or API versioning for the current EGS surface.",
+		"Future EGS semantic expansion requires explicit wrapper/payload/versioning before implementation.",
+		"If a future EGS versioned trust wrapper is implemented, it must distinguish:",
+		"signed runtime-trust payload facts",
+		"unsigned publication/discovery metadata",
+		"compatibility routing or API version",
+		"non-authoritative service metadata",
+		"That future wrapper must not carry:",
+		"CGS authorization decisions",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"runtime auth plans",
+		"Vault token material",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler truth",
+		"ES lifecycle/admission truth",
+		"runtime-config refs",
+		"workload-zone Vault ownership facts",
+		"runtime identity handoff facts",
+		"AGS/ARS artifact-publication authority",
+	)
+
+	assertContainsAll(t, "EGS D1c boundary design", egsBoundarySection,
+		"D1c keeps any future EGS versioned trust wrapper design-only.",
+		"ES continues to consume EGS only for signed signer/artifact runtime trust, while EGS publication metadata remains unsigned service-owned metadata outside that payload.",
+		"D1c is design-only and docs/tests-only.",
+		"It does not implement EGS v2 or change the current `GET /v1/trust-model` route, wrapper, signed `runtime_trust` payload, or signing behavior.",
+		"Any future EGS semantic expansion requires explicit wrapper/payload/versioning before implementation.",
+		"Any future versioned EGS trust wrapper must distinguish signed runtime-trust payload facts, unsigned publication/discovery metadata, compatibility routing or API version, and non-authoritative service metadata.",
+		"That future wrapper must not carry CGS authorization decisions, Control Plane review/approval/checkpoint/finalization semantics, runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler truth, ES lifecycle/admission truth, runtime-config refs, workload-zone Vault ownership facts, runtime identity handoff facts, or AGS/ARS artifact-publication authority.",
+	)
+
+	assertContainsAll(t, "architecture D1c guardrail", architecture,
+		"D1c keeps any future EGS versioned runtime-trust wrapper design-only.",
+		"The current `GET /v1/trust-model` route plus wrapper/payload shape remain the EGS v1 compatibility surface until an explicitly versioned replacement exists.",
+		"Any future EGS versioned trust wrapper must distinguish signed runtime-trust payload facts, unsigned publication/discovery metadata, compatibility routing or API version, and non-authoritative service metadata.",
+		"That hypothetical future wrapper must not carry CGS authorization decisions, Control Plane review/approval/checkpoint/finalization semantics, runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler truth, ES lifecycle/admission truth, runtime-config refs, workload-zone Vault ownership facts, runtime identity handoff facts, or AGS/ARS artifact-publication authority.",
+		"D1c keeps ES consuming EGS only for signer/artifact runtime trust from the signed payload and keeps ES consuming no CGS facts.",
+		"D1c does not change the accepted Workstream B artifact publication/storage/discoverability semantics, does not change the accepted Workstream C ES admission/runtime public model, and does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+	)
+
+	assertContainsAll(t, "configuration D1c metadata note", configuration,
+		"`publication.version` and `publication.update_revision` configure EGS-owned publication metadata. They are not trust-contract/schema/API versioning for the current EGS v1 surface.",
+		"`publication` config remains outside the signed `runtime_trust` payload.",
+		"D1c is design-only and docs/tests-only; it does not introduce EGS v2 config, alter the signed runtime-trust payload shape, or change the current `GET /v1/trust-model` route/wrapper/payload compatibility surface.",
+	)
+
+	assertContainsAll(t, "ES boundary D1c guardrail", esBoundarySection,
+		"D1 keeps ES consuming no CGS facts.",
+		"D1c keeps ES consuming EGS only for signed signer/artifact runtime trust.",
+		"EGS publication metadata remains outside the signed payload and outside ES hot-path admission facts.",
+		"D1c keeps any future EGS versioned runtime-trust wrapper design-only and requires explicit wrapper/payload/versioning before implementation.",
+		"D1c does not change the Workstream B AGS/ARS artifact publication/storage/discoverability decision, does not change the Workstream C ES admission/runtime public model, does not reopen the accepted Workstream A/B/C decisions, and does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "admission model D1c guardrail", admissionModel,
+		"D1c keeps any future EGS versioned runtime-trust wrapper design-only.",
+		"ES continues to consume EGS only for signed signer/artifact runtime trust, and EGS publication metadata remains outside the signed payload and outside ES hot-path admission facts.",
+		"Any future EGS semantic expansion must use explicit wrapper/payload/versioning before implementation and must not import CGS decisions, runtime-config ownership, runtime identity handoff, AGS/ARS artifact-publication authority, or Control Plane orchestration semantics into the EGS trust surface.",
+		"D1c does not change the accepted Workstream B artifact publication/storage/discoverability semantics or the accepted Workstream C ES admission/runtime public model.",
+		"This decision still does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+	)
+}
+
+func TestWorkstreamD1dIDConfCompatibilityDowngradeIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
+	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	cgsBoundarySection := compactDocSection(t, boundariesRaw, "## 10. CGS boundary", "## 11. Cross-cutting packages that are not service boundaries")
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+
+	assertContainsAll(t, "Workstream D1d design-only plan", workstreamD,
+		"D1d is an accepted docs/tests-only slice on that seam",
+		"keep checked-in `cgs/policy/id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as current-CGS-v1 compatibility/config residue only",
+		"`id.conf` is not a shared policy language",
+		"not an ES admission policy input",
+		"not an EGS trust input",
+		"not a Control Plane review/approval/checkpoint/finalization policy input",
+		"not an Infrastructure Manager readiness/profile/support-bundle authority input",
+		"keeps the current CGS v1 subject grammar local to current CGS v1 evaluation",
+		"keeps the checked-in `cgs/policy/id.conf` baseline as implementation/config residue rather than future product policy architecture",
+		"keeps `policy.id_conf_path` as a CGS-local current-v1 configuration pointer rather than a repo-wide policy registry",
+		"must not move `id.conf` into runtime-config ownership before Workstream E or fold it into runtime-identity handoff before Workstream F",
+		"Future policy-input redesign requires explicit Workstream D follow-up and, if it changes CGS semantics, a versioned CGS contract.",
+		"D1d does not change CGS v1 authorize behavior, does not implement CGS v2, and does not change EGS, ES admission, Workstream E runtime-config ownership, or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "Workstream D checkpoint status", workstreamD,
+		"D0-D1d completed the guardrail/design phase.",
+		"Workstream D remains open;",
+		"the long-term CGS authorize DTO, future CGS/EGS versioned contracts, and long-term `id.conf`/policy-input model remain reopened seams.",
+		"Those remaining D seams are non-blocking follow-ups for Workstream E planning.",
+		"No D2 behavior-changing slice is required before Workstream E planning.",
+		"D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "CGS D1d contract seam", cgsContractSection,
+		"`id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` remain local to current CGS v1 evaluation only.",
+		"They are not a shared policy language, not ES admission policy truth, not EGS trust truth, not Control Plane review/approval/checkpoint/finalization policy truth, and not Infrastructure Manager readiness/profile/support-bundle authority truth.",
+		"`policy.id_conf_path` remains a CGS-local configuration pointer for current v1 only. It is not a repo-wide policy registry.",
+		"`id.conf` must not move into runtime-config ownership before Workstream E and must not fold into runtime-identity handoff before Workstream F.",
+		"The checked-in `cgs/policy/id.conf` baseline is implementation/config residue, not future product policy architecture.",
+		"D1d is design-only and docs/tests-only.",
+		"It does not change current `POST /v1/credential/authorize` behavior, does not implement CGS v2, and does not change the current `id.conf` grammar, `policy.id_conf_path`, or checked-in `cgs/policy/id.conf` baseline.",
+		"Future policy-input redesign requires explicit Workstream D follow-up and, if it changes CGS semantics, a versioned CGS contract.",
+	)
+
+	assertContainsAll(t, "CGS D1d boundary seam", cgsBoundarySection,
+		"D1d keeps `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as CGS-local current-v1 compatibility/config residue rather than a shared policy language or repo-wide policy registry.",
+		"D1d keeps those surfaces out of ES admission policy truth, EGS trust truth, Control Plane review/approval/checkpoint/finalization policy truth, and Infrastructure Manager readiness/profile/support-bundle authority truth.",
+		"D1d keeps `id.conf` out of Workstream E runtime-config ownership and Workstream F runtime-identity handoff.",
+		"D1d is design-only and docs/tests-only.",
+		"It does not change current `POST /v1/credential/authorize` behavior, does not implement CGS v2, and does not change EGS trust semantics, ES admission behavior, Workstream E runtime-config ownership, or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "architecture D1d seam", architecture,
+		"D1d keeps `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` as current-CGS-v1 compatibility/config residue local to CGS v1 evaluation only.",
+		"They are not a shared policy language, not ES admission policy input, not EGS trust input, not Control Plane review/approval/checkpoint/finalization policy input, and not Infrastructure Manager readiness/profile/support-bundle authority input.",
+		"D1d keeps `id.conf` out of Workstream E runtime-config ownership and Workstream F runtime-identity handoff.",
+		"Future policy-input redesign requires explicit Workstream D follow-up and a versioned CGS contract if CGS semantics change.",
+	)
+
+	assertContainsAll(t, "configuration D1d seam", configuration,
+		"`policy.id_conf_path` remains a CGS-local current-v1 configuration pointer only. It is not a repo-wide policy registry, runtime-config owner surface, or runtime-identity handoff input.",
+		"the current `id.conf` grammar and checked-in baseline remain local to current CGS v1 evaluation only",
+		"they are not ES admission policy truth",
+		"they are not EGS trust truth",
+		"they are not Control Plane review/approval/checkpoint/finalization policy truth",
+		"they are not Infrastructure Manager readiness/profile/support-bundle authority truth",
+		"D1d does not move `id.conf` into Workstream E runtime-config ownership or Workstream F runtime-identity handoff",
+	)
+
+	assertContainsAll(t, "ES boundary D1d non-consumer seam", esBoundarySection,
+		"D1 keeps ES consuming no CGS facts.",
+		"D1d keeps `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` outside the ES admission model.",
+		"They remain CGS-local current-v1 compatibility/config residue, not ES admission policy truth, runtime-config ownership input, or runtime-identity handoff input.",
+	)
+
+	assertContainsAll(t, "admission model D1d seam", admissionModel,
+		"D1d keeps `id.conf`, the current CGS v1 subject grammar, and `policy.id_conf_path` outside the ES admission model.",
+		"They remain CGS-local current-v1 compatibility/config residue, not ES admission policy truth, runtime-config ownership input, or runtime-identity handoff input.",
+		"D1d does not implement CGS v2, does not change EGS trust semantics, does not change ES admission behavior, and still does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
 	)
 }
 

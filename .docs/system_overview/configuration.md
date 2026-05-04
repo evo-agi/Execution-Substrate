@@ -168,6 +168,13 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
 - `publication.update_revision` must be greater than `0`
 - `runtime_trust.signer_policy.allowed_signers` and `revoked_signers` must not contain duplicates or empty values
 - `runtime_trust.artifact_policy.revoked_artifacts`, if present, must contain labeled SHA-256 digests
+- `publication.version` and `publication.update_revision` configure
+  EGS-owned publication metadata. They are not trust-contract/schema/API
+  versioning for the current EGS v1 surface.
+- `publication` config remains outside the signed `runtime_trust` payload.
+  D1c is design-only and docs/tests-only; it does not introduce EGS v2
+  config, alter the signed runtime-trust payload shape, or change the current
+  `GET /v1/trust-model` route/wrapper/payload compatibility surface.
 
 For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must include the AGS signer key ID used for provenance.
 
@@ -440,6 +447,16 @@ recursive chown or broad deletion.
 - that checked-in file and `policy.id_conf_path` are current-CGS-v1 compatibility/config residue for the current authorize surface
   - they are not documented as transport/schema/API versioning or final repo-wide policy language
   - D1b does not rewrite the current `id.conf` grammar or evaluation and does not promote `id.conf` into repo-wide future policy language
+- `policy.id_conf_path` remains a CGS-local current-v1 configuration pointer
+  only. It is not a repo-wide policy registry, runtime-config owner surface,
+  or runtime-identity handoff input.
+- the current `id.conf` grammar and checked-in baseline remain local to
+  current CGS v1 evaluation only
+  - they are not ES admission policy truth
+  - they are not EGS trust truth
+  - they are not Control Plane review/approval/checkpoint/finalization policy truth
+  - they are not Infrastructure Manager readiness/profile/support-bundle authority truth
+  - D1d does not move `id.conf` into Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - the current `id.conf` grammar uses explicit `subject` records with:
   - `type`
   - `principal`

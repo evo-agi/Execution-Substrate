@@ -56,6 +56,23 @@ service_id {
 	}
 }
 
+func TestLoadRejectsBroadRepoPolicyRegistryGrammar(t *testing.T) {
+	t.Parallel()
+
+	_, err := policy.Load(writePolicyFile(t, `
+policy_registry "repo" {
+  subject "execution" {
+    type: "service"
+    principal: "spiffe://execution.internal/service/execution"
+    role: "worker"
+  }
+}
+`))
+	if err == nil || !strings.Contains(err.Error(), "invalid subject declaration") {
+		t.Fatalf("expected repo-policy grammar rejection, got %v", err)
+	}
+}
+
 func TestValidateWorkloadRejectsTypePrincipalMismatch(t *testing.T) {
 	t.Parallel()
 
