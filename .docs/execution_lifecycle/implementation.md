@@ -88,6 +88,12 @@ Observability placement:
 Dependency wiring:
 
 - `admission.NewService` builds dependency clients for ARS and EGS and captures the validated workload-zone Vault config reference from ES startup config.
+- The Workstream E E0 decision in
+  `.docs/system_overview/runtime_config_ownership.md` classifies that startup
+  placement as compatibility/config residue on a reopened ownership seam.
+  Runtime-config semantics live in `internal/contracts/runtimeconfig/v1`; ARS
+  owns blob storage/read by digest only; ES is the current consumer and lookup
+  orchestrator.
 - It also builds verifier instances for:
   - TrustModel
   - provenance
@@ -109,6 +115,9 @@ Dependency wiring:
 
 - ES does not start serving until runtime-trust initialization succeeds.
 - ES does not start serving unless `runtime_config.workload_zone_vault_config_ref` validates at startup.
+- That startup rule is a typed reference-availability guarantee, not a startup
+  blob-fetch guarantee and not final runtime-config ownership by ES startup
+  config.
 - Readiness after startup depends on:
   - app `started`
   - trust model loaded
@@ -137,6 +146,8 @@ What the app layer delegates:
 7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
 8. Assemble and return `PrepareResult`.
 
+There is no ACS hop in this runtime-config path.
+
 What `Prepare` reads:
 
 - ARS runtime-facing discovery plus aggregate artifact evidence from ARS
@@ -152,6 +163,8 @@ What `Prepare` reads:
 - `Prepare` does not call CGS or consume a CGS authorize response.
 - `Prepare` returns a bounded result assembled in memory after verification and resolution steps complete.
 - The richer signer/workload/workload-vault composition data stays internal to the shared admission helper instead of leaking through the public `PrepareResult`.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
 
 ## 7. Submit path implementation
 
@@ -186,6 +199,8 @@ Where IDs are created:
 - The public `SubmitResult` now returns `run_id` and bounded receipt status only; Nomad IDs remain internal implementation detail.
 - The submitted Nomad job also carries `run_id` metadata so internal tooling and tests can resolve the current slice without treating the naming rule as public contract.
 - The submitted Nomad job carries narrow ES handoff metadata for `authority_handoff` status recovery. That metadata is an internal evidence carrier for non-secret runtime handoff facts, not a public scheduler identifier surface.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority, live credential truth, or token/lease truth.
 
 Where ES stops and Nomad takes over:
 

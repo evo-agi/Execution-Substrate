@@ -31,6 +31,18 @@ This repository does not ship ready-to-run service config examples. Operators mu
 
 ## Workload-Zone Vault Runtime Config
 
+The Workstream E E0 ownership decision is recorded in
+`.docs/system_overview/runtime_config_ownership.md`. Runtime-config semantics
+live in the runtime-config contract surface; the current typed shared schema is
+`internal/contracts/runtimeconfig/v1`.
+
+ARS owns blob storage/read by digest only. ES is the current runtime-config
+consumer and lookup orchestrator during prepare and submit. ES startup config
+currently carries the required reference as compatibility/config residue on a
+reopened ownership seam.
+
+There is no ACS hop in the runtime-config path.
+
 ### Required config groups
 
 - none as a standalone service
@@ -48,6 +60,15 @@ This repository does not ship ready-to-run service config examples. Operators mu
 
 - `runtime_config.workload_zone_vault_config_ref.digest` must contain the digest of the named workload-zone Vault config blob
 - the current workload-zone Vault blob must satisfy `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
+- the required typed runtime-config reference must be configured and validated
+  before ES serves governed execution traffic; this is a reference-availability
+  startup guarantee, not a startup blob-fetch guarantee
+- the digest-only ref shape is active as a temporary compatibility edge and
+  bounded current surface, not final runtime-config architecture
+- optional `ca_bundle_pem` remains non-secret TLS trust material for standard
+  TLS/env-based verification, not runtime-config authority or token truth
+- runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads,
+  leases, Codex credential material, or runtime identity handoff
 
 Minimal reference example:
 
@@ -226,6 +247,8 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call the ES execution and lifecycle APIs
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract
 - `verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes
 - those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS

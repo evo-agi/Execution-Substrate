@@ -2,6 +2,7 @@ package executionsubstrate_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1244,6 +1245,240 @@ func TestWorkstreamD1dIDConfCompatibilityDowngradeIsDocumented(t *testing.T) {
 		"They remain CGS-local current-v1 compatibility/config residue, not ES admission policy truth, runtime-config ownership input, or runtime-identity handoff input.",
 		"D1d does not implement CGS v2, does not change EGS trust semantics, does not change ES admission behavior, and still does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
 	)
+}
+
+func TestWorkstreamERuntimeConfigOwnershipDecisionIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	decisionRaw := mustRead(t, ".docs/system_overview/runtime_config_ownership.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	implementationRaw := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+
+	plans := compactText(plansRaw)
+	decision := compactText(decisionRaw)
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	workstreamE := compactDocSection(t, plansRaw, "### Workstream E - Lookup And Config Indirection Reset", "### Workstream F - Runtime Identity Handoff Reset")
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+	runtimeConfigContract := compactDocSection(t, contractsRaw, "## 4. Workload-Zone Vault Runtime-Config Contract", "## 5. AGS Publication Contract")
+	runtimeConfigBoundary := compactDocSection(t, boundariesRaw, "## 5. Workload-zone Vault runtime-config surface", "## 6. ARS boundary")
+	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	prepareContract := compactDocSection(t, lifecycleContractsRaw, "## 5. Prepare contract", "## 6. Submit contract")
+	authorityHandoffContract := compactDocSection(t, lifecycleContractsRaw, "### Authority handoff read surface", "### Error contract")
+	implementationApp := compactDocSection(t, implementationRaw, "## 5. Application wiring", "## 6. Prepare path implementation")
+	implementationPrepare := compactDocSection(t, implementationRaw, "## 6. Prepare path implementation", "## 7. Submit path implementation")
+
+	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "runtime-config ownership decision doc")
+	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
+		t.Fatalf("runtime-config ownership decision doc missing authority preface")
+	}
+
+	assertContainsAll(t, "PLANS Workstream D checkpoint remains open", workstreamD,
+		"D0-D1d completed the guardrail/design phase.",
+		"Workstream D remains open;",
+		"No D2 behavior-changing slice is required before Workstream E planning.",
+		"D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+	assertContainsAll(t, "PLANS Workstream E E0 status", workstreamE,
+		"The Workstream E runtime-config ownership decision is recorded in `.docs/system_overview/runtime_config_ownership.md`.",
+		"E0 is docs/tests-only.",
+		"Runtime-config semantics are owned by the runtime-config contract surface.",
+		"The current typed shared schema for workload-zone Vault runtime config is `internal/contracts/runtimeconfig/v1`.",
+		"ARS owns blob storage and read by digest only.",
+		"ES is the current runtime-config consumer and lookup orchestrator during `:prepare` and `:submit`.",
+		"ES startup config currently carries the required workload-zone Vault runtime-config reference. That placement is compatibility/config residue on a reopened ownership seam, not the declared final owner.",
+		"The startup guarantee remains: the required typed runtime-config reference must be configured and validated before ES serves governed execution traffic.",
+		"The digest-only ref shape is active as a temporary compatibility edge and bounded current surface",
+		"There is no ACS hop in the runtime-config path.",
+		"Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material, or runtime identity handoff.",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only, not runtime-config authority or live credential truth.",
+		"E0 preserves `GET /v1/executions:contract`, `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP compatibility, and M6 support-bundle inputs.",
+		"E0 does not settle Workstream F runtime-identity handoff, does not reopen Workstreams A/B/C, does not mark full Workstream D complete, and does not mark full Workstream E complete.",
+	)
+	assertContainsAll(t, "PLANS Workstream F dependency", workstreamF,
+		"Dependencies: - Workstream C - Workstream D - Workstream E",
+	)
+
+	assertContainsAll(t, "runtime-config ownership decision summary", decision,
+		"E0 documents the current ownership model before any behavior-changing Workstream E implementation.",
+		"Runtime-config semantics are owned by the runtime-config contract surface, not by ARS blob mechanics, ES startup placement, CGS, EGS publication metadata, IM profiles, support bundles, or CP orchestration.",
+		"The current typed shared schema for workload-zone Vault runtime config is `internal/contracts/runtimeconfig/v1`.",
+		"ARS owns blob storage and blob read by digest.",
+		"ES is the current runtime-config consumer and lookup orchestrator during `:prepare` and `:submit`.",
+		"That placement is compatibility/config residue on a reopened ownership seam, not the declared final owner.",
+		"This is a reference-availability guarantee, not a new E0 guarantee that the ARS blob has been fetched before startup completes.",
+		"The digest-only reference shape is active today as a temporary compatibility edge and bounded current surface.",
+		"There is no ACS hop in the runtime-config path.",
+		"Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material, or runtime identity handoff.",
+		"Optional workload-zone Vault CA trust material remains standard non-secret TLS/env-based trust configuration only.",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior.",
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only.",
+		"E0 preserves ES public execution DTOs, `GET /v1/executions:contract`, `POST /v1/executions:prepare`, and `control-plane-normal-shell/v1`.",
+		"E0 does not settle Workstream F runtime-identity handoff.",
+		"E0 does not reopen Workstream A, Workstream B, or Workstream C. It does not mark full Workstream D complete and does not mark full Workstream E complete.",
+	)
+
+	dExclusions := compactDocSection(t, decisionRaw, "## 6. Required D exclusions", "## 7. Workstream F stop lines")
+	assertContainsAll(t, "runtime-config ownership D exclusions", dExclusions,
+		"CGS authorize output",
+		"`id.conf`",
+		"`policy.id_conf_path`",
+		"`audit.policy_version`",
+		"EGS `publication.version`",
+		"EGS unsigned publication metadata",
+		"AGS `policy_decisions`",
+		"ES retained bundles",
+		"ES `outcome_evidence`",
+		"ES `authority_handoff`",
+		"IM profiles",
+		"support bundles",
+		"logs, traces, reports, and `.out` artifacts",
+		"CP review/approval/checkpoint/finalization state",
+		"These exclusions preserve the accepted D0-D1d guardrails.",
+	)
+
+	fStopLines := compactDocSection(t, decisionRaw, "## 7. Workstream F stop lines", "## 8. Remaining Workstream E seams")
+	assertContainsAll(t, "runtime-config ownership F stop lines", fStopLines,
+		"runtime identity handoff ownership",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT`",
+		"SPIRE or Vault handoff implementation",
+		"reserved runtime paths",
+		"runtime helper behavior",
+		"workload UID/GID or task-user semantics",
+		"Vault JWT login protocol",
+		"token, lease, or credential lifecycle semantics",
+		"That remains Workstream F.",
+	)
+
+	assertContainsAll(t, "system contracts runtime-config E0 alignment", runtimeConfigContract,
+		"`runtime_config_ownership.md`",
+		"There is no ACS hop in the runtime-config path.",
+		"Runtime-config semantics are owned by the runtime-config contract surface",
+		"Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material, or runtime identity handoff.",
+		"ES is the current runtime-config consumer and lookup orchestrator during `:prepare` and `:submit`.",
+		"ARS owns blob storage and retrieval by digest only. ARS does not own workload-zone Vault runtime-config semantics.",
+		"ES startup-config placement of `runtime_config.workload_zone_vault_config_ref` is compatibility/config residue on a reopened ownership seam",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only, not runtime-config authority or live credential truth.",
+	)
+
+	assertContainsAll(t, "system boundaries runtime-config E0 alignment", runtimeConfigBoundary,
+		"Runtime-config semantics for the current workload-zone Vault reference/blob surface",
+		"ARS blob mechanics as semantic ownership of workload-zone Vault config",
+		"Runtime-config authority from CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, EGS `publication.version`, EGS unsigned publication metadata, AGS `policy_decisions`, ES retained bundles, ES `outcome_evidence`, ES `authority_handoff`, IM profiles, support bundles, logs, traces, reports, `.out` artifacts, or CP review/approval/checkpoint/finalization state",
+		"Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material, or runtime identity handoff",
+		"No ACS hop exists in the current runtime-config path",
+		"ES startup-config placement of `runtime_config.workload_zone_vault_config_ref` is compatibility/config residue on a reopened ownership seam.",
+		"The digest-only ref shape is an active temporary compatibility edge and bounded current surface.",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only, not runtime-config authority or live credential truth.",
+	)
+
+	assertContainsAll(t, "ES boundary runtime-config E0 alignment", esBoundary,
+		"Current runtime-config consumer and lookup orchestration during prepare and submit",
+		"`internal/contracts/runtimeconfig/v1`",
+		"Runtime-config semantic ownership beyond ES's current consumer/lookup role",
+		"`authority_handoff.runtime_config_refs` as runtime-config authority or live credential truth",
+	)
+
+	assertContainsAll(t, "architecture runtime-config E0 alignment", architecture,
+		"`.docs/system_overview/runtime_config_ownership.md`: runtime-config semantics live in the runtime-config contract surface, ARS owns blob storage/read by digest only, and ES is the current consumer and lookup orchestrator.",
+		"ES startup config currently carries the required workload-zone Vault runtime-config reference as compatibility/config residue on a reopened ownership seam",
+		"does that runtime-config lookup directly, with no ACS hop",
+		"`internal/contracts/runtimeconfig/v1` owns the typed semantics, ARS owns blob storage/read by digest",
+		"ARS blob mechanics, ES startup placement, CGS, EGS publication metadata, IM profiles, support bundles, CP orchestration state, and evidence/report artifacts are not runtime-config authority.",
+		"ES startup-config placement of `runtime_config.workload_zone_vault_config_ref`, the digest-only ref shape, and `workload_vault_auth.default_mode` are compatibility/config residue or bounded current surfaces for Workstream E",
+	)
+
+	assertContainsAll(t, "configuration runtime-config E0 alignment", configuration,
+		"Runtime-config semantics live in the runtime-config contract surface; the current typed shared schema is `internal/contracts/runtimeconfig/v1`.",
+		"ARS owns blob storage/read by digest only. ES is the current runtime-config consumer and lookup orchestrator during prepare and submit.",
+		"There is no ACS hop in the runtime-config path.",
+		"the required typed runtime-config reference must be configured and validated before ES serves governed execution traffic",
+		"not a startup blob-fetch guarantee",
+		"the digest-only ref shape is active as a temporary compatibility edge and bounded current surface",
+		"optional `ca_bundle_pem` remains non-secret TLS trust material",
+		"runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material, or runtime identity handoff",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract",
+	)
+
+	assertContainsAll(t, "admission model runtime-config E0 alignment", admissionModel,
+		"`.docs/system_overview/runtime_config_ownership.md`",
+		"`internal/contracts/runtimeconfig/v1` owns the typed semantics, ARS owns blob storage/read by digest only, and ES is the current consumer and lookup orchestrator during `:prepare` and `:submit`. There is no ACS hop.",
+		"ES startup-config placement of the required runtime-config ref is compatibility/config residue on a reopened Workstream E ownership seam.",
+		"The startup guarantee is that the typed ref is configured and validated before ES serves governed execution traffic",
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only.",
+		"Workload-zone Vault runtime-config lookup | `bounded slice rule`",
+		"Current `authority_handoff.runtime_config_refs` digest evidence",
+		"Do not treat ARS blob mechanics, ES startup placement, CGS authorize output, EGS publication metadata, IM profiles, support bundles, logs, traces, reports, retained bundles, `.out` artifacts, CP review/approval/checkpoint/finalization state, `authority_handoff`, or `outcome_evidence` as runtime-config authority.",
+	)
+
+	assertContainsAll(t, "execution lifecycle prepare runtime-config E0 alignment", prepareContract,
+		"`.docs/system_overview/runtime_config_ownership.md`",
+		"runtime-config semantics live in `internal/contracts/runtimeconfig/v1`, ARS owns blob storage/read by digest only, ES is the current consumer and lookup orchestrator, and no ACS hop exists.",
+		"ES startup-config placement of the required runtime-config reference is compatibility/config residue on a reopened ownership seam",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
+	)
+	assertContainsAll(t, "execution lifecycle authority handoff runtime-config E0 alignment", authorityHandoffContract,
+		"`authority_handoff.runtime_config_refs` is non-secret handoff evidence only.",
+		"`runtime_config_refs` inside `authority_handoff` identifies the selected workload-zone Vault config digest as evidence only.",
+		"must not be used as runtime-config authority or live credential truth",
+	)
+
+	assertContainsAll(t, "execution implementation runtime-config E0 alignment", compactText(implementationApp+" "+implementationPrepare),
+		"`.docs/system_overview/runtime_config_ownership.md`",
+		"Runtime-config semantics live in `internal/contracts/runtimeconfig/v1`; ARS owns blob storage/read by digest only; ES is the current consumer and lookup orchestrator.",
+		"That startup rule is a typed reference-availability guarantee, not a startup blob-fetch guarantee and not final runtime-config ownership by ES startup config.",
+		"There is no ACS hop in this runtime-config path.",
+		"CGS is not a current read dependency of `Prepare` or `Submit`",
+		"`workload_vault_auth.default_mode` is current ES config residue and bounded current behavior, not a generalized runtime-auth-plan contract.",
+	)
+
+	assertContainsAll(t, "PLANS E0 global docs", plans,
+		"E0 preserves `GET /v1/executions:contract`, `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP compatibility, and M6 support-bundle inputs.",
+	)
+}
+
+func TestWorkstreamERuntimeConfigOwnershipKeepsESCGSOutOfESInternal(t *testing.T) {
+	forbidden := []string{
+		"execution-substrate/cgs",
+		"credential-governance",
+		"/v1/credential/authorize",
+		"id.conf",
+		"id_conf_path",
+	}
+
+	for _, root := range []string{"es", "internal"} {
+		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			text := string(data)
+			for _, phrase := range forbidden {
+				if strings.Contains(text, phrase) {
+					t.Fatalf("%s must not contain ES/internal CGS or id.conf dependency phrase %q", path, phrase)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
 }
 
 func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {

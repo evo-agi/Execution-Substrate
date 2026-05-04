@@ -64,6 +64,11 @@ Top-level interaction notes:
 - Nomad is the execution backend and lifecycle authority for submitted work.
 - ES status exposes a bounded `lifecycle_projection` fact derived from Nomad observation so consumers can compare status reads without inferring scheduler identifiers or ES-owned run persistence.
 - ES submit/status expose a bounded non-secret `authority_handoff` fact when ES can state the submitted runtime authority path from facts it selected and handed off. This is not live credential state or scheduler identity.
+- The Workstream E E0 runtime-config ownership decision lives in
+  `.docs/system_overview/runtime_config_ownership.md`: runtime-config
+  semantics live in the runtime-config contract surface, ARS owns blob
+  storage/read by digest only, and ES is the current consumer and lookup
+  orchestrator.
 - Docker is the container runtime used underneath Nomad in the current slice.
 - The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
@@ -73,6 +78,10 @@ Top-level interaction notes:
 - The supported-environment story for that topology is narrower than the original all-in-one local bring-up convenience path: the intended supported slice-0 environment is a Linux host/VM with a pre-managed non-dev Nomad client/server that is naturally schedulable without `cpu_total_compute` override, while the script-managed local Nomad startup path remains bounded fallback/troubleshooting scaffolding.
 - `internal/contracts/evidence/v1` is now the active shared kernel for the primary AGS-published artifact path into ES.
 - `internal/contracts/runtimeconfig/v1` is the active shared runtime-config surface for the workload-zone Vault config reference and blob schema.
+- ES startup config currently carries the required workload-zone Vault
+  runtime-config reference as compatibility/config residue on a reopened
+  ownership seam; the startup guarantee is the typed reference, not a new
+  startup blob-fetch guarantee.
 - `internal/httpx` is cross-cutting transport support for strict JSON request decoding and consistent HTTP response writing.
 - `internal/observability` is cross-cutting support, not a system boundary.
 
@@ -96,11 +105,18 @@ At a high level, ES:
 - accepts execution requests through bounded preflight `:prepare` and primary submission `:submit`
 - reads aggregate artifact evidence and payloads from ARS through the primary runtime-facing discovery record
 - reads the workload-zone Vault config blob from ARS using the startup-configured `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`
+- does that runtime-config lookup directly, with no ACS hop
 - loads and enforces the EGS trust model
 - stages payload and mount data locally
 - hands execution off to Nomad
 
 ES does not own artifact publication, artifact storage, trust publication, or scheduler state. It composes those inputs into a bounded execution decision and submission.
+
+For the workload-zone Vault runtime-config path, ES is the current consumer and
+lookup orchestrator only. `internal/contracts/runtimeconfig/v1` owns the typed
+semantics, ARS owns blob storage/read by digest, and the current digest-only
+reference plus ES startup-config placement remain active compatibility/config
+surfaces rather than final architecture.
 
 For the main AGS-published artifact path, ES now requires the aggregate `internal/contracts/evidence/v1` record. Missing or corrupt aggregate evidence is an admission failure, not a reason to re-enter the legacy fact family.
 
@@ -198,6 +214,11 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - EGS publishes policy; it does not publish runtime state or own artifact execution.
 - CGS is a separate authorization boundary and is not in the current ES hot path.
 - `internal/contracts/evidence/v1` is the only active shared artifact kernel in the current repo, and its scope must stay intentional rather than expanding casually.
+- `internal/contracts/runtimeconfig/v1` is the current typed runtime-config
+  schema surface for workload-zone Vault config semantics. ARS blob mechanics,
+  ES startup placement, CGS, EGS publication metadata, IM profiles, support
+  bundles, CP orchestration state, and evidence/report artifacts are not
+  runtime-config authority.
 - ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
 - ES lifecycle projection revisions are read-coordination facts only; they do not create ES-owned lifecycle state or write preconditions.
 - ES-owned contracts are defined by this repository's `PLANS.md` and `.docs/` pages. Control Plane consumption docs may rely on accepted ES surfaces, but they do not widen or own ES core semantics.
@@ -235,6 +256,11 @@ These are current architectural absences, not omissions to fill automatically.
 
 - `GET /v1/executions:contract` is active today as a narrow producer compatibility declaration for the current CP governed-execution path. It is not a broad capability registry or readiness substitute.
 - `POST /v1/executions:prepare` is active today but explicitly bounded as a small preflight-success surface rather than declared as the permanent execution API shape.
+- ES startup-config placement of
+  `runtime_config.workload_zone_vault_config_ref`, the digest-only ref shape,
+  and `workload_vault_auth.default_mode` are compatibility/config residue or
+  bounded current surfaces for Workstream E; they must not be treated as final
+  runtime-config architecture by inertia.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
 - The containerized hot path currently relies on Docker host networking for control-plane reachability during slice 0; that is a temporary compatibility-heavy deployment convention, not the final control-plane network model.

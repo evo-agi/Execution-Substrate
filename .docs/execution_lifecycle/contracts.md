@@ -225,6 +225,17 @@ Successful response is `200` JSON with these contract fields:
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
+- The Workstream E E0 decision in
+  `.docs/system_overview/runtime_config_ownership.md` classifies this path:
+  runtime-config semantics live in `internal/contracts/runtimeconfig/v1`, ARS
+  owns blob storage/read by digest only, ES is the current consumer and lookup
+  orchestrator, and no ACS hop exists.
+- ES startup-config placement of the required runtime-config reference is
+  compatibility/config residue on a reopened ownership seam, while startup
+  validation still guarantees the typed reference is configured before ES
+  serves governed execution traffic.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
 - `.docs/system_overview/artifact_publication_storage.md` records the authoritative Workstream B publication/storage/discoverability decision that this prepare contract consumes. On the current hot path ES follows ARS discovery plus explicit evidence/payload references, keeps descriptor/manifest support paths as secondary compatibility support rather than ES public grammar, and preserves the explicit separation between `artifact_digest` and `payload_digest`.
 - `:prepare` does not surface EGS publication metadata or internal composition detail as part of its preparation result.
 - `:prepare` does not treat Control Plane orchestration, review, checkpoint, finalization, task-attempt, or proof-harness metadata as shared admission facts.
@@ -416,6 +427,9 @@ Successful response is `200` JSON with these current fields:
 - Callers may compare `lifecycle_projection.revision` values for the same `run_id` to detect that ES observed a different lifecycle projection.
 - Callers must not parse or order `lifecycle_projection.revision`, infer scheduler or backend state from it, treat it as a Nomad job/allocation identifier or index, or use it as a write precondition for `logs`, `result`, or `cancel`.
 - `authority_handoff`, when present, is recovered from the submitted runtime spec and remains a bounded non-secret read fact. It does not make status a run store, scheduler abstraction, live credential observation, or Control Plane orchestration record.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only.
+  It is not runtime-config authority, live credential truth, token or lease
+  truth, or workload-zone Vault semantic ownership.
 - If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
 - Once an allocation is selected and not terminal, status returns `status = "running"`.
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
@@ -474,6 +488,10 @@ Current shape:
 - It contains only non-secret handoff facts ES selected, derived, or injected at admission/runtime handoff time.
 - It must not expose Nomad job IDs, allocation IDs, task IDs, raw SPIRE socket source paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, token expirations, or rich policy/approval state.
 - Its evidence labels identify the bounded source family for each fact; they are not write preconditions and not ordering tokens.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only.
+- `runtime_config_refs` inside `authority_handoff` identifies the selected
+  workload-zone Vault config digest as evidence only. It must not be used as
+  runtime-config authority or live credential truth.
 
 **Bounded slice contract**
 

@@ -11,7 +11,9 @@ current CP compatibility explicit for the current governed execution path. It
 does not settle:
 
 - Workstream D policy/authorization redesign
-- Workstream E runtime-config ownership redesign
+- Workstream E runtime-config ownership redesign beyond the E0
+  docs/tests-only ownership decision in
+  `.docs/system_overview/runtime_config_ownership.md`
 - Workstream F runtime-identity redesign
 - Control Plane orchestration, review, checkpoint, escalation, or finalization
   semantics
@@ -49,6 +51,15 @@ the code and tests win and this document must be realigned.
   runtime-trust output, the configured workload-zone Vault runtime-config
   reference/blob, and caller authentication plus the configured SPIFFE
   allowlist.
+- For the workload-zone Vault runtime-config path, E0 records that
+  `internal/contracts/runtimeconfig/v1` owns the typed semantics, ARS owns blob
+  storage/read by digest only, and ES is the current consumer and lookup
+  orchestrator during `:prepare` and `:submit`. There is no ACS hop.
+- ES startup-config placement of the required runtime-config ref is
+  compatibility/config residue on a reopened Workstream E ownership seam. The
+  startup guarantee is that the typed ref is configured and validated before ES
+  serves governed execution traffic, not that E0 adds a startup blob-fetch
+  behavior.
 - ES admission composition remains CGS-independent in the current hot path.
   D1a preserves that ES consumes no CGS facts. Workstream D may later redesign
   policy/authorization ownership, but any later ES-consumed authorization fact
@@ -99,6 +110,9 @@ the code and tests win and this document must be realigned.
 - `lifecycle_projection`, `authority_handoff`, and `outcome_evidence` remain
   bounded additive read surfaces. They do not become scheduler identity, write
   coordination, credential truth, approval truth, or CP lifecycle state.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only.
+  It is not runtime-config authority, live credential truth, or a source of
+  workload-zone Vault semantics.
 - ES retained results remain opaque output bundles. They do not become CP
   checkpoint, review, finalization, or orchestration state.
 
@@ -134,6 +148,7 @@ the code and tests win and this document must be realigned.
 | Scheduler handoff after `:submit` | `stable contract` | Successful submit hands execution to Nomad. ES keeps only the bounded receipt and read-through projection responsibilities after that handoff. |
 | `lifecycle_projection` | `bounded slice rule` | `source` and `revision` are opaque same-run read-coordination facts derived from Nomad observation only. |
 | Payload/runtime package resolution | `stable contract` | ES resolves payload bytes through designed ARS discovery plus explicit evidence/payload relationships, cross-checks those facts against aggregate evidence, and keeps descriptor/manifest support outside ES hot-path public grammar. |
+| Workload-zone Vault runtime-config lookup | `bounded slice rule` | ES is the current consumer and lookup orchestrator during `:prepare` and `:submit`: it reads the validated startup ref, fetches the ARS blob by digest, and decodes typed `internal/contracts/runtimeconfig/v1` data. Runtime-config semantics live in that contract surface, ARS owns blob read by digest only, and no ACS hop exists. |
 | Current `/execution/...` runtime path conventions | `temporary compatibility edge` | `/execution/staged`, `/execution/run`, `/execution/run/result`, and the run-scoped runtime-identity backing tree remain current runtime/package conventions only. |
 | Runtime-profile selection | `temporary compatibility edge` | `invocation.annotations["execution_substrate.runtime_profile"]` plus `control-plane-normal-shell/v1` remains the current opt-in `static-script` runtime overlay. Unsupported or disabled selection fails `:prepare`/`:submit`. |
 | `authority_handoff` read surface | `bounded slice rule` | Additive non-secret runtime handoff evidence on submit/status for facts ES selected and handed off. |
@@ -160,6 +175,7 @@ ES does not own:
 | `invocation.annotations["execution_substrate.runtime_profile"]` plus `control-plane-normal-shell/v1` and the current `static-script` overlay | Preserve the accepted CP normal-shell runtime selection path without widening it into a package-kind redesign or CP control-plane transfer. | Annotation-selected ES runtime-profile choice and the bounded `static-script` runtime overlay for the current CP normal-shell attempt slice only. | ES request contract and ES runtime-boundary contract. | `system-visible` | Remove or change only after an ES-owned replacement runtime-profile/package-selection contract and coordinated compatibility/versioning plan are documented first. |
 | Current `/execution/staged`, `/execution/run`, `/execution/run/result`, and run-scoped runtime-identity path conventions | Preserve the current execution-package/runtime layout while the runtime/package seam remains reopened. | Current container-visible runtime paths, retained-result directory convention, and runtime-identity backing-tree conventions only. | ES runtime package boundary and ES runtime handoff boundary. | `local-runtime-only` | Remove or change only after a documented runtime-boundary redesign re-derives the execution-package layout and reserved-path conventions first. |
 | Current `authority_handoff` field names and evidence-source labels | Preserve the current CP/IM-consumable runtime handoff evidence vocabulary while the request/runtime-identity seam remains open. | Submit/status `authority_handoff` JSON field names, nested shape, and evidence labels only. | ES public execution contract and ES runtime handoff boundary. | `system-visible` | Remove or change only after a documented replacement handoff vocabulary and explicit compatibility/versioning plan exist. |
+| Current `authority_handoff.runtime_config_refs` digest evidence | Preserve the non-secret handoff evidence that identifies which workload-zone Vault config digest ES selected without promoting it into authority. | `authority_handoff.runtime_config_refs.workload_zone_vault_config.digest` only. It is evidence, not runtime-config authority, live credential truth, or token/lease truth. | ES public execution contract, Workstream E runtime-config boundary, and ES runtime handoff boundary. | `system-visible` | Remove or change only after a documented replacement handoff-evidence vocabulary and explicit compatibility/versioning plan exist. |
 | Current `outcome_evidence` JSON field layout and successful logs/result evidence headers | Preserve the current consumer evidence-parsing vocabulary while lifecycle observation remains bounded to the current Nomad/retained-result slice. | Status/cancel JSON `outcome_evidence`, successful logs/result outcome headers, and the current observation/access-class labels only. | ES public lifecycle contract. | `system-visible` | Remove or change only after a documented replacement observation vocabulary and explicit compatibility/versioning plan exist. |
 | Current `GET /v1/executions/{run_id}/result` route plus retained `application/gzip` bundles keyed by public `run_id` | Preserve the current retained-result retrieval path while the longer-term result-materialization seam remains open. | Public result-route path, `run_id`-keyed lookup, `application/gzip` media type, opaque tar.gz result-bundle behavior, and the current CP-consumed result retrieval path only. | ES public result contract, retained-result boundary, and ES/CP consumer boundary. | `system-visible` | Remove or change only after a documented replacement result-retrieval surface or explicit compatibility/versioning plan exists. |
 
@@ -195,6 +211,7 @@ ES does not own:
 | Long-term execution-package layout and `/execution/...` conventions | `reopened seam` | The current runtime package layout is localized inside ES, but its long-term path and reserved-directory conventions remain open. |
 | Long-term runtime identity handoff owner behind the public endpoint | `reopened seam` | Workstream C preserves the ES-owned handoff boundary only; Workstream F remains the place to settle the final runtime-identity ownership model. |
 | Long-term workload-zone Vault runtime-config owner | `reopened seam` | Workstream C preserves consumption of the current runtime-config reference/blob, but Workstream E remains the place to settle the long-term owner. |
+| ES startup-config placement of workload-zone Vault runtime-config ref | `reopened seam` | E0 classifies the current placement as compatibility/config residue; a later Workstream E slice must decide whether the startup guarantee moves to another owner. |
 
 ## 5. Guardrails for future edits
 
@@ -206,6 +223,11 @@ ES does not own:
   filesystem paths, or bundle internals as public lifecycle authority.
 - Do not bypass ARS storage/discoverability authority, EGS runtime-trust
   publication, or configured runtime-config ownership to make admission easier.
+- Do not treat ARS blob mechanics, ES startup placement, CGS authorize output,
+  EGS publication metadata, IM profiles, support bundles, logs, traces,
+  reports, retained bundles, `.out` artifacts, CP
+  review/approval/checkpoint/finalization state, `authority_handoff`, or
+  `outcome_evidence` as runtime-config authority.
 - Do not turn the current runtime-profile compatibility edges into a general
   package-kind redesign or transfer CP control semantics into ES.
 - Do not turn retained result bundles into CP checkpoint/review/finalization

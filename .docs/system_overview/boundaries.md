@@ -54,6 +54,10 @@ Those absences are current facts, not design commitments.
   part of the current ES hot path.
 - ARS is the storage and discoverability authority, not the governance or execution authority. Other services must not rely on ARS to make trust or policy decisions for them.
 - `internal/contracts/runtimeconfig/v1` is the shared schema surface for the workload-zone Vault config reference and blob. It is not a standalone service boundary.
+- The Workstream E E0 runtime-config ownership decision lives in
+  `runtime_config_ownership.md`: runtime-config semantics live in the
+  runtime-config contract surface, ARS owns blob storage/read by digest only,
+  and ES is the current consumer and lookup orchestrator.
 - `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
 - The Workstream A classification of what is kernel-level shared meaning versus service-owned contract lives in `shared_kernel.md`.
 - The Workstream B classification of AGS publication ownership, ARS
@@ -101,15 +105,26 @@ Provide the explicit shared reference and config schema ES uses to resolve workl
 - `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigBlob`
 - `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfig`
 - ES startup validation that `runtime_config.workload_zone_vault_config_ref` exists before ES serves traffic
+- Runtime-config semantics for the current workload-zone Vault reference/blob
+  surface
 
 **Explicit non-ownership**
 
 - Blob storage or blob integrity enforcement after a digest is known
 - Runtime lookup networking or a standalone service hop
+- ARS blob mechanics as semantic ownership of workload-zone Vault config
+- Runtime-config authority from CGS authorize output, `id.conf`,
+  `policy.id_conf_path`, `audit.policy_version`, EGS `publication.version`,
+  EGS unsigned publication metadata, AGS `policy_decisions`, ES retained
+  bundles, ES `outcome_evidence`, ES `authority_handoff`, IM profiles,
+  support bundles, logs, traces, reports, `.out` artifacts, or CP
+  review/approval/checkpoint/finalization state
 - Artifact publication
 - Execution admission or scheduler submission
 - Trust model publication or enforcement
 - Runtime identity minting or runtime credential delivery
+- Vault tokens, JWT-SVIDs, secret payloads, leases, Codex credential material,
+  or runtime identity handoff
 - General configuration authority beyond the current workload-zone Vault reference/blob surface
 
 **Current consumers / collaborators**
@@ -117,6 +132,7 @@ Provide the explicit shared reference and config schema ES uses to resolve workl
 - ES consumes the configured `WorkloadZoneVaultConfigRef` during preparation and submission
 - ARS serves the blob named by that reference
 - Test fixtures and startup config install the required reference
+- No ACS hop exists in the current runtime-config path
 
 **Boundary pressure points**
 
@@ -126,6 +142,16 @@ Provide the explicit shared reference and config schema ES uses to resolve workl
 **Temporary compatibility edges**
 
 - The current runtime-config surface remains intentionally small and workload-zone-specific rather than becoming a generic config platform by drift.
+- ES startup-config placement of
+  `runtime_config.workload_zone_vault_config_ref` is compatibility/config
+  residue on a reopened ownership seam. It is active today, but it is not the
+  final runtime-config owner by inertia.
+- The digest-only ref shape is an active temporary compatibility edge and
+  bounded current surface.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority or live credential truth.
 
 **Reopened seams**
 
@@ -254,6 +280,9 @@ runtime-profile handling, and compatibility edges lives in
   - `/v1/executions/{run_id}:cancel`
 - Admission validation and execution request shaping
 - Composition across startup-owned runtime-config references, ARS, and EGS during prepare and submit, with CGS explicitly outside the current hot path
+- Current runtime-config consumer and lookup orchestration during prepare and
+  submit; the workload-zone Vault runtime-config semantics themselves live in
+  `internal/contracts/runtimeconfig/v1`
 - Startup-time trust model loading and verification
 - Nomad job submission and bounded runtime mount/environment assembly
 - Projection of lifecycle and logs from Nomad without synthesizing independent ES lifecycle state, including the bounded status `lifecycle_projection` read-coordination fact
@@ -282,6 +311,9 @@ runtime-profile handling, and compatibility edges lives in
 - Vault token minting, storage, or rotation
 - Runtime identity endpoint implementation inside the workload
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
+- Runtime-config semantic ownership beyond ES's current consumer/lookup role
+- `authority_handoff.runtime_config_refs` as runtime-config authority or live
+  credential truth
 - Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - Scheduler identifiers, backend allocation/task IDs, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, or write-precondition semantics behind the `outcome_evidence` descriptor surface
 - Service health, submit readiness, run authority, credential truth, lifecycle write coordination, policy truth, or scheduler API semantics behind the producer compatibility declaration

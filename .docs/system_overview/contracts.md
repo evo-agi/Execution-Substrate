@@ -117,11 +117,15 @@ implementation-only/current-slice detail, and reopened seam lives in
 
 Define the shared reference and blob schema ES uses to resolve workload-zone Vault runtime settings.
 
+The authoritative E0 runtime-config ownership decision lives in
+`runtime_config_ownership.md`.
+
 ### Current producers / consumers
 
 - Startup config installs the required `internal/contracts/runtimeconfig/v1.WorkloadZoneVaultConfigRef`.
 - `ES` consumes that reference directly from its validated startup config.
 - `ARS` serves the blob addressed by the reference digest.
+- There is no ACS hop in the runtime-config path.
 
 ### Public surface
 
@@ -140,18 +144,33 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 - The current blob schema carries the Vault HTTPS address, JWT auth mount, auth role, JWT audience, and optional non-secret `ca_bundle_pem` trust material for Vault TLS verification.
 - ES consumes the typed `WorkloadZoneVaultConfig` derived from that blob rather than owning ad hoc local parsing of the blob shape.
 - ARS remains the blob storage and read authority after the digest is known.
+- Runtime-config semantics are owned by the runtime-config contract surface,
+  not by ARS blob mechanics, ES startup placement, CGS, EGS publication
+  metadata, IM profiles, support bundles, or CP orchestration.
+- Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads,
+  leases, Codex credential material, or runtime identity handoff.
+- Optional `ca_bundle_pem` remains non-secret TLS trust material for standard
+  TLS/env-based verification, not token truth or relaxed verification.
 
 ### Ownership boundary
 
 - `internal/contracts/runtimeconfig/v1` owns the shared schema surface for the reference and blob meaning.
-- ES startup validation currently owns the guarantee that a workload-zone Vault config reference has been installed before ES serves traffic.
-- ARS owns blob storage and retrieval by digest.
+- ES startup validation currently owns the guarantee that a workload-zone Vault config reference has been installed before ES serves traffic. This is a reference-availability guarantee, not a startup blob-fetch guarantee.
+- ES is the current runtime-config consumer and lookup orchestrator during `:prepare` and `:submit`.
+- ARS owns blob storage and retrieval by digest only. ARS does not own workload-zone Vault runtime-config semantics.
 
 ### Temporary compatibility edges
 
 `Temporary compatibility edge`
 
 - The current reference still identifies the blob by digest. That is an active bounded choice, not a statement that all future runtime-config discovery must remain digest-only.
+- ES startup-config placement of `runtime_config.workload_zone_vault_config_ref`
+  is compatibility/config residue on a reopened ownership seam unless a later
+  Workstream E slice explicitly decides otherwise.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority or live credential truth.
 
 ### Reopened seams
 
@@ -159,6 +178,8 @@ Define the shared reference and blob schema ES uses to resolve workload-zone Vau
 
 - The long-term owner of the workload-zone Vault runtime-config surface remains explicitly reopened in `PLANS.md`.
 - The current startup-configured replacement surface is active today, but it is not yet the declared end-state config ownership model.
+- The digest-only ref shape remains active but not final runtime-config
+  architecture.
 
 ## 5. AGS Publication Contract
 
@@ -519,6 +540,14 @@ Current successful response shapes:
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode` and optional Vault CA trust material, and returns bounded preflight success only.
+- `:prepare` and `:submit` make ES the current runtime-config consumer and
+  lookup orchestrator only. Runtime-config semantics live in
+  `internal/contracts/runtimeconfig/v1`, ARS owns blob read by digest, and no
+  ACS lookup hop exists on this path.
+- ES startup-config placement of the workload-zone Vault config ref is
+  compatibility/config residue on a reopened Workstream E ownership seam, even
+  though startup validation must still guarantee the typed ref exists before ES
+  serves governed execution traffic.
 - `:prepare` does not create run IDs, scheduler metadata, durable execution state, or public composition detail.
 - ES verifies and consumes these current ARS artifact surfaces:
   - artifact discovery record at `/v1/artifacts/{artifact_digest}/discovery`
@@ -544,6 +573,8 @@ Current successful response shapes:
   - relies on the existing `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, `VAULT_ADDR`, `EXEC_WORKLOAD_VAULT_AUTH_*`, and workload-zone Vault CA trust handoff for workload-side Vault login and credential-material reads
 - ES does not read the configured Codex credential secret, return it through an API, or broker Vault or Codex tokens for this profile.
 - Successful submit returns the bounded `authority_handoff` read fact assembled from the same selected runtime profile, runtime identity handoff, workload-vault plan, workload-zone Vault config reference, and profile credential-location metadata ES hands to the submitted runtime.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority or live credential truth.
 - Status returns `authority_handoff` when ES can recover those non-secret facts from the submitted runtime spec. This recovery does not create a run store and does not expose Nomad job IDs, allocation IDs, or task-state detail.
 - The supported-local proof image may realize the configured Codex CLI path with a deterministic proof-only shim. That proves the ES runtime contract for the CP normal-shell path without claiming real upstream Codex service behavior.
 - The producer contract declaration lets clients verify before submission that this ES instance declares `governed-execution-producer/v1`, whether submit is enabled, whether `control-plane-normal-shell/v1` is enabled in config, and that status/cancel JSON plus successful logs/result responses require the current outcome-evidence carriers.

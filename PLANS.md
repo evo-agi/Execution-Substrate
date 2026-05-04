@@ -714,6 +714,53 @@ Dependencies:
 - Workstream C
 - Workstream D
 
+Current docs/tests-only decision status for E0:
+
+- The Workstream E runtime-config ownership decision is recorded in
+  `.docs/system_overview/runtime_config_ownership.md`.
+- E0 is docs/tests-only. It does not change runtime behavior, public DTOs,
+  route handlers, wire shapes, ES admission behavior, runtime identity handoff,
+  Control Plane compatibility, Infrastructure Manager inputs, or M6
+  support-bundle input shapes.
+- Runtime-config semantics are owned by the runtime-config contract surface.
+  The current typed shared schema for workload-zone Vault runtime config is
+  `internal/contracts/runtimeconfig/v1`.
+- ARS owns blob storage and read by digest only. ARS does not own
+  workload-zone Vault runtime-config semantics.
+- ES is the current runtime-config consumer and lookup orchestrator during
+  `:prepare` and `:submit`.
+- ES startup config currently carries the required workload-zone Vault
+  runtime-config reference. That placement is compatibility/config residue on
+  a reopened ownership seam, not the declared final owner.
+- The startup guarantee remains: the required typed runtime-config reference
+  must be configured and validated before ES serves governed execution traffic.
+  This is a reference-availability guarantee, not a new E0 guarantee that the
+  ARS blob has been fetched before startup completes.
+- The digest-only ref shape is active as a temporary compatibility edge and
+  bounded current surface, not final runtime-config architecture.
+- There is no ACS hop in the runtime-config path.
+- Runtime-config does not broker Vault tokens, JWT-SVIDs, secret payloads,
+  leases, Codex credential material, or runtime identity handoff.
+- Optional workload-zone Vault CA trust material remains standard non-secret
+  TLS/env-based trust configuration only.
+- `workload_vault_auth.default_mode` is current ES config residue and bounded
+  current behavior, not a generalized runtime-auth-plan contract.
+- `authority_handoff.runtime_config_refs` is non-secret handoff evidence only,
+  not runtime-config authority or live credential truth.
+- E0 preserves `GET /v1/executions:contract`,
+  `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP
+  compatibility, and M6 support-bundle inputs.
+- E0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, EGS `publication.version`, EGS unsigned publication
+  metadata, AGS `policy_decisions`, ES retained bundles, ES
+  `outcome_evidence`, ES `authority_handoff`, IM profiles, support bundles,
+  logs, traces, reports, `.out` artifacts, and CP
+  review/approval/checkpoint/finalization state outside runtime-config
+  authority.
+- E0 does not settle Workstream F runtime-identity handoff, does not reopen
+  Workstreams A/B/C, does not mark full Workstream D complete, and does not
+  mark full Workstream E complete.
+
 ### Workstream F - Runtime Identity Handoff Reset
 
 Purpose:
