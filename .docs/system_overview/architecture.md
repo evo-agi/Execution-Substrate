@@ -130,6 +130,15 @@ EGS and CGS occupy different roles today.
   expiry, not through the current CGS v1 subject grammar, role/audit fields,
   runtime auth plans, workload-vault fields, runtime-config refs, credential
   material, or identity-handoff facts.
+- D1b keeps any future CGS v2 authorize contract design-only. If later
+  implemented, that versioned fact is limited to allow/deny, opaque decision
+  reference, and expiry or another bounded freshness indicator if justified,
+  with audit/evaluation metadata remaining non-authoritative outside CGS.
+- That hypothetical future fact must not carry Vault token material,
+  JWT-SVIDs, credential payloads, scheduler facts, ES lifecycle/admission
+  facts, workload-zone Vault ownership facts, or Control Plane
+  review/approval/checkpoint/finalization semantics.
+- D1b does not expand EGS beyond signer/artifact runtime-trust publication.
 
 CGS is active, but it is intentionally not part of the current ES hot path.
 

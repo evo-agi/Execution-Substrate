@@ -903,6 +903,146 @@ func TestWorkstreamDVersioningGuardrailBeforeSemanticExpansionIsDocumented(t *te
 	)
 }
 
+func TestWorkstreamD1bCGSV2AuthorizeContractDesignIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+
+	workstreamD := compactDocSection(t, plansRaw, "### Workstream D - Policy And Authorization Reset", "### Workstream E - Lookup And Config Indirection Reset")
+	egsContractSection := compactDocSection(t, contractsRaw, "## 8. EGS Policy Contract", "## 9. CGS Authorization Contract")
+	cgsContractSection := compactDocSection(t, contractsRaw, "## 9. CGS Authorization Contract", "## 10. Runtime Identity Handoff Contract")
+	esBoundarySection := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	egsBoundarySection := compactDocSection(t, boundariesRaw, "## 9. EGS boundary", "## 10. CGS boundary")
+	cgsBoundarySection := compactDocSection(t, boundariesRaw, "## 10. CGS boundary", "## 11. Cross-cutting packages that are not service boundaries")
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+
+	assertContainsAll(t, "Workstream D1b design-only plan", workstreamD,
+		"D1b is the next docs/tests-only slice on that seam",
+		"keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility",
+		"define any future CGS v2 authorize contract only at design level",
+		"require explicit versioning before any behavior change lands",
+		"allow/deny, an opaque decision reference, and expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata on that fact remains non-authoritative outside CGS",
+		"runtime auth plans",
+		"Vault token material",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler facts",
+		"ES lifecycle/admission facts",
+		"runtime-config refs",
+		"workload-zone Vault ownership facts",
+		"identity-handoff facts",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"does not rewrite its grammar or evaluation",
+		"does not expand EGS beyond signer/artifact runtime-trust publication",
+		"D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "CGS D1b contract design", cgsContractSection,
+		"D1b is design-only and docs/tests-only.",
+		"It does not implement CGS v2 or change the current `POST /v1/credential/authorize` route, DTO, wire shape, or `id.conf` evaluation behavior.",
+		"The current `POST /v1/credential/authorize` request/response shape therefore remains the live CGS v1 compatibility surface until an explicitly versioned replacement exists.",
+		"If a future CGS v2 authorize contract is implemented, it must be explicitly versioned before behavior changes land.",
+		"allow/deny result",
+		"opaque decision reference",
+		"expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata that remains non-authoritative outside CGS",
+		"runtime auth plans",
+		"Vault token material",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler facts",
+		"ES lifecycle/admission facts",
+		"runtime-config refs",
+		"workload-zone Vault ownership facts",
+		"identity-handoff facts",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"ES remains a non-consumer in D1b.",
+		"`id.conf` evaluation behavior",
+		"D1b does not expand EGS beyond signer/artifact runtime-trust publication and does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.",
+	)
+
+	assertContainsAll(t, "CGS D1b boundary design", cgsBoundarySection,
+		"Scheduler facts or ES lifecycle/admission facts",
+		"Runtime-config refs or workload-zone Vault ownership facts",
+		"Credential material, Vault token material, or JWT-SVID material",
+		"Credential payloads",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"D1b is design-only and docs/tests-only.",
+		"The current `POST /v1/credential/authorize` shape remains CGS v1 compatibility",
+		"any future CGS v2 authorize contract must be explicitly versioned before behavior changes land",
+		"D1b keeps ES as a non-consumer.",
+		"allow/deny, opaque decision reference, expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata that remains non-authoritative outside CGS",
+		"D1b does not rewrite the current `id.conf` grammar or evaluation and does not expand EGS beyond signer/artifact runtime-trust publication.",
+	)
+
+	assertContainsAll(t, "architecture D1b design guardrail", architecture,
+		"D1 preserves that ES consumes no CGS facts.",
+		"D1b keeps any future CGS v2 authorize contract design-only.",
+		"allow/deny, opaque decision reference, and expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata remaining non-authoritative outside CGS",
+		"Vault token material",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler facts",
+		"ES lifecycle/admission facts",
+		"workload-zone Vault ownership facts",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"D1b does not expand EGS beyond signer/artifact runtime-trust publication.",
+		"This current split clarifies today’s boundary only. It does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+	)
+
+	assertContainsAll(t, "configuration D1b id.conf residue note", configuration,
+		"that checked-in file and `policy.id_conf_path` are current-CGS-v1 compatibility/config residue for the current authorize surface",
+		"D1b does not rewrite the current `id.conf` grammar or evaluation and does not promote `id.conf` into repo-wide future policy language",
+	)
+
+	assertContainsAll(t, "ES boundary D1b non-consumer guardrail", esBoundarySection,
+		"D1 keeps ES consuming no CGS facts.",
+		"D1b keeps that future fact design-only.",
+		"allow/deny, opaque decision reference, expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata that remains non-authoritative outside CGS",
+		"JWT-SVIDs",
+		"credential payloads",
+		"scheduler facts",
+		"ES lifecycle/admission facts",
+		"workload-zone Vault ownership facts",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+	)
+
+	assertContainsAll(t, "admission model D1b design-only guardrail", admissionModel,
+		"D1a preserves that ES consumes no CGS facts.",
+		"D1b keeps any future CGS v2 authorize contract design-only.",
+		"allow/deny, opaque decision reference, and expiry or another bounded freshness indicator if justified",
+		"audit/evaluation metadata remaining non-authoritative outside CGS",
+		"runtime auth plans",
+		"scheduler facts",
+		"ES lifecycle/admission facts",
+		"runtime-config refs",
+		"workload-zone Vault ownership facts",
+		"identity-handoff facts",
+		"Control Plane review/approval/checkpoint/finalization semantics",
+		"This decision does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff ownership.",
+	)
+
+	assertContainsAll(t, "EGS D1b non-expansion contract", egsContractSection,
+		"D1b does not expand this EGS surface.",
+		"EGS remains signer/artifact runtime-trust publication plus separate EGS-owned publication metadata only.",
+	)
+
+	assertContainsAll(t, "EGS D1b non-expansion boundary", egsBoundarySection,
+		"D1b does not expand the EGS boundary.",
+		"EGS remains signer/artifact runtime-trust publication plus separate EGS-owned publication metadata only.",
+		"D1b keeps that surface design-stable at signer/artifact runtime trust only",
+	)
+}
+
 func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {
 	mvpRaw := mustRead(t, ".docs/mvp.md")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")

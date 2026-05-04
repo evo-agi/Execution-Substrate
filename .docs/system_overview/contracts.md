@@ -664,6 +664,8 @@ Current `publication` metadata shape:
 - The signed `runtime_trust` payload is intentionally limited to signer and
   artifact trust policy. It does not carry authorization decisions, runtime
   auth-plan material, or ES runtime handoff facts.
+- D1b does not expand this EGS surface. EGS remains signer/artifact
+  runtime-trust publication plus separate EGS-owned publication metadata only.
 - Current canonical runtime-trust signing covers:
   - `signer_policy`
   - `artifact_policy`
@@ -788,6 +790,39 @@ Current response shape:
   dependency, but it should not be mistaken for a permanent repo-wide policy
   architecture just because it is currently in use.
 - Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
+
+### D1b design-only future versioned boundary
+
+- D1b is design-only and docs/tests-only. It does not implement CGS v2 or
+  change the current `POST /v1/credential/authorize` route, DTO, wire shape,
+  or `id.conf` evaluation behavior.
+- The current `POST /v1/credential/authorize` request/response shape therefore
+  remains the live CGS v1 compatibility surface until an explicitly versioned
+  replacement exists.
+- If a future CGS v2 authorize contract is implemented, it must be explicitly
+  versioned before behavior changes land.
+- The allowed design-level shape of a future CGS v2 authorization fact is
+  limited to:
+  - allow/deny result
+  - opaque decision reference
+  - expiry or another bounded freshness indicator if justified
+  - audit/evaluation metadata that remains non-authoritative outside CGS
+- That future versioned fact must not carry:
+  - runtime auth plans
+  - Vault token material
+  - JWT-SVIDs
+  - credential payloads
+  - scheduler facts
+  - ES lifecycle/admission facts
+  - runtime-config refs
+  - workload-zone Vault ownership facts
+  - identity-handoff facts
+  - Control Plane review/approval/checkpoint/finalization semantics
+- ES remains a non-consumer in D1b. Any later ES consumption of a CGS fact
+  remains hypothetical and must be version-gated separately.
+- D1b does not expand EGS beyond signer/artifact runtime-trust publication and
+  does not settle Workstream E runtime-config ownership or Workstream F
+  runtime-identity handoff.
 
 ### Reopened seams
 

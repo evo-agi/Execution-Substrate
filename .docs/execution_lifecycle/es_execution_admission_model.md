@@ -56,6 +56,14 @@ the code and tests win and this document must be realigned.
   CGS v1 authorize shape, subject grammar, or audit fields. This decision does
   not settle Workstream E runtime-config ownership or Workstream F
   runtime-identity handoff ownership.
+- D1b keeps any future CGS v2 authorize contract design-only. That
+  hypothetical future fact is limited to allow/deny, opaque decision
+  reference, and expiry or another bounded freshness indicator if justified,
+  with audit/evaluation metadata remaining non-authoritative outside CGS. It
+  must not carry runtime auth plans, scheduler facts, ES lifecycle/admission
+  facts, runtime-config refs, workload-zone Vault ownership facts,
+  identity-handoff facts, or Control Plane
+  review/approval/checkpoint/finalization semantics.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or

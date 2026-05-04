@@ -667,6 +667,10 @@ Current bounded planning direction:
 - Treat `audit.policy_version` and EGS `publication.version` as service-owned audit/publication metadata, not transport/schema/API versioning.
 - Treat `id.conf` as current-CGS-v1 compatibility/config residue rather than as final repo-wide policy language.
 - Preserve ES CGS-independence in D1. If ES later consumes CGS output, it must do so through a separately versioned bounded authorization fact such as allow/deny plus opaque decision reference and expiry rather than by reusing the current CGS v1 shape or `id.conf`-derived subject grammar.
+- D1b is the next docs/tests-only slice on that seam: keep the current `POST /v1/credential/authorize` route and wire shape as CGS v1 compatibility, define any future CGS v2 authorize contract only at design level, and require explicit versioning before any behavior change lands.
+- In D1b, a future versioned CGS authorization fact may carry only allow/deny, an opaque decision reference, and expiry or another bounded freshness indicator if justified. Any audit/evaluation metadata on that fact remains non-authoritative outside CGS.
+- That future D1b design must not carry runtime auth plans, Vault token material, JWT-SVIDs, credential payloads, scheduler facts, ES lifecycle/admission facts, runtime-config refs, workload-zone Vault ownership facts, identity-handoff facts, or Control Plane review/approval/checkpoint/finalization semantics.
+- D1b keeps `id.conf` as current-CGS-v1 compatibility/config residue, does not rewrite its grammar or evaluation, and does not expand EGS beyond signer/artifact runtime-trust publication.
 - D1 does not settle Workstream E runtime-config ownership or Workstream F runtime-identity handoff.
 
 ### Workstream E - Lookup And Config Indirection Reset

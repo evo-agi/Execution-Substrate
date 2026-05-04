@@ -324,6 +324,13 @@ runtime-profile handling, and compatibility edges lives in
   the current CGS v1 request/response shape, subject grammar, role fields,
   `audit.policy_version`, runtime auth-plan material, workload-vault fields,
   runtime-config refs, credential material, or identity-handoff facts.
+- D1b keeps that future fact design-only. If a later versioned CGS
+  authorization fact is added, it may carry only allow/deny, opaque decision
+  reference, expiry or another bounded freshness indicator if justified, and
+  audit/evaluation metadata that remains non-authoritative outside CGS.
+- That hypothetical future fact must not carry JWT-SVIDs, credential payloads,
+  scheduler facts, ES lifecycle/admission facts, workload-zone Vault ownership
+  facts, or Control Plane review/approval/checkpoint/finalization semantics.
 
 **Temporary compatibility edges**
 
@@ -379,6 +386,8 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 
 - The current trust model form directly shapes what ES can enforce without further interpretation.
 - EGS signs its own runtime-trust payload format rather than reusing the AGS/ES shared signing kernel, which keeps the boundary narrow but makes the EGS contract family distinct.
+- D1b does not expand the EGS boundary. EGS remains signer/artifact
+  runtime-trust publication plus separate EGS-owned publication metadata only.
 
 **Temporary compatibility edges**
 
@@ -386,6 +395,9 @@ Publish a signed trust model that downstream execution logic can verify and enfo
 - The current route plus wrapper/payload shape are the live EGS v1 compatibility surface.
 - `publication.version` and `publication.update_revision` are EGS publication metadata, not trust-contract/schema/API versioning for that surface.
 - Semantic expansion of the EGS trust surface requires explicit wrapper/payload versioning before implementation; do not widen the current v1 surface in place.
+- D1b keeps that surface design-stable at signer/artifact runtime trust only;
+  it does not add authorization, runtime-config, runtime-identity, or
+  orchestration semantics to EGS.
 
 **Reopened seams**
 
@@ -411,11 +423,15 @@ Provide a separate authorize-only decision surface for workload credential acces
 - Artifact publication
 - Trust model publication
 - ES scheduler submission or lifecycle state
+- Scheduler facts or ES lifecycle/admission facts
 - General execution admission
 - Runtime auth-plan shaping
 - ES runtime handoff facts
+- Runtime-config refs or workload-zone Vault ownership facts
 - Credential material, Vault token material, or JWT-SVID material
+- Credential payloads
 - Vault token issuance or workload-vault auth-plan shaping
+- Control Plane review/approval/checkpoint/finalization semantics
 
 **Current consumers / collaborators**
 
@@ -438,6 +454,10 @@ Provide a separate authorize-only decision surface for workload credential acces
   - It exists to make the current `id.conf` dependency explicit and testable.
   - It does not expand `id.conf` into a declared complete production policy grammar or final policy architecture.
 - Semantic expansion of the CGS authorize surface requires explicit versioning before implementation; do not widen the current v1 surface in place.
+- D1b is design-only and docs/tests-only. The current `POST /v1/credential/authorize` shape remains CGS v1 compatibility, and any future CGS v2 authorize contract must be explicitly versioned before behavior changes land.
+- D1b keeps ES as a non-consumer. Any hypothetical future ES-consumed CGS fact must stay version-gated and limited to allow/deny, opaque decision reference, expiry or another bounded freshness indicator if justified, and audit/evaluation metadata that remains non-authoritative outside CGS.
+- That future fact must not become runtime auth plans, scheduler facts, ES lifecycle/admission facts, runtime-config refs, workload-zone Vault ownership facts, identity-handoff facts, or Control Plane review/approval/checkpoint/finalization semantics.
+- D1b does not rewrite the current `id.conf` grammar or evaluation and does not expand EGS beyond signer/artifact runtime-trust publication.
 
 **Reopened seams**
 
