@@ -1481,6 +1481,265 @@ func TestWorkstreamERuntimeConfigOwnershipKeepsESCGSOutOfESInternal(t *testing.T
 	}
 }
 
+func TestWorkstreamFRuntimeIdentityHandoffOwnershipDecisionIsDocumented(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	decisionRaw := mustRead(t, ".docs/system_overview/runtime_identity_handoff.md")
+	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	architectureRaw := mustRead(t, ".docs/system_overview/architecture.md")
+	configurationRaw := mustRead(t, ".docs/system_overview/configuration.md")
+	admissionModelRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	implementationRaw := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+
+	decision := compactText(decisionRaw)
+	architecture := compactText(architectureRaw)
+	configuration := compactText(configurationRaw)
+	admissionModel := compactText(admissionModelRaw)
+	workstreamF := compactDocSection(t, plansRaw, "### Workstream F - Runtime Identity Handoff Reset", "## Ordered Execution Plan")
+	runtimeIdentityContract := compactDocSection(t, contractsRaw, "## 10. Runtime Identity Handoff Contract", "## 11. Temporary Compatibility Edges")
+	esBoundary := compactDocSection(t, boundariesRaw, "## 8. ES boundary", "## 9. EGS boundary")
+	lifecycleRuntimeIdentity := compactDocSection(t, lifecycleContractsRaw, "## 14. Runtime identity and lifecycle edge", "## 15. Bounded slice rules")
+	authorityHandoffContract := compactDocSection(t, lifecycleContractsRaw, "### Authority handoff read surface", "### Error contract")
+	implementationRuntimeIdentity := compactDocSection(t, implementationRaw, "## 9. Runtime identity and mount implementation", "## 10. Filesystem and local side effects")
+
+	assertDocIncludesAuthorityHierarchy(t, decisionRaw, "runtime-identity handoff ownership decision doc")
+	if !strings.Contains(decision, "Authority for this document follows the repo-wide authority hierarchy:") {
+		t.Fatalf("runtime-identity handoff ownership decision doc missing authority preface")
+	}
+
+	assertContainsAll(t, "PLANS Workstream F F0 status", workstreamF,
+		"F0 - Runtime Identity Handoff Ownership Decision",
+		"F0 is docs/tests-only.",
+		"The F0 decision is recorded in `.docs/system_overview/runtime_identity_handoff.md`.",
+		"Runtime identity handoff is currently ES-selected and platform-delivered.",
+		"ES owns handoff selection, env injection, reserved path layout, mounts, and Nomad job construction for the current slice.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract.",
+		"It is not raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+		"The runtime supervisor/helper owns the in-task endpoint implementation, helper-private SPIRE traversal, readiness-before-workload, and root-to-workload privilege boundary",
+		"SPIRE owns JWT-SVID issuance.",
+		"Vault owns token, secret, and lease issuance after workload-side login.",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+		"Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces are bounded or compatibility-heavy, not final generalized architecture.",
+		"Capability validation remains behavior-based and local to validation boundaries",
+		"F0 does not change runtime-config ownership from E0/E1",
+		"does not change CP compatibility or `control-plane-normal-shell/v1`",
+		"does not change M6 support-bundle inputs",
+		"F0 does not reopen Workstreams A/B/C, does not mark full Workstream D complete, does not mark full Workstream E complete, and does not mark full Workstream F complete.",
+		"Full Workstream F remains open",
+		"F0 does not claim full ES/runtime de-root, rootless Nomad client, production readiness, production Vault readiness, or generalized remote deployment architecture.",
+	)
+
+	assertContainsAll(t, "runtime-identity ownership decision summary", decision,
+		"F0 documents the current ownership model before any behavior-changing Workstream F implementation.",
+		"Runtime identity handoff is currently ES-selected and platform-delivered.",
+		"ES owns handoff selection, environment injection, reserved path layout, mounts, and Nomad job construction for the current slice.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is not raw SPIRE socket exposure, not Vault token brokerage, not runtime-config authority, and not a secret payload.",
+		"The runtime supervisor/helper owns the in-task endpoint implementation, helper-private SPIRE traversal, readiness-before-workload, and the root-to-workload privilege boundary",
+		"SPIRE owns JWT-SVID issuance.",
+		"Vault owns token, secret, and lease issuance after workload-side login.",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+		"Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces are bounded or compatibility-heavy.",
+		"Capability validation remains behavior-based and local to validation boundaries",
+		"Workload-visible discovery is explicit while implementation remains platform-owned.",
+		"F0 does not change runtime-config ownership from E0/E1",
+		"F0 preserves ES public execution DTOs, `GET /v1/executions:contract`, `POST /v1/executions:prepare`, `control-plane-normal-shell/v1`, CP compatibility, and M6 support-bundle inputs.",
+		"F0 does not claim full ES/runtime de-root, rootless Nomad client, production readiness, production Vault readiness, or generalized remote deployment architecture.",
+		"F0 does not reopen Workstream A, Workstream B, or Workstream C. It does not mark full Workstream D complete, does not mark full Workstream E complete, and does not mark full Workstream F complete.",
+	)
+
+	assertContainsAll(t, "runtime-identity classified surfaces", decision,
+		"| Runtime identity handoff overall | `Current invariant`, `Bounded slice rule` |",
+		"| `EXEC_WORKLOAD_IDENTITY_ENDPOINT` | `Current invariant`, `Bounded slice rule` |",
+		"| Raw SPIRE Workload API socket | `Security-sensitive secret-bearing surface`, `Temporary compatibility edge` |",
+		"| Runtime supervisor/helper endpoint implementation | `Bounded slice rule`, `Implementation detail`, `Workstream F stop line` |",
+		"| Helper start as `0:0`, Nomad task `User: \"0:0\"`, fixed workload `10000:10000`, no supplemental groups | `Temporary compatibility edge`, `Bounded slice rule` |",
+		"| SPIRE JWT-SVID issuance | `Current invariant`, `Security-sensitive secret-bearing surface` |",
+		"| Vault token, secret, and lease issuance | `Current invariant`, `Security-sensitive secret-bearing surface` |",
+		"| `authority_handoff` and `authority_handoff.runtime_config_refs` | `Non-authority evidence/projection` |",
+	)
+
+	dExclusions := compactDocSection(t, decisionRaw, "## 6. Required D exclusions", "## 7. Required E exclusions")
+	assertContainsAll(t, "runtime-identity D exclusions", dExclusions,
+		"CGS authorize output",
+		"`id.conf`",
+		"`policy.id_conf_path`",
+		"`audit.policy_version`",
+		"CGS v1/v2 design docs",
+		"EGS `publication.version`",
+		"EGS unsigned publication metadata",
+		"AGS `policy_decisions`",
+		"These exclusions preserve the accepted D0-D1d guardrails.",
+	)
+
+	eExclusions := compactDocSection(t, decisionRaw, "## 7. Required E exclusions", "## 8. Required evidence exclusions")
+	assertContainsAll(t, "runtime-identity E exclusions", eExclusions,
+		"runtime-config refs",
+		"`authority_handoff.runtime_config_refs`",
+		"ARS blob storage/read mechanics",
+		"digest-only runtime-config refs",
+		"`workload_vault_auth.default_mode`",
+		"runtime-config ownership docs/tests",
+		"E0/E1 startup-guarantee tests",
+		"These exclusions preserve the accepted E0/E1 guardrails.",
+	)
+
+	evidenceExclusions := compactDocSection(t, decisionRaw, "## 8. Required evidence exclusions", "## 9. Workstream F stop lines")
+	assertContainsAll(t, "runtime-identity evidence exclusions", evidenceExclusions,
+		"ES retained bundles",
+		"`outcome_evidence`",
+		"`authority_handoff`",
+		"IM profiles",
+		"support bundles",
+		"logs",
+		"traces",
+		"reports",
+		"`.out` artifacts",
+		"CP review/approval/checkpoint/finalization state",
+		"They must remain non-authoritative and non-secret.",
+	)
+
+	fStopLines := compactDocSection(t, decisionRaw, "## 9. Workstream F stop lines", "## 10. Remaining Workstream F seams")
+	assertContainsAll(t, "runtime-identity F0 stop lines", fStopLines,
+		"public DTOs, route handlers, or wire shapes",
+		"`GET /v1/executions:contract`",
+		"`POST /v1/executions:prepare`",
+		"runtime-config schema/source files or ownership",
+		"ES-to-CGS dependency",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` behavior",
+		"SPIRE/Vault handoff implementation",
+		"reserved runtime paths",
+		"runtime helper behavior",
+		"Nomad task user, workload UID/GID, Vault JWT login, token, secret, or lease semantics",
+		"M6 support-bundle inputs or IM-facing evidence shapes",
+		"Control Plane or Infrastructure Manager repositories",
+		"F0 does not decide whether the current runtime-identity delivery model is final.",
+	)
+
+	assertContainsAll(t, "system contracts runtime-identity F0 alignment", runtimeIdentityContract,
+		"`runtime_identity_handoff.md`",
+		"`ES` selects the handoff and provisions the backing runtime-identity workspace, environment marker, reserved path layout, mounts, and Nomad job construction",
+		"The platform-owned runtime supervisor/helper implements the endpoint inside the task.",
+		"SPIRE owns JWT-SVID issuance.",
+		"Vault owns token, secret, and lease issuance after workload-side login.",
+		"F0 classifies `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the bounded workload-visible discovery contract only.",
+		"It is not raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+		"Runtime identity handoff is currently ES-selected and platform-delivered.",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+		"Runtime-config refs, `authority_handoff.runtime_config_refs`, ARS blob storage/read mechanics, digest-only runtime-config refs, and `workload_vault_auth.default_mode` are not runtime-identity or credential authority.",
+		"CGS authorize output, `id.conf`, `policy.id_conf_path`, `audit.policy_version`, CGS v1/v2 design docs, EGS `publication.version`, EGS unsigned publication metadata, and AGS `policy_decisions` are not runtime-identity or credential authority.",
+		"Retained bundles, `outcome_evidence`, `authority_handoff`, IM profiles, support bundles, logs, traces, reports, `.out` artifacts, and CP review/approval/checkpoint/finalization state remain evidence/projection",
+		"Helper start as `0:0`, Nomad task `User: \"0:0\"`, fixed workload `10000:10000`, helper-private SPIRE traversal, and current reserved runtime paths are bounded or compatibility-heavy first-slice surfaces.",
+	)
+
+	assertContainsAll(t, "system boundaries runtime-identity F0 alignment", esBoundary,
+		"Current runtime-identity handoff selection, environment injection, reserved path layout, mount assembly, and Nomad job construction for the bounded slice",
+		"Runtime identity endpoint implementation inside the task; the current supervisor/helper owns endpoint serving, helper-private SPIRE traversal, readiness-before-workload, and root-to-workload privilege boundary",
+		"Raw SPIRE socket exposure to workloads",
+		"JWT-SVID issuance or payload brokerage",
+		"Vault token, secret, or lease issuance after workload-side login",
+		"Runtime identity or credential authority from CGS authorize output",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract only.",
+		"Helper start as `0:0`, Nomad task `User: \"0:0\"`, fixed workload `10000:10000`, helper-private SPIRE traversal, and current reserved runtime paths are bounded or compatibility-heavy first-slice surfaces.",
+		"The long-term runtime-identity owner, helper/root/task-user model, SPIRE selector posture, Vault posture, and reserved-path architecture",
+	)
+
+	assertContainsAll(t, "architecture runtime-identity F0 alignment", architecture,
+		"`.docs/system_overview/runtime_identity_handoff.md`: runtime identity handoff is currently ES-selected and platform-delivered",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract",
+		"the runtime supervisor/helper owns the in-task endpoint implementation and helper-private SPIRE traversal",
+		"SPIRE owns JWT-SVID issuance",
+		"Vault owns token/secret/lease issuance after workload-side login",
+		"F0 records this current ownership split without making helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces final generalized architecture.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is not raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+	)
+
+	assertContainsAll(t, "configuration runtime-identity F0 alignment", configuration,
+		"`.docs/system_overview/runtime_identity_handoff.md`",
+		"Runtime identity handoff is currently ES-selected and platform-delivered.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract; it is not raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+		"The runtime supervisor/helper owns the in-task endpoint implementation, helper-private SPIRE traversal, readiness-before-workload, and the root-to-workload privilege boundary",
+		"SPIRE owns JWT-SVID issuance.",
+		"Vault owns token, secret, and lease issuance after workload-side login.",
+		"Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces are bounded or compatibility-heavy, not final generalized architecture.",
+		"F0 does not claim full ES/runtime de-root, rootless Nomad client, production readiness, production Vault readiness, or generalized remote deployment architecture.",
+	)
+
+	assertContainsAll(t, "admission model runtime-identity F0 alignment", admissionModel,
+		"`.docs/system_overview/runtime_identity_handoff.md`",
+		"F0 records that runtime identity handoff is currently ES-selected and platform-delivered.",
+		"the runtime supervisor/helper owns in-task endpoint implementation, helper-private SPIRE traversal, readiness-before-workload, and root-to-workload privilege boundary",
+		"SPIRE owns JWT-SVID issuance; Vault owns token, secret, and lease issuance after workload-side login.",
+		"F0 classifies `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the bounded workload-visible discovery contract only.",
+		"F0 does not change runtime-config ownership from E0/E1",
+		"Runtime identity handoff ownership | `bounded slice rule`",
+		"Do not reinterpret `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+	)
+
+	assertContainsAll(t, "execution lifecycle runtime-identity F0 alignment", lifecycleRuntimeIdentity,
+		"`.docs/system_overview/runtime_identity_handoff.md`",
+		"Runtime identity handoff is currently ES-selected and platform-delivered.",
+		"ES owns handoff selection, env injection, reserved path layout, mounts, and Nomad job construction for the current slice.",
+		"The runtime supervisor/helper owns the in-task endpoint implementation, helper-private SPIRE traversal, readiness-before-workload, and root-to-workload privilege boundary",
+		"SPIRE owns JWT-SVID issuance.",
+		"Vault owns token, secret, and lease issuance after workload-side login.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery contract only.",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+		"Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces are bounded or compatibility-heavy, not final generalized architecture.",
+		"Runtime-config refs, `authority_handoff.runtime_config_refs`, ARS blob storage/read mechanics, digest-only runtime-config refs, and `workload_vault_auth.default_mode` are not runtime-identity or credential authority.",
+	)
+	assertContainsAll(t, "execution lifecycle authority handoff F0 alignment", authorityHandoffContract,
+		"F0 classifies `authority_handoff` as non-secret runtime-handoff evidence only.",
+		"It is not runtime-identity authority, credential authority, proof of live JWT-SVID/Vault token/secret/lease possession, or Control Plane review/approval/checkpoint/finalization state.",
+	)
+
+	assertContainsAll(t, "execution implementation runtime-identity F0 alignment", implementationRuntimeIdentity,
+		"The current supervisor/helper implementation owns endpoint serving, helper-private SPIRE traversal, readiness-before-workload, helper death handling, and fixed root-to-workload privilege boundary enforcement.",
+		"SPIRE owns JWT-SVID issuance behind the helper. Vault owns token, secret, and lease issuance after workload-side login.",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is bounded workload-visible discovery only.",
+		"It is not raw SPIRE socket exposure, Vault token brokerage, runtime-config authority, or a secret payload.",
+		"Current helper start as `0:0`, Nomad task `User: \"0:0\"`, fixed workload `10000:10000`, helper-private SPIRE traversal, and reserved-path surfaces are bounded or compatibility-heavy implementation surfaces",
+		"`authority_handoff`, `outcome_evidence`, retained bundles, support bundles, logs, traces, reports, profiles, and `.out` artifacts remain non-authority evidence/projection",
+		"ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases, Codex credential material, or credential payloads.",
+	)
+}
+
+func TestWorkstreamFRuntimeIdentityKeepsESCGSOutOfESInternal(t *testing.T) {
+	forbidden := []string{
+		"execution-substrate/cgs",
+		"credential-governance",
+		"/v1/credential/authorize",
+		"id.conf",
+		"id_conf_path",
+	}
+
+	for _, root := range []string{"es", "internal"} {
+		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			text := string(data)
+			for _, phrase := range forbidden {
+				if strings.Contains(text, phrase) {
+					t.Fatalf("%s must not contain ES/internal CGS or id.conf dependency phrase %q", path, phrase)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}
+
 func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {
 	mvpRaw := mustRead(t, ".docs/mvp.md")
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")

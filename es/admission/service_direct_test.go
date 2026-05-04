@@ -282,6 +282,42 @@ func TestFetchWorkloadZoneVaultConfigDecodesValidBlobAndRejectsInvalidBlob(t *te
 	}
 }
 
+func TestSubmitFailsAtAdmissionWhenWorkloadZoneVaultBlobIsUnavailable(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
+
+	arsCalls := map[string]int{}
+	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arsCalls[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
+			writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
+		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
+			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
+		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			writeJSONResponse(t, w, http.StatusNotFound, artifactRegistryErrorResponse{Error: "blob not found"})
+		default:
+			t.Fatalf("submit reached unexpected ARS path before runtime-config failure: %q", r.URL.Path)
+		}
+	}))
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("submit must not call nomad when runtime-config admission fails, got %s %q", r.Method, r.URL.Path)
+	}))
+
+	_, err := service.Submit(context.Background(), request)
+	assertAdmissionError(t, err, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
+	if len(arsCalls) != 3 {
+		t.Fatalf("expected submit admission to stop after runtime-config read failure, got %v", arsCalls)
+	}
+	assertDirectoryEmpty(t, stagingRoot)
+	assertDirectoryEmpty(t, resultsRoot)
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 

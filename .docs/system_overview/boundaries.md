@@ -67,6 +67,13 @@ Those absences are current facts, not design commitments.
 - In the current evidence record, `claims.package.identity`, narrow derivation request-binding authorization, the narrow execution/runtime claims ES actually enforces, and `seal` verification are the kernel-level shared surface. `claims.package.publication` remains AGS-owned publication meaning carried inside the signed record.
 - ARS runtime-facing discovery, descriptor, and index shapes are ARS-owned discoverability contracts. ES may consume them, but they are not the shared kernel and must not become ES public grammar by reuse.
 - ES-owned admission, submission, lifecycle projection, runtime-profile, runtime-identity, retained-result, and readiness semantics are defined by this repository's planning and boundary docs.
+- The Workstream F F0 runtime-identity handoff ownership decision lives in
+  `runtime_identity_handoff.md`: runtime identity handoff is currently
+  ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
+  bounded workload-visible discovery contract, the runtime supervisor/helper
+  owns the in-task endpoint implementation and helper-private SPIRE traversal,
+  SPIRE owns JWT-SVID issuance, and Vault owns token/secret/lease issuance
+  after workload-side login.
 - Control Plane is a consumer of accepted AGS and ES surfaces, not an owner of ES core contracts. CP documents, examples, probes, or proof-harness expectations must be treated as consumer compatibility inputs unless `PLANS.md` explicitly promotes a rule into ES-owned semantics.
 
 ## 4A. Proof Bootstrap Ownership
@@ -290,6 +297,9 @@ runtime-profile handling, and compatibility edges lives in
 - Additive outcome/evidence descriptors for current lifecycle observations and retained outputs that ES can directly source: Nomad status projection depth, Nomad task stdout, accepted Nomad stop request receipts, and opaque ES-retained result bundles
 - A narrow non-secret producer compatibility declaration for the current governed-execution contract, submit/profile enablement, and mandatory outcome-evidence response carriers
 - Runtime identity endpoint handoff and ES-owned subtree protection for the backing workspace
+- Current runtime-identity handoff selection, environment injection, reserved
+  path layout, mount assembly, and Nomad job construction for the bounded
+  slice
 - Consumption of workload-zone vault runtime fields plus the bounded local default auth mode
 - Bounded non-secret `authority_handoff` read facts for submitted runs, sourced from ES-selected runtime handoff facts and the submitted runtime spec
 - One bounded opt-in runtime profile for Control Plane normal-shell workloads:
@@ -309,11 +319,16 @@ runtime-profile handling, and compatibility edges lives in
 - Control Plane checkpoint, review, accept, revise, fail, hold, resume, reject, escalation, or terminal-run semantics
 - Semantic interpretation of workload-authored result bundle contents
 - Vault token minting, storage, or rotation
-- Runtime identity endpoint implementation inside the workload
+- Runtime identity endpoint implementation inside the task; the current
+  supervisor/helper owns endpoint serving, helper-private SPIRE traversal,
+  readiness-before-workload, and root-to-workload privilege boundary
 - Workload-vault selector policy or workload-specific auth-role/audience override logic
 - Runtime-config semantic ownership beyond ES's current consumer/lookup role
 - `authority_handoff.runtime_config_refs` as runtime-config authority or live
   credential truth
+- Raw SPIRE socket exposure to workloads
+- JWT-SVID issuance or payload brokerage
+- Vault token, secret, or lease issuance after workload-side login
 - Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - Scheduler identifiers, backend allocation/task IDs, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, or write-precondition semantics behind the `outcome_evidence` descriptor surface
 - Service health, submit readiness, run authority, credential truth, lifecycle write coordination, policy truth, or scheduler API semantics behind the producer compatibility declaration
@@ -321,6 +336,14 @@ runtime-profile handling, and compatibility edges lives in
 - Policy publication or broader governance decisions that belong upstream
 - Control Plane normal-shell orchestration, task-attempt progression, review, accept/revise/fail branching, checkpoint promotion, hold/resume/reject semantics, or finalization
 - Codex token brokerage, Codex token minting, Codex token rotation, Codex service invocation ownership, or semantic interpretation of Codex outputs
+- Runtime identity or credential authority from CGS authorize output,
+  `id.conf`, `policy.id_conf_path`, `audit.policy_version`, CGS v1/v2 design
+  docs, EGS `publication.version`, EGS unsigned publication metadata, AGS
+  `policy_decisions`, runtime-config refs, `authority_handoff.runtime_config_refs`,
+  ARS blob mechanics, digest-only runtime-config refs,
+  `workload_vault_auth.default_mode`, retained bundles, `outcome_evidence`,
+  `authority_handoff`, IM profiles, support bundles, logs, traces, reports,
+  `.out` artifacts, or CP review/approval/checkpoint/finalization state
 
 **Current consumers / collaborators**
 
@@ -344,6 +367,9 @@ runtime-profile handling, and compatibility edges lives in
 - ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.
 - ES now localizes payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; the current `/execution/...` runtime paths, `/execution/run/result`, and runtime-identity backing subtree remain active conventions inside that layout.
+- F0 documents the current runtime identity handoff ownership split without
+  making helper/root/Nomad task-user/SPIRE traversal/reserved-path surfaces
+  final generalized architecture.
 - ES retained-result storage closes the current terminal-output gap for real clients without making stdout logs a fake result contract and without making ES a Control Plane state store.
 - ES now relies only on the narrower shared execution/runtime inputs it actually enforces: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 - The current `verification.derivation_attestation.*` and
@@ -384,6 +410,12 @@ runtime-profile handling, and compatibility edges lives in
 - `/v1/executions:contract` exists as a bounded producer compatibility declaration for the current CP governed-execution path. It should not grow into a general capability registry by drift.
 - Current runtime mount conventions use `/execution/staged`, `/execution/run`, `/execution/run/result`, and the current ES-owned runtime-identity backing layout.
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract only. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- Helper start as `0:0`, Nomad task `User: "0:0"`, fixed workload
+  `10000:10000`, helper-private SPIRE traversal, and current reserved runtime
+  paths are bounded or compatibility-heavy first-slice surfaces.
 - The `authority_handoff` field layout and evidence labels are current read vocabulary for the bounded handoff slice, not a durable policy or lifecycle model.
 - The `outcome_evidence` JSON field layout, successful logs/result evidence headers, and observation labels are current read vocabulary for the bounded Nomad/retained-result slice, not durable scheduler, result, log, cancellation, or lifecycle architecture.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
@@ -398,6 +430,8 @@ runtime-profile handling, and compatibility edges lives in
 - The current execution-package layout, retained-result behavior, and reserved path conventions
 - The final owner and vocabulary for the remaining shared execution/runtime inputs
 - Whether runtime profiles remain annotation-selected overlays or become part of a later re-derived ES admission model
+- The long-term runtime-identity owner, helper/root/task-user model, SPIRE
+  selector posture, Vault posture, and reserved-path architecture
 
 ## 9. EGS boundary
 

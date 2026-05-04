@@ -69,6 +69,14 @@ Top-level interaction notes:
   semantics live in the runtime-config contract surface, ARS owns blob
   storage/read by digest only, and ES is the current consumer and lookup
   orchestrator.
+- The Workstream F F0 runtime-identity handoff ownership decision lives in
+  `.docs/system_overview/runtime_identity_handoff.md`: runtime identity
+  handoff is currently ES-selected and platform-delivered,
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract, the runtime supervisor/helper owns the in-task endpoint
+  implementation and helper-private SPIRE traversal, SPIRE owns JWT-SVID
+  issuance, and Vault owns token/secret/lease issuance after workload-side
+  login.
 - Docker is the container runtime used underneath Nomad in the current slice.
 - The current slice-0 operator topology runs ARS, EGS, AGS, and ES as containers on one Linux host/VM, while Nomad server/client and Docker run on that same host.
 - Those hot-path service containers currently use Docker host networking as temporary compatibility-heavy scaffolding so the existing `127.0.0.1` dependency URLs and ES staging-path locality remain valid during slice 0.
@@ -202,6 +210,11 @@ The `authority_handoff` read fact reports the non-secret handoff path ES submitt
 
 The checked-in workload-authored runtime-identity reference remains scaffolding only. It exercises older contract compatibility without defining current ownership. The current bounded runtime-identity slice now also proves useful credential flow through the existing discovery contract: one workload can use the platform-owned endpoint plus the bounded workload-vault metadata to authenticate to a proof-scoped real Vault dev/test target and read one secret without making ES a Vault token broker. Supported-host qualification for the Linux Nomad/Docker substrate is now also proved on the current local reference host, and the canonical repo-owned proof path now records the resulting evidence under `.out/es-proof-<id>/`.
 
+F0 records this current ownership split without making helper/root/Nomad task
+user/SPIRE traversal/reserved-path surfaces final generalized architecture.
+`EXEC_WORKLOAD_IDENTITY_ENDPOINT` is not raw SPIRE socket exposure, Vault token
+brokerage, runtime-config authority, or a secret payload.
+
 ## 6. Architectural invariants
 
 **Current architectural invariants**
@@ -222,6 +235,14 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - ES must not bypass upstream ownership boundaries for artifact storage, trust publication, or lifecycle authority.
 - ES lifecycle projection revisions are read-coordination facts only; they do not create ES-owned lifecycle state or write preconditions.
 - ES-owned contracts are defined by this repository's `PLANS.md` and `.docs/` pages. Control Plane consumption docs may rely on accepted ES surfaces, but they do not widen or own ES core semantics.
+- Runtime identity handoff is currently ES-selected and platform-delivered.
+  ES owns current handoff selection, env injection, reserved path layout,
+  mounts, and Nomad job construction; the supervisor/helper owns the in-task
+  endpoint implementation and helper-private SPIRE traversal; SPIRE owns
+  JWT-SVID issuance; Vault owns token, secret, and lease issuance after
+  workload-side login.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads.
 
 ## 7. Deliberate absences
 
@@ -232,6 +253,8 @@ The checked-in workload-authored runtime-identity reference remains scaffolding 
 - ES does not own a lifecycle-state store.
 - There is no general-purpose execution orchestrator above Nomad.
 - ES does not own runtime token minting.
+- ES does not expose raw SPIRE sockets to workloads and does not own Vault
+  token, secret, or lease issuance.
 - There is no separate artifact-translation or read-indirection service beyond the current ARS role plus startup-configured runtime-config references.
 - The current Go repo does not define a separate lifecycle authority beyond ES projecting Nomad state.
 
@@ -263,6 +286,12 @@ These are current architectural absences, not omissions to fill automatically.
   runtime-config architecture by inertia.
 - ES currently relies on `/execution/...` runtime path conventions for staged data and run data, while the runtime-identity endpoint itself is now run-scoped under an ES-owned runtime subtree.
 - ES currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-visible runtime identity contract.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract only. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- Helper start as `0:0`, Nomad task `User: "0:0"`, fixed workload
+  `10000:10000`, helper-private SPIRE traversal, and current reserved runtime
+  paths are bounded or compatibility-heavy first-slice surfaces.
 - The containerized hot path currently relies on Docker host networking for control-plane reachability during slice 0; that is a temporary compatibility-heavy deployment convention, not the final control-plane network model.
 - Slice 0 by itself proves the Linux substrate and governed execution handoff only. The current bounded slice reaches strong workload identity through slice `1A` and slice `1B`, and the canonical supported-local proof path now exercises that runtime identity through a real SPIRE-backed JWT-SVID plus bounded Vault dev/test login.
 - AGS retains caller-supplied `policy_decisions` on the publish request even though AGS only normalizes them structurally rather than evaluating them semantically.
@@ -291,6 +320,8 @@ This file should stay architectural and top-level. It should not absorb detailed
 - The policy-publication shape of EGS
 - The authorize and policy-input shape of CGS
 - The current runtime identity handoff conventions
+- The long-term runtime-identity owner, helper/root/task-user model, SPIRE
+  selector posture, Vault posture, and reserved-path architecture
 
 These seams are active today and intentionally not fixed.
 

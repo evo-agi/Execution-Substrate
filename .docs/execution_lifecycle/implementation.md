@@ -110,6 +110,15 @@ Dependency wiring:
 - The long-lived ES startup path validates the staged runtime-support binary as a service-owned execution input and may validate only the syntax/config shape of `execution.spire_workload_api_socket_path`, but it does not `stat(2)` or traverse the raw host SPIRE Workload API socket directly.
 - The configured `execution.spire_workload_api_socket_path` remains a submit/runtime input used to build the helper-private mount model, and operator/readiness tooling remains responsible for proving that host path is a real Unix socket before submit-ready or service-user apply is claimed.
 - The runtime helper remains the only current component that consumes the helper-private raw SPIRE path at runtime, and failure to reach or validate that socket stays explicit and fail closed rather than degrading to workload-visible raw SPIRE access.
+- The Workstream F F0 decision in
+  `.docs/system_overview/runtime_identity_handoff.md` classifies the current
+  runtime identity handoff as ES-selected and platform-delivered. ES owns
+  handoff selection, env injection, reserved path layout, mounts, and Nomad
+  job construction for the current slice. The runtime supervisor/helper owns
+  the in-task endpoint implementation, helper-private SPIRE traversal,
+  readiness-before-workload, and root-to-workload privilege boundary. SPIRE
+  owns JWT-SVID issuance, and Vault owns token, secret, and lease issuance
+  after workload-side login.
 
 **Implementation invariants**
 
@@ -221,6 +230,8 @@ Where ES stops and Nomad takes over:
 - `Submit` does not call CGS, and `authority_handoff` remains assembled from
   ES-selected runtime facts rather than CGS authorize output or policy-approval
   state.
+- `Submit` does not broker Vault tokens, Vault secrets, JWT-SVID payloads,
+  leases, Codex credential material, or credential payloads.
 
 ## 8. Lifecycle projection implementation
 
@@ -295,16 +306,34 @@ Cancel path:
   - helper-private SPIRE path under `/run/es-runtime-identity/<run_id>/internal/`
   - platform-owned runtime assets under `/execution/run/platform/`
   - workload-owned content under `/execution/run/work`
+- The current supervisor/helper implementation owns endpoint serving,
+  helper-private SPIRE traversal, readiness-before-workload, helper death
+  handling, and fixed root-to-workload privilege boundary enforcement.
+- SPIRE owns JWT-SVID issuance behind the helper. Vault owns token, secret,
+  and lease issuance after workload-side login.
 
 **Implementation invariant**
 
 - ES currently protects the reserved runtime paths backing the discovered endpoint from caller mount overlap.
 - The first platform-owned runtime-identity slice must preserve a helper-private raw SPIRE channel and fixed non-root workload launch semantics before any JWT retrieval is considered complete.
 - The runtime helper now retries its first bounded JWT-SVID fetch within the existing readiness timeout so transient helper-private SPIRE socket startup races fail less often without widening the workload-visible contract or bypassing helper readiness.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is bounded workload-visible discovery
+  only. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- Current helper start as `0:0`, Nomad task `User: "0:0"`, fixed workload
+  `10000:10000`, helper-private SPIRE traversal, and reserved-path surfaces
+  are bounded or compatibility-heavy implementation surfaces, not final
+  generalized architecture.
+- `authority_handoff`, `outcome_evidence`, retained bundles, support bundles,
+  logs, traces, reports, profiles, and `.out` artifacts remain
+  non-authority evidence/projection rather than runtime-identity or
+  credential authority.
 
 **Deliberate absence**
 
 - ES does not become the long-lived runtime credential owner behind the reserved path; runtime-side delivery remains owned by the platform helper launched with the workload.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads.
 
 ### `mounts.go`
 

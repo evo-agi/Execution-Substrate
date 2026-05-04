@@ -492,6 +492,10 @@ Current shape:
 - `runtime_config_refs` inside `authority_handoff` identifies the selected
   workload-zone Vault config digest as evidence only. It must not be used as
   runtime-config authority or live credential truth.
+- F0 classifies `authority_handoff` as non-secret runtime-handoff evidence
+  only. It is not runtime-identity authority, credential authority, proof of
+  live JWT-SVID/Vault token/secret/lease possession, or Control Plane
+  review/approval/checkpoint/finalization state.
 
 **Bounded slice contract**
 
@@ -815,6 +819,11 @@ Successful response is `200` JSON with these fields:
 
 **Observed current contract-adjacent conventions**
 
+- The Workstream F F0 ownership decision lives in
+  `.docs/system_overview/runtime_identity_handoff.md`.
+- Runtime identity handoff is currently ES-selected and platform-delivered.
+  ES owns handoff selection, env injection, reserved path layout, mounts, and
+  Nomad job construction for the current slice.
 - ES injects the current endpoint-discovery environment conventions:
   - canonical `EXEC_WORKLOAD_IDENTITY_ENDPOINT=unix://<ES-owned run-scoped endpoint>`
 - ES also injects the current non-secret workload-vault runtime inputs derived from the resolved workload-vault auth plan.
@@ -831,26 +840,54 @@ Successful response is `200` JSON with these fields:
   - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_PATH`
   - `EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD`
 - The runtime-identity workspace is mounted as writable tmpfs in the current submit slice.
-- The bounded slice-1 implementation target keeps the workload-visible endpoint but changes the runtime-side owner behind it to a platform-owned helper launched by a platform-owned supervisor.
+- The bounded slice-1 implementation keeps the workload-visible endpoint but
+  puts the runtime-side owner behind it in a platform-owned helper launched by
+  a platform-owned supervisor.
+- The runtime supervisor/helper owns the in-task endpoint implementation,
+  helper-private SPIRE traversal, readiness-before-workload, and
+  root-to-workload privilege boundary for the current implementation.
+- SPIRE owns JWT-SVID issuance.
+- Vault owns token, secret, and lease issuance after workload-side login.
 - ES exposes the same bounded non-secret facts through `authority_handoff` on submit/status when available. That read surface is evidence of the submitted runtime handoff, not evidence of live credential possession.
 
 **Current contract invariants**
 
 - Caller runtime mounts must not overlap the ES-owned subtree that backs the discovered endpoint.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract only. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
 - ES derives the bounded workload-vault handoff from workload-zone vault runtime fields plus `workload_vault_auth.default_mode`.
 - If that runtime config supplies Vault CA trust material, ES stages it as workload-visible trust files and uses standard TLS environment rather than disabling verification.
 - ES does not turn runtime identity or Vault-auth failures into a distinct ES lifecycle phase.
-- ES does not fetch, mint, broker, validate, or store Codex credential material. The selected workload is responsible for using the existing identity endpoint and workload-vault metadata to read that material.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads. The selected workload is
+  responsible for using the existing identity endpoint and workload-vault
+  metadata to read material it is allowed to read.
 - ES does not expose live runtime credential state through `authority_handoff`.
 - The supported-local proof realization may provide a proof-only deterministic Codex shim at `EXEC_CODEX_CLI_PATH` inside the configured profile image. That shim is proof tooling, not a new ES product API or a claim that ES owns Codex service invocation semantics.
 - The first platform-owned runtime-identity slice is intentionally limited to platform-controlled non-root workloads with no privilege-escalation path.
 - The public runtime identity endpoint must remain a bounded platform endpoint, not a raw SPIRE proxy.
+- Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces
+  are bounded or compatibility-heavy, not final generalized architecture.
+- Runtime-config refs, `authority_handoff.runtime_config_refs`, ARS blob
+  storage/read mechanics, digest-only runtime-config refs, and
+  `workload_vault_auth.default_mode` are not runtime-identity or credential
+  authority.
+- CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, CGS v1/v2 design docs, EGS
+  `publication.version`, EGS unsigned publication metadata, AGS
+  `policy_decisions`, retained bundles, `outcome_evidence`,
+  `authority_handoff`, IM profiles, support bundles, logs, traces, reports,
+  `.out` artifacts, and CP review/approval/checkpoint/finalization state are
+  not runtime-identity or credential authority.
 
 **Reopened lifecycle seams**
 
 - The reserved-path conventions
 - The endpoint environment convention
 - The extent to which runtime identity handoff should remain part of the public execution contract
+- The long-term runtime-identity owner, helper/root/task-user model, SPIRE
+  selector posture, Vault posture, and reserved-path architecture
 
 ## 15. Bounded slice rules
 

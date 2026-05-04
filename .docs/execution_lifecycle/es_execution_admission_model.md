@@ -14,7 +14,8 @@ does not settle:
 - Workstream E runtime-config ownership redesign beyond the E0
   docs/tests-only ownership decision in
   `.docs/system_overview/runtime_config_ownership.md`
-- Workstream F runtime-identity redesign
+- Workstream F runtime-identity redesign beyond the F0 docs/tests-only
+  ownership decision in `.docs/system_overview/runtime_identity_handoff.md`
 - Control Plane orchestration, review, checkpoint, escalation, or finalization
   semantics
 - Infrastructure Manager bootstrap, readiness, or support-bundle ownership
@@ -97,6 +98,20 @@ the code and tests win and this document must be realigned.
   not change ES admission behavior, and still does not settle Workstream E
   runtime-config ownership or Workstream F runtime-identity handoff
   ownership.
+- F0 records that runtime identity handoff is currently ES-selected and
+  platform-delivered. ES owns current handoff selection, env injection,
+  reserved path layout, mounts, and Nomad job construction; the runtime
+  supervisor/helper owns in-task endpoint implementation, helper-private SPIRE
+  traversal, readiness-before-workload, and root-to-workload privilege
+  boundary; SPIRE owns JWT-SVID issuance; Vault owns token, secret, and lease
+  issuance after workload-side login.
+- F0 classifies `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the bounded
+  workload-visible discovery contract only. It is not raw SPIRE socket
+  exposure, Vault token brokerage, runtime-config authority, or a secret
+  payload.
+- F0 does not change runtime-config ownership from E0/E1, does not consume or
+  promote D seams, and does not widen CP, IM, support-bundle, report, trace,
+  retained-bundle, profile, log, or `.out` authority.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or
@@ -155,6 +170,7 @@ the code and tests win and this document must be realigned.
 | `outcome_evidence` read surface | `bounded slice rule` | Additive response evidence on status/cancel JSON and successful logs/result responses for current Nomad or retained-result observations. |
 | Retained opaque result bundles | `stable contract` | ES retains opaque output bundles outside staging and serves them through the current bounded result surface without interpreting their contents as CP state. |
 | Current CP governed path consumption | `temporary compatibility edge` | Preserve AGS publish plus ES contract/prepare/submit/status/logs/result/cancel over HTTPS+mTLS for the current CP consumer path without importing CP orchestration grammar into ES. |
+| Runtime identity handoff ownership | `bounded slice rule` | Current handoff is ES-selected and platform-delivered. `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is bounded workload-visible discovery only; the supervisor/helper implements the endpoint; SPIRE owns JWT-SVID issuance; Vault owns token/secret/lease issuance after workload-side login. |
 
 ES does not own:
 
@@ -228,6 +244,18 @@ ES does not own:
   reports, retained bundles, `.out` artifacts, CP
   review/approval/checkpoint/finalization state, `authority_handoff`, or
   `outcome_evidence` as runtime-config authority.
+- Do not treat CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, CGS v1/v2 design docs, EGS
+  `publication.version`, EGS unsigned publication metadata, AGS
+  `policy_decisions`, runtime-config refs, `authority_handoff.runtime_config_refs`,
+  ARS blob mechanics, digest-only runtime-config refs,
+  `workload_vault_auth.default_mode`, retained bundles, `outcome_evidence`,
+  `authority_handoff`, IM profiles, support bundles, logs, traces, reports,
+  `.out` artifacts, or CP review/approval/checkpoint/finalization state as
+  runtime-identity or credential authority.
+- Do not reinterpret `EXEC_WORKLOAD_IDENTITY_ENDPOINT` as raw SPIRE socket
+  exposure, Vault token brokerage, runtime-config authority, or a secret
+  payload.
 - Do not turn the current runtime-profile compatibility edges into a general
   package-kind redesign or transfer CP control semantics into ES.
 - Do not turn retained result bundles into CP checkpoint/review/finalization

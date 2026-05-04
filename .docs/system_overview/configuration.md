@@ -82,6 +82,29 @@ Minimal reference example:
 }
 ```
 
+## Runtime Identity Handoff
+
+The Workstream F F0 ownership decision is recorded in
+`.docs/system_overview/runtime_identity_handoff.md`.
+
+Runtime identity handoff is currently ES-selected and platform-delivered. ES
+owns handoff selection, env injection, reserved path layout, mounts, and Nomad
+job construction for the current slice. `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is
+the bounded workload-visible discovery contract; it is not raw SPIRE socket
+exposure, Vault token brokerage, runtime-config authority, or a secret payload.
+
+The runtime supervisor/helper owns the in-task endpoint implementation,
+helper-private SPIRE traversal, readiness-before-workload, and the
+root-to-workload privilege boundary for the current implementation. SPIRE owns
+JWT-SVID issuance. Vault owns token, secret, and lease issuance after
+workload-side login.
+
+Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces are
+bounded or compatibility-heavy, not final generalized architecture. F0 does
+not claim full ES/runtime de-root, rootless Nomad client, production
+readiness, production Vault readiness, or generalized remote deployment
+architecture.
+
 ## ARS
 
 ### Required config groups
@@ -326,6 +349,15 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - the workload gets no supplemental groups and no privilege-escalation path
   - root workloads and arbitrary image-user execution are out of scope for this slice
 - workloads should rely on `EXEC_WORKLOAD_IDENTITY_ENDPOINT` for endpoint discovery rather than on any fixed socket path
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` remains bounded workload-visible
+  discovery only. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads.
+- runtime-config refs, `authority_handoff.runtime_config_refs`, ARS blob
+  storage/read mechanics, digest-only runtime-config refs, and
+  `workload_vault_auth.default_mode` remain Workstream E surfaces or config
+  residue; they are not runtime-identity or credential authority.
 - ES `/health` does not include Nomad readiness in the current slice; Nomad availability is verified separately during bring-up and submit/lifecycle checks
 - The primary bring-up/check path distinguishes:
   - service health: ARS, EGS, AGS, and ES public health surfaces

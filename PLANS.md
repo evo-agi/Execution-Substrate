@@ -761,6 +761,15 @@ Current docs/tests-only decision status for E0:
   Workstreams A/B/C, does not mark full Workstream D complete, and does not
   mark full Workstream E complete.
 
+Workstream E guardrail status:
+
+- E0 and E1 are sufficient guardrails before Workstream F planning.
+- Full Workstream E remains open for long-term runtime-config owner,
+  reference/versioning, and `workload_vault_auth.default_mode` follow-ups.
+- Later Workstream E work must not drift into runtime identity handoff,
+  helper behavior, SPIRE/Vault handoff implementation, or Workstream F
+  reserved-path decisions.
+
 ### Workstream F - Runtime Identity Handoff Reset
 
 Purpose:
@@ -832,6 +841,53 @@ Current bounded planning direction:
   - use the repo-owned `scripts/72_supported_local_setup.sh` helper plus `scripts/73_supported_local_proof.sh run` for the current supported local proof path instead of the earlier out-of-repo `/tmp` harnesses
   - keep the canonical supported-local proof workspace under `.out/es-proof-<id>/`, with guest `/tmp` only as internal Lima scratch when the repo mount is read-only
 - That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap. If bounded implementation cannot preserve the helper-only SPIRE channel or the no-privilege-escalation workload launch model, stop and reopen only the runtime shape needed to keep ownership honest.
+
+F0 - Runtime Identity Handoff Ownership Decision:
+
+- F0 is docs/tests-only. It records the current runtime-identity handoff
+  ownership model before any behavior-changing Workstream F implementation.
+- The F0 decision is recorded in
+  `.docs/system_overview/runtime_identity_handoff.md`.
+- Runtime identity handoff is currently ES-selected and platform-delivered.
+  ES owns handoff selection, env injection, reserved path layout, mounts, and
+  Nomad job construction for the current slice.
+- `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
+  contract. It is not raw SPIRE socket exposure, Vault token brokerage,
+  runtime-config authority, or a secret payload.
+- The runtime supervisor/helper owns the in-task endpoint implementation,
+  helper-private SPIRE traversal, readiness-before-workload, and
+  root-to-workload privilege boundary for the current implementation.
+- SPIRE owns JWT-SVID issuance. Vault owns token, secret, and lease issuance
+  after workload-side login.
+- ES does not broker Vault tokens, Vault secrets, JWT-SVID payloads, leases,
+  Codex credential material, or credential payloads.
+- Current helper/root/Nomad task user/SPIRE traversal/reserved-path surfaces
+  are bounded or compatibility-heavy, not final generalized architecture.
+- Capability validation remains behavior-based and local to validation
+  boundaries, not based on accidental DTO/path coupling.
+- F0 does not change runtime-config ownership from E0/E1, does not consume or
+  promote D seams, does not change CP compatibility or
+  `control-plane-normal-shell/v1`, and does not change M6 support-bundle
+  inputs.
+- F0 keeps CGS authorize output, `id.conf`, `policy.id_conf_path`,
+  `audit.policy_version`, CGS v1/v2 design docs, EGS
+  `publication.version`, EGS unsigned publication metadata, AGS
+  `policy_decisions`, runtime-config refs, `authority_handoff.runtime_config_refs`,
+  ARS blob mechanics, digest-only runtime-config refs,
+  `workload_vault_auth.default_mode`, ES retained bundles,
+  `outcome_evidence`, `authority_handoff`, IM profiles, support bundles,
+  logs, traces, reports, `.out` artifacts, and CP
+  review/approval/checkpoint/finalization state outside runtime-identity and
+  credential authority.
+- F0 does not reopen Workstreams A/B/C, does not mark full Workstream D
+  complete, does not mark full Workstream E complete, and does not mark full
+  Workstream F complete.
+- Full Workstream F remains open for long-term runtime-identity owner,
+  helper/root/task-user, SPIRE selector/traversal, reserved-path, and
+  workload-credential handoff follow-ups.
+- F0 does not claim full ES/runtime de-root, rootless Nomad client,
+  production readiness, production Vault readiness, or generalized remote
+  deployment architecture.
 
 Dependencies:
 

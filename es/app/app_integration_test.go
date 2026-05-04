@@ -107,19 +107,24 @@ func TestPrepareReturns403WhenArtifactIsRevoked(t *testing.T) {
 	assertPrepareError(t, stack, http.StatusForbidden, codeArtifactRevoked)
 }
 
-func TestPrepareReturns503WhenVaultBlobIsMissing(t *testing.T) {
-	stack := startStack(t, stackOptions{MissingVaultBlob: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
-}
+func TestStartupGuaranteeDoesNotFetchWorkloadZoneVaultBlobBeforeServing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts stackOptions
+	}{
+		{name: "missing_blob", opts: stackOptions{MissingVaultBlob: true}},
+		{name: "corrupt_blob", opts: stackOptions{CorruptVaultBlob: true}},
+		{name: "invalid_blob_shape", opts: stackOptions{InvalidVaultBlobShape: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stack := startStack(t, tc.opts)
+			if !stack.es.Started() {
+				t.Fatalf("expected ES to be started before runtime-config blob is fetched during prepare")
+			}
 
-func TestPrepareReturns503WhenVaultBlobIsCorrupt(t *testing.T) {
-	stack := startStack(t, stackOptions{CorruptVaultBlob: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
-}
-
-func TestPrepareReturns503WhenVaultBlobShapeIsInvalid(t *testing.T) {
-	stack := startStack(t, stackOptions{InvalidVaultBlobShape: true})
-	assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+			assertPrepareError(t, stack, http.StatusServiceUnavailable, codeWorkloadZoneVaultUnavailable)
+		})
+	}
 }
 
 func TestPrepareIgnoresCorruptManifestWhenEvidenceIsPresent(t *testing.T) {
@@ -157,7 +162,7 @@ func TestStartFailsWhenTrustModelVerificationIsInvalid(t *testing.T) {
 	}
 }
 
-func TestNewFailsWhenWorkloadZoneVaultConfigRefIsMissing(t *testing.T) {
+func TestStartupGuaranteeRejectsMissingWorkloadZoneVaultConfigRefBeforeServing(t *testing.T) {
 	stack := startDependencyStack(t, stackOptions{})
 	defer stack.shutdownAll(t)
 
@@ -170,7 +175,7 @@ func TestNewFailsWhenWorkloadZoneVaultConfigRefIsMissing(t *testing.T) {
 	}
 }
 
-func TestNewFailsWhenWorkloadZoneVaultConfigRefIsInvalid(t *testing.T) {
+func TestStartupGuaranteeRejectsInvalidWorkloadZoneVaultConfigRefBeforeServing(t *testing.T) {
 	stack := startDependencyStack(t, stackOptions{})
 	defer stack.shutdownAll(t)
 
