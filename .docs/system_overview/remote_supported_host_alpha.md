@@ -84,6 +84,9 @@ Required top-level fields for
 - `schema`
 - `generated_at`
 - `host`
+- `runtime_inventory`
+- `cve_readiness`
+- `runtime_chain`
 - `surfaces`
 - `accepted_compatibility_edges`
 - `least_privilege_findings`
@@ -99,6 +102,18 @@ The checker must classify these current surfaces explicitly:
 - Nomad client privilege posture
 - whether those Nomad server/client surfaces were independently evaluated or
   are only one combined-service reading
+- non-secret host/runtime inventory, including kernel, OS release, package
+  versions, relevant service users, Docker/Nomad runtime chain observations,
+  Docker storage-driver observation status, FUSE/fuse-overlayfs/rootless
+  storage observation status, and Podman/crun/idmapped or `mount_setattr`
+  path observation status
+- CVE-2026-31431 and CVE-2026-31465 readiness as evidence-only
+  classifications of `fixed`, `vulnerable`, `not_affected`,
+  `mitigated_not_fixed`, or `unknown`; host-observed vendor status may justify
+  a direct classification, while unobserved vendor status must remain
+  `unknown`; CVE-2026-31431 `mitigated_not_fixed` requires both
+  `algif_aead` currently not loaded and non-mutating modprobe policy evidence
+  blocking autoload, and it is not a kernel patch or proof of production safety
 - whether the current Nomad client root posture remains an accepted MVP
   substrate dependency
 - Nomad task user posture, including the current `User: "0:0"` edge
@@ -128,6 +143,10 @@ The current expected classifications for the active Alpha posture are:
   explicit compatibility-heavy handoff posture
 - ES Vault token brokerage must remain false
 - support bundles and related evidence artifacts remain non-authoritative
+- CVE/runtime inventory evidence must not claim service health, submit
+  readiness, runtime-profile readiness, governed execution proof, full
+  ES/runtime de-root, a rootless Nomad client, support-bundle authority, or
+  CVE patch authority
 
 Nomad server/client posture reporting must stay role-aware and honest.
 
@@ -183,7 +202,9 @@ The `non_authority_labels` and `explicit_non_claims` fields must keep the
 surface honest: this checker is not runtime-profile readiness, not submit
 readiness, not service health, not producer-contract compatibility, not
 retained-result proof, not workload credential success proof, not Vault
-production readiness, and not support-bundle authority.
+production readiness, not support-bundle authority, and not CVE patch
+authority. Direct vendor status, when observed and recorded, is evidence for
+the CVE classification only.
 
 ## Topology
 

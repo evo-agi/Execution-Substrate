@@ -168,7 +168,24 @@ default it must not SSH, mutate services, change ownership, restart services,
 archive files, or delete anything. It records evidence/projection only; it
 does not change ES submit behavior, runtime-helper behavior, the current Nomad
 task user, the helper-private raw SPIRE boundary, Vault token brokerage, or
-governed execution proof claims.
+governed execution proof claims. The same evidence surface may record
+non-secret host/runtime/CVE inventory fields, including kernel and package
+versions, Docker/Nomad runtime chain observations, FUSE/fuse-overlayfs,
+Podman/crun, idmapped or `mount_setattr` path observations, and
+vendor-observed CVE readiness classifications for CVE-2026-31431 and
+CVE-2026-31465. CVE readiness classifications are `fixed`, `vulnerable`,
+`not_affected`, `mitigated_not_fixed`, or `unknown`. For CVE-2026-31431,
+`mitigated_not_fixed` may only mean vendor/package evidence still reports a
+vulnerable host while non-mutating local evidence shows `algif_aead` is not
+loaded and modprobe policy blocks autoload. That state is not a kernel patch,
+not proof of production safety, and remains a blocker unless the checker is
+run with an explicit bounded internal Remote Alpha mitigation-risk acceptance
+flag.
+Those fields remain evidence/projection only: they are not service health,
+submit readiness, runtime-profile readiness, governed execution proof, full
+ES/runtime de-root, rootless Nomad client proof, support bundle authority, or
+CVE patch authority. Direct vendor status observation is evidence for CVE
+classification only.
 
 ## Current Remote Alpha ES Config/TLS Ownership Prep Slice
 

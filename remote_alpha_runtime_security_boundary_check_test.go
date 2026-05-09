@@ -132,6 +132,174 @@ exit 97
 	}
 }
 
+func fakeUbuntuProCVEOutput(cveID, classification string) string {
+	switch classification {
+	case "fixed":
+		return cveID + " is resolved\nNo affected packages remain"
+	case "not_affected":
+		return cveID + " does not affect your system\nnot affected"
+	case "vulnerable":
+		return cveID + " is not resolved\nPackages are still affected\nNo fix is available yet"
+	default:
+		return cveID + " status could not be determined"
+	}
+}
+
+func setupFakeRuntimeSecurityBoundaryCVECommands(
+	t *testing.T,
+	dir string,
+	mutationLogPath string,
+	cve31431Classification string,
+	cve31465Classification string,
+	moduleLoaded bool,
+	autoloadBlocked bool,
+) {
+	t.Helper()
+
+	writeExecutable(t, dir, "pro", fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "fix" ] && [ "$2" = "CVE-2026-31431" ]; then
+  cat <<'EOF'
+%s
+EOF
+  exit 0
+fi
+if [ "$1" = "fix" ] && [ "$2" = "CVE-2026-31465" ]; then
+  cat <<'EOF'
+%s
+EOF
+  exit 0
+fi
+exit 1
+`, fakeUbuntuProCVEOutput("CVE-2026-31431", cve31431Classification), fakeUbuntuProCVEOutput("CVE-2026-31465", cve31465Classification)))
+
+	lsmodOutput := "Module                  Size  Used by\n"
+	if moduleLoaded {
+		lsmodOutput += "algif_aead             16384  0\n"
+	}
+	writeExecutable(t, dir, "lsmod", fmt.Sprintf(`#!/bin/sh
+cat <<'EOF'
+%s
+EOF
+`, strings.TrimRight(lsmodOutput, "\n")))
+
+	writeExecutable(t, dir, "modinfo", `#!/bin/sh
+if [ "$1" = "-F" ] && [ "$2" = "filename" ] && [ "$3" = "algif_aead" ]; then
+  echo /lib/modules/fake/kernel/crypto/algif_aead.ko
+  exit 0
+fi
+exit 1
+`)
+
+	showconfigOutput := ""
+	dryRunOutput := "insmod /lib/modules/fake/kernel/crypto/algif_aead.ko\n"
+	if autoloadBlocked {
+		showconfigOutput = "blacklist algif_aead\ninstall algif_aead /bin/false\n"
+		dryRunOutput = "install /bin/false\n"
+	}
+	writeExecutable(t, dir, "modprobe", fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--showconfig" ]; then
+  cat <<'EOF'
+%s
+EOF
+  exit 0
+fi
+if [ "$1" = "-n" ] && [ "$2" = "-v" ] && [ "$3" = "algif_aead" ]; then
+  cat <<'EOF'
+%s
+EOF
+  exit 0
+fi
+printf 'modprobe %%s\n' "$*" >> %q
+exit 97
+`, strings.TrimRight(showconfigOutput, "\n"), strings.TrimRight(dryRunOutput, "\n"), mutationLogPath))
+}
+
+type runtimeSecurityBoundaryFixtureResult struct {
+	payload         map[string]any
+	output          []byte
+	err             error
+	mutationLogPath string
+}
+
+func runRuntimeSecurityBoundaryCVEFixture(
+	t *testing.T,
+	cve31431Classification string,
+	moduleLoaded bool,
+	autoloadBlocked bool,
+	args ...string,
+) runtimeSecurityBoundaryFixtureResult {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+
+	runtimeSupportPath := filepath.Join(tmpDir, "bin", "es-runtime-support")
+	if err := os.WriteFile(runtimeSupportPath, []byte("runtime-support\n"), 0o755); err != nil {
+		t.Fatalf("write runtime support binary: %v", err)
+	}
+
+	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
+	if err != nil {
+		t.Fatalf("mkdir temp spire dir: %v", err)
+	}
+	spireSocketPath := filepath.Join(spireDir, "agent.sock")
+	listener, err := net.Listen("unix", spireSocketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+
+	configPath := filepath.Join(tmpDir, "es.json")
+	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	writeRuntimeSecurityBoundaryConfig(t, configPath, runtimeSupportPath, spireSocketPath)
+	writeRuntimeSecurityBoundaryWorkloadZoneConfig(t, workloadZoneConfigPath)
+
+	mutationLogPath := filepath.Join(tmpDir, "mutations.log")
+	setupFakeRuntimeSecurityBoundaryCommands(t, fakeBin, mutationLogPath, defaultFakeNomadExecStart, true, true)
+	setupFakeRuntimeSecurityBoundaryCVECommands(t, fakeBin, mutationLogPath, cve31431Classification, "not_affected", moduleLoaded, autoloadBlocked)
+	writeExecutable(t, fakeBin, "uname", `#!/bin/sh
+if [ "$1" = "-a" ]; then
+  echo "Linux m75q-test 6.17.0-14-generic x86_64 GNU/Linux"
+  exit 0
+fi
+if [ "$1" = "-r" ]; then
+  echo "6.17.0-14-generic"
+  exit 0
+fi
+exit 1
+`)
+	procModulesPath := filepath.Join(tmpDir, "proc_modules")
+	procModulesText := ""
+	if moduleLoaded {
+		procModulesText = "algif_aead 16384 0 - Live 0x00000000\n"
+	}
+	if err := os.WriteFile(procModulesPath, []byte(procModulesText), 0o644); err != nil {
+		t.Fatalf("write fake proc modules: %v", err)
+	}
+
+	baseArgs := []string{
+		"--config-path", configPath,
+		"--workload-zone-config-path", workloadZoneConfigPath,
+	}
+	baseArgs = append(baseArgs, args...)
+	output, err := runRemoteRuntimeSecurityBoundaryCheckScript(
+		t,
+		envWithPath(fakeBin, "REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_PROC_MODULES_PATH="+procModulesPath),
+		baseArgs...,
+	)
+	return runtimeSecurityBoundaryFixtureResult{
+		payload:         parseRuntimeSecurityBoundaryOutput(t, output),
+		output:          output,
+		err:             err,
+		mutationLogPath: mutationLogPath,
+	}
+}
+
 func envWithExactPath(t *testing.T, path string, extra ...string) []string {
 	t.Helper()
 
@@ -250,6 +418,7 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckDefaultsToNonMutating(t *testing
 
 	mutationLogPath := filepath.Join(tmpDir, "mutations.log")
 	setupFakeRuntimeSecurityBoundaryCommands(t, fakeBin, mutationLogPath, defaultFakeNomadExecStart, true, true)
+	setupFakeRuntimeSecurityBoundaryCVECommands(t, fakeBin, mutationLogPath, "fixed", "not_affected", false, false)
 
 	output, _ := runRemoteRuntimeSecurityBoundaryCheckScript(t, envWithPath(fakeBin),
 		"--config-path", configPath,
@@ -311,6 +480,7 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckSchemaAndClassificationsAreStabl
 	wantKeys := []string{
 		"accepted_compatibility_edges",
 		"blockers",
+		"cve_readiness",
 		"explicit_non_claims",
 		"generated_at",
 		"host",
@@ -320,6 +490,8 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckSchemaAndClassificationsAreStabl
 		"non_mutating",
 		"not_evaluated",
 		"redaction",
+		"runtime_chain",
+		"runtime_inventory",
 		"schema",
 		"surfaces",
 	}
@@ -346,6 +518,19 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckSchemaAndClassificationsAreStabl
 	}
 
 	surfaces := mustJSONMapField(t, payload, "surfaces")
+	runtimeInventory := mustJSONMapField(t, payload, "runtime_inventory")
+	if got := runtimeInventory["classification"]; got != "runtime_inventory_evidence_only" {
+		t.Fatalf("unexpected runtime inventory classification %v", got)
+	}
+	cveReadiness := mustJSONMapField(t, payload, "cve_readiness")
+	if got := cveReadiness["classification"]; got != "cve_runtime_inventory_evidence_only" {
+		t.Fatalf("unexpected cve readiness classification %v", got)
+	}
+	runtimeChain := mustJSONMapField(t, payload, "runtime_chain")
+	if got := runtimeChain["classification"]; got != "runtime_chain_evidence_only" {
+		t.Fatalf("unexpected runtime chain classification %v", got)
+	}
+
 	nomadServer := mustJSONMapField(t, surfaces, "nomad_server_privilege_posture")
 	if got := nomadServer["classification"]; got != "not_evaluated" {
 		t.Fatalf("unexpected nomad server classification %v", got)
@@ -424,13 +609,144 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckSchemaAndClassificationsAreStabl
 		"not_full_es_runtime_deroot",
 		"not_rootless_nomad_client",
 		"not_governed_execution_proof",
+		"not_service_health",
+		"not_submit_readiness",
+		"not_runtime_profile_readiness",
 		"not_vault_production_ready",
 		"not_workload_credential_success_proof",
 		"not_support_bundle_authority",
+		"not_cve_patch_authority",
+		"not_kernel_patch",
+		"not_production_safety_proof",
 	} {
 		if !containsString(nonClaims, required) {
 			t.Fatalf("expected explicit_non_claims to contain %q, got %v", required, nonClaims)
 		}
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks(t *testing.T) {
+	t.Parallel()
+
+	result := runRuntimeSecurityBoundaryCVEFixture(t, "vulnerable", false, false)
+	cveReadiness := mustJSONMapField(t, result.payload, "cve_readiness")
+	cve31431 := mustJSONMapField(t, cveReadiness, "cve_2026_31431")
+	if got := cve31431["classification"]; got != "vulnerable" {
+		t.Fatalf("unexpected CVE-2026-31431 classification %v", got)
+	}
+	algif := mustJSONMapField(t, cveReadiness, "algif_aead")
+	if got := algif["algif_aead_loaded"]; got != false {
+		t.Fatalf("unexpected algif_aead_loaded %v", got)
+	}
+	if got := algif["algif_aead_autoload_blocked"]; got != false {
+		t.Fatalf("unexpected algif_aead_autoload_blocked %v", got)
+	}
+	if got := algif["algif_aead_mitigation_verified"]; got != false {
+		t.Fatalf("unexpected algif_aead_mitigation_verified %v", got)
+	}
+
+	surfaces := mustJSONMapField(t, result.payload, "surfaces")
+	surface := mustJSONMapField(t, surfaces, "cve_2026_31431_readiness")
+	if got := surface["classification"]; got != "blocker" {
+		t.Fatalf("unexpected cve surface classification %v", got)
+	}
+	blockers := arrayMapBySurface(t, mustJSONArray(t, result.payload, "blockers"))
+	if _, ok := blockers["cve_2026_31431_readiness"]; !ok {
+		t.Fatalf("expected CVE-2026-31431 readiness blocker, got %v", blockers)
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryCVE31431MitigatedNotFixedBlocksWithoutRiskAcceptance(t *testing.T) {
+	t.Parallel()
+
+	result := runRuntimeSecurityBoundaryCVEFixture(t, "vulnerable", false, true)
+	cveReadiness := mustJSONMapField(t, result.payload, "cve_readiness")
+	cve31431 := mustJSONMapField(t, cveReadiness, "cve_2026_31431")
+	if got := cve31431["classification"]; got != "mitigated_not_fixed" {
+		t.Fatalf("unexpected CVE-2026-31431 classification %v", got)
+	}
+	if got := cve31431["vendor_package_classification"]; got != "vulnerable" {
+		t.Fatalf("unexpected vendor_package_classification %v", got)
+	}
+	if got := cve31431["risk_accepted_for_internal_alpha"]; got != false {
+		t.Fatalf("unexpected risk acceptance marker %v", got)
+	}
+	algif := mustJSONMapField(t, cveReadiness, "algif_aead")
+	if got := algif["algif_aead_autoload_blocked"]; got != true {
+		t.Fatalf("unexpected algif_aead_autoload_blocked %v", got)
+	}
+	if got := algif["algif_aead_mitigation_verified"]; got != true {
+		t.Fatalf("unexpected algif_aead_mitigation_verified %v", got)
+	}
+	if got := fmt.Sprint(algif["algif_aead_blocking_policy_source"]); got == "" {
+		t.Fatalf("expected algif blocking policy source, got %v", algif)
+	}
+
+	surfaces := mustJSONMapField(t, result.payload, "surfaces")
+	surface := mustJSONMapField(t, surfaces, "cve_2026_31431_readiness")
+	if got := surface["classification"]; got != "blocker" {
+		t.Fatalf("unexpected cve surface classification %v", got)
+	}
+	blockers := arrayMapBySurface(t, mustJSONArray(t, result.payload, "blockers"))
+	if _, ok := blockers["cve_2026_31431_readiness"]; !ok {
+		t.Fatalf("expected mitigated_not_fixed to block without explicit risk acceptance, got %v", blockers)
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryCVE31431MitigatedNotFixedCanBeAcceptedForInternalAlpha(t *testing.T) {
+	t.Parallel()
+
+	result := runRuntimeSecurityBoundaryCVEFixture(
+		t,
+		"vulnerable",
+		false,
+		true,
+		"--accept-cve-31431-mitigation-risk-for-internal-alpha",
+	)
+	cveReadiness := mustJSONMapField(t, result.payload, "cve_readiness")
+	cve31431 := mustJSONMapField(t, cveReadiness, "cve_2026_31431")
+	if got := cve31431["classification"]; got != "mitigated_not_fixed" {
+		t.Fatalf("unexpected CVE-2026-31431 classification %v", got)
+	}
+	if got := cve31431["risk_accepted_for_internal_alpha"]; got != true {
+		t.Fatalf("unexpected risk acceptance marker %v", got)
+	}
+
+	surfaces := mustJSONMapField(t, result.payload, "surfaces")
+	surface := mustJSONMapField(t, surfaces, "cve_2026_31431_readiness")
+	if got := surface["classification"]; got != "evidence_only" {
+		t.Fatalf("unexpected cve surface classification %v", got)
+	}
+	blockers := arrayMapBySurface(t, mustJSONArray(t, result.payload, "blockers"))
+	if _, ok := blockers["cve_2026_31431_readiness"]; ok {
+		t.Fatalf("did not expect CVE-2026-31431 blocker with explicit bounded risk acceptance, got %v", blockers)
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable(t *testing.T) {
+	t.Parallel()
+
+	result := runRuntimeSecurityBoundaryCVEFixture(t, "vulnerable", false, false)
+	cveReadiness := mustJSONMapField(t, result.payload, "cve_readiness")
+	cve31431 := mustJSONMapField(t, cveReadiness, "cve_2026_31431")
+	if got := cve31431["classification"]; got != "vulnerable" {
+		t.Fatalf("unexpected CVE-2026-31431 classification %v", got)
+	}
+}
+
+func TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnknownVendorStateBlocks(t *testing.T) {
+	t.Parallel()
+
+	result := runRuntimeSecurityBoundaryCVEFixture(t, "unknown", false, true)
+	cveReadiness := mustJSONMapField(t, result.payload, "cve_readiness")
+	cve31431 := mustJSONMapField(t, cveReadiness, "cve_2026_31431")
+	if got := cve31431["classification"]; got != "unknown" {
+		t.Fatalf("unexpected CVE-2026-31431 classification %v", got)
+	}
+
+	blockers := arrayMapBySurface(t, mustJSONArray(t, result.payload, "blockers"))
+	if _, ok := blockers["cve_2026_31431_readiness"]; !ok {
+		t.Fatalf("expected unknown CVE-2026-31431 readiness blocker, got %v", blockers)
 	}
 }
 

@@ -1609,7 +1609,25 @@ helper-private raw SPIRE traversal boundary, the broad root selector posture,
 the workload-visible `EXEC_WORKLOAD_IDENTITY_ENDPOINT` contract, Vault service
 account posture, Vault root/unseal/client-token leakage checks, the
 workload-zone handoff posture, the no-ES-Vault-token-brokerage rule, and the
-non-authority status of support/evidence artifacts. Missing local tools or
+non-authority status of support/evidence artifacts. It may also emit
+non-secret host/runtime/CVE inventory evidence, including kernel, OS release,
+package versions, service users, Docker/Nomad runtime chain observations,
+Docker storage-driver observation status, FUSE/fuse-overlayfs/rootless
+storage observation status, Podman/crun/idmapped or `mount_setattr` path
+observation status, and evidence-only CVE-2026-31431 and CVE-2026-31465
+classifications of `fixed`, `vulnerable`, `not_affected`,
+`mitigated_not_fixed`, or `unknown`. CVE-2026-31431 may be classified as
+`mitigated_not_fixed` only when vendor/package evidence remains vulnerable and
+non-mutating local evidence proves `algif_aead` is currently not loaded while
+modprobe policy blocks autoload. That is a module-disable mitigation, not a
+kernel patch and not proof of production safety; it remains a blocker unless the
+checker is run with the explicit
+`--accept-cve-31431-mitigation-risk-for-internal-alpha` flag for bounded
+internal Remote Alpha proof. Vendor status checks are direct evidence only
+when observed from the host; otherwise CVE patch status remains `unknown` and
+the artifact must include `not_cve_patch_authority`. Even when vendor status
+or module-disable mitigation evidence is directly observed, the artifact
+remains evidence only and not patch authority. Missing local tools or
 unavailable observations must become honest `blockers` or `not_evaluated`
 entries rather than false pass output. The checker must fail closed if its
 summary would persist JWT-SVIDs, Vault tokens, root tokens, unseal keys, PEM
@@ -1623,7 +1641,10 @@ service unit as the privilege evidence path for both surfaces, it must record
 service unit does not prove separate server/client posture. Stable Nomad
 posture fields may include `nomad_roles_detected`, `evaluation_source`,
 `independently_evaluated`, `combined_single_node_service`, and
-`role_evidence`.
+`role_evidence`. CVE/runtime inventory fields remain evidence/projection only:
+they are not service health, submit readiness, runtime-profile readiness,
+governed execution proof, full ES/runtime de-root, rootless Nomad client proof,
+support-bundle authority, or CVE patch authority.
 
 For the separate Remote Supported-Host Alpha host-local normal-shell runtime
 image slice, the active repo-derived values remain:

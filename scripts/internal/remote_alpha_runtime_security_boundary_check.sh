@@ -9,6 +9,7 @@ remote_alpha_runtime_security_boundary_defaults() {
   REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_CONFIG_PATH="${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_CONFIG_PATH:-${remote_alpha_runtime_security_boundary_default_config_path}}"
   REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_WORKLOAD_ZONE_CONFIG_PATH="${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_WORKLOAD_ZONE_CONFIG_PATH:-${remote_alpha_runtime_security_boundary_default_workload_zone_config_path}}"
   REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_SUMMARY_PATH="${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_SUMMARY_PATH:-}"
+  REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_ACCEPT_CVE_31431_MITIGATION_RISK="${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_ACCEPT_CVE_31431_MITIGATION_RISK:-0}"
 }
 
 remote_alpha_runtime_security_boundary_usage() {
@@ -20,9 +21,13 @@ Optional flags:
   --config-path </path/to/es.json>
   --workload-zone-config-path </path/to/workload-zone-vault-config.json>
   --summary-path <runtime-security-boundary-check.json>
+  --accept-cve-31431-mitigation-risk-for-internal-alpha
   --help
 
 Default behavior is check-only, non-mutating, and writes JSON to stdout.
+The CVE-2026-31431 mitigation-risk flag is evidence-only, non-mutating, and
+only downgrades a verified module-disable mitigation from blocker to warning for
+a bounded internal Remote Alpha proof; it is not kernel patch authority.
 EOF
 }
 
@@ -40,6 +45,10 @@ remote_alpha_runtime_security_boundary_parse_args() {
       --summary-path)
         REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_SUMMARY_PATH="$2"
         shift 2
+        ;;
+      --accept-cve-31431-mitigation-risk-for-internal-alpha)
+        REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_ACCEPT_CVE_31431_MITIGATION_RISK=1
+        shift
         ;;
       --help|-h)
         remote_alpha_runtime_security_boundary_usage
@@ -89,6 +98,8 @@ overclaim_patterns = [
     re.compile(r"Vault production readiness", re.IGNORECASE),
     re.compile(r"workload credential success", re.IGNORECASE),
     re.compile(r"support-bundle authority", re.IGNORECASE),
+    re.compile(r"kernel patch authority", re.IGNORECASE),
+    re.compile(r"production safety proof", re.IGNORECASE),
 ]
 
 for pattern in secret_patterns:
@@ -113,7 +124,8 @@ remote_alpha_runtime_security_boundary_main() {
     "${remote_alpha_runtime_security_boundary_schema}" \
     "${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_CONFIG_PATH}" \
     "${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_WORKLOAD_ZONE_CONFIG_PATH}" \
-    "${summary_tmp_path}" <<'PY'
+    "${summary_tmp_path}" \
+    "${REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_ACCEPT_CVE_31431_MITIGATION_RISK}" <<'PY'
 import json
 import os
 import pathlib
@@ -130,6 +142,7 @@ SCHEMA = sys.argv[1]
 CONFIG_PATH = pathlib.Path(sys.argv[2])
 WORKLOAD_ZONE_CONFIG_PATH = pathlib.Path(sys.argv[3])
 SUMMARY_PATH = pathlib.Path(sys.argv[4])
+ACCEPT_CVE_31431_MITIGATION_RISK = str(sys.argv[5]).lower() in {"1", "true", "yes"}
 
 NON_AUTHORITY_LABELS = [
     "not_service_health",
@@ -143,12 +156,17 @@ NON_AUTHORITY_LABELS = [
     "not_support_bundle_authority",
 ]
 EXPLICIT_NON_CLAIMS = [
+    "not_service_health",
+    "not_submit_readiness",
+    "not_runtime_profile_readiness",
     "not_full_es_runtime_deroot",
     "not_rootless_nomad_client",
     "not_governed_execution_proof",
     "not_vault_production_ready",
     "not_workload_credential_success_proof",
     "not_support_bundle_authority",
+    "not_kernel_patch",
+    "not_production_safety_proof",
 ]
 
 
@@ -174,14 +192,21 @@ def run_command(args):
     if shutil.which(args[0]) is None:
         return None
     try:
-        return subprocess.run(args, check=False, capture_output=True, text=True)
+        return subprocess.run(args, check=False, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=124,
+            stdout=exc.stdout or "",
+            stderr=(exc.stderr or "") + "\ncommand timed out",
+        )
     except FileNotFoundError:
         return None
 
 
 def service_show(service_name):
     proc = run_command(
-        ["systemctl", "show", service_name, "--property=User,Group,FragmentPath,ExecStart", "--no-pager"]
+        ["systemctl", "show", service_name, "--property=User,Group,UMask,FragmentPath,ExecStart", "--no-pager"]
     )
     if proc is None:
         return None, "systemctl command not found"
@@ -203,6 +228,7 @@ def service_show(service_name):
         "service_name": service_name,
         "user": user,
         "group": group,
+        "umask": str(payload.get("UMask") or "").strip(),
         "fragment_path": str(payload.get("FragmentPath") or "").strip(),
         "exec_start": str(payload.get("ExecStart") or "").strip(),
         "root_managed": user in {"root", "0"},
@@ -247,6 +273,567 @@ def spire_selectors():
         "selectors": selectors,
         "alpha_only": "unix:uid:0" in selectors and "unix:gid:0" in selectors,
     }, ""
+
+
+def strip_ansi(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+
+
+def command_text(proc):
+    if proc is None:
+        return ""
+    return strip_ansi(((proc.stdout or "") + (proc.stderr or "")).strip())
+
+
+def first_nonempty_line(text):
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
+
+
+def read_os_release():
+    path = pathlib.Path("/etc/os-release")
+    if not path.exists():
+        return {"available": False, "path": os.fspath(path)}
+    payload = {}
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if not raw_line or raw_line.startswith("#") or "=" not in raw_line:
+                continue
+            key, value = raw_line.split("=", 1)
+            payload[key] = value.strip().strip('"')
+    except OSError as exc:
+        return {"available": False, "path": os.fspath(path), "error": str(exc)}
+    return {
+        "available": True,
+        "path": os.fspath(path),
+        "id": payload.get("ID", ""),
+        "id_like": payload.get("ID_LIKE", ""),
+        "pretty_name": payload.get("PRETTY_NAME", ""),
+        "version_id": payload.get("VERSION_ID", ""),
+        "version_codename": payload.get("VERSION_CODENAME") or payload.get("UBUNTU_CODENAME", ""),
+    }
+
+
+def collect_package_inventory(kernel_release):
+    package_names = [
+        f"linux-image-{kernel_release}" if kernel_release else "",
+        "linux-generic",
+        "linux-headers-generic",
+        "kmod",
+        "docker-ce",
+        "docker-ce-cli",
+        "docker.io",
+        "containerd",
+        "containerd.io",
+        "runc",
+        "crun",
+        "podman",
+        "fuse-overlayfs",
+        "nomad",
+        "vault",
+    ]
+    package_names = [name for name in package_names if name]
+    inventory = {
+        "kernel_release": kernel_release,
+        "query_tool": "unknown",
+        "packages": {},
+        "missing_or_unmatched": [],
+        "query_error": "",
+    }
+
+    if shutil.which("dpkg-query"):
+        inventory["query_tool"] = "dpkg-query"
+        proc = run_command(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${Status}\n", *package_names])
+        text = command_text(proc)
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            if "no packages found matching" in line:
+                inventory["missing_or_unmatched"].append(line.strip())
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                inventory["packages"][parts[0]] = {"version": parts[1], "status": parts[2]}
+        if proc is not None and proc.returncode not in (0, 1):
+            inventory["query_error"] = first_nonempty_line(text)
+        return inventory
+
+    if shutil.which("rpm"):
+        inventory["query_tool"] = "rpm"
+        proc = run_command(["rpm", "-q", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\tinstalled\n", *package_names])
+        text = command_text(proc)
+        for line in text.splitlines():
+            if "\t" in line:
+                name, version, status = line.split("\t", 2)
+                inventory["packages"][name] = {"version": version, "status": status}
+            elif "is not installed" in line:
+                inventory["missing_or_unmatched"].append(line.strip())
+        if proc is not None and proc.returncode not in (0, 1):
+            inventory["query_error"] = first_nonempty_line(text)
+        return inventory
+
+    if shutil.which("pacman"):
+        inventory["query_tool"] = "pacman"
+        proc = run_command(["pacman", "-Q", *package_names])
+        text = command_text(proc)
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                inventory["packages"][parts[0]] = {"version": parts[1], "status": "installed"}
+            elif line.strip():
+                inventory["missing_or_unmatched"].append(line.strip())
+        if proc is not None and proc.returncode not in (0, 1):
+            inventory["query_error"] = first_nonempty_line(text)
+        return inventory
+
+    return inventory
+
+
+def parse_key_value_lines(text):
+    payload = {}
+    for line in (text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        payload[key.strip()] = value.strip()
+    return payload
+
+
+def collect_docker_inventory():
+    inventory = {
+        "binary_present": shutil.which("docker") is not None,
+        "version_observed": False,
+        "version_summary": "",
+        "info_observed": False,
+        "info_error": "",
+        "storage_driver": "",
+        "cgroup_driver": "",
+        "default_runtime": "",
+        "runtimes": [],
+        "security_options": [],
+    }
+    if not inventory["binary_present"]:
+        inventory["info_error"] = "docker command not found"
+        return inventory
+
+    version_proc = run_command(["docker", "version"])
+    version_text = command_text(version_proc)
+    inventory["version_observed"] = version_proc is not None and version_proc.returncode == 0
+    inventory["version_summary"] = "\n".join(version_text.splitlines()[:12])
+
+    format_text = (
+        "StorageDriver={{.Driver}}\n"
+        "CgroupDriver={{.CgroupDriver}}\n"
+        "DefaultRuntime={{.DefaultRuntime}}\n"
+        "Runtimes={{json .Runtimes}}\n"
+        "SecurityOptions={{json .SecurityOptions}}"
+    )
+    info_proc = run_command(["docker", "info", "--format", format_text])
+    info_text = command_text(info_proc)
+    if info_proc is None:
+        inventory["info_error"] = "docker info unavailable"
+        return inventory
+    if info_proc.returncode != 0:
+        stderr_text = strip_ansi((info_proc.stderr or "").strip())
+        inventory["info_error"] = first_nonempty_line(stderr_text) or first_nonempty_line(info_text) or f"docker info exited {info_proc.returncode}"
+        return inventory
+
+    inventory["info_observed"] = True
+    values = parse_key_value_lines(info_text)
+    inventory["storage_driver"] = values.get("StorageDriver", "")
+    inventory["cgroup_driver"] = values.get("CgroupDriver", "")
+    inventory["default_runtime"] = values.get("DefaultRuntime", "")
+    try:
+        runtimes_payload = json.loads(values.get("Runtimes") or "{}")
+        if isinstance(runtimes_payload, dict):
+            inventory["runtimes"] = sorted(runtimes_payload.keys())
+    except Exception:
+        inventory["runtimes"] = []
+    try:
+        security_options = json.loads(values.get("SecurityOptions") or "[]")
+        if isinstance(security_options, list):
+            inventory["security_options"] = [str(item) for item in security_options]
+    except Exception:
+        inventory["security_options"] = []
+    return inventory
+
+
+def collect_nomad_inventory():
+    inventory = {
+        "binary_present": shutil.which("nomad") is not None,
+        "version_observed": False,
+        "version_summary": "",
+        "agent_api_observed": False,
+        "node_api_observed": False,
+        "agent": {},
+        "node": {},
+        "api_error": "",
+    }
+    if inventory["binary_present"]:
+        proc = run_command(["nomad", "version"])
+        text = command_text(proc)
+        inventory["version_observed"] = proc is not None and proc.returncode == 0
+        inventory["version_summary"] = "\n".join(text.splitlines()[:4])
+
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:4646/v1/agent/self", timeout=3) as response:
+            agent_payload = json.loads(response.read().decode("utf-8"))
+        config = agent_payload.get("config") or agent_payload.get("Config") or {}
+        member = agent_payload.get("member") or agent_payload.get("Member") or {}
+        inventory["agent_api_observed"] = True
+        inventory["agent"] = {
+            "member_name": member.get("name") or member.get("Name") or "",
+            "member_addr": member.get("addr") or member.get("Addr") or "",
+            "server_enabled": bool((config.get("Server") or {}).get("Enabled")),
+            "datacenter": config.get("Datacenter") or "",
+        }
+
+        with urllib.request.urlopen("http://127.0.0.1:4646/v1/nodes", timeout=3) as response:
+            nodes_payload = json.loads(response.read().decode("utf-8"))
+        if isinstance(nodes_payload, list) and nodes_payload:
+            node_id = str(nodes_payload[0].get("ID") or "")
+            with urllib.request.urlopen(f"http://127.0.0.1:4646/v1/node/{node_id}", timeout=3) as response:
+                node_payload = json.loads(response.read().decode("utf-8"))
+            attributes = node_payload.get("Attributes") or {}
+            drivers = node_payload.get("Drivers") or {}
+            inventory["node_api_observed"] = True
+            inventory["node"] = {
+                "id": node_payload.get("ID") or "",
+                "name": node_payload.get("Name") or "",
+                "status": node_payload.get("Status") or "",
+                "cpu_totalcompute": attributes.get("cpu.totalcompute") or "",
+                "kernel_name": attributes.get("kernel.name") or "",
+                "kernel_version": attributes.get("kernel.version") or "",
+                "os_name": attributes.get("os.name") or "",
+                "os_version": attributes.get("os.version") or "",
+                "docker_driver_detected": attributes.get("driver.docker") == "1",
+                "docker_driver_version": attributes.get("driver.docker.version") or "",
+                "docker_driver_runtimes": attributes.get("driver.docker.runtimes") or "",
+                "drivers": {
+                    name: {
+                        "detected": bool(details.get("Detected")),
+                        "healthy": bool(details.get("Healthy")),
+                        "health_description": str(details.get("HealthDescription") or ""),
+                    }
+                    for name, details in drivers.items()
+                    if isinstance(details, dict)
+                },
+            }
+    except Exception as exc:
+        inventory["api_error"] = str(exc)
+
+    return inventory
+
+
+def collect_runtime_path_inventory(docker_inventory, nomad_inventory):
+    binaries = {
+        name: shutil.which(name) is not None
+        for name in ("fuse-overlayfs", "podman", "crun", "runc", "containerd", "docker")
+    }
+    process_matches = []
+    ps_proc = run_command(["ps", "-eo", "comm,args"])
+    ps_text = command_text(ps_proc)
+    for line in ps_text.splitlines():
+        if re.search(r"\b(dockerd|containerd|runc|crun|podman|fuse-overlayfs|nomad)\b", line):
+            process_matches.append(line.strip())
+
+    mount_matches = []
+    for path_text in ("/proc/mounts", "/proc/self/mountinfo"):
+        path = pathlib.Path(path_text)
+        if not path.exists():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if re.search(r"fuse|overlay", line, re.IGNORECASE):
+                    mount_matches.append(line.strip())
+        except OSError:
+            continue
+
+    docker_storage_driver = str(docker_inventory.get("storage_driver") or "")
+    docker_runtimes = {str(item) for item in docker_inventory.get("runtimes") or []}
+    nomad_docker_runtimes = str((nomad_inventory.get("node") or {}).get("docker_driver_runtimes") or "")
+
+    fuse_in_path = "unknown"
+    if docker_inventory.get("info_observed"):
+        fuse_in_path = "yes" if docker_storage_driver == "fuse-overlayfs" else "no"
+    elif binaries.get("fuse-overlayfs") or any("fuse-overlayfs" in line for line in process_matches + mount_matches):
+        fuse_in_path = "unknown"
+
+    podman_crun_in_path = "unknown"
+    if "crun" in docker_runtimes or "crun" in nomad_docker_runtimes:
+        podman_crun_in_path = "yes"
+    elif nomad_inventory.get("node_api_observed") and not binaries.get("podman") and not binaries.get("crun"):
+        podman_crun_in_path = "no"
+
+    idmapped_mount_setattr_in_path = "unknown"
+    if podman_crun_in_path == "no" and fuse_in_path == "no":
+        idmapped_mount_setattr_in_path = "no"
+
+    return {
+        "binaries": binaries,
+        "process_matches": process_matches[:20],
+        "mount_matches": mount_matches[:20],
+        "fuse_fuse_overlayfs_in_actual_path": fuse_in_path,
+        "podman_crun_in_actual_path": podman_crun_in_path,
+        "idmapped_mount_setattr_in_actual_path": idmapped_mount_setattr_in_path,
+    }
+
+
+def classify_vendor_cve_text(text):
+    lowered = (text or "").lower()
+    if "is not resolved" in lowered or "still affected" in lowered or "no fix is available yet" in lowered:
+        return "vulnerable"
+    if "is resolved" in lowered or "already fixed" in lowered or "no affected packages" in lowered:
+        return "fixed"
+    if "does not affect" in lowered or "not affected" in lowered:
+        return "not_affected"
+    return "unknown"
+
+
+def collect_vendor_cve_status(cve_id):
+    result = {
+        "classification": "unknown",
+        "vendor_status_directly_observed": False,
+        "evidence_source": "none",
+        "command": "",
+        "returncode": None,
+        "summary_lines": [],
+    }
+
+    if shutil.which("pro"):
+        proc = run_command(["pro", "fix", cve_id, "--dry-run"])
+        text = command_text(proc)
+        classification = classify_vendor_cve_text(text)
+        interesting = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if (
+                cve_id.lower() in lowered
+                or "affected source package" in lowered
+                or "packages are still affected" in lowered
+                or "no fix is available yet" in lowered
+                or "is not resolved" in lowered
+                or "is resolved" in lowered
+                or "not affected" in lowered
+            ):
+                interesting.append(stripped)
+        result.update(
+            {
+                "classification": classification,
+                "vendor_status_directly_observed": classification != "unknown",
+                "evidence_source": "ubuntu_pro_fix_dry_run",
+                "command": f"pro fix {cve_id} --dry-run",
+                "returncode": None if proc is None else proc.returncode,
+                "summary_lines": interesting[:12],
+            }
+        )
+        return result
+
+    for tool in ("dnf", "yum"):
+        if shutil.which(tool):
+            proc = run_command([tool, "updateinfo", "info", "--cve", cve_id])
+            text = command_text(proc)
+            classification = "unknown"
+            lowered = text.lower()
+            if "no matching" in lowered or "not found" in lowered:
+                classification = "not_affected"
+            elif cve_id.lower() in lowered:
+                classification = "vulnerable"
+            result.update(
+                {
+                    "classification": classification,
+                    "vendor_status_directly_observed": classification != "unknown",
+                    "evidence_source": f"{tool}_updateinfo",
+                    "command": f"{tool} updateinfo info --cve {cve_id}",
+                    "returncode": None if proc is None else proc.returncode,
+                    "summary_lines": [line.strip() for line in text.splitlines()[:12] if line.strip()],
+                }
+            )
+            return result
+
+    return result
+
+
+def collect_loaded_module_status(module_name):
+    proc_modules = pathlib.Path(os.environ.get("REMOTE_ALPHA_RUNTIME_SECURITY_BOUNDARY_PROC_MODULES_PATH", "/proc/modules"))
+    normalized = module_name.replace("-", "_")
+    if proc_modules.exists():
+        try:
+            text = proc_modules.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return None, os.fspath(proc_modules), f"could not read {proc_modules}: {exc}"
+        loaded = any(
+            line.split() and line.split()[0].replace("-", "_") == normalized
+            for line in text.splitlines()
+        )
+        return loaded, os.fspath(proc_modules), ""
+
+    lsmod_proc = run_command(["lsmod"])
+    if lsmod_proc is None:
+        return None, "none", "lsmod command not found and /proc/modules is unavailable"
+    lsmod_text = command_text(lsmod_proc)
+    loaded = any(
+        line.split() and line.split()[0].replace("-", "_") == normalized
+        for line in lsmod_text.splitlines()
+    )
+    return loaded, "lsmod", "" if lsmod_proc.returncode == 0 else "lsmod returned non-zero status"
+
+
+def modprobe_install_command_blocks_load(command):
+    tokens = str(command or "").strip().split()
+    if not tokens:
+        return False
+    first = pathlib.PurePosixPath(tokens[0]).name
+    return first in {"false", "true", ":"}
+
+
+def parse_modprobe_policy_text(text, source_label):
+    sources = []
+    module_expr = r"algif[_-]aead"
+    blacklist_re = re.compile(rf"^\s*blacklist\s+{module_expr}\b")
+    install_re = re.compile(rf"^\s*install\s+{module_expr}\s+(.+?)\s*$")
+
+    for line_number, raw_line in enumerate((text or "").splitlines(), start=1):
+        stripped = raw_line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if blacklist_re.match(stripped):
+            sources.append(f"{source_label}:{line_number}:blacklist algif_aead")
+            continue
+        install_match = install_re.match(stripped)
+        if install_match and modprobe_install_command_blocks_load(install_match.group(1)):
+            sources.append(f"{source_label}:{line_number}:install algif_aead blocks load")
+    return sources
+
+
+def parse_modprobe_dry_run_policy(text, source_label):
+    sources = parse_modprobe_policy_text(text, source_label)
+    for line_number, raw_line in enumerate((text or "").splitlines(), start=1):
+        stripped = raw_line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        dry_run_install = re.match(r"^\s*install\s+(.+?)\s*$", stripped)
+        if dry_run_install and modprobe_install_command_blocks_load(dry_run_install.group(1)):
+            sources.append(f"{source_label}:{line_number}:dry-run install blocks load")
+    return sources
+
+
+def collect_algif_aead_autoload_policy():
+    sources = []
+    checked_sources = []
+
+    for directory in ("/etc/modprobe.d", "/lib/modprobe.d", "/usr/lib/modprobe.d"):
+        root = pathlib.Path(directory)
+        if not root.is_dir():
+            checked_sources.append(f"{directory}:not_present")
+            continue
+        for candidate in sorted(root.glob("*.conf")):
+            checked_sources.append(os.fspath(candidate))
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            sources.extend(parse_modprobe_policy_text(text, os.fspath(candidate)))
+
+    showconfig_proc = run_command(["modprobe", "--showconfig"])
+    if showconfig_proc is None:
+        checked_sources.append("modprobe --showconfig:command_not_found")
+    else:
+        checked_sources.append(f"modprobe --showconfig:returncode={showconfig_proc.returncode}")
+        sources.extend(parse_modprobe_policy_text(command_text(showconfig_proc), "modprobe --showconfig"))
+
+    dry_run_proc = run_command(["modprobe", "-n", "-v", "algif_aead"])
+    if dry_run_proc is None:
+        checked_sources.append("modprobe -n -v algif_aead:command_not_found")
+    else:
+        checked_sources.append(f"modprobe -n -v algif_aead:returncode={dry_run_proc.returncode}")
+        sources.extend(parse_modprobe_dry_run_policy(command_text(dry_run_proc), "modprobe -n -v algif_aead"))
+
+    deduped_sources = []
+    seen = set()
+    for source in sources:
+        if source in seen:
+            continue
+        seen.add(source)
+        deduped_sources.append(source)
+
+    return {
+        "blocked": bool(deduped_sources),
+        "blocking_policy_source": deduped_sources[0] if deduped_sources else "",
+        "blocking_policy_sources": deduped_sources[:12],
+        "checked_sources": checked_sources[:40],
+    }
+
+
+def collect_algif_aead_status():
+    module_loaded, module_loaded_source, module_loaded_error = collect_loaded_module_status("algif_aead")
+    modinfo_proc = run_command(["modinfo", "-F", "filename", "algif_aead"])
+    modinfo_text = command_text(modinfo_proc)
+    module_present = None
+    if modinfo_proc is not None:
+        module_present = bool(modinfo_text and "not found" not in modinfo_text.lower() and modinfo_proc.returncode == 0)
+    autoload_policy = collect_algif_aead_autoload_policy()
+    autoload_blocked = bool(autoload_policy["blocked"])
+    mitigation_verified = module_loaded is False and autoload_blocked
+
+    return {
+        "algif_aead_module_present": module_present,
+        "algif_aead_loaded": module_loaded,
+        "algif_aead_loaded_evidence_source": module_loaded_source,
+        "algif_aead_loaded_observed": module_loaded is not None,
+        "algif_aead_autoload_blocked": autoload_blocked,
+        "algif_aead_blocking_policy_source": autoload_policy["blocking_policy_source"],
+        "algif_aead_blocking_policy_sources": autoload_policy["blocking_policy_sources"],
+        "algif_aead_policy_checked_sources": autoload_policy["checked_sources"],
+        "algif_aead_mitigation_verified": mitigation_verified,
+        "algif_aead_mitigation_warning": (
+            "algif_aead is not loaded and autoload blocking policy was observed; this is not a kernel patch and not proof of production safety."
+            if mitigation_verified
+            else ""
+        ),
+        "algif_aead_loaded_error": module_loaded_error,
+        "module_loaded": module_loaded,
+        "module_present": module_present,
+        "module_filename": first_nonempty_line(modinfo_text),
+        "mitigation_or_fix_status": "unknown",
+        "module_load_attempted": False,
+        "module_unload_attempted": False,
+    }
+
+
+def apply_cve_31431_algif_mitigation(cve_31431, algif_aead_status):
+    result = dict(cve_31431)
+    vendor_classification = str(result.get("classification") or "unknown")
+    result["vendor_package_classification"] = vendor_classification
+    result["algif_aead_mitigation_verified"] = bool(
+        algif_aead_status.get("algif_aead_mitigation_verified")
+    )
+    result["not_patch_authority"] = True
+    result["not_production_safety_proof"] = True
+
+    if vendor_classification == "vulnerable" and result["algif_aead_mitigation_verified"]:
+        result["classification"] = "mitigated_not_fixed"
+        result["mitigation_kind"] = "algif_aead_module_disable"
+        result["mitigation_warning"] = (
+            "Vendor/package evidence still reports CVE-2026-31431 vulnerable, "
+            "but algif_aead was not loaded and non-mutating modprobe policy evidence "
+            "showed autoload blocking. This is not a kernel patch and not proof of production safety."
+        )
+        result["risk_acceptance_required_for_internal_alpha"] = True
+        result["risk_accepted_for_internal_alpha"] = ACCEPT_CVE_31431_MITIGATION_RISK
+    else:
+        result["mitigation_kind"] = ""
+        result["mitigation_warning"] = ""
+        result["risk_acceptance_required_for_internal_alpha"] = False
+        result["risk_accepted_for_internal_alpha"] = False
+
+    return result
 
 
 def extract_nomad_config_paths(exec_start):
@@ -396,6 +983,76 @@ nomad_service, nomad_service_error = service_show("nomad")
 vault_service, vault_service_error = service_show("vault")
 selector_info, selector_error = spire_selectors()
 nomad_role_context = collect_nomad_role_evidence(nomad_service)
+
+uname_proc = run_command(["uname", "-a"])
+kernel_release_proc = run_command(["uname", "-r"])
+kernel_release = command_text(kernel_release_proc).splitlines()[0].strip() if kernel_release_proc else ""
+os_release = read_os_release()
+package_inventory = collect_package_inventory(kernel_release)
+docker_inventory = collect_docker_inventory()
+nomad_inventory = collect_nomad_inventory()
+runtime_path_inventory = collect_runtime_path_inventory(docker_inventory, nomad_inventory)
+cve_31431 = collect_vendor_cve_status("CVE-2026-31431")
+cve_31465 = collect_vendor_cve_status("CVE-2026-31465")
+algif_aead_status = collect_algif_aead_status()
+cve_31431 = apply_cve_31431_algif_mitigation(cve_31431, algif_aead_status)
+algif_aead_status["mitigation_or_fix_status"] = cve_31431.get("classification") or "unknown"
+vendor_status_directly_observed = bool(
+    cve_31431.get("vendor_status_directly_observed") and cve_31465.get("vendor_status_directly_observed")
+)
+
+service_inventory = {}
+service_errors = {}
+for service_name in ("nomad", "vault", "es", "ags", "ars", "egs", "docker", "spire-server", "spire-agent"):
+    if service_name == "nomad":
+        service_payload, service_error = nomad_service, nomad_service_error
+    elif service_name == "vault":
+        service_payload, service_error = vault_service, vault_service_error
+    else:
+        service_payload, service_error = service_show(service_name)
+    if service_payload is None:
+        service_inventory[service_name] = {"observed": False, "error": service_error}
+        if service_error:
+            service_errors[service_name] = service_error
+    else:
+        service_inventory[service_name] = dict(service_payload)
+        service_inventory[service_name]["observed"] = True
+
+runtime_chain_observation = "unknown"
+if docker_inventory.get("info_observed") and nomad_inventory.get("node_api_observed"):
+    runtime_chain_observation = "observed"
+elif docker_inventory.get("info_observed") or nomad_inventory.get("node_api_observed"):
+    runtime_chain_observation = "partial"
+
+runtime_inventory = {
+    "classification": "runtime_inventory_evidence_only",
+    "uname": command_text(uname_proc),
+    "os_release": os_release,
+    "packages": package_inventory,
+    "services": service_inventory,
+}
+
+cve_readiness = {
+    "classification": "cve_runtime_inventory_evidence_only",
+    "vendor_status_directly_observed": vendor_status_directly_observed,
+    "cve_2026_31431": cve_31431,
+    "cve_2026_31465": cve_31465,
+    "algif_aead": algif_aead_status,
+    "not_patch_authority": True,
+    "not_kernel_patch": True,
+    "not_production_safety_proof": True,
+}
+
+runtime_chain = {
+    "classification": "runtime_chain_evidence_only",
+    "docker_nomad_runtime_storage_chain": runtime_chain_observation,
+    "docker": docker_inventory,
+    "nomad": nomad_inventory,
+    "fuse_fuse_overlayfs_in_actual_path": runtime_path_inventory["fuse_fuse_overlayfs_in_actual_path"],
+    "podman_crun_in_actual_path": runtime_path_inventory["podman_crun_in_actual_path"],
+    "idmapped_mount_setattr_in_actual_path": runtime_path_inventory["idmapped_mount_setattr_in_actual_path"],
+    "runtime_path_inventory": runtime_path_inventory,
+}
 
 surfaces = {}
 least_privilege_findings = []
@@ -679,6 +1336,96 @@ add_surface(
 )
 
 add_surface(
+    "host_runtime_inventory",
+    "evidence_only",
+    "info",
+    "Host/runtime inventory is non-secret evidence only and does not prove service health or runtime readiness.",
+    observation_status="observed" if runtime_inventory.get("uname") else "not_evaluated",
+    os_release=runtime_inventory["os_release"],
+    package_query_tool=package_inventory.get("query_tool", "unknown"),
+    service_names=sorted(service_inventory.keys()),
+)
+
+is_linux_host = command_text(uname_proc).lower().startswith("linux")
+cve_31431_classification = str(cve_31431.get("classification") or "unknown")
+cve_31431_severity = "info"
+cve_31431_surface_classification = "evidence_only"
+cve_31431_summary = (
+    "CVE-2026-31431 readiness is recorded from host-observed vendor evidence when available; unknown or vulnerable Linux target status is a Remote Alpha readiness blocker."
+)
+if is_linux_host and cve_31431_classification in {"vulnerable", "unknown"}:
+    cve_31431_severity = "blocker"
+    cve_31431_surface_classification = "blocker"
+elif is_linux_host and cve_31431_classification == "mitigated_not_fixed":
+    cve_31431_severity = "warning"
+    cve_31431_summary = (
+        "CVE-2026-31431 remains vendor/package vulnerable but algif_aead module-disable mitigation evidence was verified; "
+        "this is not a kernel patch and not proof of production safety."
+    )
+    if not ACCEPT_CVE_31431_MITIGATION_RISK:
+        cve_31431_severity = "blocker"
+        cve_31431_surface_classification = "blocker"
+        cve_31431_summary += " Explicit bounded internal Remote Alpha mitigation-risk acceptance is required before treating this as non-blocking."
+add_surface(
+    "cve_2026_31431_readiness",
+    cve_31431_surface_classification,
+    cve_31431_severity,
+    cve_31431_summary,
+    classification_value=cve_31431_classification,
+    vendor_status_directly_observed=bool(cve_31431.get("vendor_status_directly_observed")),
+    evidence_source=str(cve_31431.get("evidence_source") or "none"),
+    vendor_package_classification=str(cve_31431.get("vendor_package_classification") or "unknown"),
+    mitigation_kind=str(cve_31431.get("mitigation_kind") or ""),
+    risk_acceptance_required_for_internal_alpha=bool(
+        cve_31431.get("risk_acceptance_required_for_internal_alpha")
+    ),
+    risk_accepted_for_internal_alpha=bool(cve_31431.get("risk_accepted_for_internal_alpha")),
+    not_kernel_patch=True,
+    not_production_safety_proof=True,
+    algif_aead=algif_aead_status,
+)
+
+cve_31465_classification = str(cve_31465.get("classification") or "unknown")
+fuse_path_classification = runtime_chain["fuse_fuse_overlayfs_in_actual_path"]
+cve_31465_severity = "info"
+cve_31465_surface_classification = "evidence_only"
+if cve_31465_classification in {"vulnerable", "unknown"} and fuse_path_classification == "yes":
+    cve_31465_severity = "blocker"
+    cve_31465_surface_classification = "blocker"
+elif cve_31465_classification in {"vulnerable", "unknown"}:
+    cve_31465_severity = "warning"
+add_surface(
+    "cve_2026_31465_readiness",
+    cve_31465_surface_classification,
+    cve_31465_severity,
+    "CVE-2026-31465 readiness is recorded with FUSE/fuse-overlayfs path context; vulnerable or unknown status is a blocker when FUSE/fuse-overlayfs/rootless storage is in the actual path.",
+    classification_value=cve_31465_classification,
+    vendor_status_directly_observed=bool(cve_31465.get("vendor_status_directly_observed")),
+    evidence_source=str(cve_31465.get("evidence_source") or "none"),
+    fuse_fuse_overlayfs_in_actual_path=fuse_path_classification,
+)
+
+runtime_chain_severity = "info" if runtime_chain_observation == "observed" else "blocker"
+runtime_chain_surface_classification = "evidence_only" if runtime_chain_observation == "observed" else "not_evaluated"
+add_surface(
+    "docker_nomad_runtime_storage_chain",
+    runtime_chain_surface_classification,
+    runtime_chain_severity,
+    "Docker/Nomad runtime and storage-chain inventory is evidence only; it must be observed before a Remote Alpha CVE readiness proof is claimed.",
+    observation_status="observed" if runtime_chain_observation == "observed" else "not_evaluated",
+    observation_reason="" if runtime_chain_observation == "observed" else "Docker info and Nomad node detail were not both observed.",
+    docker_nomad_runtime_storage_chain=runtime_chain_observation,
+    docker_storage_driver=str(docker_inventory.get("storage_driver") or ""),
+    docker_default_runtime=str(docker_inventory.get("default_runtime") or ""),
+    docker_runtimes=docker_inventory.get("runtimes") or [],
+    nomad_docker_driver_detected=bool((nomad_inventory.get("node") or {}).get("docker_driver_detected")),
+    nomad_docker_driver_runtimes=str((nomad_inventory.get("node") or {}).get("docker_driver_runtimes") or ""),
+    fuse_fuse_overlayfs_in_actual_path=runtime_chain["fuse_fuse_overlayfs_in_actual_path"],
+    podman_crun_in_actual_path=runtime_chain["podman_crun_in_actual_path"],
+    idmapped_mount_setattr_in_actual_path=runtime_chain["idmapped_mount_setattr_in_actual_path"],
+)
+
+add_surface(
     "support_evidence_non_authoritative",
     "current_invariant",
     "info",
@@ -692,6 +1439,10 @@ try:
 except KeyError:
     effective_user = str(os.geteuid())
 
+explicit_non_claims = list(EXPLICIT_NON_CLAIMS)
+if "not_cve_patch_authority" not in explicit_non_claims:
+    explicit_non_claims.append("not_cve_patch_authority")
+
 summary = {
     "mode": "check_only",
     "non_mutating": True,
@@ -704,6 +1455,9 @@ summary = {
         "config_path": os.fspath(CONFIG_PATH),
         "workload_zone_config_path": os.fspath(WORKLOAD_ZONE_CONFIG_PATH),
     },
+    "runtime_inventory": runtime_inventory,
+    "cve_readiness": cve_readiness,
+    "runtime_chain": runtime_chain,
     "surfaces": surfaces,
     "accepted_compatibility_edges": accepted_compatibility_edges,
     "least_privilege_findings": least_privilege_findings,
@@ -720,7 +1474,7 @@ summary = {
         "raw_secret_payload_persisted": False,
     },
     "non_authority_labels": NON_AUTHORITY_LABELS,
-    "explicit_non_claims": EXPLICIT_NON_CLAIMS,
+    "explicit_non_claims": explicit_non_claims,
 }
 
 SUMMARY_PATH.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
