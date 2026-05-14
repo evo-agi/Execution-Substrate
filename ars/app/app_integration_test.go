@@ -1084,6 +1084,33 @@ func TestProtectedRouteWithUnauthorizedClientReturnsForbiddenWithExactBody(t *te
 	}
 }
 
+func TestConfiguredOperatorLocalReadCallerUsesExactOrSubpathAuthorization(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
+
+	tests := []struct {
+		name       string
+		callerPath string
+		wantStatus int
+	}{
+		{name: "exact operator local accepted", callerPath: "operator/local", wantStatus: http.StatusOK},
+		{name: "operator local subpath accepted", callerPath: "operator/local/support", wantStatus: http.StatusOK},
+		{name: "legacy broad operator rejected", callerPath: "operator", wantStatus: http.StatusForbidden},
+		{name: "operator local path confusion rejected", callerPath: "operator/local-evil", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := doRequest(t, service.Addr(), http.MethodGet, "/v1/blobs/"+seeded.BlobDigest+":bytes", fixture.clientTLSConfig(t, tt.callerPath))
+			defer response.Body.Close()
+
+			if response.StatusCode != tt.wantStatus {
+				t.Fatalf("expected %d, got %d body=%s", tt.wantStatus, response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+			}
+		})
+	}
+}
+
 func TestBootstrapPKIReadCallerReturnsForbiddenWithExactBody(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service, seeded := startTestApp(t, fixture, seedStorageFixture(t))
@@ -1315,8 +1342,8 @@ func seedStorageFixture(t *testing.T) seededStorage {
 				"publication": map[string]any{
 					"builder_service": "artifact-governance",
 					"invoker": map[string]any{
-						"service":   "operator",
-						"principal": "spiffe://execution.internal/operator",
+						"service":   "operator/local",
+						"principal": "spiffe://execution.internal/operator/local",
 					},
 					"policy_decisions": []any{},
 					"build_log_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -1659,7 +1686,7 @@ func buildConfig(fixture tlsFixture, rootDir string, indexPath string) config.Co
 				"service/artifact-governance",
 				"service/execution",
 				"service/credential-governance",
-				"operator",
+				"operator/local",
 			},
 		},
 		Storage: config.StorageConfig{
