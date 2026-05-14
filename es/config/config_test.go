@@ -273,6 +273,55 @@ func TestConfigValidateAllowsPrepareOnlyConfiguration(t *testing.T) {
 	}
 }
 
+func TestConfigValidateAllowsNarrowSPIFFEPathPrefixes(t *testing.T) {
+	cfg := validTestConfig()
+	cfg.Authorization.AllowedSPIFFEPathPrefixes = []string{
+		"service/control-plane",
+		"service/control-plane/provider",
+		"operator/local",
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected narrow SPIFFE path prefixes to validate, got %v", err)
+	}
+}
+
+func TestConfigValidateRejectsBroadOrMalformedSPIFFEPathPrefixes(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "empty", prefix: ""},
+		{name: "whitespace", prefix: " "},
+		{name: "root", prefix: "/"},
+		{name: "dot", prefix: "."},
+		{name: "dotdot", prefix: ".."},
+		{name: "single segment service", prefix: "service"},
+		{name: "single segment operator", prefix: "operator"},
+		{name: "leading slash", prefix: "/service/control-plane"},
+		{name: "trailing slash", prefix: "service/control-plane/"},
+		{name: "empty middle segment", prefix: "service//control-plane"},
+		{name: "dot segment", prefix: "service/./control-plane"},
+		{name: "dotdot segment", prefix: "service/../control-plane"},
+		{name: "full spiffe uri", prefix: "spiffe://execution.internal/service/control-plane"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validTestConfig()
+			cfg.Authorization.AllowedSPIFFEPathPrefixes = []string{tt.prefix}
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected SPIFFE prefix %q to fail validation", tt.prefix)
+			}
+			if !strings.Contains(err.Error(), "authorization.allowed_spiffe_path_prefixes") {
+				t.Fatalf("expected authorization prefix validation error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestConfigValidateRequiresExecutionWhenSubmitConfigured(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.Nomad = NomadConfig{
@@ -338,7 +387,7 @@ func validTestConfig() Config {
 			BootstrapIssuerCommonName: "Execution Bootstrap",
 		},
 		Authorization: AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
 		Dependencies: DependenciesConfig{
 			ArtifactRegistry: validTestDependencyConfig(),
@@ -386,7 +435,7 @@ func validTestConfigJSON() string {
     "bootstrap_issuer_common_name": "Execution Bootstrap"
   },
   "authorization": {
-    "allowed_spiffe_path_prefixes": ["operator"]
+    "allowed_spiffe_path_prefixes": ["operator/local"]
   },
   "dependencies": {
     "artifact_registry": {

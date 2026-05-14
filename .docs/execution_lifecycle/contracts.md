@@ -43,8 +43,16 @@ These labels are intentionally different. A contract may be live today, relied o
 - All lifecycle/execution endpoints require an authenticated caller identity.
 - Bootstrap PKI callers are rejected for execution operations.
 - Accepted caller identities are the SPIFFE paths whose prefixes match `authorization.allowed_spiffe_path_prefixes` in ES config.
+- Prefix matching is exact-or-subpath: a caller path is accepted only when it
+  equals a configured prefix or starts with that prefix followed by `/`.
+- ES startup config validation keeps those prefixes narrow. Each configured
+  prefix must be a relative SPIFFE path prefix with at least two non-empty path
+  segments, no leading or trailing slash, and no `.` or `..` segment.
+- Single-segment prefixes such as `service` or `operator`, root-like prefixes
+  such as `/`, and traversal-like prefixes are rejected because exact-or-subpath
+  matching would make them broad namespace grants.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that allowlist operator-only:
-  - `spiffe://execution.internal/operator`
+  - `spiffe://execution.internal/operator/local`
 - The first repo-owned non-operator caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - The current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required

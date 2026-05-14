@@ -35,7 +35,7 @@ func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
 			Payload: []byte("bundle"),
 		},
 	}
-	server := NewServer(service, "bootstrap", []string{"operator"}, func() bool { return true })
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
 
 	logsRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(logsRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/logs"))
@@ -76,7 +76,7 @@ func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t
 			},
 		},
 	}
-	server := NewServer(service, "bootstrap", []string{"operator"}, func() bool { return true })
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
 
 	unauthorizedRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(unauthorizedRecorder, httptest.NewRequest(http.MethodGet, "/v1/executions:contract", nil))
@@ -98,6 +98,30 @@ func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t
 		payload.GovernedExecution.Contract != "governed-execution-producer/v1" ||
 		!payload.GovernedExecution.Enabled {
 		t.Fatalf("unexpected contract declaration %+v", payload)
+	}
+}
+
+func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
+	server := NewServer(fakeLifecycleService{}, "bootstrap", []string{"service/control-plane"}, func() bool { return true })
+
+	tests := []struct {
+		name       string
+		callerPath string
+		wantStatus int
+	}{
+		{name: "exact match", callerPath: "service/control-plane", wantStatus: http.StatusOK},
+		{name: "subpath match", callerPath: "service/control-plane/provider", wantStatus: http.StatusOK},
+		{name: "same prefix text without path boundary", callerPath: "service/control-plane-evil", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, lifecycleRequestWithCaller(http.MethodGet, "/v1/executions:contract", tt.callerPath))
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d body=%s", tt.wantStatus, recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -140,8 +164,12 @@ func (f fakeLifecycleService) Cancel(context.Context, string) (admission.Executi
 }
 
 func authorizedLifecycleRequest(method string, target string) *http.Request {
+	return lifecycleRequestWithCaller(method, target, "operator/local")
+}
+
+func lifecycleRequestWithCaller(method string, target string, callerPath string) *http.Request {
 	request := httptest.NewRequest(method, target, nil)
-	spiffeURI, _ := url.Parse("spiffe://execution.internal/operator")
+	spiffeURI, _ := url.Parse("spiffe://execution.internal/" + callerPath)
 	request.TLS = &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{
 			{

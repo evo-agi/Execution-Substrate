@@ -95,7 +95,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions/"+submitted.RunID+":cancel",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -162,7 +162,7 @@ func fetchExecutionStatus(t *testing.T, stack *submitStack, runID string) admiss
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+runID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -186,7 +186,7 @@ func fetchExecutionLogs(t *testing.T, stack *submitStack, runID string) string {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+runID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()

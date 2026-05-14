@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
+	"golang.org/x/sys/unix"
 )
 
 func TestRetainTerminalResultPackagesResultDirectory(t *testing.T) {
@@ -53,6 +55,86 @@ func TestRetainTerminalResultPackagesResultDirectory(t *testing.T) {
 	}
 	if entries["nested/result.json"] != "{\"status\":\"ok\"}\n" {
 		t.Fatalf("unexpected nested result entry %q", entries["nested/result.json"])
+	}
+}
+
+func TestRetainTerminalResultFailsClosedForSymlinkResultEntry(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	if err := os.MkdirAll(layout.resultStageDir, 0o755); err != nil {
+		t.Fatalf("mkdir result dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.resultStageDir, "summary.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatalf("write result file: %v", err)
+	}
+	if err := os.Symlink("summary.txt", filepath.Join(layout.resultStageDir, "summary-link.txt")); err != nil {
+		t.Fatalf("create result symlink: %v", err)
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err == nil || !strings.Contains(err.Error(), "unsupported symbolic link") {
+		t.Fatalf("expected symbolic link to fail closed, retained=%v err=%v", retained, err)
+	}
+	if retained {
+		t.Fatalf("did not expect retained result bundle with a symlink entry")
+	}
+	if _, statErr := os.Stat(service.retainedResultBundlePath(locator)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no retained result bundle, got %v", statErr)
+	}
+}
+
+func TestRetainTerminalResultFailsClosedForHardLinkedResultFile(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	if err := os.MkdirAll(layout.resultStageDir, 0o755); err != nil {
+		t.Fatalf("mkdir result dir: %v", err)
+	}
+	sourcePath := filepath.Join(layout.resultStageDir, "summary.txt")
+	if err := os.WriteFile(sourcePath, []byte("ok\n"), 0o644); err != nil {
+		t.Fatalf("write result file: %v", err)
+	}
+	if err := os.Link(sourcePath, filepath.Join(layout.resultStageDir, "summary-hardlink.txt")); err != nil {
+		t.Fatalf("create result hardlink: %v", err)
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err == nil || !strings.Contains(err.Error(), "unsupported hard link") {
+		t.Fatalf("expected hard link to fail closed, retained=%v err=%v", retained, err)
+	}
+	if retained {
+		t.Fatalf("did not expect retained result bundle with a hardlinked file")
+	}
+	if _, statErr := os.Stat(service.retainedResultBundlePath(locator)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no retained result bundle, got %v", statErr)
+	}
+}
+
+func TestRetainTerminalResultFailsClosedForSpecialResultFile(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	if err := os.MkdirAll(layout.resultStageDir, 0o755); err != nil {
+		t.Fatalf("mkdir result dir: %v", err)
+	}
+	if err := unix.Mkfifo(filepath.Join(layout.resultStageDir, "stream"), 0o600); err != nil {
+		t.Fatalf("create result fifo: %v", err)
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err == nil || !strings.Contains(err.Error(), "unsupported file mode") {
+		t.Fatalf("expected special file to fail closed, retained=%v err=%v", retained, err)
+	}
+	if retained {
+		t.Fatalf("did not expect retained result bundle with a special file")
+	}
+	if _, statErr := os.Stat(service.retainedResultBundlePath(locator)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no retained result bundle, got %v", statErr)
+	}
+}
+
+func TestResultBundleEntryNameRejectsPathTraversal(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "result")
+	outside := filepath.Join(filepath.Dir(root), "escape.txt")
+
+	_, err := resultBundleEntryName(root, outside)
+	if err == nil || !strings.Contains(err.Error(), "escapes result directory") {
+		t.Fatalf("expected path traversal rejection, got %v", err)
 	}
 }
 

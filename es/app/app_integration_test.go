@@ -42,7 +42,7 @@ import (
 func TestPrepareFlowReturnsBoundedPreflightSuccess(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator/local", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -243,7 +243,7 @@ func TestPrepareReturns403WhenDeploymentCallerIsUsed(t *testing.T) {
 func TestPrepareReturns403WhenBootstrapPKICallerIsUsed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", true), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator/local", true), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusForbidden {
@@ -275,7 +275,7 @@ func TestPrepareReturns400WhenReservedRuntimeEnvKeyIsProvided(t *testing.T) {
 func TestPrepareReturns400WhenJSONIsMalformed(t *testing.T) {
 	stack := startStack(t, stackOptions{})
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), []byte(`{"schema_version":"v1"`))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator/local", false), []byte(`{"schema_version":"v1"`))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusBadRequest {
@@ -363,7 +363,7 @@ func startStack(t *testing.T, opts stackOptions) *testStack {
 	stack.esRunning = true
 	t.Cleanup(func() { stack.shutdownAll(t) })
 
-	waitForHealthy(t, service.Addr(), stack.fixture.clientTLSConfig(t, "operator", false))
+	waitForHealthy(t, service.Addr(), stack.fixture.clientTLSConfig(t, "operator/local", false))
 	return stack
 }
 
@@ -582,7 +582,7 @@ func buildESConfig(stack *testStack, mutate func(*esconfig.Config)) esconfig.Con
 			BootstrapIssuerCommonName: stack.fixture.bootstrapCACN,
 		},
 		Authorization: esconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
@@ -680,7 +680,7 @@ func assertPrepareError(t *testing.T, stack *testStack, expectedStatus int, expe
 func assertPrepareSuccess(t *testing.T, stack *testStack) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), buildPrepareRequestBody(t, stack))
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator/local", false), buildPrepareRequestBody(t, stack))
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
@@ -699,7 +699,7 @@ func assertPrepareSuccess(t *testing.T, stack *testStack) {
 func assertPrepareErrorForBody(t *testing.T, stack *testStack, body []byte, expectedStatus int, expectedCode string) {
 	t.Helper()
 
-	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator", false), body)
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:prepare", stack.fixture.clientTLSConfig(t, "operator/local", false), body)
 	defer response.Body.Close()
 
 	if response.StatusCode != expectedStatus {
@@ -1129,8 +1129,8 @@ func signedArtifactEvidenceJSON(
 				Publication: evidencev1.Publication{
 					BuilderService: "artifact-governance",
 					Invoker: evidencev1.Invoker{
-						Service:   "operator",
-						Principal: "spiffe://execution.internal/operator",
+						Service:   "operator/local",
+						Principal: "spiffe://execution.internal/operator/local",
 					},
 					PolicyDecisions: []evidencev1.PolicyDecision{
 						{Rule: "allow", Result: "applied"},

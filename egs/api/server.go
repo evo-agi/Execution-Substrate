@@ -83,7 +83,7 @@ func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteText(w, http.StatusForbidden, "Bootstrap PKI callers are not accepted; use a SPIRE-issued identity")
 		return
 	}
-	if callerPath != "service/execution" && callerPath != "operator" {
+	if !authorizedTrustModelCaller(callerPath) {
 		httpx.WriteText(w, http.StatusForbidden, "Caller not authorized for this operation")
 		return
 	}
@@ -104,6 +104,15 @@ func (s *Server) handleTrustModel(w http.ResponseWriter, r *http.Request) {
 		Signature:     result.Signature,
 		Publication:   s.publication,
 	})
+}
+
+func authorizedTrustModelCaller(callerPath string) bool {
+	switch callerPath {
+	case "service/execution", "operator/local":
+		return true
+	default:
+		return false
+	}
 }
 
 func authenticatedCallerIdentity(r *http.Request) (callerPath string, issuerCommonName string, ok bool) {

@@ -88,7 +88,7 @@ func TestSubmitFlowRunsStaticScriptInNomadDocker(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		buildSubmitRequestBody(t, stack),
 	)
 	defer response.Body.Close()
@@ -169,7 +169,7 @@ func TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt(t *testing.T)
 		t.Fatalf("expected job id %q, got %q", "exec-"+payload.RunID, jobID)
 	}
 
-	statusResponse := executionStatusRequestWithCaller(t, stack, payload.RunID, "operator")
+	statusResponse := executionStatusRequestWithCaller(t, stack, payload.RunID, "operator/local")
 	defer statusResponse.Body.Close()
 	if statusResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 from operator status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
@@ -225,8 +225,8 @@ func assertDefaultAuthorityHandoff(t *testing.T, handoff *admission.ExecutionAut
 
 func TestSubmitFlowAllowsConfiguredControlPlaneCallerHandoff(t *testing.T) {
 	stack := startSubmitStackWithOptions(t, submitStackOptions{
-		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
-		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
+		allowedAGSCallerPrefixes:       []string{"operator/local", "service/control-plane"},
+		allowedExecutionCallerPrefixes: []string{"operator/local", "service/control-plane"},
 		publishCallerPath:              "service/control-plane",
 		executionCallerPath:            "service/control-plane",
 	})
@@ -297,7 +297,7 @@ func TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		buildSubmitRequestBody(t, stack),
 	)
 	defer response.Body.Close()
@@ -432,7 +432,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer statusResponse.Body.Close()
@@ -445,7 +445,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer logsResponse.Body.Close()
@@ -985,7 +985,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer statusResponse.Body.Close()
@@ -998,7 +998,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+payload.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer logsResponse.Body.Close()
@@ -1297,16 +1297,16 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 	})
 	workloadZoneVaultDigest := writeBlobBytes(t, arsRootDir, workloadZoneVaultBytes)
 
-	allowedAGSCallerPrefixes := []string{"operator"}
+	allowedAGSCallerPrefixes := []string{"operator/local"}
 	if len(opts.allowedAGSCallerPrefixes) > 0 {
 		allowedAGSCallerPrefixes = append([]string(nil), opts.allowedAGSCallerPrefixes...)
 	}
-	allowedExecutionCallerPrefixes := []string{"operator"}
+	allowedExecutionCallerPrefixes := []string{"operator/local"}
 	if len(opts.allowedExecutionCallerPrefixes) > 0 {
 		allowedExecutionCallerPrefixes = append([]string(nil), opts.allowedExecutionCallerPrefixes...)
 	}
-	publishCallerPath := firstNonEmpty(opts.publishCallerPath, "operator")
-	executionCallerPath := firstNonEmpty(opts.executionCallerPath, "operator")
+	publishCallerPath := firstNonEmpty(opts.publishCallerPath, "operator/local")
+	executionCallerPath := firstNonEmpty(opts.executionCallerPath, "operator/local")
 
 	stack := &submitStack{
 		fixture:                 fixture,
@@ -1441,7 +1441,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build ags app: %v", err)
 	}
 	stack.ags = agsService
-	startService(t, agsService.Start, agsService.Addr, fixture.clientTLSConfigForServer(t, fixture.agsServerName, "operator", false))
+	startService(t, agsService.Start, agsService.Addr, fixture.clientTLSConfigForServer(t, fixture.agsServerName, "operator/local", false))
 	stack.agsRunning = true
 
 	esCfg := esconfig.Config{
@@ -1530,7 +1530,7 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		t.Fatalf("build es app: %v", err)
 	}
 	stack.es = esService
-	startService(t, esService.Start, esService.Addr, fixture.clientTLSConfigForServer(t, fixture.esServerName, "operator", false))
+	startService(t, esService.Start, esService.Addr, fixture.clientTLSConfigForServer(t, fixture.esServerName, "operator/local", false))
 	stack.esRunning = true
 
 	publishSubmitArtifact(t, stack, opts.networkAccess)

@@ -40,8 +40,8 @@ echo RESULT-WROTE
 	}
 	waitForPathRemoved(t, stageRoot)
 
-	first := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator")
-	second := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator")
+	first := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator/local")
+	second := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator/local")
 	if !bytes.Equal(first, second) {
 		t.Fatalf("expected repeat result fetch to return stable retained bundle bytes")
 	}
@@ -61,7 +61,7 @@ func TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput(t *tes
 	stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 	fetchExecutionStatus(t, stack, submitted.RunID)
 
-	response := executionResultRequestWithCaller(t, stack, submitted.RunID, "operator")
+	response := executionResultRequestWithCaller(t, stack, submitted.RunID, "operator/local")
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusNotFound {

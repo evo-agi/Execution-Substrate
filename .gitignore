@@ -20,6 +20,15 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Python and local packaging byproducts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+*.zip
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -39,3 +48,4 @@ go.work.sum
 
 # OS-specific files
 .DS_Store
+._*

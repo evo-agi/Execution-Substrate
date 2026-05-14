@@ -212,6 +212,36 @@ func TestDisallowedCallerReturns403(t *testing.T) {
 	}
 }
 
+func TestTrustModelCallerAuthorizationBoundaries(t *testing.T) {
+	fixture := newTLSFixture(t)
+	service := startTestApp(t, fixture, buildConfig(fixture))
+
+	tests := []struct {
+		name        string
+		callerPath  string
+		trustDomain string
+		wantStatus  int
+	}{
+		{name: "execution service accepted", callerPath: "service/execution", trustDomain: "execution.internal", wantStatus: http.StatusOK},
+		{name: "narrow operator accepted", callerPath: "operator/local", trustDomain: "execution.internal", wantStatus: http.StatusOK},
+		{name: "legacy broad operator rejected", callerPath: "operator", trustDomain: "execution.internal", wantStatus: http.StatusForbidden},
+		{name: "unrelated service rejected", callerPath: "service/deployment", trustDomain: "execution.internal", wantStatus: http.StatusForbidden},
+		{name: "path confusion rejected", callerPath: "operator/local-evil", trustDomain: "execution.internal", wantStatus: http.StatusForbidden},
+		{name: "wrong trust domain rejected", callerPath: "service/execution", trustDomain: "other.internal", wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := doRequest(t, service.Addr(), http.MethodGet, "/v1/trust-model", fixture.clientTLSConfigForTrustDomain(t, tt.callerPath, tt.trustDomain, false))
+			defer response.Body.Close()
+
+			if response.StatusCode != tt.wantStatus {
+				t.Fatalf("expected %d, got %d body=%s", tt.wantStatus, response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+			}
+		})
+	}
+}
+
 func TestBootstrapPKICallerReturns403(t *testing.T) {
 	fixture := newTLSFixture(t)
 	service := startTestApp(t, fixture, buildConfig(fixture))
@@ -560,6 +590,11 @@ func newTLSFixture(t *testing.T) *tlsFixture {
 
 func (f *tlsFixture) clientTLSConfig(t *testing.T, spiffePath string, bootstrap bool) *tls.Config {
 	t.Helper()
+	return f.clientTLSConfigForTrustDomain(t, spiffePath, "execution.internal", bootstrap)
+}
+
+func (f *tlsFixture) clientTLSConfigForTrustDomain(t *testing.T, spiffePath string, trustDomain string, bootstrap bool) *tls.Config {
+	t.Helper()
 
 	rootCAs := x509.NewCertPool()
 	rootCAs.AddCert(f.runtimeCA)
@@ -587,7 +622,7 @@ func (f *tlsFixture) clientTLSConfig(t *testing.T, spiffePath string, bootstrap 
 		issuerKey,
 		"client."+strings.ReplaceAll(strings.Trim(spiffePath, "/"), "/", "."),
 		[]*url.URL{
-			mustSPIFFEURL(t, "spiffe://execution.internal/"+strings.Trim(spiffePath, "/")),
+			mustSPIFFEURL(t, "spiffe://"+strings.Trim(trustDomain, "/")+"/"+strings.Trim(spiffePath, "/")),
 		},
 	)
 	certificate, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)

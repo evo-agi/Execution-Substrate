@@ -173,7 +173,7 @@ architecture.
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call `POST /v1/artifacts:publish`
 - signer key material must match the public key ES verifies and the signer key ID EGS allows
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in AGS
-- the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
+- the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator/local", "service/control-plane"]` over a broad `service/` prefix
 - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`
 - the companion example templates for that path are `.examples/config/ags.operator_and_control_plane.json` and `.examples/config/es.operator_and_control_plane.json`
 - the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
@@ -219,6 +219,10 @@ AGS no longer exposes a legacy-signing compatibility control. The current publis
   D1c is design-only and docs/tests-only; it does not introduce EGS v2
   config, alter the signed runtime-trust payload shape, or change the current
   `GET /v1/trust-model` route/wrapper/payload compatibility surface.
+- `GET /v1/trust-model` currently accepts only
+  `spiffe://execution.internal/service/execution` and the narrow operator
+  identity `spiffe://execution.internal/operator/local`; single-segment
+  `spiffe://execution.internal/operator` is not an accepted EGS caller.
 
 For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must include the AGS signer key ID used for provenance.
 
@@ -268,6 +272,15 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - verifier key IDs and public keys must match the active EGS and AGS signers
 - all dependency base URLs must be absolute `https://` URLs
 - `authorization.allowed_spiffe_path_prefixes` must contain the SPIFFE path prefixes allowed to call the ES execution and lifecycle APIs
+- ES validates each allowed SPIFFE path prefix as a relative path prefix with
+  at least two non-empty segments, no leading or trailing slash, and no `.`,
+  `..`, or empty segment. Prefixes such as `service/control-plane` and
+  `operator/local` are accepted; `service`, `operator`, `/`, `.`, `..`,
+  `service//control-plane`, `service/./control-plane`, and
+  `service/../control-plane` are rejected.
+- ES authorization keeps exact-or-subpath matching after config validation:
+  `service/control-plane` authorizes `service/control-plane` and
+  `service/control-plane/provider`, but not `service/control-plane-evil`.
 - `workload_vault_auth.default_mode` must be `vault_identity_jwt`
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
 - `workload_vault_auth.default_mode` is current ES config residue and bounded
@@ -277,7 +290,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS
 - if `nomad` and `execution` are omitted, ES can still support `:prepare` but not `:submit`
 - the current repo-owned runbooks, proofs, and generated helper configs keep this allowlist operator-only, but the caller allowlist is now deployment-configured rather than hard-coded in ES
-- the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator", "service/control-plane"]` over a broad `service/` prefix
+- the first repo-owned non-operator caller activation path uses `service/control-plane`; prefer a narrow allowlist such as `["operator/local", "service/control-plane"]` over a broad `service/` prefix
 - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`
 - the companion example templates for that path are `.examples/config/ags.operator_and_control_plane.json` and `.examples/config/es.operator_and_control_plane.json`
 - the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
@@ -575,15 +588,15 @@ For local operator bring-up against this practical minimum:
 - the current slice-0 bootstrap path targets one Linux host/VM and fails fast unless Docker host networking can actually reach host loopback from a container
 - that bounded path has now been functionally proved on Linux through the real ES -> Nomad -> Docker flow, and the current supported local reference profile on this Mac is Lima `qemu` + Ubuntu 24.04 arm64 with pre-managed non-dev Nomad and positive natural `cpu.totalcompute`
 - `scripts/01_bringup.sh up` regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path (currently bundling `ars`, `ags`, `egs`, `es`, and `cgs`) and records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
-- `CONTROL_PLANE_DOCKERFILE` remains an explicit operator override, but the default bring-up source of truth is the generated `.out/Dockerfile`
-- `.out/` is the current repo-local generated-artifact area: `.out/Dockerfile` remains the tracked control-plane image input, kept integration harness workspaces such as `es-submit-*` are created under `.out/`, and the canonical supported-local proof workspaces on this Mac now live under `.out/es-proof-<id>/`; those host proof workspaces are preserved evidence, not transient scratch
+- `CONTROL_PLANE_DOCKERFILE` remains an explicit operator override, but the default bring-up Dockerfile authority is `scripts/generate_control_plane_dockerfile.sh`; `.out/Dockerfile` is its checked-in generated projection and build input
+- `.out/` is the current repo-local generated-artifact area: `.out/Dockerfile` remains the tracked control-plane image projection, kept integration harness workspaces such as `es-submit-*` are created under `.out/`, and the canonical supported-local proof workspaces on this Mac now live under `.out/es-proof-<id>/`; those host proof workspaces are preserved evidence, not transient scratch
 - top-level `scripts/*.sh` remain the operator-facing entrypoints and manual fallback commands; `scripts/internal/*.sh` is the sourced-only helper layer behind those entrypoints
 - Docker host networking in that path is temporary slice-0 compatibility scaffolding, not the final control-plane network model
 - use an operator SPIFFE client cert/key for AGS and ES operator-facing helpers:
   - `CA_CERT`
   - `OPERATOR_CERT`
   - `OPERATOR_KEY`
-  - the current repo-owned examples, proofs, and bring-up configs keep `authorization.allowed_spiffe_path_prefixes=["operator"]` for AGS and ES, even though caller authorization is now deployment-configured rather than hard-coded in those services
+  - the current repo-owned examples, proofs, and bring-up configs keep `authorization.allowed_spiffe_path_prefixes=["operator/local"]` for AGS and ES, even though caller authorization is now deployment-configured rather than hard-coded in those services
 
 The current unified health check verifies:
 

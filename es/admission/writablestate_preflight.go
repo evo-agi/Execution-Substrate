@@ -29,7 +29,7 @@ func preflightRetainedResultSource(root string, platformDir string, expectations
 		return false, err
 	}
 
-	info, err := os.Stat(root)
+	info, err := os.Lstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -53,7 +53,7 @@ func preflightRetainedResultSource(root string, platformDir string, expectations
 			return nil
 		}
 
-		info, err := entry.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
 		}
@@ -65,9 +65,12 @@ func preflightRetainedResultSource(root string, platformDir string, expectations
 		case info.IsDir():
 			return nil
 		case info.Mode().IsRegular():
-			file, err := os.Open(filepath.Clean(path))
+			if err := rejectHardLinkedRetainedResultFile(info, displayPath); err != nil {
+				return err
+			}
+			file, err := openRetainedResultRegularFile(path, displayPath)
 			if err != nil {
-				return fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
+				return err
 			}
 			if err := file.Close(); err != nil {
 				return fmt.Errorf("result entry %s close failed: %w", displayPath, err)
@@ -75,11 +78,7 @@ func preflightRetainedResultSource(root string, platformDir string, expectations
 			hasFiles = true
 			return nil
 		case info.Mode()&os.ModeSymlink != 0:
-			if _, err := os.Readlink(path); err != nil {
-				return fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
-			}
-			hasFiles = true
-			return nil
+			return fmt.Errorf("result entry %s uses unsupported symbolic link", displayPath)
 		default:
 			return fmt.Errorf("result entry %s uses unsupported file mode %s", displayPath, info.Mode().String())
 		}

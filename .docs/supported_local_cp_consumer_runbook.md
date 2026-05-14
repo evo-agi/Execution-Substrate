@@ -167,7 +167,7 @@ The current repo-owned non-operator caller activation path is:
 
 - `spiffe://execution.internal/service/control-plane`
 
-Configure AGS and ES allowlists narrowly for that caller, for example with `operator` and `service/control-plane`. A broad `service/` prefix is not required by the current activation path.
+Configure AGS and ES allowlists narrowly for that caller, for example with `operator/local` and `service/control-plane`. A broad `service/` prefix is not required by the current activation path.
 
 These are helper/proof surfaces, not separate client contracts:
 

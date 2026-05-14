@@ -192,13 +192,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Security.BootstrapIssuerCommonName) == "" {
 		return fmt.Errorf("security.bootstrap_issuer_common_name is required")
 	}
-	if len(c.Authorization.AllowedSPIFFEPathPrefixes) == 0 {
-		return fmt.Errorf("authorization.allowed_spiffe_path_prefixes is required")
-	}
-	for _, prefix := range c.Authorization.AllowedSPIFFEPathPrefixes {
-		if strings.TrimSpace(prefix) == "" {
-			return fmt.Errorf("authorization.allowed_spiffe_path_prefixes cannot contain empty values")
-		}
+	if err := c.Authorization.Validate("authorization"); err != nil {
+		return err
 	}
 
 	if err := c.Dependencies.ArtifactRegistry.Validate("dependencies.artifact_registry"); err != nil {
@@ -236,6 +231,42 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func (c AuthorizationConfig) Validate(field string) error {
+	prefixField := field + ".allowed_spiffe_path_prefixes"
+	if len(c.AllowedSPIFFEPathPrefixes) == 0 {
+		return fmt.Errorf("%s is required", prefixField)
+	}
+	for _, prefix := range c.AllowedSPIFFEPathPrefixes {
+		if err := validateAllowedSPIFFEPathPrefix(prefixField, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAllowedSPIFFEPathPrefix(field string, prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		return fmt.Errorf("%s cannot contain empty values", field)
+	}
+	if prefix != strings.TrimSpace(prefix) {
+		return fmt.Errorf("%s values must not contain leading or trailing whitespace", field)
+	}
+
+	segments := strings.Split(prefix, "/")
+	for _, segment := range segments {
+		switch segment {
+		case "":
+			return fmt.Errorf("%s values must not contain empty path segments", field)
+		case ".", "..":
+			return fmt.Errorf("%s values must not contain . or .. path segments", field)
+		}
+	}
+	if len(segments) < 2 {
+		return fmt.Errorf("%s values must contain at least two path segments", field)
+	}
 	return nil
 }
 

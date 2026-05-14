@@ -1002,7 +1002,7 @@ egs_host = sys.argv[23]
 ags_host = sys.argv[24]
 es_host = sys.argv[25]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
-operator_and_maybe_control_plane = ["operator"]
+operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
     operator_and_maybe_control_plane.append("service/control-plane")
 
@@ -1033,7 +1033,7 @@ ars_cfg = {
         "client_ca_file": str(tls_dir / "runtime-ca.pem"),
     },
     "security": {"bootstrap_issuer_common_name": "Bootstrap Root CA Example"},
-    "authorization": {"allowed_spiffe_path_prefixes": ["service/execution", "service/artifact-governance", "operator"]},
+    "authorization": {"allowed_spiffe_path_prefixes": ["service/execution", "service/artifact-governance", "operator/local"]},
     "storage": {"root_dir": str(ars_storage), "index_file": str(index_path)},
 }
 egs_cfg = {
@@ -1265,7 +1265,7 @@ setup() {
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "es-server" "${ES_HOST}" "DNS:${ES_HOST}"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "execution-client" "client.execution" "DNS:client.execution,URI:spiffe://execution.internal/service/execution"
   make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "ags-client" "client.artifact-governance" "DNS:client.artifact-governance,URI:spiffe://execution.internal/service/artifact-governance"
-  make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "operator-client" "client.operator" "DNS:client.operator,URI:spiffe://execution.internal/operator"
+  make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "operator-client" "client.operator" "DNS:client.operator,URI:spiffe://execution.internal/operator/local"
   if [[ "${ALLOW_CONTROL_PLANE_CALLER}" == "1" ]]; then
     make_leaf_certificate "${PROOF_DIR}/tls" "${PROOF_DIR}/tls/runtime-ca.pem" "${PROOF_DIR}/tls/runtime-ca-key.pem" "control-plane-client" "client.control-plane" "DNS:client.control-plane,URI:spiffe://execution.internal/service/control-plane"
   fi

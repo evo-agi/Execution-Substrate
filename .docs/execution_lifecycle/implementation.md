@@ -528,8 +528,8 @@ The most important implementation facts are backed by integration tests:
 Operator helper ownership in the current slice:
 
 - `scripts/01_bringup.sh` is the primary stack bring-up and shutdown entrypoint.
-- `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile at `.out/Dockerfile`; bring-up regenerates that file before building, and the generator integration test fails if the tracked artifact drifts from fresh output.
-- `.out/` is the repo-local generated-artifact sink in the current slice; tracked source-of-truth inputs remain explicit exceptions such as `.out/Dockerfile`, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
+- `scripts/generate_control_plane_dockerfile.sh` is the source-of-truth generator for the default shared service-image Dockerfile projection at `.out/Dockerfile`; bring-up regenerates that file before building, and the generator integration test fails if the tracked projection drifts from fresh output.
+- `.out/` is the repo-local generated-artifact sink in the current slice; `.out/Dockerfile` is the only tracked generated projection there and must not be treated as independent runtime authority, while kept integration harness workspaces (for example `es-submit-*`) are created beneath `.out/`.
 - `scripts/10_health_check.sh` is the unified readiness verifier for service health, runtime-config blob availability including any supplied Vault CA bundle shape, Nomad, Docker, and required enabled runtime-profile images.
 - For enabled runtime-profile images, the same readiness verifier also checks the supported-local Nomad Docker image-cleanup guardrail before claiming submit-ready.
 - `scripts/20_publish.sh`, `scripts/30_prepare.sh`, `scripts/40_submit.sh`, `scripts/50_lifecycle.sh`, and `scripts/60_execute_loop.sh` are operator-facing workflow helpers over the current public AGS and ES APIs; they classify failures into bounded operator categories instead of changing those APIs.

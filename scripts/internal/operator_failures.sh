@@ -135,7 +135,7 @@ operator_next_step_for_category() {
 
   case "${category}" in
     "$(operator_category_auth)")
-      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator, then retry ${phase}. ${diagnostics} ${reference}"
+      printf '%s\n' "Verify OPERATOR_CERT and OPERATOR_KEY authenticate as spiffe://execution.internal/operator/local, then retry ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_trust)")
       printf '%s\n' "Check the published artifact, aggregate evidence, and EGS trust inputs before retrying ${phase}. ${diagnostics} ${reference}"

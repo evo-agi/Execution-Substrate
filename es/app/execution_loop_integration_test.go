@@ -167,7 +167,7 @@ func runExecutionLoopScript(t *testing.T, stack *submitStack, specPath string, w
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"loop-operator-client",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	agsHost, agsPort, err := net.SplitHostPort(stack.ags.Addr())

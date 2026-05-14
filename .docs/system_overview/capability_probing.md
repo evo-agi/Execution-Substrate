@@ -145,3 +145,9 @@ This keeps the slice behavior-based, deterministic, and consistent across enviro
 The gate proves the local test substrate can run Docker/Nomad allocations and can carry the SPIRE Workload API socket source directory into the workload container so the helper can reach the mounted Unix socket. Unsupported hosts skip those allocation-dependent tests with an explicit runtime-identity capability reason instead of letting expected substrate limitations appear as noisy workload failures.
 
 This is test hygiene only. It does not change ES public contracts, readiness semantics, startup validation, runtime identity ownership, or runtime failure semantics. Tests that cover prepare-only behavior, caller authorization, static submit/job-spec shape, or submit-time validation without requiring helper socket reachability do not use this gate.
+
+`es/admission` unit tests that intentionally exercise chmod-backed filesystem denial use test-local behavior probes before asserting permission-sensitive fail-closed behavior.
+
+The probe must create or mark a temporary fixture with the restrictive mode needed by the test, attempt the same class of operation the assertion depends on, and continue only when the current process receives a permission-denied error. If the current process can bypass the fixture permissions, the test skips with a specific `skipping permission-denied fixture: ...` reason.
+
+This is also test hygiene only. It does not change ES public contracts, lifecycle cleanup semantics, retained-result semantics, readiness boundaries, or production capability probing placement.

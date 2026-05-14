@@ -16,7 +16,7 @@
   },
   "authorization": {
     "allowed_spiffe_path_prefixes": [
-      "operator"
+      "operator/local"
     ]
   },
   "dependencies": {

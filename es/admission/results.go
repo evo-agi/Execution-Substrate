@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"execution-substrate/es/internal/ownershipnorm"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -255,18 +257,23 @@ func writeResultBundle(writer io.Writer, root string) error {
 			return nil
 		}
 
-		relativePath, err := filepath.Rel(root, path)
+		relativePath, err := resultBundleEntryName(root, path)
 		if err != nil {
 			return err
-		}
-		relativePath = filepath.ToSlash(relativePath)
-		if relativePath == "." || strings.HasPrefix(relativePath, "../") {
-			return fmt.Errorf("result entry escapes result directory: %s", path)
 		}
 
-		info, err := entry.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("result entry %s uses unsupported symbolic link", relativePath)
+		}
+		if info.Mode().IsRegular() {
+			if err := rejectHardLinkedRetainedResultFile(info, relativePath); err != nil {
+				return err
+			}
 		}
 
 		header, err := tar.FileInfoHeader(info, "")
@@ -282,12 +289,6 @@ func writeResultBundle(writer io.Writer, root string) error {
 		case info.IsDir():
 			header.Name += "/"
 		case info.Mode().IsRegular():
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			header.Linkname = target
 		default:
 			return fmt.Errorf("result entry %s uses unsupported file mode %s", relativePath, info.Mode().String())
 		}
@@ -299,7 +300,7 @@ func writeResultBundle(writer io.Writer, root string) error {
 			return nil
 		}
 
-		file, err := os.Open(path)
+		file, err := openRetainedResultRegularFile(path, relativePath)
 		if err != nil {
 			return err
 		}
@@ -319,6 +320,55 @@ func writeResultBundle(writer io.Writer, root string) error {
 		return err
 	}
 	return gzipWriter.Close()
+}
+
+func resultBundleEntryName(root string, path string) (string, error) {
+	relativePath, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	relativePath = filepath.ToSlash(relativePath)
+	if relativePath == "." || relativePath == "" || relativePath == ".." || strings.HasPrefix(relativePath, "../") || filepath.IsAbs(relativePath) {
+		return "", fmt.Errorf("result entry escapes result directory: %s", path)
+	}
+	return relativePath, nil
+}
+
+func rejectHardLinkedRetainedResultFile(info os.FileInfo, displayPath string) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
+		return fmt.Errorf("result entry %s link count cannot be determined", displayPath)
+	}
+	if stat.Nlink > 1 {
+		return fmt.Errorf("result entry %s uses unsupported hard link", displayPath)
+	}
+	return nil
+}
+
+func openRetainedResultRegularFile(path string, displayPath string) (*os.File, error) {
+	fd, err := unix.Open(filepath.Clean(path), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("result entry %s is not readable", displayPath)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("result entry %s uses unsupported file mode %s", displayPath, info.Mode().String())
+	}
+	if err := rejectHardLinkedRetainedResultFile(info, displayPath); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func allocationTerminal(allocation *nomadAllocationDetail) bool {

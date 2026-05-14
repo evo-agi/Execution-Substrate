@@ -27,7 +27,7 @@ func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 			stack.es.Addr(),
 			http.MethodGet,
 			"/v1/executions/"+submitted.RunID+"/status",
-			stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+			stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 			nil,
 		)
 		if response.StatusCode != http.StatusOK {
@@ -61,7 +61,7 @@ func TestExecutionStatusReflectsNomadJobState(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+submitted.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -111,7 +111,7 @@ func TestExecutionLogsReturnRealContainerOutput(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+submitted.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -154,7 +154,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions/"+submitted.RunID+":cancel",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -191,7 +191,7 @@ func TestExecutionLifecycleRejectsInvalidRunID(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/not-a-run-id/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -209,7 +209,7 @@ func TestExecutionLifecycleMissingJobReturns404(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/run-deadbeefdeadbeef/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -229,7 +229,7 @@ func TestExecutionLogsReturnConflictWhenAllocationNotReady(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+submitted.RunID+"/logs",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -271,7 +271,7 @@ func TestExecutionStatusReturns503WhenNomadUnavailable(t *testing.T) {
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+submitted.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -299,7 +299,7 @@ exit 7
 		stack.es.Addr(),
 		http.MethodGet,
 		"/v1/executions/"+submitted.RunID+"/status",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
 	defer response.Body.Close()
@@ -349,7 +349,7 @@ func submitExecution(t *testing.T, stack *submitStack, cpu int, memoryMB int) ad
 		stack.es.Addr(),
 		http.MethodPost,
 		"/v1/executions:submit",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		requestBody,
 	)
 	defer response.Body.Close()
@@ -419,7 +419,7 @@ func publishSubmitArtifactArchiveWithOptions(t *testing.T, stack *submitStack, a
 		stack.ags.Addr(),
 		http.MethodPost,
 		"/v1/artifacts:publish",
-		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator", false),
+		stack.fixture.clientTLSConfigForServer(t, stack.fixture.agsServerName, "operator/local", false),
 		requestBody,
 	)
 	defer response.Body.Close()

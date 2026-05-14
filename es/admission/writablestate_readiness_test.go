@@ -517,12 +517,7 @@ func TestRetainTerminalResultFailsClosedWhenResultTreeIsUnreadable(t *testing.T)
 
 	mkdirWithMode(t, layout.resultStageDir, 0o700)
 	writeFileWithMode(t, filepath.Join(layout.resultStageDir, "summary.txt"), []byte("ok\n"), 0o600)
-	if err := os.Chmod(layout.resultStageDir, 0o300); err != nil {
-		t.Fatalf("chmod unreadable result root: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(layout.resultStageDir, 0o700)
-	})
+	requireChmod000ReadDenied(t, layout.resultStageDir)
 
 	retained, err := service.retainTerminalResult(locator)
 	if err == nil {
@@ -541,12 +536,7 @@ func TestResultReturnsUnavailableWhenTerminalResultTreeIsUnreadable(t *testing.T
 
 	mkdirWithMode(t, layout.resultStageDir, 0o700)
 	writeFileWithMode(t, filepath.Join(layout.resultStageDir, "summary.txt"), []byte("ok\n"), 0o600)
-	if err := os.Chmod(layout.resultStageDir, 0o300); err != nil {
-		t.Fatalf("chmod unreadable result root: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(layout.resultStageDir, 0o700)
-	})
+	requireChmod000ReadDenied(t, layout.resultStageDir)
 
 	service.nomadClient = terminalSuccessNomadClient(t, locator.JobID())
 
@@ -651,12 +641,7 @@ func TestMaybeCleanupSuccessfulStageRootRetainsUndeletableTreeWithoutPartialRemo
 	mkdirWithMode(t, filepath.Join(layout.runStageDir, "work", "blocked"), 0o700)
 	writeFileWithMode(t, filepath.Join(layout.resultStageDir, "summary.txt"), []byte("cleanup\n"), 0o600)
 	writeFileWithMode(t, filepath.Join(layout.stageRootDir, "payload.marker"), []byte("keep"), 0o600)
-	if err := os.Chmod(filepath.Join(layout.runStageDir, "work"), 0o500); err != nil {
-		t.Fatalf("chmod blocked cleanup subtree: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(filepath.Join(layout.runStageDir, "work"), 0o700)
-	})
+	requireChmod500DeleteDenied(t, filepath.Join(layout.runStageDir, "work"))
 
 	service.maybeCleanupSuccessfulStageRoot(locator, terminalSuccessAllocation())
 

@@ -75,6 +75,10 @@ This produces:
 
 - `.examples/runtime_identity_reference/dist/runtime_identity_reference.tar.gz`
 
+That tracked archive is a non-authoritative example fixture. Regenerate it with
+`package.sh` when needed; it does not define the platform-owned runtime identity
+contract.
+
 ## Runtime Requirements
 
 - ES base image must include `python3`

@@ -205,8 +205,8 @@ func newPreparedArtifactFixture(t *testing.T) preparedArtifactFixture {
 				Publication: evidencev1.Publication{
 					BuilderService: "artifact-governance",
 					Invoker: evidencev1.Invoker{
-						Service:   "operator",
-						Principal: "spiffe://execution.internal/operator",
+						Service:   "operator/local",
+						Principal: "spiffe://execution.internal/operator/local",
 					},
 					PolicyDecisions: []evidencev1.PolicyDecision{
 						{Rule: "allow", Result: "applied"},

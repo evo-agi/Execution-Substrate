@@ -54,7 +54,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 		fixture.runtimeCA,
 		fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	arsPort := reserveTCPPort(t)
@@ -102,7 +102,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: arsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"service/execution", "operator"},
+			AllowedSPIFFEPathPrefixes: []string{"service/execution", "operator/local"},
 		},
 		Storage: arsconfig.StorageConfig{
 			RootDir:   arsRootDir,
@@ -164,7 +164,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: agsconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
 		Dependencies: agsconfig.DependenciesConfig{
 			ArtifactRegistry: agsconfig.DependencyConfig{
@@ -201,7 +201,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BootstrapIssuerCommonName: fixture.bootstrapCACN,
 		},
 		Authorization: esconfig.AuthorizationConfig{
-			AllowedSPIFFEPathPrefixes: []string{"operator"},
+			AllowedSPIFFEPathPrefixes: []string{"operator/local"},
 		},
 		Dependencies: esconfig.DependenciesConfig{
 			ArtifactRegistry: esconfig.DependencyConfig{
@@ -538,7 +538,7 @@ func TestHealthCheckScriptPrepareOnlyReportsSubmitSkipped(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
@@ -862,7 +862,7 @@ func TestHealthCheckScriptRejectsPreManagedDevNomad(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
@@ -1115,7 +1115,7 @@ func TestLifecycleScriptObservesExecutionViaPublicRunID(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
@@ -1163,7 +1163,7 @@ func TestDiagnosticsScriptRuntimeConfigCategoryBundleAcceptsSurfacedFailureLabel
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
@@ -1281,7 +1281,7 @@ exit 7
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
@@ -1360,7 +1360,7 @@ func TestDiagnosticsSummaryScriptPrintsCompactBundleSummary(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	arsHost, arsPort, err := splitHostPort(t, stack.ars.Addr())
@@ -1538,7 +1538,7 @@ func TestPrepareScriptCategorizesRuntimeConfigFailure(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
@@ -1590,7 +1590,7 @@ func TestSubmitScriptCategorizesSubstrateFailure(t *testing.T) {
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())
@@ -1649,7 +1649,7 @@ exit 7
 		stack.fixture.runtimeCA,
 		stack.fixture.runtimeCAKey,
 		"client.operator",
-		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator")},
+		[]*url.URL{mustSPIFFEURL(t, "spiffe://execution.internal/operator/local")},
 	)
 
 	esHost, esPort, err := splitHostPort(t, stack.es.Addr())

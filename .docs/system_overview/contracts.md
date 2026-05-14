@@ -227,7 +227,7 @@ Current response shape:
 - AGS requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - AGS authorizes publish callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that AGS caller allowlist operator-only:
-  - `spiffe://execution.internal/operator`
+  - `spiffe://execution.internal/operator/local`
 - The first repo-owned non-operator AGS caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - AGS computes `payload_digest` from payload bytes.
@@ -449,7 +449,7 @@ Implementation details and current slice constraints must not be promoted into s
 - The current client-authorization shape is still operator-centric:
   - AGS publish and ES execution/lifecycle authorization now come from configured SPIFFE path-prefix allowlists
   - the current repo-owned runbooks, proofs, and generated helper configs still keep those allowlists operator-only:
-    - `spiffe://execution.internal/operator`
+    - `spiffe://execution.internal/operator/local`
   - the first repo-owned non-operator governed-execution caller activation path is Control Plane at:
     - `spiffe://execution.internal/service/control-plane`
   - the current prefix-based allowlist model is sufficient for that activation when configured narrowly with `service/control-plane`; a broad `service/` allowlist is not required
@@ -534,9 +534,15 @@ Current successful response shapes:
 
 - ES requires authenticated SPIFFE caller identity and rejects bootstrap-PKI callers.
 - ES authorizes execution and lifecycle callers by configured SPIFFE path prefixes from `authorization.allowed_spiffe_path_prefixes`.
+- ES prefix matching is exact-or-subpath: the authenticated caller path must
+  equal a configured prefix or start with that prefix followed by `/`.
+- ES startup config validation rejects broad or malformed prefixes. Accepted
+  prefixes are relative SPIFFE path prefixes with at least two non-empty path
+  segments, no leading or trailing slash, and no `.` or `..` segment. A
+  single-segment prefix such as `service` or `operator` is invalid.
 - `GET /v1/executions:contract` uses that same caller authorization and returns only non-secret, non-run-specific producer compatibility metadata.
 - The current repo-owned runbooks, proofs, and generated helper configs keep that ES caller allowlist operator-only:
-  - `spiffe://execution.internal/operator`
+  - `spiffe://execution.internal/operator/local`
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode` and optional Vault CA trust material, and returns bounded preflight success only.
@@ -658,7 +664,7 @@ signer/artifact trust only.
 - `EGS` publishes the runtime-trust payload plus separate publication metadata.
 - Current allowed callers are:
   - `spiffe://execution.internal/service/execution`
-  - `spiffe://execution.internal/operator`
+  - `spiffe://execution.internal/operator/local`
 - `ES` is the current runtime consumer.
 
 ### Public surface

@@ -13,8 +13,8 @@ import (
 
 func TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
-		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
-		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
+		allowedAGSCallerPrefixes:       []string{"operator/local", "service/control-plane"},
+		allowedExecutionCallerPrefixes: []string{"operator/local", "service/control-plane"},
 	})
 
 	repoRoot := executionPlatformRepoRoot(t)
@@ -116,8 +116,8 @@ func TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle(t *testing.T
 
 func TestControlPlaneStaticScriptAPIPathCancelSucceeds(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
-		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
-		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
+		allowedAGSCallerPrefixes:       []string{"operator/local", "service/control-plane"},
+		allowedExecutionCallerPrefixes: []string{"operator/local", "service/control-plane"},
 	})
 
 	repoRoot := executionPlatformRepoRoot(t)
@@ -257,8 +257,8 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 
 func TestControlPlaneStaticScriptAPIPathRejectsDisallowedCaller(t *testing.T) {
 	stack := startSubmitStackWithOptionsWithoutNomad(t, submitStackOptions{
-		allowedAGSCallerPrefixes:       []string{"operator", "service/control-plane"},
-		allowedExecutionCallerPrefixes: []string{"operator", "service/control-plane"},
+		allowedAGSCallerPrefixes:       []string{"operator/local", "service/control-plane"},
+		allowedExecutionCallerPrefixes: []string{"operator/local", "service/control-plane"},
 	})
 
 	repoRoot := executionPlatformRepoRoot(t)
