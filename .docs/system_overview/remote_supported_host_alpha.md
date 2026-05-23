@@ -379,6 +379,28 @@ SVID bodies, private keys, or other secret material. Old ignored
 `.out/es-proof-*` supported-local proof workspaces are not accepted evidence
 for this remote helper slice and must not be used to widen its claims.
 
+The repo-supported generator for that host-local summary is
+`scripts/remote_alpha_runtime_identity_helper_summary.sh`. Operators run the
+generator on the Remote Alpha host, normally with `sudo`, so it can exercise
+the helper-local SPIRE fetch smoke as root while still recording only
+non-secret status. The generator writes
+`execution-substrate.remote-runtime-identity-helper-summary.v1alpha1` JSON to
+`/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`
+by default and must keep the summary readable by Infrastructure Manager live
+refresh. It records the installed `/usr/local/bin/es-runtime-support` metadata,
+SPIRE server/agent health, the Alpha-only
+`spiffe://execution.internal/workload` registration, helper-local fetch status
+without JWT-SVID bodies, raw SPIRE socket non-exposure checks for `ds` and UID
+`10000`, Docker/Nomad status, non-authority labels, and explicit redaction
+markers.
+
+The generator is a Remote Alpha evidence generator only. It is not governed
+execution proof, not CP run-control authority, not ES submit authority, not
+runtime-profile readiness, not Vault readiness, not production posture, and not
+a replacement for the Milestone 3 proof. `--dry-run`/`--check-only` mode must
+skip the SPIRE JWT fetch smoke, write nothing, and print only non-secret
+diagnostic JSON.
+
 ## Remote Normal-Shell Runtime Image Slice
 
 Remote Supported-Host Alpha may also record a separate host-local normal-shell
@@ -1975,6 +1997,82 @@ material must remain root-only on the remote host. It must not be copied into:
 
 If init or unseal material cannot be handled that way, the slice must stop
 instead of widening evidence or secret persistence.
+
+### Disposable Vault reset/rebootstrap helper
+
+When the Remote Alpha Vault contents are disposable and the Shamir unseal key
+is unavailable, operators may use one repo-owned reset helper to rebootstrap
+the Alpha/internal Vault instance:
+
+- `scripts/remote_alpha_reset_disposable_vault.sh`
+
+This helper is a bounded recovery path for the sealed-and-unrecoverable Remote
+Alpha Vault case. It is not production Vault lifecycle automation, not
+Infrastructure Manager reconciliation, not a CP/ES governed proof, not submit
+readiness, not runtime-profile readiness, and not a general deployment
+architecture.
+
+Required behavior for this helper:
+
+- default to `--dry-run` and perform read-only inspection only
+- require `--execute-reset` for destructive reset
+- allow `--unseal-only` when the operator has the existing Shamir unseal key
+  and wants to bypass raft reset and Vault init
+- require interactive stdin and stdout before destructive or secret-producing
+  steps
+- print the raft storage path and require the exact confirmation phrase
+  `RESET DISPOSABLE REMOTE ALPHA VAULT` before moving any storage
+- reject empty, non-absolute, or broad raft paths such as `/`, `/var`,
+  `/var/lib`, `/opt`, `/home`, `/etc`, `/usr`, or `/tmp`
+- stop the Vault systemd service before moving storage
+- move the old raft path to a timestamped sibling backup rather than deleting
+  it
+- recreate the raft path for the Vault service user and group with restrictive
+  permissions
+- start Vault and run `vault operator init -key-shares=1 -key-threshold=1` in
+  the operator's interactive terminal without redirecting, teeing, or logging
+  the output
+- pause so the operator can store the printed unseal key and root token in a
+  private password manager
+- run `vault operator unseal` interactively and never pass the unseal key as a
+  command-line argument
+- verify the post-unseal state reports `sealed=false`
+- optionally run the repo-supported workload-auth checker after unseal when
+  the operator requests `--post-unseal-check`
+- print the Mac-side Infrastructure Manager live-refresh command after
+  completion
+
+The helper must use `set +x`, `umask 077`, and must not write generated secret
+values to repo files, `.out`, logs, support bundles, retained bundles, reports,
+shell history, or script output. The helper may print non-secret status such
+as service state, config path, selected raft path, timestamped backup path,
+Vault initialized/sealed booleans, and checker paths. It must not print,
+capture, persist, or relay Vault unseal keys, root tokens, client tokens,
+TLS private keys, SPIFFE private material, API keys, raw prompts, JWT-SVID
+bodies, or secret payloads.
+
+`--unseal-only` is non-destructive but still secret-sensitive. It may start the
+Vault service when needed, wait until the Vault CLI can read seal status, run
+`vault operator unseal` interactively, verify `sealed=false`, optionally run
+the repo-supported workload-auth checker after unseal, and print the Mac-side
+Infrastructure Manager refresh command. It must not move the raft path, run
+`vault operator init`, create reset backups, or ask for the destructive reset
+confirmation phrase.
+
+After a manual reset/rebootstrap, operators must refresh Infrastructure
+Manager evidence from the Mac side before treating runtime-identity readiness
+as current:
+
+```bash
+cd "/Users/ds/Repositories/Infrastructure Manager"
+PYTHONPATH=src python3 -m infra_manager.cli remote-alpha-live-refresh \
+  --profile-dir ".out/remote-alpha-m75q" \
+  --ssh-alias host_to_remote_linux_m75q
+```
+
+Only after that refresh reports unsealed, fresh Vault/workload-auth evidence
+should operators consider rerunning the bounded CP/ES proof path. The reset
+helper itself must never run the full CP/ES proof.
 
 ### Remote Vault evidence
 

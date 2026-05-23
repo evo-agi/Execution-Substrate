@@ -114,6 +114,20 @@ applied`.
   apply only, bounded to Vault host/service hardening, and must not widen into
   ES public API changes, Nomad task-user changes, SPIRE boundary changes, or
   Vault token brokerage.
+- This tranche may carry one disposable Remote Alpha Vault reset/rebootstrap
+  operator script for the sealed-and-unrecoverable Shamir-key case. That script
+  must stay dry-run by default, require an interactive TTY plus the exact
+  destructive confirmation phrase before reset, move the existing Vault raft
+  path to a timestamped backup rather than deleting it, run Vault init/unseal
+  only in the operator's interactive terminal, and never persist or relay
+  unseal keys, root tokens, client tokens, TLS private keys, SPIFFE material,
+  API keys, or raw prompts. It is a bounded Alpha recovery helper only; it is
+  not IM automation, Vault production lifecycle, CP/ES proof, submit
+  readiness, runtime-profile readiness, or a broader deployment architecture.
+  The same helper may provide a non-destructive `--unseal-only` path for the
+  case where the operator still has the Shamir unseal key; that mode must not
+  move storage or run Vault init, and must still require an interactive TTY and
+  interactive `vault operator unseal` with no key material on the command line.
 - This tranche is bounded host/service hardening only. Do not widen it into a
   runtime-boundary redesign or broader proof expansion.
 
