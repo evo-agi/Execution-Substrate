@@ -232,14 +232,20 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0d:
+Current implementation status through P0f:
 
 - P0b implemented the help, inventory, and print-command skeleton.
+- P0e aligned help, inventory, and route wording with the operator
+  involvement model: the human remains the operator, the script is a bounded
+  ES Remote Alpha operator facade/workflow, and the goal is minimizing manual
+  stitching rather than eliminating prompts.
 - P0d implements exactly one staged-helper delegation route,
   `es-writable-state-readiness-check`.
+- P0f implements exactly one bounded readiness workflow command,
+  `readiness-session`, over that existing route.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
-  `print-support-bundle-command`, `print-im-commands`, and
-  `es-writable-state-readiness-check`.
+  `print-support-bundle-command`, `print-im-commands`,
+  `es-writable-state-readiness-check`, and `readiness-session`.
 - The new route delegates only to the public staged wrapper
   `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`.
 - The route is check-only/non-mutating by construction: it has no `--apply`
@@ -249,9 +255,14 @@ Current implementation status through P0d:
 - The route accepts only the P0c allowlisted helper flags and rejects unknown
   flags, unknown positional arguments, duplicate route flags, and secret-like
   arguments before helper execution.
+- The readiness session accepts only its own allowlisted workflow flags,
+  delegates only through the existing readiness route/helper path, preserves
+  the two IM-consumed artifact filenames, and prints only non-secret local
+  metadata after scanning the artifacts for secret-like content.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
-  support-bundle collection.
+  support-bundle collection; the readiness session prints those commands as
+  follow-up evidence/provenance actions only.
 - Vault reset/unseal, workload-auth check, runtime identity summary, Vault
   service-user check, runtime security check, and all other staged `es-*`
   helper delegation remain not implemented and require later audited slices.
@@ -259,9 +270,9 @@ Current implementation status through P0d:
   v1.
 - Operator facade output is deterministic operator guidance and
   evidence/projection only. The facade itself writes no operator-owned summary,
-  `.out` file, support bundle, report, or generated artifact; the delegated
-  helper remains the owner of its existing readiness/provenance artifacts when
-  the route is intentionally invoked.
+  support bundle, report, or new authority artifact; the delegated helper
+  remains the owner of its existing readiness/provenance artifacts when the
+  route or readiness session is intentionally invoked.
 
 ### Operator Involvement Model
 
@@ -499,6 +510,90 @@ Manager-consumed local artifact filenames:
 It does not rename, replace, aggregate, or obscure those files. It writes no
 aggregate operator summary and does not call Infrastructure Manager; the facade
 may continue to print the Mac-side IM refresh and support-bundle commands only.
+
+### P0f Readiness Session Workflow
+
+`Bounded slice rule`: P0f implements exactly one Remote Alpha operator
+workflow command:
+`scripts/remote_alpha_operator.sh readiness-session`.
+
+This session is a bounded workflow consolidation over the already implemented
+`es-writable-state-readiness-check` route. It is not a live validation slice by
+itself, not a new authority source, not a new helper-dispatch framework, and
+not an Infrastructure Manager runner.
+
+The session requires:
+
+- `--ssh-target <user@host>`
+
+The session may accept only these flags:
+
+- `--ssh-target <target>`
+- `--mode <alpha-compat|future-non-root-required>`
+- `--output-dir </path/to/output-dir>`
+- `--run-id <timestamp-or-id>`
+- `--interactive-sudo`
+- `--keep-staging-on-failure`
+- `--ssh-alias <alias>` for printed IM commands only
+- `--im-profile-dir </path/to/profile-dir>` for printed IM commands only
+- `--support-output-root </path/to/support-bundles>` for printed IM commands
+  only
+- `--help`
+
+The session rejects before route execution:
+
+- `--apply`
+- `--dry-run`
+- equals-form options
+- unknown flags
+- positional arguments
+- missing flag values
+- duplicate workflow flags
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, passwords, and
+  secret payloads
+
+When `--output-dir` is omitted, the session must generate a fresh
+run-specific directory under the repo-local `.out` tree, such as
+`.out/remote-alpha-m75q-readiness-session-<UTC timestamp>`. When
+`--output-dir` is supplied, the session must use that directory. In both cases
+it must refuse to proceed if the selected directory already contains either
+expected artifact:
+
+- `es-writable-state-readiness.json`
+- `es-writable-state-readiness-helper-staging-record.json`
+
+The session must not treat pre-existing artifacts as fresh evidence.
+
+After the readiness route returns success, the session verifies:
+
+- both expected artifact filenames exist at the selected paths
+- both artifacts pass a secret-like content scan before any JSON fields are
+  read
+- the readiness artifact schema is
+  `execution-substrate.remote-alpha.es-writable-state-readiness.v1`
+- the staging record schema is
+  `execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`
+- readiness `operation_mode` is `check_only`
+- readiness `non_mutating` is `true`
+- readiness `checker_mode` matches the requested mode
+- the staging record indicates `checker_ran=true`
+
+The session may print only non-secret metadata: artifact paths, byte counts,
+SHA-256 digests, schema names, overall classification, blocker/warning counts,
+operation/checker mode, and sudo/checker status fields. It must not print full
+JSON contents and must not write an operator summary file.
+
+At the end, the session may print the Mac-side Infrastructure Manager live
+refresh and support-bundle commands as separate follow-up actions. Those
+printed commands remain IM evidence/provenance/diagnostics actions only; the
+session does not execute them, and they are not authority.
+
+P0f does not add Vault reset/unseal, Vault workload-auth, runtime identity,
+service-user migration, config/TLS, binary deployment, writable-state
+ownership, generic remote staging, arbitrary shell passthrough, live IM
+execution, CP proof, support-bundle collection, or Remote Alpha deployment
+architecture.
 
 ### P0d Interactive Validation Evidence
 

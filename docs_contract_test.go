@@ -2226,11 +2226,17 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"`Bounded slice rule`",
 		"bounded MVP proof/support helper plus evidence/projection outputs only",
 		"`scripts/remote_alpha_operator.sh`",
-		"Current implementation status through P0d:",
+		"Current implementation status through P0f:",
+		"P0e aligned help, inventory, and route wording with the operator involvement model",
 		"P0d implements exactly one staged-helper delegation route",
 		"`es-writable-state-readiness-check`",
+		"P0f implements exactly one bounded readiness workflow command",
+		"`readiness-session`",
 		"delegates only to the public staged wrapper",
 		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"delegates only through the existing readiness route/helper path",
+		"prints only non-secret local metadata after scanning the artifacts for secret-like content",
+		"follow-up evidence/provenance actions only",
 		"operator ergonomics over existing bounded helpers",
 		"Mac-side only: inventory, print IM commands, and staged-wrapper delegation",
 		"Remote-host only: Vault reset/unseal, runtime identity summary, Vault workload-auth check, and Vault service-user check.",
@@ -2338,7 +2344,7 @@ func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T
 func TestRemoteAlphaOperatorP0dDocsFirstDelegationBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0d First Staged-Helper Delegation Implementation", "## Direct Remote Requirements")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0d First Staged-Helper Delegation Implementation", "### P0f Readiness Session Workflow")
 
 	assertContainsAll(t, "Remote Alpha operator P0d PLANS boundary", plans,
 		"The P0d implementation slice is limited to exactly that one check-only route",
@@ -2391,6 +2397,74 @@ func TestRemoteAlphaOperatorP0dDocsFirstDelegationBoundary(t *testing.T) {
 		"`es-writable-state-readiness-helper-staging-record.json`",
 		"writes no aggregate operator summary and does not call Infrastructure Manager",
 		"the facade may continue to print the Mac-side IM refresh and support-bundle commands only",
+	)
+}
+
+func TestRemoteAlphaOperatorP0fDocsReadinessSessionBoundary(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0f Readiness Session Workflow", "### P0d Interactive Validation Evidence")
+
+	assertContainsAll(t, "Remote Alpha operator P0f PLANS boundary", plans,
+		"The P0f combined slice may fold in the P0e help/inventory wording alignment",
+		"`scripts/remote_alpha_operator.sh readiness-session`",
+		"operator-workflow consolidation over the already approved writable-state readiness route",
+		"not a live validation slice and not a new authority source",
+		"the human remains the operator",
+		"noninteractive sudo remains an ergonomic optimization rather than a universal success criterion",
+		"require an explicit `--ssh-target` for execution",
+		"delegate only through the existing `es-writable-state-readiness-check` route/helper path",
+		"use a fresh run-specific output directory by default unless `--output-dir` is supplied",
+		"scan those artifacts for secret-like content before reading JSON fields",
+		"print only non-secret metadata",
+		"print IM refresh and support-bundle commands as follow-up evidence/provenance instructions only",
+		"write no operator summary file",
+		"add no generic helper dispatch",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator P0f docs boundary", operatorSection,
+		"`Bounded slice rule`: P0f implements exactly one Remote Alpha operator",
+		"`scripts/remote_alpha_operator.sh readiness-session`",
+		"bounded workflow consolidation over the already implemented",
+		"`es-writable-state-readiness-check`",
+		"not a live validation slice by itself",
+		"not a new authority source",
+		"not a new helper-dispatch framework",
+		"not an Infrastructure Manager runner",
+		"The session requires:",
+		"`--ssh-target <user@host>`",
+		"The session may accept only these flags:",
+		"`--mode <alpha-compat|future-non-root-required>`",
+		"`--output-dir </path/to/output-dir>`",
+		"`--interactive-sudo`",
+		"`--ssh-alias <alias>` for printed IM commands only",
+		"`--im-profile-dir </path/to/profile-dir>` for printed IM commands only",
+		"`--support-output-root </path/to/support-bundles>` for printed IM commands",
+		"The session rejects before route execution:",
+		"`--apply`",
+		"`--dry-run`",
+		"equals-form options",
+		"positional arguments",
+		"duplicate workflow flags",
+		"secret-like arguments",
+		"generate a fresh run-specific directory",
+		"must refuse to proceed if the selected directory already contains either expected artifact",
+		"`es-writable-state-readiness.json`",
+		"`es-writable-state-readiness-helper-staging-record.json`",
+		"both artifacts pass a secret-like content scan before any JSON fields are read",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness.v1`",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`",
+		"readiness `operation_mode` is `check_only`",
+		"readiness `non_mutating` is `true`",
+		"readiness `checker_mode` matches the requested mode",
+		"`checker_ran=true`",
+		"may print only non-secret metadata",
+		"must not print full JSON contents",
+		"must not write an operator summary file",
+		"printed commands remain IM evidence/provenance/diagnostics actions only",
+		"does not execute them",
+		"not authority",
+		"does not add Vault reset/unseal, Vault workload-auth, runtime identity, service-user migration, config/TLS, binary deployment, writable-state ownership, generic remote staging, arbitrary shell passthrough, live IM execution, CP proof, support-bundle collection, or Remote Alpha deployment architecture",
 	)
 }
 

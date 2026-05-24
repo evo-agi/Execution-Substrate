@@ -125,6 +125,33 @@ create an operator-owned summary, rename helper artifacts, or add any reset,
 unseal, Vault workload-auth, runtime-identity, service-user migration,
 config/TLS, binary deployment, or writable-state ownership route.
 
+The P0f combined slice may fold in the P0e help/inventory wording alignment
+and add one bounded workflow subcommand:
+`scripts/remote_alpha_operator.sh readiness-session`. This command is an
+operator-workflow consolidation over the already approved writable-state
+readiness route, not a live validation slice and not a new authority source.
+It must minimize manual stitching without implying zero operator involvement:
+the human remains the operator, explicit interactive sudo remains allowed only
+when named, bounded, visible, and secret-safe, and noninteractive sudo remains
+an ergonomic optimization rather than a universal success criterion. The
+session must require an explicit `--ssh-target` for execution, accept only its
+own allowlisted flags, delegate only through the existing
+`es-writable-state-readiness-check` route/helper path, use a fresh
+run-specific output directory by default unless `--output-dir` is supplied,
+refuse pre-existing readiness or staging-record artifacts in the selected
+directory, verify the two expected artifacts after a successful route return,
+scan those artifacts for secret-like content before reading JSON fields, and
+print only non-secret metadata such as paths, byte counts, SHA-256 digests,
+schema names, blocker/warning counts, and sudo/checker status. It must not run
+Infrastructure Manager, support-bundle collection, sudo, SSH, Vault, Nomad,
+Docker, SPIRE, `systemctl`, reset/unseal flows, or live validation except
+through the intentionally invoked readiness route. It must print IM refresh and
+support-bundle commands as follow-up evidence/provenance instructions only,
+write no operator summary file, preserve the existing IM-consumed artifact
+filenames, and add no generic helper dispatch or additional Vault, reset,
+unseal, runtime identity, service-user, config/TLS, binary, or writable-state
+ownership route.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

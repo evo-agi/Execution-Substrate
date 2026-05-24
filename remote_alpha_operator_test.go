@@ -84,7 +84,7 @@ func assertNoNewPaths(t *testing.T, label string, before map[string]bool) {
 	}
 }
 
-func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0dScope(t *testing.T) {
+func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0fScope(t *testing.T) {
 	scriptPath := remoteAlphaOperatorScriptPath()
 	info, err := os.Stat(scriptPath)
 	if err != nil {
@@ -97,19 +97,29 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0dScope(t *testing.
 	help := requireRemoteAlphaOperatorSuccess(t, "--help")
 	assertContainsAll(t, "operator help", help,
 		"Remote Alpha operator facade",
-		"P0d implements one check-only staged-helper route",
+		"P0f adds one readiness-session workflow",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
+		"The human remains the operator",
+		"bounded ES Remote Alpha operator facade/workflow",
+		"minimize manual stitching, copying, and recovery sequencing; not eliminate prompts",
+		"Explicit interactive modes are allowed only when named, bounded, visible, and secret-safe",
+		"Noninteractive sudo is an ergonomic optimization, not a universal success criterion",
+		"Outputs are evidence/projection/diagnostics only, never authority",
 		"help",
 		"inventory",
 		"print-refresh-command",
 		"print-support-bundle-command",
 		"print-im-commands",
 		"es-writable-state-readiness-check",
+		"readiness-session",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
+		"runs the existing readiness route",
+		"fresh output directory by default",
+		"prints only non-secret artifact metadata",
 		"preserves es-writable-state-readiness.json",
 		"es-writable-state-readiness-helper-staging-record.json",
 		"--profile-dir .out/remote-alpha-m75q",
@@ -123,16 +133,19 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0dScope(t *testing.
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented in P0d",
+		"implemented through P0f",
 		"help",
 		"inventory",
 		"print-refresh-command",
 		"print-support-bundle-command",
 		"print-im-commands",
 		"es-writable-state-readiness-check",
+		"readiness-session",
 		"delegates to existing readiness staged helper",
+		"runs the existing readiness route",
 		"check-only/non-mutating",
 		"preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json",
+		"prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status",
 		"future/not implemented",
 		"Vault reset/unseal",
 		"workload-auth check",
@@ -144,6 +157,10 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
+		"implemented, future, and blocked entries are operator-workflow/evidence surfaces, not authority surfaces",
+		"interactive operator involvement is expected where an explicit mode says so",
+		"IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise",
+		"must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture",
 	)
 }
 
@@ -282,7 +299,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented in P0d",
+				"not implemented in P0f",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -305,6 +322,11 @@ func TestRemoteAlphaOperatorWritableStateRouteHelpDocumentsScope(t *testing.T) {
 		"Delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
+		"supports explicit --interactive-sudo",
+		"interactive sudo is operator-authorized and bounded to this route",
+		"does not eliminate the operator",
+		"removes manual staging and command stitching",
+		"Artifacts remain evidence/projection only",
 		"--mode alpha-compat|future-non-root-required",
 		"--run-id <id>",
 		"--output-dir <path>",
@@ -319,6 +341,40 @@ func TestRemoteAlphaOperatorWritableStateRouteHelpDocumentsScope(t *testing.T) {
 		"es-writable-state-readiness-helper-staging-record.json",
 		"does not call Infrastructure Manager",
 		"writes no operator summary",
+	)
+}
+
+func TestRemoteAlphaOperatorReadinessSessionHelpDocumentsScope(t *testing.T) {
+	output := requireRemoteAlphaOperatorSuccess(t, "readiness-session", "--help")
+	assertContainsAll(t, "readiness-session help", output,
+		"Remote Alpha operator workflow: readiness-session",
+		"Runs the existing es-writable-state-readiness-check route",
+		"bounded ES Remote Alpha operator facade/workflow",
+		"human remains the operator",
+		"minimizes manual stitching",
+		"does not eliminate prompts",
+		"explicit --interactive-sudo",
+		"visible and secret-safe",
+		"fresh run-specific output directory by default",
+		"--ssh-target <target>",
+		"--mode alpha-compat|future-non-root-required",
+		"--output-dir <path>",
+		"--run-id <id>",
+		"--interactive-sudo",
+		"--keep-staging-on-failure",
+		"--ssh-alias <alias>",
+		"--im-profile-dir <path>",
+		"--support-output-root <path>",
+		"for printed IM commands only",
+		"forbidden: --apply, --dry-run, equals-form options, unknown flags, positional arguments, duplicate workflow flags, secret-like arguments",
+		"verifies es-writable-state-readiness.json",
+		"es-writable-state-readiness-helper-staging-record.json",
+		"scans artifacts for secret-like content before reading JSON fields",
+		"prints only non-secret metadata",
+		"does not run Infrastructure Manager",
+		"writes no operator summary",
+		"IM follow-up commands are printed only as evidence/provenance actions",
+		"not authority",
 	)
 }
 
@@ -493,17 +549,213 @@ func TestRemoteAlphaOperatorWritableStateRouteRejectsSecretLikeArgsBeforeRouting
 	}
 }
 
+func TestRemoteAlphaOperatorReadinessSessionRejectsUnsafeArgsBeforeRouting(t *testing.T) {
+	docs := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	assertContainsAll(t, "P0f readiness-session docs", docs,
+		"`Bounded slice rule`: P0f implements exactly one Remote Alpha operator",
+		"`scripts/remote_alpha_operator.sh readiness-session`",
+		"delegates only through the existing readiness route/helper path",
+		"`--apply`",
+		"`--dry-run`",
+		"equals-form options",
+		"secret-like arguments",
+	)
+
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		required []string
+	}{
+		{
+			name: "missing ssh target",
+			args: []string{},
+			required: []string{
+				"readiness-session requires --ssh-target <target>",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "apply forbidden",
+			args: []string{"--apply"},
+			required: []string{
+				"readiness-session forbids --apply",
+				"check-only/non-mutating",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "dry run forbidden",
+			args: []string{"--dry-run"},
+			required: []string{
+				"readiness-session forbids --dry-run",
+				"delegated route does not expose a documented dry-run mode",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "invalid mode",
+			args: []string{"--mode", "invalid"},
+			required: []string{
+				"unsupported --mode for readiness-session: invalid",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "unknown flag",
+			args: []string{"--unknown-flag"},
+			required: []string{
+				"unknown option for readiness-session: --unknown-flag",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "positional",
+			args: []string{"positional"},
+			required: []string{
+				"unexpected positional argument for readiness-session: positional",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "missing run id",
+			args: []string{"--run-id"},
+			required: []string{
+				"--run-id requires a value",
+				"No readiness route execution occurred.",
+			},
+		},
+		{
+			name: "equals form",
+			args: []string{"--mode=alpha-compat"},
+			required: []string{
+				"readiness-session does not accept equals-form options: --mode=alpha-compat",
+				"No readiness route execution occurred.",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"readiness-session"}, tc.args...)...)
+			assertContainsAll(t, "readiness-session refusal", output, tc.required...)
+		})
+	}
+
+	output := requireRemoteAlphaOperatorFailure(t, "--ssh-alias=alias", "readiness-session", "--ssh-target", "host")
+	assertContainsAll(t, "readiness-session top-level equals-form refusal", output,
+		"readiness-session does not accept top-level printed-command options before the subcommand: --ssh-alias",
+		"No readiness route execution occurred.",
+	)
+	assertContainsNone(t, "readiness-session top-level equals-form refusal", output,
+		"Readiness session artifact metadata",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+	)
+}
+
+func TestRemoteAlphaOperatorReadinessSessionRejectsDuplicateArgsBeforeRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		duplicate string
+	}{
+		{
+			name:      "duplicate ssh target",
+			args:      []string{"--ssh-target", "a", "--ssh-target", "b"},
+			duplicate: "--ssh-target",
+		},
+		{
+			name:      "duplicate mode",
+			args:      []string{"--ssh-target", "host", "--mode", "alpha-compat", "--mode", "future-non-root-required"},
+			duplicate: "--mode",
+		},
+		{
+			name:      "duplicate output dir",
+			args:      []string{"--ssh-target", "host", "--output-dir", ".out/a", "--output-dir", ".out/b"},
+			duplicate: "--output-dir",
+		},
+		{
+			name:      "duplicate run id",
+			args:      []string{"--ssh-target", "host", "--run-id", "a", "--run-id", "b"},
+			duplicate: "--run-id",
+		},
+		{
+			name:      "duplicate interactive sudo",
+			args:      []string{"--ssh-target", "host", "--interactive-sudo", "--interactive-sudo"},
+			duplicate: "--interactive-sudo",
+		},
+		{
+			name:      "duplicate keep staging",
+			args:      []string{"--ssh-target", "host", "--keep-staging-on-failure", "--keep-staging-on-failure"},
+			duplicate: "--keep-staging-on-failure",
+		},
+		{
+			name:      "duplicate ssh alias",
+			args:      []string{"--ssh-target", "host", "--ssh-alias", "a", "--ssh-alias", "b"},
+			duplicate: "--ssh-alias",
+		},
+		{
+			name:      "duplicate im profile dir",
+			args:      []string{"--ssh-target", "host", "--im-profile-dir", "a", "--im-profile-dir", "b"},
+			duplicate: "--im-profile-dir",
+		},
+		{
+			name:      "duplicate support output root",
+			args:      []string{"--ssh-target", "host", "--support-output-root", "a", "--support-output-root", "b"},
+			duplicate: "--support-output-root",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"readiness-session"}, tc.args...)...)
+			assertContainsAll(t, "duplicate readiness-session flag refusal", output,
+				"duplicate option for readiness-session: "+tc.duplicate,
+				"No readiness route execution occurred.",
+			)
+			assertContainsNone(t, "duplicate readiness-session flag refusal", output,
+				"Readiness session artifact metadata",
+				"remote-alpha-live-refresh",
+				"remote-alpha-live-support-bundle",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorReadinessSessionRejectsSecretLikeArgsBeforeRouting(t *testing.T) {
+	for _, args := range [][]string{
+		{"--api-key=dummy"},
+		{"--api-key", "dummy"},
+		{"--root-token", "dummy"},
+		{"--unseal-key", "dummy"},
+		{"--client-token", "dummy"},
+		{"--vault-token", "dummy"},
+		{"--jwt-svid", "dummy"},
+		{"--private-key", "dummy"},
+		{"--password", "dummy"},
+		{"--secret", "dummy"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"readiness-session"}, args...)...)
+			assertContainsAll(t, "readiness-session secret flag refusal", output,
+				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
+			)
+			assertContainsNone(t, "readiness-session secret flag refusal", output,
+				"Readiness session artifact metadata",
+				"remote-alpha-live-refresh",
+				"remote-alpha-live-support-bundle",
+			)
+		})
+	}
+}
+
 func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	output := requireRemoteAlphaOperatorFailure(t, "definitely-unknown")
 	assertContainsAll(t, "unknown subcommand refusal", output,
 		"unknown subcommand",
 		"definitely-unknown",
-		"not implemented in P0d",
+		"not implemented in P0f",
 		"later audited slice",
 	)
 }
 
-func TestRemoteAlphaOperatorSourceLimitsP0dDelegationSurface(t *testing.T) {
+func TestRemoteAlphaOperatorSourceLimitsP0fDelegationSurface(t *testing.T) {
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	assertContainsAll(t, "operator source", source,
 		"set -euo pipefail",
@@ -513,11 +765,17 @@ func TestRemoteAlphaOperatorSourceLimitsP0dDelegationSurface(t *testing.T) {
 		`exec "${REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER}" "${helper_args[@]}"`,
 		`es-writable-state-readiness-check)`,
 		`route_es_writable_state_readiness_check ${subcommand_args[@]+"${subcommand_args[@]}"}`,
+		`readiness-session)`,
+		`readiness_session ${subcommand_args[@]+"${subcommand_args[@]}"}`,
+		`"${SCRIPT_DIR}/remote_alpha_operator.sh" "${route_args[@]}"`,
 	)
 	assertContainsNone(t, "operator source forbidden helper routing", source,
 		"scripts/internal/",
 		"source ",
 		". scripts/",
+		"helper-name",
+		"helper_name",
+		"helper_path_from_user",
 		"remote_alpha_reset_disposable_vault.sh",
 		"remote_alpha_runtime_identity_helper_summary.sh",
 		"remote_alpha_vault_workload_auth_check.sh",
@@ -527,7 +785,9 @@ func TestRemoteAlphaOperatorSourceLimitsP0dDelegationSurface(t *testing.T) {
 		"remote_alpha_prepare_es_writable_state_ownership.sh",
 		"remote_alpha_migrate_es_service_user.sh",
 		"--summary-path",
+		"--summary-output",
 		"operator-summary",
+		"readiness-session-summary",
 	)
 
 	liveCommand := regexp.MustCompile(`(^|[;&|()]|\bthen\b|\bdo\b)\s*(sudo|ssh|scp|vault|nomad|docker|spire|systemctl)(\s|$|[;&|()<>])`)
@@ -538,6 +798,17 @@ func TestRemoteAlphaOperatorSourceLimitsP0dDelegationSurface(t *testing.T) {
 		}
 		if liveCommand.MatchString(trimmed) {
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)
+		}
+	}
+
+	liveIMCommand := regexp.MustCompile(`^\s*(PYTHONPATH=.*infra_manager\.cli|python3\s+-m\s+infra_manager\.cli|infra_manager\.cli)(\s|$)`)
+	for lineNumber, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if liveIMCommand.MatchString(trimmed) {
+			t.Fatalf("operator source line %d appears to invoke IM directly: %s", lineNumber+1, line)
 		}
 	}
 }
