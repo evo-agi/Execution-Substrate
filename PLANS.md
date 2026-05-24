@@ -59,6 +59,22 @@ Current bounded implementation status:
 - Remote Supported-Host Alpha may now extend the narrower helper-install proof with a separate host-local Vault/workload-auth proof slice: install a single-node Alpha/internal Vault system service on the remote Linux host, constrain it to the helper SPIFFE identity JWT path needed by future ES runtime identity, and record only non-secret host evidence without claiming `runtime_profile_ready`, `submit_ready`, `es_services_healthy`, `producer_contract_compatible`, or retained-result readiness.
 - Remote Supported-Host Alpha may now also use one separate operator-owned Vault service-user migration helper slice: default `check_only`, require explicit `--apply`, stay bounded to the dedicated Vault service account, the Vault systemd drop-in, and the minimum config/storage/log/audit/TLS ownership or readability changes needed for Vault, record backup plus rollback evidence before mutation, and run honest post-apply Vault plus ES health or contract checks. That helper must preserve workload-side Vault JWT login, the ES-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` handoff, and the no-ES-Vault-token-brokerage rule; it does not claim `runtime_profile_ready`, `submit_ready`, Vault production readiness, governed execution proof, full ES/runtime de-root, full Nomad client de-root, or SPIRE redesign.
 
+## Highest-Priority Backlog Entry
+
+P0: ES Remote Alpha operator-helper consolidation and manual recovery
+minimization.
+
+This P0 is bounded to operator ergonomics over the existing Remote Alpha proof
+and support helpers. Implementation must be split into small audited slices,
+starting with docs/static-test prep, then help/inventory/print-command
+ergonomics, then narrowly reviewed delegation to existing staged helpers, and
+only later any secret-sensitive reset/unseal routing after reset-helper tests
+and audit. It must not widen ES public contracts, CP orchestration semantics,
+IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault
+token brokerage. It must preserve Remote Alpha as bounded proof/support
+posture only, preserve existing IM-consumed artifact filenames, and keep any
+operator summary as non-secret evidence/projection rather than a v1 IM input.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

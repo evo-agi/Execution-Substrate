@@ -2199,6 +2199,52 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 	}
 }
 
+func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "## Direct Remote Requirements")
+
+	assertContainsAll(t, "Remote Alpha operator facade PLANS backlog", plans,
+		"P0: ES Remote Alpha operator-helper consolidation and manual recovery minimization.",
+		"Implementation must be split into small audited slices",
+		"docs/static-test prep",
+		"help/inventory/print-command ergonomics",
+		"staged helpers",
+		"secret-sensitive reset/unseal routing",
+		"must not widen ES public contracts, CP orchestration semantics, IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault token brokerage",
+		"preserve existing IM-consumed artifact filenames",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator facade docs", operatorSection,
+		"`Bounded slice rule`",
+		"bounded MVP proof/support helper plus evidence/projection outputs only",
+		"`scripts/remote_alpha_operator.sh`",
+		"operator ergonomics over existing bounded helpers",
+		"Mac-side only: inventory, print IM commands, and staged-wrapper delegation",
+		"Remote-host only: Vault reset/unseal, runtime identity summary, Vault workload-auth check, and Vault service-user check.",
+		"Not v1: SSH-driven reset/unseal, generic remote staging, arbitrary shell passthrough, or Vault workload-auth bootstrap.",
+		"docs/static-test prep",
+		"help/inventory/print-command skeleton",
+		"staged-helper delegation after sudo-model review",
+		"secret-sensitive Vault reset/unseal only after reset-helper tests and audit",
+		"separate workload-auth bootstrap design only if still needed",
+		"prefer one explicit interactive sudo validation followed by `sudo -n` where supported",
+		"noninteractive default for staged wrappers that support it",
+		"config/TLS staged wrapper is currently a sudo-model gap unless fixed",
+		"not IM automation or reconciliation",
+		"not CP authority",
+		"not Vault production lifecycle",
+		"not ES token brokerage",
+		"not deployment architecture",
+		"The facade must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a production/general deployment architecture.",
+		"The facade must not rename, replace, aggregate, or obscure existing IM-consumed artifact filenames.",
+		"Any optional operator summary is non-secret evidence/projection only, not an IM input in v1.",
+		"The proposed `vault-workload-auth-bootstrap` surface is blocked/reopened for now.",
+		"reset/unseal/check helpers but no safe Remote Alpha helper that bootstraps Vault JWT auth, Vault roles, or proof secrets after reset without root-token handling",
+		"does not design root-token automation",
+	)
+}
+
 func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 

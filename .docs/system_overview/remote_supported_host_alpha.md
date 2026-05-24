@@ -217,6 +217,73 @@ For Remote Alpha 0.3:
 - No shared filesystem is assumed between Mac and remote host.
 - Infrastructure Manager may emit profile, doctor, support-bundle, and combined readiness-report outputs, but it is installer/profile/doctor/support-bundle/report direction only. It is not CP run authority, ES runtime authority, a remote SSH installer, a remote host provisioner, a live remote proof runner, or a long-lived reconciler.
 
+## Future ES-Owned Remote Alpha Operator Facade
+
+`Bounded slice rule`: a future ES-owned Remote Alpha operator facade is allowed
+only as a bounded MVP proof/support helper plus evidence/projection outputs
+only. This P0 effort is operator-helper consolidation and manual recovery
+minimization, not a new product deployment surface.
+
+Classification:
+
+- bounded MVP proof/support helper plus evidence/projection outputs only
+
+Proposed path:
+
+- `scripts/remote_alpha_operator.sh`
+
+Purpose:
+
+- operator ergonomics over existing bounded helpers
+- inventory of available ES-owned Remote Alpha helper surfaces
+- printing exact commands for existing Mac-side Infrastructure Manager refresh
+  and existing ES helper paths
+- future staged-wrapper delegation only after each delegated surface has an
+  audited sudo and artifact model
+
+Execution-context split:
+
+- Mac-side only: inventory, print IM commands, and staged-wrapper delegation
+  for existing repo-side staged helpers.
+- Remote-host only: Vault reset/unseal, runtime identity summary, Vault
+  workload-auth check, and Vault service-user check.
+- Not v1: SSH-driven reset/unseal, generic remote staging, arbitrary shell
+  passthrough, or Vault workload-auth bootstrap.
+
+Proposed v1/v2 slice sequence:
+
+1. docs/static-test prep
+2. help/inventory/print-command skeleton
+3. staged-helper delegation after sudo-model review
+4. secret-sensitive Vault reset/unseal only after reset-helper tests and audit
+5. separate workload-auth bootstrap design only if still needed
+
+Sudo model:
+
+- prefer one explicit interactive sudo validation followed by `sudo -n` where
+  supported
+- noninteractive default for staged wrappers that support it
+- config/TLS staged wrapper is currently a sudo-model gap unless fixed
+
+The facade is not IM automation or reconciliation, not CP authority, not Vault
+production lifecycle, not ES token brokerage, and not deployment architecture.
+
+The facade must not make IM a remote reconciler, CP a Vault/runtime recovery
+authority, ES a Vault token broker, or Remote Alpha a production/general
+deployment architecture.
+
+The facade must not rename, replace, aggregate, or obscure existing
+IM-consumed artifact filenames.
+
+Any optional operator summary is non-secret evidence/projection only, not an
+IM input in v1.
+
+The proposed `vault-workload-auth-bootstrap` surface is blocked/reopened for
+now. The repo currently has reset/unseal/check helpers but no safe Remote
+Alpha helper that bootstraps Vault JWT auth, Vault roles, or proof secrets
+after reset without root-token handling. This docs/static-test prep slice does
+not design root-token automation.
+
 ## Direct Remote Requirements
 
 AGS and ES must be reachable from the Mac over the direct remote HTTPS/mTLS boundary.
