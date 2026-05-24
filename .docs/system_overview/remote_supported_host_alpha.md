@@ -2148,8 +2148,8 @@ Future implementation tests:
 
 `Bounded slice rule`: P0q implements the dedicated secret-sensitive
 workload-auth bootstrap execution route and bounded summary-path preparation
-route plus bounded config-readability preparation route with fake/static
-validation only. It does not run live SSH, live sudo,
+route plus bounded config-readability and SPIRE bundle-read preparation routes
+with fake/static validation only. It does not run live SSH, live sudo,
 Vault, workload-auth checks, reset/unseal,
 Infrastructure Manager refresh, support-bundle collection, CP proof, runtime
 identity summary, runtime identity generation, governed smoke, default
@@ -2179,10 +2179,14 @@ Mac-side operator route:
 - `scripts/remote_alpha_operator.sh recovery-session
   vault-workload-auth-bootstrap --ssh-target <target>
   --prepare-config-readability --interactive-tty`
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --ssh-target <target>
+  --prepare-spire-bundle-read --interactive-tty`
 - Combined form:
   `scripts/remote_alpha_operator.sh recovery-session
   vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
-  --prepare-summary-path --prepare-config-readability --interactive-tty`
+  --prepare-summary-path --prepare-config-readability
+  --prepare-spire-bundle-read --interactive-tty`
 
 Safe modes remain:
 
@@ -2226,6 +2230,19 @@ Secret prompt model:
   summary preflight passed, classify the failure as `config_load` with
   `config_missing`, `config_invalid`, or `config_unreadable`, and run no Vault
   writes.
+- After config preflight/load succeeds, and still before either prompt or any
+  Vault operation/write, the helper must preflight the fixed SPIRE bundle-read
+  command used to obtain public JWT validation material:
+  `spire-server bundle show -format spiffe -socketPath
+  /run/spire/server/private/api.sock`. If the command fails, returns malformed
+  output, or does not contain usable JWT-SVID RSA validation material, the
+  helper must fail before prompting, write/retain only a safe failure summary
+  when summary preflight passed, classify the failure as `jwt_auth_config` with
+  a safe class such as `invalid_response` and a safe message class such as
+  `spire_bundle_show_failed`, set
+  `operations.spire_jwt_validation_material.status=fail`, and run no Vault
+  writes. It must not print raw SPIRE output, raw SPIRE stderr, or bundle
+  contents.
 
 Summary-path preparation:
 
@@ -2288,11 +2305,45 @@ Config-readability preparation:
   delete unrelated summaries, or print the config contents. If `setfacl` is
   unavailable or readability is still not proven, preparation fails before
   helper execution with only non-secret status/classification.
+- In the combined form, config-readability preparation runs after summary-path
+  preparation and before SPIRE bundle-read preparation, helper staging/execution,
+  any Vault bootstrap authority prompt, proof secret prompt, or Vault write.
+  Inside the helper, summary preflight runs before config readability/load
+  preflight, and both complete before the SPIRE bundle-read preflight and before
+  any Vault prompt or write.
+
+SPIRE bundle-read preparation:
+
+- After summary-path and config-readability preparation succeeded, a live retry
+  reached `jwt_auth_config` before any secret prompt or Vault operation and
+  failed while obtaining SPIRE JWT validation material from `spire-server bundle
+  show -format spiffe -socketPath /run/spire/server/private/api.sock`.
+- `--prepare-spire-bundle-read` is OS/filesystem/capability setup only. It
+  prepares only helper-user access for the fixed SPIRE server bundle-read
+  command and fixed SPIRE server socket path. It must not run Vault, request
+  Vault/root/proof secret material, run workload-auth checks, reset/unseal, IM,
+  support bundles, CP proof, runtime identity generation, helper staging, SPIRE
+  bundle content printing, or summary/bundle copy-back. The bundle output is
+  discarded.
+- Because this repo does not define a SPIRE-server-socket-specific group
+  ownership model for this recovery route, the bounded preparation policy is
+  fixed-path user ACLs when needed: discard-output probe the exact bundle-read
+  command first; if it already succeeds, make no permission change; otherwise
+  require `spire-server` to exist, require
+  `/run/spire/server/private/api.sock` to exist and be a socket, require
+  `setfacl`, use only an explicit operator-authorized OS sudo prompt through
+  the visible SSH TTY, apply execute ACLs only to `/run/spire`,
+  `/run/spire/server`, and `/run/spire/server/private` when needed, and apply a
+  read/write ACL only to `/run/spire/server/private/api.sock` for the helper
+  user. The route must not world-read or world-write the socket, chown broad
+  `/run` directories, grant access to workloads, add generic command execution,
+  print bundle contents, or copy bundle contents to Mac `.out`.
 - In the combined form, ordering is summary-path preparation, then
-  config-readability preparation, then helper staging/execution. Inside the
-  helper, summary preflight runs before config readability/load preflight, and
-  both complete before any Vault bootstrap authority prompt, proof secret prompt,
-  SPIRE/Vault operation, or Vault write.
+  config-readability preparation, then SPIRE bundle-read preparation, then
+  helper staging/execution. Inside the helper, summary preflight runs before
+  config readability/load preflight, and the SPIRE bundle-read preflight runs
+  before any Vault bootstrap authority prompt, proof secret prompt, Vault
+  operation, or Vault write.
 
 Vault API strategy:
 
@@ -2376,19 +2427,20 @@ Allowed execution flags:
 - `--execute-bootstrap`
 - `--prepare-summary-path`
 - `--prepare-config-readability`
+- `--prepare-spire-bundle-read`
 - `--interactive-tty`
 
 Flag and staging rules:
 
 - `--help`, `--plan`, and `--inventory` are mutually exclusive with
-  `--execute-bootstrap`, `--prepare-summary-path`, and
-  `--prepare-config-readability`.
+  `--execute-bootstrap`, `--prepare-summary-path`,
+  `--prepare-config-readability`, and `--prepare-spire-bundle-read`.
 - `--ssh-target` and `--interactive-tty` are valid only with
-  `--execute-bootstrap`, `--prepare-summary-path`, and/or
-  `--prepare-config-readability`.
+  `--execute-bootstrap`, `--prepare-summary-path`,
+  `--prepare-config-readability`, and/or `--prepare-spire-bundle-read`.
 - `--execute-bootstrap`, `--prepare-summary-path`, and
-  `--prepare-config-readability` each require both `--ssh-target <target>` and
-  `--interactive-tty`.
+  `--prepare-config-readability`, and `--prepare-spire-bundle-read` each require
+  both `--ssh-target <target>` and `--interactive-tty`.
 - The SSH target must be a single target, not an SSH option or shell command.
 - The route requires visible local stdin and stdout before preparation or
   staging.
@@ -2400,9 +2452,14 @@ Flag and staging rules:
 - Standalone `--prepare-config-readability` runs only the fixed bounded remote
   preparation command for the workload-zone config path. It does not stage
   helpers, print config contents, or create a bootstrap summary.
+- Standalone `--prepare-spire-bundle-read` runs only the fixed bounded remote
+  preparation command for the SPIRE server bundle-read socket path. It does not
+  stage helpers, print SPIRE bundle contents, copy bundle contents, or create a
+  bootstrap summary.
 - Combined `--execute-bootstrap --prepare-summary-path
-  --prepare-config-readability` runs summary preparation and then config
-  preparation before helper staging and helper execution.
+  --prepare-config-readability --prepare-spire-bundle-read` runs summary
+  preparation, then config preparation, then SPIRE bundle-read preparation
+  before helper staging and helper execution.
 - The route stages to a route-specific remote scratch root, stages only the two
   bootstrap helper files, invokes only the staged public helper, and attempts
   staged-helper cleanup by default.
@@ -2450,9 +2507,13 @@ P0q tests:
 - config readability preflight failure before secret prompts proves no root-token
   prompt, no proof secret prompt, no fake Vault API call, and a safe failure
   summary with `operations.config_load.status=fail`
+- SPIRE bundle-read preflight failure before secret prompts proves no root-token
+  prompt, no proof secret prompt, no fake Vault API call, and a safe failure
+  summary with `operations.spire_jwt_validation_material.status=fail`
 - fake bootstrap writes the expected fake Vault objects only
 - fake successful bootstrap records the summary preflight and config load as
-  passed
+  passed, records SPIRE JWT validation material as passed, and stores only a
+  digest instead of raw bundle material
 - static source tests prove redaction checks run before final summary rename
 - summary schema and redaction scans fail on secret-like material
 - operator tests prove help, plan, and inventory stay safe
@@ -2470,9 +2531,15 @@ P0q tests:
   filesystem preparation, does not print config contents, does not stage helpers,
   does not invoke Vault/workload-auth/reset/IM/CP/runtime routes, and creates no
   local `.out`
+- fake SSH tests prove `--prepare-spire-bundle-read` uses only the bounded
+  fixed-path ACL preparation command, may use visible OS sudo only for
+  filesystem/capability preparation, discards SPIRE bundle command output, does
+  not print/copy bundle contents, does not stage helpers, does not invoke
+  Vault/workload-auth/reset/IM/CP/runtime routes, and creates no local `.out`
 - fake SSH tests prove combined `--execute-bootstrap --prepare-summary-path
-  --prepare-config-readability` runs summary preparation and then config
-  preparation before helper staging and helper execution
+  --prepare-config-readability --prepare-spire-bundle-read` runs summary
+  preparation, then config preparation, then SPIRE bundle-read preparation
+  before helper staging and helper execution
 - fake SSH/SCP tests prove exactly the two bootstrap helper files are staged,
   `ssh -tt` is used only for execution, only the public bootstrap helper is
   invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no

@@ -607,12 +607,15 @@ token env path; assert only the dedicated bootstrap helper pair is staged;
 assert cleanup is attempted; assert summary schema/redaction behavior if the
 summary is implemented; and assert the route cannot bundle workload-auth
 checks, reset/unseal, IM, support bundles, CP proof, or runtime identity work.
+SPIRE follow-up tests should include fake SPIRE bundle-read preparation over
+only the bounded fixed-path ACL command.
 
 The P0q implementation/self-audit/merge-readiness slice may implement exactly
 one dedicated secret-sensitive workload-auth bootstrap helper, exactly one
 Mac-side recovery-session execution route, one bounded preparation form for the
 bootstrap summary path, and one bounded preparation form for fixed workload-zone
-config readability:
+config readability, and one bounded preparation form for fixed SPIRE server
+bundle-read access:
 `scripts/remote_alpha_operator.sh recovery-session
 vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
 --interactive-tty`, plus
@@ -621,6 +624,9 @@ vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path
 --interactive-tty`, plus
 `scripts/remote_alpha_operator.sh recovery-session
 vault-workload-auth-bootstrap --ssh-target <target> --prepare-config-readability
+--interactive-tty`, plus
+`scripts/remote_alpha_operator.sh recovery-session
+vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read
 --interactive-tty`. P0q may add the public helper
 `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and the internal helper
 `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, plus static
@@ -635,14 +641,17 @@ still defaults to printing plan/help and exiting zero. The execution route is
 available as `--ssh-target <target> --execute-bootstrap --interactive-tty`.
 Preparation routes are available as `--ssh-target <target>
 --prepare-summary-path --interactive-tty` and `--ssh-target <target>
---prepare-config-readability --interactive-tty`. The combined form
+--prepare-config-readability --interactive-tty` and `--ssh-target <target>
+--prepare-spire-bundle-read --interactive-tty`. The combined form
 `--ssh-target <target> --execute-bootstrap --prepare-summary-path
---prepare-config-readability --interactive-tty` is allowed only when summary
-preparation runs first, config-readability preparation runs second, and both
-complete before helper staging, helper preflights, Vault/root/proof prompts, and
-Vault writes. `--ssh-target` and `--interactive-tty` are valid only with
-`--execute-bootstrap`, `--prepare-summary-path`, and/or
-`--prepare-config-readability`; all action flags require both target and TTY;
+--prepare-config-readability --prepare-spire-bundle-read --interactive-tty` is
+allowed only when summary preparation runs first, config-readability preparation
+runs second, SPIRE bundle-read preparation runs third, and all preparation
+completes before helper staging, helper preflights, Vault/root/proof prompts,
+and Vault writes. `--ssh-target` and `--interactive-tty` are valid only with
+`--execute-bootstrap`, `--prepare-summary-path`,
+`--prepare-config-readability`, and/or `--prepare-spire-bundle-read`; all action
+flags require both target and TTY;
 and safe modes are mutually exclusive with execution/preparation. Duplicate
 route flags, equals-form options, unknown flags, extra positionals, helper
 override flags, forbidden reset/unseal or IM/CP/runtime flags, and secret-like
@@ -703,6 +712,41 @@ a non-secret classification if `setfacl` is unavailable or readability is still
 not proven. It must not world-read the config, chown broad `/etc` directories,
 delete unrelated summaries, or create a bootstrap summary in standalone
 preparation.
+
+After summary-path and config-readability preparation succeeded, a live retry
+reached `jwt_auth_config` before any secret prompt or Vault operation and failed
+while obtaining SPIRE JWT validation material from `spire-server bundle show
+-format spiffe -socketPath /run/spire/server/private/api.sock`. The helper must
+therefore treat the fixed SPIRE bundle-read command as a pre-prompt preflight:
+after summary and config preflights/load succeed, and before Vault bootstrap
+authority prompts, proof secret prompts, or Vault writes, it obtains only the
+public JWT validation material, records `operations.spire_jwt_validation_material`
+as pass or fail, records only a digest on success, and records only safe
+phase/class labels such as `failure_phase=jwt_auth_config`,
+`failure_class=invalid_response`, and
+`failure_message_class=spire_bundle_show_failed` on failure. It must not print
+raw SPIRE stderr/stdout, copy bundle contents to Mac `.out`, include bundle
+contents in the summary, or expose prompt values.
+This is the SPIRE bundle-read preflight before prompts and Vault writes.
+
+The explicit `--prepare-spire-bundle-read` follow-up is OS/filesystem/capability
+preparation only. It prepares only helper-user access to the fixed command
+`spire-server bundle show -format spiffe -socketPath
+/run/spire/server/private/api.sock`; it must not stage helpers, run Vault, ask
+for Vault/root/proof secrets, run workload-auth checks, reset/unseal, IM,
+support bundles, CP proof, or runtime identity generation, write Mac `.out`
+artifacts, or print/copy SPIRE bundle contents. Because this repo does not
+define a SPIRE-server-socket-specific group ownership model for this recovery
+route, the deterministic narrow policy is fixed-path user ACL based when
+preparation is needed: first discard-output probe the exact command; if it
+already succeeds, make no permission change; otherwise require `spire-server`
+and the fixed socket path to exist, require the socket path to be a socket,
+require `setfacl`, use visible operator-authorized OS sudo through the SSH TTY
+only when needed, apply execute ACLs only to `/run/spire`, `/run/spire/server`,
+and `/run/spire/server/private` when needed, and apply read/write ACL only to
+`/run/spire/server/private/api.sock` for the helper user. The route must not
+world-read or world-write the socket, chown broad `/run` directories, grant
+access to workloads, add generic command execution, or print bundle contents.
 
 P0q's helper must still run a secret-free writability preflight for the
 canonical remote bootstrap summary path before any Vault bootstrap authority

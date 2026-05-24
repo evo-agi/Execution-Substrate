@@ -47,11 +47,14 @@ Summary:
   Remote-only non-secret summary:
   /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json
   The helper preflights summary writability and workload-zone config readability
-  before any secret prompt, SPIRE query, or Vault write. If either preflight
-  fails, it fails before prompts with non-secret classification such as
-  summary_preflight_failed or config_unreadable. After summary preflight, failure
-  summaries record only safe phase/class labels and never raw exceptions, raw
-  Vault output, headers, config contents, or operator-entered prompt values.
+  before any secret prompt, SPIRE query, or Vault write. It then preflights the
+  fixed SPIRE server bundle-read command needed for JWT validation material
+  before any secret prompt or Vault write. If a preflight fails, it fails before
+  prompts with non-secret classification such as summary_preflight_failed,
+  config_unreadable, or spire_bundle_show_failed. After summary preflight,
+  failure summaries record only safe phase/class labels and never raw
+  exceptions, raw SPIRE/Vault output, bundle contents, headers, config contents,
+  or operator-entered prompt values.
 
 Non-claims:
   This helper does not run workload-auth checks, reset, unseal, IM refresh,
@@ -521,6 +524,10 @@ def extract_jwt_validation_pubkey():
     raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="no_jwt_svid_rsa_key")
 
 
+def preflight_spire_bundle_read():
+    return extract_jwt_validation_pubkey()
+
+
 def make_opener(ca_bundle_pem):
     set_next_operation("vault_client_init")
     try:
@@ -764,7 +771,7 @@ def main():
     try:
         preflight_config_readable()
         address, ca_bundle_pem = load_config()
-        validation_pubkey = extract_jwt_validation_pubkey()
+        validation_pubkey = preflight_spire_bundle_read()
         set_next_operation("prompt_bootstrap_authority")
         summary["secret_prompts_started"] = True
         try:

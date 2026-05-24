@@ -268,7 +268,9 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *test
 		"The human operator enters Vault bootstrap authority and the proof secret",
 		"never accepted through CLI",
 		"preflights summary writability and workload-zone config readability",
+		"fixed SPIRE server bundle-read command",
 		"summary_preflight_failed",
+		"spire_bundle_show_failed",
 		"safe phase/class labels",
 		"never raw",
 		"in-process Python HTTPS client",
@@ -486,6 +488,97 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigUnreadablePreflightFailsBefo
 	}
 	if len(tmpMatches)+len(hiddenTmpMatches) != 0 {
 		t.Fatalf("config preflight failure must not leave temp summaries, visible=%v hidden=%v", tmpMatches, hiddenTmpMatches)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapSpireBundlePreflightFailsBeforePromptsAndVaultWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	const spireRawSentinel = "FAKE-SPIRE-BUNDLE-MATERIAL-MUST-NOT-LEAK"
+	writeExecutable(t, fakeBin, "spire-server", `#!/usr/bin/env bash
+set -euo pipefail
+printf '`+spireRawSentinel+`\n'
+printf 'raw SPIRE stderr must not be printed\n' >&2
+exit 17
+`)
+
+	rootToken := "hvs.fakeRootTokenForSpireFailure1234567890"
+	proofSecret := "sk-fakeProofSecretForSpireFailure1234567890"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+	output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+		rootToken+"\n"+proofSecret+"\n",
+	)
+	if err == nil {
+		t.Fatalf("expected SPIRE bundle-read preflight failure:\n%s", output)
+	}
+	assertContainsNone(t, "SPIRE bundle preflight output", output,
+		"Vault bootstrap authority token",
+		"Proof secret value",
+		rootToken,
+		proofSecret,
+		spireRawSentinel,
+		"raw SPIRE stderr",
+		"X-Vault-Token",
+		"Traceback",
+	)
+	if got := len(state.requests); got != 0 {
+		t.Fatalf("SPIRE preflight failure must not call fake Vault API, got %d requests", got)
+	}
+	summaryRaw := mustRead(t, summaryPath)
+	assertContainsNone(t, "SPIRE bundle preflight summary forbidden material", summaryRaw,
+		rootToken,
+		proofSecret,
+		spireRawSentinel,
+		"raw SPIRE stderr",
+		"X-Vault-Token",
+		"Traceback",
+		`"keys"`,
+		"jwt-svid",
+	)
+	assertBootstrapSummaryRedactionScanPasses(t, summaryPath, rootToken, proofSecret, spireRawSentinel)
+	summary := readJSONFile(t, summaryPath)
+	if got := summary["overall_status"]; got != "fail" {
+		t.Fatalf("expected overall_status=fail, got %#v", got)
+	}
+	if got := summary["failure_phase"]; got != "jwt_auth_config" {
+		t.Fatalf("expected failure_phase=jwt_auth_config, got %#v\nsummary=%s", got, summaryRaw)
+	}
+	if got := summary["failure_class"]; got != "invalid_response" {
+		t.Fatalf("expected failure_class=invalid_response, got %#v\nsummary=%s", got, summaryRaw)
+	}
+	if got := summary["secret_prompts_started"]; got != false {
+		t.Fatalf("expected secret_prompts_started=false, got %#v\nsummary=%s", got, summaryRaw)
+	}
+	if got := summary["vault_operations_started"]; got != false {
+		t.Fatalf("expected vault_operations_started=false, got %#v\nsummary=%s", got, summaryRaw)
+	}
+	if got := summary["failure_message_class"]; got != "spire_bundle_show_failed" {
+		t.Fatalf("expected spire_bundle_show_failed message class, got %#v", got)
+	}
+	if got := summary["last_completed_operation"]; got != "workload_zone_config" {
+		t.Fatalf("expected last_completed_operation=workload_zone_config before SPIRE failure, got %#v", got)
+	}
+	if got := summary["next_operation"]; got != "jwt_auth_config" {
+		t.Fatalf("expected next_operation=jwt_auth_config for SPIRE failure, got %#v", got)
+	}
+	operations, ok := summary["operations"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected operations block %#v", summary["operations"])
+	}
+	spireOp, ok := operations["spire_jwt_validation_material"].(map[string]any)
+	if !ok || spireOp["status"] != "fail" || spireOp["error_classification"] != "invalid_response" {
+		t.Fatalf("expected spire_jwt_validation_material failure, got %#v", operations["spire_jwt_validation_material"])
 	}
 }
 
@@ -781,6 +874,11 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		rootToken,
 		proofSecret,
 		"X-Vault-Token",
+		`"keys"`,
+		`"n":`,
+		`"e":`,
+		"jwt-svid",
+		"AQAB",
 	)
 	summary := readJSONFile(t, summaryPath)
 	if got := summary["schema_version"]; got != "execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1" {
@@ -800,6 +898,10 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 	configLoad, ok := operations["config_load"].(map[string]any)
 	if !ok || configLoad["status"] != "pass" {
 		t.Fatalf("expected config load pass after readable config preflight, got %#v", operations["config_load"])
+	}
+	spireMaterial, ok := operations["spire_jwt_validation_material"].(map[string]any)
+	if !ok || spireMaterial["status"] != "pass" || spireMaterial["public_key_digest"] == "" {
+		t.Fatalf("expected SPIRE JWT validation material preflight pass with digest only, got %#v", operations["spire_jwt_validation_material"])
 	}
 	redaction, ok := summary["redaction"].(map[string]any)
 	if !ok || redaction["root_token_recorded"] != false || redaction["proof_secret_value_recorded"] != false {
@@ -859,6 +961,42 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapSourceKeepsRedactionBeforeFinalSum
 	if !(redactionIndex < tempIndex && tempIndex < moveIndex) {
 		t.Fatalf("write_summary must validate redaction before temp write and final move:\n%s", writeSummarySection)
 	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapSourceKeepsPreflightAndBoundaries(t *testing.T) {
+	source := mustRead(t, remoteAlphaVaultWorkloadAuthBootstrapInternalPath())
+	mainSection := docSection(t, source, "def main():", "\n\nraise SystemExit(main())")
+	executeSection := docSection(t, source, "remote_alpha_vault_workload_auth_bootstrap_execute() {", "\nPY\n}")
+
+	assertContainsAll(t, "bootstrap helper preflight source", mainSection,
+		"preflight_summary_writable()",
+		"preflight_config_readable()",
+		"load_config()",
+		"preflight_spire_bundle_read()",
+		`set_next_operation("prompt_bootstrap_authority")`,
+	)
+	summaryIndex := strings.Index(mainSection, "preflight_summary_writable()")
+	configIndex := strings.Index(mainSection, "preflight_config_readable()")
+	spireIndex := strings.Index(mainSection, "preflight_spire_bundle_read()")
+	promptIndex := strings.Index(mainSection, `set_next_operation("prompt_bootstrap_authority")`)
+	if summaryIndex < 0 || configIndex < 0 || spireIndex < 0 || promptIndex < 0 || !(summaryIndex < configIndex && configIndex < spireIndex && spireIndex < promptIndex) {
+		t.Fatalf("expected summary/config/SPIRE preflights before prompt in main:\n%s", mainSection)
+	}
+
+	assertContainsNone(t, "bootstrap helper executable source forbidden surfaces", executeSection,
+		`os.environ["VAULT_TOKEN"]`,
+		"VAULT_TOKEN=",
+		"vault login",
+		" tee ",
+		"script ",
+		"script -",
+		"remote_alpha_vault_workload_auth_check",
+		"remote_alpha_reset_disposable_vault",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"runtime_identity_generation",
+	)
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapSummaryRedactionScanRejectsSecretLikeContent(t *testing.T) {
