@@ -83,6 +83,25 @@ run IM collection commands, stage generic remote helpers, invoke sudo or SSH,
 perform Vault reset/unseal behavior, add Vault workload-auth bootstrap, or
 write generated artifacts.
 
+The P0c design/static-test prep slice is also docs/static-test only. It may
+record the first staged-helper delegation boundary for a later implementation
+slice and add static refusal assertions, but it must not make
+`scripts/remote_alpha_operator.sh` delegate yet. The selected first future
+delegation target is the existing ES writable-state readiness staged wrapper,
+`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`, exposed
+later as the proposed operator subcommand `es-writable-state-readiness-check`.
+That future route is limited to check-only/non-mutating readiness evidence:
+`--apply` is forbidden in the first delegation slice, no reset/unseal, Vault
+workload-auth, runtime-identity, service-user migration, config/TLS apply,
+binary deployment apply, generic remote staging, arbitrary shell passthrough,
+or new aggregate operator summary is allowed, and the exact existing
+Infrastructure Manager-consumed filenames `es-writable-state-readiness.json`
+and `es-writable-state-readiness-helper-staging-record.json` must be
+preserved. The future route must reuse the helper's existing minimal staging
+and sudo model, including noninteractive `sudo -n` preflight by default and
+explicit `--interactive-sudo` only for a visible terminal. The facade may
+continue to print IM commands only; it must not call IM.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

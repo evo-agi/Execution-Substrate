@@ -2245,6 +2245,59 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 	)
 }
 
+func TestDocsRemoteAlphaOperatorP0cFirstDelegationBoundary(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0c First Staged-Helper Delegation Plan", "## Direct Remote Requirements")
+
+	assertContainsAll(t, "Remote Alpha operator P0c PLANS boundary", plans,
+		"The P0c design/static-test prep slice is also docs/static-test only.",
+		"The selected first future delegation target is the existing ES writable-state readiness staged wrapper",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"proposed operator subcommand `es-writable-state-readiness-check`",
+		"`--apply` is forbidden in the first delegation slice",
+		"no reset/unseal, Vault workload-auth, runtime-identity, service-user migration, config/TLS apply, binary deployment apply, generic remote staging, arbitrary shell passthrough, or new aggregate operator summary is allowed",
+		"`es-writable-state-readiness.json`",
+		"`es-writable-state-readiness-helper-staging-record.json`",
+		"noninteractive `sudo -n` preflight by default",
+		"it must not call IM",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator P0c docs boundary", operatorSection,
+		"`Bounded slice rule`: P0c is design/static-test prep only.",
+		"does not implement helper delegation",
+		"proposed operator subcommand: `es-writable-state-readiness-check`",
+		"exact helper to delegate later:",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"`scripts/internal/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"The later route may pass only these helper flags:",
+		"`--ssh-target <user@host>`",
+		"`--mode <alpha-compat|future-non-root-required>`",
+		"`--run-id <timestamp-or-id>`",
+		"`--output-dir </path/to/output-dir>`",
+		"`--readiness-output </path/to/es-writable-state-readiness.json>`",
+		"`--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
+		"`--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
+		"`--interactive-sudo`",
+		"`--keep-staging-on-failure`",
+		"The later route must forbid:",
+		"`--apply`",
+		"arbitrary shell or command strings",
+		"secret-like CLI arguments, environment values, logs, reports, summaries, or artifacts",
+		"any new aggregate operator summary in the first delegation slice",
+		"The first delegation slice must stay check-only/non-mutating.",
+		"the operator facade itself must not introduce a generic remote staging framework",
+		"Default sudo behavior must remain the helper's noninteractive `sudo -n` preflight",
+		"must preserve the exact existing Infrastructure Manager-consumed local artifact filenames",
+		"must not call Infrastructure Manager",
+		"the facade may continue to print the Mac-side IM refresh and support-bundle commands only",
+		"the route allows only the flags listed above and rejects `--apply`, unknown flags, arbitrary command strings, and secret-like arguments before routing",
+		"writes no aggregate operator summary and does not call Infrastructure Manager",
+		"This target is safer than the other staged candidates because it has no `--apply` mode",
+		"The config/TLS staged wrapper is already called out above as a sudo-model gap unless fixed",
+	)
+}
+
 func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 

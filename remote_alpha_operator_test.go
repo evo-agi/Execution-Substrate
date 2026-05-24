@@ -242,6 +242,24 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 	)
 }
 
+func TestRemoteAlphaOperatorP0cPlannedWritableStateRouteStillRefusesUntilImplemented(t *testing.T) {
+	docs := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	assertContainsAll(t, "P0c planned writable-state route docs", docs,
+		"proposed operator subcommand: `es-writable-state-readiness-check`",
+		"exact helper to delegate later:",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"The first delegation slice must stay check-only/non-mutating.",
+	)
+
+	output := requireRemoteAlphaOperatorFailure(t, "es-writable-state-readiness-check")
+	assertContainsAll(t, "planned writable-state route refusal", output,
+		"es-writable-state-readiness-check",
+		"not implemented in P0b",
+		"later audited slice",
+		"No helper execution routing occurred.",
+	)
+}
+
 func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	output := requireRemoteAlphaOperatorFailure(t, "definitely-unknown")
 	assertContainsAll(t, "unknown subcommand refusal", output,

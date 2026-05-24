@@ -303,6 +303,98 @@ Alpha helper that bootstraps Vault JWT auth, Vault roles, or proof secrets
 after reset without root-token handling. This docs/static-test prep slice does
 not design root-token automation.
 
+### P0c First Staged-Helper Delegation Plan
+
+`Bounded slice rule`: P0c is design/static-test prep only. It does not
+implement helper delegation, does not change `scripts/remote_alpha_operator.sh`
+behavior beyond existing refusal coverage, and does not route to SSH, sudo,
+Infrastructure Manager, Vault, Nomad, Docker, SPIRE, `systemctl`, support
+bundle collection, reset/unseal flows, or ES helper execution.
+
+The recommended first staged-helper delegation target for the next
+implementation slice is:
+
+- proposed operator subcommand: `es-writable-state-readiness-check`
+- exact helper to delegate later:
+  `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`
+- helper internal implementation:
+  `scripts/internal/remote_alpha_stage_es_writable_state_readiness_check.sh`
+
+The later route may pass only these helper flags:
+
+- `--ssh-target <user@host>`
+- `--mode <alpha-compat|future-non-root-required>`
+- `--run-id <timestamp-or-id>`
+- `--output-dir </path/to/output-dir>`
+- `--readiness-output </path/to/es-writable-state-readiness.json>`
+- `--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`
+- `--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`
+- `--interactive-sudo`
+- `--keep-staging-on-failure`
+
+The later route must forbid:
+
+- `--apply`
+- reset/unseal behavior
+- Vault workload-auth bootstrap or workload-auth proof routing
+- runtime-identity summary routing
+- Vault service-user or ES service-user migration routing
+- ES config/TLS apply routing
+- ES binary deployment routing
+- generic remote staging options
+- arbitrary shell or command strings
+- secret-like CLI arguments, environment values, logs, reports, summaries, or
+  artifacts
+- any new aggregate operator summary in the first delegation slice
+
+The first delegation slice must stay check-only/non-mutating. It may rely on
+the helper's existing temporary checker staging under
+`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/`, but the
+operator facade itself must not introduce a generic remote staging framework.
+Default sudo behavior must remain the helper's noninteractive `sudo -n`
+preflight and structured `sudo_unavailable` evidence. `--interactive-sudo`
+may remain available only for a visible terminal when a bounded password
+handoff is authorized.
+
+The first delegation slice must preserve the exact existing
+Infrastructure Manager-consumed local artifact filenames:
+
+- `es-writable-state-readiness.json`
+- `es-writable-state-readiness-helper-staging-record.json`
+
+The route must not rename, replace, aggregate, or obscure those files. It must
+not call Infrastructure Manager; the facade may continue to print the
+Mac-side IM refresh and support-bundle commands only.
+
+Expected tests for the later implementation slice:
+
+- operator help/inventory documents the new check-only route without widening
+  the facade classification
+- the new subcommand delegates only to
+  `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`
+- the route allows only the flags listed above and rejects `--apply`, unknown
+  flags, arbitrary command strings, and secret-like arguments before routing
+- default route execution passes `--ssh-target`, optional `--mode`, output
+  paths, and sudo mode through to the existing helper without changing helper
+  artifact names
+- the route preserves the helper's `sudo -n` default and structured
+  `sudo_unavailable` behavior
+- the route writes no aggregate operator summary and does not call
+  Infrastructure Manager
+- the existing staged-helper tests remain the source of truth for helper
+  staging, provenance, JSON validation, and non-mutating evidence acceptance
+
+This target is safer than the other staged candidates because it has no
+`--apply` mode, writes only readiness/provenance evidence, stages only the
+minimal checker helper tree, already defaults to noninteractive `sudo -n`, and
+does not touch config/TLS, binaries, stable writable-state ownership,
+long-lived service-user posture, Vault, runtime identity, reset/unseal, or
+workload-auth bootstrap. The binary-deployment, writable-state ownership, and
+service-user migration wrappers have check-only defaults but also expose
+mutation-capable `--apply` paths. The config/TLS staged wrapper is already
+called out above as a sudo-model gap unless fixed and also fronts a helper
+whose host-local default is apply.
+
 ## Direct Remote Requirements
 
 AGS and ES must be reachable from the Mac over the direct remote HTTPS/mTLS boundary.
