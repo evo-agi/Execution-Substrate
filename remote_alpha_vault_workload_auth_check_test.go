@@ -29,6 +29,9 @@ type fakeVaultServer struct {
 	expectedJWT        string
 	clientToken        string
 	loginFail          bool
+	loginStatus        int
+	loginResponse      map[string]any
+	loginRawBody       string
 	proofPath          string
 	runtimeSecretPath  string
 	runtimeSecretField string
@@ -59,7 +62,21 @@ func (f *fakeVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.t.Fatalf("unexpected login jwt %q", got)
 		}
 		if f.loginFail {
-			writeJSON(w, http.StatusForbidden, map[string]any{"errors": []string{"permission denied"}})
+			status := f.loginStatus
+			if status == 0 {
+				status = http.StatusForbidden
+			}
+			if f.loginRawBody != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(f.loginRawBody))
+				return
+			}
+			payload := f.loginResponse
+			if payload == nil {
+				payload = map[string]any{"errors": []string{"permission denied"}}
+			}
+			writeJSON(w, status, payload)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -140,6 +157,7 @@ func buildJWT(t *testing.T, subject string, audience []string) string {
 	claims := encodeJWTPart(t, map[string]any{
 		"sub": subject,
 		"aud": audience,
+		"iss": "spiffe://execution.internal",
 	})
 	return header + "." + claims + ".signature"
 }
@@ -172,6 +190,23 @@ func startFakeVault(t *testing.T, jwt string, loginFail bool, proofPath string, 
 		t.Fatal("test server certificate was nil")
 	}
 	return server, state, encodeCertificatePEM(t, cert)
+}
+
+func startFakeVaultWithLoginFailure(t *testing.T, jwt string, status int, payload map[string]any, rawBody string) (*httptest.Server, *fakeVaultServer, string) {
+	t.Helper()
+
+	server, state, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		true,
+		"",
+		remoteAlphaDefaultProofRuntimeSecretPath,
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
+	state.loginStatus = status
+	state.loginResponse = payload
+	state.loginRawBody = rawBody
+	return server, state, caBundlePEM
 }
 
 func encodeCertificatePEM(t *testing.T, cert *x509.Certificate) string {
@@ -340,6 +375,35 @@ func envWithPath(fakeBin string, extra ...string) []string {
 	return env
 }
 
+func runWorkloadAuthCheckForFakeVault(t *testing.T, jwt string, serverURL string, caBundlePEM string) (map[string]any, string, []byte, error) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeCommands(t, fakeBin, jwt)
+
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "vault-workload-auth-summary.json")
+	writeWorkloadZoneConfig(t, configPath, serverURL, "jwt", "service_execution", "vault", caBundlePEM)
+
+	output, err := runSourcedHelper(t, envWithPath(fakeBin,
+		"REMOTE_ALPHA_VAULT_ADDRESS="+serverURL,
+		"REMOTE_ALPHA_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+		"REMOTE_ALPHA_SUMMARY_PATH="+summaryPath,
+		"REMOTE_ALPHA_TEST_PASSWORDLESS_SUDO_FOR_DS=false",
+		"REMOTE_ALPHA_TEST_RAW_SPIRE_SOCKET_ACCESS_DS=false",
+		"REMOTE_ALPHA_TEST_RAW_SPIRE_SOCKET_ACCESS_UID_10000=false",
+	), "remote_alpha_vault_workload_auth_check_main")
+	if _, statErr := os.Stat(summaryPath); statErr != nil {
+		return nil, "", output, err
+	}
+
+	return readJSONFile(t, summaryPath), mustRead(t, summaryPath), output, err
+}
+
 func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 	t.Parallel()
 
@@ -440,6 +504,7 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 		"token_revoked":         "pass",
 		"jwt_audience_verified": true,
 		"jwt_subject_verified":  true,
+		"jwt_issuer_verified":   true,
 	} {
 		if got := authSmoke[field]; got != want {
 			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
@@ -582,6 +647,9 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	if err == nil {
 		t.Fatalf("expected login failure, got success\n%s", output)
 	}
+	if _, statErr := os.Stat(summaryPath); statErr != nil {
+		t.Fatalf("expected failure summary to be written: %v\n%s", statErr, output)
+	}
 
 	summary := readJSONFile(t, summaryPath)
 	summaryText := mustRead(t, summaryPath)
@@ -591,12 +659,21 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	}
 	authSmoke := jsonMap(t, summary["auth_smoke"])
 	for field, want := range map[string]any{
-		"jwt_fetch":            "pass",
-		"vault_login":          "fail",
-		"token_lookup":         "not_exercised",
-		"proof_read":           "not_exercised",
-		"proof_runtime_secret": "not_exercised",
-		"token_revoked":        "not_exercised",
+		"jwt_fetch":                      "pass",
+		"vault_login":                    "fail",
+		"token_lookup":                   "not_exercised",
+		"proof_read":                     "not_exercised",
+		"proof_runtime_secret":           "not_exercised",
+		"token_revoked":                  "not_exercised",
+		"jwt_audience_verified":          true,
+		"jwt_subject_verified":           true,
+		"jwt_issuer_verified":            true,
+		"vault_login_failure_phase":      "vault_login",
+		"vault_login_failure_class":      "permission_denied",
+		"vault_login_http_status":        float64(http.StatusForbidden),
+		"vault_login_error_count":        float64(1),
+		"vault_login_error_class":        "permission_denied",
+		"vault_login_raw_error_recorded": false,
 	} {
 		if got := authSmoke[field]; got != want {
 			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
@@ -619,11 +696,268 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 	if strings.Contains(summaryText, state.clientToken) {
 		t.Fatal("summary unexpectedly contained client token material")
 	}
+	if strings.Contains(summaryText, "permission denied") {
+		t.Fatal("summary unexpectedly contained raw Vault login error text")
+	}
 	if state.lookupCalls != 0 {
 		t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
 	}
 	if state.revokeCalls != 0 {
 		t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		status     int
+		payload    map[string]any
+		wantClass  string
+		rawSnippet string
+	}{
+		{
+			name:       "400 invalid audience",
+			status:     http.StatusBadRequest,
+			payload:    map[string]any{"errors": []string{"audience claim does not match bound audience"}},
+			wantClass:  "invalid_audience",
+			rawSnippet: "audience claim does not match bound audience",
+		},
+		{
+			name:       "403 permission denied",
+			status:     http.StatusForbidden,
+			payload:    map[string]any{"errors": []string{"permission denied"}},
+			wantClass:  "permission_denied",
+			rawSnippet: "permission denied",
+		},
+		{
+			name:       "500 vault api error",
+			status:     http.StatusInternalServerError,
+			payload:    map[string]any{"errors": []string{"internal server error"}},
+			wantClass:  "vault_api_error",
+			rawSnippet: "internal server error",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+			server, state, caBundlePEM := startFakeVaultWithLoginFailure(t, jwt, tc.status, tc.payload, "")
+
+			summary, summaryText, output, err := runWorkloadAuthCheckForFakeVault(t, jwt, server.URL, caBundlePEM)
+			if err == nil {
+				t.Fatalf("expected login failure, got success\n%s", output)
+			}
+			if got := summary["vault_workload_auth_smoke"]; got != "fail" {
+				t.Fatalf("unexpected smoke result %v", got)
+			}
+
+			authSmoke := jsonMap(t, summary["auth_smoke"])
+			for field, want := range map[string]any{
+				"jwt_fetch":                      "pass",
+				"jwt_audience_verified":          true,
+				"jwt_subject_verified":           true,
+				"jwt_issuer_verified":            true,
+				"vault_login":                    "fail",
+				"vault_login_failure_phase":      "vault_login",
+				"vault_login_failure_class":      tc.wantClass,
+				"vault_login_http_status":        float64(tc.status),
+				"vault_login_error_count":        float64(1),
+				"vault_login_error_class":        tc.wantClass,
+				"vault_login_raw_error_recorded": false,
+				"token_lookup":                   "not_exercised",
+				"proof_read":                     "not_exercised",
+				"proof_runtime_secret":           "not_exercised",
+				"token_revoked":                  "not_exercised",
+			} {
+				if got := authSmoke[field]; got != want {
+					t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+				}
+			}
+
+			if strings.Contains(summaryText, jwt) {
+				t.Fatal("summary unexpectedly contained jwt material")
+			}
+			if strings.Contains(summaryText, state.clientToken) {
+				t.Fatal("summary unexpectedly contained client token material")
+			}
+			if strings.Contains(summaryText, tc.rawSnippet) {
+				t.Fatalf("summary unexpectedly contained raw Vault login error text %q", tc.rawSnippet)
+			}
+			if state.lookupCalls != 0 {
+				t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
+			}
+			if state.revokeCalls != 0 {
+				t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesMissingLoginTokenAsInvalidResponse(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	rawMarker := "raw-login-response-marker-missing-client-token"
+	server, state, caBundlePEM := startFakeVaultWithLoginFailure(t, jwt, http.StatusOK, map[string]any{
+		"auth": map[string]any{
+			"lease_duration": 300,
+			"policies":       []string{"default"},
+		},
+		"debug": rawMarker,
+	}, "")
+
+	summary, summaryText, output, err := runWorkloadAuthCheckForFakeVault(t, jwt, server.URL, caBundlePEM)
+	if err == nil {
+		t.Fatalf("expected missing client token failure, got success\n%s", output)
+	}
+
+	authSmoke := jsonMap(t, summary["auth_smoke"])
+	for field, want := range map[string]any{
+		"vault_login":                    "fail",
+		"vault_login_failure_phase":      "vault_login",
+		"vault_login_failure_class":      "invalid_response",
+		"vault_login_http_status":        float64(http.StatusOK),
+		"vault_login_error_count":        float64(0),
+		"vault_login_error_class":        "invalid_response",
+		"vault_login_raw_error_recorded": false,
+		"token_lookup":                   "not_exercised",
+		"proof_read":                     "not_exercised",
+		"proof_runtime_secret":           "not_exercised",
+		"token_revoked":                  "not_exercised",
+	} {
+		if got := authSmoke[field]; got != want {
+			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+		}
+	}
+
+	if strings.Contains(summaryText, rawMarker) {
+		t.Fatal("summary unexpectedly contained raw Vault login response body")
+	}
+	if strings.Contains(summaryText, jwt) {
+		t.Fatal("summary unexpectedly contained jwt material")
+	}
+	if strings.Contains(summaryText, state.clientToken) {
+		t.Fatal("summary unexpectedly contained client token material")
+	}
+	if state.lookupCalls != 0 {
+		t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
+	}
+	if state.revokeCalls != 0 {
+		t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckDoesNotPersistSecretLikeLoginErrors(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	vaultToken := "hvs.secretmaterial123456"
+	rootToken := "root-token-secret-value"
+	proofSecret := remoteAlphaDefaultProofRuntimeSecretValue
+	apiKey := "sk-live-secret-api-key-123456"
+	privateKey := "-----BEGIN PRIVATE KEY-----"
+	rawHeader := "X-Vault-Token: " + vaultToken
+	authHeader := "Authorization: Bearer " + vaultToken
+	rawMarker := "raw-login-response-marker-secret-bearing"
+	rawError := strings.Join([]string{
+		"role rejected",
+		rawMarker,
+		jwt,
+		vaultToken,
+		rootToken,
+		proofSecret,
+		apiKey,
+		privateKey,
+		rawHeader,
+		authHeader,
+	}, " ")
+
+	server, state, caBundlePEM := startFakeVaultWithLoginFailure(t, jwt, http.StatusBadRequest, map[string]any{
+		"errors": []string{rawError},
+	}, "")
+
+	summary, summaryText, output, err := runWorkloadAuthCheckForFakeVault(t, jwt, server.URL, caBundlePEM)
+	if err == nil {
+		t.Fatalf("expected secret-bearing login error failure, got success\n%s", output)
+	}
+
+	authSmoke := jsonMap(t, summary["auth_smoke"])
+	for field, want := range map[string]any{
+		"vault_login":                    "fail",
+		"vault_login_failure_phase":      "vault_login",
+		"vault_login_failure_class":      "role_missing_or_rejected",
+		"vault_login_http_status":        float64(http.StatusBadRequest),
+		"vault_login_error_count":        float64(1),
+		"vault_login_error_class":        "role_missing_or_rejected",
+		"vault_login_raw_error_recorded": false,
+		"token_lookup":                   "not_exercised",
+		"proof_read":                     "not_exercised",
+		"proof_runtime_secret":           "not_exercised",
+		"token_revoked":                  "not_exercised",
+	} {
+		if got := authSmoke[field]; got != want {
+			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		jwt,
+		vaultToken,
+		rootToken,
+		proofSecret,
+		apiKey,
+		privateKey,
+		rawHeader,
+		authHeader,
+		rawMarker,
+		rawError,
+	} {
+		if strings.Contains(summaryText, forbidden) {
+			t.Fatalf("summary unexpectedly contained secret or raw login material %q", forbidden)
+		}
+	}
+	if state.lookupCalls != 0 {
+		t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
+	}
+	if state.revokeCalls != 0 {
+		t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckSourceKeepsLoginFailureTriageRedacted(t *testing.T) {
+	t.Parallel()
+
+	source := mustRead(t, "scripts/internal/remote_alpha_vault_workload_auth_check.sh")
+	for _, required := range []string{
+		"SAFE_CLASSES",
+		"error_count",
+		"failure_class",
+		"raw_error_recorded",
+		"vault_login_raw_error_recorded",
+		"remote_alpha_vault_validate_summary_file",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("workload-auth check source missing redaction/classification guard %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"VAULT_TOKEN=",
+		"ROOT_TOKEN",
+		"Authorization",
+		"raw_headers",
+		"Traceback",
+		".out",
+		"tee ",
+		"script ",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("workload-auth check source unexpectedly contains forbidden logging/env/report surface %q", forbidden)
+		}
 	}
 }
 

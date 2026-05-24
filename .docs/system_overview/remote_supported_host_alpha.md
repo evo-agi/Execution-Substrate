@@ -1741,6 +1741,25 @@ Secret model:
   copy JWT-SVIDs, Vault client tokens, proof secret payloads, root tokens,
   unseal keys, API keys, private keys, passwords, or secret payloads
 - helper summary redaction remains owned by the existing workload-auth helper
+- when the helper reaches Vault JWT login and `auth_smoke.vault_login=fail`,
+  it may add only safe failure triage fields to the existing v1 summary:
+  `auth_smoke.vault_login_failure_phase`,
+  `auth_smoke.vault_login_failure_class`,
+  `auth_smoke.vault_login_http_status`,
+  `auth_smoke.vault_login_error_count`,
+  `auth_smoke.vault_login_error_class`, and
+  `auth_smoke.vault_login_raw_error_recorded`, with
+  `auth_smoke.vault_login_raw_error_recorded=false`
+- login failure classes are bounded labels only:
+  `auth_mount_missing_or_unreachable`, `role_missing_or_rejected`,
+  `invalid_jwt`, `invalid_audience`, `invalid_subject`,
+  `invalid_issuer_or_validation_key`, `permission_denied`,
+  `vault_api_error`, `invalid_response`, `tls_or_connectivity_error`, and
+  `unknown`
+- the helper must not print or persist the raw Vault login response body, raw
+  HTTP headers, Authorization header, full Vault login JSON, stack traces,
+  JWT-SVID payload, Vault client token, root token, unseal key, proof secret
+  value, API key, or private key while producing those labels
 - the operator facade must not print full summary JSON
 - the operator facade must not tee, run `script`, record, capture, parse, or
   summarize terminal transcripts
@@ -4513,6 +4532,22 @@ The current required auth-smoke checks for a passing
 path. The current intended source for that capability is Vault's attached
 `default` policy rather than an extra compatibility policy stanza.
 
+When JWT fetch passes but Vault JWT login fails, the same v1 summary may include
+backward-compatible safe triage fields under `auth_smoke`: login failure phase
+`vault_login`, a safe `vault_login_failure_class`, optional
+`vault_login_http_status`, `vault_login_error_count`,
+`vault_login_error_class`, and `vault_login_raw_error_recorded=false`. The
+helper may also record `auth_smoke.jwt_issuer_verified` as `true`, `false`, or
+`unknown` when it can compare the JWT issuer to the repo-derived bound issuer
+without printing the JWT. The safe classes are:
+`auth_mount_missing_or_unreachable`, `role_missing_or_rejected`,
+`invalid_jwt`, `invalid_audience`, `invalid_subject`,
+`invalid_issuer_or_validation_key`, `permission_denied`, `vault_api_error`,
+`invalid_response`, `tls_or_connectivity_error`, and `unknown`. These labels do
+not persist raw Vault error strings, raw Vault response bodies, raw HTTP
+headers, Authorization headers, stack traces, JWT-SVIDs, Vault tokens, root
+tokens, unseal keys, proof secret values, API keys, or private keys.
+
 ### Remote Vault service-user migration
 
 Remote Supported-Host Alpha may also use one separate bounded Vault
@@ -4632,6 +4667,7 @@ Required summary fields for
 - `workload.registration_selector_scope`
 - `workload.registration_alpha_only`
 - `auth_smoke.jwt_fetch`
+- `auth_smoke.jwt_issuer_verified`
 - `auth_smoke.vault_login`
 - `auth_smoke.token_lookup`
 - `auth_smoke.proof_read`

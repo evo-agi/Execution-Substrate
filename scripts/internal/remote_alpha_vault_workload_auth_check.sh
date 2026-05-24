@@ -381,14 +381,16 @@ PY
 remote_alpha_vault_jwt_metadata() {
   local expected_spiffe_id=$1
   local expected_audience=$2
+  local expected_issuer=${3:-}
 
-  python3 /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" 3<<'PY'
+  python3 /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" "${expected_issuer}" 3<<'PY'
 import base64
 import json
 import sys
 
 expected_spiffe_id = sys.argv[1].strip()
 expected_audience = sys.argv[2].strip()
+expected_issuer = sys.argv[3].strip()
 token = sys.stdin.read().strip()
 
 result = {
@@ -397,6 +399,7 @@ result = {
     "audience": [],
     "audience_matches_expected": False,
     "subject_matches_expected": False,
+    "issuer_matches_expected": None,
     "error": "",
 }
 
@@ -420,11 +423,14 @@ audience = payload.get("aud") or []
 if isinstance(audience, str):
     audience = [audience]
 audience = [str(item).strip() for item in audience if str(item).strip()]
+issuer = str(payload.get("iss") or "").strip()
 
 result["subject"] = subject
 result["audience"] = audience
 result["subject_matches_expected"] = subject == expected_spiffe_id
 result["audience_matches_expected"] = expected_audience in audience
+if expected_issuer:
+    result["issuer_matches_expected"] = issuer == expected_issuer
 if result["subject_matches_expected"] and result["audience_matches_expected"]:
     result["status"] = "pass"
 else:
@@ -441,6 +447,7 @@ remote_alpha_vault_login_raw() {
 
   python3 /dev/fd/3 "${vault_address}" "${ca_bundle_path}" "${auth_mount}" "${role}" 3<<'PY'
 import json
+import re
 import ssl
 import sys
 import urllib.error
@@ -460,6 +467,99 @@ request = urllib.request.Request(
     headers={"Accept": "application/json", "Content-Type": "application/json"},
     method="POST",
 )
+
+SAFE_CLASSES = {
+    "auth_mount_missing_or_unreachable",
+    "role_missing_or_rejected",
+    "invalid_jwt",
+    "invalid_audience",
+    "invalid_subject",
+    "invalid_issuer_or_validation_key",
+    "permission_denied",
+    "vault_api_error",
+    "invalid_response",
+    "tls_or_connectivity_error",
+    "unknown",
+}
+
+
+def safe_class(value):
+    text = str(value or "").strip()
+    return text if text in SAFE_CLASSES else "unknown"
+
+
+def vault_errors(parsed):
+    errors = []
+    if isinstance(parsed, dict):
+        raw_errors = parsed.get("errors")
+        if isinstance(raw_errors, str):
+            raw_errors = [raw_errors]
+        if isinstance(raw_errors, list):
+            for item in raw_errors:
+                text = str(item or "").strip()
+                if text:
+                    errors.append(text)
+    return errors
+
+
+def classify_failure(status, errors, invalid_response=False, request_failed=False):
+    if request_failed:
+        return "tls_or_connectivity_error"
+    if invalid_response:
+        return "invalid_response"
+
+    joined = " ".join(errors).lower()
+    joined = re.sub(r"eyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+", " jwt_svid_redacted ", joined)
+    joined = re.sub(r"(?:hvs|s|b)\.[a-z0-9._-]{12,}", " vault_token_redacted ", joined)
+    if "no handler for route" in joined or "unsupported path" in joined or "missing client token" in joined:
+        return "auth_mount_missing_or_unreachable"
+    if status == 404:
+        return "auth_mount_missing_or_unreachable"
+    if "audience" in joined or re.search(r"\baud\b", joined):
+        return "invalid_audience"
+    if "bound_subject" in joined or "subject" in joined or "claim \"sub\"" in joined or "claim 'sub'" in joined or "sub claim" in joined:
+        return "invalid_subject"
+    if "issuer" in joined or "validation key" in joined or "validation pubkey" in joined or "public key" in joined or "signature" in joined:
+        return "invalid_issuer_or_validation_key"
+    if "role" in joined and (
+        "not found" in joined
+        or "could not be found" in joined
+        or "missing" in joined
+        or "invalid" in joined
+        or "rejected" in joined
+        or "denied" in joined
+    ):
+        return "role_missing_or_rejected"
+    if "jwt" in joined and (
+        "invalid" in joined
+        or "malformed" in joined
+        or "expired" in joined
+        or "parse" in joined
+        or "not valid" in joined
+    ):
+        return "invalid_jwt"
+    if status in (401, 403):
+        return "permission_denied"
+    if status is not None and status >= 500:
+        return "vault_api_error"
+    return "unknown"
+
+
+def fail_result(status, failure_class, error_count=0):
+    failure_class = safe_class(failure_class)
+    return {
+        "status": "fail",
+        "http_status": status,
+        "error": f"vault login failed: {failure_class}",
+        "error_count": int(error_count),
+        "error_class": failure_class,
+        "failure_phase": "vault_login",
+        "failure_class": failure_class,
+        "raw_error_recorded": False,
+        "client_token": "",
+    }
+
+
 try:
     with urllib.request.urlopen(request, timeout=10, context=context) as response:
         body = response.read().decode("utf-8")
@@ -468,26 +568,40 @@ except urllib.error.HTTPError as exc:
     body = exc.read().decode("utf-8", errors="replace")
     status = exc.code
 except Exception as exc:
-    print(json.dumps({"status": "fail", "http_status": None, "error": f"vault login request failed: {exc}", "client_token": ""}, sort_keys=True))
+    print(json.dumps(fail_result(None, classify_failure(None, [], request_failed=True)), sort_keys=True))
     sys.exit(0)
 
 try:
-    payload = json.loads(body)
+    response_payload = json.loads(body)
 except Exception as exc:
-    print(json.dumps({"status": "fail", "http_status": status, "error": f"vault login response was not json: {exc}", "client_token": ""}, sort_keys=True))
+    print(json.dumps(fail_result(status, classify_failure(status, [], invalid_response=True)), sort_keys=True))
     sys.exit(0)
 
 client_token = ""
-auth_payload = payload.get("auth")
+auth_payload = response_payload.get("auth") if isinstance(response_payload, dict) else None
 if isinstance(auth_payload, dict):
     client_token = str(auth_payload.get("client_token") or "").strip()
 
-result = {
-    "status": "pass" if status < 400 and client_token else "fail",
-    "http_status": status,
-    "error": "" if status < 400 and client_token else "vault login did not return auth.client_token",
-    "client_token": client_token,
-}
+if status < 400 and client_token:
+    result = {
+        "status": "pass",
+        "http_status": status,
+        "error": "",
+        "error_count": 0,
+        "error_class": "unknown",
+        "failure_phase": "",
+        "failure_class": "unknown",
+        "raw_error_recorded": False,
+        "client_token": client_token,
+    }
+else:
+    errors = vault_errors(response_payload)
+    failure_class = classify_failure(
+        status,
+        errors,
+        invalid_response=(status < 400 and not client_token),
+    )
+    result = fail_result(status, failure_class, len(errors))
 print(json.dumps(result, sort_keys=True))
 PY
 }
@@ -499,10 +613,43 @@ import sys
 
 payload = json.loads(sys.stdin.read())
 auth_payload = payload.get("auth")
+
+safe_classes = {
+    "auth_mount_missing_or_unreachable",
+    "role_missing_or_rejected",
+    "invalid_jwt",
+    "invalid_audience",
+    "invalid_subject",
+    "invalid_issuer_or_validation_key",
+    "permission_denied",
+    "vault_api_error",
+    "invalid_response",
+    "tls_or_connectivity_error",
+    "unknown",
+}
+
+
+def safe_class(value):
+    text = str(value or "").strip()
+    return text if text in safe_classes else "unknown"
+
+
+def int_or_zero(value):
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
 result = {
     "status": str(payload.get("status") or "").strip(),
     "http_status": payload.get("http_status"),
     "error": str(payload.get("error") or "").strip(),
+    "error_count": int_or_zero(payload.get("error_count")),
+    "error_class": safe_class(payload.get("error_class")),
+    "failure_phase": str(payload.get("failure_phase") or "").strip(),
+    "failure_class": safe_class(payload.get("failure_class")),
+    "raw_error_recorded": bool(payload.get("raw_error_recorded")),
     "policy_names": [],
     "token_ttl_seconds": None,
 }
@@ -1128,6 +1275,34 @@ def json_env(name, fallback):
         return fallback
     return json.loads(raw)
 
+safe_login_failure_classes = {
+    "auth_mount_missing_or_unreachable",
+    "role_missing_or_rejected",
+    "invalid_jwt",
+    "invalid_audience",
+    "invalid_subject",
+    "invalid_issuer_or_validation_key",
+    "permission_denied",
+    "vault_api_error",
+    "invalid_response",
+    "tls_or_connectivity_error",
+    "unknown",
+}
+
+
+def safe_login_failure_class(value):
+    text = str(value or "").strip()
+    return text if text in safe_login_failure_classes else "unknown"
+
+
+def optional_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
 listener_addresses = json_env("REMOTE_ALPHA_LISTENER_ADDRESSES_JSON", [])
 expected_listener = ""
 parsed_address = urlparse(os.environ["REMOTE_ALPHA_VAULT_ADDRESS"].strip())
@@ -1152,6 +1327,34 @@ policy_names = lookup_meta.get("policy_names") or login_meta.get("policy_names")
 token_ttl_seconds = lookup_meta.get("token_ttl_seconds")
 if token_ttl_seconds is None:
     token_ttl_seconds = login_meta.get("token_ttl_seconds")
+
+jwt_issuer_verified = jwt_meta.get("issuer_matches_expected")
+if jwt_issuer_verified is None:
+    jwt_issuer_verified = "unknown"
+
+auth_smoke = {
+    "jwt_fetch": jwt_meta.get("status") or "fail",
+    "vault_login": login_meta.get("status") or "fail",
+    "token_lookup": lookup_meta.get("status") or "fail",
+    "proof_read": proof_status,
+    "proof_runtime_secret": proof_runtime_secret_status,
+    "token_revoked": revoke_meta.get("status") or "fail",
+    "jwt_subject_verified": bool(jwt_meta.get("subject_matches_expected")),
+    "jwt_audience_verified": bool(jwt_meta.get("audience_matches_expected")),
+    "jwt_issuer_verified": jwt_issuer_verified,
+}
+
+if auth_smoke["vault_login"] == "fail":
+    failure_class = safe_login_failure_class(login_meta.get("failure_class"))
+    error_class = safe_login_failure_class(login_meta.get("error_class"))
+    auth_smoke["vault_login_failure_phase"] = str(login_meta.get("failure_phase") or "vault_login")
+    auth_smoke["vault_login_failure_class"] = failure_class
+    login_http_status = optional_int(login_meta.get("http_status"))
+    if login_http_status is not None:
+        auth_smoke["vault_login_http_status"] = login_http_status
+    auth_smoke["vault_login_error_count"] = optional_int(login_meta.get("error_count")) or 0
+    auth_smoke["vault_login_error_class"] = error_class
+    auth_smoke["vault_login_raw_error_recorded"] = bool(login_meta.get("raw_error_recorded"))
 
 lookup_ok = lookup_meta.get("status") == "pass" if token_lookup_required else lookup_meta.get("status") in {"pass", "not_exercised"}
 proof_ok = proof_status == "pass" if proof_read_required else proof_status in {"pass", "not_exercised"}
@@ -1224,16 +1427,7 @@ summary = {
         "jwt_audience": config_meta.get("jwt_audience") or "",
         "ca_bundle_present": bool(config_meta.get("ca_bundle_present")),
     },
-    "auth_smoke": {
-        "jwt_fetch": jwt_meta.get("status") or "fail",
-        "vault_login": login_meta.get("status") or "fail",
-        "token_lookup": lookup_meta.get("status") or "fail",
-        "proof_read": proof_status,
-        "proof_runtime_secret": proof_runtime_secret_status,
-        "token_revoked": revoke_meta.get("status") or "fail",
-        "jwt_subject_verified": bool(jwt_meta.get("subject_matches_expected")),
-        "jwt_audience_verified": bool(jwt_meta.get("audience_matches_expected")),
-    },
+    "auth_smoke": auth_smoke,
     "auth_smoke_requirements": {
         "token_lookup_required": token_lookup_required,
         "proof_read_required": proof_read_required,
@@ -1298,6 +1492,7 @@ remote_alpha_vault_workload_auth_check_main() {
   local summary_tmp_path=""
   local ca_bundle_path=""
   local jwt_value=""
+  local expected_jwt_issuer=""
   local vault_login_raw=""
   local vault_token=""
   local listener_port=""
@@ -1396,6 +1591,9 @@ remote_alpha_vault_workload_auth_check_main() {
     REMOTE_ALPHA_TRUST_DOMAIN="unknown"
     overall_ok=false
   fi
+  if [[ "${REMOTE_ALPHA_TRUST_DOMAIN}" != "unknown" ]]; then
+    expected_jwt_issuer="spiffe://${REMOTE_ALPHA_TRUST_DOMAIN}"
+  fi
   export REMOTE_ALPHA_SELECTORS_JSON
   REMOTE_ALPHA_SELECTORS_JSON="$(remote_alpha_vault_registration_selectors_json)"
   export REMOTE_ALPHA_LISTENER_ADDRESSES_JSON
@@ -1407,12 +1605,13 @@ remote_alpha_vault_workload_auth_check_main() {
   echo '{"status":"not_exercised","error":"token revoke not attempted"}' >"${revoke_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"token lookup not attempted"}' >"${lookup_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"vault login not attempted"}' >"${login_meta_path}"
-  echo '{"status":"fail","subject":"","audience":[],"audience_matches_expected":false,"subject_matches_expected":false,"error":"jwt fetch not attempted"}' >"${jwt_meta_path}"
+  echo '{"status":"fail","subject":"","audience":[],"audience_matches_expected":false,"subject_matches_expected":false,"issuer_matches_expected":null,"error":"jwt fetch not attempted"}' >"${jwt_meta_path}"
 
   if jwt_value="$(remote_alpha_vault_extract_first_jwt 2>/dev/null)"; then
     printf '%s' "${jwt_value}" | remote_alpha_vault_jwt_metadata \
       "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" \
-      "${REMOTE_ALPHA_VAULT_AUDIENCE}" >"${jwt_meta_path}"
+      "${REMOTE_ALPHA_VAULT_AUDIENCE}" \
+      "${expected_jwt_issuer}" >"${jwt_meta_path}"
   fi
   if [[ "$(remote_alpha_vault_json_field "${jwt_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
     overall_ok=false

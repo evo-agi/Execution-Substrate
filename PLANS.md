@@ -448,6 +448,18 @@ readiness, not governed execution proof, not ES Vault token brokerage, not IM
 authority, not CP recovery authority, and not Remote Alpha
 production/deployment/reconciliation architecture.
 
+A bounded bugfix/self-audit refinement may extend the same v1 workload-auth
+summary with backward-compatible, safe Vault JWT login failure classification
+when `auth_smoke.vault_login=fail`. The helper may record only class labels,
+HTTP status, error-string count, a `vault_login` failure phase, and
+`auth_smoke.vault_login_raw_error_recorded=false`; it must not print or persist
+the JWT-SVID, Vault client token, root token, unseal key, proof secret value,
+raw Vault login response body, raw HTTP headers, Authorization header, stack
+trace, or full Vault login JSON. Classification remains bounded triage over the
+host-local evidence artifact, not workload-auth bootstrap, not a claim that a
+specific Vault object is missing unless the class safely supports that, and not
+ES Vault token brokerage.
+
 The P0o combined implementation/self-audit/merge-readiness slice may add exactly
 one safe local/print-only planning surface for a future post-reset Vault
 workload-auth bootstrap route:
