@@ -2226,7 +2226,7 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"`Bounded slice rule`",
 		"bounded MVP proof/support helper plus evidence/projection outputs only",
 		"`scripts/remote_alpha_operator.sh`",
-		"Current implementation status through P0g:",
+		"Current implementation status through P0h:",
 		"P0e aligned help, inventory, and route wording with the operator involvement model",
 		"P0d implements exactly one staged-helper delegation route",
 		"`es-writable-state-readiness-check`",
@@ -2234,6 +2234,9 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"`readiness-session`",
 		"P0g implements one safe/local recovery workflow skeleton",
 		"`recovery-session`",
+		"P0h extends only `recovery-session --evidence-check` with known-schema interpretation",
+		"`--strict-known-schema`",
+		"non-recursive `--evidence-dir` discovery",
 		"delegates only to the public staged wrapper",
 		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
 		"delegates only through the existing readiness route/helper path",
@@ -2476,7 +2479,7 @@ func TestRemoteAlphaOperatorP0fDocsReadinessSessionBoundary(t *testing.T) {
 func TestRemoteAlphaOperatorP0gDocsRecoverySessionBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0g Recovery Session Safe Skeleton", "### P0d Interactive Validation Evidence")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0g Recovery Session Safe Skeleton", "### P0h Schema-Aware Recovery Evidence Interpretation")
 
 	assertContainsAll(t, "Remote Alpha operator P0g PLANS boundary", plans,
 		"The P0g combined slice may add one bounded safe/local recovery workflow surface",
@@ -2554,6 +2557,74 @@ func TestRemoteAlphaOperatorP0gDocsRecoverySessionBoundary(t *testing.T) {
 		"If secret-like content is detected or JSON is malformed, it must fail with the path classification only",
 		"must not print file contents",
 		"does not add Vault reset/unseal execution, Vault workload-auth check execution, runtime identity summary generation, Vault service-user check/apply execution",
+	)
+}
+
+func TestRemoteAlphaOperatorP0hDocsSchemaAwareRecoveryEvidenceBoundary(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0h Schema-Aware Recovery Evidence Interpretation", "### P0d Interactive Validation Evidence")
+
+	assertContainsAll(t, "Remote Alpha operator P0h PLANS boundary", plans,
+		"The P0h combined slice may extend only",
+		"`scripts/remote_alpha_operator.sh recovery-session --evidence-check`",
+		"schema-aware interpretation of known local evidence summaries",
+		"remains local-only",
+		"readiness summary, readiness staging record, Vault workload-auth summary, runtime identity helper summary, and Vault service-user migration summary schemas",
+		"explicit safe-field allowlists",
+		"print only non-secret status, classification, boolean, count, schema, byte-count, and SHA-256 metadata",
+		"Unknown schemas are allowed by default with `schema_interpretation=unknown`",
+		"`--strict-known-schema` may fail unknown schemas",
+		"`--evidence-dir <path>` may inspect only direct expected filenames",
+		"report missing expected filenames as `not_supplied`",
+		"must not recurse or write into the directory",
+		"must not print full JSON, create a session summary, write `.out`, run live tools, dispatch helpers",
+		"Schema interpretation is evidence/projection only",
+		"must not add IM authority, CP recovery authority, ES Vault token brokerage, or Remote Alpha deployment/provisioning/reconciliation architecture",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator P0h docs boundary", operatorSection,
+		"`Bounded slice rule`: P0h extends only the local",
+		"`scripts/remote_alpha_operator.sh recovery-session --evidence-check`",
+		"local-only evidence interpretation",
+		"does not add live helper execution",
+		"Infrastructure Manager execution",
+		"support-bundle collection",
+		"CP proof",
+		"reset/unseal behavior",
+		"workload-auth live checks",
+		"runtime identity summary generation",
+		"Vault service-user apply",
+		"generic helper dispatch",
+		"generated session summaries",
+		"`.out` writes",
+		"The known schemas are:",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness.v1`",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`",
+		"`execution-substrate.remote-alpha.vault-workload-auth-summary.v1`",
+		"`execution-substrate.remote-runtime-identity-helper-summary.v1alpha1`",
+		"`execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`",
+		"explicit safe-field allowlists",
+		"selected status/classification fields",
+		"booleans, and counts",
+		"must not print full JSON, JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys, passwords, proof secret values",
+		"raw identity payloads, arbitrary smoke-command output, or secret-bearing paths",
+		"Unknown schemas are allowed by default",
+		"`schema_interpretation=unknown`",
+		"With `--strict-known-schema`, unknown schemas must fail without printing file contents",
+		"`--evidence-dir <path>` is local-only",
+		"`es-writable-state-readiness.json`",
+		"`es-writable-state-readiness-helper-staging-record.json`",
+		"`vault-workload-auth-summary.json`",
+		"`runtime-identity-helper-summary.json`",
+		"`vault-service-user-migration-check-only.json`",
+		"`vault-service-user-migration-apply-summary.json`",
+		"must not recurse",
+		"must inspect only files that exist",
+		"must report missing expected filenames as `not_supplied`",
+		"must never write into the directory",
+		"Schema-aware interpretation remains evidence/projection/diagnostics only",
+		"not IM authority, CP recovery authority, ES Vault token brokerage",
 	)
 }
 

@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0g:
+Current implementation status through P0h:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -246,6 +246,9 @@ Current implementation status through P0g:
 - P0g implements one safe/local recovery workflow skeleton,
   `recovery-session`, with print-only plan, inventory, next-step guidance, and a
   local evidence-check mode over operator-supplied existing JSON evidence files.
+- P0h extends only `recovery-session --evidence-check` with known-schema
+  interpretation, `--strict-known-schema`, and non-recursive `--evidence-dir`
+  discovery of expected local evidence filenames.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -268,7 +271,9 @@ Current implementation status through P0g:
   destructive, live, or authority-bearing work. Its `--evidence-check` mode reads
   only supplied local JSON evidence paths, scans for secret-like content before
   parsing, and prints only path, byte count, SHA-256 digest, schema, and selected
-  safe status/count metadata.
+  safe status/count metadata. Known schemas are interpreted through explicit
+  safe-field allowlists; unknown schemas are allowed by default and classified as
+  `schema_interpretation=unknown` unless `--strict-known-schema` is set.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
@@ -708,6 +713,56 @@ execution, runtime identity summary generation, Vault service-user check/apply
 execution, config/TLS, binary deployment, writable-state ownership, generic
 remote staging, arbitrary shell passthrough, live IM execution, CP proof,
 support-bundle collection, or Remote Alpha deployment architecture.
+
+### P0h Schema-Aware Recovery Evidence Interpretation
+
+`Bounded slice rule`: P0h extends only the local
+`scripts/remote_alpha_operator.sh recovery-session --evidence-check` mode.
+
+This slice remains local-only evidence interpretation. It does not add live
+helper execution, Infrastructure Manager execution, support-bundle collection,
+CP proof, reset/unseal behavior, workload-auth live checks, runtime identity
+summary generation, Vault service-user apply, generic helper dispatch, generated
+session summaries, `.out` writes, or authority-bearing behavior.
+
+The known schemas are:
+
+- `execution-substrate.remote-alpha.es-writable-state-readiness.v1`
+- `execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`
+- `execution-substrate.remote-alpha.vault-workload-auth-summary.v1`
+- `execution-substrate.remote-runtime-identity-helper-summary.v1alpha1`
+- `execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`
+
+Known schemas must be interpreted through explicit safe-field allowlists. The
+operator facade may print only non-secret metadata: path, byte count, SHA-256
+digest, schema, schema interpretation, selected status/classification fields,
+booleans, and counts. It must not print full JSON, JWT-SVIDs, Vault tokens,
+root tokens, unseal keys, API keys, private keys, passwords, proof secret values,
+raw identity payloads, arbitrary smoke-command output, or secret-bearing paths.
+
+Unknown schemas are allowed by default. For unknown schemas, the facade may print
+only path, byte count, SHA-256 digest, `schema_version` when present, and
+`schema_interpretation=unknown`. With `--strict-known-schema`, unknown schemas
+must fail without printing file contents.
+
+`--evidence-dir <path>` is local-only. It may discover these direct filenames
+under the supplied directory:
+
+- `es-writable-state-readiness.json`
+- `es-writable-state-readiness-helper-staging-record.json`
+- `vault-workload-auth-summary.json`
+- `runtime-identity-helper-summary.json`
+- `vault-service-user-migration-check-only.json`
+- `vault-service-user-migration-apply-summary.json`
+
+The directory mode must not recurse, must inspect only files that exist, must
+report missing expected filenames as `not_supplied`, and must never write into
+the directory.
+
+Schema-aware interpretation remains evidence/projection/diagnostics only. It is
+not IM authority, CP recovery authority, ES Vault token brokerage, Vault
+production lifecycle, or Remote Alpha deployment/provisioning/reconciliation
+architecture.
 
 ### P0d Interactive Validation Evidence
 

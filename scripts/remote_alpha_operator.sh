@@ -158,7 +158,7 @@ usage() {
   printf '%s\n' \
     "Remote Alpha operator facade" \
     "" \
-    "P0g adds a recovery-session safe skeleton plus local evidence-check over existing JSON evidence files." \
+    "P0h extends recovery-session evidence-check with known-schema interpretation over existing local JSON evidence files." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -182,10 +182,10 @@ usage() {
     "  --ssh-alias host_to_remote_linux_m75q" \
     "  --help, -h" \
     "" \
-    "Implemented through P0g:" \
+    "Implemented through P0h:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, and --evidence-check over existing local JSON evidence paths; writes no summary and runs no live tools." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, and schema-aware local evidence-check over existing local JSON evidence paths; writes no summary and runs no live tools." \
     "" \
     "The operator facade does not invoke IM refresh or support-bundle collection and does not add reset/unseal, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic staging routes." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
@@ -199,7 +199,7 @@ inventory() {
     "interactive operator involvement is expected where an explicit mode says so" \
     "IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise" \
     "" \
-    "implemented through P0g:" \
+    "implemented through P0h:" \
     "  help - show bounded facade scope and options" \
     "  inventory - show this static non-secret inventory" \
     "  print-refresh-command - print Mac-side IM live-refresh command text only" \
@@ -207,15 +207,15 @@ inventory() {
     "  print-im-commands - print both Mac-side IM command texts only" \
     "  es-writable-state-readiness-check - delegates to existing readiness staged helper; check-only/non-mutating; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json" \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; verifies the two expected artifacts; prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status" \
-    "  recovery-session - safe/local skeleton for recovery sequencing; prints plan, static helper inventory, next-step commands, or checks existing local JSON evidence metadata without running helpers" \
+    "  recovery-session - safe/local skeleton for recovery sequencing; prints plan, static helper inventory, next-step commands, or performs schema-aware local JSON evidence interpretation without running helpers" \
     "" \
     "future/not implemented:" \
-    "  Vault reset/unseal execution - not implemented in P0g; requires later audited secret-sensitive/destructive slice" \
-    "  workload-auth check execution - not implemented in P0g; requires later audited live check slice" \
-    "  runtime identity summary generation - not implemented in P0g; requires later audited evidence route" \
-    "  Vault service-user check/apply execution - not implemented in P0g; remains separate" \
-    "  runtime security check - not implemented in P0g; requires later audited slice" \
-    "  other staged ES helper delegation - not implemented in P0g; requires later audited slice" \
+    "  Vault reset/unseal execution - not implemented in P0h; requires later audited secret-sensitive/destructive slice" \
+    "  workload-auth check execution - not implemented in P0h; requires later audited live check slice" \
+    "  runtime identity summary generation - not implemented in P0h; requires later audited evidence route" \
+    "  Vault service-user check/apply execution - not implemented in P0h; remains separate" \
+    "  runtime security check - not implemented in P0h; requires later audited slice" \
+    "  other staged ES helper delegation - not implemented in P0h; requires later audited slice" \
     "" \
     "blocked/reopened:" \
     "  vault-workload-auth-bootstrap - blocked/reopened and not available in v1" \
@@ -230,7 +230,7 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0g scope: safe/local recovery skeleton plus local evidence-check over existing JSON files." \
+    "P0h scope: safe/local schema-aware recovery evidence interpretation over existing JSON files." \
     "The human remains the operator. This workflow sequences recovery work; it does not execute secret-sensitive, destructive, live, or authority-bearing steps." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
     "" \
@@ -258,14 +258,17 @@ recovery_session_usage() {
     "  --vault-service-user-summary <path>" \
     "  --readiness-summary <path>" \
     "  --staging-record <path>" \
+    "  --evidence-dir <path>" \
+    "  --strict-known-schema" \
     "" \
     "Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command, helper path overrides, arbitrary command strings, unknown flags, positional arguments, duplicate operational flags, secret-like arguments, and equals-form options." \
-    "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out."
+    "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out." \
+    "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
 }
 
 recovery_session_plan() {
   printf '%s\n' \
-    "Remote Alpha recovery-session plan (P0g safe/local skeleton)" \
+    "Remote Alpha recovery-session plan (P0h safe/local schema-aware evidence interpretation)" \
     "classification: bounded proof/support helper; evidence/projection/diagnostics only; no authority source" \
     "default behavior: print this plan/help and exit zero; no live tools run" \
     "" \
@@ -279,7 +282,7 @@ recovery_session_plan() {
     "  disposable reset - future destructive exact-phrase mode; no root token or unseal key through args/env/logs/artifacts/Codex output" \
     "  workload-auth check execution - future audited live check; ES must not become a Vault token broker" \
     "  runtime identity summary generation - future audited evidence route; runtime identity remains a reopened seam" \
-    "  service-user check/apply - remains separate; apply is mutating and not part of P0g recovery-session" \
+    "  service-user check/apply - remains separate; apply is mutating and not part of P0h recovery-session" \
     "" \
     "separate IM actions:" \
     "  IM refresh and support-bundle collection are printed only as separate IM evidence/provenance actions" \
@@ -288,7 +291,7 @@ recovery_session_plan() {
     "non-claims:" \
     "  not CP recovery authority, not Vault production lifecycle, not ES Vault token brokerage" \
     "  not Remote Alpha deployment, provisioning, reconciliation, production, HA, or multi-tenant architecture" \
-    "  no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0g"
+    "  no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0h"
 }
 
 recovery_session_inventory() {
@@ -299,9 +302,9 @@ recovery_session_inventory() {
     "safe/local:" \
     "  scripts/remote_alpha_operator.sh readiness-session - existing bounded workflow over es-writable-state-readiness-check; live only when separately invoked with --ssh-target; not executed by recovery-session" \
     "  recovery-session --plan, --inventory, --next-steps - print-only/local" \
-    "  recovery-session --evidence-check - local-only check of existing JSON evidence metadata; check-only; no summary file" \
+    "  recovery-session --evidence-check - local-only schema-aware check of existing JSON evidence metadata; check-only; no summary file" \
     "" \
-    "check-only evidence helpers (future execution routes, not run by recovery-session P0g):" \
+    "check-only evidence helpers (future execution routes, not run by recovery-session P0h):" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; future audited live check" \
     "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; dry-run/check-only available; future audited evidence route" \
     "  scripts/remote_alpha_migrate_vault_service_user.sh --check-only - host-local Vault service-user migration check; check-only default; apply remains separate" \
@@ -311,7 +314,7 @@ recovery_session_inventory() {
     "  scripts/remote_alpha_reset_disposable_vault.sh --execute-reset - future destructive exact-phrase mode" \
     "" \
     "blocked/reopened:" \
-    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0g" \
+    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0h" \
     "" \
     "classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened" \
     "non-claims: inventory is evidence/projection/diagnostics only, never authority"
@@ -355,23 +358,46 @@ recovery_session_next_steps() {
 }
 
 recovery_session_evidence_check() {
-  if [[ "$#" -eq 0 ]]; then
+  local strict_known_schema=$1
+  local evidence_dir=$2
+  shift 2
+
+  if [[ "$#" -eq 0 && -z "${evidence_dir}" ]]; then
     printf '%s\n' "No recovery-session evidence paths supplied; nothing to check."
     printf '%s\n' "Evidence-check is local-only and treats supplied files as evidence/projection/diagnostics only, never authority."
     return 0
   fi
 
-  python3 - "$@" <<'PY'
+  python3 - "${strict_known_schema}" "${evidence_dir}" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
 import re
 import sys
 
-args = sys.argv[1:]
+strict_known_schema = sys.argv[1] == "true"
+evidence_dir_arg = sys.argv[2]
+args = sys.argv[3:]
 if len(args) % 2 != 0:
     print("error: internal evidence-check argument mismatch", file=sys.stderr)
     raise SystemExit(2)
+
+expected_evidence_filenames = [
+    ("readiness-summary", "es-writable-state-readiness.json"),
+    ("staging-record", "es-writable-state-readiness-helper-staging-record.json"),
+    ("vault-workload-auth-summary", "vault-workload-auth-summary.json"),
+    ("runtime-identity-summary", "runtime-identity-helper-summary.json"),
+    ("vault-service-user-summary", "vault-service-user-migration-check-only.json"),
+    ("vault-service-user-summary", "vault-service-user-migration-apply-summary.json"),
+]
+
+schema_interpretations = {
+    "execution-substrate.remote-alpha.es-writable-state-readiness.v1": "readiness-summary",
+    "execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1": "readiness-staging-record",
+    "execution-substrate.remote-alpha.vault-workload-auth-summary.v1": "vault-workload-auth-summary",
+    "execution-substrate.remote-runtime-identity-helper-summary.v1alpha1": "runtime-identity-helper-summary",
+    "execution-substrate.remote-alpha.vault-service-user-migration-summary.v1": "vault-service-user-migration-summary",
+}
 
 secret_key_pattern = re.compile(
     r'"(?:root[-_]?token|unseal[-_]?key|client[-_]?token|vault[-_]?token|api[-_]?key|jwt[-_]?svid|private[-_]?key|password|secret|secret[-_]?payload)"\s*:',
@@ -382,33 +408,6 @@ secret_value_patterns = [
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     re.compile(r"\b(?:hvs|hvb|s)\.[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,})\b"),
-]
-safe_scalar_fields = [
-    "schema_version",
-    "operation_mode",
-    "mode",
-    "collection_status",
-    "overall_status",
-    "overall_classification",
-    "status",
-    "result",
-    "non_mutating",
-    "apply_ready",
-    "checker_mode",
-    "requested_checker_mode",
-    "checker_ran",
-    "staging_occurred",
-    "sudo_mode",
-    "sudo_unavailable",
-    "wrapper_exit_code",
-    "checker_exit_code",
-]
-safe_count_fields = [
-    "blockers",
-    "warnings",
-    "skipped",
-    "requirements",
-    "non_authority_labels",
 ]
 
 
@@ -426,10 +425,156 @@ def print_scalar(name, value):
         print(f"  {name}: {value}")
 
 
-print("Recovery-session evidence metadata (local-only; evidence/projection/diagnostics only; no authority):")
+def print_field(payload, field, output_name=None):
+    if field in payload:
+        print_scalar(output_name or field, payload[field])
+
+
+def print_count(payload, field, output_name=None):
+    value = payload.get(field)
+    if isinstance(value, list):
+        print(f"  {output_name or field + '_count'}: {len(value)}")
+    elif isinstance(value, int):
+        print(f"  {output_name or field + '_count'}: {value}")
+
+
+def nested_dict(payload, *keys):
+    current = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    if isinstance(current, dict):
+        return current
+    return {}
+
+
+def print_nested_field(payload, output_name, *keys):
+    current = payload
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return
+        current = current[key]
+    print_scalar(output_name, current)
+
+
+def print_common_status_counts(payload):
+    for field in ("blockers", "warnings", "skipped", "requirements", "non_authority_labels"):
+        print_count(payload, field)
+
+
+def print_schema_specific_fields(payload, interpretation):
+    if interpretation == "readiness-summary":
+        for field in ("operation_mode", "non_mutating", "checker_mode", "overall_classification"):
+            print_field(payload, field)
+        for field in ("blockers", "warnings", "bounded_compatibility_edges"):
+            print_count(payload, field)
+    elif interpretation == "readiness-staging-record":
+        for field in (
+            "requested_checker_mode",
+            "sudo_mode",
+            "staging_occurred",
+            "checker_ran",
+            "sudo_unavailable",
+            "wrapper_exit_code",
+            "checker_exit_code",
+            "transient_staging_removed",
+            "staging_retained_for_diagnostics",
+        ):
+            print_field(payload, field)
+        print_count(payload, "staged_files")
+    elif interpretation == "vault-workload-auth-summary":
+        for field in (
+            "operation_mode",
+            "mode",
+            "collection_status",
+            "overall_status",
+            "overall_classification",
+            "status",
+            "result",
+            "non_mutating",
+        ):
+            print_field(payload, field)
+        print_common_status_counts(payload)
+        auth_smoke = nested_dict(payload, "auth_smoke")
+        for check_name in (
+            "jwt_fetch",
+            "vault_login",
+            "token_lookup",
+            "proof_read",
+            "proof_runtime_secret",
+            "token_revoked",
+        ):
+            check = nested_dict(auth_smoke, check_name)
+            if "status" in check:
+                print_scalar(f"auth_smoke.{check_name}_status", check["status"])
+            if check_name == "proof_runtime_secret" and "field_present" in check:
+                print_scalar("auth_smoke.proof_runtime_secret_field_present", check["field_present"])
+    elif interpretation == "runtime-identity-helper-summary":
+        for field in (
+            "mode",
+            "operation_mode",
+            "collection_status",
+            "overall_status",
+            "overall_classification",
+            "status",
+            "result",
+            "runtime_identity_helper_local_fetch",
+            "non_mutating",
+            "jwt_fetch_output_discarded",
+            "output_discarded",
+        ):
+            print_field(payload, field)
+        print_common_status_counts(payload)
+        print_count(payload, "checks")
+        print_nested_field(payload, "helper_binary.exists", "helper_binary", "exists")
+        print_nested_field(payload, "spire_fetch_smoke.status", "spire_fetch_smoke", "status")
+        print_nested_field(payload, "spire_fetch_smoke.output_discarded", "spire_fetch_smoke", "output_discarded")
+    elif interpretation == "vault-service-user-migration-summary":
+        for field in (
+            "operation_mode",
+            "mode",
+            "collection_status",
+            "overall_status",
+            "overall_classification",
+            "status",
+            "result",
+            "non_mutating",
+            "apply_ready",
+            "apply_performed",
+            "sudo_unavailable",
+        ):
+            print_field(payload, field)
+        print_common_status_counts(payload)
+
+
+evidence_specs = []
+missing_specs = []
+if evidence_dir_arg:
+    evidence_dir = pathlib.Path(evidence_dir_arg)
+    if not evidence_dir.is_dir():
+        fail(evidence_dir, "evidence-dir", "missing_directory")
+    for classification, filename in expected_evidence_filenames:
+        candidate = evidence_dir / filename
+        if candidate.is_file():
+            evidence_specs.append((classification, str(candidate), filename))
+        else:
+            missing_specs.append((classification, str(candidate), filename))
+
 for i in range(0, len(args), 2):
-    classification = args[i]
-    path = pathlib.Path(args[i + 1])
+    evidence_specs.append((args[i], args[i + 1], None))
+
+print("Recovery-session evidence metadata (local-only; evidence/projection/diagnostics only; no authority):")
+if evidence_dir_arg:
+    print(f"evidence_dir: {evidence_dir_arg}")
+    for classification, path, filename in missing_specs:
+        print(f"- classification: {classification}")
+        print(f"  expected_filename: {filename}")
+        print(f"  path: {path}")
+        print("  status: not_supplied")
+
+for classification, path_text, expected_filename in evidence_specs:
+    path = pathlib.Path(path_text)
     if not path.is_file():
         fail(path, classification, "missing_file")
 
@@ -453,19 +598,24 @@ for i in range(0, len(args), 2):
     if not isinstance(payload, dict):
         fail(path, classification, "json_root_not_object")
 
+    schema = payload.get("schema_version")
+    interpretation = schema_interpretations.get(schema, "unknown")
+    if strict_known_schema and interpretation == "unknown":
+        fail(path, classification, "unknown_schema")
+
     print(f"- classification: {classification}")
+    if expected_filename is not None:
+        print(f"  expected_filename: {expected_filename}")
     print(f"  path: {path}")
     print(f"  bytes: {len(raw)}")
     print(f"  sha256: {hashlib.sha256(raw).hexdigest()}")
-    for field in safe_scalar_fields:
-        if field in payload:
-            print_scalar(field, payload[field])
-    for field in safe_count_fields:
-        value = payload.get(field)
-        if isinstance(value, list):
-            print(f"  {field}_count: {len(value)}")
-        elif isinstance(value, int):
-            print(f"  {field}_count: {value}")
+    if isinstance(schema, str):
+        print(f"  schema_version: {schema}")
+    else:
+        print("  schema_version: None")
+    print(f"  schema_interpretation: {interpretation}")
+    if interpretation != "unknown":
+        print_schema_specific_fields(payload, interpretation)
 PY
 }
 
@@ -478,11 +628,15 @@ recovery_session() {
   local ssh_alias_seen="false"
   local im_profile_dir_seen="false"
   local support_output_root_seen="false"
+  local strict_known_schema_seen="false"
+  local evidence_dir_seen="false"
   local vault_workload_auth_summary_seen="false"
   local runtime_identity_summary_seen="false"
   local vault_service_user_summary_seen="false"
   local readiness_summary_seen="false"
   local staging_record_seen="false"
+  local strict_known_schema="false"
+  local evidence_dir=""
   local -a evidence_specs=()
 
   if [[ "${#facade_options_seen[@]}" -gt 0 ]]; then
@@ -545,6 +699,19 @@ recovery_session() {
         support_output_root=$2
         shift 2
         ;;
+      --strict-known-schema)
+        require_recovery_option_not_seen "$1" "${strict_known_schema_seen}"
+        strict_known_schema_seen="true"
+        strict_known_schema="true"
+        shift
+        ;;
+      --evidence-dir)
+        require_recovery_option_not_seen "$1" "${evidence_dir_seen}"
+        require_recovery_option_value "$1" "$#" "${2:-}"
+        evidence_dir_seen="true"
+        evidence_dir=$2
+        shift 2
+        ;;
       --vault-workload-auth-summary)
         require_recovery_option_not_seen "$1" "${vault_workload_auth_summary_seen}"
         require_recovery_option_value "$1" "$#" "${2:-}"
@@ -581,7 +748,7 @@ recovery_session() {
         shift 2
         ;;
       --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session forbids $1; P0g is safe/local/print-only/evidence-check only"
+        recovery_die "recovery-session forbids $1; P0h is safe/local/print-only/evidence-check only"
         ;;
       --*=*)
         recovery_die "recovery-session does not accept equals-form options: $1"
@@ -602,6 +769,12 @@ recovery_session() {
   if [[ "${#evidence_specs[@]}" -gt 0 && "${mode}" != "evidence-check" ]]; then
     recovery_die "recovery-session evidence path flags require --evidence-check"
   fi
+  if [[ -n "${evidence_dir}" && "${mode}" != "evidence-check" ]]; then
+    recovery_die "recovery-session --evidence-dir requires --evidence-check"
+  fi
+  if [[ "${strict_known_schema}" == "true" && "${mode}" != "evidence-check" ]]; then
+    recovery_die "recovery-session --strict-known-schema requires --evidence-check"
+  fi
 
   case "${mode}" in
     help)
@@ -617,7 +790,7 @@ recovery_session() {
       recovery_session_next_steps "${im_profile_dir}" "${support_output_root}" "${im_ssh_alias}"
       ;;
     evidence-check)
-      recovery_session_evidence_check ${evidence_specs[@]+"${evidence_specs[@]}"}
+      recovery_session_evidence_check "${strict_known_schema}" "${evidence_dir}" ${evidence_specs[@]+"${evidence_specs[@]}"}
       ;;
     *)
       recovery_die "unsupported recovery-session mode: ${mode}"
@@ -659,7 +832,7 @@ print_im_commands() {
 
 refuse_not_implemented() {
   local name=$1
-  printf 'error: subcommand %q is not implemented in P0g and requires a later audited slice.\n' "${name}" >&2
+  printf 'error: subcommand %q is not implemented in P0h and requires a later audited slice.\n' "${name}" >&2
   printf 'No helper execution routing occurred.\n' >&2
   exit 2
 }
@@ -1349,7 +1522,7 @@ main() {
       refuse_not_implemented "${subcommand}"
       ;;
     *)
-      printf 'error: unknown subcommand %q is not implemented in P0g and requires a later audited slice.\n' "${subcommand}" >&2
+      printf 'error: unknown subcommand %q is not implemented in P0h and requires a later audited slice.\n' "${subcommand}" >&2
       printf 'No helper execution routing occurred.\n' >&2
       exit 2
       ;;

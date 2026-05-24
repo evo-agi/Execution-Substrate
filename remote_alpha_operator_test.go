@@ -86,7 +86,7 @@ func assertNoNewPaths(t *testing.T, label string, before map[string]bool) {
 	}
 }
 
-func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0gScope(t *testing.T) {
+func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0hScope(t *testing.T) {
 	scriptPath := remoteAlphaOperatorScriptPath()
 	info, err := os.Stat(scriptPath)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0gScope(t *testing.
 	help := requireRemoteAlphaOperatorSuccess(t, "--help")
 	assertContainsAll(t, "operator help", help,
 		"Remote Alpha operator facade",
-		"P0g adds a recovery-session safe skeleton",
+		"P0h extends recovery-session evidence-check with known-schema interpretation",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -124,7 +124,8 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0gScope(t *testing.
 		"fresh output directory by default",
 		"prints only non-secret artifact metadata",
 		"safe/local recovery skeleton",
-		"--plan, --inventory, --next-steps, and --evidence-check",
+		"schema-aware local evidence-check",
+		"supports --plan, --inventory, --next-steps",
 		"writes no summary and runs no live tools",
 		"preserves es-writable-state-readiness.json",
 		"es-writable-state-readiness-helper-staging-record.json",
@@ -139,7 +140,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0gScope(t *testing.
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented through P0g",
+		"implemented through P0h",
 		"help",
 		"inventory",
 		"print-refresh-command",
@@ -154,7 +155,7 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json",
 		"prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status",
 		"safe/local skeleton for recovery sequencing",
-		"checks existing local JSON evidence metadata without running helpers",
+		"schema-aware local JSON evidence interpretation without running helpers",
 		"future/not implemented",
 		"Vault reset/unseal",
 		"workload-auth check",
@@ -308,7 +309,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented in P0g",
+				"not implemented in P0h",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -391,8 +392,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
 	assertContainsAll(t, "recovery-session help", help,
 		"Remote Alpha operator workflow: recovery-session",
-		"P0g scope: safe/local recovery skeleton",
-		"local evidence-check over existing JSON files",
+		"P0h scope: safe/local schema-aware recovery evidence interpretation",
+		"over existing JSON files",
 		"does not execute secret-sensitive, destructive, live, or authority-bearing steps",
 		"Outputs are evidence/projection/diagnostics only, never authority",
 		"--plan",
@@ -404,6 +405,10 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"--vault-service-user-summary <path>",
 		"--readiness-summary <path>",
 		"--staging-record <path>",
+		"--evidence-dir <path>",
+		"--strict-known-schema",
+		"Recognized schemas",
+		"Unknown schemas are allowed by default",
 		"Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command",
 		"prints no full JSON",
 		"creates no summary file",
@@ -424,7 +429,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"service-user check/apply - remains separate",
 		"recovery-session does not execute IM",
 		"not ES Vault token brokerage",
-		"no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0g",
+		"no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0h",
 	)
 
 	plan := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--plan")
@@ -484,10 +489,10 @@ func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckNoPathsIsNonError(t *tes
 	)
 }
 
-func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckPrintsMetadataOnly(t *testing.T) {
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRecognizesReadinessSummary(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"schema_version":"execution-substrate.test.v1","operation_mode":"check_only","non_mutating":true,"overall_classification":"warning","blockers":[],"warnings":["documented warning"],"internal_detail":"must not print"}`
-	fixturePath := filepath.Join(dir, "summary.json")
+	fixture := `{"schema_version":"execution-substrate.remote-alpha.es-writable-state-readiness.v1","operation_mode":"check_only","non_mutating":true,"checker_mode":"alpha-compat","overall_classification":"warning","blockers":["blocked detail"],"warnings":["warning detail"],"bounded_compatibility_edges":["edge-a","edge-b"],"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "es-writable-state-readiness.json")
 	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -505,18 +510,241 @@ func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckPrintsMetadataOnly(t *te
 		"path: "+fixturePath,
 		fmt.Sprintf("bytes: %d", len([]byte(fixture))),
 		fmt.Sprintf("sha256: %x", sum),
-		"schema_version: execution-substrate.test.v1",
+		"schema_version: execution-substrate.remote-alpha.es-writable-state-readiness.v1",
+		"schema_interpretation: readiness-summary",
 		"operation_mode: check_only",
 		"non_mutating: true",
+		"checker_mode: alpha-compat",
 		"overall_classification: warning",
-		"blockers_count: 0",
+		"blockers_count: 1",
 		"warnings_count: 1",
+		"bounded_compatibility_edges_count: 2",
 	)
 	assertContainsNone(t, "recovery-session evidence metadata", output,
 		"internal_detail",
 		"must not print",
 		"{\"schema_version\"",
-		"documented warning",
+		"blocked detail",
+		"warning detail",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRecognizesReadinessStagingRecord(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1","requested_checker_mode":"alpha-compat","sudo_mode":"interactive","staging_occurred":true,"checker_ran":true,"sudo_unavailable":false,"wrapper_exit_code":0,"checker_exit_code":0,"transient_staging_removed":true,"staging_retained_for_diagnostics":false,"staged_files":["wrapper","checker"],"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "es-writable-state-readiness-helper-staging-record.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--staging-record", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session staging metadata", output,
+		"classification: staging-record",
+		"schema_version: execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1",
+		"schema_interpretation: readiness-staging-record",
+		"requested_checker_mode: alpha-compat",
+		"sudo_mode: interactive",
+		"staging_occurred: true",
+		"checker_ran: true",
+		"sudo_unavailable: false",
+		"wrapper_exit_code: 0",
+		"checker_exit_code: 0",
+		"transient_staging_removed: true",
+		"staging_retained_for_diagnostics: false",
+		"staged_files_count: 2",
+	)
+	assertContainsNone(t, "recovery-session staging metadata", output,
+		"internal_detail",
+		"must not print",
+		"wrapper\",",
+		"checker\"",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRecognizesVaultWorkloadAuthSummary(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.remote-alpha.vault-workload-auth-summary.v1","operation_mode":"check_only","collection_status":"collected","overall_classification":"pass","non_mutating":true,"blockers":[],"warnings":[],"requirements":["req-a","req-b"],"auth_smoke":{"jwt_fetch":{"status":"pass"},"vault_login":{"status":"pass"},"token_lookup":{"status":"pass"},"proof_read":{"status":"pass"},"proof_runtime_secret":{"status":"pass","field_present":true},"token_revoked":{"status":"pass"}},"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "vault-workload-auth-summary.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--vault-workload-auth-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session vault workload auth metadata", output,
+		"classification: vault-workload-auth-summary",
+		"schema_version: execution-substrate.remote-alpha.vault-workload-auth-summary.v1",
+		"schema_interpretation: vault-workload-auth-summary",
+		"operation_mode: check_only",
+		"collection_status: collected",
+		"overall_classification: pass",
+		"non_mutating: true",
+		"blockers_count: 0",
+		"warnings_count: 0",
+		"requirements_count: 2",
+		"auth_smoke.jwt_fetch_status: pass",
+		"auth_smoke.vault_login_status: pass",
+		"auth_smoke.token_lookup_status: pass",
+		"auth_smoke.proof_read_status: pass",
+		"auth_smoke.proof_runtime_secret_status: pass",
+		"auth_smoke.proof_runtime_secret_field_present: true",
+		"auth_smoke.token_revoked_status: pass",
+	)
+	assertContainsNone(t, "recovery-session vault workload auth metadata", output,
+		"internal_detail",
+		"must not print",
+		"req-a",
+		"req-b",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRecognizesRuntimeIdentitySummary(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.remote-runtime-identity-helper-summary.v1alpha1","mode":"generate","overall_status":"pass","runtime_identity_helper_local_fetch":"pass","jwt_fetch_output_discarded":true,"helper_binary":{"exists":true},"spire_fetch_smoke":{"status":"pass","output_discarded":true},"checks":[true,false],"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "runtime-identity-helper-summary.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--runtime-identity-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session runtime identity metadata", output,
+		"classification: runtime-identity-summary",
+		"schema_version: execution-substrate.remote-runtime-identity-helper-summary.v1alpha1",
+		"schema_interpretation: runtime-identity-helper-summary",
+		"mode: generate",
+		"overall_status: pass",
+		"runtime_identity_helper_local_fetch: pass",
+		"jwt_fetch_output_discarded: true",
+		"helper_binary.exists: true",
+		"spire_fetch_smoke.status: pass",
+		"spire_fetch_smoke.output_discarded: true",
+		"checks_count: 2",
+	)
+	assertContainsNone(t, "recovery-session runtime identity metadata", output,
+		"internal_detail",
+		"must not print",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRecognizesVaultServiceUserSummary(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.remote-alpha.vault-service-user-migration-summary.v1","operation_mode":"check_only","collection_status":"collected","non_mutating":true,"apply_ready":true,"sudo_unavailable":false,"blockers":[],"warnings":["warning detail"],"smoke":{"command_output":"must not print"}}`
+	fixturePath := filepath.Join(dir, "vault-service-user-migration-check-only.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--vault-service-user-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session service user metadata", output,
+		"classification: vault-service-user-summary",
+		"schema_version: execution-substrate.remote-alpha.vault-service-user-migration-summary.v1",
+		"schema_interpretation: vault-service-user-migration-summary",
+		"operation_mode: check_only",
+		"collection_status: collected",
+		"non_mutating: true",
+		"apply_ready: true",
+		"sudo_unavailable: false",
+		"blockers_count: 0",
+		"warnings_count: 1",
+	)
+	assertContainsNone(t, "recovery-session service user metadata", output,
+		"command_output",
+		"must not print",
+		"warning detail",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckUnknownSchemaDefaultAndStrict(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.unknown.v1","operation_mode":"check_only","warnings":["do not print"],"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "unknown.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--readiness-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session unknown schema default", output,
+		"classification: readiness-summary",
+		"path: "+fixturePath,
+		"schema_version: execution-substrate.unknown.v1",
+		"schema_interpretation: unknown",
+	)
+	assertContainsNone(t, "recovery-session unknown schema default", output,
+		"operation_mode",
+		"warnings_count",
+		"internal_detail",
+		"must not print",
+		"do not print",
+	)
+
+	strictOutput := requireRemoteAlphaOperatorFailure(t,
+		"recovery-session", "--evidence-check", "--strict-known-schema",
+		"--readiness-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session unknown schema strict", strictOutput,
+		"evidence-check failed for readiness-summary",
+		"path: "+fixturePath,
+		"error_classification: unknown_schema",
+	)
+	assertContainsNone(t, "recovery-session unknown schema strict", strictOutput,
+		"operation_mode",
+		"internal_detail",
+		"must not print",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceDirDiscoversExpectedFilesOnly(t *testing.T) {
+	dir := t.TempDir()
+	readinessFixture := `{"schema_version":"execution-substrate.remote-alpha.es-writable-state-readiness.v1","operation_mode":"check_only","non_mutating":true,"checker_mode":"alpha-compat","overall_classification":"pass","blockers":[],"warnings":[],"bounded_compatibility_edges":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "es-writable-state-readiness.json"), []byte(readinessFixture), 0o600); err != nil {
+		t.Fatalf("write readiness fixture: %v", err)
+	}
+	vaultFixture := `{"schema_version":"execution-substrate.remote-alpha.vault-workload-auth-summary.v1","operation_mode":"check_only","collection_status":"collected","overall_classification":"pass","non_mutating":true,"blockers":[],"warnings":[],"auth_smoke":{"jwt_fetch":{"status":"pass"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "vault-workload-auth-summary.json"), []byte(vaultFixture), 0o600); err != nil {
+		t.Fatalf("write vault fixture: %v", err)
+	}
+	nestedDir := filepath.Join(dir, "nested")
+	if err := os.Mkdir(nestedDir, 0o700); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	nestedRuntime := filepath.Join(nestedDir, "runtime-identity-helper-summary.json")
+	if err := os.WriteFile(nestedRuntime, []byte(`{"schema_version":"execution-substrate.remote-runtime-identity-helper-summary.v1alpha1"}`), 0o600); err != nil {
+		t.Fatalf("write nested runtime fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--evidence-dir", dir,
+	)
+	assertContainsAll(t, "recovery-session evidence dir", output,
+		"evidence_dir: "+dir,
+		"expected_filename: es-writable-state-readiness.json",
+		"expected_filename: vault-workload-auth-summary.json",
+		"classification: readiness-summary",
+		"classification: vault-workload-auth-summary",
+		"schema_interpretation: readiness-summary",
+		"schema_interpretation: vault-workload-auth-summary",
+		"expected_filename: runtime-identity-helper-summary.json",
+		"status: not_supplied",
+		"expected_filename: vault-service-user-migration-apply-summary.json",
+	)
+	assertContainsNone(t, "recovery-session evidence dir", output,
+		nestedRuntime,
+		"nested/runtime-identity-helper-summary.json",
 	)
 }
 
@@ -692,6 +920,16 @@ func TestRemoteAlphaOperatorRecoverySessionRejectsDuplicateAndMisplacedFlags(t *
 			name:      "duplicate staging record",
 			args:      []string{"--evidence-check", "--staging-record", "a", "--staging-record", "b"},
 			duplicate: "--staging-record",
+		},
+		{
+			name:      "duplicate evidence dir",
+			args:      []string{"--evidence-check", "--evidence-dir", "a", "--evidence-dir", "b"},
+			duplicate: "--evidence-dir",
+		},
+		{
+			name:      "duplicate strict known schema",
+			args:      []string{"--evidence-check", "--strict-known-schema", "--strict-known-schema"},
+			duplicate: "--strict-known-schema",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1082,12 +1320,12 @@ func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	assertContainsAll(t, "unknown subcommand refusal", output,
 		"unknown subcommand",
 		"definitely-unknown",
-		"not implemented in P0g",
+		"not implemented in P0h",
 		"later audited slice",
 	)
 }
 
-func TestRemoteAlphaOperatorSourceLimitsP0gDelegationSurface(t *testing.T) {
+func TestRemoteAlphaOperatorSourceLimitsP0hDelegationSurface(t *testing.T) {
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	assertContainsAll(t, "operator source", source,
 		"set -euo pipefail",

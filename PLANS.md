@@ -179,6 +179,25 @@ audited future slices. P0g must not add Vault token brokerage, IM authority, CP
 recovery authority, or Remote Alpha deployment/provisioning/reconciliation
 architecture.
 
+The P0h combined slice may extend only
+`scripts/remote_alpha_operator.sh recovery-session --evidence-check` with
+schema-aware interpretation of known local evidence summaries. It remains
+local-only and may recognize the readiness summary, readiness staging record,
+Vault workload-auth summary, runtime identity helper summary, and Vault
+service-user migration summary schemas. Recognized schemas must use explicit
+safe-field allowlists and print only non-secret status, classification, boolean,
+count, schema, byte-count, and SHA-256 metadata. Unknown schemas are allowed by
+default with `schema_interpretation=unknown`; `--strict-known-schema` may fail
+unknown schemas. `--evidence-dir <path>` may inspect only direct expected
+filenames in that directory, report missing expected filenames as
+`not_supplied`, and must not recurse or write into the directory. P0h must not
+print full JSON, create a session summary, write `.out`, run live tools,
+dispatch helpers, run IM, support-bundle collection, CP proof, reset/unseal
+flows, workload-auth live checks, runtime identity generation, or Vault
+service-user apply. Schema interpretation is evidence/projection only and must
+not add IM authority, CP recovery authority, ES Vault token brokerage, or Remote
+Alpha deployment/provisioning/reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
