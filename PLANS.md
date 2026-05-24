@@ -102,6 +102,19 @@ and sudo model, including noninteractive `sudo -n` preflight by default and
 explicit `--interactive-sudo` only for a visible terminal. The facade may
 continue to print IM commands only; it must not call IM.
 
+The P0d implementation slice is limited to exactly that one check-only route:
+`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`. The route
+must require an explicit `--ssh-target`, accept only the P0c allowlisted helper
+flags, reject `--apply`, `--dry-run`, unknown flags, unknown positional
+arguments, duplicate route flags, and secret-like arguments before helper
+execution, and delegate only to the public staged wrapper
+`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`. It must not
+source helpers, invoke `scripts/internal/*`, construct helper paths from user
+input, add generic staging or helper routing, call Infrastructure Manager,
+create an operator-owned summary, rename helper artifacts, or add any reset,
+unseal, Vault workload-auth, runtime-identity, service-user migration,
+config/TLS, binary deployment, or writable-state ownership route.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

@@ -232,24 +232,36 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current P0b implementation status:
+Current implementation status through P0d:
 
-- `scripts/remote_alpha_operator.sh` exists only as the help, inventory, and
-  print-command skeleton.
+- P0b implemented the help, inventory, and print-command skeleton.
+- P0d implements exactly one staged-helper delegation route,
+  `es-writable-state-readiness-check`.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
-  `print-support-bundle-command`, and `print-im-commands`.
+  `print-support-bundle-command`, `print-im-commands`, and
+  `es-writable-state-readiness-check`.
+- The new route delegates only to the public staged wrapper
+  `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`.
+- The route is check-only/non-mutating by construction: it has no `--apply`
+  path, rejects `--dry-run`, and requires an explicit `--ssh-target` before the
+  helper may run. Host-local execution through the operator facade is not
+  enabled in P0d.
+- The route accepts only the P0c allowlisted helper flags and rejects unknown
+  flags, unknown positional arguments, duplicate route flags, and secret-like
+  arguments before helper execution.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
-  commands only. It does not invoke Infrastructure Manager, SSH, sudo, Vault,
-  Nomad, Docker, SPIRE, `systemctl`, support-bundle collection, reset/unseal
-  flows, or ES helper delegation.
+  commands only. It does not invoke Infrastructure Manager refresh or
+  support-bundle collection.
 - Vault reset/unseal, workload-auth check, runtime identity summary, Vault
-  service-user check, runtime security check, and staged `es-*` helper
-  delegation remain not implemented in P0b and require later audited slices.
+  service-user check, runtime security check, and all other staged `es-*`
+  helper delegation remain not implemented and require later audited slices.
 - `vault-workload-auth-bootstrap` remains blocked/reopened and unavailable in
   v1.
-- P0b output is deterministic operator guidance and evidence/projection only;
-  it writes no summary, `.out` file, support bundle, report, or generated
-  artifact.
+- Operator facade output is deterministic operator guidance and
+  evidence/projection only. The facade itself writes no operator-owned summary,
+  `.out` file, support bundle, report, or generated artifact; the delegated
+  helper remains the owner of its existing readiness/provenance artifacts when
+  the route is intentionally invoked.
 
 Purpose:
 
@@ -394,6 +406,72 @@ service-user migration wrappers have check-only defaults but also expose
 mutation-capable `--apply` paths. The config/TLS staged wrapper is already
 called out above as a sudo-model gap unless fixed and also fronts a helper
 whose host-local default is apply.
+
+### P0d First Staged-Helper Delegation Implementation
+
+`Bounded slice rule`: P0d implements exactly one Remote Alpha operator route:
+`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`.
+
+The implemented route delegates only to:
+
+- `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`
+
+It does not source helper scripts, does not invoke `scripts/internal/*`, does
+not construct helper paths from user input, and does not introduce generic
+staging or generic helper routing.
+
+The route requires:
+
+- `--ssh-target <user@host>`
+
+Host-local execution is intentionally not enabled through the operator facade in
+P0d. That keeps this first delegation slice aligned with the existing staged
+wrapper contract and avoids turning the facade into a local privileged helper
+runner.
+
+The route may pass only these helper flags:
+
+- `--ssh-target <user@host>`
+- `--mode <alpha-compat|future-non-root-required>`
+- `--run-id <timestamp-or-id>`
+- `--output-dir </path/to/output-dir>`
+- `--readiness-output </path/to/es-writable-state-readiness.json>`
+- `--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`
+- `--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`
+- `--interactive-sudo`
+- `--keep-staging-on-failure`
+- `--help`
+
+The route rejects before helper execution:
+
+- `--apply`
+- `--dry-run`
+- unknown flags
+- unknown positional arguments
+- duplicate route flags; the operator does not rely on helper last-one-wins
+  parsing
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, passwords, and
+  secret payloads
+
+The operator facade itself does not call `sudo`, `ssh`, `scp`, Vault, Nomad,
+Docker, SPIRE, `systemctl`, Infrastructure Manager refresh, support-bundle
+collection, reset/unseal flows, workload-auth bootstrap or checks,
+runtime-identity summaries, service-user migration helpers, config/TLS helpers,
+binary deployment helpers, or writable-state ownership helpers. SSH/SCP and the
+helper's noninteractive `sudo -n` preflight remain inside the existing delegated
+staged wrapper and only run when an operator intentionally invokes this route
+with an explicit `--ssh-target`.
+
+The implemented route preserves the exact existing Infrastructure
+Manager-consumed local artifact filenames:
+
+- `es-writable-state-readiness.json`
+- `es-writable-state-readiness-helper-staging-record.json`
+
+It does not rename, replace, aggregate, or obscure those files. It writes no
+aggregate operator summary and does not call Infrastructure Manager; the facade
+may continue to print the Mac-side IM refresh and support-bundle commands only.
 
 ## Direct Remote Requirements
 

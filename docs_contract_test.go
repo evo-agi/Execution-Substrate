@@ -2219,6 +2219,11 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"`Bounded slice rule`",
 		"bounded MVP proof/support helper plus evidence/projection outputs only",
 		"`scripts/remote_alpha_operator.sh`",
+		"Current implementation status through P0d:",
+		"P0d implements exactly one staged-helper delegation route",
+		"`es-writable-state-readiness-check`",
+		"delegates only to the public staged wrapper",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
 		"operator ergonomics over existing bounded helpers",
 		"Mac-side only: inventory, print IM commands, and staged-wrapper delegation",
 		"Remote-host only: Vault reset/unseal, runtime identity summary, Vault workload-auth check, and Vault service-user check.",
@@ -2242,6 +2247,65 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"The proposed `vault-workload-auth-bootstrap` surface is blocked/reopened for now.",
 		"reset/unseal/check helpers but no safe Remote Alpha helper that bootstraps Vault JWT auth, Vault roles, or proof secrets after reset without root-token handling",
 		"does not design root-token automation",
+	)
+}
+
+func TestRemoteAlphaOperatorP0dDocsFirstDelegationBoundary(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0d First Staged-Helper Delegation Implementation", "## Direct Remote Requirements")
+
+	assertContainsAll(t, "Remote Alpha operator P0d PLANS boundary", plans,
+		"The P0d implementation slice is limited to exactly that one check-only route",
+		"`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`",
+		"require an explicit `--ssh-target`",
+		"accept only the P0c allowlisted helper flags",
+		"reject `--apply`, `--dry-run`, unknown flags, unknown positional arguments, duplicate route flags, and secret-like arguments before helper execution",
+		"delegate only to the public staged wrapper",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"must not source helpers",
+		"invoke `scripts/internal/*`",
+		"add generic staging or helper routing",
+		"call Infrastructure Manager",
+		"create an operator-owned summary",
+		"rename helper artifacts",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator P0d docs boundary", operatorSection,
+		"`Bounded slice rule`: P0d implements exactly one Remote Alpha operator route",
+		"`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`",
+		"The implemented route delegates only to:",
+		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
+		"does not source helper scripts",
+		"does not invoke `scripts/internal/*`",
+		"does not construct helper paths from user input",
+		"does not introduce generic staging or generic helper routing",
+		"Host-local execution is intentionally not enabled through the operator facade in P0d.",
+		"The route may pass only these helper flags:",
+		"`--ssh-target <user@host>`",
+		"`--mode <alpha-compat|future-non-root-required>`",
+		"`--run-id <timestamp-or-id>`",
+		"`--output-dir </path/to/output-dir>`",
+		"`--readiness-output </path/to/es-writable-state-readiness.json>`",
+		"`--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
+		"`--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
+		"`--interactive-sudo`",
+		"`--keep-staging-on-failure`",
+		"`--help`",
+		"The route rejects before helper execution:",
+		"`--apply`",
+		"`--dry-run`",
+		"unknown positional arguments",
+		"duplicate route flags",
+		"does not rely on helper last-one-wins parsing",
+		"secret-like arguments",
+		"The operator facade itself does not call `sudo`, `ssh`, `scp`, Vault, Nomad, Docker, SPIRE, `systemctl`, Infrastructure Manager refresh, support-bundle collection, reset/unseal flows, workload-auth bootstrap or checks, runtime-identity summaries, service-user migration helpers, config/TLS helpers, binary deployment helpers, or writable-state ownership helpers.",
+		"only run when an operator intentionally invokes this route with an explicit `--ssh-target`",
+		"preserves the exact existing Infrastructure Manager-consumed local artifact filenames",
+		"`es-writable-state-readiness.json`",
+		"`es-writable-state-readiness-helper-staging-record.json`",
+		"writes no aggregate operator summary and does not call Infrastructure Manager",
+		"the facade may continue to print the Mac-side IM refresh and support-bundle commands only",
 	)
 }
 
