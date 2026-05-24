@@ -306,9 +306,9 @@ P0k dry-run route is the prerequisite for this design: commit `b1a561a` passed
 live validation of
 `scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
 --ssh-target host_to_remote_linux_m75q --dry-run`, proving the non-destructive
-staging, invocation, and cleanup-attempt behavior for reset planning. P0l stays
-docs/static-test only; `--execute-reset` remains future until later separate
-implementation, audit, and live-validation slices.
+staging, invocation, and cleanup-attempt behavior for reset planning. P0l stayed
+docs/static-test only; at P0l, `--execute-reset` remained future until later
+separate implementation, audit, and live-validation slices.
 
 P0l fixes the future destructive contract as a Mac-side operator-facade route
 only. It must require `--ssh-target` plus `--interactive-tty`, and
@@ -351,6 +351,50 @@ reset-capable helper. The route remains bounded Remote Alpha proof/support
 workflow glue only; it must not make ES a Vault token broker, IM a reconciler,
 CP a recovery authority, or Remote Alpha production/deployment/reconciliation
 architecture.
+
+The P0m implementation/self-audit slice may implement exactly the Mac-side
+destructive disposable Vault reset route defined by P0l:
+`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
+--ssh-target <target> --execute-reset --interactive-tty`. P0m may validate only
+with static and fake SSH/SCP tests; it must not run live SSH, sudo, Vault, reset,
+unseal, execute-reset, Infrastructure Manager refresh, support-bundle
+collection, CP proof, workload-auth live checks, runtime identity generation,
+or network-dependent integration tests. The P0k dry-run route remains the
+prerequisite/planning route, and P0m must preserve the existing P0k dry-run,
+P0i/P0j unseal-existing, recovery-session evidence/plan/inventory, readiness
+session, and writable-state readiness routes.
+
+P0m's execute-reset route must require `--ssh-target` and
+`--interactive-tty`; `--execute-reset` without either must fail before staging.
+`--dry-run` and `--execute-reset` are mutually exclusive. There is no
+host-local execute-reset route through the operator facade in this slice. The
+route may stage only `scripts/remote_alpha_reset_disposable_vault.sh` from the
+fixed script-relative helper path and invoke only
+`remote_alpha_reset_disposable_vault.sh --execute-reset` over an interactive
+SSH TTY. It must never pass `--dry-run`, `--unseal-only`,
+`--post-unseal-check`, workload-auth flags, Infrastructure Manager commands,
+support-bundle commands, CP proof commands, runtime identity flags, helper path
+overrides, or arbitrary commands in execute-reset mode. It must not offer
+`--keep-staging-on-failure`, because the staged helper contains destructive
+capabilities, and cleanup of the staged reset-capable helper must be attempted
+by default.
+
+P0m preserves the human-visible prompt and secret model. The exact confirmation
+phrase remains `RESET DISPOSABLE REMOTE ALPHA VAULT` and is typed only by the
+operator in the visible remote helper/Vault terminal. The route must not accept
+the phrase, root token, unseal key, client token, Vault token, API key, private
+key, password, JWT-SVID payload, Vault init output, or secret payload through
+CLI arguments, environment values, environment files, local or remote files,
+logs, `.out`, reports, support bundles, retained bundles, CP artifacts, or
+Codex output. The operator facade must not receive, parse, log, store, echo,
+summarize, persist, tee, run `script`, capture, or transcript terminal content.
+P0m writes no `.out` summary, operator summary, report, support bundle,
+generated JSON, retained bundle, or CP artifact. Process exit and
+operator-visible helper output are the only route result surfaces. Post-reset
+evidence checks remain separate later steps. P0m remains bounded Remote Alpha
+proof/support workflow glue only; it must not make ES a Vault token broker, IM
+a reconciler, CP a recovery authority, or Remote Alpha
+production/deployment/reconciliation architecture.
 
 ## Current Remote Alpha Hardening Tranche
 

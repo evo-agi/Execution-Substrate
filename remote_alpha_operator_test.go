@@ -144,7 +144,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 	help := requireRemoteAlphaOperatorSuccess(t, "--help")
 	assertContainsAll(t, "operator help", help,
 		"Remote Alpha operator facade",
-		"P0k adds recovery-session vault-reset-disposable as an explicit Mac-side dry-run planning route while preserving the P0i/P0j unseal-existing routes",
+		"P0m adds recovery-session vault-reset-disposable --execute-reset as an explicit destructive Mac-side operator route while preserving the P0k dry-run planning route and the P0i/P0j unseal-existing routes",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -165,6 +165,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"recovery-session vault-unseal-existing --host-local",
 		"recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty",
 		"recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run",
+		"recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
@@ -176,7 +177,9 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"host-local vault-unseal-existing",
 		"Mac-side interactive TTY vault-unseal-existing",
 		"Mac-side vault-reset-disposable dry-run planning",
+		"Mac-side destructive vault-reset-disposable execute-reset",
 		"helper's --dry-run mode",
+		"helper's --execute-reset mode",
 		"supports --plan, --inventory, --next-steps",
 		"writes no summary",
 		"preserves es-writable-state-readiness.json",
@@ -185,14 +188,14 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"--output-root .out/remote-alpha-m75q/support-bundles",
 		"--ssh-alias host_to_remote_linux_m75q",
 		"does not invoke IM refresh or support-bundle collection",
-		"does not add reset execution, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch",
+		"does not add Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch",
 	)
 }
 
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented through P0k",
+		"implemented through P0m",
 		"help",
 		"inventory",
 		"print-refresh-command",
@@ -212,15 +215,16 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"recovery-session vault-unseal-existing --host-local",
 		"recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty",
 		"recovery-session vault-reset-disposable --ssh-target <target> --dry-run",
+		"recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
 		"invokes only --unseal-only through ssh -tt",
 		"invokes only --dry-run",
+		"invokes only --execute-reset through ssh -tt",
 		"no transcript",
 		"secret-sensitive",
+		"destructive",
 		"non-destructive",
-		"future/not implemented",
-		"Vault destructive reset execution",
-		"execute-reset remains a future audited destructive exact-phrase slice",
+		"vault-reset-disposable --execute-reset is destructive and must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state",
 		"workload-auth check",
 		"runtime identity summary generation",
 		"Vault service-user check/apply execution",
@@ -235,6 +239,8 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise",
 		"vault-reset-disposable --dry-run is non-destructive planning only",
 		"does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles",
+		"vault-reset-disposable --execute-reset is destructive and must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state",
+		"RESET DISPOSABLE REMOTE ALPHA VAULT",
 		"must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture",
 	)
 }
@@ -374,7 +380,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented as a top-level P0k route",
+				"not implemented as a top-level P0m route",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -457,7 +463,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
 	assertContainsAll(t, "recovery-session help", help,
 		"Remote Alpha operator workflow: recovery-session",
-		"P0k scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes and Mac-side vault-reset-disposable dry-run planning",
+		"P0m scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, and Mac-side destructive vault-reset-disposable execute-reset",
 		"Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI",
 		"Codex must not receive, type, log, relay, persist, or summarize the unseal key",
 		"Outputs are evidence/projection/diagnostics only, never authority",
@@ -478,7 +484,13 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command",
 		"recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty",
 		"recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run",
+		"recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty",
 		"Mac-side dry-run planning only",
+		"destructive Mac-side operator route",
+		"stages only the reset helper",
+		"invokes only --execute-reset",
+		"exact confirmation phrase",
+		"visible remote terminal",
 		"non-destructive and does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles",
 		"prints no full JSON",
 		"creates no summary file",
@@ -497,7 +509,10 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"invokes only --unseal-only over ssh -tt",
 		"vault-reset-disposable --ssh-target <target> --dry-run - implemented Mac-side dry-run planning mode",
 		"invokes only --dry-run over SSH",
-		"execute-reset for disposable reset - future destructive exact-phrase mode",
+		"vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - implemented destructive Mac-side operator mode",
+		"invokes only --execute-reset over ssh -tt",
+		"RESET DISPOSABLE REMOTE ALPHA VAULT",
+		"visible remote helper/Vault terminal",
 		"workload-auth check execution - future audited live check",
 		"runtime identity summary generation - future audited evidence route",
 		"service-user check/apply - remains separate",
@@ -505,7 +520,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"not ES Vault token brokerage",
 		"vault-reset-disposable --dry-run is non-destructive",
 		"it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles",
-		"no destructive reset/workload-auth/runtime-identity/service-user execution route is added in P0k",
+		"no post-unseal/workload-auth/runtime-identity/service-user/IM/support-bundle/CP-proof bundling is added in P0m",
 		"vault-unseal-existing does not validate default noninteractive readiness",
 	)
 
@@ -515,7 +530,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"implemented safe/local or explicitly host-local",
 		"vault-unseal-existing --host-local",
 		"vault-reset-disposable --ssh-target <target> --dry-run",
-		"future explicit audited slices",
+		"vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"separate IM actions",
 		"non-claims",
 	)
@@ -536,12 +551,15 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session vault-unseal-existing --host-local",
 		"recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty",
 		"recovery-session vault-reset-disposable --ssh-target <target> --dry-run",
+		"recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"implemented host-local explicit operator mode",
 		"implemented Mac-side explicit operator mode",
 		"invokes only --unseal-only through ssh -tt",
 		"invokes only --dry-run through SSH",
+		"invokes only --execute-reset through ssh -tt",
 		"does not stop Vault, move raft storage, init, unseal, run post-unseal checks, run IM, or collect support bundles",
 		"secret-sensitive",
+		"destructive",
 		"non-destructive",
 		"classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened",
 		"vault-workload-auth-bootstrap - blocked/reopened",
@@ -608,11 +626,14 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableHelpDocumentsDryR
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "vault-reset-disposable", "--help")
 	assertContainsAll(t, "vault-reset-disposable help", help,
 		"Remote Alpha recovery-session mode: vault-reset-disposable",
-		"P0k scope: explicit Mac-side dry-run-only disposable Vault reset planning route",
-		"stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --dry-run",
+		"P0m scope: explicit Mac-side disposable Vault reset dry-run planning route plus destructive execute-reset operator route",
+		"Dry-run stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --dry-run",
+		"Execute-reset stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --execute-reset through ssh -tt",
+		"Dry-run remains the prerequisite/planning route",
+		"Live execute-reset must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state",
 		"The helper supports --dry-run; the operator facade passes it explicitly",
-		"No transcript, tee/script capture, log, .out, report, support bundle, operator summary, IM refresh, workload-auth check, reset execution, init, unseal, post-unseal check, or CP proof is created or run",
-		"Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --dry-run",
+		"No transcript, tee/script capture, log, .out, report, support bundle, operator summary, IM refresh, workload-auth check, post-unseal check, runtime identity summary, or CP proof is created or run",
+		"Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --dry-run or scripts/remote_alpha_reset_disposable_vault.sh --execute-reset",
 		"Non-destructive behavior",
 		"This is planning/inspection only",
 		"It does not stop Vault",
@@ -622,26 +643,39 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableHelpDocumentsDryR
 		"It does not run post-unseal checks",
 		"It does not run Infrastructure Manager",
 		"It does not collect support bundles",
-		"Execute-reset remains a future explicit destructive mode with the exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT",
+		"Execute-reset is a destructive explicit operator route and requires --interactive-tty",
+		"Destructive execute-reset behavior",
+		"This is destructive for disposable Remote Alpha Vault state",
+		"The existing exact confirmation phrase is RESET DISPOSABLE REMOTE ALPHA VAULT",
+		"The operator types that phrase only in the visible remote helper/Vault terminal",
+		"Vault init output, root token, unseal key, and Vault prompts are handled only by the human operator in the visible remote terminal",
+		"The phrase and Vault secrets must never be passed by CLI args, env files, files, logs, .out, reports, support bundles, retained bundles, or Codex output",
+		"The operator facade does not receive, parse, log, store, echo, summarize, or persist the phrase or secret material",
 		"Artifacts and outputs remain evidence/projection/diagnostics only, never authority",
 		"remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run",
+		"remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty",
 		"Allowed flags",
 		"--ssh-target <target>",
 		"--dry-run",
-		"Topology rules: Mac-side only",
-		"--host-local is not accepted",
-		"Forbidden in P0k",
 		"--execute-reset",
+		"--interactive-tty",
+		"Topology rules: Mac-side only",
+		"exactly one of --dry-run or --execute-reset is required",
+		"--execute-reset requires --interactive-tty",
+		"--dry-run rejects --interactive-tty",
+		"--host-local is not accepted",
+		"Forbidden in P0m",
 		"--unseal-only",
 		"--post-unseal-check",
 		"--host-local",
-		"--interactive-tty",
 		"--keep-staging-on-failure",
 		"workload-auth flags",
 		"IM commands",
+		"support-bundle commands",
+		"runtime-identity flags",
 		"secret-like flags",
 		"equals-form options",
-		"Non-claims: not reset execution, not init, not unseal, not workload-auth bootstrap or check, not IM refresh/support-bundle, not CP proof",
+		"Non-claims: not workload-auth bootstrap or check, not IM refresh/support-bundle, not CP proof",
 		"not ES Vault token brokerage",
 		"not Remote Alpha deployment/provisioning/reconciliation architecture",
 	)
@@ -1199,26 +1233,36 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableRejectsUnsafeArgs
 		{
 			name:     "missing dry run",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session vault-reset-disposable requires --dry-run", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-reset-disposable requires --dry-run or --execute-reset", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
-			name:     "execute reset",
+			name:     "execute reset missing ssh target",
 			args:     []string{"--execute-reset"},
-			required: []string{"recovery-session vault-reset-disposable forbids --execute-reset", "Mac-side dry-run planning only", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-reset-disposable requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "execute reset missing interactive tty",
+			args:     []string{"--ssh-target", "host", "--execute-reset"},
+			required: []string{"recovery-session vault-reset-disposable --execute-reset requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "execute reset plus dry run",
+			args:     []string{"--ssh-target", "host", "--execute-reset", "--dry-run"},
+			required: []string{"recovery-session vault-reset-disposable requires exactly one mode: --dry-run or --execute-reset", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "unseal only",
 			args:     []string{"--unseal-only"},
-			required: []string{"recovery-session vault-reset-disposable forbids --unseal-only", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-reset-disposable forbids --unseal-only", "does not combine reset, unseal, post-unseal checks", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "post unseal check",
-			args:     []string{"--post-unseal-check"},
-			required: []string{"recovery-session vault-reset-disposable forbids --post-unseal-check", "No recovery-session live helper or IM execution occurred."},
+			args:     []string{"--ssh-target", "host", "--execute-reset", "--post-unseal-check"},
+			required: []string{"recovery-session vault-reset-disposable forbids --post-unseal-check", "does not combine reset, unseal, post-unseal checks", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "host local",
-			args:     []string{"--host-local"},
+			args:     []string{"--ssh-target", "host", "--execute-reset", "--host-local"},
 			required: []string{"recovery-session vault-reset-disposable forbids --host-local", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
@@ -1272,6 +1316,16 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableRejectsUnsafeArgs
 			required: []string{"duplicate option for recovery-session: --dry-run", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
+			name:     "duplicate execute reset",
+			args:     []string{"--ssh-target", "host", "--execute-reset", "--execute-reset", "--interactive-tty"},
+			required: []string{"duplicate option for recovery-session: --execute-reset", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "duplicate interactive tty",
+			args:     []string{"--ssh-target", "host", "--execute-reset", "--interactive-tty", "--interactive-tty"},
+			required: []string{"duplicate option for recovery-session: --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
 			name:     "ssh target option injection",
 			args:     []string{"--ssh-target", "-oProxyCommand=sh", "--dry-run"},
 			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
@@ -1287,7 +1341,9 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableRejectsUnsafeArgs
 			assertContainsAll(t, "vault-reset-disposable refusal", output, tc.required...)
 			assertContainsNone(t, "vault-reset-disposable refusal", output,
 				"Running Mac-side disposable Vault reset dry-run planning route",
+				"Running Mac-side disposable Vault execute-reset",
 				"remote_alpha_reset_disposable_vault.sh --dry-run",
+				"remote_alpha_reset_disposable_vault.sh --execute-reset",
 			)
 		})
 	}
@@ -1315,7 +1371,40 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableRejectsSecretLike
 			)
 			assertContainsNone(t, "vault-reset-disposable secret flag refusal", output,
 				"Running Mac-side disposable Vault reset dry-run planning route",
+				"Running Mac-side disposable Vault execute-reset",
 				"remote_alpha_reset_disposable_vault.sh --dry-run",
+				"remote_alpha_reset_disposable_vault.sh --execute-reset",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableExecuteResetRejectsSecretLikeArgsBeforeDelegation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--api-key=dummy"},
+		{"--root-token", "dummy"},
+		{"--unseal-key", "dummy"},
+		{"--vault-token", "dummy"},
+		{"--client-token", "dummy"},
+		{"--jwt-svid", "dummy"},
+		{"--private-key", "dummy"},
+		{"--password", "dummy"},
+		{"--secret", "dummy"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			routeArgs := append([]string{
+				"recovery-session", "vault-reset-disposable",
+				"--ssh-target", "host",
+				"--execute-reset",
+				"--interactive-tty",
+			}, args...)
+			output := requireRemoteAlphaOperatorFailure(t, routeArgs...)
+			assertContainsAll(t, "vault-reset-disposable execute secret flag refusal", output,
+				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
+			)
+			assertContainsNone(t, "vault-reset-disposable execute secret flag refusal", output,
+				"Running Mac-side disposable Vault execute-reset",
+				"remote_alpha_reset_disposable_vault.sh --execute-reset",
 			)
 		})
 	}
@@ -1599,9 +1688,10 @@ if [[ "${1:-}" == "/bin/bash" && "${2:-}" == "-s" ]]; then
 fi
 if [[ "$#" -eq 1 && "${1:-}" == exec\ /bin/bash\ -c* ]]; then
   command_string="${1}"
-  remote_prefix="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"
-  mapped_prefix="${FAKE_REMOTE_ROOT}${remote_prefix}"
-  mapped_command="${command_string//${remote_prefix}/${mapped_prefix}}"
+  dry_run_prefix="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"
+  execute_prefix="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-execute"
+  mapped_command="${command_string//${dry_run_prefix}/${FAKE_REMOTE_ROOT}${dry_run_prefix}}"
+  mapped_command="${mapped_command//${execute_prefix}/${FAKE_REMOTE_ROOT}${execute_prefix}}"
   exec /bin/bash -c "${mapped_command}"
 fi
 echo "unexpected fake ssh invocation: $*" >&2
@@ -1669,7 +1759,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableMacSideDryRunStag
 		"does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run workload-auth checks, run IM, or collect support bundles",
 		"No transcript, tee/script capture, .out, report, support bundle, operator summary, or generated JSON is created.",
 		"staged helper cleanup was attempted",
-		"Execute-reset remains a future explicit destructive mode with exact confirmation phrase; IM refresh and support-bundle collection were not executed here.",
+		"Execute-reset is a separate destructive exact-phrase route; IM refresh and support-bundle collection were not executed here.",
 	)
 
 	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
@@ -1721,6 +1811,145 @@ func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableMacSideDryRunStag
 		t.Fatalf("expected remote reset dry-run staged helper directory to be cleaned, found %d entries", len(entries))
 	}
 	assertNoNewPaths(t, "Mac-side fake reset dry-run route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableExecuteResetNoTTYFailsBeforeStaging(t *testing.T) {
+	h := setupFakeRemoteAlphaResetDryRunHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "vault-reset-disposable",
+		"--ssh-target", "ds@m75q-test",
+		"--execute-reset",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected no-TTY failure before execute-reset staging, got success:\n%s", output)
+	}
+	assertContainsAll(t, "vault-reset-disposable execute no tty refusal", output,
+		"requires visible local terminal",
+		"no staging or SSH occurred",
+		"No recovery-session live helper or IM execution occurred.",
+	)
+	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
+		t.Fatalf("ssh should not run when execute-reset local TTY guard fails: %v", err)
+	}
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run when execute-reset local TTY guard fails: %v", err)
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableExecuteResetStagesSingleHelperWithTTYAndCleanup(t *testing.T) {
+	h := setupFakeRemoteAlphaResetDryRunHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths()...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-reset-disposable",
+		"--ssh-target", "ds@m75q-test",
+		"--execute-reset",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake reset execute route failed: %v\noutput=%s\nssh=%s\nscp=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertContainsAll(t, "Mac-side fake reset execute output", output,
+		"Running Mac-side disposable Vault execute-reset through an explicit interactive SSH TTY.",
+		"Staging only scripts/remote_alpha_reset_disposable_vault.sh and invoking only --execute-reset.",
+		"destructive for disposable Remote Alpha Vault state",
+		"The operator handles confirmation, Vault init output, root token, unseal key, and Vault prompts only in the visible SSH/Vault/helper terminal.",
+		"The operator facade will not read, log, relay, persist, summarize, or capture the confirmation phrase or secret material.",
+		"No transcript, tee/script capture, .out, report, support bundle, operator summary, generated JSON, post-unseal check, workload-auth check, runtime identity summary, IM refresh, or CP proof is created or run.",
+		"staged helper cleanup was attempted",
+		"Post-reset evidence checks, post-unseal checks, workload-auth checks, runtime identity summaries, IM refresh, support-bundle collection, and CP proof were not executed here.",
+	)
+	assertContainsNone(t, "Mac-side fake reset execute output must not print phrase", output,
+		"RESET DISPOSABLE REMOTE ALPHA VAULT",
+	)
+
+	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
+	scpLines := strings.Split(scpLog, "\n")
+	if len(scpLines) != 1 {
+		t.Fatalf("expected exactly one staged file upload, got %q", scpLog)
+	}
+	assertContainsAll(t, "fake reset execute scp log", scpLog,
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_reset_disposable_vault.sh"),
+	)
+	assertContainsNone(t, "fake reset execute scp log", scpLog,
+		"remote_alpha_operator.sh",
+		"scripts/internal",
+		"bundle",
+	)
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty=true"); got != 1 {
+		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	}
+	assertContainsAll(t, "fake reset execute ssh log", sshLog,
+		"tty=true target=ds@m75q-test",
+	)
+	assertContainsNone(t, "fake reset execute ssh log forbidden capture", sshLog,
+		" tee ",
+		"script ",
+		"transcript",
+		".out",
+	)
+
+	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
+	if helperLog != "--execute-reset" {
+		t.Fatalf("expected staged helper to receive only --execute-reset, got %q", helperLog)
+	}
+	assertContainsNone(t, "fake reset execute helper log forbidden modes", helperLog,
+		"--dry-run",
+		"--unseal-only",
+		"--post-unseal-check",
+		"workload-auth",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+	)
+
+	rmLog := mustRead(t, h.rmLogPath)
+	assertContainsAll(t, "fake reset execute remote cleanup log", rmLog,
+		"execution-substrate-remote-alpha-vault-reset-disposable-execute",
+	)
+	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-reset-disposable-execute")); err == nil && len(entries) > 0 {
+		t.Fatalf("expected remote reset execute staged helper directory to be cleaned, found %d entries", len(entries))
+	}
+	assertNoNewPaths(t, "Mac-side fake reset execute route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultResetDisposableSourceKeepsExecuteRouteNarrow(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	section := docSection(t, source, "recovery_session_vault_reset_disposable_require_command() {", "\nrecovery_session_evidence_check() {")
+
+	assertContainsAll(t, "vault-reset-disposable source section", section,
+		"REMOTE_ALPHA_VAULT_RESET_HELPER",
+		"REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT",
+		"REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT",
+		"recovery_session_vault_reset_disposable_require_local_tty",
+		"ssh -tt",
+		`"${helper_path}" --execute-reset`,
+		`"${helper_path}" --dry-run`,
+		"staged helper cleanup was attempted",
+	)
+	assertContainsNone(t, "vault-reset-disposable source section", section,
+		"scripts/internal/",
+		"remote_alpha_operator.sh",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_runtime_identity_helper_summary.sh",
+		"remote_alpha_migrate_vault_service_user.sh",
+		"remote_alpha_prepare_es_config_tls.sh",
+		"remote_alpha_deploy_es_binaries.sh",
+		"remote_alpha_prepare_es_writable_state_ownership.sh",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"print_refresh_command",
+		"print_support_bundle_command",
+		"--workload-auth",
+		"--runtime-identity",
+		"operator_summary",
+		"summary_path",
+		"support_output_root",
+	)
 }
 
 func TestRemoteAlphaOperatorRecoverySessionRejectsDuplicateAndMisplacedFlags(t *testing.T) {
@@ -2173,7 +2402,7 @@ func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	assertContainsAll(t, "unknown subcommand refusal", output,
 		"unknown subcommand",
 		"definitely-unknown",
-		"not implemented in P0k",
+		"not implemented in P0m",
 		"later audited slice",
 	)
 }
@@ -2293,16 +2522,22 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 	resetFunction := source[resetStart : resetStart+resetEnd]
 	assertContainsAll(t, "vault-reset-disposable source", resetFunction,
 		`REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT`,
+		`REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT`,
+		`recovery_session_vault_reset_disposable_require_local_tty`,
 		`scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"`,
 		`"${helper_path}" --dry-run`,
+		`"${helper_path}" --execute-reset`,
 		`ssh "${ssh_target}"`,
+		`ssh -tt "${ssh_target}"`,
 		`require_recovery_option_not_seen "$1" "${ssh_target_seen}"`,
 		`require_recovery_option_not_seen "$1" "${dry_run_seen}"`,
+		`require_recovery_option_not_seen "$1" "${execute_reset_seen}"`,
+		`require_recovery_option_not_seen "$1" "${interactive_tty_seen}"`,
 		`recovery_die "recovery-session vault-reset-disposable requires --ssh-target`,
-		`recovery_die "recovery-session vault-reset-disposable requires --dry-run"`,
+		`recovery_die "recovery-session vault-reset-disposable requires --dry-run or --execute-reset"`,
+		`recovery_die "recovery-session vault-reset-disposable --execute-reset requires --interactive-tty"`,
 	)
 	assertContainsNone(t, "vault-reset-disposable source forbidden execution surfaces", resetFunction,
-		`"--execute-reset"`,
 		`"--unseal-only"`,
 		`"--post-unseal-check"`,
 		"operator-summary",

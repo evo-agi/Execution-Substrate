@@ -11,6 +11,7 @@ REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER="${SCRIPT_DIR}/remote_alpha_stag
 REMOTE_ALPHA_VAULT_RESET_HELPER="${SCRIPT_DIR}/remote_alpha_reset_disposable_vault.sh"
 REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"
+REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-execute"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
 READINESS_STAGING_RECORD_ARTIFACT_NAME="es-writable-state-readiness-helper-staging-record.json"
 READINESS_SESSION_DEFAULT_OUTPUT_PREFIX=".out/remote-alpha-m75q-readiness-session"
@@ -161,7 +162,7 @@ usage() {
   printf '%s\n' \
     "Remote Alpha operator facade" \
     "" \
-    "P0k adds recovery-session vault-reset-disposable as an explicit Mac-side dry-run planning route while preserving the P0i/P0j unseal-existing routes." \
+    "P0m adds recovery-session vault-reset-disposable --execute-reset as an explicit destructive Mac-side operator route while preserving the P0k dry-run planning route and the P0i/P0j unseal-existing routes." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -181,6 +182,7 @@ usage() {
     "  remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local" \
     "  remote_alpha_operator.sh recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run" \
+    "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty" \
     "" \
     "Options for printed command text only:" \
     "  --profile-dir .out/remote-alpha-m75q" \
@@ -188,12 +190,12 @@ usage() {
     "  --ssh-alias host_to_remote_linux_m75q" \
     "  --help, -h" \
     "" \
-    "Implemented through P0k:" \
+    "Implemented through P0m:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, and Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode; writes no summary." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, and Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode; writes no summary." \
     "" \
-    "The operator facade does not invoke IM refresh or support-bundle collection and does not add reset execution, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
+    "The operator facade does not invoke IM refresh or support-bundle collection and does not add Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
 }
 
@@ -205,7 +207,7 @@ inventory() {
     "interactive operator involvement is expected where an explicit mode says so" \
     "IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise" \
     "" \
-    "implemented through P0k:" \
+    "implemented through P0m:" \
     "  help - show bounded facade scope and options" \
     "  inventory - show this static non-secret inventory" \
     "  print-refresh-command - print Mac-side IM live-refresh command text only" \
@@ -217,14 +219,14 @@ inventory() {
     "  recovery-session vault-unseal-existing --host-local - delegates only to scripts/remote_alpha_reset_disposable_vault.sh --unseal-only; host-local; secret-sensitive; non-destructive; not reset; not workload-auth bootstrap; not IM; not CP proof" \
     "  recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty - Mac-side route; stages only scripts/remote_alpha_reset_disposable_vault.sh to a route-specific remote scratch directory and invokes only --unseal-only through ssh -tt; no transcript, no summary, no support bundle" \
     "  recovery-session vault-reset-disposable --ssh-target <target> --dry-run - Mac-side dry-run planning route; stages only scripts/remote_alpha_reset_disposable_vault.sh to a route-specific remote scratch directory and invokes only --dry-run; non-destructive; no transcript, no summary, no support bundle" \
+    "  recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - destructive Mac-side operator route; stages only scripts/remote_alpha_reset_disposable_vault.sh to a route-specific remote scratch directory and invokes only --execute-reset through ssh -tt; no transcript, no summary, no support bundle" \
     "" \
     "future/not implemented:" \
-    "  Vault destructive reset execution - not implemented in P0k; execute-reset remains a future audited destructive exact-phrase slice" \
-    "  workload-auth check execution - not implemented in P0k; requires later audited live check slice" \
-    "  runtime identity summary generation - not implemented in P0k; requires later audited evidence route" \
-    "  Vault service-user check/apply execution - not implemented in P0k; remains separate" \
-    "  runtime security check - not implemented in P0k; requires later audited slice" \
-    "  other staged ES helper delegation - not implemented in P0k; requires later audited slice" \
+    "  workload-auth check execution - not implemented in P0m; requires later audited live check slice" \
+    "  runtime identity summary generation - not implemented in P0m; requires later audited evidence route" \
+    "  Vault service-user check/apply execution - not implemented in P0m; remains separate" \
+    "  runtime security check - not implemented in P0m; requires later audited slice" \
+    "  other staged ES helper delegation - not implemented in P0m; requires later audited slice" \
     "" \
     "blocked/reopened:" \
     "  vault-workload-auth-bootstrap - blocked/reopened and not available in v1" \
@@ -233,6 +235,7 @@ inventory() {
     "  not production, not HA, not multi-tenant, not a general deployment architecture" \
     "  not IM automation or reconciliation, not CP authority, not ES Vault token brokerage" \
     "  vault-reset-disposable --dry-run is non-destructive planning only: it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles" \
+    "  vault-reset-disposable --execute-reset is destructive and must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state; it requires --interactive-tty and the existing exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT in the visible remote helper/Vault terminal" \
     "  must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture" \
     "  no operator-owned summary, support bundle, report, or new authority artifact is written; readiness artifacts remain delegated helper evidence"
 }
@@ -240,7 +243,7 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0k scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes and Mac-side vault-reset-disposable dry-run planning." \
+    "P0m scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, and Mac-side destructive vault-reset-disposable execute-reset." \
     "The human remains the operator. Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI." \
     "Codex must not receive, type, log, relay, persist, or summarize the unseal key." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
@@ -255,6 +258,7 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local" \
     "  remote_alpha_operator.sh recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run" \
+    "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty" \
     "" \
     "Allowed flags for all modes:" \
     "  --help" \
@@ -277,6 +281,7 @@ recovery_session_usage() {
     "" \
     "Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command, helper path overrides, arbitrary command strings, unknown flags, positional arguments, duplicate operational flags, secret-like arguments, and equals-form options." \
     "Submode exception: recovery-session vault-reset-disposable --ssh-target <target> --dry-run is implemented as Mac-side dry-run planning only; it is non-destructive and does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles." \
+    "Submode exception: recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty is implemented as a destructive Mac-side operator route; it stages only the reset helper, invokes only --execute-reset, and relies on the human operator to type the exact confirmation phrase and Vault secrets only in the visible remote terminal." \
     "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out." \
     "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
 }
@@ -314,11 +319,14 @@ recovery_session_vault_unseal_existing_usage() {
 recovery_session_vault_reset_disposable_usage() {
   printf '%s\n' \
     "Remote Alpha recovery-session mode: vault-reset-disposable" \
-    "P0k scope: explicit Mac-side dry-run-only disposable Vault reset planning route." \
-    "This route stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --dry-run." \
+    "P0m scope: explicit Mac-side disposable Vault reset dry-run planning route plus destructive execute-reset operator route." \
+    "Dry-run stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --dry-run." \
+    "Execute-reset stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --execute-reset through ssh -tt." \
     "The helper supports --dry-run; the operator facade passes it explicitly." \
-    "No transcript, tee/script capture, log, .out, report, support bundle, operator summary, IM refresh, workload-auth check, reset execution, init, unseal, post-unseal check, or CP proof is created or run." \
-    "Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --dry-run" \
+    "Dry-run remains the prerequisite/planning route." \
+    "Live execute-reset must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state." \
+    "No transcript, tee/script capture, log, .out, report, support bundle, operator summary, IM refresh, workload-auth check, post-unseal check, runtime identity summary, or CP proof is created or run." \
+    "Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --dry-run or scripts/remote_alpha_reset_disposable_vault.sh --execute-reset" \
     "" \
     "Non-destructive behavior:" \
     "  This is planning/inspection only." \
@@ -329,25 +337,36 @@ recovery_session_vault_reset_disposable_usage() {
     "  It does not run post-unseal checks." \
     "  It does not run Infrastructure Manager." \
     "  It does not collect support bundles." \
-    "  Execute-reset remains a future explicit destructive mode with the exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT." \
+    "  Execute-reset is a destructive explicit operator route and requires --interactive-tty." \
     "  Artifacts and outputs remain evidence/projection/diagnostics only, never authority." \
+    "" \
+    "Destructive execute-reset behavior:" \
+    "  This is destructive for disposable Remote Alpha Vault state." \
+    "  The existing exact confirmation phrase is RESET DISPOSABLE REMOTE ALPHA VAULT." \
+    "  The operator types that phrase only in the visible remote helper/Vault terminal." \
+    "  Vault init output, root token, unseal key, and Vault prompts are handled only by the human operator in the visible remote terminal." \
+    "  The phrase and Vault secrets must never be passed by CLI args, env files, files, logs, .out, reports, support bundles, retained bundles, or Codex output." \
+    "  The operator facade does not receive, parse, log, store, echo, summarize, or persist the phrase or secret material." \
     "" \
     "Usage:" \
     "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --dry-run" \
+    "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty" \
     "" \
     "Allowed flags:" \
     "  --help" \
     "  --ssh-target <target>" \
     "  --dry-run" \
+    "  --execute-reset" \
+    "  --interactive-tty" \
     "" \
-    "Topology rules: Mac-side only; --ssh-target is required; --dry-run is required; --host-local is not accepted in this route; the SSH target must be a single target, not an option or shell command." \
-    "Forbidden in P0k: --execute-reset, --unseal-only, --post-unseal-check, --host-local, --interactive-tty, --interactive-sudo, --apply, --governed-smoke-command, --keep-staging-on-failure, workload-auth flags, IM commands, arbitrary command strings, helper path overrides, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
-    "Non-claims: not reset execution, not init, not unseal, not workload-auth bootstrap or check, not IM refresh/support-bundle, not CP proof, not default noninteractive readiness validation, not ES Vault token brokerage, and not Remote Alpha deployment/provisioning/reconciliation architecture."
+    "Topology rules: Mac-side only; --ssh-target is required; exactly one of --dry-run or --execute-reset is required; --execute-reset requires --interactive-tty; --dry-run rejects --interactive-tty; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
+    "Forbidden in P0m: --unseal-only, --post-unseal-check, --host-local, --interactive-sudo, --apply, --governed-smoke-command, --keep-staging-on-failure, workload-auth flags, IM commands, support-bundle commands, runtime-identity flags, arbitrary command strings, helper path overrides, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
+    "Non-claims: not workload-auth bootstrap or check, not IM refresh/support-bundle, not CP proof, not runtime identity generation, not default noninteractive readiness validation, not ES Vault token brokerage, and not Remote Alpha deployment/provisioning/reconciliation architecture."
 }
 
 recovery_session_plan() {
   printf '%s\n' \
-    "Remote Alpha recovery-session plan (P0k Mac-side disposable Vault reset dry-run planning added)" \
+    "Remote Alpha recovery-session plan (P0m Mac-side disposable Vault reset execute-reset route added)" \
     "classification: bounded proof/support helper; evidence/projection/diagnostics only; no authority source" \
     "default behavior: print this plan/help and exit zero; no live tools run" \
     "" \
@@ -358,12 +377,12 @@ recovery_session_plan() {
     "  vault-unseal-existing --host-local - implemented host-local operator mode for the Linux Remote Alpha host; secret-sensitive but non-destructive; delegates only to the existing reset helper's --unseal-only flow" \
     "  vault-unseal-existing --ssh-target <target> --interactive-tty - implemented Mac-side operator mode; stages only the existing reset helper, invokes only --unseal-only over ssh -tt, and attempts cleanup without transcript capture" \
     "  vault-reset-disposable --ssh-target <target> --dry-run - implemented Mac-side dry-run planning mode; stages only the existing reset helper, invokes only --dry-run over SSH, and attempts cleanup without transcript capture" \
+    "  vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - implemented destructive Mac-side operator mode; stages only the existing reset helper, invokes only --execute-reset over ssh -tt, and attempts cleanup without transcript capture" \
     "" \
     "future explicit audited slices:" \
-    "  execute-reset for disposable reset - future destructive exact-phrase mode; no root token or unseal key through args/env/logs/artifacts/Codex output" \
     "  workload-auth check execution - future audited live check; ES must not become a Vault token broker" \
     "  runtime identity summary generation - future audited evidence route; runtime identity remains a reopened seam" \
-    "  service-user check/apply - remains separate; apply is mutating and not part of P0k recovery-session" \
+    "  service-user check/apply - remains separate; apply is mutating and not part of P0m recovery-session" \
     "" \
     "separate IM actions:" \
     "  IM refresh and support-bundle collection are printed only as separate IM evidence/provenance actions" \
@@ -373,7 +392,9 @@ recovery_session_plan() {
     "  not CP recovery authority, not Vault production lifecycle, not ES Vault token brokerage" \
     "  not Remote Alpha deployment, provisioning, reconciliation, production, HA, or multi-tenant architecture" \
     "  vault-reset-disposable --dry-run is non-destructive: it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles" \
-    "  no destructive reset/workload-auth/runtime-identity/service-user execution route is added in P0k" \
+    "  vault-reset-disposable --execute-reset is destructive and requires the existing exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT in the visible remote helper/Vault terminal" \
+    "  the phrase, Vault init output, root token, unseal key, and Vault prompt interactions are never accepted through args/env/files/logs/artifacts/Codex output" \
+    "  no post-unseal/workload-auth/runtime-identity/service-user/IM/support-bundle/CP-proof bundling is added in P0m" \
     "  vault-unseal-existing does not validate default noninteractive readiness"
 }
 
@@ -389,8 +410,9 @@ recovery_session_inventory() {
     "  recovery-session vault-unseal-existing --host-local - implemented host-local explicit operator mode; secret-sensitive; non-destructive; delegates only to scripts/remote_alpha_reset_disposable_vault.sh --unseal-only" \
     "  recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty - implemented Mac-side explicit operator mode; stages only scripts/remote_alpha_reset_disposable_vault.sh and invokes only --unseal-only through ssh -tt; no summary file" \
     "  recovery-session vault-reset-disposable --ssh-target <target> --dry-run - implemented Mac-side dry-run planning mode; stages only scripts/remote_alpha_reset_disposable_vault.sh and invokes only --dry-run through SSH; non-destructive; no summary file" \
+    "  recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - implemented destructive Mac-side operator mode; stages only scripts/remote_alpha_reset_disposable_vault.sh and invokes only --execute-reset through ssh -tt; no summary file; no transcript capture" \
     "" \
-    "check-only evidence helpers (future execution routes, not run by recovery-session P0k):" \
+    "check-only evidence helpers (future execution routes, not run by recovery-session P0m):" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; future audited live check" \
     "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; dry-run/check-only available; future audited evidence route" \
     "  scripts/remote_alpha_migrate_vault_service_user.sh --check-only - host-local Vault service-user migration check; check-only default; apply remains separate" \
@@ -398,10 +420,10 @@ recovery_session_inventory() {
     "secret-sensitive or destructive helpers:" \
     "  scripts/remote_alpha_reset_disposable_vault.sh --dry-run - implemented through explicit Mac-side vault-reset-disposable dry-run planning; non-destructive; does not stop Vault, move raft storage, init, unseal, run post-unseal checks, run IM, or collect support bundles" \
     "  scripts/remote_alpha_reset_disposable_vault.sh --unseal-only - implemented through explicit host-local and Mac-side interactive TTY vault-unseal-existing; secret-sensitive; non-destructive" \
-    "  scripts/remote_alpha_reset_disposable_vault.sh --execute-reset - future destructive exact-phrase mode" \
+    "  scripts/remote_alpha_reset_disposable_vault.sh --execute-reset - implemented through explicit Mac-side vault-reset-disposable --execute-reset --interactive-tty; destructive exact-phrase operator mode; no post-unseal check, workload-auth check, IM refresh, support bundle, runtime identity, or CP proof bundling" \
     "" \
     "blocked/reopened:" \
-    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0k" \
+    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0m" \
     "" \
     "classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened" \
     "non-claims: inventory is evidence/projection/diagnostics only, never authority"
@@ -623,7 +645,12 @@ recovery_session_vault_unseal_existing() {
 }
 
 recovery_session_vault_reset_disposable_require_command() {
-  command -v "$1" >/dev/null 2>&1 || recovery_die "$1 is required for Mac-side vault-reset-disposable dry-run staging"
+  command -v "$1" >/dev/null 2>&1 || recovery_die "$1 is required for Mac-side vault-reset-disposable staging"
+}
+
+recovery_session_vault_reset_disposable_require_local_tty() {
+  [[ -t 0 ]] || recovery_die "recovery-session vault-reset-disposable --execute-reset requires visible local terminal stdin; no staging or SSH occurred"
+  [[ -t 1 ]] || recovery_die "recovery-session vault-reset-disposable --execute-reset requires visible local terminal stdout; no staging or SSH occurred"
 }
 
 recovery_session_vault_reset_disposable_validate_ssh_target() {
@@ -666,29 +693,60 @@ recovery_session_vault_reset_disposable_run_remote() {
   local ssh_target=$1
   local remote_stage_dir=$2
   local remote_helper_path=$3
+  local helper_mode=$4
   local remote_command remote_shell_command
 
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
-  printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
-  ssh "${ssh_target}" "${remote_shell_command}"
+  case "${helper_mode}" in
+    --dry-run)
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --dry-run' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
+      ssh "${ssh_target}" "${remote_shell_command}"
+      ;;
+    --execute-reset)
+      printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; "${helper_path}" --execute-reset' "${remote_stage_dir}" "${remote_helper_path}"
+      printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
+      ssh -tt "${ssh_target}" "${remote_shell_command}"
+      ;;
+    *)
+      recovery_die "internal error: unsupported vault-reset-disposable helper mode ${helper_mode}"
+      ;;
+  esac
 }
 
 recovery_session_vault_reset_disposable_remote() {
   local ssh_target=$1
+  local helper_mode=$2
   local run_id remote_stage_dir remote_helper_path remote_status cleanup_status
 
   recovery_session_vault_reset_disposable_require_command ssh
   recovery_session_vault_reset_disposable_require_command scp
+  if [[ "${helper_mode}" == "--execute-reset" ]]; then
+    recovery_session_vault_reset_disposable_require_local_tty
+  fi
 
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT}/${run_id}"
+  if [[ "${helper_mode}" == "--execute-reset" ]]; then
+    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT}/${run_id}"
+  else
+    remote_stage_dir="${REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT}/${run_id}"
+  fi
   remote_helper_path="${remote_stage_dir}/remote_alpha_reset_disposable_vault.sh"
 
-  printf '%s\n' \
-    "Running Mac-side disposable Vault reset dry-run planning route." \
-    "Staging only scripts/remote_alpha_reset_disposable_vault.sh and invoking only --dry-run." \
-    "This route is non-destructive: it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run workload-auth checks, run IM, or collect support bundles." \
-    "No transcript, tee/script capture, .out, report, support bundle, operator summary, or generated JSON is created."
+  if [[ "${helper_mode}" == "--execute-reset" ]]; then
+    printf '%s\n' \
+      "Running Mac-side disposable Vault execute-reset through an explicit interactive SSH TTY." \
+      "Staging only scripts/remote_alpha_reset_disposable_vault.sh and invoking only --execute-reset." \
+      "This route is destructive for disposable Remote Alpha Vault state and should run only when the operator intentionally wants that reset." \
+      "The operator handles confirmation, Vault init output, root token, unseal key, and Vault prompts only in the visible SSH/Vault/helper terminal." \
+      "The operator facade will not read, log, relay, persist, summarize, or capture the confirmation phrase or secret material." \
+      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated JSON, post-unseal check, workload-auth check, runtime identity summary, IM refresh, or CP proof is created or run."
+  else
+    printf '%s\n' \
+      "Running Mac-side disposable Vault reset dry-run planning route." \
+      "Staging only scripts/remote_alpha_reset_disposable_vault.sh and invoking only --dry-run." \
+      "This route is non-destructive: it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run workload-auth checks, run IM, or collect support bundles." \
+      "No transcript, tee/script capture, .out, report, support bundle, operator summary, or generated JSON is created."
+  fi
 
   if ! recovery_session_vault_reset_disposable_stage_remote "${ssh_target}" "${remote_stage_dir}" "${remote_helper_path}"; then
     recovery_session_vault_reset_disposable_cleanup_remote "${ssh_target}" "${remote_stage_dir}" || true
@@ -696,7 +754,7 @@ recovery_session_vault_reset_disposable_remote() {
   fi
 
   set +e
-  recovery_session_vault_reset_disposable_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_helper_path}"
+  recovery_session_vault_reset_disposable_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_helper_path}" "${helper_mode}"
   remote_status=$?
   set -e
 
@@ -705,12 +763,22 @@ recovery_session_vault_reset_disposable_remote() {
   cleanup_status=$?
   set -e
   if [[ "${cleanup_status}" -ne 0 ]]; then
-    printf '%s\n' "warning: Mac-side vault-reset-disposable dry-run could not verify remote staged helper cleanup; inspect the route-specific scratch path manually." >&2
+    if [[ "${helper_mode}" == "--execute-reset" ]]; then
+      printf '%s\n' "error: Mac-side vault-reset-disposable execute-reset could not verify remote staged helper cleanup; inspect the route-specific scratch path manually from a visible terminal." >&2
+    else
+      printf '%s\n' "warning: Mac-side vault-reset-disposable dry-run could not verify remote staged helper cleanup; inspect the route-specific scratch path manually." >&2
+    fi
   fi
 
-  printf '%s\n' \
-    "Mac-side vault-reset-disposable dry-run route finished; staged helper cleanup was attempted." \
-    "Execute-reset remains a future explicit destructive mode with exact confirmation phrase; IM refresh and support-bundle collection were not executed here."
+  if [[ "${helper_mode}" == "--execute-reset" ]]; then
+    printf '%s\n' \
+      "Mac-side vault-reset-disposable execute-reset route finished; staged helper cleanup was attempted." \
+      "Post-reset evidence checks, post-unseal checks, workload-auth checks, runtime identity summaries, IM refresh, support-bundle collection, and CP proof were not executed here."
+  else
+    printf '%s\n' \
+      "Mac-side vault-reset-disposable dry-run route finished; staged helper cleanup was attempted." \
+      "Execute-reset is a separate destructive exact-phrase route; IM refresh and support-bundle collection were not executed here."
+  fi
 
   if [[ "${remote_status}" -eq 0 && "${cleanup_status}" -ne 0 ]]; then
     return "${cleanup_status}"
@@ -721,6 +789,8 @@ recovery_session_vault_reset_disposable_remote() {
 recovery_session_vault_reset_disposable() {
   local ssh_target_seen="false"
   local dry_run_seen="false"
+  local execute_reset_seen="false"
+  local interactive_tty_seen="false"
   local ssh_target=""
 
   while [[ "$#" -gt 0 ]]; do
@@ -741,8 +811,18 @@ recovery_session_vault_reset_disposable() {
         dry_run_seen="true"
         shift
         ;;
-      --execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--host-local|--host-local=*|--interactive-tty|--interactive-tty=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--governed-smoke-command|--governed-smoke-command=*|--keep-staging-on-failure|--keep-staging-on-failure=*)
-        recovery_die "recovery-session vault-reset-disposable forbids $1; P0k is Mac-side dry-run planning only and does not combine reset, unseal, post-unseal checks, IM, or support bundles"
+      --execute-reset)
+        require_recovery_option_not_seen "$1" "${execute_reset_seen}"
+        execute_reset_seen="true"
+        shift
+        ;;
+      --interactive-tty)
+        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
+        interactive_tty_seen="true"
+        shift
+        ;;
+      --unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--host-local|--host-local=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--governed-smoke-command|--governed-smoke-command=*|--keep-staging-on-failure|--keep-staging-on-failure=*)
+        recovery_die "recovery-session vault-reset-disposable forbids $1; P0m does not combine reset, unseal, post-unseal checks, workload-auth, IM, support bundles, runtime identity, or CP proof"
         ;;
       --*=*)
         recovery_die "recovery-session vault-reset-disposable does not accept equals-form options: $1"
@@ -759,8 +839,17 @@ recovery_session_vault_reset_disposable() {
   if [[ "${ssh_target_seen}" != "true" ]]; then
     recovery_die "recovery-session vault-reset-disposable requires --ssh-target <target>"
   fi
-  if [[ "${dry_run_seen}" != "true" ]]; then
-    recovery_die "recovery-session vault-reset-disposable requires --dry-run"
+  if [[ "${dry_run_seen}" == "true" && "${execute_reset_seen}" == "true" ]]; then
+    recovery_die "recovery-session vault-reset-disposable requires exactly one mode: --dry-run or --execute-reset"
+  fi
+  if [[ "${dry_run_seen}" != "true" && "${execute_reset_seen}" != "true" ]]; then
+    recovery_die "recovery-session vault-reset-disposable requires --dry-run or --execute-reset"
+  fi
+  if [[ "${execute_reset_seen}" == "true" && "${interactive_tty_seen}" != "true" ]]; then
+    recovery_die "recovery-session vault-reset-disposable --execute-reset requires --interactive-tty"
+  fi
+  if [[ "${dry_run_seen}" == "true" && "${interactive_tty_seen}" == "true" ]]; then
+    recovery_die "recovery-session vault-reset-disposable forbids --interactive-tty with --dry-run; interactive TTY is only for --execute-reset"
   fi
   recovery_session_vault_reset_disposable_validate_ssh_target "${ssh_target}"
 
@@ -768,7 +857,11 @@ recovery_session_vault_reset_disposable() {
     recovery_die "Vault reset helper is not executable: ${REMOTE_ALPHA_VAULT_RESET_HELPER}"
   fi
 
-  recovery_session_vault_reset_disposable_remote "${ssh_target}"
+  if [[ "${execute_reset_seen}" == "true" ]]; then
+    recovery_session_vault_reset_disposable_remote "${ssh_target}" "--execute-reset"
+  else
+    recovery_session_vault_reset_disposable_remote "${ssh_target}" "--dry-run"
+  fi
 }
 
 recovery_session_evidence_check() {
@@ -1173,7 +1266,7 @@ recovery_session() {
         shift 2
         ;;
       --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session forbids $1 outside explicit submodes; P0k is safe/local/print-only/evidence-check plus explicit vault-unseal-existing and vault-reset-disposable submodes"
+        recovery_die "recovery-session forbids $1 outside explicit submodes; P0m is safe/local/print-only/evidence-check plus explicit vault-unseal-existing and vault-reset-disposable submodes"
         ;;
       --*=*)
         recovery_die "recovery-session does not accept equals-form options: $1"
@@ -1257,7 +1350,7 @@ print_im_commands() {
 
 refuse_not_implemented() {
   local name=$1
-  printf 'error: subcommand %q is not implemented as a top-level P0k route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
+  printf 'error: subcommand %q is not implemented as a top-level P0m route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
   printf 'No helper execution routing occurred.\n' >&2
   exit 2
 }
@@ -1947,7 +2040,7 @@ main() {
       refuse_not_implemented "${subcommand}"
       ;;
     *)
-      printf 'error: unknown subcommand %q is not implemented in P0k and requires a later audited slice.\n' "${subcommand}" >&2
+      printf 'error: unknown subcommand %q is not implemented in P0m and requires a later audited slice.\n' "${subcommand}" >&2
       printf 'No helper execution routing occurred.\n' >&2
       exit 2
       ;;
