@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0f:
+Current implementation status through P0g:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -243,9 +243,13 @@ Current implementation status through P0f:
   `es-writable-state-readiness-check`.
 - P0f implements exactly one bounded readiness workflow command,
   `readiness-session`, over that existing route.
+- P0g implements one safe/local recovery workflow skeleton,
+  `recovery-session`, with print-only plan, inventory, next-step guidance, and a
+  local evidence-check mode over operator-supplied existing JSON evidence files.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
-  `es-writable-state-readiness-check`, and `readiness-session`.
+  `es-writable-state-readiness-check`, `readiness-session`, and
+  `recovery-session`.
 - The new route delegates only to the public staged wrapper
   `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`.
 - The route is check-only/non-mutating by construction: it has no `--apply`
@@ -259,10 +263,17 @@ Current implementation status through P0f:
   delegates only through the existing readiness route/helper path, preserves
   the two IM-consumed artifact filenames, and prints only non-secret local
   metadata after scanning the artifacts for secret-like content.
+- The recovery session accepts only its own allowlisted safe/local flags. It does
+  not dispatch helpers, inspect live host state, or execute secret-sensitive,
+  destructive, live, or authority-bearing work. Its `--evidence-check` mode reads
+  only supplied local JSON evidence paths, scans for secret-like content before
+  parsing, and prints only path, byte count, SHA-256 digest, schema, and selected
+  safe status/count metadata.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
-  follow-up evidence/provenance actions only.
+  follow-up evidence/provenance actions only, and the recovery session may print
+  those commands as next-step text only.
 - Vault reset/unseal, workload-auth check, runtime identity summary, Vault
   service-user check, runtime security check, and all other staged `es-*`
   helper delegation remain not implemented and require later audited slices.
@@ -272,7 +283,8 @@ Current implementation status through P0f:
   evidence/projection only. The facade itself writes no operator-owned summary,
   support bundle, report, or new authority artifact; the delegated helper
   remains the owner of its existing readiness/provenance artifacts when the
-  route or readiness session is intentionally invoked.
+  route or readiness session is intentionally invoked. The recovery session
+  creates no summary file and writes no `.out`.
 
 ### Operator Involvement Model
 
@@ -594,6 +606,108 @@ service-user migration, config/TLS, binary deployment, writable-state
 ownership, generic remote staging, arbitrary shell passthrough, live IM
 execution, CP proof, support-bundle collection, or Remote Alpha deployment
 architecture.
+
+### P0g Recovery Session Safe Skeleton
+
+`Bounded slice rule`: P0g implements one safe/local Remote Alpha operator
+workflow command:
+`scripts/remote_alpha_operator.sh recovery-session`.
+
+This session is a recovery sequencing skeleton and local evidence-check only. It
+is not a live validation slice, not a new authority source, not a helper-dispatch
+framework, not an Infrastructure Manager runner, not Vault token brokerage, and
+not Remote Alpha deployment/provisioning/reconciliation architecture.
+
+The supported modes are:
+
+- `--help`
+- `--plan`
+- `--inventory`
+- `--next-steps`
+- `--evidence-check`
+
+Calling `recovery-session` with no mode prints the plan/help and exits zero. It
+must not run live tools.
+
+The session may accept only these shared flags:
+
+- `--help`
+- `--plan`
+- `--inventory`
+- `--next-steps`
+- `--evidence-check`
+- `--ssh-alias <alias>` for printed IM commands only
+- `--im-profile-dir </path/to/profile-dir>` for printed IM commands only
+- `--support-output-root </path/to/support-bundles>` for printed IM commands
+  only
+
+The session may accept these evidence path flags only with `--evidence-check`:
+
+- `--vault-workload-auth-summary <path>`
+- `--runtime-identity-summary <path>`
+- `--vault-service-user-summary <path>`
+- `--readiness-summary <path>`
+- `--staging-record <path>`
+
+The session rejects:
+
+- `--ssh-target`
+- `--interactive-sudo`
+- `--apply`
+- `--dry-run`
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--governed-smoke-command`
+- arbitrary command strings
+- helper path overrides
+- unknown flags
+- positional arguments
+- duplicate operational flags
+- equals-form options
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, passwords, and
+  secret payloads
+
+`--plan` prints the bounded recovery sequence only:
+
+- inventory/status is safe/planned
+- unseal-existing is a future explicit secret-sensitive mode
+- disposable reset is a future destructive exact-phrase mode
+- workload-auth check execution is a future audited live check
+- runtime identity summary generation is a future audited evidence route
+- Vault service-user check/apply remains separate
+- IM refresh and support-bundle commands are separate IM
+  evidence/provenance/diagnostics actions and may be printed only
+
+`--inventory` prints static helper inventory only. It may list the reset helper,
+workload-auth check helper, runtime identity helper summary, Vault service-user
+migration/check helper, and readiness session, with classifications such as
+safe/local, check-only, secret-sensitive, destructive, future, and
+blocked/reopened. It must not inspect live host state and must not run any
+helper.
+
+`--next-steps` prints command text only. It may include an existing
+`readiness-session` example plus the Mac-side Infrastructure Manager refresh and
+support-bundle command texts. Those printed IM commands remain separate
+IM-owned evidence/provenance actions, not ES execution and not authority.
+
+`--evidence-check` is local-only. If no evidence path flags are supplied, it
+prints a non-error message that no evidence paths were supplied. For each
+supplied path, it must require that the file exists, compute byte count and
+SHA-256 digest, scan for secret-like content before JSON parsing, parse JSON,
+and print only non-secret metadata: path, byte count, SHA-256 digest,
+`schema_version` when present, and selected safe status/count fields when
+present. It must not print full JSON, create a session summary file, write
+`.out`, run helpers, run IM, or treat evidence as authority. If secret-like
+content is detected or JSON is malformed, it must fail with the path
+classification only and must not print file contents.
+
+P0g does not add Vault reset/unseal execution, Vault workload-auth check
+execution, runtime identity summary generation, Vault service-user check/apply
+execution, config/TLS, binary deployment, writable-state ownership, generic
+remote staging, arbitrary shell passthrough, live IM execution, CP proof,
+support-bundle collection, or Remote Alpha deployment architecture.
 
 ### P0d Interactive Validation Evidence
 

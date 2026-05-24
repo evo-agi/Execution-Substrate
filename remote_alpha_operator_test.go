@@ -1,6 +1,8 @@
 package executionsubstrate_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +86,7 @@ func assertNoNewPaths(t *testing.T, label string, before map[string]bool) {
 	}
 }
 
-func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0fScope(t *testing.T) {
+func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0gScope(t *testing.T) {
 	scriptPath := remoteAlphaOperatorScriptPath()
 	info, err := os.Stat(scriptPath)
 	if err != nil {
@@ -97,7 +99,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0fScope(t *testing.
 	help := requireRemoteAlphaOperatorSuccess(t, "--help")
 	assertContainsAll(t, "operator help", help,
 		"Remote Alpha operator facade",
-		"P0f adds one readiness-session workflow",
+		"P0g adds a recovery-session safe skeleton",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -114,12 +116,16 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0fScope(t *testing.
 		"print-im-commands",
 		"es-writable-state-readiness-check",
 		"readiness-session",
+		"recovery-session",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
 		"runs the existing readiness route",
 		"fresh output directory by default",
 		"prints only non-secret artifact metadata",
+		"safe/local recovery skeleton",
+		"--plan, --inventory, --next-steps, and --evidence-check",
+		"writes no summary and runs no live tools",
 		"preserves es-writable-state-readiness.json",
 		"es-writable-state-readiness-helper-staging-record.json",
 		"--profile-dir .out/remote-alpha-m75q",
@@ -133,7 +139,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0fScope(t *testing.
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented through P0f",
+		"implemented through P0g",
 		"help",
 		"inventory",
 		"print-refresh-command",
@@ -141,16 +147,19 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"print-im-commands",
 		"es-writable-state-readiness-check",
 		"readiness-session",
+		"recovery-session",
 		"delegates to existing readiness staged helper",
 		"runs the existing readiness route",
 		"check-only/non-mutating",
 		"preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json",
 		"prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status",
+		"safe/local skeleton for recovery sequencing",
+		"checks existing local JSON evidence metadata without running helpers",
 		"future/not implemented",
 		"Vault reset/unseal",
 		"workload-auth check",
-		"runtime identity summary",
-		"Vault service-user check",
+		"runtime identity summary generation",
+		"Vault service-user check/apply execution",
 		"other staged ES helper delegation",
 		"blocked/reopened",
 		"vault-workload-auth-bootstrap",
@@ -299,7 +308,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented in P0f",
+				"not implemented in P0g",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -375,6 +384,329 @@ func TestRemoteAlphaOperatorReadinessSessionHelpDocumentsScope(t *testing.T) {
 		"writes no operator summary",
 		"IM follow-up commands are printed only as evidence/provenance actions",
 		"not authority",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocumentBoundaries(t *testing.T) {
+	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
+	assertContainsAll(t, "recovery-session help", help,
+		"Remote Alpha operator workflow: recovery-session",
+		"P0g scope: safe/local recovery skeleton",
+		"local evidence-check over existing JSON files",
+		"does not execute secret-sensitive, destructive, live, or authority-bearing steps",
+		"Outputs are evidence/projection/diagnostics only, never authority",
+		"--plan",
+		"--inventory",
+		"--next-steps",
+		"--evidence-check",
+		"--vault-workload-auth-summary <path>",
+		"--runtime-identity-summary <path>",
+		"--vault-service-user-summary <path>",
+		"--readiness-summary <path>",
+		"--staging-record <path>",
+		"Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command",
+		"prints no full JSON",
+		"creates no summary file",
+		"writes no .out",
+	)
+
+	defaultOutput := requireRemoteAlphaOperatorSuccess(t, "recovery-session")
+	assertContainsAll(t, "default recovery-session plan", defaultOutput,
+		"Remote Alpha recovery-session plan",
+		"default behavior: print this plan/help and exit zero; no live tools run",
+		"inventory/status - safe local planning and static inventory only",
+		"evidence-check - local-only metadata check",
+		"next-steps - print readiness-session and IM command text only",
+		"unseal-existing - future explicit secret-sensitive mode",
+		"disposable reset - future destructive exact-phrase mode",
+		"workload-auth check execution - future audited live check",
+		"runtime identity summary generation - future audited evidence route",
+		"service-user check/apply - remains separate",
+		"recovery-session does not execute IM",
+		"not ES Vault token brokerage",
+		"no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0g",
+	)
+
+	plan := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--plan")
+	assertContainsAll(t, "recovery-session plan", plan,
+		"Remote Alpha recovery-session plan",
+		"safe/planned",
+		"future explicit audited slices",
+		"separate IM actions",
+		"non-claims",
+	)
+
+	inventory := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--inventory")
+	assertContainsAll(t, "recovery-session inventory", inventory,
+		"Remote Alpha recovery-session static helper inventory",
+		"safe/local inventory only",
+		"no live host state inspection",
+		"no helper execution",
+		"scripts/remote_alpha_reset_disposable_vault.sh --unseal-only",
+		"scripts/remote_alpha_reset_disposable_vault.sh --execute-reset",
+		"scripts/remote_alpha_vault_workload_auth_check.sh",
+		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
+		"scripts/remote_alpha_migrate_vault_service_user.sh --check-only",
+		"scripts/remote_alpha_operator.sh readiness-session",
+		"classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened",
+		"vault-workload-auth-bootstrap - blocked/reopened",
+	)
+
+	nextSteps := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--next-steps",
+		"--im-profile-dir", "profiles/alpha",
+		"--support-output-root", "bundles/alpha",
+		"--ssh-alias", "alpha_alias",
+	)
+	assertContainsAll(t, "recovery-session next steps", nextSteps,
+		"Remote Alpha recovery-session next steps",
+		"printed only; no execution",
+		"bash scripts/remote_alpha_operator.sh readiness-session --ssh-target <user@host> --interactive-sudo",
+		"Separate IM evidence/provenance actions",
+		"not ES execution",
+		"not authority",
+		"remote-alpha-live-refresh",
+		"--profile-dir \"profiles/alpha\"",
+		"--ssh-alias \"alpha_alias\"",
+		"remote-alpha-live-support-bundle",
+		"--output-root \"bundles/alpha\"",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckNoPathsIsNonError(t *testing.T) {
+	output := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--evidence-check")
+	assertContainsAll(t, "recovery-session evidence-check no paths", output,
+		"No recovery-session evidence paths supplied",
+		"nothing to check",
+		"local-only",
+		"evidence/projection/diagnostics only",
+		"never authority",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckPrintsMetadataOnly(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.test.v1","operation_mode":"check_only","non_mutating":true,"overall_classification":"warning","blockers":[],"warnings":["documented warning"],"internal_detail":"must not print"}`
+	fixturePath := filepath.Join(dir, "summary.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	sum := sha256.Sum256([]byte(fixture))
+
+	output := requireRemoteAlphaOperatorSuccess(t,
+		"recovery-session", "--evidence-check",
+		"--readiness-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session evidence metadata", output,
+		"Recovery-session evidence metadata",
+		"local-only",
+		"evidence/projection/diagnostics only",
+		"classification: readiness-summary",
+		"path: "+fixturePath,
+		fmt.Sprintf("bytes: %d", len([]byte(fixture))),
+		fmt.Sprintf("sha256: %x", sum),
+		"schema_version: execution-substrate.test.v1",
+		"operation_mode: check_only",
+		"non_mutating: true",
+		"overall_classification: warning",
+		"blockers_count: 0",
+		"warnings_count: 1",
+	)
+	assertContainsNone(t, "recovery-session evidence metadata", output,
+		"internal_detail",
+		"must not print",
+		"{\"schema_version\"",
+		"documented warning",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRejectsSecretLikeFixtureWithoutPrintingContents(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":"execution-substrate.test.v1","api_key":"DO_NOT_PRINT"}`
+	fixturePath := filepath.Join(dir, "secret-like.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorFailure(t,
+		"recovery-session", "--evidence-check",
+		"--vault-workload-auth-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session secret-like fixture refusal", output,
+		"evidence-check failed for vault-workload-auth-summary",
+		"path",
+		fixturePath,
+		"error_classification: secret_like_key",
+	)
+	assertContainsNone(t, "recovery-session secret-like fixture refusal", output,
+		"api_key",
+		"DO_NOT_PRINT",
+		"{\"schema_version\"",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionEvidenceCheckRejectsMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{"schema_version":`
+	fixturePath := filepath.Join(dir, "malformed.json")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	output := requireRemoteAlphaOperatorFailure(t,
+		"recovery-session", "--evidence-check",
+		"--runtime-identity-summary", fixturePath,
+	)
+	assertContainsAll(t, "recovery-session malformed fixture refusal", output,
+		"evidence-check failed for runtime-identity-summary",
+		fixturePath,
+		"error_classification: malformed_json",
+	)
+	assertContainsNone(t, "recovery-session malformed fixture refusal", output,
+		fixture,
+		"schema_version",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionRejectsForbiddenFlagsAndUnsafeArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		required []string
+	}{
+		{
+			name:     "ssh target",
+			args:     []string{"--ssh-target", "host"},
+			required: []string{"recovery-session forbids --ssh-target", "safe/local/print-only/evidence-check only", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "interactive sudo",
+			args:     []string{"--interactive-sudo"},
+			required: []string{"recovery-session forbids --interactive-sudo", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "apply",
+			args:     []string{"--apply"},
+			required: []string{"recovery-session forbids --apply", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "dry run",
+			args:     []string{"--dry-run"},
+			required: []string{"recovery-session forbids --dry-run", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "execute reset",
+			args:     []string{"--execute-reset"},
+			required: []string{"recovery-session forbids --execute-reset", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "unseal only",
+			args:     []string{"--unseal-only"},
+			required: []string{"recovery-session forbids --unseal-only", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "post unseal check",
+			args:     []string{"--post-unseal-check"},
+			required: []string{"recovery-session forbids --post-unseal-check", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "governed smoke command",
+			args:     []string{"--governed-smoke-command", "echo hi"},
+			required: []string{"recovery-session forbids --governed-smoke-command", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "secret equals form",
+			args:     []string{"--api-key=dummy"},
+			required: []string{"secret material must never be passed by CLI args/env/logs/reports/artifacts"},
+		},
+		{
+			name:     "unknown flag",
+			args:     []string{"--unknown-flag"},
+			required: []string{"unknown option for recovery-session: --unknown-flag", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "positional",
+			args:     []string{"positional"},
+			required: []string{"unexpected positional argument for recovery-session: positional", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "equals form",
+			args:     []string{"--plan=true"},
+			required: []string{"recovery-session does not accept equals-form options: --plan=true", "No recovery-session live helper or IM execution occurred."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
+			assertContainsAll(t, "recovery-session refusal", output, tc.required...)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionRejectsDuplicateAndMisplacedFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		duplicate string
+	}{
+		{
+			name:      "duplicate mode",
+			args:      []string{"--plan", "--inventory"},
+			duplicate: "--inventory",
+		},
+		{
+			name:      "duplicate ssh alias",
+			args:      []string{"--next-steps", "--ssh-alias", "a", "--ssh-alias", "b"},
+			duplicate: "--ssh-alias",
+		},
+		{
+			name:      "duplicate im profile dir",
+			args:      []string{"--evidence-check", "--im-profile-dir", "a", "--im-profile-dir", "b"},
+			duplicate: "--im-profile-dir",
+		},
+		{
+			name:      "duplicate support output root",
+			args:      []string{"--next-steps", "--support-output-root", "a", "--support-output-root", "b"},
+			duplicate: "--support-output-root",
+		},
+		{
+			name:      "duplicate vault summary",
+			args:      []string{"--evidence-check", "--vault-workload-auth-summary", "a", "--vault-workload-auth-summary", "b"},
+			duplicate: "--vault-workload-auth-summary",
+		},
+		{
+			name:      "duplicate runtime summary",
+			args:      []string{"--evidence-check", "--runtime-identity-summary", "a", "--runtime-identity-summary", "b"},
+			duplicate: "--runtime-identity-summary",
+		},
+		{
+			name:      "duplicate service-user summary",
+			args:      []string{"--evidence-check", "--vault-service-user-summary", "a", "--vault-service-user-summary", "b"},
+			duplicate: "--vault-service-user-summary",
+		},
+		{
+			name:      "duplicate readiness summary",
+			args:      []string{"--evidence-check", "--readiness-summary", "a", "--readiness-summary", "b"},
+			duplicate: "--readiness-summary",
+		},
+		{
+			name:      "duplicate staging record",
+			args:      []string{"--evidence-check", "--staging-record", "a", "--staging-record", "b"},
+			duplicate: "--staging-record",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
+			assertContainsAll(t, "duplicate recovery-session flag refusal", output,
+				"duplicate option for recovery-session: "+tc.duplicate,
+				"No recovery-session live helper or IM execution occurred.",
+			)
+		})
+	}
+
+	output := requireRemoteAlphaOperatorFailure(t, "recovery-session", "--readiness-summary", "summary.json")
+	assertContainsAll(t, "misplaced evidence path refusal", output,
+		"recovery-session evidence path flags require --evidence-check",
+		"No recovery-session live helper or IM execution occurred.",
 	)
 }
 
@@ -750,12 +1082,12 @@ func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	assertContainsAll(t, "unknown subcommand refusal", output,
 		"unknown subcommand",
 		"definitely-unknown",
-		"not implemented in P0f",
+		"not implemented in P0g",
 		"later audited slice",
 	)
 }
 
-func TestRemoteAlphaOperatorSourceLimitsP0fDelegationSurface(t *testing.T) {
+func TestRemoteAlphaOperatorSourceLimitsP0gDelegationSurface(t *testing.T) {
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	assertContainsAll(t, "operator source", source,
 		"set -euo pipefail",
@@ -768,6 +1100,9 @@ func TestRemoteAlphaOperatorSourceLimitsP0fDelegationSurface(t *testing.T) {
 		`readiness-session)`,
 		`readiness_session ${subcommand_args[@]+"${subcommand_args[@]}"}`,
 		`"${SCRIPT_DIR}/remote_alpha_operator.sh" "${route_args[@]}"`,
+		`recovery-session)`,
+		`recovery_session ${subcommand_args[@]+"${subcommand_args[@]}"}`,
+		`recovery_session_evidence_check`,
 	)
 	assertContainsNone(t, "operator source forbidden helper routing", source,
 		"scripts/internal/",
@@ -776,10 +1111,6 @@ func TestRemoteAlphaOperatorSourceLimitsP0fDelegationSurface(t *testing.T) {
 		"helper-name",
 		"helper_name",
 		"helper_path_from_user",
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote_alpha_runtime_identity_helper_summary.sh",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_migrate_vault_service_user.sh",
 		"remote_alpha_stage_es_config_tls_prep.sh",
 		"remote_alpha_deploy_es_binaries.sh",
 		"remote_alpha_prepare_es_writable_state_ownership.sh",
@@ -788,7 +1119,28 @@ func TestRemoteAlphaOperatorSourceLimitsP0fDelegationSurface(t *testing.T) {
 		"--summary-output",
 		"operator-summary",
 		"readiness-session-summary",
+		"recovery-session-summary",
 	)
+
+	for _, helper := range []string{
+		"remote_alpha_reset_disposable_vault.sh",
+		"remote_alpha_runtime_identity_helper_summary.sh",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_migrate_vault_service_user.sh",
+	} {
+		for lineNumber, line := range strings.Split(source, "\n") {
+			if !strings.Contains(line, helper) {
+				continue
+			}
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "\"") {
+				t.Fatalf("operator source line %d references %s outside static printed inventory: %s", lineNumber+1, helper, line)
+			}
+			if strings.Contains(trimmed, "exec ") || strings.Contains(trimmed, "$(") || strings.Contains(trimmed, "`") {
+				t.Fatalf("operator source line %d appears to route helper %s: %s", lineNumber+1, helper, line)
+			}
+		}
+	}
 
 	liveCommand := regexp.MustCompile(`(^|[;&|()]|\bthen\b|\bdo\b)\s*(sudo|ssh|scp|vault|nomad|docker|spire|systemctl)(\s|$|[;&|()<>])`)
 	for lineNumber, line := range strings.Split(source, "\n") {

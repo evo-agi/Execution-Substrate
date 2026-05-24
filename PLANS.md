@@ -152,6 +152,33 @@ filenames, and add no generic helper dispatch or additional Vault, reset,
 unseal, runtime identity, service-user, config/TLS, binary, or writable-state
 ownership route.
 
+The P0g combined slice may add one bounded safe/local recovery workflow surface:
+`scripts/remote_alpha_operator.sh recovery-session`. This command is a recovery
+sequencing skeleton plus local evidence-check only. Its supported safe modes are
+`--help`, `--plan`, `--inventory`, `--next-steps`, and `--evidence-check`; the
+default no-mode behavior must print the plan/help and exit zero without running
+live tools. `--plan`, `--inventory`, and `--next-steps` are print-only. IM
+refresh and support-bundle commands may be printed as separate
+evidence/provenance instructions only, never executed by ES and never described
+as authority. `--evidence-check` may read only operator-supplied local JSON
+evidence paths, require files to exist, scan for secret-like content before JSON
+parsing, compute byte counts and SHA-256 digests, parse JSON, and print only
+non-secret metadata such as path, byte count, digest, `schema_version`, and
+selected safe status/count fields. It must not print full JSON, create a
+session summary, write `.out`, inspect live host state, dispatch helpers, run
+sudo, SSH, Vault, Nomad, Docker, SPIRE, `systemctl`, Infrastructure Manager,
+support-bundle collection, CP proof, reset/unseal flows, workload-auth live
+checks, or runtime identity summary generation. It must reject `--ssh-target`,
+`--interactive-sudo`, `--apply`, `--dry-run`, `--execute-reset`,
+`--unseal-only`, `--post-unseal-check`, `--governed-smoke-command`, arbitrary
+command strings, helper path overrides, positional arguments, unknown flags,
+duplicate operational flags, equals-form options, and secret-like arguments.
+Unseal-existing, disposable reset, workload-auth check execution, runtime
+identity summary generation, and Vault service-user check/apply remain separate
+audited future slices. P0g must not add Vault token brokerage, IM authority, CP
+recovery authority, or Remote Alpha deployment/provisioning/reconciliation
+architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
