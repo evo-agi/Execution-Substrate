@@ -74,6 +74,14 @@ IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault
 token brokerage. It must preserve Remote Alpha as bounded proof/support
 posture only, preserve existing IM-consumed artifact filenames, and keep any
 operator summary as non-secret evidence/projection rather than a v1 IM input.
+The P0b implementation slice is limited to an inert
+`scripts/remote_alpha_operator.sh` help/inventory/print-command skeleton:
+it may document available and future surfaces, print exact Mac-side
+Infrastructure Manager refresh/support-bundle commands, and refuse blocked or
+not-yet-implemented subcommands. It must not route to Remote Alpha helpers,
+run IM collection commands, stage generic remote helpers, invoke sudo or SSH,
+perform Vault reset/unseal behavior, add Vault workload-auth bootstrap, or
+write generated artifacts.
 
 ## Current Remote Alpha Hardening Tranche
 

@@ -232,6 +232,25 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
+Current P0b implementation status:
+
+- `scripts/remote_alpha_operator.sh` exists only as the help, inventory, and
+  print-command skeleton.
+- Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
+  `print-support-bundle-command`, and `print-im-commands`.
+- The script prints Mac-side Infrastructure Manager refresh and support-bundle
+  commands only. It does not invoke Infrastructure Manager, SSH, sudo, Vault,
+  Nomad, Docker, SPIRE, `systemctl`, support-bundle collection, reset/unseal
+  flows, or ES helper delegation.
+- Vault reset/unseal, workload-auth check, runtime identity summary, Vault
+  service-user check, runtime security check, and staged `es-*` helper
+  delegation remain not implemented in P0b and require later audited slices.
+- `vault-workload-auth-bootstrap` remains blocked/reopened and unavailable in
+  v1.
+- P0b output is deterministic operator guidance and evidence/projection only;
+  it writes no summary, `.out` file, support bundle, report, or generated
+  artifact.
+
 Purpose:
 
 - operator ergonomics over existing bounded helpers
