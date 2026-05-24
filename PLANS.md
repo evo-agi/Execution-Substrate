@@ -448,6 +448,66 @@ readiness, not governed execution proof, not ES Vault token brokerage, not IM
 authority, not CP recovery authority, and not Remote Alpha
 production/deployment/reconciliation architecture.
 
+The P0o combined implementation/self-audit/merge-readiness slice may add exactly
+one safe local/print-only planning surface for a future post-reset Vault
+workload-auth bootstrap route:
+`scripts/remote_alpha_operator.sh recovery-session
+vault-workload-auth-bootstrap [--help|--plan|--inventory]`. This slice is
+allowed to update docs, tests, and the operator facade's inert print-only
+behavior only. It must not implement live bootstrap execution,
+`--execute-bootstrap`, `--ssh-target` execution, `--interactive-tty` execution, Vault
+writes, root-token prompts, proof secret creation, workload-auth check
+execution, Infrastructure Manager execution, support-bundle collection, CP
+proof, reset/unseal behavior, runtime identity generation, `.out` writes,
+JSON/report/summary creation, transcripts, `tee`, `script`, helper staging, or
+generic helper dispatch.
+
+P0o records the conservative post-reset triage from the canonical workload-auth
+summary: schema matched, the summary was fresh, redaction passed, Vault reported
+`initialized=true` and `sealed=false`, and the safe configuration fields were
+`auth_mount=jwt`, `role=service_execution`, and `audience=vault`; the smoke
+failed at `auth_smoke.vault_login=fail`. The safe failure classification is
+therefore only `Vault JWT login rejected or not configured`. The route mechanics
+partially passed, but P0o must not claim that any individual Vault object is
+missing unless a later reviewed secret-safe check proves it.
+
+The P0o plan/inventory output may describe likely post-reset bootstrap objects
+inferred from the existing helper, docs, and tests: auth mount `jwt`; JWT auth
+config with SPIRE JWT validation material and bound issuer; role
+`service_execution` with `role_type=jwt`, `user_claim=sub`,
+`bound_audiences=vault`, and
+`bound_subject=spiffe://execution.internal/workload`; a policy such as
+`runtime-identity-proof`; KV v2 proof paths
+`proof-secrets/data/runtime-identity-vault-login` and
+`proof-secrets/data/codex-runtime-profile`; proof-runtime field shape
+`api_key` present and non-empty with the value never printed; and workload-zone
+config alignment at
+`/etc/execution-substrate/vault/workload-zone-vault-config.json`.
+
+Allowed P0o bootstrap flags are only `--help`, `--plan`, and `--inventory`;
+with no mode, the submode defaults to printing the plan/help and exiting zero.
+The submode must reject
+`--execute-bootstrap`, `--ssh-target`, `--interactive-tty`, `--host-local`,
+`--root-token`, `--unseal-key`, `--client-token`, `--vault-token`, `--api-key`,
+`--jwt-svid`, `--private-key`, `--password`, `--secret`, `--execute-reset`,
+`--dry-run`, `--unseal-only`, `--post-unseal-check`, `--apply`,
+`--governed-smoke-command`, workload-auth helper override flags, proof secret
+value flags, arbitrary commands, unknown flags, duplicate flags, equals-form
+options, and extra positionals beyond the submode/mode before any live action.
+
+Any future bootstrap execution must be a separate audited secret-sensitive route.
+Root tokens must never be accepted as CLI arguments, environment variables,
+files, `.out`, reports, support bundles, retained bundles, or Codex output. If a
+root token is needed, it may only be entered by the human operator through an
+explicit visible or silent prompt in a named secret-sensitive mode, with no
+transcript capture, no `tee`, and no `script`. Proof secret values must never be
+printed, copied, summarized, logged, or persisted by the operator facade.
+Bootstrap must only configure expected Vault objects; it must not claim
+workload-auth success, runtime-profile readiness, submit readiness, Vault
+production readiness, governed execution proof, IM authority, CP recovery
+authority, or ES Vault token brokerage. Workload-auth check remains a separate
+post-bootstrap command.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
