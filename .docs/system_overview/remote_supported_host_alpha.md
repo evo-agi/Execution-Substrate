@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation/design status through P0p:
+Current implementation/design status through P0q:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -303,6 +303,21 @@ Current implementation/design status through P0p:
   writes, no root-token or proof-secret prompt, no workload-auth check, no
   reset/unseal, no IM/support-bundle/CP/runtime-identity execution, no summary,
   and no live validation.
+- P0q implements exactly that secret-sensitive workload-auth bootstrap helper
+  and Mac-side recovery-session route, with static and fake tests only:
+  `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
+  --execute-bootstrap --interactive-tty`. P0q stages only
+  `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and
+  `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, preserves
+  their public/internal relative layout, invokes only the staged public helper
+  over `ssh -tt`, obtains Vault bootstrap authority and proof secret values
+  only from the visible/silent remote helper TTY prompt, uses an in-process
+  Vault API client rather than `VAULT_TOKEN` or `vault login`, writes only the
+  remote non-secret summary at
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`,
+  copies no summary back to Mac `.out`, captures no transcript, and keeps
+  workload-auth checks, reset/unseal, IM refresh, support bundles, CP proof,
+  and runtime identity work separate.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -324,10 +339,13 @@ Current implementation/design status through P0p:
   the explicit host-local and Mac-side interactive TTY `vault-unseal-existing`
   submodes, the P0k dry-run `vault-reset-disposable` submode, the P0m
   interactive TTY `vault-reset-disposable --execute-reset` submode, the P0n
-  Mac-side interactive TTY `vault-workload-auth-check` submode, and the P0o
-  safe local/print-only `vault-workload-auth-bootstrap` planning submode. Its
-  safe modes do not use SSH or remote staging, inspect live host state, dispatch
-  generic helpers, or execute destructive or authority-bearing work. Its
+  Mac-side interactive TTY `vault-workload-auth-check` submode, the P0o safe
+  local/print-only `vault-workload-auth-bootstrap` planning submode, and the
+  P0q Mac-side interactive TTY
+  `vault-workload-auth-bootstrap --execute-bootstrap` submode. Its safe modes
+  do not use SSH or remote staging, inspect live host state, dispatch generic
+  helpers, or execute destructive or authority-bearing work. Its execution
+  submodes remain individually allowlisted and route-specific. Its
   `--evidence-check` mode reads only supplied local JSON evidence paths, scans
   for secret-like content before parsing, and prints only path, byte count,
   SHA-256 digest, schema, and selected safe status/count metadata. Known schemas
@@ -381,39 +399,36 @@ Current implementation/design status through P0p:
   proof, not IM refresh/support-bundle collection, not CP proof, not runtime
   identity generation, and not reset/unseal.
 - The `vault-workload-auth-bootstrap [--help|--plan|--inventory]` submode is the
-  P0o safe local/print-only planning surface for a future bootstrap route. With
+  P0o safe local/print-only planning surface for the P0q bootstrap route. With
   no mode, the submode defaults to printing the plan/help and exiting zero. It accepts only
-  `--help`, `--plan`, and `--inventory`; it rejects `--execute-bootstrap`,
-  `--ssh-target`, `--interactive-tty`, `--host-local`, secret-like arguments,
-  reset/unseal flags, workload-auth helper override flags, proof secret value
-  flags, unknown flags, duplicate flags, equals-form options, and extra
-  positionals. It writes no `.out`, JSON, support bundle, report, generated
-  artifact, operator summary, retained bundle, or CP artifact.
-- The future `vault-workload-auth-bootstrap --ssh-target <target>
-  --execute-bootstrap --interactive-tty` route is defined by P0p but is not
-  implemented. It is the only future execution shape currently authorized for a
-  later audited slice. It will require a visible Mac-side terminal before
-  staging, allocate an interactive SSH TTY, stage only the dedicated future
-  workload-auth bootstrap public/internal helper pair, obtain any bootstrap
-  authority or proof secret value only from TTY prompts owned by the human
-  operator, write at most a remote-only non-secret summary, and attempt staged
-  helper cleanup by default. It must not pass or store secrets through args,
-  env, files, logs, `.out`, reports, support bundles, retained bundles, CP
-  artifacts, transcripts, helper summaries, printed commands, or Codex output.
+  `--help`, `--plan`, and `--inventory`. It writes no `.out`, JSON, support
+  bundle, report, generated artifact, operator summary, retained bundle, or CP
+  artifact and performs no live action.
+- The `vault-workload-auth-bootstrap --ssh-target <target>
+  --execute-bootstrap --interactive-tty` route is the P0q Mac-side
+  secret-sensitive bootstrap route. It requires a visible Mac-side terminal
+  before staging, allocates an interactive SSH TTY, stages exactly the
+  dedicated workload-auth bootstrap public/internal helper pair, obtains
+  bootstrap authority and proof secret values only from TTY prompts owned by
+  the human operator in the remote helper, writes only a remote non-secret
+  summary, and attempts staged-helper cleanup by default. It must not pass or
+  store secrets through args, env, files, logs, `.out`, reports, support
+  bundles, retained bundles, CP artifacts, transcripts, helper summaries,
+  printed commands, or Codex output.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
   follow-up evidence/provenance actions only, and the recovery session may print
   those commands as next-step text only.
-- P0o implements only the safe local/print-only workload-auth bootstrap
-  planning surface described here, in addition to the previously landed
-  reset/unseal, readiness, and workload-auth evidence routes. Runtime identity
+- P0q implements the safe local/print-only workload-auth bootstrap modes and
+  the Mac-side secret-sensitive bootstrap execution route described here, in
+  addition to the previously landed reset/unseal, readiness, and workload-auth
+  evidence routes. Runtime identity
   summary, Vault service-user check/apply execution, runtime security check,
   post-unseal check combination, live execute-reset validation, live
-  workload-auth bootstrap execution, the P0p dedicated bootstrap helper,
-  preinstalled helper bundles, generic helper dispatch, and all other staged
-  `es-*` helper delegation remain not implemented and require later audited
-  slices.
+  workload-auth bootstrap validation, preinstalled helper bundles, generic
+  helper dispatch, and all other staged `es-*` helper delegation remain not
+  implemented and require later audited slices.
 - Operator facade output is deterministic operator guidance and
   evidence/projection only. The facade itself writes no operator-owned summary,
   support bundle, report, or new authority artifact; the delegated helper
@@ -453,7 +468,10 @@ workload-auth bootstrap and not a token broker. P0o adds only the safe
 local/print-only `vault-workload-auth-bootstrap` planning surface; it has no
 root-token prompt and no live bootstrap execution. P0p defines only the future
 prompt-only, TTY-bound execution contract; it still has no implemented
-root-token or proof-secret prompt and no live bootstrap execution. In these topologies the
+root-token or proof-secret prompt and no live bootstrap execution. P0q
+implements the prompt-only, TTY-bound workload-auth bootstrap route over the
+dedicated bootstrap public/internal helper pair, with no live validation in
+this slice and no ES Vault token brokerage. In these topologies the
 facade itself does not prompt for, read, type, log, relay, persist, summarize,
 or accept the unseal key, root token, client token, Vault token, API key,
 private key, password, JWT-SVID payload, proof secret material, or secret
@@ -499,10 +517,12 @@ Execution-context split:
   `recovery-session vault-workload-auth-check --ssh-target <target>
   --interactive-tty`, while P0o
   `recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]`
-  remains safe local/print-only and does not use SSH or staging. P0p defines
+  remains safe local/print-only and does not use SSH or staging. P0p defined
   the future Mac-side
   `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
-  --execute-bootstrap --interactive-tty` contract but does not implement it.
+  --execute-bootstrap --interactive-tty` contract, and P0q implements it with
+  the dedicated bootstrap public/internal helper pair and fake/static
+  validation only.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
   runtime identity summary and Vault service-user check. The host-local
   workload-auth helper remains available as a direct helper, but P0n adds the
@@ -512,11 +532,11 @@ Execution-context split:
   operator-facade route.
 - Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning
   route, the P0m explicit execute-reset operator route, the P0n workload-auth
-  evidence route, and the P0o safe bootstrap planning surface; P0p is
-  design/static-test prep only and does not add an implemented v1 route:
+  evidence route, the P0o safe bootstrap planning surface, and the P0q
+  workload-auth bootstrap execution route:
   generic remote staging, arbitrary shell passthrough, post-unseal/runtime
   identity/service-user/IM/support-bundle/CP-proof bundling, live execute-reset
-  validation, or Vault workload-auth bootstrap execution.
+  validation, or live Vault workload-auth bootstrap validation.
 
 Proposed v1/v2 slice sequence:
 
@@ -551,10 +571,12 @@ Proposed v1/v2 slice sequence:
    docs/static-test only, with a dedicated future helper, prompt-only secret
    handling, remote-only non-secret evidence, fake/static tests, and no
    implementation
-12. later separate audit/live-validation and post-reset evidence slices before
+12. secret-sensitive workload-auth bootstrap implementation with static and
+   fake validation only, no live bootstrap, prompt-only secret handling, no
+   transcript capture, and no workload-auth check/reset/unseal/IM/support/CP or
+   runtime identity bundling
+13. later separate audit/live-validation and post-reset evidence slices before
    any live destructive execute-reset validation or post-reset authority claim
-13. separate secret-sensitive workload-auth bootstrap implementation only if
-   still needed
 
 Sudo model:
 
@@ -576,12 +598,11 @@ IM-consumed artifact filenames.
 Any optional operator summary is non-secret evidence/projection only, not an
 IM input in v1.
 
-The proposed `vault-workload-auth-bootstrap` execution surface is
-blocked/reopened for now. The repo currently has reset/unseal/check helpers but
-no implemented safe Remote Alpha helper that bootstraps Vault JWT auth, Vault
-roles, or proof secrets after reset. P0p designs the later prompt-only
-secret-sensitive route; it does not implement root-token automation, helper
-files, Vault writes, helper staging, or live validation.
+The `vault-workload-auth-bootstrap` execution surface is implemented only as
+the P0q bounded Remote Alpha helper/facade route. Live validation remains
+blocked/reopened for a later audited slice. P0q does not implement root-token
+automation, ES token brokerage, workload-auth success proof, live validation,
+or production/deployment/reconciliation architecture.
 
 ### P0c First Staged-Helper Delegation Plan
 
@@ -2087,6 +2108,195 @@ Future implementation tests:
   reset/unseal, IM refresh, support-bundle collection, CP proof, runtime
   identity summary, runtime identity generation, governed smoke, or default
   readiness validation
+
+### P0q Vault Workload-Auth Bootstrap Execution Route
+
+`Bounded slice rule`: P0q implements the dedicated secret-sensitive
+workload-auth bootstrap execution route with fake/static validation only.
+It does not run live SSH, sudo, Vault, workload-auth checks, reset/unseal,
+Infrastructure Manager refresh, support-bundle collection, CP proof, runtime
+identity summary, runtime identity generation, governed smoke, default
+readiness validation, or network-dependent integration tests during validation.
+
+Helper strategy:
+
+- Public helper:
+  `scripts/remote_alpha_vault_workload_auth_bootstrap.sh`
+- Internal helper:
+  `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`
+- The public helper sources only the fixed internal helper from the repository
+  relative layout.
+- The operator facade may stage only that public/internal bootstrap helper pair.
+  It must not stage `scripts/remote_alpha_operator.sh`, reset/unseal helpers,
+  the workload-auth check helper, runtime identity helpers, service-user
+  helpers, bundles, unrelated helpers, or a generic helper dispatcher.
+
+Mac-side operator route:
+
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
+  --interactive-tty`
+
+Safe modes remain:
+
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --help`
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --plan`
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --inventory`
+
+Secret prompt model:
+
+- The human remains the operator.
+- ES remains a bounded Remote Alpha operator facade/workflow, not a Vault token
+  broker.
+- Vault owns token, secret, and lease authority.
+- SPIRE owns JWT-SVID issuance.
+- The helper prompts for Vault bootstrap authority and proof secret values only
+  on the visible/silent remote TTY owned by the human operator.
+- Root tokens, unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API
+  keys, private keys, passwords, proof secret values, and secret payloads must
+  never enter CLI arguments, environment variables, environment files, local or
+  remote files, shell history, logs, `.out`, reports, support bundles, retained
+  bundles, CP artifacts, helper summaries, printed commands, terminal
+  transcripts, `tee`, `script`, or Codex output.
+
+Vault API strategy:
+
+- The helper uses an in-process HTTPS client for Vault API writes.
+- The helper must not use `VAULT_TOKEN`, `vault login`, token-bearing Vault CLI
+  arguments, token files such as `.vault-token`, transcript capture, `tee`, or
+  `script`.
+- Bootstrap authority may exist only in helper process memory for the duration
+  of the helper operation and should be cleared where practical.
+
+Configured Vault objects/config:
+
+- auth mount `jwt`
+- JWT auth config with SPIRE validation material and bound issuer
+- role `service_execution`
+- `role_type=jwt`
+- `user_claim=sub`
+- `bound_audiences=vault`
+- `bound_subject=spiffe://execution.internal/workload`
+- policy `runtime-identity-proof`
+- KV v2 proof paths:
+  - `proof-secrets/data/runtime-identity-vault-login`
+  - `proof-secrets/data/codex-runtime-profile`
+- proof runtime field `api_key` present and non-empty, with the value never
+  printed
+- workload-zone config alignment at
+  `/etc/execution-substrate/vault/workload-zone-vault-config.json`
+
+Execution boundaries:
+
+- P0q may configure only the intended Vault objects/config.
+- It must not run a workload-auth check.
+- It must not run reset or unseal.
+- It must not run Infrastructure Manager refresh.
+- It must not collect support bundles.
+- It must not run CP proof.
+- It must not run runtime identity summary or runtime identity generation.
+- It must not run governed smoke, default readiness validation, or post-unseal
+  checks.
+- It must not claim workload-auth success, runtime-profile readiness, submit
+  readiness, Vault production readiness, governed execution proof, IM
+  authority, CP recovery authority, ES Vault token brokerage, or Remote Alpha
+  production/deployment/provisioning/reconciliation architecture.
+- The workload-auth check remains a separate post-bootstrap command.
+
+Summary/evidence behavior:
+
+- P0q writes only one remote-only non-secret bootstrap summary:
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
+- The schema is
+  `execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`.
+- The summary is evidence/projection only, not authority and not an IM input.
+- The route must not copy that summary back to Mac `.out`.
+- The route must not create an operator summary.
+- The summary may contain only schema, generated time, operation mode,
+  configured-object labels, operation statuses/booleans, path labels, digests,
+  redaction booleans, and explicit non-claims.
+- The summary must not contain a root token, unseal key, client token, Vault
+  token, JWT-SVID payload, API key value, private key, password, proof secret
+  value, secret payload, raw Vault output, raw HTTP headers, operator-entered
+  prompt values, or terminal transcript.
+
+Allowed execution flags:
+
+- `--help`
+- `--plan`
+- `--inventory`
+- `--ssh-target <target>`
+- `--execute-bootstrap`
+- `--interactive-tty`
+
+Flag and staging rules:
+
+- `--help`, `--plan`, `--inventory`, and `--execute-bootstrap` are mutually
+  exclusive route modes.
+- `--ssh-target` and `--interactive-tty` are valid only with
+  `--execute-bootstrap`.
+- `--execute-bootstrap` requires both `--ssh-target <target>` and
+  `--interactive-tty`.
+- The SSH target must be a single target, not an SSH option or shell command.
+- The route requires visible local stdin and stdout before staging.
+- The route allocates an interactive SSH TTY with `ssh -tt` only for the
+  explicit `--interactive-tty` execution path.
+- The route stages to a route-specific remote scratch root, stages only the two
+  bootstrap helper files, invokes only the staged public helper, and attempts
+  staged-helper cleanup by default.
+- P0q does not offer `--keep-staging-on-failure`.
+
+Forbidden execution flags and inputs include:
+
+- `--host-local`
+- `--dry-run`
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--apply`
+- `--interactive-sudo`
+- `--governed-smoke-command`
+- `--keep-staging-on-failure`
+- helper override flags
+- workload-auth helper override flags
+- Vault address, role, audience, path, proof-path, SPIFFE ID, config path,
+  summary path, container probe image, or SPIRE socket override flags
+- arbitrary commands
+- helper path overrides
+- `--root-token`
+- `--unseal-key`
+- `--client-token`
+- `--vault-token`
+- `--api-key`
+- `--jwt-svid`
+- `--private-key`
+- `--password`
+- `--secret`
+- proof secret value flags
+- any secret-like positional argument
+
+P0q tests:
+
+- helper help documents secret posture and non-claims
+- helper rejects secret CLI args, equals-form secret args, and secret env vars
+- fake Vault API capture proves bootstrap authority is not passed by argv, env,
+  file, summary, or Codex-facing output
+- fake Vault API capture proves the proof secret value is never printed or
+  summarized
+- fake bootstrap writes the expected fake Vault objects only
+- summary schema and redaction scans fail on secret-like material
+- operator tests prove help, plan, and inventory stay safe
+- operator tests reject missing `--ssh-target`, missing `--interactive-tty`,
+  forbidden reset/unseal/check/IM/CP/runtime flags, helper override flags,
+  secret-like flags, unknown flags, duplicate flags, equals-form options, and
+  extra positionals before staging
+- fake SSH/SCP tests prove exactly the two bootstrap helper files are staged,
+  `ssh -tt` is used only for execution, only the public bootstrap helper is
+  invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no
+  Mac `.out` copy-back occurs
 
 ### P0d Interactive Validation Evidence
 

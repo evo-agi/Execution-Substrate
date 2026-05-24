@@ -608,6 +608,86 @@ assert cleanup is attempted; assert summary schema/redaction behavior if the
 summary is implemented; and assert the route cannot bundle workload-auth
 checks, reset/unseal, IM, support bundles, CP proof, or runtime identity work.
 
+The P0q implementation/self-audit/merge-readiness slice may implement exactly
+one dedicated secret-sensitive workload-auth bootstrap helper and exactly one
+Mac-side recovery-session route:
+`scripts/remote_alpha_operator.sh recovery-session
+vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
+--interactive-tty`. P0q may add the public helper
+`scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and the internal helper
+`scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, plus static
+and fake tests for that bounded route. P0q must not run live bootstrap, live
+SSH, sudo, Vault, workload-auth checks, reset/unseal, Infrastructure Manager
+refresh, support-bundle collection, CP proof, runtime identity generation,
+runtime identity summaries, or network-dependent integration tests.
+
+P0q preserves the P0o safe modes: `vault-workload-auth-bootstrap --help`,
+`--plan`, and `--inventory` remain safe local/print-only modes, and no mode
+still defaults to printing plan/help and exiting zero. The execution route is
+available only as `--ssh-target <target> --execute-bootstrap
+--interactive-tty`. `--ssh-target` and `--interactive-tty` are valid only with
+`--execute-bootstrap`; `--execute-bootstrap` requires both; and safe modes are
+mutually exclusive with execution. Duplicate route flags, equals-form options,
+unknown flags, extra positionals, helper override flags, forbidden reset/unseal
+or IM/CP/runtime flags, and secret-like arguments must fail before staging.
+
+P0q's helper prompt model is visible/silent remote helper TTY prompt only.
+Vault bootstrap authority and proof secret values must never be accepted through
+CLI arguments, environment variables, environment files, files, shell history,
+logs, `.out`, reports, support bundles, retained bundles, CP artifacts,
+summaries, transcripts, `tee`, `script`, printed commands, or Codex output. The
+helper may hold those values only in process memory for the duration of the
+bootstrap operation and should clear variables where practical. It must not use
+`VAULT_TOKEN`, `vault login`, token-bearing Vault CLI arguments, or Vault token
+files such as `.vault-token`.
+
+P0q's helper may use an in-process Vault API client for the documented objects:
+auth mount `jwt`; JWT auth config with SPIRE validation material and bound
+issuer; role `service_execution` with `role_type=jwt`, `user_claim=sub`,
+`bound_audiences=vault`, and
+`bound_subject=spiffe://execution.internal/workload`; policy
+`runtime-identity-proof`; KV v2 proof paths
+`proof-secrets/data/runtime-identity-vault-login` and
+`proof-secrets/data/codex-runtime-profile`; field `api_key` present and
+non-empty with the value never printed; and workload-zone config alignment at
+`/etc/execution-substrate/vault/workload-zone-vault-config.json`. P0q must not
+invent additional policy paths, mounts, roles, proof fields, or identities.
+
+P0q execution writes only one remote-only non-secret bootstrap summary at
+`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`
+with schema
+`execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`.
+The summary is evidence/projection only, never authority and not an IM input.
+It may contain only schema, generated time, operation mode, configured-object
+labels, operation statuses/booleans, path labels, digests, redaction booleans,
+and explicit non-claims. It must not contain a root token, unseal key, client
+token, Vault token, JWT-SVID payload, API key value, private key, password,
+proof secret value, secret payload, raw Vault output, raw HTTP headers,
+operator-entered prompt values, or terminal transcript. P0q must not copy that
+summary back to Mac `.out`, create an operator summary, run IM, or create a
+support bundle.
+
+P0q bootstrap configures expected Vault objects only. It must not run a
+workload-auth check, reset, unseal, Infrastructure Manager refresh,
+support-bundle collection, CP proof, runtime identity summary, runtime identity
+generation, governed smoke, default readiness validation, post-unseal check, or
+support-bundle collection. It must not claim workload-auth success,
+runtime-profile readiness, submit readiness, Vault production readiness,
+governed execution proof, IM authority, CP recovery authority, ES Vault token
+brokerage, or Remote Alpha production/deployment/provisioning/reconciliation
+architecture. The workload-auth check remains a separate post-bootstrap
+command.
+
+P0q validation remains fake/static only. Tests must cover helper help and
+secret posture, secret CLI/env rejection, fake Vault API capture showing
+bootstrap authority is not passed by argv/env/file, proof secret value redaction
+from printed output and summary, expected fake Vault objects, summary schema and
+redaction scans, no workload-auth check/reset/unseal/IM/CP/runtime-identity
+commands, operator flag rejection, fake SSH/SCP staging of exactly the
+bootstrap public/internal helper pair, `ssh -tt` only for explicit
+`--interactive-tty`, public helper invocation only, cleanup attempts, no
+transcript/`tee`/`script`, and no copy-back to Mac `.out`.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
