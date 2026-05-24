@@ -2161,6 +2161,16 @@ Secret prompt model:
   remote files, shell history, logs, `.out`, reports, support bundles, retained
   bundles, CP artifacts, helper summaries, printed commands, terminal
   transcripts, `tee`, `script`, or Codex output.
+- Before either prompt, and before any SPIRE/Vault operation or Vault write, the
+  helper must run a secret-free writability preflight for the canonical summary
+  path
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
+  The preflight may create `/var/tmp/execution-substrate-remote-alpha` when it
+  is missing and safe for the helper user to create. If the parent exists but is
+  not writable by the helper user, or the summary path cannot be written safely,
+  the helper must fail before prompting, print only a non-secret
+  `summary_preflight_failed` classification, leave no summary or temp summary
+  when possible, and run no Vault writes.
 
 Vault API strategy:
 
@@ -2215,6 +2225,9 @@ Summary/evidence behavior:
 - The summary is evidence/projection only, not authority and not an IM input.
 - The route must not copy that summary back to Mac `.out`.
 - The route must not create an operator summary.
+- The helper must write the summary through a temp file in the same directory
+  and atomically rename it only after redaction checks pass. Temp summary files
+  must be removed on failure when possible.
 - The summary may contain only schema, generated time, operation mode,
   configured-object labels, operation statuses/booleans, path labels, digests,
   redaction booleans, and explicit non-claims.
@@ -2286,7 +2299,11 @@ P0q tests:
   file, summary, or Codex-facing output
 - fake Vault API capture proves the proof secret value is never printed or
   summarized
+- preflight failure before secret prompts proves no root-token prompt, no proof
+  secret prompt, no fake Vault API call, and no summary or temp summary
 - fake bootstrap writes the expected fake Vault objects only
+- fake successful bootstrap records the summary preflight as passed
+- static source tests prove redaction checks run before final summary rename
 - summary schema and redaction scans fail on secret-like material
 - operator tests prove help, plan, and inventory stay safe
 - operator tests reject missing `--ssh-target`, missing `--interactive-tty`,

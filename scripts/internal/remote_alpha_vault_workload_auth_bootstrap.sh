@@ -46,6 +46,9 @@ Configured objects:
 Summary:
   Remote-only non-secret summary:
   /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json
+  The helper preflights summary writability before any secret prompt or Vault
+  write. If the summary path cannot be written safely, it fails before prompts
+  with a non-secret summary_preflight_failed classification.
 
 Non-claims:
   This helper does not run workload-auth checks, reset, unseal, IM refresh,
@@ -150,6 +153,7 @@ import pathlib
 import ssl
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -233,6 +237,68 @@ def set_status(name, status, **extra):
 
 def fail(name, reason):
     set_status(name, "fail", error_classification=reason)
+
+
+class SummaryPreflightError(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def cleanup_path(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def preflight_summary_writable():
+    parent = SUMMARY_PATH.parent
+    preflight_temp = parent / f".{SUMMARY_PATH.name}.preflight.{os.getpid()}.tmp"
+
+    try:
+        if parent.exists() and not parent.is_dir():
+            raise SummaryPreflightError("summary_parent_not_directory")
+        try:
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            raise SummaryPreflightError("summary_parent_create_failed")
+        if not os.access(parent, os.W_OK | os.X_OK):
+            raise SummaryPreflightError("summary_parent_not_writable")
+        if SUMMARY_PATH.exists():
+            if not SUMMARY_PATH.is_file():
+                raise SummaryPreflightError("summary_path_not_regular")
+            if not os.access(SUMMARY_PATH, os.W_OK):
+                raise SummaryPreflightError("summary_path_not_writable")
+        try:
+            fd = os.open(str(preflight_temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError:
+            raise SummaryPreflightError("summary_temp_create_failed")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("summary_preflight=pass\n")
+        except OSError:
+            cleanup_path(preflight_temp)
+            raise SummaryPreflightError("summary_temp_write_failed")
+        try:
+            preflight_temp.unlink()
+        except OSError:
+            raise SummaryPreflightError("summary_temp_cleanup_failed")
+        set_status("summary_preflight", "pass", path=str(SUMMARY_PATH), parent=str(parent))
+    except SummaryPreflightError:
+        cleanup_path(preflight_temp)
+        raise
+
+
+def report_summary_preflight_failure(reason):
+    print("Remote Alpha Vault workload-auth bootstrap preflight failed.")
+    print("failure_class=summary_preflight_failed")
+    print(f"error_classification={reason}")
+    print(f"summary_path={SUMMARY_PATH}")
+    print(f"summary_parent={SUMMARY_PATH.parent}")
+    print("No Vault bootstrap prompts were read and no Vault writes were attempted.")
 
 
 def load_config():
@@ -528,13 +594,26 @@ def validate_summary_no_secrets(text, secrets):
 
 
 def write_summary(secrets=()):
-    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
     validate_summary_no_secrets(text, secrets)
-    tmp = SUMMARY_PATH.with_suffix(SUMMARY_PATH.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(SUMMARY_PATH)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(SUMMARY_PATH.parent),
+            prefix=f"{SUMMARY_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = pathlib.Path(handle.name)
+            handle.write(text)
+        os.chmod(temp_path, 0o600)
+        temp_path.replace(SUMMARY_PATH)
+    except Exception:
+        if temp_path is not None:
+            cleanup_path(temp_path)
+        raise
 
 
 def prompt_secret(prompt):
@@ -549,6 +628,12 @@ def main():
     proof_secret = ""
     exit_code = 0
     secret_values_for_scan = []
+    try:
+        preflight_summary_writable()
+    except SummaryPreflightError as exc:
+        report_summary_preflight_failure(exc.reason)
+        return 1
+
     try:
         address, ca_bundle_pem = load_config()
         validation_pubkey = extract_jwt_validation_pubkey()

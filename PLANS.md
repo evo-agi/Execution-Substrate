@@ -641,6 +641,21 @@ bootstrap operation and should clear variables where practical. It must not use
 `VAULT_TOKEN`, `vault login`, token-bearing Vault CLI arguments, or Vault token
 files such as `.vault-token`.
 
+P0q's helper must run a secret-free writability preflight for the canonical
+remote bootstrap summary path before any Vault bootstrap authority prompt, proof
+secret prompt, SPIRE/Vault operation, or Vault write. The preflight may create
+`/var/tmp/execution-substrate-remote-alpha` when it is missing and safe for the
+helper user to create, and it must prove that a temp file can be created and
+removed in the same directory as
+`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
+If the parent exists but is not writable by the helper user, or the summary path
+cannot be written safely, the helper must fail before prompting, print only a
+non-secret failure classification such as `summary_preflight_failed`, leave no
+summary or temp summary when possible, and run no Vault writes. This preflight
+does not add sudo, root-token argument handling, Mac `.out` copy-back, IM,
+support-bundle collection, workload-auth checks, reset/unseal, CP proof, or
+runtime identity generation.
+
 P0q's helper may use an in-process Vault API client for the documented objects:
 auth mount `jwt`; JWT auth config with SPIRE validation material and bound
 issuer; role `service_execution` with `role_type=jwt`, `user_claim=sub`,
@@ -665,7 +680,9 @@ token, Vault token, JWT-SVID payload, API key value, private key, password,
 proof secret value, secret payload, raw Vault output, raw HTTP headers,
 operator-entered prompt values, or terminal transcript. P0q must not copy that
 summary back to Mac `.out`, create an operator summary, run IM, or create a
-support bundle.
+support bundle. The helper must write through a temp file in the summary
+directory and atomically rename it only after redaction checks pass; cleanup must
+remove temp summary files on failure when possible.
 
 P0q bootstrap configures expected Vault objects only. It must not run a
 workload-auth check, reset, unseal, Infrastructure Manager refresh,
@@ -681,12 +698,13 @@ command.
 P0q validation remains fake/static only. Tests must cover helper help and
 secret posture, secret CLI/env rejection, fake Vault API capture showing
 bootstrap authority is not passed by argv/env/file, proof secret value redaction
-from printed output and summary, expected fake Vault objects, summary schema and
-redaction scans, no workload-auth check/reset/unseal/IM/CP/runtime-identity
-commands, operator flag rejection, fake SSH/SCP staging of exactly the
-bootstrap public/internal helper pair, `ssh -tt` only for explicit
-`--interactive-tty`, public helper invocation only, cleanup attempts, no
-transcript/`tee`/`script`, and no copy-back to Mac `.out`.
+from printed output and summary, expected fake Vault objects, summary
+writability preflight before prompts and Vault writes, summary schema and
+redaction scans, redaction checks before final summary rename, no workload-auth
+check/reset/unseal/IM/CP/runtime-identity commands, operator flag rejection,
+fake SSH/SCP staging of exactly the bootstrap public/internal helper pair,
+`ssh -tt` only for explicit `--interactive-tty`, public helper invocation only,
+cleanup attempts, no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
 
 ## Current Remote Alpha Hardening Tranche
 
