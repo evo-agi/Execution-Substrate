@@ -2298,12 +2298,21 @@ Summary/evidence behavior:
   and atomically rename it only after redaction checks pass. Temp summary files
   must be removed on failure when possible.
 - The summary may contain only schema, generated time, operation mode,
-  configured-object labels, operation statuses/booleans, path labels, digests,
-  redaction booleans, and explicit non-claims.
+  configured-object labels, operation statuses/booleans, safe failure
+  phase/class labels, safe prompt/operation-start booleans, safe last/next
+  operation labels, path labels, digests, redaction booleans, and explicit
+  non-claims.
+- After summary preflight succeeds, failures must write a non-secret
+  classification summary when possible: `overall_status=fail`, `failure_phase`,
+  `failure_class`, optional sanitized `failure_message_class`,
+  `secret_prompts_started`, `vault_operations_started`, and
+  `operations.<phase>.status=fail` where applicable. Pre-prompt failures must
+  make clear that secret prompts did not start; post-prompt failures may only
+  record that prompts started, never prompt values.
 - The summary must not contain a root token, unseal key, client token, Vault
   token, JWT-SVID payload, API key value, private key, password, proof secret
-  value, secret payload, raw Vault output, raw HTTP headers, operator-entered
-  prompt values, or terminal transcript.
+  value, secret payload, raw exception string, traceback, raw Vault output, raw
+  HTTP headers, operator-entered prompt values, or terminal transcript.
 
 Allowed execution flags:
 

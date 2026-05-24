@@ -48,7 +48,9 @@ Summary:
   /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json
   The helper preflights summary writability before any secret prompt or Vault
   write. If the summary path cannot be written safely, it fails before prompts
-  with a non-secret summary_preflight_failed classification.
+  with a non-secret summary_preflight_failed classification. After that
+  preflight, failure summaries record only safe phase/class labels and never raw
+  exceptions, raw Vault output, headers, or operator-entered prompt values.
 
 Non-claims:
   This helper does not run workload-auth checks, reset, unseal, IM refresh,
@@ -150,6 +152,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import ssl
 import subprocess
 import sys
@@ -201,6 +204,10 @@ summary = {
         "bound_audiences": [AUDIENCE],
     },
     "operations": {},
+    "secret_prompts_started": False,
+    "vault_operations_started": False,
+    "last_completed_operation": None,
+    "next_operation": "summary_preflight",
     "redaction": {
         "root_token_recorded": False,
         "vault_token_recorded": False,
@@ -229,14 +236,91 @@ summary = {
 }
 
 
+class BootstrapFailure(Exception):
+    def __init__(self, phase, failure_class, message_class=None, exit_code=1):
+        super().__init__(phase)
+        self.phase = phase
+        self.failure_class = failure_class
+        self.message_class = message_class
+        self.exit_code = exit_code
+
+
+class VaultAPIError(Exception):
+    def __init__(self, failure_class, message_class):
+        super().__init__(message_class)
+        self.failure_class = failure_class
+        self.message_class = message_class
+
+
 def set_status(name, status, **extra):
     payload = {"status": status}
     payload.update(extra)
     summary["operations"][name] = payload
+    if status == "pass":
+        summary["last_completed_operation"] = name
+        summary["next_operation"] = None
 
 
-def fail(name, reason):
-    set_status(name, "fail", error_classification=reason)
+def set_next_operation(name):
+    summary["next_operation"] = name
+
+
+def safe_message_class(exc):
+    name = type(exc).__name__
+    name = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
+    return cleaned or "exception"
+
+
+def vault_http_failure_class(status):
+    if status == 401:
+        return "vault_auth_failed"
+    if status == 403:
+        return "vault_permission_denied"
+    return "vault_api_error"
+
+
+def classify_exception(exc):
+    if isinstance(exc, BootstrapFailure):
+        return exc.failure_class, exc.message_class or "bootstrap_failure"
+    if isinstance(exc, VaultAPIError):
+        return exc.failure_class, exc.message_class
+    if isinstance(exc, urllib.error.HTTPError):
+        return vault_http_failure_class(exc.code), f"http_{exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLError):
+            return "vault_tls_error", "tls_error"
+        return "vault_unreachable", "url_error"
+    if isinstance(exc, ssl.SSLError):
+        return "vault_tls_error", "tls_error"
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return "invalid_response", safe_message_class(exc)
+    return "unexpected_exception", safe_message_class(exc)
+
+
+def record_failure(phase, failure_class, operation=None, message_class=None):
+    safe_phase = phase or "unexpected"
+    safe_operation = operation or safe_phase
+    summary["overall_status"] = "fail"
+    summary["failure_phase"] = safe_phase
+    summary["failure_class"] = failure_class
+    if message_class:
+        summary["failure_message_class"] = message_class
+    if summary.get("next_operation") is None:
+        summary["next_operation"] = safe_phase
+    set_status(safe_operation, "fail", error_classification=failure_class)
+
+
+def raise_failure(phase, failure_class, operation=None, message_class=None, exit_code=1):
+    record_failure(phase, failure_class, operation=operation, message_class=message_class)
+    raise BootstrapFailure(phase, failure_class, message_class=message_class, exit_code=exit_code)
+
+
+def fail_from_exception(phase, exc, operation=None):
+    failure_class, message_class = classify_exception(exc)
+    raise_failure(phase, failure_class, operation=operation, message_class=message_class)
 
 
 class SummaryPreflightError(Exception):
@@ -302,21 +386,19 @@ def report_summary_preflight_failure(reason):
 
 
 def load_config():
+    set_next_operation("config_load")
     try:
         raw = CONFIG_PATH.read_bytes()
     except FileNotFoundError:
-        fail("workload_zone_config_alignment", "missing_config")
-        raise SystemExit(1)
+        raise_failure("config_load", "config_missing")
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:
-        fail("workload_zone_config_alignment", "invalid_json")
-        raise SystemExit(1)
+        raise_failure("config_load", "config_invalid", message_class="invalid_json")
     vault = payload.get("vault_config")
     if not isinstance(vault, dict):
-        fail("workload_zone_config_alignment", "missing_vault_config")
-        raise SystemExit(1)
+        raise_failure("config_load", "config_invalid", message_class="missing_vault_config")
     address = str(vault.get("address") or "").strip()
     auth_mount = str(vault.get("auth_mount") or "").strip()
     auth_role = str(vault.get("auth_role") or "").strip()
@@ -324,8 +406,7 @@ def load_config():
     ca_bundle_pem = str(vault.get("ca_bundle_pem") or "").strip()
     parsed = urllib.parse.urlparse(address)
     if parsed.scheme != "https" or not parsed.netloc:
-        fail("workload_zone_config_alignment", "vault_address_not_https")
-        raise SystemExit(1)
+        raise_failure("config_load", "config_invalid", message_class="vault_address_not_https")
     expected = {
         "auth_mount": (auth_mount, AUTH_MOUNT),
         "auth_role": (auth_role, ROLE),
@@ -333,9 +414,9 @@ def load_config():
     }
     for field, (actual, wanted) in expected.items():
         if actual != wanted:
-            fail("workload_zone_config_alignment", f"{field}_mismatch")
-            raise SystemExit(1)
-    set_status("workload_zone_config_alignment", "pass", path=str(CONFIG_PATH), digest=digest)
+            raise_failure("config_load", "config_invalid", message_class=f"{field}_mismatch")
+    set_status("config_load", "pass", path=str(CONFIG_PATH), digest=digest)
+    set_status("workload_zone_config", "pass", path=str(CONFIG_PATH), digest=digest)
     return address.rstrip("/"), ca_bundle_pem
 
 
@@ -373,6 +454,7 @@ def rsa_public_key_pem(n_b64, e_b64):
 
 
 def extract_jwt_validation_pubkey():
+    set_next_operation("jwt_auth_config")
     try:
         proc = subprocess.run(
             [SPIRE_COMMAND, "bundle", "show", "-format", "spiffe", "-socketPath", SPIRE_SOCKET],
@@ -382,16 +464,13 @@ def extract_jwt_validation_pubkey():
             text=True,
         )
     except FileNotFoundError:
-        fail("spire_jwt_validation_material", "spire_server_command_missing")
-        raise SystemExit(1)
+        raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="spire_server_command_missing")
     except subprocess.CalledProcessError:
-        fail("spire_jwt_validation_material", "spire_bundle_show_failed")
-        raise SystemExit(1)
+        raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="spire_bundle_show_failed")
     try:
         payload = json.loads(proc.stdout)
     except Exception:
-        fail("spire_jwt_validation_material", "spire_bundle_json_invalid")
-        raise SystemExit(1)
+        raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="spire_bundle_json_invalid")
 
     candidates = []
     if isinstance(payload.get("keys"), list):
@@ -414,19 +493,25 @@ def extract_jwt_validation_pubkey():
                 public_key_digest="sha256:" + hashlib.sha256(pem.encode("utf-8")).hexdigest(),
             )
             return pem
-    fail("spire_jwt_validation_material", "no_jwt_svid_rsa_key")
-    raise SystemExit(1)
+    raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="no_jwt_svid_rsa_key")
 
 
 def make_opener(ca_bundle_pem):
-    if ca_bundle_pem:
-        context = ssl.create_default_context(cadata=ca_bundle_pem)
-    else:
-        context = ssl.create_default_context()
-    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+    set_next_operation("vault_client_init")
+    try:
+        if ca_bundle_pem:
+            context = ssl.create_default_context(cadata=ca_bundle_pem)
+        else:
+            context = ssl.create_default_context()
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+    except Exception as exc:
+        fail_from_exception("vault_client_init", exc)
+    set_status("vault_client_init", "pass")
+    return opener
 
 
 def vault_request(opener, token, method, address, path, payload=None, allowed_statuses=(200, 204)):
+    summary["vault_operations_started"] = True
     body = None
     headers = {
         "Accept": "application/json",
@@ -443,18 +528,19 @@ def vault_request(opener, token, method, address, path, payload=None, allowed_st
     except urllib.error.HTTPError as exc:
         exc.read()
         if exc.code not in allowed_statuses:
-            raise RuntimeError(f"http_{exc.code}") from None
+            raise VaultAPIError(vault_http_failure_class(exc.code), f"http_{exc.code}") from None
         return {}
     except urllib.error.URLError as exc:
-        raise RuntimeError("url_error") from exc
+        failure_class, message_class = classify_exception(exc)
+        raise VaultAPIError(failure_class, message_class) from None
     if status not in allowed_statuses:
-        raise RuntimeError(f"http_{status}")
+        raise VaultAPIError(vault_http_failure_class(status), f"http_{status}")
     if not raw.strip():
         return {}
     try:
         return json.loads(raw)
     except Exception:
-        raise RuntimeError("invalid_json") from None
+        raise VaultAPIError("invalid_response", "invalid_json") from None
 
 
 def mount_from_kv_path(path):
@@ -465,37 +551,40 @@ def mount_from_kv_path(path):
 
 
 def ensure_auth_mount(opener, token, address):
+    phase = "jwt_auth_mount"
+    set_next_operation(phase)
     try:
         payload = vault_request(opener, token, "GET", address, "sys/auth")
         if f"{AUTH_MOUNT}/" in payload:
-            set_status("auth_mount", "pass", mount=AUTH_MOUNT, already_present=True)
+            set_status(phase, "pass", mount=AUTH_MOUNT, already_present=True)
             return
         vault_request(opener, token, "POST", address, f"sys/auth/{AUTH_MOUNT}", {"type": "jwt"}, allowed_statuses=(200, 204))
-        set_status("auth_mount", "pass", mount=AUTH_MOUNT, already_present=False)
+        set_status(phase, "pass", mount=AUTH_MOUNT, already_present=False)
     except Exception as exc:
-        fail("auth_mount", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def ensure_kv_mount(opener, token, address):
+    phase = "kv_v2_mount"
+    set_next_operation(phase)
     mount = mount_from_kv_path(PROOF_READ_PATH)
     if mount != mount_from_kv_path(PROOF_RUNTIME_SECRET_PATH):
-        fail("kv_v2_mount", "proof_paths_use_different_mounts")
-        raise RuntimeError("proof_paths_use_different_mounts")
+        raise_failure(phase, "config_invalid", message_class="proof_paths_use_different_mounts")
     try:
         payload = vault_request(opener, token, "GET", address, "sys/mounts")
         if f"{mount}/" in payload:
-            set_status("kv_v2_mount", "pass", mount=mount, already_present=True)
+            set_status(phase, "pass", mount=mount, already_present=True)
             return mount
         vault_request(opener, token, "POST", address, f"sys/mounts/{mount}", {"type": "kv", "options": {"version": "2"}}, allowed_statuses=(200, 204))
-        set_status("kv_v2_mount", "pass", mount=mount, already_present=False)
+        set_status(phase, "pass", mount=mount, already_present=False)
         return mount
     except Exception as exc:
-        fail("kv_v2_mount", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def configure_policy(opener, token, address):
+    phase = "runtime_identity_policy"
+    set_next_operation(phase)
     policy = f'''path "{PROOF_READ_PATH}" {{
   capabilities = ["read"]
 }}
@@ -506,13 +595,14 @@ path "{PROOF_RUNTIME_SECRET_PATH}" {{
 '''
     try:
         vault_request(opener, token, "PUT", address, f"sys/policies/acl/{POLICY_NAME}", {"policy": policy}, allowed_statuses=(200, 204))
-        set_status("policy", "pass", policy_name=POLICY_NAME, digest="sha256:" + hashlib.sha256(policy.encode("utf-8")).hexdigest())
+        set_status(phase, "pass", policy_name=POLICY_NAME, digest="sha256:" + hashlib.sha256(policy.encode("utf-8")).hexdigest())
     except Exception as exc:
-        fail("policy", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def configure_jwt(opener, token, address, validation_pubkey):
+    phase = "jwt_auth_config"
+    set_next_operation(phase)
     try:
         vault_request(
             opener,
@@ -523,13 +613,14 @@ def configure_jwt(opener, token, address, validation_pubkey):
             {"jwt_validation_pubkeys": [validation_pubkey], "bound_issuer": BOUND_ISSUER},
             allowed_statuses=(200, 204),
         )
-        set_status("jwt_auth_config", "pass", auth_mount=AUTH_MOUNT, bound_issuer=BOUND_ISSUER)
+        set_status(phase, "pass", auth_mount=AUTH_MOUNT, bound_issuer=BOUND_ISSUER)
     except Exception as exc:
-        fail("jwt_auth_config", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def configure_role(opener, token, address):
+    phase = "service_execution_role"
+    set_next_operation(phase)
     try:
         vault_request(
             opener,
@@ -546,13 +637,14 @@ def configure_role(opener, token, address):
             },
             allowed_statuses=(200, 204),
         )
-        set_status("role", "pass", role=ROLE, role_type="jwt", user_claim="sub")
+        set_status(phase, "pass", role=ROLE, role_type="jwt", user_claim="sub")
     except Exception as exc:
-        fail("role", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def write_proof_secrets(opener, token, address, proof_secret):
+    phase = "proof_secret_runtime_identity_vault_login"
+    set_next_operation(phase)
     try:
         vault_request(
             opener,
@@ -563,7 +655,13 @@ def write_proof_secrets(opener, token, address, proof_secret):
             {"data": {PROOF_READ_FIELD: proof_secret}},
             allowed_statuses=(200, 204),
         )
-        set_status("proof_read_path", "pass", path=PROOF_READ_PATH, field_label=PROOF_READ_FIELD, value_recorded=False)
+        set_status(phase, "pass", path=PROOF_READ_PATH, field_label=PROOF_READ_FIELD, value_recorded=False)
+    except Exception as exc:
+        fail_from_exception(phase, exc)
+
+    phase = "proof_secret_codex_runtime_profile"
+    set_next_operation(phase)
+    try:
         vault_request(
             opener,
             token,
@@ -573,10 +671,9 @@ def write_proof_secrets(opener, token, address, proof_secret):
             {"data": {PROOF_RUNTIME_SECRET_FIELD: proof_secret}},
             allowed_statuses=(200, 204),
         )
-        set_status("proof_runtime_secret_path", "pass", path=PROOF_RUNTIME_SECRET_PATH, field_label=PROOF_RUNTIME_SECRET_FIELD, value_recorded=False)
+        set_status(phase, "pass", path=PROOF_RUNTIME_SECRET_PATH, field_label=PROOF_RUNTIME_SECRET_FIELD, value_recorded=False)
     except Exception as exc:
-        fail("proof_secret_paths", str(exc))
-        raise
+        fail_from_exception(phase, exc)
 
 
 def validate_summary_no_secrets(text, secrets):
@@ -595,7 +692,11 @@ def validate_summary_no_secrets(text, secrets):
 
 def write_summary(secrets=()):
     text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
-    validate_summary_no_secrets(text, secrets)
+    try:
+        validate_summary_no_secrets(text, secrets)
+    except Exception:
+        record_failure("final_redaction", "redaction_blocked", message_class="summary_redaction_failed")
+        raise
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -613,6 +714,7 @@ def write_summary(secrets=()):
     except Exception:
         if temp_path is not None:
             cleanup_path(temp_path)
+        record_failure("summary_write", "summary_write_failed", message_class="summary_write_failed")
         raise
 
 
@@ -637,15 +739,36 @@ def main():
     try:
         address, ca_bundle_pem = load_config()
         validation_pubkey = extract_jwt_validation_pubkey()
-        root_token = prompt_secret("Vault bootstrap authority token (input hidden; not logged): ").strip()
+        set_next_operation("prompt_bootstrap_authority")
+        summary["secret_prompts_started"] = True
+        try:
+            root_token = prompt_secret("Vault bootstrap authority token (input hidden; not logged): ").strip()
+        except KeyboardInterrupt:
+            raise_failure("prompt_bootstrap_authority", "prompt_interrupted", message_class="keyboard_interrupt")
+        except (EOFError, OSError):
+            raise_failure("prompt_bootstrap_authority", "prompt_unavailable", message_class="prompt_unavailable")
+        except Exception as exc:
+            failure_class, message_class = classify_exception(exc)
+            if failure_class == "unexpected_exception":
+                failure_class = "prompt_unavailable"
+            raise_failure("prompt_bootstrap_authority", failure_class, message_class=message_class)
         if not root_token:
-            fail("prompt_bootstrap_authority", "empty")
-            raise SystemExit(1)
+            raise_failure("prompt_bootstrap_authority", "prompt_unavailable", message_class="empty_prompt")
         set_status("prompt_bootstrap_authority", "pass", prompt_source="remote_tty", value_recorded=False)
-        proof_secret = prompt_secret("Proof secret value for runtime proof paths (input hidden; not logged): ")
+        set_next_operation("prompt_proof_secret")
+        try:
+            proof_secret = prompt_secret("Proof secret value for runtime proof paths (input hidden; not logged): ")
+        except KeyboardInterrupt:
+            raise_failure("prompt_proof_secret", "prompt_interrupted", message_class="keyboard_interrupt")
+        except (EOFError, OSError):
+            raise_failure("prompt_proof_secret", "prompt_unavailable", message_class="prompt_unavailable")
+        except Exception as exc:
+            failure_class, message_class = classify_exception(exc)
+            if failure_class == "unexpected_exception":
+                failure_class = "prompt_unavailable"
+            raise_failure("prompt_proof_secret", failure_class, message_class=message_class)
         if not proof_secret:
-            fail("prompt_proof_secret", "empty")
-            raise SystemExit(1)
+            raise_failure("prompt_proof_secret", "prompt_unavailable", message_class="empty_prompt")
         set_status("prompt_proof_secret", "pass", prompt_source="remote_tty", value_recorded=False)
         secret_values_for_scan = [root_token, proof_secret]
 
@@ -657,10 +780,20 @@ def main():
         configure_role(opener, root_token, address)
         write_proof_secrets(opener, root_token, address, proof_secret)
         summary["overall_status"] = "pass"
+    except BootstrapFailure as exc:
+        summary["overall_status"] = "fail"
+        exit_code = exc.exit_code
     except SystemExit as exc:
+        if "failure_phase" not in summary:
+            phase = summary.get("next_operation") or "unexpected"
+            record_failure(phase, "unexpected_exception", message_class="system_exit")
         summary["overall_status"] = "fail"
         exit_code = int(exc.code or 1)
-    except Exception:
+    except Exception as exc:
+        if "failure_phase" not in summary:
+            phase = summary.get("next_operation") or "unexpected"
+            failure_class, message_class = classify_exception(exc)
+            record_failure(phase, failure_class, message_class=message_class)
         summary["overall_status"] = "fail"
         exit_code = 1
     finally:

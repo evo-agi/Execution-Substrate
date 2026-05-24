@@ -707,15 +707,23 @@ with schema
 `execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`.
 The summary is evidence/projection only, never authority and not an IM input.
 It may contain only schema, generated time, operation mode, configured-object
-labels, operation statuses/booleans, path labels, digests, redaction booleans,
-and explicit non-claims. It must not contain a root token, unseal key, client
-token, Vault token, JWT-SVID payload, API key value, private key, password,
-proof secret value, secret payload, raw Vault output, raw HTTP headers,
-operator-entered prompt values, or terminal transcript. P0q must not copy that
-summary back to Mac `.out`, create an operator summary, run IM, or create a
-support bundle. The helper must write through a temp file in the summary
-directory and atomically rename it only after redaction checks pass; cleanup must
-remove temp summary files on failure when possible.
+labels, operation statuses/booleans, safe failure phase/class labels, safe
+prompt/operation-start booleans, safe last/next operation labels, path labels,
+digests, redaction booleans, and explicit non-claims. After summary preflight
+succeeds, failures must write a non-secret classification summary when possible:
+`overall_status=fail`, `failure_phase`, `failure_class`, optional sanitized
+`failure_message_class`, `secret_prompts_started`, `vault_operations_started`,
+and `operations.<phase>.status=fail` where applicable. Pre-prompt failures must
+make clear that secret prompts did not start; post-prompt failures may only
+record that prompts started, never prompt values. It must not contain a root
+token, unseal key, client token, Vault token, JWT-SVID payload, API key value,
+private key, password, proof secret value, secret payload, raw exception string,
+traceback, raw Vault output, raw HTTP headers, operator-entered prompt values,
+or terminal transcript. P0q must not copy that summary back to Mac `.out`,
+create an operator summary, run IM, or create a support bundle. The helper must
+write through a temp file in the summary directory and atomically rename it only
+after redaction checks pass; cleanup must remove temp summary files on failure
+when possible.
 
 P0q bootstrap configures expected Vault objects only. It must not run a
 workload-auth check, reset, unseal, Infrastructure Manager refresh,

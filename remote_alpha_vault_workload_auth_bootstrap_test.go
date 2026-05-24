@@ -102,6 +102,9 @@ type fakeBootstrapVaultServer struct {
 	t             *testing.T
 	expectedToken string
 	requests      []fakeBootstrapVaultRequest
+	failPath      string
+	failStatus    int
+	failBody      string
 }
 
 func (f *fakeBootstrapVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +127,12 @@ func (f *fakeBootstrapVaultServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		Path:   r.URL.Path,
 		Body:   body,
 	})
+
+	if f.failPath == r.URL.Path {
+		w.WriteHeader(f.failStatus)
+		_, _ = w.Write([]byte(f.failBody))
+		return
+	}
 
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/sys/auth":
@@ -157,6 +166,20 @@ func startFakeBootstrapVault(t *testing.T, expectedToken string) (*httptest.Serv
 	return server, state, encodeCertificatePEM(t, server.Certificate())
 }
 
+func startFailingFakeBootstrapVault(t *testing.T, expectedToken, failPath string, failStatus int) (*httptest.Server, *fakeBootstrapVaultServer, string) {
+	t.Helper()
+	state := &fakeBootstrapVaultServer{
+		t:             t,
+		expectedToken: expectedToken,
+		failPath:      failPath,
+		failStatus:    failStatus,
+		failBody:      `{"errors":["raw Vault output must not be summarized","X-Vault-Token: hvs.rawbodytokenvalue123456789012345","traceback sentinel"]}`,
+	}
+	server := httptest.NewTLSServer(state)
+	t.Cleanup(server.Close)
+	return server, state, encodeCertificatePEM(t, server.Certificate())
+}
+
 func setupFakeBootstrapSpireServer(t *testing.T, dir string) string {
 	t.Helper()
 	logPath := filepath.Join(dir, "spire-server.log")
@@ -171,6 +194,70 @@ JSON
 	return logPath
 }
 
+func assertBootstrapSummaryRedactionScanPasses(t *testing.T, summaryPath string, secretValues ...string) {
+	t.Helper()
+	args := append([]string{remoteAlphaVaultWorkloadAuthBootstrapInternalPath(), summaryPath}, secretValues...)
+	script := `set -euo pipefail
+source "$1"
+shift
+remote_alpha_vault_workload_auth_bootstrap_validate_summary_file "$@"
+`
+	cmd := exec.Command("/bin/bash", append([]string{"-c", script, "redaction-scan"}, args...)...)
+	cmd.Dir = executionSubstrateRepoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected summary redaction scan to pass for %s: %v\n%s", summaryPath, err, output)
+	}
+}
+
+func assertBootstrapFailureSummary(t *testing.T, summaryPath, phase, failureClass string, secretPromptsStarted, vaultOperationsStarted bool, secretValues ...string) map[string]any {
+	t.Helper()
+	summaryRaw := mustRead(t, summaryPath)
+	assertContainsNone(t, "bootstrap failure summary forbidden material", summaryRaw,
+		"X-Vault-Token",
+		"raw Vault output",
+		"traceback sentinel",
+		"Traceback",
+		"BEGIN PRIVATE KEY",
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+		"hvs.rawbodytokenvalue123456789012345",
+	)
+	assertContainsNone(t, "bootstrap failure summary fake secrets", summaryRaw, secretValues...)
+	assertBootstrapSummaryRedactionScanPasses(t, summaryPath, secretValues...)
+
+	summary := readJSONFile(t, summaryPath)
+	if got := summary["overall_status"]; got != "fail" {
+		t.Fatalf("expected failure summary overall_status=fail, got %#v", got)
+	}
+	if got := summary["failure_phase"]; got != phase {
+		t.Fatalf("expected failure_phase=%s, got %#v\nsummary=%s", phase, got, summaryRaw)
+	}
+	if got := summary["failure_class"]; got != failureClass {
+		t.Fatalf("expected failure_class=%s, got %#v\nsummary=%s", failureClass, got, summaryRaw)
+	}
+	if got := summary["secret_prompts_started"]; got != secretPromptsStarted {
+		t.Fatalf("expected secret_prompts_started=%v, got %#v\nsummary=%s", secretPromptsStarted, got, summaryRaw)
+	}
+	if got := summary["vault_operations_started"]; got != vaultOperationsStarted {
+		t.Fatalf("expected vault_operations_started=%v, got %#v\nsummary=%s", vaultOperationsStarted, got, summaryRaw)
+	}
+	operations, ok := summary["operations"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected operations block %#v", summary["operations"])
+	}
+	operation, ok := operations[phase].(map[string]any)
+	if !ok {
+		t.Fatalf("expected operation %s failure, got operations=%#v\nsummary=%s", phase, operations, summaryRaw)
+	}
+	if got := operation["status"]; got != "fail" {
+		t.Fatalf("expected operation %s status=fail, got %#v\nsummary=%s", phase, got, summaryRaw)
+	}
+	if got := operation["error_classification"]; got != failureClass {
+		t.Fatalf("expected operation %s error_classification=%s, got %#v\nsummary=%s", phase, failureClass, got, summaryRaw)
+	}
+	return summary
+}
+
 func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *testing.T) {
 	output, err := runRemoteAlphaBootstrapHelperWithEnv(os.Environ(), "--help")
 	if err != nil {
@@ -182,6 +269,8 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *test
 		"never accepted through CLI",
 		"preflights summary writability before any secret prompt or Vault",
 		"summary_preflight_failed",
+		"safe phase/class labels",
+		"never raw",
 		"in-process Python HTTPS client",
 		"does not use",
 		"VAULT_TOKEN",
@@ -293,6 +382,188 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightFailsBeforePromptsAndVaul
 	}
 	if len(tmpMatches)+len(hiddenTmpMatches) != 0 {
 		t.Fatalf("preflight failure must not leave temp summaries, visible=%v hidden=%v", tmpMatches, hiddenTmpMatches)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigLoadFailureWritesSafeSummaryBeforePrompts(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeBootstrapSpireServer(t, fakeBin)
+
+	rootToken := "hvs.fakeRootTokenForConfigFailure1234567890"
+	proofSecret := "sk-fakeProofSecretForConfigFailure1234567890"
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+	missingConfigPath := filepath.Join(tmpDir, "missing-workload-zone-vault-config.json")
+
+	output, err := runRemoteAlphaBootstrapHelperWithEnv(
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+missingConfigPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+	)
+	if err == nil {
+		t.Fatalf("expected config-load failure:\n%s", output)
+	}
+	assertContainsNone(t, "config-load failure output", output,
+		"Vault bootstrap authority token",
+		"Proof secret value",
+		rootToken,
+		proofSecret,
+		"Traceback",
+	)
+	summary := assertBootstrapFailureSummary(t, summaryPath, "config_load", "config_missing", false, false, rootToken, proofSecret)
+	if got := summary["next_operation"]; got != "config_load" {
+		t.Fatalf("expected next_operation=config_load for config failure, got %#v", got)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapPromptUnavailableWritesSafeSummaryWithoutSecretValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeBootstrapSpireServer(t, fakeBin)
+
+	rootToken := "hvs.fakeRootTokenForPromptFailure1234567890"
+	proofSecret := "sk-fakeProofSecretForPromptFailure1234567890"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+	output, err := runRemoteAlphaBootstrapHelperWithEnv(
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+	)
+	if err == nil {
+		t.Fatalf("expected prompt-unavailable failure:\n%s", output)
+	}
+	assertContainsNone(t, "prompt-unavailable failure output", output,
+		rootToken,
+		proofSecret,
+		"X-Vault-Token",
+		"Traceback",
+	)
+	if got := len(state.requests); got != 0 {
+		t.Fatalf("prompt failure must not call fake Vault API, got %d requests", got)
+	}
+	summary := assertBootstrapFailureSummary(t, summaryPath, "prompt_bootstrap_authority", "prompt_unavailable", true, false, rootToken, proofSecret)
+	if got := summary["last_completed_operation"]; got != "spire_jwt_validation_material" {
+		t.Fatalf("expected last_completed_operation=spire_jwt_validation_material before prompt failure, got %#v", got)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapVaultAPIFailuresWriteSafePhaseSummary(t *testing.T) {
+	cases := []struct {
+		name         string
+		failPath     string
+		failStatus   int
+		phase        string
+		failureClass string
+	}{
+		{name: "jwt_auth_mount", failPath: "/v1/sys/auth", failStatus: http.StatusForbidden, phase: "jwt_auth_mount", failureClass: "vault_permission_denied"},
+		{name: "kv_v2_mount", failPath: "/v1/sys/mounts", failStatus: http.StatusInternalServerError, phase: "kv_v2_mount", failureClass: "vault_api_error"},
+		{name: "runtime_identity_policy", failPath: "/v1/sys/policies/acl/runtime-identity-proof", failStatus: http.StatusForbidden, phase: "runtime_identity_policy", failureClass: "vault_permission_denied"},
+		{name: "jwt_auth_config", failPath: "/v1/auth/jwt/config", failStatus: http.StatusInternalServerError, phase: "jwt_auth_config", failureClass: "vault_api_error"},
+		{name: "service_execution_role", failPath: "/v1/auth/jwt/role/service_execution", failStatus: http.StatusForbidden, phase: "service_execution_role", failureClass: "vault_permission_denied"},
+		{name: "proof_secret_runtime_identity_vault_login", failPath: "/v1/proof-secrets/data/runtime-identity-vault-login", failStatus: http.StatusForbidden, phase: "proof_secret_runtime_identity_vault_login", failureClass: "vault_permission_denied"},
+		{name: "proof_secret_codex_runtime_profile", failPath: "/v1/proof-secrets/data/codex-runtime-profile", failStatus: http.StatusInternalServerError, phase: "proof_secret_codex_runtime_profile", failureClass: "vault_api_error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+			setupFakeBootstrapSpireServer(t, fakeBin)
+
+			rootToken := "hvs.fakeRootTokenForVaultFailure1234567890"
+			proofSecret := "sk-fakeProofSecretForVaultFailure1234567890"
+			server, state, caBundle := startFailingFakeBootstrapVault(t, rootToken, tc.failPath, tc.failStatus)
+			configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+			summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+			writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+			output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+				envWithPath(fakeBin,
+					"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+					"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+				),
+				rootToken+"\n"+proofSecret+"\n",
+			)
+			if err == nil {
+				t.Fatalf("expected fake Vault API failure for %s:\n%s", tc.phase, output)
+			}
+			assertContainsNone(t, "fake Vault API failure output", output,
+				rootToken,
+				proofSecret,
+				"X-Vault-Token",
+				"raw Vault output",
+				"Traceback",
+			)
+			if len(state.requests) == 0 {
+				t.Fatalf("expected fake Vault API to be called for %s", tc.phase)
+			}
+			summary := assertBootstrapFailureSummary(t, summaryPath, tc.phase, tc.failureClass, true, true, rootToken, proofSecret)
+			if got := summary["next_operation"]; got != tc.phase {
+				t.Fatalf("expected next_operation=%s, got %#v", tc.phase, got)
+			}
+			if got := summary["failure_message_class"]; got == nil {
+				t.Fatalf("expected safe failure_message_class for %s\nsummary=%s", tc.phase, mustRead(t, summaryPath))
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapUnexpectedExceptionAfterPreflightWritesSafeSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	spireCommandDirectory := filepath.Join(tmpDir, "spire-directory")
+	if err := os.Mkdir(spireCommandDirectory, 0o755); err != nil {
+		t.Fatalf("mkdir fake spire command directory: %v", err)
+	}
+
+	rootToken := "hvs.fakeRootTokenForUnexpectedFailure1234567890"
+	proofSecret := "sk-fakeProofSecretForUnexpectedFailure1234567890"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+	output, err := runRemoteAlphaBootstrapHelperWithEnv(
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SPIRE_SERVER_COMMAND="+spireCommandDirectory,
+		),
+	)
+	if err == nil {
+		t.Fatalf("expected unexpected post-preflight failure:\n%s", output)
+	}
+	assertContainsNone(t, "unexpected failure output", output,
+		"Vault bootstrap authority token",
+		"Proof secret value",
+		rootToken,
+		proofSecret,
+		"Traceback",
+	)
+	if got := len(state.requests); got != 0 {
+		t.Fatalf("unexpected pre-prompt failure must not call fake Vault API, got %d requests", got)
+	}
+	summary := assertBootstrapFailureSummary(t, summaryPath, "jwt_auth_config", "unexpected_exception", false, false, rootToken, proofSecret)
+	if got := summary["failure_message_class"]; got != "permission_error" {
+		t.Fatalf("expected sanitized permission_error message class, got %#v", got)
 	}
 }
 
