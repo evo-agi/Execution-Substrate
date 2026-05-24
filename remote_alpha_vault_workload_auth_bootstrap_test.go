@@ -267,7 +267,7 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapHelpDocumentsSecretPosture(t *test
 		"Configure the Remote Alpha Vault workload-auth objects",
 		"The human operator enters Vault bootstrap authority and the proof secret",
 		"never accepted through CLI",
-		"preflights summary writability before any secret prompt or Vault",
+		"preflights summary writability and workload-zone config readability",
 		"summary_preflight_failed",
 		"safe phase/class labels",
 		"never raw",
@@ -417,6 +417,75 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigLoadFailureWritesSafeSummary
 	summary := assertBootstrapFailureSummary(t, summaryPath, "config_load", "config_missing", false, false, rootToken, proofSecret)
 	if got := summary["next_operation"]; got != "config_load" {
 		t.Fatalf("expected next_operation=config_load for config failure, got %#v", got)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapConfigUnreadablePreflightFailsBeforePrompts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("unreadable config preflight requires a non-root test process")
+	}
+
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeBootstrapSpireServer(t, fakeBin)
+
+	rootToken := "hvs.fakeRootTokenForUnreadableConfig1234567890"
+	proofSecret := "sk-fakeProofSecretForUnreadableConfig1234567890"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+	if err := os.Chmod(configPath, 0o000); err != nil {
+		t.Fatalf("chmod unreadable config: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(configPath, 0o600)
+	})
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+
+	output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+		rootToken+"\n"+proofSecret+"\n",
+	)
+	if err == nil {
+		t.Fatalf("expected unreadable config preflight failure:\n%s", output)
+	}
+	assertContainsNone(t, "unreadable config preflight output", output,
+		"Vault bootstrap authority token",
+		"Proof secret value",
+		rootToken,
+		proofSecret,
+		"X-Vault-Token",
+		"Traceback",
+	)
+	if got := len(state.requests); got != 0 {
+		t.Fatalf("config preflight failure must not call fake Vault API, got %d requests", got)
+	}
+	summary := assertBootstrapFailureSummary(t, summaryPath, "config_load", "config_unreadable", false, false, rootToken, proofSecret)
+	if got := summary["failure_message_class"]; got != "permission_denied" && got != "permission_error" {
+		t.Fatalf("expected permission failure message class, got %#v", got)
+	}
+	if got := summary["last_completed_operation"]; got != "summary_preflight" {
+		t.Fatalf("expected last_completed_operation=summary_preflight before config failure, got %#v", got)
+	}
+	if got := summary["next_operation"]; got != "config_load" {
+		t.Fatalf("expected next_operation=config_load for config failure, got %#v", got)
+	}
+	tmpMatches, err := filepath.Glob(filepath.Join(filepath.Dir(summaryPath), "*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp summaries after config failure: %v", err)
+	}
+	hiddenTmpMatches, err := filepath.Glob(filepath.Join(filepath.Dir(summaryPath), ".*.tmp"))
+	if err != nil {
+		t.Fatalf("glob hidden temp summaries after config failure: %v", err)
+	}
+	if len(tmpMatches)+len(hiddenTmpMatches) != 0 {
+		t.Fatalf("config preflight failure must not leave temp summaries, visible=%v hidden=%v", tmpMatches, hiddenTmpMatches)
 	}
 }
 
@@ -727,6 +796,10 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 	summaryPreflight, ok := operations["summary_preflight"].(map[string]any)
 	if !ok || summaryPreflight["status"] != "pass" {
 		t.Fatalf("expected summary preflight pass, got %#v", operations["summary_preflight"])
+	}
+	configLoad, ok := operations["config_load"].(map[string]any)
+	if !ok || configLoad["status"] != "pass" {
+		t.Fatalf("expected config load pass after readable config preflight, got %#v", operations["config_load"])
 	}
 	redaction, ok := summary["redaction"].(map[string]any)
 	if !ok || redaction["root_token_recorded"] != false || redaction["proof_secret_value_recorded"] != false {

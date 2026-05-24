@@ -610,13 +610,17 @@ checks, reset/unseal, IM, support bundles, CP proof, or runtime identity work.
 
 The P0q implementation/self-audit/merge-readiness slice may implement exactly
 one dedicated secret-sensitive workload-auth bootstrap helper, exactly one
-Mac-side recovery-session execution route, and one bounded preparation form for
-the bootstrap summary path:
+Mac-side recovery-session execution route, one bounded preparation form for the
+bootstrap summary path, and one bounded preparation form for fixed workload-zone
+config readability:
 `scripts/remote_alpha_operator.sh recovery-session
 vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
 --interactive-tty`, plus
 `scripts/remote_alpha_operator.sh recovery-session
 vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path
+--interactive-tty`, plus
+`scripts/remote_alpha_operator.sh recovery-session
+vault-workload-auth-bootstrap --ssh-target <target> --prepare-config-readability
 --interactive-tty`. P0q may add the public helper
 `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and the internal helper
 `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, plus static
@@ -628,18 +632,21 @@ runtime identity summaries, or network-dependent integration tests.
 P0q preserves the P0o safe modes: `vault-workload-auth-bootstrap --help`,
 `--plan`, and `--inventory` remain safe local/print-only modes, and no mode
 still defaults to printing plan/help and exiting zero. The execution route is
-available as `--ssh-target <target> --execute-bootstrap --interactive-tty`, and
-the preparation route is available as `--ssh-target <target>
---prepare-summary-path --interactive-tty`. The combined form
+available as `--ssh-target <target> --execute-bootstrap --interactive-tty`.
+Preparation routes are available as `--ssh-target <target>
+--prepare-summary-path --interactive-tty` and `--ssh-target <target>
+--prepare-config-readability --interactive-tty`. The combined form
 `--ssh-target <target> --execute-bootstrap --prepare-summary-path
---interactive-tty` is allowed only when preparation runs before helper staging,
-helper preflight, Vault/root/proof prompts, and Vault writes. `--ssh-target` and
-`--interactive-tty` are valid only with `--execute-bootstrap` and/or
-`--prepare-summary-path`; both action flags require both target and TTY; and
-safe modes are mutually exclusive with execution/preparation. Duplicate route
-flags, equals-form options, unknown flags, extra positionals, helper override
-flags, forbidden reset/unseal or IM/CP/runtime flags, and secret-like arguments
-must fail before staging or preparation.
+--prepare-config-readability --interactive-tty` is allowed only when summary
+preparation runs first, config-readability preparation runs second, and both
+complete before helper staging, helper preflights, Vault/root/proof prompts, and
+Vault writes. `--ssh-target` and `--interactive-tty` are valid only with
+`--execute-bootstrap`, `--prepare-summary-path`, and/or
+`--prepare-config-readability`; all action flags require both target and TTY;
+and safe modes are mutually exclusive with execution/preparation. Duplicate
+route flags, equals-form options, unknown flags, extra positionals, helper
+override flags, forbidden reset/unseal or IM/CP/runtime flags, and secret-like
+arguments must fail before staging or preparation.
 
 P0q's helper prompt model is visible/silent remote helper TTY prompt only.
 Vault bootstrap authority and proof secret values must never be accepted through
@@ -674,12 +681,39 @@ helper-owned mode `0600`; do not delete or rewrite unrelated summaries; create
 and remove only a hidden same-directory temp probe; and create no final
 bootstrap summary in standalone preparation.
 
+After the summary-path fix and failure-classification fix, a live retry reached
+`config_load` and failed before secret prompts with `secret_prompts_started=false`
+and `vault_operations_started=false`, likely because the helper user could not
+read `/etc/execution-substrate/vault/workload-zone-vault-config.json`. The
+explicit `--prepare-config-readability` follow-up is OS/filesystem preparation
+only. It prepares only helper-user readability for that fixed config file and
+the two fixed parent execute ACLs needed for
+`/etc/execution-substrate/vault/workload-zone-vault-config.json`; it must not
+print config contents, copy config to Mac `.out`, stage helpers, run Vault, ask
+for Vault/root/proof secrets, run workload-auth checks, reset/unseal, IM,
+support bundles, CP proof, or runtime identity generation. Because this repo
+does not define a workload-zone-config-specific group ownership model, the
+deterministic narrow policy is fixed-path user ACL based when preparation is needed:
+require the file to exist and be regular, use visible operator-authorized OS
+sudo through the SSH TTY only when the helper user cannot already read the file,
+apply execute ACLs only to `/etc/execution-substrate` and
+`/etc/execution-substrate/vault`, apply read ACL only to
+`/etc/execution-substrate/vault/workload-zone-vault-config.json`, and fail with
+a non-secret classification if `setfacl` is unavailable or readability is still
+not proven. It must not world-read the config, chown broad `/etc` directories,
+delete unrelated summaries, or create a bootstrap summary in standalone
+preparation.
+
 P0q's helper must still run a secret-free writability preflight for the
 canonical remote bootstrap summary path before any Vault bootstrap authority
-prompt, proof secret prompt, SPIRE/Vault operation, or Vault write. The preflight
-may create `/var/tmp/execution-substrate-remote-alpha` when it is missing and
-safe for the helper user to create, and it must prove that a temp file can be
-created and removed in the same directory as
+prompt, proof secret prompt, config load, SPIRE/Vault operation, or Vault write.
+After summary preflight succeeds, it must also run a secret-free readability
+preflight for
+`/etc/execution-substrate/vault/workload-zone-vault-config.json` before any
+Vault/bootstrap/proof prompt, SPIRE/Vault operation, or Vault write. The summary
+preflight may create `/var/tmp/execution-substrate-remote-alpha` when it is
+missing and safe for the helper user to create, and it must prove that a temp
+file can be created and removed in the same directory as
 `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
 If the parent exists but is not writable by the helper user, or the summary path
 cannot be written safely, the helper must fail before prompting, print only a
@@ -687,7 +721,12 @@ non-secret failure classification such as `summary_preflight_failed`, leave no
 summary or temp summary when possible, and run no Vault writes. This preflight
 does not add root-token argument handling, Mac `.out` copy-back, IM,
 support-bundle collection, workload-auth checks, reset/unseal, CP proof, or
-runtime identity generation.
+runtime identity generation. If config readability fails after summary preflight
+passes, the helper must write a safe failure summary with `failure_phase` such as
+`config_load`, `failure_class` such as `config_unreadable` or `config_missing`,
+`secret_prompts_started=false`, `vault_operations_started=false`, and
+`operations.config_load.status=fail`, without raw exception strings or config
+contents.
 
 P0q's helper may use an in-process Vault API client for the documented objects:
 auth mount `jwt`; JWT auth config with SPIRE validation material and bound
@@ -740,10 +779,12 @@ P0q validation remains fake/static only. Tests must cover helper help and
 secret posture, secret CLI/env rejection, fake Vault API capture showing
 bootstrap authority is not passed by argv/env/file, proof secret value redaction
 from printed output and summary, expected fake Vault objects, summary
-writability preflight before prompts and Vault writes, summary schema and
-redaction scans, redaction checks before final summary rename, no workload-auth
+writability preflight before prompts and Vault writes, config readability
+preflight before prompts and Vault writes, summary schema and redaction scans,
+redaction checks before final summary rename, no workload-auth
 check/reset/unseal/IM/CP/runtime-identity commands, operator flag rejection,
 fake summary-path preparation over only the bounded remote filesystem command,
+fake config-readability preparation over only the bounded fixed-path ACL command,
 preparation failing before helper staging and prompts when it cannot prepare,
 combined preparation ordering before helper staging/execution, fake SSH/SCP
 staging of exactly the bootstrap public/internal helper pair, `ssh -tt` only for

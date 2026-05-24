@@ -46,11 +46,12 @@ Configured objects:
 Summary:
   Remote-only non-secret summary:
   /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json
-  The helper preflights summary writability before any secret prompt or Vault
-  write. If the summary path cannot be written safely, it fails before prompts
-  with a non-secret summary_preflight_failed classification. After that
-  preflight, failure summaries record only safe phase/class labels and never raw
-  exceptions, raw Vault output, headers, or operator-entered prompt values.
+  The helper preflights summary writability and workload-zone config readability
+  before any secret prompt, SPIRE query, or Vault write. If either preflight
+  fails, it fails before prompts with non-secret classification such as
+  summary_preflight_failed or config_unreadable. After summary preflight, failure
+  summaries record only safe phase/class labels and never raw exceptions, raw
+  Vault output, headers, config contents, or operator-entered prompt values.
 
 Non-claims:
   This helper does not run workload-auth checks, reset, unseal, IM refresh,
@@ -385,12 +386,36 @@ def report_summary_preflight_failure(reason):
     print("No Vault bootstrap prompts were read and no Vault writes were attempted.")
 
 
+def preflight_config_readable():
+    set_next_operation("config_load")
+    try:
+        if not CONFIG_PATH.exists():
+            raise_failure("config_load", "config_missing")
+        if not CONFIG_PATH.is_file():
+            raise_failure("config_load", "config_invalid", message_class="config_path_not_regular")
+        if not os.access(CONFIG_PATH, os.R_OK):
+            raise_failure("config_load", "config_unreadable", message_class="permission_denied")
+        try:
+            with CONFIG_PATH.open("rb") as handle:
+                handle.read(1)
+        except PermissionError:
+            raise_failure("config_load", "config_unreadable", message_class="permission_error")
+        except OSError:
+            raise_failure("config_load", "config_unreadable", message_class="read_error")
+    except BootstrapFailure:
+        raise
+
+
 def load_config():
     set_next_operation("config_load")
     try:
         raw = CONFIG_PATH.read_bytes()
     except FileNotFoundError:
         raise_failure("config_load", "config_missing")
+    except PermissionError:
+        raise_failure("config_load", "config_unreadable", message_class="permission_error")
+    except OSError:
+        raise_failure("config_load", "config_unreadable", message_class="read_error")
     digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -737,6 +762,7 @@ def main():
         return 1
 
     try:
+        preflight_config_readable()
         address, ca_bundle_pem = load_config()
         validation_pubkey = extract_jwt_validation_pubkey()
         set_next_operation("prompt_bootstrap_authority")
