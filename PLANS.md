@@ -396,6 +396,58 @@ proof/support workflow glue only; it must not make ES a Vault token broker, IM
 a reconciler, CP a recovery authority, or Remote Alpha
 production/deployment/reconciliation architecture.
 
+The P0n implementation/self-audit slice may add exactly one Mac-side
+post-reset evidence route:
+`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
+--ssh-target <target> --interactive-tty`. This route exists for the intended
+operator topology where the operator runs the ES operator facade from the Mac,
+the facade stages bounded helper files to the Remote Alpha host, the human
+remains the operator, and secrets never pass through args, env, logs,
+artifacts, or Codex. P0n may validate only with static and fake SSH/SCP tests; it must not
+run live SSH, sudo, Vault, workload-auth checks, reset/unseal, Infrastructure
+Manager refresh, support-bundle collection, CP proof, runtime identity
+generation, or network-dependent integration tests.
+
+P0n must stage only:
+
+- `scripts/remote_alpha_vault_workload_auth_check.sh`
+- `scripts/internal/remote_alpha_vault_workload_auth_check.sh`
+
+It must preserve that public/internal relative layout on the remote host and
+invoke only the staged public workload-auth helper. It may run that helper with
+root through the explicit interactive TTY route when required, using `ssh -tt`
+only because `--interactive-tty` is mandatory. It must not stage
+`scripts/remote_alpha_operator.sh`, reset/unseal helpers, runtime identity
+helpers, service-user helpers, config/TLS helpers, binary deployment helpers,
+bundles, unrelated helpers, or a generic helper dispatcher.
+
+Allowed flags for P0n are only `--help`, `--ssh-target <target>`, and
+`--interactive-tty`. P0n must reject `--host-local`, `--dry-run`,
+`--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--apply`,
+`--interactive-sudo`, `--governed-smoke-command`, workload-auth helper override
+flags, Vault address/role/audience/path/proof-path overrides, SPIFFE ID
+overrides, config path overrides, summary path overrides, container probe image
+overrides, SPIRE socket overrides, arbitrary commands, unknown flags, duplicate
+flags, extra positional arguments, equals-form options, and all secret-like
+arguments including root tokens, unseal keys, client tokens, Vault tokens,
+JWT-SVID payloads, API keys, private keys, passwords, and secret payloads.
+
+P0n keeps the canonical workload-auth evidence artifact on the remote host at
+`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`.
+The operator facade must not copy that summary back to Mac `.out`, print full
+summary JSON, create an operator summary, create generated artifacts, tee, run
+`script`, capture transcripts, write logs, run Infrastructure Manager,
+collect support bundles, run CP proof, run runtime identity generation, run
+reset/unseal, or combine workload-auth evidence with reset/unseal. After remote
+success it may print only non-secret next steps: the remote summary path, a
+recommendation to use `recovery-session --evidence-check` after separately
+collecting IM/local evidence, and printed-only IM refresh/support-bundle
+commands as separate IM evidence/provenance actions. The workload-auth summary
+remains evidence/projection only, not readiness authority, not Vault production
+readiness, not governed execution proof, not ES Vault token brokerage, not IM
+authority, not CP recovery authority, and not Remote Alpha
+production/deployment/reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

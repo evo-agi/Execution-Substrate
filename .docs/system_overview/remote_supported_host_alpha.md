@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0m:
+Current implementation status through P0n:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -276,6 +276,19 @@ Current implementation status through P0m:
   Infrastructure Manager refresh, support-bundle collection, CP proof,
   workload-auth live checks, runtime identity generation, or network-dependent
   integration tests.
+- P0n adds one separate Mac-side post-reset workload-auth evidence route,
+  `recovery-session vault-workload-auth-check --ssh-target <target>
+  --interactive-tty`, with static and fake SSH/SCP validation only. P0n stages
+  only `scripts/remote_alpha_vault_workload_auth_check.sh` and
+  `scripts/internal/remote_alpha_vault_workload_auth_check.sh`, preserves their
+  public/internal relative layout on the remote host, invokes only the staged
+  public workload-auth helper over `ssh -tt`, keeps the canonical summary on
+  the remote host at
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`,
+  does not copy the summary back to Mac `.out`, creates no operator summary,
+  captures no transcript, handles no secrets, and keeps IM refresh,
+  support-bundle collection, CP proof, runtime identity generation, and
+  reset/unseal separate.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -295,8 +308,9 @@ Current implementation status through P0m:
   metadata after scanning the artifacts for secret-like content.
 - The recovery session accepts only its own allowlisted safe/local flags plus
   the explicit host-local and Mac-side interactive TTY `vault-unseal-existing`
-  submodes, the P0k dry-run `vault-reset-disposable` submode, and the P0m
-  interactive TTY `vault-reset-disposable --execute-reset` submode. Its safe
+  submodes, the P0k dry-run `vault-reset-disposable` submode, the P0m
+  interactive TTY `vault-reset-disposable --execute-reset` submode, and the
+  P0n Mac-side interactive TTY `vault-workload-auth-check` submode. Its safe
   modes do not use SSH or remote staging, inspect live host state, dispatch
   generic helpers, or execute destructive or authority-bearing work. Its
   `--evidence-check` mode reads only supplied local JSON evidence paths, scans
@@ -337,17 +351,32 @@ Current implementation status through P0m:
   or operator summary, captures no transcript, handles no secrets, and keeps
   post-reset evidence checks as separate later steps. P0m validation is static
   and fake SSH/SCP only; it is not live execute-reset validation.
+- The `vault-workload-auth-check --ssh-target <target> --interactive-tty`
+  route is the P0n Mac-side post-reset workload-auth evidence route. It
+  requires a visible local terminal before staging, allocates an interactive
+  SSH TTY, stages exactly the public workload-auth helper and its internal
+  implementation helper, invokes only the staged public helper with no helper
+  override flags, attempts staged-helper cleanup by default, writes no `.out`
+  summary or operator summary, captures no transcript, handles no secrets, does
+  not print full summary JSON, and leaves the canonical summary on the remote
+  host at
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`.
+  The route is evidence/projection only: it is not workload-auth bootstrap, not
+  ES token brokerage, not Vault production readiness, not governed execution
+  proof, not IM refresh/support-bundle collection, not CP proof, not runtime
+  identity generation, and not reset/unseal.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
   follow-up evidence/provenance actions only, and the recovery session may print
   those commands as next-step text only.
-- P0m implements only the explicit Mac-side disposable reset execute-reset
-  operator route described here. Workload-auth check, runtime identity summary,
-  Vault service-user check, runtime security check, post-unseal check
-  combination, live execute-reset validation, preinstalled helper bundles,
-  generic helper dispatch, and all other staged `es-*` helper delegation remain
-  not implemented and require later audited slices.
+- P0n implements only the explicit Mac-side workload-auth evidence route
+  described here, in addition to the previously landed reset/unseal and
+  readiness routes. Runtime identity summary, Vault service-user check, runtime
+  security check, post-unseal check combination, live execute-reset validation,
+  workload-auth bootstrap, preinstalled helper bundles, generic helper
+  dispatch, and all other staged `es-*` helper delegation remain not
+  implemented and require later audited slices.
 - `vault-workload-auth-bootstrap` remains blocked/reopened and unavailable in
   v1.
 - Operator facade output is deterministic operator guidance and
@@ -382,15 +411,19 @@ TTY because it does not run reset, init, unseal, or secret-producing flows. P0l
 fixed the destructive Mac-side
 `vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`
 contract as an explicit visible-terminal mode, and P0m implements that bounded
-operator route without live execute-reset validation. In these topologies the facade
+operator route without live execute-reset validation. P0n adds the Mac-side
+`vault-workload-auth-check --ssh-target <target> --interactive-tty` evidence
+route over only the workload-auth public/internal helper pair; it is not
+workload-auth bootstrap and not a token broker. In these topologies the facade
 itself does not prompt for, read, type, log, relay, persist, summarize, or
 accept the unseal key, root token, client token, Vault token, API key, private
-key, password, JWT-SVID payload, or secret payload. Future Vault, reset, or
-unseal prompts may be allowed only in explicit secret-sensitive modes, silent
-where appropriate, and never through CLI arguments, environment variables,
-environment files, local or remote files, logs, reports, `.out`, support
-bundles, retained bundles, CP artifacts, helper summaries, readiness outputs,
-printed commands, or Codex output. The P0m execute-reset phrase
+key, password, JWT-SVID payload, proof secret material, or secret payload.
+Future Vault, reset, unseal, or workload-auth prompts may be allowed only in
+explicit secret-sensitive modes, silent where appropriate, and never through
+CLI arguments, environment variables, environment files, local or remote files,
+logs, reports, `.out`, support bundles, retained bundles, CP artifacts, helper
+summaries, readiness outputs, printed commands, or Codex output. The P0m
+execute-reset phrase
 `RESET DISPOSABLE REMOTE ALPHA VAULT` must be typed by the operator directly in
 the visible remote helper/Vault terminal and must not be accepted via CLI args,
 environment values, environment files, files, logs, artifacts, or Codex output.
@@ -423,17 +456,21 @@ Execution-context split:
   `recovery-session vault-reset-disposable --ssh-target <target> --dry-run`,
   and P0m
   `recovery-session vault-reset-disposable --ssh-target <target>
-  --execute-reset --interactive-tty`.
+  --execute-reset --interactive-tty`, and P0n
+  `recovery-session vault-workload-auth-check --ssh-target <target>
+  --interactive-tty`.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
-  runtime identity summary, Vault workload-auth check, and Vault service-user
-  check. P0m does not add a host-local execute-reset route through the operator
-  facade; the reset helper's direct host-local capability remains outside the
-  P0m operator-facade route.
+  runtime identity summary and Vault service-user check. The host-local
+  workload-auth helper remains available as a direct helper, but P0n adds the
+  Mac-side operator topology for that evidence route. P0m does not add a
+  host-local execute-reset route through the operator facade; the reset
+  helper's direct host-local capability remains outside the P0m
+  operator-facade route.
 - Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning
-  route, and the P0m explicit execute-reset operator route: generic remote
-  staging, arbitrary shell passthrough, post-unseal/workload-auth/runtime
-  identity/IM/support-bundle/CP-proof bundling, live execute-reset validation,
-  or Vault workload-auth bootstrap.
+  route, the P0m explicit execute-reset operator route, and the P0n
+  workload-auth evidence route: generic remote staging, arbitrary shell
+  passthrough, post-unseal/runtime identity/IM/support-bundle/CP-proof
+  bundling, live execute-reset validation, or Vault workload-auth bootstrap.
 
 Proposed v1/v2 slice sequence:
 
@@ -457,9 +494,14 @@ Proposed v1/v2 slice sequence:
 8. Mac-side disposable Vault reset execute-reset implementation with static and
    fake SSH/SCP validation only, no live reset, no secret handling, no
    transcript capture, and no bundled post-reset evidence checks
-9. later separate audit/live-validation and post-reset evidence slices before
+9. Mac-side post-reset Vault workload-auth evidence route over the fixed
+   public/internal workload-auth helper pair, with static and fake SSH/SCP
+   validation only, no summary copy-back, no bootstrap, no token brokerage, no
+   IM/support-bundle/CP-proof/runtime-identity/reset/unseal bundling, and no
+   transcript capture
+10. later separate audit/live-validation and post-reset evidence slices before
    any live destructive execute-reset validation or post-reset authority claim
-10. separate workload-auth bootstrap design only if still needed
+11. separate workload-auth bootstrap design only if still needed
 
 Sudo model:
 
@@ -1514,6 +1556,180 @@ automation, not ES Vault token brokerage, not IM authority or reconciliation,
 not CP recovery authority, not Nomad/SPIRE boundary redesign, not governed
 execution proof, and not Remote Alpha production, deployment, provisioning, or
 reconciliation architecture.
+
+### P0n Mac-Side Vault Workload-Auth Check Recovery Session
+
+`Bounded slice rule`: P0n implements exactly one Mac-side post-reset
+workload-auth evidence route:
+
+- `scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
+  --ssh-target <target> --interactive-tty`
+
+P0n is implementation/self-audit with static and fake SSH/SCP validation only.
+It does not run live SSH, sudo, Vault, workload-auth checks, reset, unseal,
+Infrastructure Manager refresh, support-bundle collection, CP proof, runtime
+identity generation, or network-dependent integration tests during validation.
+The route is separate from reset/unseal. It is not workload-auth bootstrap, not
+ES token brokerage, not Vault production lifecycle automation, not IM
+reconciliation, not CP recovery authority, and not Remote Alpha deployment,
+provisioning, or reconciliation architecture.
+
+Topology rules:
+
+- Mac-side only for this operator-facade route
+- `--ssh-target <target>` is required
+- `--interactive-tty` is required
+- local stdin and stdout must both be visible terminals before staging or SSH
+- `--host-local` is not accepted for this Mac-side route
+- bare `vault-workload-auth-check` execution must fail
+- the `--ssh-target` value must be a single SSH target, not an SSH option or
+  shell command
+
+Allowed flags for `vault-workload-auth-check` in P0n are:
+
+- `--help`
+- `--ssh-target <target>`
+- `--interactive-tty`
+
+P0n must reject:
+
+- missing `--ssh-target`
+- missing `--interactive-tty`
+- `--host-local`
+- `--dry-run`
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--apply`
+- `--interactive-sudo`
+- `--governed-smoke-command`
+- workload-auth helper override flags
+- Vault address, role, audience, path, or proof-path overrides
+- SPIFFE ID overrides
+- config path overrides
+- summary path overrides
+- container probe image overrides
+- SPIRE socket overrides
+- Infrastructure Manager commands
+- support-bundle commands
+- CP proof or governed-smoke commands
+- runtime identity summary flags
+- helper path overrides
+- preinstalled remote bundle assumptions
+- arbitrary command strings
+- unknown flags
+- duplicate flags
+- positional arguments beyond the submode
+- equals-form options
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, private keys,
+  passwords, proof secret material, and secret payloads
+
+Secret model:
+
+- the route must not accept, parse, print, log, relay, persist, summarize, or
+  copy JWT-SVIDs, Vault client tokens, proof secret payloads, root tokens,
+  unseal keys, API keys, private keys, passwords, or secret payloads
+- helper summary redaction remains owned by the existing workload-auth helper
+- the operator facade must not print full summary JSON
+- the operator facade must not tee, run `script`, record, capture, parse, or
+  summarize terminal transcripts
+
+Mac-side staging behavior:
+
+- stage only `scripts/remote_alpha_vault_workload_auth_check.sh`
+- stage only
+  `scripts/internal/remote_alpha_vault_workload_auth_check.sh` as the matching
+  internal helper
+- preserve the remote `scripts/` and `scripts/internal/` relative layout so the
+  public wrapper can source the internal helper
+- do not stage `scripts/remote_alpha_operator.sh`
+- do not stage reset/unseal helpers
+- do not stage runtime identity helpers
+- do not stage service-user helpers
+- do not stage config/TLS helpers
+- do not stage binary deployment helpers
+- do not stage bundles or unrelated helpers
+- do not source helper scripts from the operator facade
+- do not construct helper paths from user input
+- do not introduce generic helper dispatch
+- do not require a preinstalled remote bundle
+- use a fixed helper path resolved from `BASH_SOURCE[0]`
+- use a route-specific remote scratch path
+- do not offer `--keep-staging-on-failure`
+
+Remote invocation behavior:
+
+- allocate an interactive SSH TTY with `ssh -tt`
+- invoke only the staged public helper as
+  `remote_alpha_vault_workload_auth_check.sh`
+- run the staged public helper with root through the explicit interactive TTY
+  path when required
+- pass no workload-auth helper override flags
+- never pass reset/unseal flags, `--dry-run`, `--execute-reset`,
+  `--unseal-only`, `--post-unseal-check`, Infrastructure Manager commands,
+  support-bundle commands, CP proof commands, runtime identity flags, helper
+  path overrides, or arbitrary commands
+- never combine workload-auth evidence with reset, unseal, post-unseal checks,
+  runtime identity summary, Infrastructure Manager refresh, support-bundle
+  collection, CP proof, governed smoke, or default noninteractive readiness
+  validation
+- do not capture stdout or stderr to files
+- do not use `tee`
+- do not run `script`
+- do not create transcripts or logs
+
+Cleanup and evidence behavior:
+
+- cleanup of the staged workload-auth helper files/root must be attempted by
+  default after the remote command returns, where safe
+- the canonical summary remains remote at
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`
+- no summary is copied back to Mac `.out` in this route
+- no `.out` summary from the ES operator route
+- no operator summary file
+- no support bundle
+- no report
+- no generated JSON
+- no retained bundle
+- no CP artifact
+- no Infrastructure Manager execution
+- no transcript capture
+- after remote success, the operator facade may print only non-secret next
+  steps: the remote summary path, a recommendation to use
+  `recovery-session --evidence-check` after separate IM/local evidence
+  collection, and printed-only IM refresh/support-bundle commands as separate
+  IM evidence/provenance actions
+- the workload-auth summary is evidence/projection only, not readiness
+  authority, not Vault production readiness, not governed execution proof, not
+  CP recovery authority, not IM authority, and not ES Vault token brokerage
+
+Stop conditions for P0n:
+
+- no visible local TTY
+- SSH host-auth prompt or unknown-host authenticity prompt
+- any request to pass secrets as CLI args, environment values, environment
+  files, local files, remote files, logs, artifacts, or Codex output
+- staging the workload-auth route requires more files than the public wrapper
+  and internal helper
+- helper override flags are accepted
+- the operator route copies the summary back to Mac `.out`
+- the operator route prints full summary JSON
+- the operator route creates operator summaries or generated artifacts
+- the operator route runs Infrastructure Manager refresh, support-bundle
+  collection, CP proof, reset/unseal, runtime identity generation, or
+  workload-auth bootstrap
+- the operator route combines workload-auth evidence with reset/unseal
+- a generic helper dispatcher is introduced
+- generated artifacts are staged or untracked after validation
+
+P0n remains bounded ES Remote Alpha proof/support workflow glue only. The human
+remains the operator. The script minimizes manual stitching, but does not
+eliminate explicit operator prompts. It is not Vault production lifecycle
+automation, not workload-auth bootstrap, not ES Vault token brokerage, not IM
+authority or reconciliation, not CP recovery authority, not Nomad/SPIRE
+boundary redesign, not governed execution proof, and not Remote Alpha
+production, deployment, provisioning, or reconciliation architecture.
 
 ### P0d Interactive Validation Evidence
 
@@ -3410,17 +3626,28 @@ helper itself must never run the full CP/ES proof.
 
 ### Remote Vault evidence
 
-The current host-local non-secret evidence summary for this slice is:
+The current canonical non-secret evidence summary for this slice remains on the
+Remote Alpha host at:
 
 - `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`
 
-The repo-owned check path for this slice is:
+The repo-owned direct host-local check path for this slice is:
 
 - `sudo scripts/remote_alpha_vault_workload_auth_check.sh`
 
-That command is a host-local root check only. It does not install ES, AGS, ARS,
-or EGS, does not build the normal-shell image, does not call ES `:prepare` or
-`:submit`, and does not change ES public contracts.
+That command is a host-local root check. The P0n Mac-side operator facade route
+may stage only the public wrapper and its internal helper to the Remote Alpha
+host and invoke only the staged public helper through:
+
+- `scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
+  --ssh-target <target> --interactive-tty`
+
+The Mac-side route does not copy the summary back to Mac `.out`, does not print
+full summary JSON, and does not create an operator summary. Both the direct
+helper path and the Mac-side staged route are evidence/projection only. They do
+not install ES, AGS, ARS, or EGS, do not build the normal-shell image, do not
+call ES `:prepare` or `:submit`, do not change ES public contracts, do not
+bootstrap workload auth, and do not make ES a Vault token broker.
 
 The summary schema for that host-local record is:
 
