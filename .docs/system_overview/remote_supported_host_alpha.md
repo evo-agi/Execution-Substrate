@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0h:
+Current implementation status through P0i:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -249,6 +249,10 @@ Current implementation status through P0h:
 - P0h extends only `recovery-session --evidence-check` with known-schema
   interpretation, `--strict-known-schema`, and non-recursive `--evidence-dir`
   discovery of expected local evidence filenames.
+- P0i adds exactly one secret-sensitive recovery-session route,
+  `recovery-session vault-unseal-existing --host-local`, which delegates only to
+  the public reset helper's `--unseal-only` mode from a fixed script-relative
+  path.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -266,22 +270,30 @@ Current implementation status through P0h:
   delegates only through the existing readiness route/helper path, preserves
   the two IM-consumed artifact filenames, and prints only non-secret local
   metadata after scanning the artifacts for secret-like content.
-- The recovery session accepts only its own allowlisted safe/local flags. It does
-  not dispatch helpers, inspect live host state, or execute secret-sensitive,
-  destructive, live, or authority-bearing work. Its `--evidence-check` mode reads
-  only supplied local JSON evidence paths, scans for secret-like content before
-  parsing, and prints only path, byte count, SHA-256 digest, schema, and selected
-  safe status/count metadata. Known schemas are interpreted through explicit
-  safe-field allowlists; unknown schemas are allowed by default and classified as
-  `schema_interpretation=unknown` unless `--strict-known-schema` is set.
+- The recovery session accepts only its own allowlisted safe/local flags plus the
+  explicit host-local `vault-unseal-existing --host-local` submode. It does not
+  use SSH or remote staging, inspect live host state from safe modes, dispatch
+  generic helpers, or execute destructive or authority-bearing work. Its
+  `--evidence-check` mode reads only supplied local JSON evidence paths, scans
+  for secret-like content before parsing, and prints only path, byte count,
+  SHA-256 digest, schema, and selected safe status/count metadata. Known schemas
+  are interpreted through explicit safe-field allowlists; unknown schemas are
+  allowed by default and classified as `schema_interpretation=unknown` unless
+  `--strict-known-schema` is set.
+- The `vault-unseal-existing --host-local` route is secret-sensitive but
+  non-destructive. It must be run on the Remote Alpha host where Vault is
+  installed and reachable, and the human operator enters any unseal key directly
+  into the visible delegated helper/Vault CLI prompt. The facade does not prompt
+  for, read, type, log, relay, persist, summarize, or accept secret material.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
   follow-up evidence/provenance actions only, and the recovery session may print
   those commands as next-step text only.
-- Vault reset/unseal, workload-auth check, runtime identity summary, Vault
-  service-user check, runtime security check, and all other staged `es-*`
-  helper delegation remain not implemented and require later audited slices.
+- Vault destructive reset, workload-auth check, runtime identity summary, Vault
+  service-user check, runtime security check, post-unseal check combination, and
+  all other staged `es-*` helper delegation remain not implemented and require
+  later audited slices.
 - `vault-workload-auth-bootstrap` remains blocked/reopened and unavailable in
   v1.
 - Operator facade output is deterministic operator guidance and
@@ -289,7 +301,8 @@ Current implementation status through P0h:
   support bundle, report, or new authority artifact; the delegated helper
   remains the owner of its existing readiness/provenance artifacts when the
   route or readiness session is intentionally invoked. The recovery session
-  creates no summary file and writes no `.out`.
+  creates no summary file, writes no `.out`, and does not wrap the P0i unseal
+  delegation in transcript capture.
 
 ### Operator Involvement Model
 
@@ -302,14 +315,18 @@ a bounded operator facade/workflow, not the operator and not an authority
 source.
 
 Interactive sudo is allowed only under the explicit `--interactive-sudo` route
-flag and only from a visible terminal. Future Vault, reset, or unseal prompts
-may be allowed only in explicit secret-sensitive modes, silent where
-appropriate, and never through CLI arguments, environment files, logs, reports,
-`.out`, support bundles, retained bundles, CP artifacts, helper summaries,
-readiness outputs, printed commands, or Codex output. Root tokens, unseal keys,
-client tokens, JWT-SVID payloads, API keys, TLS private keys, SPIFFE material,
-passwords, raw prompts, and secret payloads must not be recorded by the facade
-or delegated helpers.
+flag and only from a visible terminal. The P0i `vault-unseal-existing
+--host-local` mode may delegate to the existing public reset helper's
+`--unseal-only` flow from a visible terminal on the Remote Alpha host; the
+facade itself does not prompt for, read, type, log, relay, persist, summarize,
+or accept the unseal key. Future Vault, reset, or unseal prompts may be allowed
+only in explicit secret-sensitive modes, silent where appropriate, and never
+through CLI arguments, environment files, logs, reports, `.out`, support
+bundles, retained bundles, CP artifacts, helper summaries, readiness outputs,
+printed commands, or Codex output. Root tokens, unseal keys, client tokens,
+JWT-SVID payloads, API keys, TLS private keys, SPIFFE material, passwords, raw
+prompts, and secret payloads must not be recorded by the facade or delegated
+helpers.
 
 Helper outputs remain evidence/projection only. Infrastructure Manager live
 refresh and support-bundle collection remain separate IM
@@ -331,8 +348,9 @@ Execution-context split:
 
 - Mac-side only: inventory, print IM commands, and staged-wrapper delegation
   for existing repo-side staged helpers.
-- Remote-host only: Vault reset/unseal, runtime identity summary, Vault
-  workload-auth check, and Vault service-user check.
+- Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
+  future Vault destructive reset, runtime identity summary, Vault workload-auth
+  check, and Vault service-user check.
 - Not v1: SSH-driven reset/unseal, generic remote staging, arbitrary shell
   passthrough, or Vault workload-auth bootstrap.
 
@@ -341,7 +359,8 @@ Proposed v1/v2 slice sequence:
 1. docs/static-test prep
 2. help/inventory/print-command skeleton
 3. staged-helper delegation after sudo-model review
-4. secret-sensitive Vault reset/unseal only after reset-helper tests and audit
+4. host-local Vault unseal-existing after reset-helper tests and audit, with
+   destructive reset kept for a later exact-phrase slice
 5. separate workload-auth bootstrap design only if still needed
 
 Sudo model:
@@ -763,6 +782,75 @@ Schema-aware interpretation remains evidence/projection/diagnostics only. It is
 not IM authority, CP recovery authority, ES Vault token brokerage, Vault
 production lifecycle, or Remote Alpha deployment/provisioning/reconciliation
 architecture.
+
+### P0i Host-Local Vault Unseal Existing Recovery Session
+
+`Bounded slice rule`: P0i adds exactly one secret-sensitive
+`recovery-session` route:
+`scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing
+--host-local`.
+
+This route is an explicit host-local operator mode. It must be run on the Remote
+Alpha host where Vault is installed and reachable, and it must require
+`--host-local` before delegation. The facade does not detect the host, does not
+use SSH or remote staging, and does not provide a Mac-side path for unseal.
+
+The route may delegate only to the public helper:
+
+- `scripts/remote_alpha_reset_disposable_vault.sh --unseal-only`
+
+The helper path is fixed relative to the operator script. The route must not
+source helper scripts, call `scripts/internal/*`, accept helper path overrides,
+construct helper paths from user input, or introduce generic helper dispatch.
+
+P0i preserves the explicit operator prompt model:
+
+- the human remains the operator
+- the operator enters any unseal key directly into the visible delegated
+  helper/Vault CLI terminal prompt
+- Codex and the facade must not receive, type, read, log, relay, persist,
+  summarize, or accept unseal keys, root tokens, Vault tokens, API keys,
+  passwords, private keys, JWT-SVIDs, or secret payloads
+- secret material must never be passed through CLI arguments, environment files,
+  logs, `.out`, reports, support bundles, retained bundles, helper summaries,
+  readiness outputs, printed commands, or Codex output
+
+Allowed flags for this route are:
+
+- `--help`
+- `--host-local`
+
+The route must reject:
+
+- `--ssh-target`
+- `--execute-reset`
+- `--post-unseal-check`
+- `--apply`
+- `--dry-run`
+- `--interactive-sudo`
+- `--governed-smoke-command`
+- arbitrary command strings
+- helper path overrides
+- unknown flags
+- duplicate flags
+- positional arguments beyond the submode
+- equals-form options
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, passwords, and
+  secret payloads
+
+P0i is secret-sensitive but non-destructive. It is not destructive reset, not
+workload-auth bootstrap or check, not runtime identity summary generation, not
+Vault service-user execution, not Infrastructure Manager refresh or
+support-bundle collection, not CP proof, and not default noninteractive
+readiness validation. It must not write logs, `.out`, transcripts, reports,
+operator summaries, support bundles, or retained bundles, and it must not wrap
+the delegated helper in transcript capture.
+
+The route remains evidence/projection/diagnostics workflow glue only. It is not
+ES Vault token brokerage, IM authority or reconciliation, CP recovery authority,
+Vault production lifecycle, and not Remote Alpha
+deployment/provisioning/reconciliation architecture.
 
 ### P0d Interactive Validation Evidence
 

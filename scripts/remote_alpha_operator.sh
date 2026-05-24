@@ -8,6 +8,7 @@ DEFAULT_SSH_ALIAS="host_to_remote_linux_m75q"
 IM_REPO="/Users/ds/Repositories/Infrastructure Manager"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER="${SCRIPT_DIR}/remote_alpha_stage_es_writable_state_readiness_check.sh"
+REMOTE_ALPHA_VAULT_RESET_HELPER="${SCRIPT_DIR}/remote_alpha_reset_disposable_vault.sh"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
 READINESS_STAGING_RECORD_ARTIFACT_NAME="es-writable-state-readiness-helper-staging-record.json"
 READINESS_SESSION_DEFAULT_OUTPUT_PREFIX=".out/remote-alpha-m75q-readiness-session"
@@ -158,7 +159,7 @@ usage() {
   printf '%s\n' \
     "Remote Alpha operator facade" \
     "" \
-    "P0h extends recovery-session evidence-check with known-schema interpretation over existing local JSON evidence files." \
+    "P0i adds recovery-session vault-unseal-existing as an explicit host-local, secret-sensitive, non-destructive operator mode." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -175,6 +176,7 @@ usage() {
     "  remote_alpha_operator.sh es-writable-state-readiness-check --ssh-target <user@host> [options]" \
     "  remote_alpha_operator.sh readiness-session --ssh-target <user@host> [options]" \
     "  remote_alpha_operator.sh recovery-session [--plan|--inventory|--next-steps|--evidence-check] [options]" \
+    "  remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local" \
     "" \
     "Options for printed command text only:" \
     "  --profile-dir .out/remote-alpha-m75q" \
@@ -182,12 +184,12 @@ usage() {
     "  --ssh-alias host_to_remote_linux_m75q" \
     "  --help, -h" \
     "" \
-    "Implemented through P0h:" \
+    "Implemented through P0i:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, and schema-aware local evidence-check over existing local JSON evidence paths; writes no summary and runs no live tools." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, and host-local vault-unseal-existing over the existing reset helper's --unseal-only mode; writes no summary." \
     "" \
-    "The operator facade does not invoke IM refresh or support-bundle collection and does not add reset/unseal, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic staging routes." \
+    "The operator facade does not invoke IM refresh or support-bundle collection and does not add reset execution, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic staging routes." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
 }
 
@@ -199,7 +201,7 @@ inventory() {
     "interactive operator involvement is expected where an explicit mode says so" \
     "IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise" \
     "" \
-    "implemented through P0h:" \
+    "implemented through P0i:" \
     "  help - show bounded facade scope and options" \
     "  inventory - show this static non-secret inventory" \
     "  print-refresh-command - print Mac-side IM live-refresh command text only" \
@@ -207,15 +209,16 @@ inventory() {
     "  print-im-commands - print both Mac-side IM command texts only" \
     "  es-writable-state-readiness-check - delegates to existing readiness staged helper; check-only/non-mutating; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json" \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; verifies the two expected artifacts; prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status" \
-    "  recovery-session - safe/local skeleton for recovery sequencing; prints plan, static helper inventory, next-step commands, or performs schema-aware local JSON evidence interpretation without running helpers" \
+    "  recovery-session - safe/local skeleton for recovery sequencing; prints plan, static helper inventory, next-step commands, performs schema-aware local JSON evidence interpretation, or runs explicit host-local vault-unseal-existing" \
+    "  recovery-session vault-unseal-existing --host-local - delegates only to scripts/remote_alpha_reset_disposable_vault.sh --unseal-only; host-local; secret-sensitive; non-destructive; not reset; not workload-auth bootstrap; not IM; not CP proof" \
     "" \
     "future/not implemented:" \
-    "  Vault reset/unseal execution - not implemented in P0h; requires later audited secret-sensitive/destructive slice" \
-    "  workload-auth check execution - not implemented in P0h; requires later audited live check slice" \
-    "  runtime identity summary generation - not implemented in P0h; requires later audited evidence route" \
-    "  Vault service-user check/apply execution - not implemented in P0h; remains separate" \
-    "  runtime security check - not implemented in P0h; requires later audited slice" \
-    "  other staged ES helper delegation - not implemented in P0h; requires later audited slice" \
+    "  Vault destructive reset execution - not implemented in P0i; requires later audited destructive exact-phrase slice" \
+    "  workload-auth check execution - not implemented in P0i; requires later audited live check slice" \
+    "  runtime identity summary generation - not implemented in P0i; requires later audited evidence route" \
+    "  Vault service-user check/apply execution - not implemented in P0i; remains separate" \
+    "  runtime security check - not implemented in P0i; requires later audited slice" \
+    "  other staged ES helper delegation - not implemented in P0i; requires later audited slice" \
     "" \
     "blocked/reopened:" \
     "  vault-workload-auth-bootstrap - blocked/reopened and not available in v1" \
@@ -230,8 +233,9 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0h scope: safe/local schema-aware recovery evidence interpretation over existing JSON files." \
-    "The human remains the operator. This workflow sequences recovery work; it does not execute secret-sensitive, destructive, live, or authority-bearing steps." \
+    "P0i scope: safe/local recovery planning and evidence interpretation plus explicit host-local vault-unseal-existing." \
+    "The human remains the operator. Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper and Vault CLI." \
+    "Codex must not receive, type, log, relay, persist, or summarize the unseal key." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
     "" \
     "Usage:" \
@@ -241,6 +245,7 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session --inventory" \
     "  remote_alpha_operator.sh recovery-session --next-steps [print options]" \
     "  remote_alpha_operator.sh recovery-session --evidence-check [evidence paths] [print options]" \
+    "  remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local" \
     "" \
     "Allowed flags for all modes:" \
     "  --help" \
@@ -266,23 +271,48 @@ recovery_session_usage() {
     "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
 }
 
+recovery_session_vault_unseal_existing_usage() {
+  printf '%s\n' \
+    "Remote Alpha recovery-session mode: vault-unseal-existing" \
+    "P0i scope: explicit host-local secret-sensitive non-destructive unseal flow." \
+    "Must be run on the Remote Alpha host where Vault is installed and reachable." \
+    "Requires --host-local. SSH, remote staging, and host detection are not enabled in this slice." \
+    "Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --unseal-only" \
+    "" \
+    "Human operator model:" \
+    "  The human remains the operator." \
+    "  The operator enters any unseal key directly into the visible Vault/helper terminal prompt." \
+    "  The operator facade does not prompt for, read, type, log, relay, persist, summarize, or accept unseal keys, root tokens, Vault tokens, API keys, passwords, or secret payloads." \
+    "  Secret material must never be passed by CLI args, env files, logs, .out, reports, support bundles, retained bundles, or Codex output." \
+    "" \
+    "Usage:" \
+    "  remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local" \
+    "" \
+    "Allowed flags:" \
+    "  --help" \
+    "  --host-local" \
+    "" \
+    "Forbidden in P0i: --ssh-target, --execute-reset, --post-unseal-check, --apply, --dry-run, --interactive-sudo, --governed-smoke-command, arbitrary command strings, helper path overrides, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
+    "Non-claims: not reset, not workload-auth bootstrap or check, not IM refresh/support-bundle, not CP proof, not default noninteractive readiness validation, not ES Vault token brokerage, and not Remote Alpha deployment/provisioning/reconciliation architecture."
+}
+
 recovery_session_plan() {
   printf '%s\n' \
-    "Remote Alpha recovery-session plan (P0h safe/local schema-aware evidence interpretation)" \
+    "Remote Alpha recovery-session plan (P0i host-local unseal-existing added)" \
     "classification: bounded proof/support helper; evidence/projection/diagnostics only; no authority source" \
     "default behavior: print this plan/help and exit zero; no live tools run" \
     "" \
-    "safe/planned:" \
+    "implemented safe/local or explicitly host-local:" \
     "  inventory/status - safe local planning and static inventory only; no host inspection" \
     "  evidence-check - local-only metadata check of supplied existing JSON evidence files" \
     "  next-steps - print readiness-session and IM command text only" \
+    "  vault-unseal-existing --host-local - implemented host-local operator mode; secret-sensitive but non-destructive; delegates only to the existing reset helper's --unseal-only flow" \
     "" \
     "future explicit audited slices:" \
-    "  unseal-existing - future explicit secret-sensitive mode; human enters unseal material only into the visible Vault prompt" \
     "  disposable reset - future destructive exact-phrase mode; no root token or unseal key through args/env/logs/artifacts/Codex output" \
     "  workload-auth check execution - future audited live check; ES must not become a Vault token broker" \
     "  runtime identity summary generation - future audited evidence route; runtime identity remains a reopened seam" \
-    "  service-user check/apply - remains separate; apply is mutating and not part of P0h recovery-session" \
+    "  service-user check/apply - remains separate; apply is mutating and not part of P0i recovery-session" \
     "" \
     "separate IM actions:" \
     "  IM refresh and support-bundle collection are printed only as separate IM evidence/provenance actions" \
@@ -291,7 +321,8 @@ recovery_session_plan() {
     "non-claims:" \
     "  not CP recovery authority, not Vault production lifecycle, not ES Vault token brokerage" \
     "  not Remote Alpha deployment, provisioning, reconciliation, production, HA, or multi-tenant architecture" \
-    "  no reset/unseal/workload-auth/runtime-identity/service-user execution route is added in P0h"
+    "  no destructive reset/workload-auth/runtime-identity/service-user execution route is added in P0i" \
+    "  vault-unseal-existing does not validate default noninteractive readiness"
 }
 
 recovery_session_inventory() {
@@ -303,18 +334,19 @@ recovery_session_inventory() {
     "  scripts/remote_alpha_operator.sh readiness-session - existing bounded workflow over es-writable-state-readiness-check; live only when separately invoked with --ssh-target; not executed by recovery-session" \
     "  recovery-session --plan, --inventory, --next-steps - print-only/local" \
     "  recovery-session --evidence-check - local-only schema-aware check of existing JSON evidence metadata; check-only; no summary file" \
+    "  recovery-session vault-unseal-existing --host-local - implemented host-local explicit operator mode; secret-sensitive; non-destructive; delegates only to scripts/remote_alpha_reset_disposable_vault.sh --unseal-only" \
     "" \
-    "check-only evidence helpers (future execution routes, not run by recovery-session P0h):" \
+    "check-only evidence helpers (future execution routes, not run by recovery-session P0i):" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; future audited live check" \
     "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; dry-run/check-only available; future audited evidence route" \
     "  scripts/remote_alpha_migrate_vault_service_user.sh --check-only - host-local Vault service-user migration check; check-only default; apply remains separate" \
     "" \
-    "secret-sensitive or destructive helpers (future only):" \
-    "  scripts/remote_alpha_reset_disposable_vault.sh --unseal-only - future explicit secret-sensitive mode" \
+    "secret-sensitive or destructive helpers:" \
+    "  scripts/remote_alpha_reset_disposable_vault.sh --unseal-only - implemented only through explicit host-local vault-unseal-existing; secret-sensitive; non-destructive" \
     "  scripts/remote_alpha_reset_disposable_vault.sh --execute-reset - future destructive exact-phrase mode" \
     "" \
     "blocked/reopened:" \
-    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0h" \
+    "  vault-workload-auth-bootstrap - blocked/reopened; no root-token automation and no proof-secret bootstrap in P0i" \
     "" \
     "classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened" \
     "non-claims: inventory is evidence/projection/diagnostics only, never authority"
@@ -355,6 +387,50 @@ recovery_session_next_steps() {
   printf '  --output-root '
   print_double_quoted "--support-output-root" "${support_output_root}"
   printf '\n'
+}
+
+recovery_session_vault_unseal_existing() {
+  local host_local_seen="false"
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        recovery_session_vault_unseal_existing_usage
+        return 0
+        ;;
+      --host-local)
+        require_recovery_option_not_seen "$1" "${host_local_seen}"
+        host_local_seen="true"
+        shift
+        ;;
+      --ssh-target|--ssh-target=*|--execute-reset|--execute-reset=*|--post-unseal-check|--post-unseal-check=*|--apply|--apply=*|--dry-run|--dry-run=*|--interactive-sudo|--interactive-sudo=*|--governed-smoke-command|--governed-smoke-command=*)
+        recovery_die "recovery-session vault-unseal-existing forbids $1; P0i is host-local unseal-only and non-destructive"
+        ;;
+      --*=*)
+        recovery_die "recovery-session vault-unseal-existing does not accept equals-form options: $1"
+        ;;
+      --*)
+        recovery_die "unknown option for recovery-session vault-unseal-existing: $1"
+        ;;
+      *)
+        recovery_die "unexpected positional argument for recovery-session vault-unseal-existing: $1"
+        ;;
+    esac
+  done
+
+  if [[ "${host_local_seen}" != "true" ]]; then
+    recovery_die "recovery-session vault-unseal-existing requires --host-local; run it on the Remote Alpha host where Vault is installed and reachable"
+  fi
+
+  if [[ ! -x "${REMOTE_ALPHA_VAULT_RESET_HELPER}" ]]; then
+    recovery_die "Vault reset helper is not executable: ${REMOTE_ALPHA_VAULT_RESET_HELPER}"
+  fi
+
+  printf '%s\n' \
+    "Running host-local Vault unseal-only helper in the visible terminal." \
+    "The operator enters any unseal key directly into the delegated Vault/helper prompt." \
+    "The operator facade will not read, log, relay, persist, summarize, or capture secret material."
+  exec "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "--unseal-only"
 }
 
 recovery_session_evidence_check() {
@@ -643,6 +719,12 @@ recovery_session() {
     recovery_die "recovery-session does not accept top-level printed-command options before the subcommand: ${facade_options_seen[*]}"
   fi
 
+  if [[ "$#" -gt 0 && "$1" == "vault-unseal-existing" ]]; then
+    shift
+    recovery_session_vault_unseal_existing "$@"
+    return 0
+  fi
+
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --help|-h)
@@ -748,7 +830,7 @@ recovery_session() {
         shift 2
         ;;
       --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session forbids $1; P0h is safe/local/print-only/evidence-check only"
+        recovery_die "recovery-session forbids $1; P0i is safe/local/print-only/evidence-check plus explicit host-local unseal-only"
         ;;
       --*=*)
         recovery_die "recovery-session does not accept equals-form options: $1"
@@ -832,7 +914,7 @@ print_im_commands() {
 
 refuse_not_implemented() {
   local name=$1
-  printf 'error: subcommand %q is not implemented in P0h and requires a later audited slice.\n' "${name}" >&2
+  printf 'error: subcommand %q is not implemented in P0i and requires a later audited slice.\n' "${name}" >&2
   printf 'No helper execution routing occurred.\n' >&2
   exit 2
 }
@@ -1522,7 +1604,7 @@ main() {
       refuse_not_implemented "${subcommand}"
       ;;
     *)
-      printf 'error: unknown subcommand %q is not implemented in P0h and requires a later audited slice.\n' "${subcommand}" >&2
+      printf 'error: unknown subcommand %q is not implemented in P0i and requires a later audited slice.\n' "${subcommand}" >&2
       printf 'No helper execution routing occurred.\n' >&2
       exit 2
       ;;

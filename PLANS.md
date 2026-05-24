@@ -198,6 +198,32 @@ service-user apply. Schema interpretation is evidence/projection only and must
 not add IM authority, CP recovery authority, ES Vault token brokerage, or Remote
 Alpha deployment/provisioning/reconciliation architecture.
 
+The P0i implementation/self-audit slice may add exactly one secret-sensitive
+`recovery-session` route:
+`scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing
+--host-local`. This route is host-local only, must require explicit
+`--host-local`, and may delegate only to the public helper
+`scripts/remote_alpha_reset_disposable_vault.sh --unseal-only` through a fixed
+path resolved from the operator script. It must not use SSH, remote staging,
+host detection, helper path overrides, generic helper dispatch, `scripts/internal`
+paths, `tee`, transcripts, logs, `.out`, reports, support bundles, retained
+bundles, or an operator summary. It must not run or add destructive reset,
+post-unseal workload-auth checks, runtime identity generation, Vault service-user
+execution, Infrastructure Manager execution, support-bundle collection, CP
+proof, or default noninteractive readiness validation.
+
+P0i preserves the operator prompt model: the human remains the operator, and any
+unseal key entry happens directly in the visible terminal owned by the delegated
+helper and Vault CLI. Codex and the operator facade must not receive, type, read,
+log, relay, persist, summarize, or accept unseal keys, root tokens, Vault
+tokens, API keys, passwords, private keys, JWT-SVIDs, or secret payloads through
+CLI arguments, environment files, logs, `.out`, reports, support bundles,
+retained bundles, helper summaries, readiness outputs, printed commands, or
+Codex output. The route is secret-sensitive but non-destructive evidence/support
+workflow glue only; it must not make ES a Vault token broker, IM a reconciler, CP
+a recovery authority, or Remote Alpha deployment/provisioning/reconciliation
+architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
