@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation status through P0j:
+Current implementation status through P0k:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -259,11 +259,15 @@ Current implementation status through P0j:
   `scripts/remote_alpha_reset_disposable_vault.sh` to the remote host and
   invokes only the staged helper's `--unseal-only` mode over an interactive SSH
   TTY.
+- P0k adds one Mac-side dry-run-only disposable reset planning route,
+  `recovery-session vault-reset-disposable --ssh-target <target> --dry-run`,
+  which stages only `scripts/remote_alpha_reset_disposable_vault.sh` to the
+  remote host and invokes only the staged helper's `--dry-run` mode.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
   `recovery-session`.
-- The new route delegates only to the public staged wrapper
+- The writable-state readiness route delegates only to the public staged wrapper
   `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`.
 - The route is check-only/non-mutating by construction: it has no `--apply`
   path, rejects `--dry-run`, and requires an explicit `--ssh-target` before the
@@ -299,12 +303,21 @@ Current implementation status through P0j:
   route-specific remote scratch path, invokes only `--unseal-only`, attempts
   staged-helper cleanup by default, and writes no `.out`, transcript, log,
   support bundle, report, generated JSON, or operator summary.
+- The `vault-reset-disposable --ssh-target <target> --dry-run` route is the
+  Mac-side topology for disposable Vault reset planning only. It does not
+  require an interactive TTY, stages only the public reset helper to a
+  route-specific remote scratch path, invokes only `--dry-run`, attempts
+  staged-helper cleanup by default, and writes no `.out`, transcript, log,
+  support bundle, report, generated JSON, or operator summary. It is
+  non-destructive: it does not stop Vault, move raft storage, init or unseal
+  Vault, run post-unseal checks, run workload-auth checks, run Infrastructure
+  Manager, or collect support bundles.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
   follow-up evidence/provenance actions only, and the recovery session may print
   those commands as next-step text only.
-- Vault destructive reset, workload-auth check, runtime identity summary, Vault
+- Vault destructive reset execution, workload-auth check, runtime identity summary, Vault
   service-user check, runtime security check, post-unseal check combination,
   preinstalled helper bundles, generic helper dispatch, and all other staged
   `es-*` helper delegation remain not implemented and require later audited
@@ -317,7 +330,7 @@ Current implementation status through P0j:
   remains the owner of its existing readiness/provenance artifacts when the
   route or readiness session is intentionally invoked. The recovery session
   creates no summary file, writes no `.out`, and does not wrap the P0i/P0j
-  unseal delegation in transcript capture.
+  unseal delegation or the P0k reset dry-run delegation in transcript capture.
 
 ### Operator Involvement Model
 
@@ -335,15 +348,20 @@ flag and only from a visible terminal. The P0i `vault-unseal-existing
 `--unseal-only` flow from a visible terminal on the Remote Alpha host. The P0j
 Mac-side `vault-unseal-existing --ssh-target <target> --interactive-tty` mode
 may stage that same public helper and run only `--unseal-only` through an
-interactive SSH TTY from the Mac. In both topologies the facade itself does not
-prompt for, read, type, log, relay, persist, summarize, or accept the unseal
-key. Future Vault, reset, or unseal prompts may be allowed only in explicit
-secret-sensitive modes, silent where appropriate, and never through CLI
-arguments, environment files, logs, reports, `.out`, support bundles, retained
-bundles, CP artifacts, helper summaries, readiness outputs, printed commands,
-or Codex output. Root tokens, unseal keys, client tokens, JWT-SVID payloads,
-API keys, TLS private keys, SPIFFE material, passwords, raw prompts, and secret
-payloads must not be recorded by the facade or delegated helpers.
+interactive SSH TTY from the Mac. The P0k Mac-side
+`vault-reset-disposable --ssh-target <target> --dry-run` mode may stage that
+same public helper and run only `--dry-run`; it does not require an interactive
+TTY because it does not run reset, init, unseal, or secret-producing flows. In
+these topologies the facade itself does not prompt for, read, type, log, relay,
+persist, summarize, or accept the unseal key, root token, Vault token, API key,
+password, or secret payload. Future Vault, reset, or unseal prompts may be
+allowed only in explicit secret-sensitive modes, silent where appropriate, and
+never through CLI arguments, environment files, logs, reports, `.out`, support
+bundles, retained bundles, CP artifacts, helper summaries, readiness outputs,
+printed commands, or Codex output. Root tokens, unseal keys, client tokens,
+JWT-SVID payloads, API keys, TLS private keys, SPIFFE material, passwords, raw
+prompts, and secret payloads must not be recorded by the facade or delegated
+helpers.
 
 Helper outputs remain evidence/projection only. Infrastructure Manager live
 refresh and support-bundle collection remain separate IM
@@ -364,15 +382,16 @@ Purpose:
 Execution-context split:
 
 - Mac-side only: inventory, print IM commands, staged-wrapper delegation for
-  existing repo-side staged helpers, and P0j
+  existing repo-side staged helpers, P0j
   `recovery-session vault-unseal-existing --ssh-target <target>
-  --interactive-tty`.
+  --interactive-tty`, and P0k
+  `recovery-session vault-reset-disposable --ssh-target <target> --dry-run`.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
-  future Vault destructive reset, runtime identity summary, Vault workload-auth
-  check, and Vault service-user check.
-- Not v1 except the P0j unseal-existing route: SSH-driven reset/unseal,
-  generic remote staging, arbitrary shell passthrough, or Vault workload-auth
-  bootstrap.
+  future Vault destructive reset execution, runtime identity summary, Vault
+  workload-auth check, and Vault service-user check.
+- Not v1 except the P0j unseal-existing route and the P0k reset dry-run
+  planning route: SSH-driven destructive reset/unseal, generic remote staging,
+  arbitrary shell passthrough, or Vault workload-auth bootstrap.
 
 Proposed v1/v2 slice sequence:
 
@@ -384,7 +403,11 @@ Proposed v1/v2 slice sequence:
 5. Mac-side interactive TTY unseal-existing over the existing reset helper,
    without reset, post-unseal checks, generic helper dispatch, transcripts, or
    generated evidence
-6. separate workload-auth bootstrap design only if still needed
+6. Mac-side disposable Vault reset dry-run planning over the existing reset
+   helper, without destructive reset, init, unseal, post-unseal checks, IM,
+   support-bundle collection, generic helper dispatch, transcripts, or
+   generated evidence
+7. separate workload-auth bootstrap design only if still needed
 
 Sudo model:
 
@@ -720,7 +743,9 @@ The session rejects:
 
 - inventory/status is safe/planned
 - unseal-existing is a future explicit secret-sensitive mode
-- disposable reset is a future destructive exact-phrase mode
+- disposable reset dry-run planning is implemented later in P0k as an explicit
+  Mac-side dry-run submode
+- disposable reset execute-reset remains a future destructive exact-phrase mode
 - workload-auth check execution is a future audited live check
 - runtime identity summary generation is a future audited evidence route
 - Vault service-user check/apply remains separate
@@ -993,6 +1018,114 @@ support-bundle collection, not CP proof, and not default noninteractive
 readiness validation. It is not ES Vault token brokerage, IM authority or
 reconciliation, CP recovery authority, Vault production lifecycle, and not
 Remote Alpha deployment/provisioning/reconciliation architecture.
+
+### P0k Mac-Side Disposable Vault Reset Dry-Run Recovery Session
+
+`Bounded slice rule`: P0k adds exactly one Mac-side dry-run planning route:
+`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
+--ssh-target <target> --dry-run`.
+
+This route helps the operator inspect the disposable reset plan from the
+Mac/operator workstation without performing the reset. It is an ES Remote Alpha
+operator facade/workflow surface, not Vault lifecycle automation and not a new
+authority source.
+
+Topology rules:
+
+- Mac-side only for this slice
+- `--ssh-target <target>` is required
+- `--dry-run` is required
+- `--interactive-tty` is not required for dry-run and is rejected
+- `--host-local` is not accepted for this route
+- the `--ssh-target` value must be a single SSH target, not an SSH option or
+  shell command
+- bare `vault-reset-disposable` execution must fail
+
+Allowed flags for `vault-reset-disposable` are:
+
+- `--help`
+- `--ssh-target <target>`
+- `--dry-run`
+
+The route must reject:
+
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--host-local`
+- `--interactive-tty`
+- `--interactive-sudo`
+- `--apply`
+- `--governed-smoke-command`
+- `--keep-staging-on-failure`
+- workload-auth flags
+- Infrastructure Manager commands
+- arbitrary command strings
+- helper path overrides
+- unknown flags
+- duplicate flags
+- positional arguments beyond the submode
+- equals-form options
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, TLS private keys, passwords, and
+  secret payloads
+
+Mac-side staging behavior:
+
+- stage only `scripts/remote_alpha_reset_disposable_vault.sh`
+- do not stage `scripts/remote_alpha_operator.sh`
+- do not stage a bundle
+- do not source helper scripts
+- do not call `scripts/internal/*`
+- do not construct helper paths from user input
+- do not introduce generic helper dispatch
+- use a route-specific remote scratch path
+- do not offer `--keep-staging-on-failure`, because the staged helper contains
+  destructive reset code even though this route invokes only `--dry-run`
+
+Remote invocation behavior:
+
+- invoke the staged helper only as
+  `remote_alpha_reset_disposable_vault.sh --dry-run`
+- the helper supports `--dry-run`, so the operator facade passes it explicitly
+- never pass `--execute-reset`, `--unseal-only`, `--post-unseal-check`,
+  workload-auth flags, Infrastructure Manager commands, helper path overrides,
+  or arbitrary commands
+- do not allocate an interactive SSH TTY for dry-run
+- do not capture stdout or stderr to files
+- do not use `tee`
+- do not run `script`
+- do not create transcripts or logs
+
+Cleanup and evidence behavior:
+
+- cleanup of the staged helper/root must be attempted by default after the
+  remote command returns, where safe
+- the route writes no `.out`
+- the route writes no operator summary
+- the route writes no support bundle
+- the route writes no report
+- the route writes no generated JSON
+- artifacts and outputs remain evidence/projection/diagnostics only, never
+  authority
+
+Dry-run non-destructive posture:
+
+- the route does not stop Vault
+- the route does not move raft storage
+- the route does not run `vault operator init`
+- the route does not unseal Vault
+- the route does not run post-unseal checks
+- the route does not run workload-auth checks
+- the route does not run Infrastructure Manager refresh
+- the route does not collect support bundles
+- the route does not run CP proof or default noninteractive readiness validation
+
+Destructive `--execute-reset` remains a future explicit destructive mode with
+the exact confirmation phrase `RESET DISPOSABLE REMOTE ALPHA VAULT`. P0k is not
+ES Vault token brokerage, IM authority or reconciliation, CP recovery authority,
+Vault production lifecycle, and not Remote Alpha
+deployment/provisioning/reconciliation architecture.
 
 ### P0d Interactive Validation Evidence
 

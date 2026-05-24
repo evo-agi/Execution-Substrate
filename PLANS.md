@@ -263,6 +263,41 @@ output. The route remains bounded proof/support workflow glue only; it must not
 make ES a Vault token broker, IM a reconciler, CP a recovery authority, or
 Remote Alpha deployment/provisioning/reconciliation architecture.
 
+The P0k implementation/self-audit slice may add exactly one Mac-side disposable
+Vault reset planning route:
+`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
+--ssh-target <target> --dry-run`. This route is dry-run-only and
+non-destructive. It may stage only the public helper
+`scripts/remote_alpha_reset_disposable_vault.sh` from a fixed path resolved
+from `BASH_SOURCE[0]`, and it may invoke the staged helper only in the helper's
+documented `--dry-run` mode. Because the helper supports `--dry-run`, the
+operator facade must pass `--dry-run` explicitly.
+
+P0k must require explicit `--ssh-target` plus `--dry-run`, must not require
+`--interactive-tty`, and must reject `--host-local`, `--interactive-tty`,
+`--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--apply`,
+`--interactive-sudo`, `--governed-smoke-command`,
+`--keep-staging-on-failure`, helper path overrides, workload-auth flags,
+Infrastructure Manager commands, arbitrary commands, unknown flags, duplicate
+flags, extra positional arguments, equals-form options, and all secret-like
+arguments. It must not stage `scripts/remote_alpha_operator.sh`, stage a
+bundle, source helper scripts, call `scripts/internal/*`, introduce generic
+helper dispatch, capture transcripts, use `tee`, run `script`, or write
+`.out`, logs, reports, summaries, support bundles, retained bundles, generated
+JSON, or any operator-owned artifact. It must attempt cleanup of the staged
+reset-capable helper by default and must not offer
+`--keep-staging-on-failure`.
+
+P0k is planning/inspection only. It must not stop Vault, move raft storage, run
+`vault operator init`, unseal Vault, run post-unseal checks, run workload-auth
+checks, refresh Infrastructure Manager evidence, collect support bundles, run
+CP proof, or validate default noninteractive readiness. Destructive
+`--execute-reset` remains a future explicit destructive mode with the exact
+confirmation phrase `RESET DISPOSABLE REMOTE ALPHA VAULT`. P0k outputs remain
+operator-visible evidence/projection/diagnostics only, never authority. The
+route must not make ES a Vault token broker, IM a reconciler, CP a recovery
+authority, or Remote Alpha deployment/provisioning/reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
