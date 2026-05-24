@@ -298,6 +298,60 @@ operator-visible evidence/projection/diagnostics only, never authority. The
 route must not make ES a Vault token broker, IM a reconciler, CP a recovery
 authority, or Remote Alpha deployment/provisioning/reconciliation architecture.
 
+The P0l design/static-test prep slice may define, but must not implement, the
+future Mac-side destructive disposable Vault reset route:
+`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
+--ssh-target <target> --execute-reset --interactive-tty`. The already validated
+P0k dry-run route is the prerequisite for this design: commit `b1a561a` passed
+live validation of
+`scripts/remote_alpha_operator.sh recovery-session vault-reset-disposable
+--ssh-target host_to_remote_linux_m75q --dry-run`, proving the non-destructive
+staging, invocation, and cleanup-attempt behavior for reset planning. P0l stays
+docs/static-test only; `--execute-reset` remains future until later separate
+implementation, audit, and live-validation slices.
+
+P0l fixes the future destructive contract as a Mac-side operator-facade route
+only. It must require `--ssh-target` plus `--interactive-tty`, and
+`--execute-reset` must require `--interactive-tty`. `--dry-run` and
+`--execute-reset` are mutually exclusive. The future route must not add a
+host-local execute-reset path through the operator facade in this slice. It may
+stage only `scripts/remote_alpha_reset_disposable_vault.sh` from a fixed
+script-relative path and invoke only the staged helper with `--execute-reset`.
+It must never include `--post-unseal-check` in the first destructive slice and
+must never combine reset with workload-auth checks, runtime identity summaries,
+Infrastructure Manager refresh, support-bundle collection, CP proof, governed
+smokes, preinstalled remote bundles, generic helper dispatch, or arbitrary
+commands. It must attempt cleanup of the staged reset-capable helper by default
+and must not offer `--keep-staging-on-failure`.
+
+The P0l confirmation model is human-visible and non-capturing. The exact
+confirmation phrase remains `RESET DISPOSABLE REMOTE ALPHA VAULT`; the operator
+must type it directly in a visible terminal owned by the remote helper/Vault
+session. The phrase must not be accepted through CLI arguments, environment
+variables, environment files, local or remote files, helper summaries, readiness
+outputs, `.out`, logs, reports, support bundles, retained bundles, CP artifacts,
+or Codex output, and it must not be logged, summarized, captured, parsed, or
+relayed by the operator facade. Root tokens, unseal keys, client tokens, Vault
+tokens, API keys, private keys, passwords, JWT-SVID payloads, and secret payloads
+must never be accepted as arguments, environment values, files, logs, artifacts,
+or Codex output. Any Vault init/unseal material is handled only by the human
+operator in the visible remote helper/Vault terminal.
+
+P0l evidence is process exit plus operator-visible helper output only. The
+future ES operator route must not tee, run `script`, record, capture, parse, or
+summarize terminal transcripts; must write no `.out` summary, operator summary
+file, support bundle, report, generated JSON, retained bundle, or CP artifact;
+and must not execute Infrastructure Manager. Post-reset evidence checks are
+separate later steps. Stop conditions for the future route include no visible
+TTY, SSH host-auth prompts, any request to pass secrets as args/env/files,
+reset-helper broad raft path guard failures, exact phrase mismatch, any request
+to combine post-unseal checks, workload-auth checks, IM refresh, support-bundle
+collection, or CP proof in the same command, and failure to clean up the staged
+reset-capable helper. The route remains bounded Remote Alpha proof/support
+workflow glue only; it must not make ES a Vault token broker, IM a reconciler,
+CP a recovery authority, or Remote Alpha production/deployment/reconciliation
+architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
