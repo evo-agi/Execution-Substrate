@@ -460,6 +460,10 @@ trace, or full Vault login JSON. Classification remains bounded triage over the
 host-local evidence artifact, not workload-auth bootstrap, not a claim that a
 specific Vault object is missing unless the class safely supports that, and not
 ES Vault token brokerage.
+The issuer comparison must understand the same `spire-server bundle show
+-format spiffe` trust-domain JSON shape used by bootstrap, including
+`trust_domains` maps keyed by bare trust-domain labels, so a parseable
+repo-derived bound issuer does not degrade to `unknown` before classification.
 
 The P0o combined implementation/self-audit/merge-readiness slice may add exactly
 one safe local/print-only planning surface for a future post-reset Vault

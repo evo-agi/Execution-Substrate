@@ -245,6 +245,11 @@ func writeWorkloadZoneConfig(t *testing.T, path, address, authMount, authRole, a
 
 func setupFakeCommands(t *testing.T, dir, jwt string) {
 	t.Helper()
+	setupFakeCommandsWithBundle(t, dir, jwt, "spiffe://execution.internal")
+}
+
+func setupFakeCommandsWithBundle(t *testing.T, dir, jwt string, bundleOutput string) {
+	t.Helper()
 
 	writeExecutable(t, dir, "hostname", "#!/bin/sh\necho m75q-test\n")
 	writeExecutable(t, dir, "id", `#!/bin/sh
@@ -276,12 +281,12 @@ if [ "$1" = "api" ] && [ "$2" = "fetch" ] && [ "$3" = "jwt" ]; then
 fi
 exit 1
 `, jwt, jwt))
-	writeExecutable(t, dir, "spire-server", `#!/bin/sh
+	writeExecutable(t, dir, "spire-server", fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "healthcheck" ]; then
   exit 0
 fi
 if [ "$1" = "bundle" ] && [ "$2" = "show" ]; then
-  echo "spiffe://execution.internal"
+  printf '%%s\n' %q
   exit 0
 fi
 if [ "$1" = "entry" ] && [ "$2" = "show" ]; then
@@ -294,7 +299,7 @@ EOF
   exit 0
 fi
 exit 1
-`)
+`, bundleOutput))
 	writeExecutable(t, dir, "ss", `#!/bin/sh
 cat <<'EOF'
 LISTEN 0 128 172.17.0.1:8200 0.0.0.0:*
@@ -382,13 +387,18 @@ func envWithPath(fakeBin string, extra ...string) []string {
 
 func runWorkloadAuthCheckForFakeVault(t *testing.T, jwt string, serverURL string, caBundlePEM string) (map[string]any, string, []byte, error) {
 	t.Helper()
+	return runWorkloadAuthCheckForFakeVaultWithBundle(t, jwt, serverURL, caBundlePEM, "spiffe://execution.internal")
+}
+
+func runWorkloadAuthCheckForFakeVaultWithBundle(t *testing.T, jwt string, serverURL string, caBundlePEM string, bundleOutput string) (map[string]any, string, []byte, error) {
+	t.Helper()
 
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
 	}
-	setupFakeCommands(t, fakeBin, jwt)
+	setupFakeCommandsWithBundle(t, fakeBin, jwt, bundleOutput)
 
 	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
 	summaryPath := filepath.Join(tmpDir, "vault-workload-auth-summary.json")
@@ -870,6 +880,66 @@ func TestRemoteAlphaVaultWorkloadAuthCheckRecordsSafeIssuerMismatchHint(t *testi
 	} {
 		if strings.Contains(summaryText, forbidden) {
 			t.Fatalf("summary unexpectedly contained raw issuer/JWT/Vault material %q", forbidden)
+		}
+	}
+	if state.lookupCalls != 0 {
+		t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
+	}
+	if state.revokeCalls != 0 {
+		t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckDerivesIssuerFromBundleTrustDomainMap(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	server, state, caBundlePEM := startFakeVaultWithLoginFailure(t, jwt, http.StatusBadRequest, map[string]any{
+		"errors": []string{"error validating token: invalid issuer or validation key"},
+	}, "")
+	bundleOutput := `{"trust_domains":{"execution.internal":{"keys":[{"kty":"RSA","use":"jwt-svid"}]}}}`
+
+	summary, summaryText, output, err := runWorkloadAuthCheckForFakeVaultWithBundle(t, jwt, server.URL, caBundlePEM, bundleOutput)
+	if err == nil {
+		t.Fatalf("expected validation-key login failure, got success\n%s", output)
+	}
+
+	spire := jsonMap(t, summary["spire"])
+	if got := spire["trust_domain"]; got != "execution.internal" {
+		t.Fatalf("unexpected trust domain %v", got)
+	}
+
+	authSmoke := jsonMap(t, summary["auth_smoke"])
+	for field, want := range map[string]any{
+		"jwt_fetch":                          "pass",
+		"jwt_audience_verified":              true,
+		"jwt_subject_verified":               true,
+		"jwt_issuer_verified":                true,
+		"jwt_issuer_expected_source":         "repo_bound_issuer_from_trust_domain",
+		"jwt_issuer_expected_class":          "spiffe_trust_domain",
+		"jwt_issuer_actual_class":            "matches_expected",
+		"vault_login":                        "fail",
+		"vault_login_failure_class":          "invalid_issuer_or_validation_key",
+		"vault_login_failure_alignment_hint": "validation_key_mismatch_or_rotation",
+		"vault_login_raw_error_recorded":     false,
+		"token_lookup":                       "not_exercised",
+		"proof_read":                         "not_exercised",
+		"proof_runtime_secret":               "not_exercised",
+		"token_revoked":                      "not_exercised",
+	} {
+		if got := authSmoke[field]; got != want {
+			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		jwt,
+		bundleOutput,
+		"error validating token: invalid issuer or validation key",
+		state.clientToken,
+	} {
+		if strings.Contains(summaryText, forbidden) {
+			t.Fatalf("summary unexpectedly contained raw JWT/bundle/Vault material %q", forbidden)
 		}
 	}
 	if state.lookupCalls != 0 {

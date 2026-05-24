@@ -980,33 +980,97 @@ remote_alpha_vault_spire_server_command() {
   fi
 }
 
-remote_alpha_vault_spire_trust_domain() {
-  local output=""
-
-  if output="$(remote_alpha_vault_spire_server_command bundle show -format spiffe 2>/dev/null)"; then
-    printf '%s' "${output}" | python3 /dev/fd/3 3<<'PY'
-import re
+remote_alpha_vault_trust_domain_from_spiffe_id() {
+  python3 - "${1:-}" <<'PY'
 import sys
 
-match = re.search(r"spiffe://([A-Za-z0-9._-]+)", sys.stdin.read())
-if not match:
-    sys.exit(1)
-print(match.group(1))
-PY
-    return 0
-  fi
-
-  python3 - "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" <<'PY'
-import sys
 value = sys.argv[1].strip()
 prefix = "spiffe://"
 if value.startswith(prefix):
-    trust_domain = value[len(prefix):].split("/", 1)[0]
+    trust_domain = value[len(prefix):].split("/", 1)[0].strip()
     if trust_domain:
         print(trust_domain)
         sys.exit(0)
 sys.exit(1)
 PY
+}
+
+remote_alpha_vault_spire_trust_domain() {
+  local output=""
+  local trust_domain=""
+
+  if output="$(remote_alpha_vault_spire_server_command bundle show -format spiffe 2>/dev/null)"; then
+    if trust_domain="$(printf '%s' "${output}" | python3 /dev/fd/3 "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" 3<<'PY'
+import json
+import re
+import sys
+
+workload_spiffe_id = sys.argv[1].strip()
+text = sys.stdin.read()
+domains = []
+
+
+def trust_domain_from_spiffe_id(value):
+    text_value = str(value or "").strip()
+    prefix = "spiffe://"
+    if text_value.startswith(prefix):
+        trust_domain = text_value[len(prefix):].split("/", 1)[0].strip()
+        if trust_domain:
+            return trust_domain
+    return ""
+
+
+def normalize_trust_domain_label(value):
+    text_value = str(value or "").strip()
+    spiffe_trust_domain = trust_domain_from_spiffe_id(text_value)
+    if spiffe_trust_domain:
+        return spiffe_trust_domain
+    if re.fullmatch(r"[A-Za-z0-9._-]+", text_value):
+        return text_value
+    return ""
+
+
+def add_domain(value):
+    trust_domain = normalize_trust_domain_label(value)
+    if trust_domain and trust_domain not in domains:
+        domains.append(trust_domain)
+
+
+workload_trust_domain = trust_domain_from_spiffe_id(workload_spiffe_id)
+
+try:
+    payload = json.loads(text)
+except Exception:
+    payload = None
+
+if isinstance(payload, dict):
+    trust_domains = payload.get("trust_domains")
+    if isinstance(trust_domains, dict):
+        for label in trust_domains:
+            add_domain(label)
+    for field in ("trust_domain", "trustDomain"):
+        add_domain(payload.get(field))
+
+for match in re.finditer(r"spiffe://([A-Za-z0-9._-]+)", text):
+    add_domain(match.group(1))
+
+if workload_trust_domain and workload_trust_domain in domains:
+    print(workload_trust_domain)
+    sys.exit(0)
+if len(domains) == 1:
+    print(domains[0])
+    sys.exit(0)
+sys.exit(1)
+PY
+    )"; then
+      if [[ -n "${trust_domain}" ]]; then
+        printf '%s\n' "${trust_domain}"
+        return 0
+      fi
+    fi
+  fi
+
+  remote_alpha_vault_trust_domain_from_spiffe_id "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}"
 }
 
 remote_alpha_vault_registration_selectors_json() {

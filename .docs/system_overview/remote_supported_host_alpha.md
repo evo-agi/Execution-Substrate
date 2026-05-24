@@ -4551,7 +4551,11 @@ helper may also record `auth_smoke.jwt_issuer_verified` as `true`, `false`, or
 `unknown`, `auth_smoke.jwt_issuer_expected_source`,
 `auth_smoke.jwt_issuer_expected_class`, and
 `auth_smoke.jwt_issuer_actual_class` when it can compare the JWT issuer to the
-repo-derived bound issuer without printing the JWT. For an
+repo-derived bound issuer without printing the JWT. For issuer comparison, the
+helper must understand the same SPIRE bundle JSON shape
+used by bootstrap, including `trust_domains` maps keyed by bare trust-domain
+labels, so a parseable repo-derived bound issuer does not degrade to `unknown`.
+For an
 `invalid_issuer_or_validation_key` login failure, it may record
 `auth_smoke.vault_login_failure_alignment_hint` as a safe label such as
 `issuer_mismatch`, `validation_key_mismatch_or_rotation`, or

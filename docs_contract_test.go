@@ -4041,6 +4041,7 @@ func TestRemoteSupportedHostAlphaVaultWorkloadAuthSummarySchemaIsDocumented(t *t
 		"`invalid_issuer_or_validation_key`",
 		"`issuer_mismatch`",
 		"`validation_key_mismatch_or_rotation`",
+		"`trust_domains` maps keyed by bare trust-domain labels",
 		"`vault_login_raw_error_recorded=false`",
 		"do not persist raw Vault error strings, raw Vault response bodies, raw HTTP headers, Authorization headers, stack traces, JWT-SVIDs, Vault tokens, root tokens, unseal keys, proof secret values, API keys, or private keys",
 		"must not print or persist JWT-SVIDs, Vault client tokens, root tokens, unseal keys, private keys, or secret payloads",
