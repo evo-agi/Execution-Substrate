@@ -224,6 +224,45 @@ workflow glue only; it must not make ES a Vault token broker, IM a reconciler, C
 a recovery authority, or Remote Alpha deployment/provisioning/reconciliation
 architecture.
 
+The P0j implementation/self-audit slice may extend exactly that
+`recovery-session vault-unseal-existing` surface with one Mac-side interactive
+TTY topology:
+`scripts/remote_alpha_operator.sh recovery-session vault-unseal-existing
+--ssh-target <target> --interactive-tty`. The P0i `--host-local` route remains
+available only for an operator already on the Linux Remote Alpha host. The
+Mac-side route must require explicit `--ssh-target` plus `--interactive-tty`,
+must fail before staging when local stdin or stdout is not a visible terminal,
+and must reject bare execution, `--host-local` combined with `--ssh-target`,
+`--ssh-target` without `--interactive-tty`, and `--interactive-tty` without
+`--ssh-target`. The `--ssh-target` value must be a single SSH target, not an
+SSH option or shell command.
+
+P0j may stage only the public helper
+`scripts/remote_alpha_reset_disposable_vault.sh` to a route-specific remote
+scratch path and may invoke the staged helper only as
+`remote_alpha_reset_disposable_vault.sh --unseal-only` over an interactive SSH
+TTY such as `ssh -tt`. It must not stage `scripts/remote_alpha_operator.sh`,
+stage a helper bundle, source helpers, call `scripts/internal/*`, construct
+helper paths from user input, introduce generic helper dispatch, offer
+`--keep-staging-on-failure`, capture transcripts, use `tee`, run `script`, or
+write `.out`, logs, reports, summaries, support bundles, retained bundles, or
+generated JSON. It must attempt remote staged-helper cleanup by default. P0j
+must not run or add destructive reset, post-unseal workload-auth checks,
+workload-auth bootstrap, runtime identity generation, Vault service-user
+execution, Infrastructure Manager execution, support-bundle collection, CP
+proof, or default noninteractive readiness validation.
+
+P0j preserves the same secret posture as P0i: the human remains the operator,
+and unseal key entry happens only inside the visible SSH/helper/Vault terminal
+prompt. Codex and the operator facade must not receive, type, read, parse, log,
+relay, persist, summarize, or accept unseal keys, root tokens, Vault tokens,
+API keys, passwords, private keys, JWT-SVIDs, or secret payloads through CLI
+arguments, environment files, logs, `.out`, reports, support bundles, retained
+bundles, helper summaries, readiness outputs, printed commands, or Codex
+output. The route remains bounded proof/support workflow glue only; it must not
+make ES a Vault token broker, IM a reconciler, CP a recovery authority, or
+Remote Alpha deployment/provisioning/reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

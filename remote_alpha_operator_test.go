@@ -23,6 +23,51 @@ func runRemoteAlphaOperator(args ...string) (string, error) {
 	return string(output), err
 }
 
+func runRemoteAlphaOperatorWithEnv(env []string, args ...string) (string, error) {
+	scriptPath := remoteAlphaOperatorScriptPath()
+	cmd := exec.Command("/bin/bash", append([]string{scriptPath}, args...)...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func runRemoteAlphaOperatorWithPTY(t *testing.T, env []string, args ...string) (string, error) {
+	t.Helper()
+	scriptPath := remoteAlphaOperatorScriptPath()
+	python := `
+import os
+import pty
+import subprocess
+import sys
+
+repo_root = os.environ["ES_REPO_ROOT"]
+cmd = sys.argv[1:]
+master_fd, slave_fd = pty.openpty()
+proc = subprocess.Popen(cmd, cwd=repo_root, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd)
+os.close(slave_fd)
+chunks = []
+while True:
+    try:
+        data = os.read(master_fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    chunks.append(data)
+os.close(master_fd)
+status = proc.wait()
+sys.stdout.buffer.write(b"".join(chunks))
+sys.exit(status)
+`
+	commandArgs := append([]string{"-c", python, "/bin/bash", scriptPath}, args...)
+	cmd := exec.Command("python3", commandArgs...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(env, "ES_REPO_ROOT="+executionSubstrateRepoRoot)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
 func requireRemoteAlphaOperatorSuccess(t *testing.T, args ...string) string {
 	t.Helper()
 	output, err := runRemoteAlphaOperator(args...)
@@ -86,7 +131,7 @@ func assertNoNewPaths(t *testing.T, label string, before map[string]bool) {
 	}
 }
 
-func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0iScope(t *testing.T) {
+func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0jScope(t *testing.T) {
 	scriptPath := remoteAlphaOperatorScriptPath()
 	info, err := os.Stat(scriptPath)
 	if err != nil {
@@ -99,7 +144,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0iScope(t *testing.
 	help := requireRemoteAlphaOperatorSuccess(t, "--help")
 	assertContainsAll(t, "operator help", help,
 		"Remote Alpha operator facade",
-		"P0i adds recovery-session vault-unseal-existing as an explicit host-local, secret-sensitive, non-destructive operator mode",
+		"P0j adds recovery-session vault-unseal-existing as an explicit Mac-side interactive TTY route while preserving the P0i host-local fallback",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -118,6 +163,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0iScope(t *testing.
 		"readiness-session",
 		"recovery-session",
 		"recovery-session vault-unseal-existing --host-local",
+		"recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
@@ -127,6 +173,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0iScope(t *testing.
 		"safe/local recovery skeleton",
 		"schema-aware local evidence-check",
 		"host-local vault-unseal-existing",
+		"Mac-side interactive TTY vault-unseal-existing",
 		"supports --plan, --inventory, --next-steps",
 		"writes no summary",
 		"preserves es-writable-state-readiness.json",
@@ -135,14 +182,14 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0iScope(t *testing.
 		"--output-root .out/remote-alpha-m75q/support-bundles",
 		"--ssh-alias host_to_remote_linux_m75q",
 		"does not invoke IM refresh or support-bundle collection",
-		"does not add reset execution, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic staging routes",
+		"does not add reset execution, Vault workload-auth, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch",
 	)
 }
 
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented through P0i",
+		"implemented through P0j",
 		"help",
 		"inventory",
 		"print-refresh-command",
@@ -158,8 +205,12 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"prints non-secret paths, byte counts, SHA-256 digests, schemas, blocker/warning counts, and sudo/checker status",
 		"safe/local skeleton for recovery sequencing",
 		"schema-aware local JSON evidence interpretation",
-		"runs explicit host-local vault-unseal-existing",
+		"runs explicit vault-unseal-existing modes",
 		"recovery-session vault-unseal-existing --host-local",
+		"recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty",
+		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
+		"invokes only --unseal-only through ssh -tt",
+		"no transcript",
 		"secret-sensitive",
 		"non-destructive",
 		"future/not implemented",
@@ -315,7 +366,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented in P0i",
+				"not implemented in P0j",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -398,8 +449,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
 	assertContainsAll(t, "recovery-session help", help,
 		"Remote Alpha operator workflow: recovery-session",
-		"P0i scope: safe/local recovery planning and evidence interpretation plus explicit host-local vault-unseal-existing",
-		"Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper and Vault CLI",
+		"P0j scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing host-local and Mac-side interactive TTY modes",
+		"Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI",
 		"Codex must not receive, type, log, relay, persist, or summarize the unseal key",
 		"Outputs are evidence/projection/diagnostics only, never authority",
 		"--plan",
@@ -417,6 +468,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"Recognized schemas",
 		"Unknown schemas are allowed by default",
 		"Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command",
+		"recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty",
 		"prints no full JSON",
 		"creates no summary file",
 		"writes no .out",
@@ -429,14 +481,16 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"inventory/status - safe local planning and static inventory only",
 		"evidence-check - local-only metadata check",
 		"next-steps - print readiness-session and IM command text only",
-		"vault-unseal-existing --host-local - implemented host-local operator mode; secret-sensitive but non-destructive",
+		"vault-unseal-existing --host-local - implemented host-local operator mode for the Linux Remote Alpha host; secret-sensitive but non-destructive",
+		"vault-unseal-existing --ssh-target <target> --interactive-tty - implemented Mac-side operator mode",
+		"invokes only --unseal-only over ssh -tt",
 		"disposable reset - future destructive exact-phrase mode",
 		"workload-auth check execution - future audited live check",
 		"runtime identity summary generation - future audited evidence route",
 		"service-user check/apply - remains separate",
 		"recovery-session does not execute IM",
 		"not ES Vault token brokerage",
-		"no destructive reset/workload-auth/runtime-identity/service-user execution route is added in P0i",
+		"no destructive reset/workload-auth/runtime-identity/service-user execution route is added in P0j",
 		"vault-unseal-existing does not validate default noninteractive readiness",
 	)
 
@@ -463,7 +517,10 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"scripts/remote_alpha_migrate_vault_service_user.sh --check-only",
 		"scripts/remote_alpha_operator.sh readiness-session",
 		"recovery-session vault-unseal-existing --host-local",
+		"recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty",
 		"implemented host-local explicit operator mode",
+		"implemented Mac-side explicit operator mode",
+		"invokes only --unseal-only through ssh -tt",
 		"secret-sensitive",
 		"non-destructive",
 		"classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened",
@@ -495,10 +552,10 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingHelpDocumentsHostL
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "vault-unseal-existing", "--help")
 	assertContainsAll(t, "vault-unseal-existing help", help,
 		"Remote Alpha recovery-session mode: vault-unseal-existing",
-		"P0i scope: explicit host-local secret-sensitive non-destructive unseal flow",
-		"Must be run on the Remote Alpha host where Vault is installed and reachable",
-		"Requires --host-local",
-		"SSH, remote staging, and host detection are not enabled in this slice",
+		"P0j scope: explicit secret-sensitive non-destructive unseal-existing flow with host-local and Mac-side interactive TTY topologies",
+		"Host-local mode must be run on the Remote Alpha host where Vault is installed and reachable",
+		"Mac-side mode stages only scripts/remote_alpha_reset_disposable_vault.sh to the remote host and invokes only --unseal-only through ssh -tt",
+		"No transcript, log, .out, report, support bundle, operator summary, IM refresh, workload-auth check, reset, or CP proof is created or run",
 		"Delegates only to: scripts/remote_alpha_reset_disposable_vault.sh --unseal-only",
 		"Human operator model",
 		"The human remains the operator",
@@ -506,12 +563,18 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingHelpDocumentsHostL
 		"The operator facade does not prompt for, read, type, log, relay, persist, summarize, or accept unseal keys, root tokens, Vault tokens, API keys, passwords, or secret payloads",
 		"Secret material must never be passed by CLI args, env files, logs, .out, reports, support bundles, retained bundles, or Codex output",
 		"remote_alpha_operator.sh recovery-session vault-unseal-existing --host-local",
+		"remote_alpha_operator.sh recovery-session vault-unseal-existing --ssh-target <user@host> --interactive-tty",
 		"Allowed flags",
 		"--host-local",
-		"Forbidden in P0i",
-		"--ssh-target",
+		"--ssh-target <target>",
+		"--interactive-tty",
+		"Topology rules",
+		"--host-local and --ssh-target are mutually exclusive",
+		"the SSH target must be a single target, not an option or shell command",
+		"Forbidden in P0j",
 		"--execute-reset",
 		"--post-unseal-check",
+		"--keep-staging-on-failure",
 		"--interactive-sudo",
 		"secret-like flags",
 		"equals-form options",
@@ -848,7 +911,7 @@ func TestRemoteAlphaOperatorRecoverySessionRejectsForbiddenFlagsAndUnsafeArgs(t 
 		{
 			name:     "ssh target",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session forbids --ssh-target", "safe/local/print-only/evidence-check plus explicit host-local unseal-only", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session forbids --ssh-target", "safe/local/print-only/evidence-check plus explicit vault-unseal-existing submodes", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "interactive sudo",
@@ -920,24 +983,44 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingRejectsUnsafeArgsB
 		required []string
 	}{
 		{
-			name:     "missing host local",
+			name:     "missing topology",
 			args:     []string{},
-			required: []string{"recovery-session vault-unseal-existing requires --host-local", "Remote Alpha host where Vault is installed and reachable", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-unseal-existing requires --host-local or --ssh-target <target> --interactive-tty", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
-			name:     "ssh target",
+			name:     "missing interactive tty",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session vault-unseal-existing forbids --ssh-target", "host-local unseal-only and non-destructive", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-unseal-existing --ssh-target requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "missing ssh target",
+			args:     []string{"--interactive-tty"},
+			required: []string{"recovery-session vault-unseal-existing --interactive-tty requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "host local plus ssh target",
+			args:     []string{"--host-local", "--ssh-target", "host", "--interactive-tty"},
+			required: []string{"recovery-session vault-unseal-existing requires exactly one topology", "--host-local or --ssh-target <target> --interactive-tty", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "execute reset",
 			args:     []string{"--execute-reset"},
-			required: []string{"recovery-session vault-unseal-existing forbids --execute-reset", "host-local unseal-only and non-destructive", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-unseal-existing forbids --execute-reset", "unseal-only, non-destructive, and does not combine checks", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "post unseal check",
 			args:     []string{"--post-unseal-check"},
-			required: []string{"recovery-session vault-unseal-existing forbids --post-unseal-check", "host-local unseal-only and non-destructive", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-unseal-existing forbids --post-unseal-check", "unseal-only, non-destructive, and does not combine checks", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "unseal only direct flag",
+			args:     []string{"--unseal-only"},
+			required: []string{"recovery-session vault-unseal-existing forbids --unseal-only", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "keep staging",
+			args:     []string{"--keep-staging-on-failure"},
+			required: []string{"recovery-session vault-unseal-existing forbids --keep-staging-on-failure", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "apply",
@@ -979,6 +1062,26 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingRejectsUnsafeArgsB
 			args:     []string{"--host-local", "--host-local"},
 			required: []string{"duplicate option for recovery-session: --host-local", "No recovery-session live helper or IM execution occurred."},
 		},
+		{
+			name:     "duplicate ssh target",
+			args:     []string{"--ssh-target", "a", "--ssh-target", "b", "--interactive-tty"},
+			required: []string{"duplicate option for recovery-session: --ssh-target", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "duplicate interactive tty",
+			args:     []string{"--ssh-target", "host", "--interactive-tty", "--interactive-tty"},
+			required: []string{"duplicate option for recovery-session: --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "ssh target option injection",
+			args:     []string{"--ssh-target", "-oProxyCommand=sh", "--interactive-tty"},
+			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "ssh target shell command",
+			args:     []string{"--ssh-target", "host;echo", "--interactive-tty"},
+			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session", "vault-unseal-existing"}, tc.args...)...)
@@ -1017,6 +1120,220 @@ func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingRejectsSecretLikeA
 			)
 		})
 	}
+}
+
+type fakeRemoteAlphaUnsealHarness struct {
+	localBin   string
+	remoteBin  string
+	remoteRoot string
+	sshLogPath string
+	scpLogPath string
+	rmLogPath  string
+	helperLog  string
+}
+
+func setupFakeRemoteAlphaUnsealHarness(t *testing.T) *fakeRemoteAlphaUnsealHarness {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	h := &fakeRemoteAlphaUnsealHarness{
+		localBin:   filepath.Join(tmpDir, "local-bin"),
+		remoteBin:  filepath.Join(tmpDir, "remote-bin"),
+		remoteRoot: filepath.Join(tmpDir, "remote-root"),
+		sshLogPath: filepath.Join(tmpDir, "ssh.log"),
+		scpLogPath: filepath.Join(tmpDir, "scp.log"),
+		rmLogPath:  filepath.Join(tmpDir, "rm.log"),
+		helperLog:  filepath.Join(tmpDir, "helper.log"),
+	}
+	for _, dir := range []string{h.localBin, h.remoteBin, h.remoteRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+tty=false
+while [[ "${1:-}" == "-tt" ]]; do
+  tty=true
+  shift
+done
+target="${1:-}"
+shift || true
+printf 'tty=%%s target=%%s args=%%s\n' "${tty}" "${target}" "$*" >> %q
+export PATH="${FAKE_REMOTE_BIN}:${PATH}"
+if [[ "${1:-}" == "/bin/bash" && "${2:-}" == "-s" ]]; then
+  shift 2
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  mapped_args=()
+  for arg in "$@"; do
+    if [[ "${arg}" == /* ]]; then
+      mapped_args+=("${FAKE_REMOTE_ROOT}${arg}")
+    else
+      mapped_args+=("${arg}")
+    fi
+  done
+  payload="$(mktemp)"
+  cat >"${payload}"
+  set +e
+  /bin/bash "${payload}" "${mapped_args[@]}"
+  status=$?
+  set -e
+  rm -f -- "${payload}"
+  exit "${status}"
+fi
+if [[ "${1:-}" == "/bin/bash" && "${2:-}" == "-c" ]]; then
+  command_string="${3:-}"
+  remote_prefix="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"
+  mapped_prefix="${FAKE_REMOTE_ROOT}${remote_prefix}"
+  mapped_command="${command_string//${remote_prefix}/${mapped_prefix}}"
+  exec /bin/bash -c "${mapped_command}"
+fi
+if [[ "$#" -eq 1 && "${1:-}" == exec\ /bin/bash\ -c* ]]; then
+  command_string="${1}"
+  remote_prefix="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"
+  mapped_prefix="${FAKE_REMOTE_ROOT}${remote_prefix}"
+  mapped_command="${command_string//${remote_prefix}/${mapped_prefix}}"
+  exec /bin/bash -c "${mapped_command}"
+fi
+echo "unexpected fake ssh invocation: $*" >&2
+exit 64
+`, h.sshLogPath))
+
+	writeExecutable(t, h.localBin, "scp", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -ne 2 ]]; then
+  echo "unexpected fake scp args: $*" >&2
+  exit 64
+fi
+src=$1
+dest=$2
+printf '%%s\t%%s\n' "${src}" "${dest}" >> %q
+if [[ "${src}" == *:* || "${dest}" != *:* ]]; then
+  echo "fake scp supports one local-to-remote helper upload" >&2
+  exit 64
+fi
+remote_path="${dest#*:}"
+mapped_dest="${FAKE_REMOTE_ROOT}${remote_path}"
+mkdir -p -- "$(dirname "${mapped_dest}")"
+cat >"${mapped_dest}" <<'REMOTE_ALPHA_FAKE_UNSEAL_HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "$*" >> %q
+REMOTE_ALPHA_FAKE_UNSEAL_HELPER
+chmod 0700 "${mapped_dest}"
+`, h.scpLogPath, h.helperLog))
+
+	writeExecutable(t, h.remoteBin, "rm", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "$*" >> %q
+exec /bin/rm "$@"
+`, h.rmLogPath))
+
+	return h
+}
+
+func (h *fakeRemoteAlphaUnsealHarness) env() []string {
+	return envWithPath(h.localBin,
+		"FAKE_REMOTE_BIN="+h.remoteBin,
+		"FAKE_REMOTE_ROOT="+h.remoteRoot,
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingNoTTYFailsBeforeStaging(t *testing.T) {
+	h := setupFakeRemoteAlphaUnsealHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "vault-unseal-existing",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected no-TTY failure before staging, got success:\n%s", output)
+	}
+	assertContainsAll(t, "vault-unseal-existing no tty refusal", output,
+		"requires visible local terminal",
+		"no staging or SSH occurred",
+		"No recovery-session live helper or IM execution occurred.",
+	)
+	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
+		t.Fatalf("ssh should not run when local TTY guard fails: %v", err)
+	}
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run when local TTY guard fails: %v", err)
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultUnsealExistingMacSideStagesSingleHelperWithTTYAndCleanup(t *testing.T) {
+	h := setupFakeRemoteAlphaUnsealHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths()...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-unseal-existing",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake unseal route failed: %v\noutput=%s\nssh=%s\nscp=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertContainsAll(t, "Mac-side fake unseal output", output,
+		"Running Mac-side Vault unseal-existing through an explicit interactive SSH TTY.",
+		"Staging only scripts/remote_alpha_reset_disposable_vault.sh and invoking only --unseal-only.",
+		"The operator enters any unseal key directly into the visible SSH/Vault/helper prompt.",
+		"staged helper cleanup was attempted",
+		"Post-unseal evidence checks, IM refresh, support-bundle collection, and workload-auth checks are separate follow-up actions and were not executed here.",
+	)
+
+	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
+	scpLines := strings.Split(scpLog, "\n")
+	if len(scpLines) != 1 {
+		t.Fatalf("expected exactly one staged file upload, got %q", scpLog)
+	}
+	assertContainsAll(t, "fake scp log", scpLog,
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_reset_disposable_vault.sh"),
+	)
+	assertContainsNone(t, "fake scp log", scpLog,
+		"remote_alpha_operator.sh",
+		"scripts/internal",
+		"bundle",
+	)
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty=true"); got != 1 {
+		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	}
+	assertContainsAll(t, "fake ssh log", sshLog,
+		"tty=true target=ds@m75q-test",
+	)
+	assertContainsNone(t, "fake ssh log forbidden capture", sshLog,
+		" tee ",
+		"script ",
+		"transcript",
+	)
+
+	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
+	if helperLog != "--unseal-only" {
+		t.Fatalf("expected staged helper to receive only --unseal-only, got %q", helperLog)
+	}
+	assertContainsNone(t, "fake helper log forbidden modes", helperLog,
+		"--execute-reset",
+		"--post-unseal-check",
+		"workload-auth",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+	)
+
+	rmLog := mustRead(t, h.rmLogPath)
+	assertContainsAll(t, "fake remote cleanup log", rmLog,
+		"execution-substrate-remote-alpha-vault-unseal-existing",
+	)
+	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-vault-unseal-existing")); err == nil && len(entries) > 0 {
+		t.Fatalf("expected remote staged helper directory to be cleaned, found %d entries", len(entries))
+	}
+	assertNoNewPaths(t, "Mac-side fake unseal route", before)
 }
 
 func TestRemoteAlphaOperatorRecoverySessionRejectsDuplicateAndMisplacedFlags(t *testing.T) {
@@ -1469,12 +1786,12 @@ func TestRemoteAlphaOperatorUnknownSubcommandRefuses(t *testing.T) {
 	assertContainsAll(t, "unknown subcommand refusal", output,
 		"unknown subcommand",
 		"definitely-unknown",
-		"not implemented in P0i",
+		"not implemented in P0j",
 		"later audited slice",
 	)
 }
 
-func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
+func TestRemoteAlphaOperatorSourceLimitsP0jDelegationSurface(t *testing.T) {
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	assertContainsAll(t, "operator source", source,
 		"set -euo pipefail",
@@ -1482,8 +1799,12 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 		`SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`,
 		`REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER="${SCRIPT_DIR}/remote_alpha_stage_es_writable_state_readiness_check.sh"`,
 		`REMOTE_ALPHA_VAULT_RESET_HELPER="${SCRIPT_DIR}/remote_alpha_reset_disposable_vault.sh"`,
+		`REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"`,
 		`exec "${REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER}" "${helper_args[@]}"`,
 		`exec "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "--unseal-only"`,
+		`scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"`,
+		`"${helper_path}" --unseal-only`,
+		`ssh -tt "${ssh_target}"`,
 		`es-writable-state-readiness-check)`,
 		`route_es_writable_state_readiness_check ${subcommand_args[@]+"${subcommand_args[@]}"}`,
 		`readiness-session)`,
@@ -1493,6 +1814,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 		`recovery_session ${subcommand_args[@]+"${subcommand_args[@]}"}`,
 		`recovery_session_evidence_check`,
 		`recovery_session_vault_unseal_existing`,
+		`recovery_session_vault_unseal_existing_remote`,
 	)
 	assertContainsNone(t, "operator source forbidden helper routing", source,
 		"scripts/internal/",
@@ -1505,6 +1827,8 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 		"remote_alpha_deploy_es_binaries.sh",
 		"remote_alpha_prepare_es_writable_state_ownership.sh",
 		"remote_alpha_migrate_es_service_user.sh",
+		"remote_alpha_stage_es_service_user",
+		"remote_alpha_stage_es_binaries",
 		"--summary-path",
 		"--summary-output",
 		"operator-summary",
@@ -1531,7 +1855,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 		}
 	}
 
-	unsealStart := strings.Index(source, "recovery_session_vault_unseal_existing() {")
+	unsealStart := strings.Index(source, "recovery_session_vault_unseal_existing_require_command() {")
 	if unsealStart == -1 {
 		t.Fatalf("operator source missing vault-unseal-existing function")
 	}
@@ -1542,8 +1866,12 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 	unsealFunction := source[unsealStart : unsealStart+unsealEnd]
 	assertContainsAll(t, "vault-unseal-existing source", unsealFunction,
 		`exec "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "--unseal-only"`,
+		`scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"`,
+		`"${helper_path}" --unseal-only`,
 		`require_recovery_option_not_seen "$1" "${host_local_seen}"`,
-		`recovery_die "recovery-session vault-unseal-existing requires --host-local`,
+		`require_recovery_option_not_seen "$1" "${ssh_target_seen}"`,
+		`require_recovery_option_not_seen "$1" "${interactive_tty_seen}"`,
+		`recovery_die "recovery-session vault-unseal-existing requires --host-local or --ssh-target`,
 	)
 	assertContainsNone(t, "vault-unseal-existing source forbidden execution surfaces", unsealFunction,
 		`"--execute-reset"`,
@@ -1570,6 +1898,9 @@ func TestRemoteAlphaOperatorSourceLimitsP0iDelegationSurface(t *testing.T) {
 			continue
 		}
 		if liveCommand.MatchString(trimmed) {
+			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) {
+				continue
+			}
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)
 		}
 	}
