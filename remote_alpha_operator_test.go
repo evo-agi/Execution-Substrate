@@ -2837,6 +2837,72 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceIsPri
 	)
 }
 
+func TestRemoteAlphaOperatorP0pBootstrapExecutionContractIsDocsOnly(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	remoteSection := compactDocSection(t, remoteRaw, "### P0p Vault Workload-Auth Bootstrap Execution Contract Prep", "### P0d Interactive Validation Evidence")
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+
+	assertContainsAll(t, "P0p bootstrap execution docs", plans,
+		"P0p stays docs/static-test only.",
+		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
+		"`scripts/remote_alpha_vault_workload_auth_bootstrap.sh`",
+		"`scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`",
+		"prompt-only and operator-owned",
+		"If a proof secret value is required, it must use the same TTY-only prompt posture.",
+		"must not rely on token-bearing `VAULT_TOKEN` environment variables",
+		"`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`",
+		"`execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`",
+		"Future implementation tests for P0p's contract must remain fake/static",
+	)
+	assertContainsAll(t, "P0p bootstrap execution remote docs", remoteSection,
+		"docs/static-test prep only",
+		"Helper strategy:",
+		"`scripts/remote_alpha_vault_workload_auth_bootstrap.sh`",
+		"`scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`",
+		"Prompt and secret model:",
+		"The human remains the operator.",
+		"ES remains a bounded Remote Alpha operator facade/workflow, not a Vault token broker.",
+		"If the future route needs a Vault root token or equivalent bootstrap authority",
+		"If the future route needs a proof secret value",
+		"Execution boundaries:",
+		"must not run a workload-auth check",
+		"must not run Infrastructure Manager refresh",
+		"must not collect support bundles",
+		"must not run CP proof",
+		"must not run runtime identity summary or runtime identity generation",
+		"Summary/evidence behavior:",
+		"`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`",
+		"`execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`",
+		"Allowed future execution flags:",
+		"`--execute-bootstrap`",
+		"Forbidden future execution flags and inputs include:",
+		"`--root-token`",
+		"`--vault-token`",
+		"proof secret value flags",
+		"Future implementation tests:",
+		"fake SSH/SCP",
+		"fake Vault/API command capture",
+	)
+	assertContainsNone(t, "P0p bootstrap execution still absent from operator source", source,
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP",
+		"vault-workload-auth-bootstrap-summary.json",
+		"vault-workload-auth-bootstrap-summary.v1",
+	)
+
+	for _, path := range []string{
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_vault_workload_auth_bootstrap.sh"),
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_vault_workload_auth_bootstrap.sh"),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("P0p must remain docs/static-test only; helper should not exist yet: %s", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+	}
+}
+
 func TestRemoteAlphaOperatorRecoverySessionRejectsDuplicateAndMisplacedFlags(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
