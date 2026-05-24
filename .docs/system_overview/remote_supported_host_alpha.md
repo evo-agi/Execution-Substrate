@@ -1903,7 +1903,8 @@ The P0o plan/inventory text may describe likely post-reset Vault objects/config
 inferred from the existing helper, docs, and tests:
 
 - auth mount: `jwt`
-- JWT auth config with SPIRE JWT validation material and bound issuer
+- JWT auth config with SPIRE JWT validation material selected for the workload
+  trust domain and bound issuer
 - role: `service_execution`
 - `role_type=jwt`
 - `user_claim=sub`
@@ -2014,7 +2015,8 @@ Helper strategy:
 Intended Vault objects/config:
 
 - auth mount `jwt`
-- JWT auth config with SPIRE validation material and bound issuer
+- JWT auth config with SPIRE validation material selected for the workload trust
+  domain and bound issuer
 - role `service_execution`
 - `role_type=jwt`
 - `user_claim=sub`
@@ -2261,7 +2263,11 @@ Secret prompt model:
   `spire_bundle_show_failed`, set
   `operations.spire_jwt_validation_material.status=fail`, and run no Vault
   writes. It must not print raw SPIRE output, raw SPIRE stderr, or bundle
-  contents.
+  contents. When the SPIFFE bundle output is a bundle map, the helper must select
+  JWT validation material from the workload SPIFFE ID trust domain rather than
+  from the first available trust domain. The helper may record only safe
+  source/shape labels, selected trust-domain labels, key counts, and a digest;
+  it must not summarize raw public key material or raw bundle JSON.
 
 Summary-path preparation:
 
@@ -2390,7 +2396,8 @@ Vault API strategy:
 Configured Vault objects/config:
 
 - auth mount `jwt`
-- JWT auth config with SPIRE validation material and bound issuer
+- JWT auth config with SPIRE validation material selected for the workload trust
+  domain and bound issuer
 - role `service_execution`
 - `role_type=jwt`
 - `user_claim=sub`
@@ -2437,8 +2444,8 @@ Summary/evidence behavior:
 - The summary may contain only schema, generated time, operation mode,
   configured-object labels, operation statuses/booleans, safe failure
   phase/class labels, safe prompt/operation-start booleans, safe last/next
-  operation labels, path labels, digests, redaction booleans, and explicit
-  non-claims.
+  operation labels, path labels, source labels, shape labels, counts, digests,
+  redaction booleans, and explicit non-claims.
 - After summary preflight succeeds, failures must write a non-secret
   classification summary when possible: `overall_status=fail`, `failure_phase`,
   `failure_class`, optional sanitized `failure_message_class`,
@@ -2544,6 +2551,9 @@ P0q tests:
   prompt, no proof secret prompt, no fake Vault API call, and a safe failure
   summary with `operations.spire_jwt_validation_material.status=fail`
 - fake bootstrap writes the expected fake Vault objects only
+- fake bootstrap writes the Vault JWT auth config with the expected validation
+  material and bound issuer shape
+- fake workload-auth check JWT claims align with the bootstrap config labels
 - fake successful bootstrap records the summary preflight and config load as
   passed, records SPIRE JWT validation material as passed, and stores only a
   digest instead of raw bundle material
@@ -4538,8 +4548,14 @@ backward-compatible safe triage fields under `auth_smoke`: login failure phase
 `vault_login_http_status`, `vault_login_error_count`,
 `vault_login_error_class`, and `vault_login_raw_error_recorded=false`. The
 helper may also record `auth_smoke.jwt_issuer_verified` as `true`, `false`, or
-`unknown` when it can compare the JWT issuer to the repo-derived bound issuer
-without printing the JWT. The safe classes are:
+`unknown`, `auth_smoke.jwt_issuer_expected_source`,
+`auth_smoke.jwt_issuer_expected_class`, and
+`auth_smoke.jwt_issuer_actual_class` when it can compare the JWT issuer to the
+repo-derived bound issuer without printing the JWT. For an
+`invalid_issuer_or_validation_key` login failure, it may record
+`auth_smoke.vault_login_failure_alignment_hint` as a safe label such as
+`issuer_mismatch`, `validation_key_mismatch_or_rotation`, or
+`issuer_or_key_unknown`. The safe classes are:
 `auth_mount_missing_or_unreachable`, `role_missing_or_rejected`,
 `invalid_jwt`, `invalid_audience`, `invalid_subject`,
 `invalid_issuer_or_validation_key`, `permission_denied`, `vault_api_error`,
@@ -4668,6 +4684,10 @@ Required summary fields for
 - `workload.registration_alpha_only`
 - `auth_smoke.jwt_fetch`
 - `auth_smoke.jwt_issuer_verified`
+- `auth_smoke.jwt_issuer_expected_source`
+- `auth_smoke.jwt_issuer_expected_class`
+- `auth_smoke.jwt_issuer_actual_class`
+- `auth_smoke.vault_login_failure_alignment_hint`
 - `auth_smoke.vault_login`
 - `auth_smoke.token_lookup`
 - `auth_smoke.proof_read`

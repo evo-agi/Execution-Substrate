@@ -482,7 +482,7 @@ recovery_session_vault_workload_auth_bootstrap_plan() {
     "" \
     "Likely post-reset Vault objects/config inferred from helper/docs/tests:" \
     "  auth mount: jwt" \
-    "  JWT auth config: SPIRE JWT validation material and bound issuer" \
+    "  JWT auth config: SPIRE JWT validation material selected for the workload trust domain and bound issuer" \
     "  role: service_execution" \
     "  role_type=jwt" \
     "  user_claim=sub" \
@@ -547,7 +547,7 @@ recovery_session_vault_workload_auth_bootstrap_inventory() {
     "" \
     "likely bootstrap objects to account for later:" \
     "  auth mount jwt" \
-    "  JWT auth config with SPIRE validation material and bound issuer" \
+    "  JWT auth config with SPIRE validation material selected for the workload trust domain and bound issuer" \
     "  role service_execution with role_type=jwt, user_claim=sub, bound_audiences=vault, bound_subject=spiffe://execution.internal/workload" \
     "  policy such as runtime-identity-proof" \
     "  KV v2 proof paths proof-secrets/data/runtime-identity-vault-login and proof-secrets/data/codex-runtime-profile" \

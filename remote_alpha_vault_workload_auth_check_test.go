@@ -150,6 +150,11 @@ func encodeJWTPart(t *testing.T, payload map[string]any) string {
 
 func buildJWT(t *testing.T, subject string, audience []string) string {
 	t.Helper()
+	return buildJWTWithIssuer(t, subject, audience, "spiffe://execution.internal")
+}
+
+func buildJWTWithIssuer(t *testing.T, subject string, audience []string, issuer string) string {
+	t.Helper()
 	header := encodeJWTPart(t, map[string]any{
 		"alg": "none",
 		"typ": "JWT",
@@ -157,7 +162,7 @@ func buildJWT(t *testing.T, subject string, audience []string) string {
 	claims := encodeJWTPart(t, map[string]any{
 		"sub": subject,
 		"aud": audience,
-		"iss": "spiffe://execution.internal",
+		"iss": issuer,
 	})
 	return header + "." + claims + ".signature"
 }
@@ -496,15 +501,18 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 
 	authSmoke := jsonMap(t, summary["auth_smoke"])
 	for field, want := range map[string]any{
-		"jwt_fetch":             "pass",
-		"vault_login":           "pass",
-		"token_lookup":          "pass",
-		"proof_read":            "pass",
-		"proof_runtime_secret":  "pass",
-		"token_revoked":         "pass",
-		"jwt_audience_verified": true,
-		"jwt_subject_verified":  true,
-		"jwt_issuer_verified":   true,
+		"jwt_fetch":                  "pass",
+		"vault_login":                "pass",
+		"token_lookup":               "pass",
+		"proof_read":                 "pass",
+		"proof_runtime_secret":       "pass",
+		"token_revoked":              "pass",
+		"jwt_audience_verified":      true,
+		"jwt_subject_verified":       true,
+		"jwt_issuer_verified":        true,
+		"jwt_issuer_expected_source": "repo_bound_issuer_from_trust_domain",
+		"jwt_issuer_expected_class":  "spiffe_trust_domain",
+		"jwt_issuer_actual_class":    "matches_expected",
 	} {
 		if got := authSmoke[field]; got != want {
 			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
@@ -668,6 +676,9 @@ func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFa
 		"jwt_audience_verified":          true,
 		"jwt_subject_verified":           true,
 		"jwt_issuer_verified":            true,
+		"jwt_issuer_expected_source":     "repo_bound_issuer_from_trust_domain",
+		"jwt_issuer_expected_class":      "spiffe_trust_domain",
+		"jwt_issuer_actual_class":        "matches_expected",
 		"vault_login_failure_phase":      "vault_login",
 		"vault_login_failure_class":      "permission_denied",
 		"vault_login_http_status":        float64(http.StatusForbidden),
@@ -715,6 +726,7 @@ func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *te
 		status     int
 		payload    map[string]any
 		wantClass  string
+		wantHint   string
 		rawSnippet string
 	}{
 		{
@@ -730,6 +742,14 @@ func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *te
 			payload:    map[string]any{"errors": []string{"permission denied"}},
 			wantClass:  "permission_denied",
 			rawSnippet: "permission denied",
+		},
+		{
+			name:       "400 invalid issuer or validation key",
+			status:     http.StatusBadRequest,
+			payload:    map[string]any{"errors": []string{"error validating token: invalid issuer or validation key"}},
+			wantClass:  "invalid_issuer_or_validation_key",
+			wantHint:   "validation_key_mismatch_or_rotation",
+			rawSnippet: "error validating token: invalid issuer or validation key",
 		},
 		{
 			name:       "500 vault api error",
@@ -762,6 +782,9 @@ func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *te
 				"jwt_audience_verified":          true,
 				"jwt_subject_verified":           true,
 				"jwt_issuer_verified":            true,
+				"jwt_issuer_expected_source":     "repo_bound_issuer_from_trust_domain",
+				"jwt_issuer_expected_class":      "spiffe_trust_domain",
+				"jwt_issuer_actual_class":        "matches_expected",
 				"vault_login":                    "fail",
 				"vault_login_failure_phase":      "vault_login",
 				"vault_login_failure_class":      tc.wantClass,
@@ -776,6 +799,11 @@ func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *te
 			} {
 				if got := authSmoke[field]; got != want {
 					t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+				}
+			}
+			if tc.wantHint != "" {
+				if got := authSmoke["vault_login_failure_alignment_hint"]; got != tc.wantHint {
+					t.Fatalf("unexpected vault login failure alignment hint %v want %v", got, tc.wantHint)
 				}
 			}
 
@@ -795,6 +823,60 @@ func TestRemoteAlphaVaultWorkloadAuthCheckClassifiesVaultLoginHTTPFailures(t *te
 				t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
 			}
 		})
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckRecordsSafeIssuerMismatchHint(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWTWithIssuer(t, "spiffe://execution.internal/workload", []string{"vault"}, "https://issuer.example.invalid")
+	server, state, caBundlePEM := startFakeVaultWithLoginFailure(t, jwt, http.StatusBadRequest, map[string]any{
+		"errors": []string{"invalid issuer or validation key"},
+	}, "")
+
+	summary, summaryText, output, err := runWorkloadAuthCheckForFakeVault(t, jwt, server.URL, caBundlePEM)
+	if err == nil {
+		t.Fatalf("expected issuer mismatch login failure, got success\n%s", output)
+	}
+
+	authSmoke := jsonMap(t, summary["auth_smoke"])
+	for field, want := range map[string]any{
+		"jwt_fetch":                          "pass",
+		"jwt_audience_verified":              true,
+		"jwt_subject_verified":               true,
+		"jwt_issuer_verified":                false,
+		"jwt_issuer_expected_source":         "repo_bound_issuer_from_trust_domain",
+		"jwt_issuer_expected_class":          "spiffe_trust_domain",
+		"jwt_issuer_actual_class":            "https_url",
+		"vault_login":                        "fail",
+		"vault_login_failure_class":          "invalid_issuer_or_validation_key",
+		"vault_login_failure_alignment_hint": "issuer_mismatch",
+		"vault_login_raw_error_recorded":     false,
+		"token_lookup":                       "not_exercised",
+		"proof_read":                         "not_exercised",
+		"proof_runtime_secret":               "not_exercised",
+		"token_revoked":                      "not_exercised",
+	} {
+		if got := authSmoke[field]; got != want {
+			t.Fatalf("unexpected auth smoke %s=%v want %v", field, got, want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		jwt,
+		"issuer.example.invalid",
+		"invalid issuer or validation key",
+		state.clientToken,
+	} {
+		if strings.Contains(summaryText, forbidden) {
+			t.Fatalf("summary unexpectedly contained raw issuer/JWT/Vault material %q", forbidden)
+		}
+	}
+	if state.lookupCalls != 0 {
+		t.Fatalf("unexpected lookup calls %d", state.lookupCalls)
+	}
+	if state.revokeCalls != 0 {
+		t.Fatalf("unexpected revoke calls %d", state.revokeCalls)
 	}
 }
 
@@ -1008,6 +1090,43 @@ func TestRemoteAlphaVaultValidateWorkloadZoneConfigRejectsMismatchedAudience(t *
 	}
 	if message := fmt.Sprint(payload["validation_error"]); !strings.Contains(message, "jwt_audience") {
 		t.Fatalf("unexpected validation error %q", message)
+	}
+}
+
+func TestRemoteAlphaVaultWorkloadAuthCheckJWTClaimsAlignWithBootstrapConfig(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	output, err := runSourcedHelper(t, os.Environ(), fmt.Sprintf(
+		"printf '%%s' %q | remote_alpha_vault_jwt_metadata %q %q %q %q",
+		jwt,
+		"spiffe://execution.internal/workload",
+		"vault",
+		"spiffe://execution.internal",
+		"repo_bound_issuer_from_trust_domain",
+	))
+	if err != nil {
+		t.Fatalf("jwt metadata helper failed: %v\n%s", err, output)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(output, &payload); err != nil {
+		t.Fatalf("unmarshal jwt metadata output: %v\n%s", err, output)
+	}
+	for field, want := range map[string]any{
+		"status":                    "pass",
+		"subject_matches_expected":  true,
+		"audience_matches_expected": true,
+		"issuer_matches_expected":   true,
+		"issuer_expected_source":    "repo_bound_issuer_from_trust_domain",
+		"issuer_expected_class":     "spiffe_trust_domain",
+		"issuer_actual_class":       "matches_expected",
+	} {
+		if got := payload[field]; got != want {
+			t.Fatalf("unexpected jwt metadata %s=%#v want %#v", field, got, want)
+		}
+	}
+	if strings.Contains(string(output), jwt) {
+		t.Fatal("jwt metadata output unexpectedly contained JWT material")
 	}
 }
 

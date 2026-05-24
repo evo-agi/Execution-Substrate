@@ -183,6 +183,17 @@ PROOF_RUNTIME_SECRET_FIELD = "api_key"
 PROOF_READ_FIELD = "message"
 
 
+def trust_domain_from_spiffe_id(value):
+    prefix = "spiffe://"
+    text = str(value or "").strip()
+    if not text.startswith(prefix):
+        return ""
+    return text[len(prefix) :].split("/", 1)[0].strip()
+
+
+WORKLOAD_TRUST_DOMAIN = trust_domain_from_spiffe_id(WORKLOAD_SUBJECT) or "unknown"
+
+
 def utc_now():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -205,6 +216,7 @@ summary = {
         "workload_zone_config_path": str(CONFIG_PATH),
         "bound_issuer": BOUND_ISSUER,
         "bound_subject": WORKLOAD_SUBJECT,
+        "validation_trust_domain": WORKLOAD_TRUST_DOMAIN,
         "bound_audiences": [AUDIENCE],
     },
     "operations": {},
@@ -481,6 +493,41 @@ def rsa_public_key_pem(n_b64, e_b64):
     return "\n".join(lines) + "\n"
 
 
+def spire_bundle_validation_keys(payload):
+    trust_domains = payload.get("trust_domains")
+    if isinstance(trust_domains, dict):
+        for label in (WORKLOAD_TRUST_DOMAIN, f"spiffe://{WORKLOAD_TRUST_DOMAIN}"):
+            bundle = trust_domains.get(label)
+            if not isinstance(bundle, dict):
+                continue
+            keys = bundle.get("keys")
+            if not isinstance(keys, list):
+                raise_failure(
+                    "jwt_auth_config",
+                    "invalid_response",
+                    operation="spire_jwt_validation_material",
+                    message_class="jwt_validation_trust_domain_missing_keys",
+                )
+            return keys, "spiffe_bundle_map_workload_trust_domain", label, len(trust_domains)
+        raise_failure(
+            "jwt_auth_config",
+            "invalid_response",
+            operation="spire_jwt_validation_material",
+            message_class="jwt_validation_trust_domain_missing",
+        )
+
+    keys = payload.get("keys")
+    if isinstance(keys, list):
+        return keys, "spiffe_bundle_direct_workload_trust_domain", WORKLOAD_TRUST_DOMAIN, 1
+
+    raise_failure(
+        "jwt_auth_config",
+        "invalid_response",
+        operation="spire_jwt_validation_material",
+        message_class="spire_bundle_missing_keys",
+    )
+
+
 def extract_jwt_validation_pubkey():
     set_next_operation("jwt_auth_config")
     try:
@@ -499,28 +546,32 @@ def extract_jwt_validation_pubkey():
         payload = json.loads(proc.stdout)
     except Exception:
         raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="spire_bundle_json_invalid")
+    if not isinstance(payload, dict):
+        raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="spire_bundle_json_not_object")
 
-    candidates = []
-    if isinstance(payload.get("keys"), list):
-        candidates.extend(payload["keys"])
-    trust_domains = payload.get("trust_domains")
-    if isinstance(trust_domains, dict):
-        for bundle in trust_domains.values():
-            if isinstance(bundle, dict) and isinstance(bundle.get("keys"), list):
-                candidates.extend(bundle["keys"])
-
+    candidates, source_label, selected_trust_domain, trust_domain_count = spire_bundle_validation_keys(payload)
+    jwt_svid_rsa_keys = []
     for key in candidates:
         if not isinstance(key, dict):
             continue
         if key.get("use") == "jwt-svid" and key.get("kty") == "RSA" and key.get("n") and key.get("e"):
-            pem = rsa_public_key_pem(str(key["n"]), str(key["e"]))
-            set_status(
-                "spire_jwt_validation_material",
-                "pass",
-                source="spire-server bundle show -format spiffe",
-                public_key_digest="sha256:" + hashlib.sha256(pem.encode("utf-8")).hexdigest(),
-            )
-            return pem
+            jwt_svid_rsa_keys.append(key)
+    if jwt_svid_rsa_keys:
+        key = jwt_svid_rsa_keys[0]
+        pem = rsa_public_key_pem(str(key["n"]), str(key["e"]))
+        set_status(
+            "spire_jwt_validation_material",
+            "pass",
+            source="spire-server bundle show -format spiffe",
+            validation_material_source=source_label,
+            selected_trust_domain=selected_trust_domain,
+            trust_domain_count=trust_domain_count,
+            key_count=len(candidates),
+            jwt_svid_rsa_key_count=len(jwt_svid_rsa_keys),
+            vault_jwt_config_shape="jwt_validation_pubkeys_array_pem_bound_issuer",
+            public_key_digest="sha256:" + hashlib.sha256(pem.encode("utf-8")).hexdigest(),
+        )
+        return pem
     raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="no_jwt_svid_rsa_key")
 
 
@@ -645,7 +696,14 @@ def configure_jwt(opener, token, address, validation_pubkey):
             {"jwt_validation_pubkeys": [validation_pubkey], "bound_issuer": BOUND_ISSUER},
             allowed_statuses=(200, 204),
         )
-        set_status(phase, "pass", auth_mount=AUTH_MOUNT, bound_issuer=BOUND_ISSUER)
+        set_status(
+            phase,
+            "pass",
+            auth_mount=AUTH_MOUNT,
+            bound_issuer=BOUND_ISSUER,
+            validation_material_field="jwt_validation_pubkeys",
+            vault_jwt_config_shape="jwt_validation_pubkeys_array_pem_bound_issuer",
+        )
     except Exception as exc:
         fail_from_exception(phase, exc)
 

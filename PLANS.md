@@ -451,7 +451,8 @@ production/deployment/reconciliation architecture.
 A bounded bugfix/self-audit refinement may extend the same v1 workload-auth
 summary with backward-compatible, safe Vault JWT login failure classification
 when `auth_smoke.vault_login=fail`. The helper may record only class labels,
-HTTP status, error-string count, a `vault_login` failure phase, and
+HTTP status, error-string count, a `vault_login` failure phase, safe JWT issuer
+expected-source/class labels, safe JWT issuer actual-class labels, and
 `auth_smoke.vault_login_raw_error_recorded=false`; it must not print or persist
 the JWT-SVID, Vault client token, root token, unseal key, proof secret value,
 raw Vault login response body, raw HTTP headers, Authorization header, stack
@@ -485,7 +486,8 @@ missing unless a later reviewed secret-safe check proves it.
 
 The P0o plan/inventory output may describe likely post-reset bootstrap objects
 inferred from the existing helper, docs, and tests: auth mount `jwt`; JWT auth
-config with SPIRE JWT validation material and bound issuer; role
+config with SPIRE JWT validation material selected for the workload trust domain
+and bound issuer; role
 `service_execution` with `role_type=jwt`, `user_claim=sub`,
 `bound_audiences=vault`, and
 `bound_subject=spiffe://execution.internal/workload`; a policy such as
@@ -561,7 +563,8 @@ root, and attempt staged-helper cleanup by default. It must not offer
 The intended Vault objects/config for that later execution route are exactly
 the documented workload-auth bootstrap objects and names, with no secret values
 in docs, args, logs, summaries, or output: auth mount `jwt`; JWT auth config
-with SPIRE validation material and bound issuer; role `service_execution` with
+with SPIRE validation material selected for the workload trust domain and bound
+issuer; role `service_execution` with
 `role_type=jwt`, `user_claim=sub`, `bound_audiences=vault`, and
 `bound_subject=spiffe://execution.internal/workload`; policy
 `runtime-identity-proof`; KV v2 proof paths
@@ -732,9 +735,11 @@ while obtaining SPIRE JWT validation material from `spire-server bundle show
 therefore treat the fixed SPIRE bundle-read command as a pre-prompt preflight:
 after summary and config preflights/load succeed, and before Vault bootstrap
 authority prompts, proof secret prompts, or Vault writes, it obtains only the
-public JWT validation material, records `operations.spire_jwt_validation_material`
-as pass or fail, records only a digest on success, and records only safe
-phase/class labels such as `failure_phase=jwt_auth_config`,
+public JWT validation material for the workload SPIFFE ID trust domain, records
+`operations.spire_jwt_validation_material` as pass or fail, records only safe
+source/shape labels, key counts, selected trust-domain labels, and a digest on
+success, and records only safe phase/class labels such as
+`failure_phase=jwt_auth_config`,
 `failure_class=invalid_response`, and
 `failure_message_class=spire_bundle_show_failed` on failure. It must not print
 raw SPIRE stderr/stdout, copy bundle contents to Mac `.out`, include bundle
@@ -798,8 +803,9 @@ passes, the helper must write a safe failure summary with `failure_phase` such a
 contents.
 
 P0q's helper may use an in-process Vault API client for the documented objects:
-auth mount `jwt`; JWT auth config with SPIRE validation material and bound
-issuer; role `service_execution` with `role_type=jwt`, `user_claim=sub`,
+auth mount `jwt`; JWT auth config with SPIRE validation material selected for
+the workload trust domain and bound issuer; role `service_execution` with
+`role_type=jwt`, `user_claim=sub`,
 `bound_audiences=vault`, and
 `bound_subject=spiffe://execution.internal/workload`; policy
 `runtime-identity-proof`; KV v2 proof paths
@@ -817,7 +823,8 @@ The summary is evidence/projection only, never authority and not an IM input.
 It may contain only schema, generated time, operation mode, configured-object
 labels, operation statuses/booleans, safe failure phase/class labels, safe
 prompt/operation-start booleans, safe last/next operation labels, path labels,
-digests, redaction booleans, and explicit non-claims. After summary preflight
+source labels, shape labels, counts, digests, redaction booleans, and explicit
+non-claims. After summary preflight
 succeeds, failures must write a non-secret classification summary when possible:
 `overall_status=fail`, `failure_phase`, `failure_class`, optional sanitized
 `failure_message_class`, `secret_prompts_started`, `vault_operations_started`,
@@ -847,7 +854,9 @@ command.
 P0q validation remains fake/static only. Tests must cover helper help and
 secret posture, secret CLI/env rejection, fake Vault API capture showing
 bootstrap authority is not passed by argv/env/file, proof secret value redaction
-from printed output and summary, expected fake Vault objects, summary
+from printed output and summary, expected fake Vault objects, exact Vault JWT
+auth config validation-key/issuer shape, workload-auth check JWT claim alignment
+with the bootstrap config labels, summary
 writability preflight before prompts and Vault writes, config readability
 preflight before prompts and Vault writes, summary schema and redaction scans,
 redaction checks before final summary rename, no workload-auth

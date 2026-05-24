@@ -382,8 +382,9 @@ remote_alpha_vault_jwt_metadata() {
   local expected_spiffe_id=$1
   local expected_audience=$2
   local expected_issuer=${3:-}
+  local expected_issuer_source=${4:-unknown}
 
-  python3 /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" "${expected_issuer}" 3<<'PY'
+  python3 /dev/fd/3 "${expected_spiffe_id}" "${expected_audience}" "${expected_issuer}" "${expected_issuer_source}" 3<<'PY'
 import base64
 import json
 import sys
@@ -391,7 +392,26 @@ import sys
 expected_spiffe_id = sys.argv[1].strip()
 expected_audience = sys.argv[2].strip()
 expected_issuer = sys.argv[3].strip()
+expected_issuer_source = sys.argv[4].strip() or "unknown"
 token = sys.stdin.read().strip()
+
+
+def issuer_class(value, expected=""):
+    text = str(value or "").strip()
+    if not text:
+        return "empty"
+    if expected and text == expected:
+        return "matches_expected"
+    if text.startswith("spiffe://"):
+        rest = text[len("spiffe://") :]
+        if "/" in rest.strip("/"):
+            return "spiffe_id"
+        return "spiffe_trust_domain"
+    if text.startswith("https://"):
+        return "https_url"
+    if text.startswith("http://"):
+        return "http_url"
+    return "other_nonempty"
 
 result = {
     "status": "fail",
@@ -400,6 +420,9 @@ result = {
     "audience_matches_expected": False,
     "subject_matches_expected": False,
     "issuer_matches_expected": None,
+    "issuer_expected_source": expected_issuer_source,
+    "issuer_expected_class": issuer_class(expected_issuer) if expected_issuer else "unknown",
+    "issuer_actual_class": "unknown",
     "error": "",
 }
 
@@ -427,6 +450,7 @@ issuer = str(payload.get("iss") or "").strip()
 
 result["subject"] = subject
 result["audience"] = audience
+result["issuer_actual_class"] = issuer_class(issuer, expected_issuer)
 result["subject_matches_expected"] = subject == expected_spiffe_id
 result["audience_matches_expected"] = expected_audience in audience
 if expected_issuer:
@@ -1342,6 +1366,9 @@ auth_smoke = {
     "jwt_subject_verified": bool(jwt_meta.get("subject_matches_expected")),
     "jwt_audience_verified": bool(jwt_meta.get("audience_matches_expected")),
     "jwt_issuer_verified": jwt_issuer_verified,
+    "jwt_issuer_expected_source": jwt_meta.get("issuer_expected_source") or "unknown",
+    "jwt_issuer_expected_class": jwt_meta.get("issuer_expected_class") or "unknown",
+    "jwt_issuer_actual_class": jwt_meta.get("issuer_actual_class") or "unknown",
 }
 
 if auth_smoke["vault_login"] == "fail":
@@ -1355,6 +1382,13 @@ if auth_smoke["vault_login"] == "fail":
     auth_smoke["vault_login_error_count"] = optional_int(login_meta.get("error_count")) or 0
     auth_smoke["vault_login_error_class"] = error_class
     auth_smoke["vault_login_raw_error_recorded"] = bool(login_meta.get("raw_error_recorded"))
+    if failure_class == "invalid_issuer_or_validation_key":
+        if jwt_issuer_verified is False:
+            auth_smoke["vault_login_failure_alignment_hint"] = "issuer_mismatch"
+        elif jwt_issuer_verified is True:
+            auth_smoke["vault_login_failure_alignment_hint"] = "validation_key_mismatch_or_rotation"
+        else:
+            auth_smoke["vault_login_failure_alignment_hint"] = "issuer_or_key_unknown"
 
 lookup_ok = lookup_meta.get("status") == "pass" if token_lookup_required else lookup_meta.get("status") in {"pass", "not_exercised"}
 proof_ok = proof_status == "pass" if proof_read_required else proof_status in {"pass", "not_exercised"}
@@ -1493,6 +1527,7 @@ remote_alpha_vault_workload_auth_check_main() {
   local ca_bundle_path=""
   local jwt_value=""
   local expected_jwt_issuer=""
+  local expected_jwt_issuer_source="unknown"
   local vault_login_raw=""
   local vault_token=""
   local listener_port=""
@@ -1593,6 +1628,7 @@ remote_alpha_vault_workload_auth_check_main() {
   fi
   if [[ "${REMOTE_ALPHA_TRUST_DOMAIN}" != "unknown" ]]; then
     expected_jwt_issuer="spiffe://${REMOTE_ALPHA_TRUST_DOMAIN}"
+    expected_jwt_issuer_source="repo_bound_issuer_from_trust_domain"
   fi
   export REMOTE_ALPHA_SELECTORS_JSON
   REMOTE_ALPHA_SELECTORS_JSON="$(remote_alpha_vault_registration_selectors_json)"
@@ -1605,13 +1641,14 @@ remote_alpha_vault_workload_auth_check_main() {
   echo '{"status":"not_exercised","error":"token revoke not attempted"}' >"${revoke_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"token lookup not attempted"}' >"${lookup_meta_path}"
   echo '{"status":"not_exercised","policy_names":[],"token_ttl_seconds":null,"error":"vault login not attempted"}' >"${login_meta_path}"
-  echo '{"status":"fail","subject":"","audience":[],"audience_matches_expected":false,"subject_matches_expected":false,"issuer_matches_expected":null,"error":"jwt fetch not attempted"}' >"${jwt_meta_path}"
+  echo '{"status":"fail","subject":"","audience":[],"audience_matches_expected":false,"subject_matches_expected":false,"issuer_matches_expected":null,"issuer_expected_source":"unknown","issuer_expected_class":"unknown","issuer_actual_class":"unknown","error":"jwt fetch not attempted"}' >"${jwt_meta_path}"
 
   if jwt_value="$(remote_alpha_vault_extract_first_jwt 2>/dev/null)"; then
     printf '%s' "${jwt_value}" | remote_alpha_vault_jwt_metadata \
       "${REMOTE_ALPHA_WORKLOAD_SPIFFE_ID}" \
       "${REMOTE_ALPHA_VAULT_AUDIENCE}" \
-      "${expected_jwt_issuer}" >"${jwt_meta_path}"
+      "${expected_jwt_issuer}" \
+      "${expected_jwt_issuer_source}" >"${jwt_meta_path}"
   fi
   if [[ "$(remote_alpha_vault_json_field "${jwt_meta_path}" "status" 2>/dev/null || true)" != "pass" ]]; then
     overall_ok=false

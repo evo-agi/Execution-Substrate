@@ -1,8 +1,14 @@
 package executionsubstrate_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,7 +186,38 @@ func startFailingFakeBootstrapVault(t *testing.T, expectedToken, failPath string
 	return server, state, encodeCertificatePEM(t, server.Certificate())
 }
 
-func setupFakeBootstrapSpireServer(t *testing.T, dir string) string {
+type fakeSpireJWTValidationKey struct {
+	N   string
+	E   string
+	PEM string
+}
+
+func generateFakeSpireJWTValidationKey(t *testing.T) fakeSpireJWTValidationKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fake SPIRE JWT validation key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal fake SPIRE JWT validation public key: %v", err)
+	}
+	return fakeSpireJWTValidationKey{
+		N:   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()),
+		PEM: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
+	}
+}
+
+func fakeSpireJWTValidationBundle(keys ...fakeSpireJWTValidationKey) string {
+	entries := make([]string, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, fmt.Sprintf(`{"kty":"RSA","use":"jwt-svid","n":%q,"e":%q}`, key.N, key.E))
+	}
+	return fmt.Sprintf(`{"keys":[%s]}`, strings.Join(entries, ","))
+}
+
+func setupFakeBootstrapSpireServerWithBundle(t *testing.T, dir string, bundleJSON string) string {
 	t.Helper()
 	logPath := filepath.Join(dir, "spire-server.log")
 	writeExecutable(t, dir, "spire-server", fmt.Sprintf(`#!/usr/bin/env bash
@@ -188,10 +225,16 @@ set -euo pipefail
 printf 'args=%%s\n' "$*" >> %q
 env | sort | sed -n '/TOKEN/p;/SECRET/p;/PASSWORD/p' >> %q
 cat <<'JSON'
-{"keys":[{"kty":"RSA","use":"jwt-svid","n":"AQAB","e":"AQAB"}]}
+%s
 JSON
-`, logPath, logPath))
+`, logPath, logPath, bundleJSON))
 	return logPath
+}
+
+func setupFakeBootstrapSpireServer(t *testing.T, dir string) string {
+	t.Helper()
+	key := generateFakeSpireJWTValidationKey(t)
+	return setupFakeBootstrapSpireServerWithBundle(t, dir, fakeSpireJWTValidationBundle(key))
 }
 
 func assertBootstrapSummaryRedactionScanPasses(t *testing.T, summaryPath string, secretValues ...string) {
@@ -852,6 +895,30 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		"unseal",
 	)
 
+	jwtConfigRequest := findFakeBootstrapRequest(t, state.requests, "POST", "/v1/auth/jwt/config")
+	if got := jwtConfigRequest.Body["bound_issuer"]; got != "spiffe://execution.internal" {
+		t.Fatalf("expected bound_issuer spiffe://execution.internal, got %#v", got)
+	}
+	validationKeys, ok := jwtConfigRequest.Body["jwt_validation_pubkeys"].([]any)
+	if !ok || len(validationKeys) != 1 {
+		t.Fatalf("expected one jwt_validation_pubkeys entry, got %#v", jwtConfigRequest.Body["jwt_validation_pubkeys"])
+	}
+	validationPEM, ok := validationKeys[0].(string)
+	if !ok || !strings.Contains(validationPEM, "-----BEGIN PUBLIC KEY-----") {
+		t.Fatalf("expected PEM public key validation material, got %#v", validationKeys[0])
+	}
+	block, _ := pem.Decode([]byte(validationPEM))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		t.Fatalf("expected parseable PUBLIC KEY PEM, got block %#v", block)
+	}
+	parsedKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse validation public key: %v", err)
+	}
+	if _, ok := parsedKey.(*rsa.PublicKey); !ok {
+		t.Fatalf("expected RSA validation public key, got %T", parsedKey)
+	}
+
 	roleRequest := findFakeBootstrapRequest(t, state.requests, "POST", "/v1/auth/jwt/role/service_execution")
 	if got := roleRequest.Body["role_type"]; got != "jwt" {
 		t.Fatalf("expected role_type jwt, got %#v", got)
@@ -903,6 +970,13 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 	if !ok || spireMaterial["status"] != "pass" || spireMaterial["public_key_digest"] == "" {
 		t.Fatalf("expected SPIRE JWT validation material preflight pass with digest only, got %#v", operations["spire_jwt_validation_material"])
 	}
+	if got := spireMaterial["vault_jwt_config_shape"]; got != "jwt_validation_pubkeys_array_pem_bound_issuer" {
+		t.Fatalf("expected safe Vault JWT config shape label, got %#v", got)
+	}
+	jwtAuthConfig, ok := operations["jwt_auth_config"].(map[string]any)
+	if !ok || jwtAuthConfig["validation_material_field"] != "jwt_validation_pubkeys" || jwtAuthConfig["vault_jwt_config_shape"] != "jwt_validation_pubkeys_array_pem_bound_issuer" {
+		t.Fatalf("expected jwt auth config safe shape labels, got %#v", operations["jwt_auth_config"])
+	}
 	redaction, ok := summary["redaction"].(map[string]any)
 	if !ok || redaction["root_token_recorded"] != false || redaction["proof_secret_value_recorded"] != false {
 		t.Fatalf("unexpected redaction block %#v", summary["redaction"])
@@ -938,6 +1012,81 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndS
 		proofSecret,
 		"VAULT_TOKEN",
 	)
+}
+
+func TestRemoteAlphaVaultWorkloadAuthBootstrapSelectsValidationKeyForWorkloadTrustDomain(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	foreignKey := generateFakeSpireJWTValidationKey(t)
+	localKey := generateFakeSpireJWTValidationKey(t)
+	bundleJSON := fmt.Sprintf(`{"trust_domains":{"foreign.internal":{"keys":[{"kty":"RSA","use":"jwt-svid","n":%q,"e":%q}]},"execution.internal":{"keys":[{"kty":"RSA","use":"jwt-svid","n":%q,"e":%q}]}}}`,
+		foreignKey.N,
+		foreignKey.E,
+		localKey.N,
+		localKey.E,
+	)
+	setupFakeBootstrapSpireServerWithBundle(t, fakeBin, bundleJSON)
+
+	rootToken := "root-token-for-trust-domain-selection"
+	proofSecret := "proof-value-for-trust-domain-selection"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	summaryPath := filepath.Join(tmpDir, "summary", "vault-workload-auth-bootstrap-summary.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+	output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+		rootToken+"\n"+proofSecret+"\n",
+	)
+	if err != nil {
+		t.Fatalf("bootstrap helper fake run failed: %v\noutput=%s\nsummary=%s", err, output, readIfExists(summaryPath))
+	}
+
+	jwtConfigRequest := findFakeBootstrapRequest(t, state.requests, "POST", "/v1/auth/jwt/config")
+	validationKeys, ok := jwtConfigRequest.Body["jwt_validation_pubkeys"].([]any)
+	if !ok || len(validationKeys) != 1 {
+		t.Fatalf("expected one jwt_validation_pubkeys entry, got %#v", jwtConfigRequest.Body["jwt_validation_pubkeys"])
+	}
+	if got := validationKeys[0]; got != localKey.PEM {
+		t.Fatalf("expected local trust-domain validation key in Vault config, got %#v", got)
+	}
+	if got := jwtConfigRequest.Body["bound_issuer"]; got != "spiffe://execution.internal" {
+		t.Fatalf("expected bound issuer to stay repo-derived, got %#v", got)
+	}
+
+	summaryRaw := mustRead(t, summaryPath)
+	assertContainsNone(t, "bootstrap trust-domain selection summary forbidden material", summaryRaw,
+		localKey.PEM,
+		foreignKey.PEM,
+		localKey.N,
+		foreignKey.N,
+		rootToken,
+		proofSecret,
+	)
+	summary := readJSONFile(t, summaryPath)
+	operations := jsonMap(t, summary["operations"])
+	spireMaterial := jsonMap(t, operations["spire_jwt_validation_material"])
+	for field, want := range map[string]any{
+		"validation_material_source": "spiffe_bundle_map_workload_trust_domain",
+		"selected_trust_domain":      "execution.internal",
+		"trust_domain_count":         float64(2),
+		"key_count":                  float64(1),
+		"jwt_svid_rsa_key_count":     float64(1),
+		"vault_jwt_config_shape":     "jwt_validation_pubkeys_array_pem_bound_issuer",
+	} {
+		if got := spireMaterial[field]; got != want {
+			t.Fatalf("unexpected spire material diagnostic %s=%#v want %#v", field, got, want)
+		}
+	}
+	if digest := fmt.Sprint(spireMaterial["public_key_digest"]); !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("expected safe public key digest, got %q", digest)
+	}
 }
 
 func TestRemoteAlphaVaultWorkloadAuthBootstrapSourceKeepsRedactionBeforeFinalSummaryMove(t *testing.T) {
