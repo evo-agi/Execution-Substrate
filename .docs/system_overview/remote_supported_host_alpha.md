@@ -2328,16 +2328,30 @@ SPIRE bundle-read preparation:
 - Because this repo does not define a SPIRE-server-socket-specific group
   ownership model for this recovery route, the bounded preparation policy is
   fixed-path user ACLs when needed: discard-output probe the exact bundle-read
-  command first; if it already succeeds, make no permission change; otherwise
-  require `spire-server` to exist, require
-  `/run/spire/server/private/api.sock` to exist and be a socket, require
-  `setfacl`, use only an explicit operator-authorized OS sudo prompt through
-  the visible SSH TTY, apply execute ACLs only to `/run/spire`,
-  `/run/spire/server`, and `/run/spire/server/private` when needed, and apply a
-  read/write ACL only to `/run/spire/server/private/api.sock` for the helper
-  user. The route must not world-read or world-write the socket, chown broad
-  `/run` directories, grant access to workloads, add generic command execution,
-  print bundle contents, or copy bundle contents to Mac `.out`.
+  command first; if it already succeeds, classify the path as
+  `spire_socket_present_accessible` and make no permission change. Otherwise
+  require `spire-server` to exist, failing with
+  `spire_server_command_missing` when absent; if systemd service state is
+  available and `spire-server` is not active, fail with
+  `spire_server_inactive_or_unknown`.
+  The route then uses only the explicit operator-authorized OS sudo prompt
+  through the visible SSH TTY to inspect the fixed parents and socket before
+  classifying absence, so helper-user traversal denial under `/run/spire/server`
+  is not mislabeled as a missing parent. If sudo-visible inspection shows a
+  missing fixed parent, missing socket, or wrong socket type, fail with
+  `spire_socket_parent_missing`, `spire_socket_missing`, or
+  `spire_socket_not_socket`; do not create SPIRE parents or sockets and do not
+  restart or reconfigure SPIRE. If sudo-visible inspection shows the fixed
+  socket exists as a socket but the helper user lacks traversal or socket
+  read/write access, classify it as `spire_socket_present_needs_acl`, require
+  `setfacl`, apply execute ACLs only to `/run/spire`, `/run/spire/server`, and
+  `/run/spire/server/private` when needed, and apply a read/write ACL only to
+  `/run/spire/server/private/api.sock` for the helper user. If the exact
+  discard-output bundle-read still fails after fixed-path access prep, fail
+  with `spire_bundle_show_failed`. The route must not world-read or world-write
+  the socket, chown broad `/run` directories, grant access to workloads, add
+  generic command execution, print bundle contents, or copy bundle contents to
+  Mac `.out`.
 - In the combined form, ordering is summary-path preparation, then
   config-readability preparation, then SPIRE bundle-read preparation, then
   helper staging/execution. Inside the helper, summary preflight runs before

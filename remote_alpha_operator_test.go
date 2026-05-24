@@ -2996,6 +2996,15 @@ set -euo pipefail
 exit 0
 `)
 
+	writeExecutable(t, h.remoteBin, "systemctl", `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 3 && "${1:-}" == "is-active" && "${2:-}" == "--quiet" && "${3:-}" == "spire-server" ]]; then
+  exit "${REMOTE_ALPHA_FAKE_SYSTEMCTL_SPIRE_ACTIVE_STATUS:-0}"
+fi
+echo "unexpected fake systemctl args: $*" >&2
+exit 64
+`)
+
 	writeExecutable(t, h.remoteBin, "spire-server", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 printf 'args=%%s\n' "$*" >> %q
@@ -3004,6 +3013,10 @@ if [[ "$#" -ne 6 || "${1:-}" != "bundle" || "${2:-}" != "show" || "${3:-}" != "-
   exit 64
 fi
 socket_path="${6:-}"
+if [[ "${REMOTE_ALPHA_FAKE_SPIRE_SERVER_FORCE_FAIL:-false}" == "true" ]]; then
+  echo "raw fake SPIRE stderr must not print" >&2
+  exit 17
+fi
 if [[ ! -S "${socket_path}" || ! -r "${socket_path}" || ! -w "${socket_path}" ]]; then
   exit 13
 fi
@@ -3078,6 +3091,28 @@ case "${cmd}" in
 	      shift
 	    fi
 	    exec /bin/chmod "${mode}" "$@"
+	    ;;
+	  test)
+	    predicate="${1:-}"
+	    path="${2:-}"
+	    restore_path=""
+	    restore_mode=""
+	    if [[ -n "${FAKE_REMOTE_ROOT:-}" && "${path}" == "${FAKE_REMOTE_ROOT}/run/spire/server/"* ]]; then
+	      server_dir="${FAKE_REMOTE_ROOT}/run/spire/server"
+	      if [[ -d "${server_dir}" && ! -x "${server_dir}" ]]; then
+	        restore_path="${server_dir}"
+	        restore_mode="$(stat -f '%%Lp' "${server_dir}" 2>/dev/null || stat -c '%%a' "${server_dir}")"
+	        /bin/chmod u+x "${server_dir}"
+	      fi
+	    fi
+	    set +e
+	    /bin/test "${predicate}" "${path}"
+	    status=$?
+	    set -e
+	    if [[ -n "${restore_path}" ]]; then
+	      /bin/chmod "${restore_mode}" "${restore_path}"
+	    fi
+	    exit "${status}"
 	    ;;
 	  setfacl)
 	    acl_spec=""
@@ -3443,6 +3478,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpir
 		"spire_bundle_read_prepare_status=pass",
 		"api.sock",
 		"spire_bundle_read_policy=fixed_path_user_acl_when_needed",
+		"spire_socket_access_classification=spire_socket_present_needs_acl",
 		"spire_socket_acl_applied=true",
 		"bundle_output_discarded=true",
 		"bundle_contents_printed=false",
@@ -3515,6 +3551,243 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpir
 		t.Fatalf("prepare-spire-bundle-read-only route should not delete summaries or staging paths: %s", rmLog)
 	}
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap SPIRE prepare route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("fake no-sudo traversal ambiguity requires a non-root test process")
+	}
+
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	socketPath := createFakeBootstrapSpireSocket(t, h, 0o600)
+	spireServerDir := filepath.Dir(filepath.Dir(socketPath))
+	if err := os.Chmod(spireServerDir, 0o000); err != nil {
+		t.Fatalf("chmod fake SPIRE server dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(spireServerDir, 0o700)
+		_ = os.Chmod(socketPath, 0o600)
+	})
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("expected sudo-visible SPIRE path inspection to disambiguate traversal denial: %v\noutput=%s\nsudo=%s\nspire=%s",
+			err, output, readIfExists(h.sudoLogPath), readIfExists(h.spireLog))
+	}
+
+	assertContainsAll(t, "SPIRE traversal ambiguity prepare output", output,
+		"spire_bundle_read_prepare_status=pass",
+		"spire_socket_access_classification=spire_socket_present_needs_acl",
+		"spire_socket_acl_applied=true",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	assertContainsNone(t, "SPIRE traversal ambiguity output forbidden classifications", output,
+		"spire_socket_parent_missing",
+		"FAKE-SPIRE-BUNDLE-MATERIAL-MUST-NOT-PRINT",
+		"raw fake SPIRE stderr",
+	)
+
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsAll(t, "SPIRE traversal ambiguity sudo log", sudoLog,
+		"-n test -d",
+		"-n test -S",
+		"-n setfacl -m u:",
+		":--x --",
+		"run/spire/server",
+	)
+	assertContainsNone(t, "SPIRE traversal ambiguity sudo log forbidden broad changes", sudoLog,
+		"chmod 777",
+		"chown",
+		" o:",
+		"g:",
+		"workload-zone-vault-config.json",
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadFailsForTrueMissingParentUnderSudoVisibleInspection(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	spireServerDir := filepath.Join(h.remoteRoot, "run", "spire", "server")
+	if err := os.MkdirAll(spireServerDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake SPIRE server dir: %v", err)
+	}
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected missing SPIRE socket parent failure:\n%s", output)
+	}
+
+	assertContainsAll(t, "missing SPIRE parent prepare output", output,
+		"spire_bundle_read_prepare_status=fail",
+		"error_classification=spire_socket_parent_missing",
+		"spire_server_socket_path=",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	assertContainsNone(t, "missing SPIRE parent output forbidden", output,
+		"FAKE-SPIRE-BUNDLE-MATERIAL-MUST-NOT-PRINT",
+		"Remote Alpha Vault workload-auth bootstrap helper finished.",
+	)
+	if _, statErr := os.Stat(filepath.Join(spireServerDir, "private")); !os.IsNotExist(statErr) {
+		t.Fatalf("SPIRE prep must not create missing parent, stat err=%v", statErr)
+	}
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsNone(t, "missing SPIRE parent sudo log forbidden ACL", sudoLog,
+		"setfacl",
+		"chmod 777",
+		"chown",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadFailsForTrueMissingSocketUnderSudoVisibleInspection(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	spireParent := filepath.Join(h.remoteRoot, "run", "spire", "server", "private")
+	if err := os.MkdirAll(spireParent, 0o755); err != nil {
+		t.Fatalf("mkdir fake SPIRE socket parent: %v", err)
+	}
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected missing SPIRE socket failure:\n%s", output)
+	}
+
+	assertContainsAll(t, "missing SPIRE socket prepare output", output,
+		"spire_bundle_read_prepare_status=fail",
+		"error_classification=spire_socket_missing",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	if _, statErr := os.Stat(filepath.Join(spireParent, "api.sock")); !os.IsNotExist(statErr) {
+		t.Fatalf("SPIRE prep must not create missing socket, stat err=%v", statErr)
+	}
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsNone(t, "missing SPIRE socket sudo log forbidden ACL", sudoLog,
+		"setfacl",
+		"chmod 777",
+		"chown",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadFailsForWrongSocketType(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	socketPath := filepath.Join(h.remoteRoot, "run", "spire", "server", "private", "api.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatalf("mkdir fake SPIRE socket parent: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("not a socket"), 0o600); err != nil {
+		t.Fatalf("write wrong-type SPIRE path fixture: %v", err)
+	}
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected wrong-type SPIRE socket failure:\n%s", output)
+	}
+
+	assertContainsAll(t, "wrong-type SPIRE socket prepare output", output,
+		"spire_bundle_read_prepare_status=fail",
+		"error_classification=spire_socket_not_socket",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsNone(t, "wrong-type SPIRE socket sudo log forbidden ACL", sudoLog,
+		"setfacl",
+		"chmod 777",
+		"chown",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesInactiveServerBeforeAcl(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, append(h.env(), "REMOTE_ALPHA_FAKE_SYSTEMCTL_SPIRE_ACTIVE_STATUS=3"),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected inactive SPIRE server failure:\n%s", output)
+	}
+
+	assertContainsAll(t, "inactive SPIRE server prepare output", output,
+		"spire_bundle_read_prepare_status=fail",
+		"error_classification=spire_server_inactive_or_unknown",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	sudoLog := readIfExists(h.sudoLogPath)
+	assertContainsNone(t, "inactive SPIRE server must not apply ACL", sudoLog,
+		"setfacl",
+		"chmod 777",
+		"chown",
+	)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesAccessibleBundleShowFailure(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	createFakeBootstrapSpireSocket(t, h, 0o600)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, append(h.env(), "REMOTE_ALPHA_FAKE_SPIRE_SERVER_FORCE_FAIL=true"),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-spire-bundle-read",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected SPIRE bundle show failure:\n%s", output)
+	}
+
+	assertContainsAll(t, "accessible SPIRE bundle show failure output", output,
+		"spire_bundle_read_prepare_status=fail",
+		"error_classification=spire_bundle_show_failed",
+		"spire_socket_access_classification=spire_socket_present_accessible",
+		"bundle_contents_printed=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	assertContainsNone(t, "accessible SPIRE bundle show failure output forbidden raw content", output,
+		"raw fake SPIRE stderr",
+		"FAKE-SPIRE-BUNDLE-MATERIAL-MUST-NOT-PRINT",
+	)
+	sudoLog := readIfExists(h.sudoLogPath)
+	assertContainsNone(t, "accessible SPIRE bundle show failure must not apply ACL", sudoLog,
+		"setfacl",
+		"chmod 777",
+		"chown",
+	)
 }
 
 func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRunsBeforeHelperExecution(t *testing.T) {
@@ -3879,6 +4152,18 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"recovery_session_vault_workload_auth_bootstrap_prepare_spire_bundle_read_remote",
 		"spire_bundle_read_prepare_status=pass",
 		`sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`,
+		"require_spire_server_active_when_systemd_visible",
+		"sudo_path_test",
+		"require_sudo_visible_spire_path_shape",
+		"helper_can_access_spire_socket",
+		"spire_socket_present_accessible",
+		"spire_socket_present_needs_acl",
+		"spire_socket_parent_missing",
+		"spire_socket_missing",
+		"spire_socket_not_socket",
+		"spire_server_inactive_or_unknown",
+		"spire_server_command_missing",
+		"spire_bundle_show_failed",
 		`run_sudo setfacl -m "u:${helper_user}:rw-"`,
 		"bundle_output_discarded=true",
 		"bundle_contents_printed=false",
@@ -3942,6 +4227,16 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"`--prepare-config-readability` follow-up is OS/filesystem preparation only",
 		"`--prepare-spire-bundle-read` follow-up is OS/filesystem/capability preparation only",
 		"fixed-path user ACL",
+		"`spire_socket_present_accessible`",
+		"`spire_socket_present_needs_acl`",
+		"`spire_socket_parent_missing`",
+		"`spire_socket_missing`",
+		"`spire_socket_not_socket`",
+		"`spire_server_inactive_or_unknown`",
+		"`spire_server_command_missing`",
+		"`spire_bundle_show_failed`",
+		"sudo-visible inspection shows",
+		"do not create SPIRE parents or sockets",
 		"config readability preflight before prompts and Vault writes",
 		"SPIRE bundle-read preflight before prompts and Vault writes",
 		"visible/silent remote helper TTY prompt",
@@ -3975,6 +4270,15 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"does not print config contents",
 		"SPIRE bundle-read preparation:",
 		"fixed SPIRE server socket path",
+		"`spire_socket_present_accessible`",
+		"`spire_socket_present_needs_acl`",
+		"`spire_socket_parent_missing`",
+		"`spire_socket_missing`",
+		"`spire_socket_not_socket`",
+		"`spire_server_inactive_or_unknown`",
+		"`spire_bundle_show_failed`",
+		"sudo-visible inspection shows",
+		"do not create SPIRE parents or sockets",
 		"bundle output is discarded",
 		"summary-path preparation, then config-readability preparation, then SPIRE bundle-read preparation, then helper staging/execution",
 		"Vault API strategy:",
@@ -4655,7 +4959,10 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) {
 				continue
 			}
-			if strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for config readability preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`) || strings.HasPrefix(trimmed, `sudo -n "$@"`) {
+			if strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for config readability preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`) || strings.HasPrefix(trimmed, `sudo -n "$@"`) || strings.HasPrefix(trimmed, `sudo -n test "${predicate}" "${path}"`) {
+				continue
+			}
+			if strings.HasPrefix(trimmed, `systemctl is-active --quiet spire-server`) {
 				continue
 			}
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)

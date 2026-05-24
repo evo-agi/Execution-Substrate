@@ -1126,11 +1126,13 @@ spire_server_dir="${spire_parent%/*}"
 spire_root="${spire_server_dir%/*}"
 sudo_ready="false"
 acl_applied="false"
+spire_socket_access_classification="unknown"
 
 die_prepare() {
   printf 'spire_bundle_read_prepare_status=fail\n' >&2
   printf 'error_classification=%s\n' "$1" >&2
   printf 'spire_server_socket_path=%s\n' "${spire_socket}" >&2
+  printf 'spire_socket_access_classification=%s\n' "${spire_socket_access_classification}" >&2
   printf 'bundle_contents_printed=false\n' >&2
   printf 'vault_run=false\n' >&2
   printf 'workload_auth_check_run=false\n' >&2
@@ -1154,16 +1156,48 @@ require_setfacl() {
   command -v setfacl >/dev/null 2>&1 || die_prepare "spire_bundle_read_acl_tool_missing"
 }
 
+require_spire_server_active_when_systemd_visible() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet spire-server >/dev/null 2>&1 || die_prepare "spire_server_inactive_or_unknown"
+  fi
+}
+
 probe_spire_bundle_read() {
   command -v spire-server >/dev/null 2>&1 || return 127
   spire-server bundle show -format spiffe -socketPath "${spire_socket}" >/dev/null 2>/dev/null
 }
 
+sudo_path_test() {
+  local predicate=$1
+  local path=$2
+  prepare_sudo
+  sudo -n test "${predicate}" "${path}" >/dev/null 2>/dev/null
+}
+
+require_sudo_visible_spire_path_shape() {
+  local dir
+  for dir in "${spire_root}" "${spire_server_dir}" "${spire_parent}"; do
+    sudo_path_test -d "${dir}" || die_prepare "spire_socket_parent_missing"
+  done
+  sudo_path_test -e "${spire_socket}" || die_prepare "spire_socket_missing"
+  sudo_path_test -S "${spire_socket}" || die_prepare "spire_socket_not_socket"
+}
+
+helper_can_access_spire_socket() {
+  local dir
+  for dir in "${spire_root}" "${spire_server_dir}" "${spire_parent}"; do
+    [[ -x "${dir}" ]] || return 1
+  done
+  [[ -S "${spire_socket}" && -r "${spire_socket}" && -w "${spire_socket}" ]]
+}
+
 if probe_spire_bundle_read; then
+  spire_socket_access_classification="spire_socket_present_accessible"
   printf 'spire_bundle_read_prepare_status=pass\n'
   printf 'spire_server_socket_path=%s\n' "${spire_socket}"
   printf 'helper_user=%s\n' "${helper_user}"
   printf 'spire_bundle_read_policy=fixed_path_user_acl_when_needed\n'
+  printf 'spire_socket_access_classification=%s\n' "${spire_socket_access_classification}"
   printf 'spire_socket_acl_applied=false\n'
   printf 'bundle_output_discarded=true\n'
   printf 'bundle_contents_printed=false\n'
@@ -1174,21 +1208,15 @@ if probe_spire_bundle_read; then
 fi
 
 command -v spire-server >/dev/null 2>&1 || die_prepare "spire_server_command_missing"
+require_spire_server_active_when_systemd_visible
 
-for dir in "${spire_root}" "${spire_server_dir}" "${spire_parent}"; do
-  if [[ ! -d "${dir}" ]]; then
-    die_prepare "spire_socket_parent_missing"
-  fi
-done
-
-if [[ ! -e "${spire_socket}" ]]; then
-  die_prepare "spire_server_socket_missing"
+if helper_can_access_spire_socket; then
+  spire_socket_access_classification="spire_socket_present_accessible"
+  die_prepare "spire_bundle_show_failed"
 fi
 
-if [[ ! -S "${spire_socket}" ]]; then
-  die_prepare "spire_server_socket_not_socket"
-fi
-
+require_sudo_visible_spire_path_shape
+spire_socket_access_classification="spire_socket_present_needs_acl"
 require_setfacl
 for dir in "${spire_root}" "${spire_server_dir}" "${spire_parent}"; do
   if [[ ! -x "${dir}" ]]; then
@@ -1197,17 +1225,22 @@ for dir in "${spire_root}" "${spire_server_dir}" "${spire_parent}"; do
   fi
 done
 
-run_sudo setfacl -m "u:${helper_user}:rw-" -- "${spire_socket}" || die_prepare "spire_socket_acl_failed"
-acl_applied="true"
+if [[ ! -r "${spire_socket}" || ! -w "${spire_socket}" ]]; then
+  run_sudo setfacl -m "u:${helper_user}:rw-" -- "${spire_socket}" || die_prepare "spire_socket_acl_failed"
+  acl_applied="true"
+fi
+
+helper_can_access_spire_socket || die_prepare "spire_bundle_show_failed"
 
 if ! probe_spire_bundle_read; then
-  die_prepare "spire_bundle_read_still_blocked"
+  die_prepare "spire_bundle_show_failed"
 fi
 
 printf 'spire_bundle_read_prepare_status=pass\n'
 printf 'spire_server_socket_path=%s\n' "${spire_socket}"
 printf 'helper_user=%s\n' "${helper_user}"
 printf 'spire_bundle_read_policy=fixed_path_user_acl_when_needed\n'
+printf 'spire_socket_access_classification=%s\n' "${spire_socket_access_classification}"
 printf 'spire_socket_acl_applied=%s\n' "${acl_applied}"
 printf 'bundle_output_discarded=true\n'
 printf 'bundle_contents_printed=false\n'
