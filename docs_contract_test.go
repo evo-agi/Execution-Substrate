@@ -2213,6 +2213,13 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"secret-sensitive reset/unseal routing",
 		"must not widen ES public contracts, CP orchestration semantics, IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault token brokerage",
 		"preserve existing IM-consumed artifact filenames",
+		"The objective is one repo-supported ES operator facade/workflow/script",
+		"minimizes manual stitching, copying, and recovery sequencing",
+		"Operator involvement is expected and allowed",
+		"success does not mean eliminating every prompt",
+		"Explicit interactive modes are valid when they are named, bounded to a mode or subcommand, visible to the operator, and secret-safe.",
+		"Default noninteractive sudo remains an ergonomic optimization",
+		"not a universal success criterion",
 	)
 
 	assertContainsAll(t, "Remote Alpha operator facade docs", operatorSection,
@@ -2247,6 +2254,84 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"The proposed `vault-workload-auth-bootstrap` surface is blocked/reopened for now.",
 		"reset/unseal/check helpers but no safe Remote Alpha helper that bootstraps Vault JWT auth, Vault roles, or proof secrets after reset without root-token handling",
 		"does not design root-token automation",
+	)
+}
+
+func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	operatorSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "## Direct Remote Requirements")
+	involvementSection := compactDocSection(t, remoteRaw, "### Operator Involvement Model", "Purpose:")
+	evidenceSection := compactDocSection(t, remoteRaw, "### P0d Interactive Validation Evidence", "## Direct Remote Requirements")
+
+	assertContainsAll(t, "Remote Alpha operator objective", plans,
+		"one repo-supported ES operator facade/workflow/script",
+		"minimizes manual stitching, copying, and recovery sequencing",
+		"Operator involvement is expected and allowed",
+		"success does not mean eliminating every prompt",
+		"Explicit interactive modes are valid when they are named, bounded to a mode or subcommand, visible to the operator, and secret-safe.",
+		"Default noninteractive sudo remains an ergonomic optimization for helpers that support it, not a universal success criterion for the operator facade.",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator involvement model", involvementSection,
+		"Human operator involvement is expected and allowed",
+		"The goal is to minimize manual stitching, copying, and recovery sequencing, not to eliminate all prompts.",
+		"The human operator remains the authority for interactive prompts.",
+		"The script is a bounded operator facade/workflow, not the operator and not an authority source.",
+		"Interactive sudo is allowed only under the explicit `--interactive-sudo` route flag",
+		"Future Vault, reset, or unseal prompts may be allowed only in explicit secret-sensitive modes",
+		"silent where appropriate",
+		"never through CLI arguments, environment files, logs, reports, `.out`, support bundles, retained bundles, CP artifacts, helper summaries, readiness outputs, printed commands, or Codex output.",
+		"Root tokens, unseal keys, client tokens, JWT-SVID payloads, API keys, TLS private keys, SPIFFE material, passwords, raw prompts, and secret payloads must not be recorded",
+		"Helper outputs remain evidence/projection only.",
+		"Infrastructure Manager live refresh and support-bundle collection remain separate IM evidence/provenance/diagnostics actions",
+		"Remote Alpha remains bounded proof/support posture only",
+		"not production, HA, multi-tenant, general deployment architecture, remote provisioning, or reconciliation",
+	)
+
+	assertContainsAll(t, "Remote Alpha P0d interactive evidence", evidenceSection,
+		"operator-workstation-to-remote interactive-sudo validation evidence only",
+		"generated output, not tracked source, not design authority",
+		"validated the P0d operator route handoff to the staged writable-state readiness helper",
+		"remote temporary staging",
+		"checker execution",
+		"readiness and staging-record artifact schemas",
+		"transient-staging cleanup evidence",
+		"secret-like redaction scan",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness.v1`",
+		"`operation_mode=check_only`",
+		"`non_mutating=true`",
+		"`checker_mode=alpha-compat`",
+		"`overall_classification=warning`",
+		"`blockers_count=0`",
+		"`warnings_count=2`",
+		"`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`",
+		"`sudo_mode=interactive`",
+		"`staging_occurred=true`",
+		"`checker_ran=true`",
+		"`sudo_unavailable=false`",
+		"`wrapper_exit_code=0`",
+		"`checker_exit_code=0`",
+		"`transient_staging_removed=true`",
+		"`staging_retained_for_diagnostics=false`",
+		"did not validate the default noninteractive `sudo -n` path",
+		"did not prove governed execution, CP orchestration, production readiness, Vault workload authentication, IM authority",
+		"Remote Alpha deployment architecture",
+		"Digest summary for the untracked evidence files",
+	)
+
+	assertContainsAll(t, "Remote Alpha operator boundary non-claims", operatorSection,
+		"not IM automation or reconciliation",
+		"not CP authority",
+		"not Vault production lifecycle",
+		"not ES token brokerage",
+		"not deployment architecture",
+		"The facade must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a production/general deployment architecture.",
+	)
+	assertContainsNone(t, "Remote Alpha operator objective overclaim", operatorSection,
+		"zero operator involvement",
+		"must eliminate operator prompts",
+		"must eliminate every prompt",
 	)
 }
 

@@ -74,6 +74,16 @@ IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault
 token brokerage. It must preserve Remote Alpha as bounded proof/support
 posture only, preserve existing IM-consumed artifact filenames, and keep any
 operator summary as non-secret evidence/projection rather than a v1 IM input.
+The objective is one repo-supported ES operator facade/workflow/script that
+minimizes manual stitching, copying, and recovery sequencing across bounded
+operator work. Operator involvement is expected and allowed: success does not
+mean eliminating every prompt. Explicit interactive modes are valid when they
+are named, bounded to a mode or subcommand, visible to the operator, and
+secret-safe. Default noninteractive sudo remains an ergonomic optimization for
+helpers that support it, not a universal success criterion for the operator
+facade. The facade must remain a helper workflow and evidence surface, not an
+authority source, Vault token broker, IM reconciler, CP recovery authority, or
+Remote Alpha deployment/reconciliation system.
 The P0b implementation slice is limited to an inert
 `scripts/remote_alpha_operator.sh` help/inventory/print-command skeleton:
 it may document available and future surfaces, print exact Mac-side

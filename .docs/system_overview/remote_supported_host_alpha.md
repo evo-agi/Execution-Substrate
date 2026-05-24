@@ -263,6 +263,33 @@ Current implementation status through P0d:
   helper remains the owner of its existing readiness/provenance artifacts when
   the route is intentionally invoked.
 
+### Operator Involvement Model
+
+Human operator involvement is expected and allowed for this facade. The goal is
+to minimize manual stitching, copying, and recovery sequencing, not to
+eliminate all prompts.
+
+The human operator remains the authority for interactive prompts. The script is
+a bounded operator facade/workflow, not the operator and not an authority
+source.
+
+Interactive sudo is allowed only under the explicit `--interactive-sudo` route
+flag and only from a visible terminal. Future Vault, reset, or unseal prompts
+may be allowed only in explicit secret-sensitive modes, silent where
+appropriate, and never through CLI arguments, environment files, logs, reports,
+`.out`, support bundles, retained bundles, CP artifacts, helper summaries,
+readiness outputs, printed commands, or Codex output. Root tokens, unseal keys,
+client tokens, JWT-SVID payloads, API keys, TLS private keys, SPIFFE material,
+passwords, raw prompts, and secret payloads must not be recorded by the facade
+or delegated helpers.
+
+Helper outputs remain evidence/projection only. Infrastructure Manager live
+refresh and support-bundle collection remain separate IM
+evidence/provenance/diagnostics actions unless a later reviewed contract says
+otherwise. Remote Alpha remains bounded proof/support posture only; it is not
+production, HA, multi-tenant, general deployment architecture, remote
+provisioning, or reconciliation.
+
 Purpose:
 
 - operator ergonomics over existing bounded helpers
@@ -472,6 +499,42 @@ Manager-consumed local artifact filenames:
 It does not rename, replace, aggregate, or obscure those files. It writes no
 aggregate operator summary and does not call Infrastructure Manager; the facade
 may continue to print the Mac-side IM refresh and support-bundle commands only.
+
+### P0d Interactive Validation Evidence
+
+The P0d interactive validation artifact directory
+`.out/remote-alpha-m75q-p0d-alpha-compat-interactive-20260524T033740Z` is
+operator-workstation-to-remote interactive-sudo validation evidence only. It is
+generated output, not tracked source, not design authority, and not an ES, CP,
+or IM authority surface.
+
+The reported run validated the P0d operator route handoff to the staged
+writable-state readiness helper, remote temporary staging, checker execution,
+readiness and staging-record artifact schemas, transient-staging cleanup
+evidence, and the secret-like redaction scan. The readiness record used schema
+`execution-substrate.remote-alpha.es-writable-state-readiness.v1`,
+`operation_mode=check_only`, `non_mutating=true`,
+`checker_mode=alpha-compat`, `overall_classification=warning`,
+`blockers_count=0`, and `warnings_count=2`. The staging record used schema
+`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`,
+`sudo_mode=interactive`, `staging_occurred=true`, `checker_ran=true`,
+`sudo_unavailable=false`, `wrapper_exit_code=0`, `checker_exit_code=0`,
+`transient_staging_removed=true`, and
+`staging_retained_for_diagnostics=false`.
+
+The evidence did not validate the default noninteractive `sudo -n` path. It
+did not prove governed execution, CP orchestration, production readiness, Vault
+workload authentication, IM authority, submit readiness, runtime-profile
+readiness, retained-result readiness, or Remote Alpha deployment architecture.
+
+Digest summary for the untracked evidence files:
+
+- `es-writable-state-readiness.json`: sha256
+  `ab52a79b478877368dd4613430c1eaf30498f9f25363912d5593fbae67ec718e`,
+  290018 bytes.
+- `es-writable-state-readiness-helper-staging-record.json`: sha256
+  `dac32b552d6da8b39411839099a3f704e6d70890da147caf2bccbad10a4c59e7`,
+  5245 bytes.
 
 ## Direct Remote Requirements
 
