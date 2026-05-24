@@ -609,10 +609,14 @@ summary is implemented; and assert the route cannot bundle workload-auth
 checks, reset/unseal, IM, support bundles, CP proof, or runtime identity work.
 
 The P0q implementation/self-audit/merge-readiness slice may implement exactly
-one dedicated secret-sensitive workload-auth bootstrap helper and exactly one
-Mac-side recovery-session route:
+one dedicated secret-sensitive workload-auth bootstrap helper, exactly one
+Mac-side recovery-session execution route, and one bounded preparation form for
+the bootstrap summary path:
 `scripts/remote_alpha_operator.sh recovery-session
 vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
+--interactive-tty`, plus
+`scripts/remote_alpha_operator.sh recovery-session
+vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path
 --interactive-tty`. P0q may add the public helper
 `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and the internal helper
 `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, plus static
@@ -624,12 +628,18 @@ runtime identity summaries, or network-dependent integration tests.
 P0q preserves the P0o safe modes: `vault-workload-auth-bootstrap --help`,
 `--plan`, and `--inventory` remain safe local/print-only modes, and no mode
 still defaults to printing plan/help and exiting zero. The execution route is
-available only as `--ssh-target <target> --execute-bootstrap
---interactive-tty`. `--ssh-target` and `--interactive-tty` are valid only with
-`--execute-bootstrap`; `--execute-bootstrap` requires both; and safe modes are
-mutually exclusive with execution. Duplicate route flags, equals-form options,
-unknown flags, extra positionals, helper override flags, forbidden reset/unseal
-or IM/CP/runtime flags, and secret-like arguments must fail before staging.
+available as `--ssh-target <target> --execute-bootstrap --interactive-tty`, and
+the preparation route is available as `--ssh-target <target>
+--prepare-summary-path --interactive-tty`. The combined form
+`--ssh-target <target> --execute-bootstrap --prepare-summary-path
+--interactive-tty` is allowed only when preparation runs before helper staging,
+helper preflight, Vault/root/proof prompts, and Vault writes. `--ssh-target` and
+`--interactive-tty` are valid only with `--execute-bootstrap` and/or
+`--prepare-summary-path`; both action flags require both target and TTY; and
+safe modes are mutually exclusive with execution/preparation. Duplicate route
+flags, equals-form options, unknown flags, extra positionals, helper override
+flags, forbidden reset/unseal or IM/CP/runtime flags, and secret-like arguments
+must fail before staging or preparation.
 
 P0q's helper prompt model is visible/silent remote helper TTY prompt only.
 Vault bootstrap authority and proof secret values must never be accepted through
@@ -641,18 +651,39 @@ bootstrap operation and should clear variables where practical. It must not use
 `VAULT_TOKEN`, `vault login`, token-bearing Vault CLI arguments, or Vault token
 files such as `.vault-token`.
 
-P0q's helper must run a secret-free writability preflight for the canonical
-remote bootstrap summary path before any Vault bootstrap authority prompt, proof
-secret prompt, SPIRE/Vault operation, or Vault write. The preflight may create
-`/var/tmp/execution-substrate-remote-alpha` when it is missing and safe for the
-helper user to create, and it must prove that a temp file can be created and
-removed in the same directory as
+The first real bootstrap attempt failed after the Vault operation flow because
+`/var/tmp/execution-substrate-remote-alpha` existed as `root:root` mode `0755`
+and the helper could not write the canonical bootstrap summary. Commit
+`e4d7016` added the helper-side secret-free writability preflight before
+secrets. The explicit `--prepare-summary-path` follow-up is OS/filesystem
+preparation only: it prepares only `/var/tmp/execution-substrate-remote-alpha`,
+`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`,
+and same-directory temp writability for that summary. It must not stage helpers,
+run Vault, ask for Vault/root/proof secrets, run workload-auth checks,
+reset/unseal, IM, support bundles, CP proof, or runtime identity generation, or
+write Mac `.out` artifacts or operator summaries. If sudo is needed, it is only
+an OS sudo prompt through the visible SSH TTY. The deterministic mode/ownership
+policy is: create the parent directory when missing; if the parent exists but is
+not writable/executable by the helper user, use visible operator-authorized sudo
+to make that parent owned by the helper user/group with mode `0750`; if the
+bootstrap summary file already exists and is a regular file but is not writable
+by the helper user, use visible sudo to make only that file helper-owned mode
+`0600`; do not delete or rewrite unrelated summaries; create and remove only a
+hidden same-directory temp probe; and create no final bootstrap summary in
+standalone preparation.
+
+P0q's helper must still run a secret-free writability preflight for the
+canonical remote bootstrap summary path before any Vault bootstrap authority
+prompt, proof secret prompt, SPIRE/Vault operation, or Vault write. The preflight
+may create `/var/tmp/execution-substrate-remote-alpha` when it is missing and
+safe for the helper user to create, and it must prove that a temp file can be
+created and removed in the same directory as
 `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
 If the parent exists but is not writable by the helper user, or the summary path
 cannot be written safely, the helper must fail before prompting, print only a
 non-secret failure classification such as `summary_preflight_failed`, leave no
 summary or temp summary when possible, and run no Vault writes. This preflight
-does not add sudo, root-token argument handling, Mac `.out` copy-back, IM,
+does not add root-token argument handling, Mac `.out` copy-back, IM,
 support-bundle collection, workload-auth checks, reset/unseal, CP proof, or
 runtime identity generation.
 
@@ -702,9 +733,12 @@ from printed output and summary, expected fake Vault objects, summary
 writability preflight before prompts and Vault writes, summary schema and
 redaction scans, redaction checks before final summary rename, no workload-auth
 check/reset/unseal/IM/CP/runtime-identity commands, operator flag rejection,
-fake SSH/SCP staging of exactly the bootstrap public/internal helper pair,
-`ssh -tt` only for explicit `--interactive-tty`, public helper invocation only,
-cleanup attempts, no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
+fake summary-path preparation over only the bounded remote filesystem command,
+preparation failing before helper staging and prompts when it cannot prepare,
+combined preparation ordering before helper staging/execution, fake SSH/SCP
+staging of exactly the bootstrap public/internal helper pair, `ssh -tt` only for
+explicit `--interactive-tty`, public helper invocation only, cleanup attempts,
+no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
 
 ## Current Remote Alpha Hardening Tranche
 

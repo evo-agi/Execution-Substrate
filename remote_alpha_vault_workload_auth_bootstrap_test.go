@@ -296,6 +296,66 @@ func TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightFailsBeforePromptsAndVaul
 	}
 }
 
+func TestRemoteAlphaVaultWorkloadAuthBootstrapPreflightSucceedsWhenSummaryPathIsPreparedWritable(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	setupFakeBootstrapSpireServer(t, fakeBin)
+
+	rootToken := "root-token-for-prepared-preflight"
+	proofSecret := "proof-value-for-prepared-preflight"
+	server, state, caBundle := startFakeBootstrapVault(t, rootToken)
+	configPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
+	writeWorkloadZoneConfig(t, configPath, server.URL, "jwt", "service_execution", "vault", caBundle)
+
+	summaryParent := filepath.Join(tmpDir, "summary-parent")
+	if err := os.Mkdir(summaryParent, 0o750); err != nil {
+		t.Fatalf("mkdir prepared summary parent: %v", err)
+	}
+	summaryPath := filepath.Join(summaryParent, "vault-workload-auth-bootstrap-summary.json")
+
+	output, err := runRemoteAlphaBootstrapHelperWithPTYInput(t,
+		envWithPath(fakeBin,
+			"REMOTE_ALPHA_BOOTSTRAP_WORKLOAD_ZONE_CONFIG_PATH="+configPath,
+			"REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH="+summaryPath,
+		),
+		rootToken+"\n"+proofSecret+"\n",
+	)
+	if err != nil {
+		t.Fatalf("bootstrap helper should pass after prepared writable summary path: %v\noutput=%s", err, output)
+	}
+	if len(state.requests) == 0 {
+		t.Fatalf("prepared writable summary preflight should allow fake Vault API calls")
+	}
+	summary := readJSONFile(t, summaryPath)
+	operations, ok := summary["operations"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected operations block %#v", summary["operations"])
+	}
+	summaryPreflight, ok := operations["summary_preflight"].(map[string]any)
+	if !ok || summaryPreflight["status"] != "pass" {
+		t.Fatalf("expected summary preflight pass after prepared writable path, got %#v", operations["summary_preflight"])
+	}
+	assertContainsNone(t, "prepared writable bootstrap output secrets", output,
+		rootToken,
+		proofSecret,
+		"summary_preflight_failed",
+	)
+	tmpMatches, err := filepath.Glob(filepath.Join(summaryParent, "*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp summaries after prepared writable success: %v", err)
+	}
+	hiddenTmpMatches, err := filepath.Glob(filepath.Join(summaryParent, ".*.tmp"))
+	if err != nil {
+		t.Fatalf("glob hidden temp summaries after prepared writable success: %v", err)
+	}
+	if len(tmpMatches)+len(hiddenTmpMatches) != 0 {
+		t.Fatalf("prepared writable success must not leave temp summaries, visible=%v hidden=%v", tmpMatches, hiddenTmpMatches)
+	}
+}
+
 func TestRemoteAlphaVaultWorkloadAuthBootstrapFakeVaultWritesExpectedObjectsAndSafeSummary(t *testing.T) {
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")

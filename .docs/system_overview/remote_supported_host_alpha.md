@@ -303,10 +303,13 @@ Current implementation/design status through P0q:
   writes, no root-token or proof-secret prompt, no workload-auth check, no
   reset/unseal, no IM/support-bundle/CP/runtime-identity execution, no summary,
   and no live validation.
-- P0q implements exactly that secret-sensitive workload-auth bootstrap helper
-  and Mac-side recovery-session route, with static and fake tests only:
+- P0q implements exactly that secret-sensitive workload-auth bootstrap helper,
+  Mac-side recovery-session route, and bounded remote filesystem preparation
+  for the bootstrap summary path, with static and fake tests only:
   `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
-  --execute-bootstrap --interactive-tty`. P0q stages only
+  --execute-bootstrap --interactive-tty`, plus
+  `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
+  --prepare-summary-path --interactive-tty`. P0q stages only
   `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and
   `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`, preserves
   their public/internal relative layout, invokes only the staged public helper
@@ -317,7 +320,10 @@ Current implementation/design status through P0q:
   `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`,
   copies no summary back to Mac `.out`, captures no transcript, and keeps
   workload-auth checks, reset/unseal, IM refresh, support bundles, CP proof,
-  and runtime identity work separate.
+  and runtime identity work separate. The `--prepare-summary-path` form is
+  OS/filesystem preparation only: it prepares the remote summary directory,
+  bootstrap summary file ownership/mode when needed, and same-directory temp
+  writability before any helper staging or Vault/root/proof prompt.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -341,8 +347,10 @@ Current implementation/design status through P0q:
   interactive TTY `vault-reset-disposable --execute-reset` submode, the P0n
   Mac-side interactive TTY `vault-workload-auth-check` submode, the P0o safe
   local/print-only `vault-workload-auth-bootstrap` planning submode, and the
-  P0q Mac-side interactive TTY
-  `vault-workload-auth-bootstrap --execute-bootstrap` submode. Its safe modes
+  P0q Mac-side interactive TTY `vault-workload-auth-bootstrap
+  --execute-bootstrap` submode and bounded
+  `vault-workload-auth-bootstrap --prepare-summary-path` preparation submode.
+  Its safe modes
   do not use SSH or remote staging, inspect live host state, dispatch generic
   helpers, or execute destructive or authority-bearing work. Its execution
   submodes remain individually allowlisted and route-specific. Its
@@ -415,6 +423,19 @@ Current implementation/design status through P0q:
   store secrets through args, env, files, logs, `.out`, reports, support
   bundles, retained bundles, CP artifacts, transcripts, helper summaries,
   printed commands, or Codex output.
+- The `vault-workload-auth-bootstrap --ssh-target <target>
+  --prepare-summary-path --interactive-tty` route is bounded OS/filesystem
+  preparation only. It requires a visible Mac-side terminal, allocates an
+  interactive SSH TTY, may prompt only for OS sudo, prepares only
+  `/var/tmp/execution-substrate-remote-alpha`,
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`,
+  and same-directory temp writability, creates no final bootstrap summary,
+  does not stage helpers, and does not run Vault, workload-auth checks,
+  reset/unseal, IM, support bundles, CP proof, or runtime identity generation.
+- The combined `vault-workload-auth-bootstrap --ssh-target <target>
+  --execute-bootstrap --prepare-summary-path --interactive-tty` route runs
+  preparation before helper staging, helper preflight, any Vault bootstrap
+  authority prompt, any proof secret prompt, and any Vault write.
 - The script prints Mac-side Infrastructure Manager refresh and support-bundle
   commands only. It does not invoke Infrastructure Manager refresh or
   support-bundle collection; the readiness session prints those commands as
@@ -522,7 +543,10 @@ Execution-context split:
   `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --interactive-tty` contract, and P0q implements it with
   the dedicated bootstrap public/internal helper pair and fake/static
-  validation only.
+  validation only. P0q also implements the bounded
+  `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
+  --prepare-summary-path --interactive-tty` preparation form for summary-path
+  writability only.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
   runtime identity summary and Vault service-user check. The host-local
   workload-auth helper remains available as a direct helper, but P0n adds the
@@ -599,10 +623,11 @@ Any optional operator summary is non-secret evidence/projection only, not an
 IM input in v1.
 
 The `vault-workload-auth-bootstrap` execution surface is implemented only as
-the P0q bounded Remote Alpha helper/facade route. Live validation remains
-blocked/reopened for a later audited slice. P0q does not implement root-token
-automation, ES token brokerage, workload-auth success proof, live validation,
-or production/deployment/reconciliation architecture.
+the P0q bounded Remote Alpha helper/facade route, with a separate bounded
+summary-path preparation form. Live validation remains blocked/reopened for a
+later audited slice. P0q does not implement root-token automation, ES token
+brokerage, workload-auth success proof, live validation, or
+production/deployment/reconciliation architecture.
 
 ### P0c First Staged-Helper Delegation Plan
 
@@ -2112,8 +2137,9 @@ Future implementation tests:
 ### P0q Vault Workload-Auth Bootstrap Execution Route
 
 `Bounded slice rule`: P0q implements the dedicated secret-sensitive
-workload-auth bootstrap execution route with fake/static validation only.
-It does not run live SSH, sudo, Vault, workload-auth checks, reset/unseal,
+workload-auth bootstrap execution route and bounded summary-path preparation
+route with fake/static validation only. It does not run live SSH, live sudo,
+Vault, workload-auth checks, reset/unseal,
 Infrastructure Manager refresh, support-bundle collection, CP proof, runtime
 identity summary, runtime identity generation, governed smoke, default
 readiness validation, or network-dependent integration tests during validation.
@@ -2136,6 +2162,13 @@ Mac-side operator route:
 - `scripts/remote_alpha_operator.sh recovery-session
   vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
   --interactive-tty`
+- `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path
+  --interactive-tty`
+- Combined form:
+  `scripts/remote_alpha_operator.sh recovery-session
+  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap
+  --prepare-summary-path --interactive-tty`
 
 Safe modes remain:
 
@@ -2171,6 +2204,39 @@ Secret prompt model:
   the helper must fail before prompting, print only a non-secret
   `summary_preflight_failed` classification, leave no summary or temp summary
   when possible, and run no Vault writes.
+
+Summary-path preparation:
+
+- The first real bootstrap attempt failed because the remote summary parent
+  `/var/tmp/execution-substrate-remote-alpha` existed as `root:root` mode
+  `0755`, and the helper could not write
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`.
+  Because the failure occurred at summary writing, that attempt did not prove
+  whether Vault objects were or were not configured.
+- Commit `e4d7016` added helper-side summary writability preflight before any
+  Vault/root/proof prompt. The bounded follow-up operator route adds
+  `--prepare-summary-path` so the human operator can explicitly prepare the
+  path before retrying live bootstrap.
+- Preparation is OS/filesystem setup only. It prepares only
+  `/var/tmp/execution-substrate-remote-alpha`,
+  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`,
+  and same-directory temp writability for that summary. It must not run Vault,
+  request Vault/root/proof secret material, run workload-auth checks,
+  reset/unseal, IM, support bundles, CP proof, runtime identity generation,
+  helper staging, or summary copy-back.
+- If the parent is missing, preparation creates it. If the parent exists but is
+  not writable/executable by the helper user, preparation uses only an explicit
+  operator-authorized OS sudo prompt through the visible SSH TTY to make that
+  parent helper-user/group owned with mode `0750`. If the bootstrap summary file
+  already exists as a regular file but is not writable by the helper user,
+  preparation uses visible sudo to make only that file helper-owned with mode
+  `0600`. Preparation does not delete workload-auth check summaries or other
+  unrelated evidence files, creates and removes only a hidden same-directory
+  temp probe, and creates no final bootstrap summary in standalone mode.
+- In the combined form, preparation must complete before helper staging,
+  helper-side preflight, any Vault bootstrap authority prompt, any proof secret
+  prompt, and any Vault write. If preparation fails, the route stops before
+  helper execution and prints only non-secret status/classification.
 
 Vault API strategy:
 
@@ -2243,20 +2309,28 @@ Allowed execution flags:
 - `--inventory`
 - `--ssh-target <target>`
 - `--execute-bootstrap`
+- `--prepare-summary-path`
 - `--interactive-tty`
 
 Flag and staging rules:
 
-- `--help`, `--plan`, `--inventory`, and `--execute-bootstrap` are mutually
-  exclusive route modes.
+- `--help`, `--plan`, and `--inventory` are mutually exclusive with
+  `--execute-bootstrap` and `--prepare-summary-path`.
 - `--ssh-target` and `--interactive-tty` are valid only with
-  `--execute-bootstrap`.
-- `--execute-bootstrap` requires both `--ssh-target <target>` and
+  `--execute-bootstrap` and/or `--prepare-summary-path`.
+- `--execute-bootstrap` and `--prepare-summary-path` each require both
+  `--ssh-target <target>` and
   `--interactive-tty`.
 - The SSH target must be a single target, not an SSH option or shell command.
-- The route requires visible local stdin and stdout before staging.
+- The route requires visible local stdin and stdout before preparation or
+  staging.
 - The route allocates an interactive SSH TTY with `ssh -tt` only for the
-  explicit `--interactive-tty` execution path.
+  explicit `--interactive-tty` preparation/execution path.
+- Standalone `--prepare-summary-path` runs only the fixed bounded remote
+  preparation command. It does not stage helpers and does not create a bootstrap
+  summary.
+- Combined `--execute-bootstrap --prepare-summary-path` runs preparation before
+  helper staging and helper execution.
 - The route stages to a route-specific remote scratch root, stages only the two
   bootstrap helper files, invokes only the staged public helper, and attempts
   staged-helper cleanup by default.
@@ -2310,6 +2384,13 @@ P0q tests:
   forbidden reset/unseal/check/IM/CP/runtime flags, helper override flags,
   secret-like flags, unknown flags, duplicate flags, equals-form options, and
   extra positionals before staging
+- fake SSH tests prove `--prepare-summary-path` uses only the bounded remote
+  preparation command, may use visible OS sudo only for filesystem preparation,
+  does not stage helpers, does not invoke Vault/workload-auth/reset/IM/CP/runtime
+  routes, creates no local `.out`, creates no final bootstrap summary, and
+  removes its temp probe
+- fake SSH tests prove combined `--execute-bootstrap --prepare-summary-path`
+  runs preparation before helper staging and helper execution
 - fake SSH/SCP tests prove exactly the two bootstrap helper files are staged,
   `ssh -tt` is used only for execution, only the public bootstrap helper is
   invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no

@@ -19,6 +19,7 @@ REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT="/tmp/execution-substrate-remote-alp
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-workload-auth-check"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-workload-auth-bootstrap"
+REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR="/var/tmp/execution-substrate-remote-alpha"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
 READINESS_STAGING_RECORD_ARTIFACT_NAME="es-writable-state-readiness-helper-staging-record.json"
@@ -170,7 +171,7 @@ usage() {
   printf '%s\n' \
     "Remote Alpha operator facade" \
     "" \
-    "P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route while preserving safe plan/inventory modes and earlier recovery routes." \
+    "P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route, plus --prepare-summary-path as bounded remote filesystem preparation for the bootstrap summary path, while preserving safe plan/inventory modes and earlier recovery routes." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -193,6 +194,8 @@ usage() {
     "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-check --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-summary-path --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "" \
     "Options for printed command text only:" \
@@ -204,7 +207,7 @@ usage() {
     "Implemented through P0q:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, and Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair; writes no operator summary." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path preparation, and Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair; writes no operator summary." \
     "" \
     "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
@@ -233,6 +236,8 @@ inventory() {
     "  recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - destructive Mac-side operator route; stages only scripts/remote_alpha_reset_disposable_vault.sh to a route-specific remote scratch directory and invokes only --execute-reset through ssh -tt; no transcript, no summary, no support bundle" \
     "  recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty - Mac-side staged evidence route; stages only scripts/remote_alpha_vault_workload_auth_check.sh and scripts/internal/remote_alpha_vault_workload_auth_check.sh; invokes only the staged public workload-auth helper through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json; no transcript, no summary copy-back, no support bundle" \
     "  recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory] - safe local/print-only planning surface for post-reset Vault workload-auth bootstrap" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty - Mac-side bounded filesystem preparation route; prepares only /var/tmp/execution-substrate-remote-alpha and the bootstrap summary/temp writability path through a visible SSH TTY; may trigger an OS sudo prompt; no Vault/root/proof prompt, no helper staging, no summary creation, no .out" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty - prepare the bootstrap summary path first, then stage and invoke the dedicated bootstrap helper; helper preflight still runs before Vault/root/proof prompts" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - Mac-side staged bootstrap route; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public bootstrap helper through ssh -tt; leaves the canonical bootstrap summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json; no transcript, no summary copy-back, no support bundle" \
     "" \
     "future/not implemented:" \
@@ -258,7 +263,7 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0q scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, and Mac-side vault-workload-auth-bootstrap execution." \
+    "P0q scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path preparation, and Mac-side vault-workload-auth-bootstrap execution." \
     "The human remains the operator. Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI." \
     "Codex must not receive, type, log, relay, persist, or summarize the unseal key." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
@@ -276,6 +281,8 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-check --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-summary-path --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "" \
     "Allowed flags for all modes:" \
@@ -302,6 +309,7 @@ recovery_session_usage() {
     "Submode exception: recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty is implemented as a destructive Mac-side operator route; it stages only the reset helper, invokes only --execute-reset, and relies on the human operator to type the exact confirmation phrase and Vault secrets only in the visible remote terminal." \
     "Submode exception: recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty is implemented as a Mac-side staged evidence route; it stages only the workload-auth public/internal helper pair, invokes only the staged public helper, leaves the canonical summary on the remote host, and does not bootstrap workload auth or broker Vault tokens." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory] is safe local/print-only planning; it does not run SSH, sudo, Vault, workload-auth checks, reset/unseal, IM, support bundles, CP proof, runtime identity generation, or live bootstrap." \
+    "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty is bounded remote filesystem preparation only; it may use an OS sudo prompt through the visible SSH TTY and must not stage helpers, run Vault, or create a bootstrap summary." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty is a Mac-side staged bootstrap route; it stages only the bootstrap public/internal helper pair and relies on the human operator to type Vault bootstrap authority and proof secret values only in the visible remote helper prompt." \
     "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out." \
     "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
@@ -417,8 +425,8 @@ recovery_session_vault_workload_auth_check_usage() {
 recovery_session_vault_workload_auth_bootstrap_usage() {
   printf '%s\n' \
     "Remote Alpha recovery-session mode: vault-workload-auth-bootstrap" \
-    "P0q scope: safe local/print-only planning plus Mac-side staged bootstrap execution for post-reset Vault workload-auth bootstrap." \
-    "Execution stages only the dedicated bootstrap public/internal helper pair and invokes only the staged public helper over ssh -tt." \
+    "P0q scope: safe local/print-only planning plus bounded summary-path preparation and Mac-side staged bootstrap execution for post-reset Vault workload-auth bootstrap." \
+    "Preparation runs only a fixed remote filesystem command for the canonical bootstrap summary path; execution stages only the dedicated bootstrap public/internal helper pair and invokes only the staged public helper over ssh -tt." \
     "No workload-auth check, reset/unseal, IM execution, support-bundle collection, CP proof, runtime identity generation, Mac .out, report, support bundle, operator summary, helper bundle, unrelated helper staging, or generic helper dispatch occurs." \
     "" \
     "Usage:" \
@@ -426,20 +434,23 @@ recovery_session_vault_workload_auth_bootstrap_usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --help" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --plan" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --inventory" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-summary-path --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "" \
     "Allowed flags:" \
     "  --help" \
     "  --plan" \
     "  --inventory" \
-    "  --ssh-target <target> (only with --execute-bootstrap)" \
+    "  --ssh-target <target> (only with --execute-bootstrap and/or --prepare-summary-path)" \
     "  --execute-bootstrap" \
-    "  --interactive-tty (only with --execute-bootstrap)" \
+    "  --prepare-summary-path" \
+    "  --interactive-tty (only with --execute-bootstrap and/or --prepare-summary-path)" \
     "" \
     "Default behavior: print the bootstrap plan/help and exit zero." \
-    "Topology rules: --execute-bootstrap requires --ssh-target <target> and --interactive-tty; --ssh-target and --interactive-tty are valid only with --execute-bootstrap; the SSH target must be a single target, not an option or shell command." \
+    "Topology rules: --execute-bootstrap and --prepare-summary-path each require --ssh-target <target> and --interactive-tty; --ssh-target and --interactive-tty are valid only with --execute-bootstrap and/or --prepare-summary-path; combined execution prepares the summary path before helper staging or any Vault/root/proof prompt; the SSH target must be a single target, not an option or shell command." \
     "Forbidden in P0q: --host-local, --execute-reset, --dry-run, --unseal-only, --post-unseal-check, --apply, --interactive-sudo, --governed-smoke-command, --keep-staging-on-failure, helper override flags, proof secret value flags, arbitrary commands, unknown flags, duplicate flags, positional args beyond the submode/mode, secret-like flags, and equals-form options." \
-    "Secret posture: Vault bootstrap authority and proof secret values are entered only through the visible/silent remote helper TTY prompt; never through CLI args, env vars, files, logs, .out, reports, support bundles, retained bundles, CP artifacts, transcripts, tee, script, or Codex output." \
+    "Secret posture: summary-path preparation may prompt only for OS sudo through the visible SSH TTY; Vault bootstrap authority and proof secret values are entered only through the visible/silent remote helper TTY prompt after preparation and helper preflight pass; never through CLI args, env vars, files, logs, .out, reports, support bundles, retained bundles, CP artifacts, transcripts, tee, script, or Codex output." \
     "Non-claims: not workload-auth success, not reset/unseal, not workload-auth check, not ES Vault token brokerage, not IM refresh/support-bundle, not CP proof, not runtime identity generation, not Vault production readiness, not governed execution proof, and not Remote Alpha deployment/provisioning/reconciliation architecture."
 }
 
@@ -471,7 +482,11 @@ recovery_session_vault_workload_auth_bootstrap_plan() {
     "  workload-zone config alignment: /etc/execution-substrate/vault/workload-zone-vault-config.json" \
     "" \
     "Implemented execution contract:" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty" \
+    "  runs only bounded remote filesystem preparation for /var/tmp/execution-substrate-remote-alpha and the bootstrap summary/temp path" \
+    "  may use visible OS sudo to make the summary directory/file owner-writable by the helper user with narrow permissions; no Vault/root/proof prompt occurs" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty" \
+    "  optional combined form may add --prepare-summary-path, which runs before helper staging and before any Vault/root/proof prompt" \
     "  stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh" \
     "  root token must never be accepted as a CLI arg, env var, file, .out, report, support bundle, retained bundle, or Codex output" \
     "  any root-token use must happen only through an explicit visible or silent operator prompt in the named secret-sensitive mode" \
@@ -503,6 +518,8 @@ recovery_session_vault_workload_auth_bootstrap_inventory() {
     "  recovery-session vault-workload-auth-bootstrap --help - print safe usage and boundaries" \
     "  recovery-session vault-workload-auth-bootstrap --plan - print the inferred bootstrap plan and future execution contract" \
     "  recovery-session vault-workload-auth-bootstrap --inventory - print this static inventory" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty - run only the bounded remote filesystem preparation command for the canonical bootstrap summary path" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty - prepare the summary path before staging the dedicated bootstrap helper pair" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - stage the dedicated bootstrap helper pair and invoke only the public helper over ssh -tt" \
     "" \
     "not implemented/run in P0q:" \
@@ -519,7 +536,7 @@ recovery_session_vault_workload_auth_bootstrap_inventory() {
     "  workload-zone config /etc/execution-substrate/vault/workload-zone-vault-config.json" \
     "" \
     "safe output posture:" \
-    "  safe modes are text only; execution writes only a remote non-secret summary; no Mac .out; no operator summary; no support bundle; no report" \
+    "  safe modes are text only; preparation creates no final bootstrap summary and no Mac artifact; execution writes only a remote non-secret summary; no Mac .out; no operator summary; no support bundle; no report" \
     "  evidence/projection only; not authority" \
     "  ES does not broker Vault tokens; Vault owns token, secret, and lease authority; SPIRE owns JWT-SVID issuance"
 }
@@ -540,6 +557,8 @@ recovery_session_plan() {
     "  vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - implemented destructive Mac-side operator mode; stages only the existing reset helper, invokes only --execute-reset over ssh -tt, and attempts cleanup without transcript capture" \
     "  vault-workload-auth-check --ssh-target <target> --interactive-tty - implemented Mac-side staged evidence mode; stages only the workload-auth public/internal helper pair, invokes only the staged public helper over ssh -tt, leaves the canonical summary on the remote host, and attempts cleanup without transcript capture" \
     "  vault-workload-auth-bootstrap [--help|--plan|--inventory] - implemented safe local/print-only planning mode; no SSH, no sudo, no Vault, no root-token prompt, no proof secret creation, no workload-auth check, no JSON, no .out, no summary" \
+    "  vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty - implemented bounded remote filesystem preparation mode; prepares only the bootstrap summary directory/file/temp writability path through ssh -tt, may request OS sudo, and creates no final bootstrap summary" \
+    "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty - implemented combined preparation plus staged bootstrap mode; preparation runs before helper staging and before any Vault/root/proof prompt" \
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only the dedicated bootstrap public/internal helper pair, invokes only the public helper over ssh -tt, leaves the non-secret summary remote, and attempts cleanup without transcript capture" \
     "" \
     "future explicit audited slices:" \
@@ -578,6 +597,8 @@ recovery_session_inventory() {
     "  recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty - implemented destructive Mac-side operator mode; stages only scripts/remote_alpha_reset_disposable_vault.sh and invokes only --execute-reset through ssh -tt; no summary file; no transcript capture" \
     "  recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty - implemented Mac-side staged evidence mode; stages only scripts/remote_alpha_vault_workload_auth_check.sh and scripts/internal/remote_alpha_vault_workload_auth_check.sh; invokes only the staged public helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "  recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory] - safe local/print-only planning; no SSH, no sudo, no Vault, no root-token prompt, no proof secret creation, no workload-auth check, no .out, no JSON, no summary" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty - bounded remote filesystem preparation only for /var/tmp/execution-substrate-remote-alpha and the bootstrap summary/temp path; may request OS sudo through ssh -tt; no helper staging, no Vault, no final summary" \
+    "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty - combined route that prepares the summary path before staging the bootstrap helper pair and before any Vault/root/proof prompt" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "" \
     "check-only evidence helpers:" \
@@ -639,6 +660,7 @@ recovery_session_vault_workload_auth_bootstrap() {
   local mode_seen="false"
   local ssh_target_seen="false"
   local execute_bootstrap_seen="false"
+  local prepare_summary_path_seen="false"
   local interactive_tty_seen="false"
   local ssh_target=""
 
@@ -671,10 +693,12 @@ recovery_session_vault_workload_auth_bootstrap() {
         ;;
       --execute-bootstrap)
         require_recovery_option_not_seen "$1" "${execute_bootstrap_seen}"
-        require_recovery_option_not_seen "$1" "${mode_seen}"
         execute_bootstrap_seen="true"
-        mode_seen="true"
-        mode="execute-bootstrap"
+        shift
+        ;;
+      --prepare-summary-path)
+        require_recovery_option_not_seen "$1" "${prepare_summary_path_seen}"
+        prepare_summary_path_seen="true"
         shift
         ;;
       --interactive-tty)
@@ -704,14 +728,22 @@ recovery_session_vault_workload_auth_bootstrap() {
   done
 
   if [[ -z "${mode}" ]]; then
-    mode="plan"
+    if [[ "${execute_bootstrap_seen}" == "true" ]]; then
+      mode="execute-bootstrap"
+    elif [[ "${prepare_summary_path_seen}" == "true" ]]; then
+      mode="prepare-summary-path"
+    else
+      mode="plan"
+    fi
+  elif [[ "${execute_bootstrap_seen}" == "true" || "${prepare_summary_path_seen}" == "true" ]]; then
+    recovery_die "recovery-session vault-workload-auth-bootstrap safe modes are mutually exclusive with --execute-bootstrap and --prepare-summary-path"
   fi
 
-  if [[ "${execute_bootstrap_seen}" != "true" && "${ssh_target_seen}" == "true" ]]; then
-    recovery_die "recovery-session vault-workload-auth-bootstrap --ssh-target is valid only with --execute-bootstrap"
+  if [[ "${execute_bootstrap_seen}" != "true" && "${prepare_summary_path_seen}" != "true" && "${ssh_target_seen}" == "true" ]]; then
+    recovery_die "recovery-session vault-workload-auth-bootstrap --ssh-target is valid only with --execute-bootstrap or --prepare-summary-path"
   fi
-  if [[ "${execute_bootstrap_seen}" != "true" && "${interactive_tty_seen}" == "true" ]]; then
-    recovery_die "recovery-session vault-workload-auth-bootstrap --interactive-tty is valid only with --execute-bootstrap"
+  if [[ "${execute_bootstrap_seen}" != "true" && "${prepare_summary_path_seen}" != "true" && "${interactive_tty_seen}" == "true" ]]; then
+    recovery_die "recovery-session vault-workload-auth-bootstrap --interactive-tty is valid only with --execute-bootstrap or --prepare-summary-path"
   fi
   if [[ "${execute_bootstrap_seen}" == "true" && "${ssh_target_seen}" != "true" ]]; then
     recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap requires --ssh-target <target>"
@@ -719,7 +751,13 @@ recovery_session_vault_workload_auth_bootstrap() {
   if [[ "${execute_bootstrap_seen}" == "true" && "${interactive_tty_seen}" != "true" ]]; then
     recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap requires --interactive-tty"
   fi
-  if [[ "${execute_bootstrap_seen}" == "true" ]]; then
+  if [[ "${prepare_summary_path_seen}" == "true" && "${ssh_target_seen}" != "true" ]]; then
+    recovery_die "recovery-session vault-workload-auth-bootstrap --prepare-summary-path requires --ssh-target <target>"
+  fi
+  if [[ "${prepare_summary_path_seen}" == "true" && "${interactive_tty_seen}" != "true" ]]; then
+    recovery_die "recovery-session vault-workload-auth-bootstrap --prepare-summary-path requires --interactive-tty"
+  fi
+  if [[ "${execute_bootstrap_seen}" == "true" || "${prepare_summary_path_seen}" == "true" ]]; then
     recovery_session_vault_workload_auth_bootstrap_validate_ssh_target "${ssh_target}"
   fi
 
@@ -733,8 +771,11 @@ recovery_session_vault_workload_auth_bootstrap() {
     inventory)
       recovery_session_vault_workload_auth_bootstrap_inventory
       ;;
+    prepare-summary-path)
+      recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote "${ssh_target}"
+      ;;
     execute-bootstrap)
-      recovery_session_vault_workload_auth_bootstrap_remote "${ssh_target}"
+      recovery_session_vault_workload_auth_bootstrap_remote "${ssh_target}" "${prepare_summary_path_seen}"
       ;;
     *)
       recovery_die "unsupported recovery-session vault-workload-auth-bootstrap mode: ${mode}"
@@ -747,8 +788,8 @@ recovery_session_vault_workload_auth_bootstrap_require_command() {
 }
 
 recovery_session_vault_workload_auth_bootstrap_require_local_tty() {
-  [[ -t 0 ]] || recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap requires visible local terminal stdin; no staging or SSH occurred"
-  [[ -t 1 ]] || recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap requires visible local terminal stdout; no staging or SSH occurred"
+  [[ -t 0 ]] || recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap/--prepare-summary-path requires visible local terminal stdin; no staging or SSH occurred"
+  [[ -t 1 ]] || recovery_die "recovery-session vault-workload-auth-bootstrap --execute-bootstrap/--prepare-summary-path requires visible local terminal stdout; no staging or SSH occurred"
 }
 
 recovery_session_vault_workload_auth_bootstrap_validate_ssh_target() {
@@ -758,6 +799,87 @@ recovery_session_vault_workload_auth_bootstrap_validate_ssh_target() {
       recovery_die "recovery-session vault-workload-auth-bootstrap --ssh-target must be a single SSH target, not an option or shell command"
       ;;
   esac
+}
+
+recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote() {
+  local ssh_target=$1
+
+  recovery_session_vault_workload_auth_bootstrap_require_local_tty
+  recovery_session_vault_workload_auth_bootstrap_require_command ssh
+
+  printf '%s\n' \
+    "Preparing Remote Alpha Vault workload-auth bootstrap summary path through an explicit interactive SSH TTY." \
+    "This is OS/filesystem preparation only for ${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR} and ${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY}." \
+    "It may request only an OS sudo password through the visible remote terminal if the helper user cannot write the summary directory." \
+    "No Vault, root token, proof secret, workload-auth check, reset/unseal, IM refresh, support bundle, CP proof, runtime identity generation, Mac .out, operator summary, transcript, tee, or script capture is run or created."
+
+  ssh -tt "${ssh_target}" /bin/bash -s -- "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR}" "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY'
+set -euo pipefail
+summary_dir=$1
+summary_path=$2
+helper_user="$(id -un)"
+helper_group="$(id -gn)"
+prep_tmp="${summary_dir}/.vault-workload-auth-bootstrap-summary.prepare.$$"
+
+die_prepare() {
+  printf 'summary_path_prepare_status=fail\n' >&2
+  printf 'error_classification=%s\n' "$1" >&2
+  rm -f -- "${prep_tmp}" 2>/dev/null || true
+  exit 1
+}
+
+if [[ -e "${summary_dir}" && ! -d "${summary_dir}" ]]; then
+  die_prepare "summary_parent_not_directory"
+fi
+
+if [[ ! -d "${summary_dir}" ]]; then
+  if ! (umask 077 && mkdir -p -- "${summary_dir}") 2>/dev/null; then
+    sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_create_failed"
+  fi
+fi
+
+if [[ ! -d "${summary_dir}" ]]; then
+  die_prepare "summary_parent_missing_after_prepare"
+fi
+
+if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
+  sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_sudo_prepare_failed"
+fi
+
+if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
+  die_prepare "summary_parent_not_writable_after_prepare"
+fi
+
+if [[ -e "${summary_path}" && ! -f "${summary_path}" ]]; then
+  die_prepare "summary_path_not_regular"
+fi
+
+if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
+  sudo chown "${helper_user}:${helper_group}" -- "${summary_path}" || die_prepare "summary_path_chown_failed"
+  sudo chmod 0600 -- "${summary_path}" || die_prepare "summary_path_chmod_failed"
+fi
+
+if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
+  die_prepare "summary_path_not_writable_after_prepare"
+fi
+
+rm -f -- "${prep_tmp}" 2>/dev/null || true
+if ! (umask 077 && : > "${prep_tmp}"); then
+  die_prepare "summary_temp_write_failed"
+fi
+rm -f -- "${prep_tmp}" || die_prepare "summary_temp_cleanup_failed"
+
+printf 'summary_path_prepare_status=pass\n'
+printf 'summary_parent=%s\n' "${summary_dir}"
+printf 'summary_path=%s\n' "${summary_path}"
+printf 'helper_user=%s\n' "${helper_user}"
+printf 'summary_parent_policy=owner_writable_0750_when_sudo_needed\n'
+printf 'summary_file_policy=existing_regular_file_owner_writable_0600_when_sudo_needed\n'
+printf 'final_summary_created=false\n'
+printf 'vault_run=false\n'
+printf 'workload_auth_check_run=false\n'
+printf 'reset_unseal_im_support_bundle_cp_runtime_identity_run=false\n'
+REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY
 }
 
 recovery_session_vault_workload_auth_bootstrap_stage_remote() {
@@ -803,6 +925,7 @@ recovery_session_vault_workload_auth_bootstrap_run_remote() {
 
 recovery_session_vault_workload_auth_bootstrap_remote() {
   local ssh_target=$1
+  local prepare_summary_path=${2:-false}
   local run_id remote_stage_dir remote_public_helper_path remote_internal_helper_path remote_status cleanup_status
 
   recovery_session_vault_workload_auth_bootstrap_require_local_tty
@@ -820,6 +943,10 @@ recovery_session_vault_workload_auth_bootstrap_remote() {
   remote_stage_dir="${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT}/${run_id}"
   remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_vault_workload_auth_bootstrap.sh"
   remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
+
+  if [[ "${prepare_summary_path}" == "true" ]]; then
+    recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote "${ssh_target}"
+  fi
 
   printf '%s\n' \
     "Running Mac-side Vault workload-auth bootstrap through an explicit interactive SSH TTY." \

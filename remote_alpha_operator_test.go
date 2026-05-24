@@ -168,6 +168,8 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty",
 		"recovery-session vault-workload-auth-check --ssh-target <user@host> --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-summary-path --interactive-tty",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
@@ -183,6 +185,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"Mac-side destructive vault-reset-disposable execute-reset",
 		"Mac-side vault-workload-auth-check",
 		"safe vault-workload-auth-bootstrap planning",
+		"bounded vault-workload-auth-bootstrap summary-path preparation",
 		"Mac-side vault-workload-auth-bootstrap execution",
 		"fixed workload-auth public/internal helper pair",
 		"fixed bootstrap public/internal helper pair",
@@ -226,6 +229,11 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty",
+		"bounded filesystem preparation route",
+		"may trigger an OS sudo prompt",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty",
+		"prepare the bootstrap summary path first",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
 		"invokes only --unseal-only through ssh -tt",
@@ -490,7 +498,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
 	assertContainsAll(t, "recovery-session help", help,
 		"Remote Alpha operator workflow: recovery-session",
-		"P0q scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, and Mac-side vault-workload-auth-bootstrap execution",
+		"P0q scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path preparation, and Mac-side vault-workload-auth-bootstrap execution",
 		"Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI",
 		"Codex must not receive, type, log, relay, persist, or summarize the unseal key",
 		"Outputs are evidence/projection/diagnostics only, never authority",
@@ -514,6 +522,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session vault-reset-disposable --ssh-target <user@host> --execute-reset --interactive-tty",
 		"recovery-session vault-workload-auth-check --ssh-target <user@host> --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-summary-path --interactive-tty",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty",
 		"Mac-side dry-run planning only",
 		"destructive Mac-side operator route",
@@ -525,6 +535,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"does not bootstrap workload auth or broker Vault tokens",
 		"safe local/print-only planning",
 		"does not run SSH, sudo, Vault, workload-auth checks, reset/unseal, IM, support bundles, CP proof, runtime identity generation, or live bootstrap",
+		"bounded remote filesystem preparation only",
+		"may use an OS sudo prompt through the visible SSH TTY",
 		"Mac-side staged bootstrap route",
 		"stages only the bootstrap public/internal helper pair",
 		"Vault bootstrap authority and proof secret values only in the visible remote helper prompt",
@@ -555,6 +567,11 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"leaves the canonical summary on the remote host",
 		"vault-workload-auth-bootstrap [--help|--plan|--inventory] - implemented safe local/print-only planning mode",
 		"no SSH, no sudo, no Vault, no root-token prompt, no proof secret creation, no workload-auth check, no JSON, no .out, no summary",
+		"vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty - implemented bounded remote filesystem preparation mode",
+		"may request OS sudo",
+		"creates no final bootstrap summary",
+		"vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty - implemented combined preparation plus staged bootstrap mode",
+		"preparation runs before helper staging and before any Vault/root/proof prompt",
 		"vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode",
 		"RESET DISPOSABLE REMOTE ALPHA VAULT",
 		"visible remote helper/Vault terminal",
@@ -582,6 +599,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"vault-workload-auth-check --ssh-target <target> --interactive-tty",
 		"vault-workload-auth-bootstrap [--help|--plan|--inventory]",
+		"vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty",
+		"vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty",
 		"separate IM actions",
 		"non-claims",
 	)
@@ -606,6 +625,10 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty",
 		"recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty",
+		"bounded remote filesystem preparation only",
+		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty",
+		"prepares the summary path before staging",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 		"implemented host-local explicit operator mode",
 		"implemented Mac-side explicit operator mode",
@@ -1687,6 +1710,10 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrintsPlanI
 				"api_key present and non-empty; value never printed",
 				"/etc/execution-substrate/vault/workload-zone-vault-config.json",
 				"Implemented execution contract",
+				"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty",
+				"runs only bounded remote filesystem preparation",
+				"may use visible OS sudo",
+				"optional combined form may add --prepare-summary-path",
 				"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 				"stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh",
 				"root token must never be accepted as a CLI arg, env var, file, .out, report, support bundle, retained bundle, or Codex output",
@@ -1714,16 +1741,18 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrintsPlanI
 			args: []string{"recovery-session", "vault-workload-auth-bootstrap", "--help"},
 			required: []string{
 				"Remote Alpha recovery-session mode: vault-workload-auth-bootstrap",
-				"P0q scope: safe local/print-only planning plus Mac-side staged bootstrap execution",
+				"P0q scope: safe local/print-only planning plus bounded summary-path preparation and Mac-side staged bootstrap execution",
 				"Allowed flags:",
 				"--help",
 				"--plan",
 				"--inventory",
 				"--ssh-target <target>",
 				"--execute-bootstrap",
+				"--prepare-summary-path",
 				"--interactive-tty",
 				"Default behavior: print the bootstrap plan/help and exit zero.",
 				"Topology rules:",
+				"summary-path preparation may prompt only for OS sudo",
 				"Secret posture:",
 				"not workload-auth success",
 				"not ES Vault token brokerage",
@@ -1738,6 +1767,10 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrintsPlanI
 				"recovery-session vault-workload-auth-bootstrap --help",
 				"recovery-session vault-workload-auth-bootstrap --plan",
 				"recovery-session vault-workload-auth-bootstrap --inventory",
+				"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty",
+				"run only the bounded remote filesystem preparation command",
+				"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty",
+				"prepare the summary path before staging",
 				"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 				"stage the dedicated bootstrap helper pair",
 				"live validation - not performed",
@@ -1746,6 +1779,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrintsPlanI
 				"proof-secrets/data/runtime-identity-vault-login",
 				"proof-secrets/data/codex-runtime-profile",
 				"api_key field present and non-empty; proof secret value never printed",
+				"preparation creates no final bootstrap summary and no Mac artifact",
 				"execution writes only a remote non-secret summary; no Mac .out; no operator summary",
 				"Vault owns token, secret, and lease authority",
 				"SPIRE owns JWT-SVID issuance",
@@ -1778,12 +1812,27 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapRejectsUnsa
 		{
 			name:     "ssh target",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session vault-workload-auth-bootstrap --ssh-target is valid only with --execute-bootstrap", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-workload-auth-bootstrap --ssh-target is valid only with --execute-bootstrap or --prepare-summary-path", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "interactive tty",
 			args:     []string{"--interactive-tty"},
-			required: []string{"recovery-session vault-workload-auth-bootstrap --interactive-tty is valid only with --execute-bootstrap", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session vault-workload-auth-bootstrap --interactive-tty is valid only with --execute-bootstrap or --prepare-summary-path", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "prepare summary path missing ssh target and tty",
+			args:     []string{"--prepare-summary-path"},
+			required: []string{"recovery-session vault-workload-auth-bootstrap --prepare-summary-path requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "prepare summary path missing tty",
+			args:     []string{"--ssh-target", "host", "--prepare-summary-path"},
+			required: []string{"recovery-session vault-workload-auth-bootstrap --prepare-summary-path requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "prepare summary path missing ssh target",
+			args:     []string{"--interactive-tty", "--prepare-summary-path"},
+			required: []string{"recovery-session vault-workload-auth-bootstrap --prepare-summary-path requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "host local",
@@ -1849,6 +1898,16 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapRejectsUnsa
 			name:     "duplicate mode",
 			args:     []string{"--plan", "--inventory"},
 			required: []string{"duplicate option for recovery-session: --inventory", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "duplicate prepare summary path",
+			args:     []string{"--ssh-target", "host", "--prepare-summary-path", "--prepare-summary-path", "--interactive-tty"},
+			required: []string{"duplicate option for recovery-session: --prepare-summary-path", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "safe mode with prepare summary path",
+			args:     []string{"--plan", "--prepare-summary-path"},
+			required: []string{"safe modes are mutually exclusive with --execute-bootstrap and --prepare-summary-path", "No recovery-session live helper or IM execution occurred."},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2710,13 +2769,14 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthCheckStagesOnlyAppro
 }
 
 type fakeRemoteAlphaWorkloadAuthBootstrapHarness struct {
-	localBin   string
-	remoteBin  string
-	remoteRoot string
-	sshLogPath string
-	scpLogPath string
-	rmLogPath  string
-	helperLog  string
+	localBin    string
+	remoteBin   string
+	remoteRoot  string
+	sshLogPath  string
+	scpLogPath  string
+	rmLogPath   string
+	sudoLogPath string
+	helperLog   string
 }
 
 func setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t *testing.T) *fakeRemoteAlphaWorkloadAuthBootstrapHarness {
@@ -2724,13 +2784,14 @@ func setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t *testing.T) *fakeRemoteA
 
 	tmpDir := t.TempDir()
 	h := &fakeRemoteAlphaWorkloadAuthBootstrapHarness{
-		localBin:   filepath.Join(tmpDir, "local-bin"),
-		remoteBin:  filepath.Join(tmpDir, "remote-bin"),
-		remoteRoot: filepath.Join(tmpDir, "remote-root"),
-		sshLogPath: filepath.Join(tmpDir, "ssh.log"),
-		scpLogPath: filepath.Join(tmpDir, "scp.log"),
-		rmLogPath:  filepath.Join(tmpDir, "rm.log"),
-		helperLog:  filepath.Join(tmpDir, "helper.log"),
+		localBin:    filepath.Join(tmpDir, "local-bin"),
+		remoteBin:   filepath.Join(tmpDir, "remote-bin"),
+		remoteRoot:  filepath.Join(tmpDir, "remote-root"),
+		sshLogPath:  filepath.Join(tmpDir, "ssh.log"),
+		scpLogPath:  filepath.Join(tmpDir, "scp.log"),
+		rmLogPath:   filepath.Join(tmpDir, "rm.log"),
+		sudoLogPath: filepath.Join(tmpDir, "sudo.log"),
+		helperLog:   filepath.Join(tmpDir, "helper.log"),
 	}
 	for _, dir := range []string{h.localBin, h.remoteBin, h.remoteRoot} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -2831,6 +2892,74 @@ printf '%%s\n' "$*" >> %q
 exec /bin/rm "$@"
 `, h.rmLogPath))
 
+	writeExecutable(t, h.remoteBin, "sudo", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "$*" >> %q
+cmd="${1:-}"
+shift || true
+case "${cmd}" in
+  install)
+    mode=""
+    dir=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -d)
+          shift
+          ;;
+        -m)
+          mode="$2"
+          shift 2
+          ;;
+        -o|-g)
+          shift 2
+          ;;
+        --)
+          shift
+          dir="$1"
+          shift
+          ;;
+        -*)
+          echo "unexpected fake sudo install arg: $1" >&2
+          exit 64
+          ;;
+        *)
+          dir="$1"
+          shift
+          ;;
+      esac
+    done
+    if [[ -z "${dir}" ]]; then
+      echo "fake sudo install missing directory" >&2
+      exit 64
+    fi
+    mkdir -p -- "${dir}"
+    if [[ -n "${mode}" ]]; then
+      chmod "${mode}" "${dir}"
+    fi
+    ;;
+  chown)
+    while [[ "$#" -gt 0 && "${1:-}" != "--" ]]; do
+      shift
+    done
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    ;;
+  chmod)
+    mode="${1:-}"
+    shift || true
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    exec /bin/chmod "${mode}" "$@"
+    ;;
+  *)
+    echo "unexpected fake sudo command: ${cmd}" >&2
+    exit 64
+    ;;
+esac
+`, h.sudoLogPath))
+
 	return h
 }
 
@@ -2863,6 +2992,203 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapNoTTYFailsB
 	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
 		t.Fatalf("scp should not run when workload-auth bootstrap local TTY guard fails: %v", err)
 	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSummaryPathUsesBoundedRemoteCommand(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "vault-workload-auth-bootstrap-summary.json"))...)
+
+	summaryParent := filepath.Join(h.remoteRoot, "var", "tmp", "execution-substrate-remote-alpha")
+	if err := os.MkdirAll(summaryParent, 0o755); err != nil {
+		t.Fatalf("mkdir summary parent: %v", err)
+	}
+	if err := os.Chmod(summaryParent, 0o555); err != nil {
+		t.Fatalf("chmod summary parent: %v", err)
+	}
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--prepare-summary-path",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake workload-auth bootstrap prepare route failed: %v\noutput=%s\nssh=%s\nsudo=%s\nscp=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.sudoLogPath), readIfExists(h.scpLogPath), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertContainsAll(t, "Mac-side fake workload-auth bootstrap prepare output", output,
+		"Preparing Remote Alpha Vault workload-auth bootstrap summary path through an explicit interactive SSH TTY.",
+		"OS/filesystem preparation only",
+		"may request only an OS sudo password",
+		"summary_path_prepare_status=pass",
+		"summary_parent_policy=owner_writable_0750_when_sudo_needed",
+		"summary_file_policy=existing_regular_file_owner_writable_0600_when_sudo_needed",
+		"final_summary_created=false",
+		"vault_run=false",
+		"workload_auth_check_run=false",
+		"reset_unseal_im_support_bundle_cp_runtime_identity_run=false",
+	)
+	assertContainsNone(t, "Mac-side fake workload-auth bootstrap prepare output forbidden surfaces", output,
+		"Running Mac-side Vault workload-auth bootstrap through an explicit interactive SSH TTY.",
+		"Remote Alpha Vault workload-auth bootstrap helper finished.",
+		"root-token-for-fake-bootstrap",
+		"proof-value-for-fake-bootstrap",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"runtime identity generation was run",
+	)
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty=true"); got != 1 {
+		t.Fatalf("expected exactly one interactive ssh -tt invocation for prepare, got %d log=%q", got, sshLog)
+	}
+	assertContainsAll(t, "fake workload-auth bootstrap prepare ssh log", sshLog,
+		"tty=true target=ds@m75q-test",
+		"/bin/bash -s --",
+		"vault-workload-auth-bootstrap-summary.json",
+	)
+	assertContainsNone(t, "fake workload-auth bootstrap prepare ssh log forbidden capture", sshLog,
+		"exec /bin/bash -c",
+		"execution-substrate-remote-alpha-vault-workload-auth-bootstrap",
+		" tee ",
+		"script ",
+		"transcript",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		".out",
+	)
+
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsAll(t, "fake workload-auth bootstrap prepare sudo log", sudoLog,
+		"install -d -m 0750",
+		"execution-substrate-remote-alpha",
+	)
+	assertContainsNone(t, "fake workload-auth bootstrap prepare sudo log forbidden surfaces", sudoLog,
+		"vault",
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_reset_disposable_vault.sh",
+		"tee ",
+		"script ",
+	)
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run for prepare-summary-path-only route: %v log=%s", err, readIfExists(h.scpLogPath))
+	}
+	if _, err := os.Stat(h.helperLog); !os.IsNotExist(err) {
+		t.Fatalf("bootstrap helper should not run for prepare-summary-path-only route: %v log=%s", err, readIfExists(h.helperLog))
+	}
+	rmLog := readIfExists(h.rmLogPath)
+	assertContainsAll(t, "fake workload-auth bootstrap prepare rm log", rmLog,
+		".vault-workload-auth-bootstrap-summary.prepare.",
+	)
+	assertContainsNone(t, "fake workload-auth bootstrap prepare rm log forbidden staging cleanup", rmLog,
+		"execution-substrate-remote-alpha-vault-workload-auth-bootstrap",
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+	)
+	if _, err := os.Stat(filepath.Join(summaryParent, "vault-workload-auth-bootstrap-summary.json")); !os.IsNotExist(err) {
+		t.Fatalf("prepare-summary-path-only route should not create final summary: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(summaryParent, ".vault-workload-auth-bootstrap-summary.prepare.*"))
+	if err != nil {
+		t.Fatalf("glob prepare temp: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("prepare-summary-path-only route left temp summary probes: %v", matches)
+	}
+	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap prepare route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRunsBeforeHelperExecution(t *testing.T) {
+	h := setupFakeRemoteAlphaWorkloadAuthBootstrapHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "vault-workload-auth-bootstrap-summary.json"))...)
+
+	summaryParent := filepath.Join(h.remoteRoot, "var", "tmp", "execution-substrate-remote-alpha")
+	if err := os.MkdirAll(summaryParent, 0o755); err != nil {
+		t.Fatalf("mkdir summary parent: %v", err)
+	}
+	if err := os.Chmod(summaryParent, 0o555); err != nil {
+		t.Fatalf("chmod summary parent: %v", err)
+	}
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "vault-workload-auth-bootstrap",
+		"--ssh-target", "ds@m75q-test",
+		"--execute-bootstrap",
+		"--prepare-summary-path",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake workload-auth bootstrap combined prepare+execute route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLogPath), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertContainsAll(t, "Mac-side fake workload-auth bootstrap combined output", output,
+		"Preparing Remote Alpha Vault workload-auth bootstrap summary path through an explicit interactive SSH TTY.",
+		"summary_path_prepare_status=pass",
+		"Running Mac-side Vault workload-auth bootstrap through an explicit interactive SSH TTY.",
+		"Staging only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh.",
+		"Remote Alpha Vault workload-auth bootstrap helper finished.",
+		"Workload-auth check remains a separate post-bootstrap command and was not run here.",
+	)
+	prepareOutputIndex := strings.Index(output, "Preparing Remote Alpha Vault workload-auth bootstrap summary path")
+	executeOutputIndex := strings.Index(output, "Running Mac-side Vault workload-auth bootstrap")
+	if prepareOutputIndex < 0 || executeOutputIndex < 0 || prepareOutputIndex > executeOutputIndex {
+		t.Fatalf("expected prepare output before execute output, got output=%s", output)
+	}
+
+	sshLog := mustRead(t, h.sshLogPath)
+	prepareIndex := strings.Index(sshLog, "vault-workload-auth-bootstrap-summary.json")
+	stageIndex := strings.Index(sshLog, "execution-substrate-remote-alpha-vault-workload-auth-bootstrap")
+	helperIndex := strings.Index(sshLog, "exec /bin/bash -c")
+	if prepareIndex < 0 || stageIndex < 0 || helperIndex < 0 {
+		t.Fatalf("expected prepare, stage, and helper ssh invocations in log=%q", sshLog)
+	}
+	if !(prepareIndex < stageIndex && stageIndex < helperIndex) {
+		t.Fatalf("expected prepare before stage before helper execution, log=%q", sshLog)
+	}
+	if got := strings.Count(sshLog, "tty=true"); got != 2 {
+		t.Fatalf("expected two interactive ssh -tt invocations for prepare and helper, got %d log=%q", got, sshLog)
+	}
+	assertContainsNone(t, "fake workload-auth bootstrap combined ssh log forbidden capture", sshLog,
+		" tee ",
+		"script ",
+		"transcript",
+		"--execute-reset",
+		"--unseal-only",
+		"--post-unseal-check",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		".out",
+	)
+
+	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
+	if scpLines := strings.Split(scpLog, "\n"); len(scpLines) != 2 {
+		t.Fatalf("expected exactly two staged file uploads after prepare, got %q", scpLog)
+	}
+	helperLog := mustRead(t, h.helperLog)
+	assertContainsAll(t, "fake workload-auth bootstrap combined helper log", helperLog,
+		"public_args=",
+		"/scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh",
+	)
+	assertContainsNone(t, "fake workload-auth bootstrap combined helper log forbidden args", helperLog,
+		"--prepare-summary-path",
+		"--vault-addr",
+		"--vault-role",
+		"--api-key",
+		"--proof-secret-value",
+		"--execute-reset",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+	)
+	sudoLog := mustRead(t, h.sudoLogPath)
+	assertContainsAll(t, "fake workload-auth bootstrap combined sudo log", sudoLog,
+		"install -d -m 0750",
+	)
+	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap combined route", before)
 }
 
 func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapStagesOnlyApprovedHelpersWithTTYAndCleanup(t *testing.T) {
@@ -3080,11 +3406,13 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT",
+		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY",
 		"recovery_session_vault_workload_auth_bootstrap_plan",
 		"recovery_session_vault_workload_auth_bootstrap_inventory",
 		"recovery_session_vault_workload_auth_bootstrap_require_local_tty",
 		"--execute-bootstrap",
+		"--prepare-summary-path",
 		"--ssh-target",
 		"--interactive-tty",
 		"--host-local",
@@ -3095,6 +3423,10 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"--proof-secret-value",
 		"fixed documented bootstrap values",
 		"proof secret values must never be passed",
+		"recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote",
+		"summary_path_prepare_status=pass",
+		"sudo install -d -m 0750",
+		"final_summary_created=false",
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
 		`ssh -tt "${ssh_target}"`,
@@ -3118,7 +3450,7 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT",
 		"REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT",
 		"REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT",
-		`sudo `,
+		`sudo "${helper_path}"`,
 		`exec "`,
 		"print_refresh_command",
 		"print_support_bundle_command",
@@ -3128,7 +3460,6 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"remote_alpha_vault_workload_auth_check.sh",
 		"remote_alpha_runtime_identity_helper_summary.sh",
 		"mktemp",
-		"summary_path=",
 		"operator-summary",
 		"recovery-session-summary",
 		"tee ",
@@ -3143,10 +3474,14 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 	sourceSection := docSection(t, source, "recovery_session_vault_workload_auth_bootstrap() {", "\nrecovery_session_vault_unseal_existing_require_command() {")
 
 	assertContainsAll(t, "P0q bootstrap execution docs", plans,
-		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper and exactly one Mac-side recovery-session route",
+		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper, exactly one Mac-side recovery-session execution route, and one bounded preparation form for the bootstrap summary path",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
+		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",
 		"`scripts/remote_alpha_vault_workload_auth_bootstrap.sh`",
 		"`scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`",
+		"`--ssh-target <target> --execute-bootstrap --prepare-summary-path --interactive-tty`",
+		"preparation runs before helper staging",
+		"`--prepare-summary-path` follow-up is OS/filesystem preparation only",
 		"visible/silent remote helper TTY prompt",
 		"in-process Vault API client",
 		"must not use `VAULT_TOKEN`",
@@ -3156,15 +3491,21 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"P0q validation remains fake/static only",
 	)
 	assertContainsAll(t, "P0q bootstrap execution remote docs", remoteSection,
-		"`Bounded slice rule`: P0q implements the dedicated secret-sensitive workload-auth bootstrap execution route",
+		"`Bounded slice rule`: P0q implements the dedicated secret-sensitive workload-auth bootstrap execution route and bounded summary-path preparation route",
 		"`scripts/remote_alpha_vault_workload_auth_bootstrap.sh`",
 		"`scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`",
 		"Mac-side operator route:",
 		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
+		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",
+		"Combined form:",
 		"Secret prompt model:",
 		"The human remains the operator.",
 		"ES remains a bounded Remote Alpha operator facade/workflow, not a Vault token broker.",
 		"The helper prompts for Vault bootstrap authority and proof secret values only on the visible/silent remote TTY",
+		"Summary-path preparation:",
+		"Preparation is OS/filesystem setup only",
+		"helper-user/group owned with mode `0750`",
+		"creates no final bootstrap summary in standalone mode",
 		"Vault API strategy:",
 		"in-process HTTPS client",
 		"must not use `VAULT_TOKEN`",
@@ -3181,6 +3522,8 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"`execution-substrate.remote-alpha.vault-workload-auth-bootstrap-summary.v1`",
 		"Allowed execution flags:",
 		"`--execute-bootstrap`",
+		"`--prepare-summary-path`",
+		"Standalone `--prepare-summary-path` runs only the fixed bounded remote preparation command",
 		"Forbidden execution flags and inputs include:",
 		"`--root-token`",
 		"`--vault-token`",
@@ -3193,7 +3536,10 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_STAGE_ROOT",
+		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR",
 		"REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY",
+		"--prepare-summary-path",
+		"recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote",
 		`ssh -tt "${ssh_target}"`,
 		`"${helper_path}"`,
 	)
@@ -3203,7 +3549,7 @@ func TestRemoteAlphaOperatorP0qBootstrapExecutionContractIsImplementedNarrowly(t
 		"remote_alpha_runtime_identity_helper_summary.sh",
 		"remote-alpha-live-refresh",
 		"remote-alpha-live-support-bundle",
-		"sudo ",
+		`sudo "${helper_path}"`,
 	)
 
 	for _, path := range []string{
@@ -3828,6 +4174,9 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		}
 		if liveCommand.MatchString(trimmed) {
 			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) {
+				continue
+			}
+			if strings.HasPrefix(trimmed, `sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}"`) || strings.HasPrefix(trimmed, `sudo chown "${helper_user}:${helper_group}" -- "${summary_path}"`) || strings.HasPrefix(trimmed, `sudo chmod 0600 -- "${summary_path}"`) {
 				continue
 			}
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)
