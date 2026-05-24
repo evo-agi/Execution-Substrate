@@ -2227,12 +2227,15 @@ Summary-path preparation:
 - If the parent is missing, preparation creates it. If the parent exists but is
   not writable/executable by the helper user, preparation uses only an explicit
   operator-authorized OS sudo prompt through the visible SSH TTY to make that
-  parent helper-user/group owned with mode `0750`. If the bootstrap summary file
-  already exists as a regular file but is not writable by the helper user,
-  preparation uses visible sudo to make only that file helper-owned with mode
-  `0600`. Preparation does not delete workload-auth check summaries or other
-  unrelated evidence files, creates and removes only a hidden same-directory
-  temp probe, and creates no final bootstrap summary in standalone mode.
+  parent helper-user/group owned with mode `0750`. The preparation command must
+  keep SSH stdin attached to the visible terminal instead of feeding the remote
+  script over SSH stdin, so sudo controls password echo suppression. If the
+  bootstrap summary file already exists as a regular file but is not writable by
+  the helper user, preparation uses visible sudo to make only that file
+  helper-owned with mode `0600`. Preparation does not delete workload-auth check
+  summaries or other unrelated evidence files, creates and removes only a hidden
+  same-directory temp probe, and creates no final bootstrap summary in
+  standalone mode.
 - In the combined form, preparation must complete before helper staging,
   helper-side preflight, any Vault bootstrap authority prompt, any proof secret
   prompt, and any Vault write. If preparation fails, the route stops before

@@ -2810,6 +2810,13 @@ target="${1:-}"
 shift || true
 printf 'tty=%%s target=%%s args=%%s\n' "${tty}" "${target}" "$*" >> %q
 export PATH="${FAKE_REMOTE_BIN}:${PATH}"
+command_joined="$*"
+if [[ "${command_joined}" == *"summary_path_prepare_status=pass"* ]]; then
+  command_string="${command_joined}"
+  summary_prefix="/var/tmp/execution-substrate-remote-alpha"
+  mapped_command="${command_string//${summary_prefix}/${FAKE_REMOTE_ROOT}${summary_prefix}}"
+  exec /bin/bash -c "${mapped_command}"
+fi
 if [[ "${1:-}" == "/bin/bash" && "${2:-}" == "-s" ]]; then
   shift 2
   if [[ "${1:-}" == "--" ]]; then
@@ -2897,7 +2904,13 @@ set -euo pipefail
 printf '%%s\n' "$*" >> %q
 cmd="${1:-}"
 shift || true
+if [[ "${cmd}" == "-n" ]]; then
+  cmd="${1:-}"
+  shift || true
+fi
 case "${cmd}" in
+  -v)
+    ;;
   install)
     mode=""
     dir=""
@@ -3046,10 +3059,11 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSumm
 	}
 	assertContainsAll(t, "fake workload-auth bootstrap prepare ssh log", sshLog,
 		"tty=true target=ds@m75q-test",
-		"/bin/bash -s --",
+		"/bin/bash -c",
 		"vault-workload-auth-bootstrap-summary.json",
 	)
 	assertContainsNone(t, "fake workload-auth bootstrap prepare ssh log forbidden capture", sshLog,
+		"/bin/bash -s -- /var/tmp/execution-substrate-remote-alpha",
 		"exec /bin/bash -c",
 		"execution-substrate-remote-alpha-vault-workload-auth-bootstrap",
 		" tee ",
@@ -3063,7 +3077,8 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSumm
 
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap prepare sudo log", sudoLog,
-		"install -d -m 0750",
+		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
+		"-n install -d -m 0750",
 		"execution-substrate-remote-alpha",
 	)
 	assertContainsNone(t, "fake workload-auth bootstrap prepare sudo log forbidden surfaces", sudoLog,
@@ -3186,7 +3201,8 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareRuns
 	)
 	sudoLog := mustRead(t, h.sudoLogPath)
 	assertContainsAll(t, "fake workload-auth bootstrap combined sudo log", sudoLog,
-		"install -d -m 0750",
+		"-v -p Remote Alpha OS sudo password for summary path preparation: ",
+		"-n install -d -m 0750",
 	)
 	assertNoNewPaths(t, "Mac-side fake workload-auth bootstrap combined route", before)
 }
@@ -3425,7 +3441,10 @@ func TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapSourceKeeps
 		"proof secret values must never be passed",
 		"recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote",
 		"summary_path_prepare_status=pass",
-		"sudo install -d -m 0750",
+		`ssh -tt "${ssh_target}" "/bin/bash -c ${remote_prepare_command_quoted}"`,
+		`sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`,
+		`sudo -n "$@"`,
+		"run_sudo install -d -m 0750",
 		"final_summary_created=false",
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
@@ -4176,7 +4195,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) {
 				continue
 			}
-			if strings.HasPrefix(trimmed, `sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}"`) || strings.HasPrefix(trimmed, `sudo chown "${helper_user}:${helper_group}" -- "${summary_path}"`) || strings.HasPrefix(trimmed, `sudo chmod 0600 -- "${summary_path}"`) {
+			if strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`) || strings.HasPrefix(trimmed, `sudo -n "$@"`) {
 				continue
 			}
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)

@@ -801,8 +801,16 @@ recovery_session_vault_workload_auth_bootstrap_validate_ssh_target() {
   esac
 }
 
+recovery_session_vault_workload_auth_bootstrap_single_quote_remote() {
+  local value=$1
+  local escaped
+  escaped="$(printf '%s' "${value}" | sed "s/'/'\\\\''/g")"
+  printf "'%s'" "${escaped}"
+}
+
 recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote() {
   local ssh_target=$1
+  local remote_prepare_command remote_prepare_command_quoted summary_dir_literal summary_path_literal
 
   recovery_session_vault_workload_auth_bootstrap_require_local_tty
   recovery_session_vault_workload_auth_bootstrap_require_command ssh
@@ -810,16 +818,19 @@ recovery_session_vault_workload_auth_bootstrap_prepare_summary_path_remote() {
   printf '%s\n' \
     "Preparing Remote Alpha Vault workload-auth bootstrap summary path through an explicit interactive SSH TTY." \
     "This is OS/filesystem preparation only for ${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR} and ${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY}." \
-    "It may request only an OS sudo password through the visible remote terminal if the helper user cannot write the summary directory." \
+    "It may request only an OS sudo password through the visible remote terminal if the helper user cannot write the summary directory; SSH stdin stays attached to that terminal so sudo owns prompt echo handling." \
     "No Vault, root token, proof secret, workload-auth check, reset/unseal, IM refresh, support bundle, CP proof, runtime identity generation, Mac .out, operator summary, transcript, tee, or script capture is run or created."
 
-  ssh -tt "${ssh_target}" /bin/bash -s -- "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR}" "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY}" <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY'
+  printf -v summary_dir_literal '%q' "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR}"
+  printf -v summary_path_literal '%q' "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY}"
+  read -r -d '' remote_prepare_command <<'REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY' || true
 set -euo pipefail
-summary_dir=$1
-summary_path=$2
+summary_dir=__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_DIR__
+summary_path=__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH__
 helper_user="$(id -un)"
 helper_group="$(id -gn)"
 prep_tmp="${summary_dir}/.vault-workload-auth-bootstrap-summary.prepare.$$"
+sudo_ready="false"
 
 die_prepare() {
   printf 'summary_path_prepare_status=fail\n' >&2
@@ -828,13 +839,25 @@ die_prepare() {
   exit 1
 }
 
+prepare_sudo() {
+  if [[ "${sudo_ready}" != "true" ]]; then
+    sudo -v -p "Remote Alpha OS sudo password for summary path preparation: " || die_prepare "summary_path_sudo_authorization_failed"
+    sudo_ready="true"
+  fi
+}
+
+run_sudo() {
+  prepare_sudo
+  sudo -n "$@"
+}
+
 if [[ -e "${summary_dir}" && ! -d "${summary_dir}" ]]; then
   die_prepare "summary_parent_not_directory"
 fi
 
 if [[ ! -d "${summary_dir}" ]]; then
   if ! (umask 077 && mkdir -p -- "${summary_dir}") 2>/dev/null; then
-    sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_create_failed"
+    run_sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_create_failed"
   fi
 fi
 
@@ -843,7 +866,7 @@ if [[ ! -d "${summary_dir}" ]]; then
 fi
 
 if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
-  sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_sudo_prepare_failed"
+  run_sudo install -d -m 0750 -o "${helper_user}" -g "${helper_group}" -- "${summary_dir}" || die_prepare "summary_parent_sudo_prepare_failed"
 fi
 
 if [[ ! -w "${summary_dir}" || ! -x "${summary_dir}" ]]; then
@@ -855,8 +878,8 @@ if [[ -e "${summary_path}" && ! -f "${summary_path}" ]]; then
 fi
 
 if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
-  sudo chown "${helper_user}:${helper_group}" -- "${summary_path}" || die_prepare "summary_path_chown_failed"
-  sudo chmod 0600 -- "${summary_path}" || die_prepare "summary_path_chmod_failed"
+  run_sudo chown "${helper_user}:${helper_group}" -- "${summary_path}" || die_prepare "summary_path_chown_failed"
+  run_sudo chmod 0600 -- "${summary_path}" || die_prepare "summary_path_chmod_failed"
 fi
 
 if [[ -f "${summary_path}" && ! -w "${summary_path}" ]]; then
@@ -880,6 +903,11 @@ printf 'vault_run=false\n'
 printf 'workload_auth_check_run=false\n'
 printf 'reset_unseal_im_support_bundle_cp_runtime_identity_run=false\n'
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PREPARE_SUMMARY
+
+  remote_prepare_command="${remote_prepare_command/__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_DIR__/${summary_dir_literal}}"
+  remote_prepare_command="${remote_prepare_command/__REMOTE_ALPHA_BOOTSTRAP_SUMMARY_PATH__/${summary_path_literal}}"
+  remote_prepare_command_quoted="$(recovery_session_vault_workload_auth_bootstrap_single_quote_remote "${remote_prepare_command}")"
+  ssh -tt "${ssh_target}" "/bin/bash -c ${remote_prepare_command_quoted}"
 }
 
 recovery_session_vault_workload_auth_bootstrap_stage_remote() {

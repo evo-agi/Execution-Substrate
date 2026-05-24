@@ -662,15 +662,17 @@ and same-directory temp writability for that summary. It must not stage helpers,
 run Vault, ask for Vault/root/proof secrets, run workload-auth checks,
 reset/unseal, IM, support bundles, CP proof, or runtime identity generation, or
 write Mac `.out` artifacts or operator summaries. If sudo is needed, it is only
-an OS sudo prompt through the visible SSH TTY. The deterministic mode/ownership
-policy is: create the parent directory when missing; if the parent exists but is
-not writable/executable by the helper user, use visible operator-authorized sudo
-to make that parent owned by the helper user/group with mode `0750`; if the
-bootstrap summary file already exists and is a regular file but is not writable
-by the helper user, use visible sudo to make only that file helper-owned mode
-`0600`; do not delete or rewrite unrelated summaries; create and remove only a
-hidden same-directory temp probe; and create no final bootstrap summary in
-standalone preparation.
+an OS sudo prompt through the visible SSH TTY; the preparation command must keep
+SSH stdin attached to that terminal rather than feeding the remote script over
+SSH stdin, so sudo controls password echo suppression. The deterministic
+mode/ownership policy is: create the parent directory when missing; if the
+parent exists but is not writable/executable by the helper user, use visible
+operator-authorized sudo to make that parent owned by the helper user/group with
+mode `0750`; if the bootstrap summary file already exists and is a regular file
+but is not writable by the helper user, use visible sudo to make only that file
+helper-owned mode `0600`; do not delete or rewrite unrelated summaries; create
+and remove only a hidden same-directory temp probe; and create no final
+bootstrap summary in standalone preparation.
 
 P0q's helper must still run a secret-free writability preflight for the
 canonical remote bootstrap summary path before any Vault bootstrap authority
