@@ -4,9 +4,14 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -178,25 +183,65 @@ func TestWorkstreamAAdmissionDTOsExcludePublicationARSSupportAndCPGrammar(t *tes
 	}
 }
 
-func TestWorkstreamAAdmissionImplementationDoesNotReferenceAGSPublicationFields(t *testing.T) {
-	for _, file := range nonTestGoFiles(t, ".") {
+func TestWorkstreamAESImplementationDoesNotExposeAGSPublicationGrammar(t *testing.T) {
+	assertNoForbiddenWorkstreamASourceTerms(t, workstreamAESBoundaryNonTestGoFiles(t), []workstreamASourceTerm{
+		{
+			name:        "AGS-owned publication Go identifier",
+			identifiers: []string{"Publication", "publication", "Published", "published", "Publisher", "publisher", "BuilderService", "builderService", "BuildLogDigest", "PolicyDecision", "PolicyDecisions", "Invoker", "SourceURI", "SourceUri", "PublishedAt"},
+		},
+		{
+			name:            "AGS-owned publication JSON/string spelling",
+			stringSpellings: []string{"builder_service", "source_uri", "published_at", "publication", "build_log_digest", "policy_decisions", "invoker"},
+		},
+	}, allowedWorkstreamAPublicationOccurrence)
+}
+
+func TestWorkstreamAESBoundaryImportsExcludeARSSupportAndAGSPublicationPackages(t *testing.T) {
+	blocked := []workstreamABlockedImport{
+		{path: "execution-substrate/ars/index", reason: "ARS index support remains ARS-owned and must not become ES grammar"},
+		{path: "execution-substrate/ars/store", reason: "ARS storage support remains ARS-owned and must not become ES grammar"},
+		{path: "execution-substrate/ars/descriptor", reason: "ARS descriptor support remains ARS-owned and must not become ES grammar"},
+		{path: "execution-substrate/ars/manifest", reason: "ARS manifest support remains ARS-owned and must not become ES grammar"},
+		{path: "execution-substrate/ars/support", reason: "ARS support packages remain ARS-owned and must not become ES grammar"},
+		{path: "execution-substrate/ags/", reason: "AGS publication packages remain AGS-owned and must not become ES grammar"},
+	}
+
+	for _, file := range workstreamAESBoundaryNonTestGoFiles(t) {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		text := string(data)
-		for _, forbidden := range []string{
-			".Package.Publication",
-			"BuilderService",
-			"BuildLogDigest",
-			"PolicyDecisions",
-			"evidencev1.Invoker",
-		} {
-			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s must not directly enforce AGS-owned publication field %q", file, forbidden)
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, data, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse imports in %s: %v", file, err)
+		}
+		for _, imported := range parsed.Imports {
+			importPath, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				t.Fatalf("unquote import in %s: %v", file, err)
+			}
+			for _, forbidden := range blocked {
+				if blockedWorkstreamAImportMatches(importPath, forbidden.path) {
+					t.Fatalf("%s imports %q: %s", file, importPath, forbidden.reason)
+				}
 			}
 		}
 	}
+}
+
+func TestWorkstreamAESImplementationExcludesControlPlaneGrammar(t *testing.T) {
+	assertNoForbiddenWorkstreamASourceTerms(t, workstreamAESBoundaryNonTestGoFiles(t), []workstreamASourceTerm{
+		{name: "CP attempt manifest grammar", identifiers: []string{"AttemptManifest"}, stringSpellings: []string{"attempt_manifest", "attempt-manifest"}},
+		{name: "CP review grammar", identifiers: []string{"Review"}, stringSpellings: []string{"review"}},
+		{name: "CP checkpoint grammar", identifiers: []string{"Checkpoint"}, stringSpellings: []string{"checkpoint"}},
+		{name: "CP finalization grammar", identifiers: []string{"Finalization"}, stringSpellings: []string{"finalization"}},
+		{name: "CP approval grammar", identifiers: []string{"Approval"}, stringSpellings: []string{"approval"}},
+		{name: "CP hold grammar", identifiers: []string{"Hold"}, stringSpellings: []string{"hold"}},
+		{name: "CP resume grammar", identifiers: []string{"Resume"}, stringSpellings: []string{"resume"}},
+		{name: "CP reject grammar", identifiers: []string{"Reject"}, stringSpellings: []string{"reject"}},
+		{name: "CP Temporal grammar", identifiers: []string{"Temporal"}, stringSpellings: []string{"Temporal"}},
+		{name: "CP workflow grammar", identifiers: []string{"Workflow"}, stringSpellings: []string{"workflow"}},
+	}, nil)
 }
 
 func TestWorkstreamAControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {
@@ -303,4 +348,132 @@ func nonTestGoFiles(t *testing.T, root string) []string {
 		files = append(files, match)
 	}
 	return files
+}
+
+func workstreamAESBoundaryNonTestGoFiles(t *testing.T) []string {
+	t.Helper()
+
+	files := []string{}
+	for _, root := range []string{".", "../api", "../app"} {
+		files = append(files, nonTestGoFiles(t, root)...)
+	}
+	sort.Strings(files)
+	return files
+}
+
+type workstreamASourceTerm struct {
+	name            string
+	identifiers     []string
+	stringSpellings []string
+}
+
+type workstreamASourceOccurrence struct {
+	file     string
+	line     int
+	term     workstreamASourceTerm
+	spelling string
+	source   string
+}
+
+type workstreamABlockedImport struct {
+	path   string
+	reason string
+}
+
+func assertNoForbiddenWorkstreamASourceTerms(t *testing.T, files []string, terms []workstreamASourceTerm, allow func(workstreamASourceOccurrence) bool) {
+	t.Helper()
+
+	for _, file := range files {
+		for _, occurrence := range forbiddenWorkstreamASourceOccurrences(t, file, terms) {
+			if allow != nil && allow(occurrence) {
+				continue
+			}
+			t.Fatalf("%s:%d must not contain %q as %s: %s", occurrence.file, occurrence.line, occurrence.spelling, occurrence.term.name, occurrence.source)
+		}
+	}
+}
+
+func forbiddenWorkstreamASourceOccurrences(t *testing.T, file string, terms []workstreamASourceTerm) []workstreamASourceOccurrence {
+	t.Helper()
+
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, file, data, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	occurrences := []workstreamASourceOccurrence{}
+
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.Ident:
+			for _, term := range terms {
+				for _, spelling := range term.identifiers {
+					if strings.Contains(n.Name, spelling) {
+						occurrences = append(occurrences, workstreamASourceOccurrence{
+							file:     file,
+							line:     fileSet.Position(n.Pos()).Line,
+							term:     term,
+							spelling: spelling,
+							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+						})
+					}
+				}
+			}
+		case *ast.BasicLit:
+			if n.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(n.Value)
+			if err != nil {
+				value = n.Value
+			}
+			for _, term := range terms {
+				for _, spelling := range term.stringSpellings {
+					if strings.Contains(value, spelling) {
+						occurrences = append(occurrences, workstreamASourceOccurrence{
+							file:     file,
+							line:     fileSet.Position(n.Pos()).Line,
+							term:     term,
+							spelling: spelling,
+							source:   workstreamASourceLine(lines, fileSet.Position(n.Pos()).Line),
+						})
+					}
+				}
+			}
+		}
+		return true
+	})
+	return occurrences
+}
+
+func workstreamASourceLine(lines []string, line int) string {
+	if line <= 0 || line > len(lines) {
+		return ""
+	}
+	return strings.TrimSpace(lines[line-1])
+}
+
+func allowedWorkstreamAPublicationOccurrence(occurrence workstreamASourceOccurrence) bool {
+	if occurrence.spelling != "Publication" && occurrence.spelling != "publication" {
+		return false
+	}
+	// EGS publishes unsigned runtime-trust publication metadata beside the
+	// signed runtime-trust payload. ES ignores that dependency metadata; this is
+	// not AGS claims.package.publication or an ES public admission/API/app field.
+	return filepath.Base(occurrence.file) == "service.go" &&
+		strings.Contains(occurrence.source, "Publication") &&
+		strings.Contains(occurrence.source, "json.RawMessage") &&
+		strings.Contains(occurrence.source, `json:"publication,omitempty"`)
+}
+
+func blockedWorkstreamAImportMatches(importPath string, blockedPath string) bool {
+	if strings.HasSuffix(blockedPath, "/") {
+		return importPath == strings.TrimSuffix(blockedPath, "/") || strings.HasPrefix(importPath, blockedPath)
+	}
+	return importPath == blockedPath || strings.HasPrefix(importPath, blockedPath+"/")
 }
