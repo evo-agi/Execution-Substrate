@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation/design status through P0q:
+Current implementation/design status through P0r:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -324,6 +324,18 @@ Current implementation/design status through P0q:
   OS/filesystem preparation only: it prepares the remote summary directory,
   bootstrap summary file ownership/mode when needed, and same-directory temp
   writability before any helper staging or Vault/root/proof prompt.
+- P0r implements exactly one Mac-side runtime identity evidence route,
+  `recovery-session runtime-identity-summary --ssh-target <target>
+  --interactive-tty`, with static and fake SSH/SCP validation only. P0r stages
+  only `scripts/remote_alpha_runtime_identity_helper_summary.sh`, invokes only
+  that staged helper over `ssh -tt`, keeps the canonical summary on the remote
+  host at
+  `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`,
+  does not copy the summary back to Mac `.out`, creates no operator summary,
+  captures no transcript, handles no secrets, and keeps workload-auth
+  bootstrap/check, reset/unseal, IM refresh, support bundles, CP proof,
+  runtime identity generation, runtime-profile readiness, submit readiness, and
+  retained-result readiness separate.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -349,7 +361,9 @@ Current implementation/design status through P0q:
   local/print-only `vault-workload-auth-bootstrap` planning submode, and the
   P0q Mac-side interactive TTY `vault-workload-auth-bootstrap
   --execute-bootstrap` submode and bounded
-  `vault-workload-auth-bootstrap --prepare-summary-path` preparation submode.
+  `vault-workload-auth-bootstrap --prepare-summary-path` preparation submode,
+  plus the P0r Mac-side interactive TTY `runtime-identity-summary` evidence
+  submode.
   Its safe modes
   do not use SSH or remote staging, inspect live host state, dispatch generic
   helpers, or execute destructive or authority-bearing work. Its execution
@@ -441,6 +455,20 @@ Current implementation/design status through P0q:
   fixed-path user ACLs when needed, prints no config contents, does not stage
   helpers, and does not run Vault, workload-auth checks, reset/unseal, IM,
   support bundles, CP proof, or runtime identity generation.
+- The `runtime-identity-summary --ssh-target <target> --interactive-tty` route
+  is the P0r Mac-side runtime identity evidence route. It requires a visible
+  local terminal before staging, allocates an interactive SSH TTY, stages only
+  `scripts/remote_alpha_runtime_identity_helper_summary.sh`, invokes only the
+  staged helper with no helper override flags, attempts staged-helper cleanup by
+  default, writes no `.out` summary or operator summary, captures no
+  transcript, handles no secrets, does not print full summary JSON, and leaves
+  the canonical summary on the remote host at
+  `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`.
+  The route is evidence/projection only: it is not workload-auth
+  bootstrap/check, not reset/unseal, not ES token brokerage, not runtime
+  identity generation, not runtime-profile readiness, not submit readiness, not
+  retained-result readiness, not governed execution proof, not IM
+  refresh/support-bundle collection, not CP proof, and not production readiness.
 - The combined `vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --prepare-summary-path --prepare-config-readability
   --interactive-tty` route runs summary preparation and then config readability
@@ -454,9 +482,9 @@ Current implementation/design status through P0q:
 - P0q implements the safe local/print-only workload-auth bootstrap modes and
   the Mac-side secret-sensitive bootstrap execution route described here, in
   addition to the previously landed reset/unseal, readiness, and workload-auth
-  evidence routes. Runtime identity
-  summary, Vault service-user check/apply execution, runtime security check,
-  post-unseal check combination, live execute-reset validation, live
+  evidence routes. P0r adds the separate Mac-side runtime identity summary
+  evidence route. Vault service-user check/apply execution, runtime security
+  check, post-unseal check combination, live execute-reset validation, live
   workload-auth bootstrap validation, preinstalled helper bundles, generic
   helper dispatch, and all other staged `es-*` helper delegation remain not
   implemented and require later audited slices.
@@ -502,7 +530,11 @@ prompt-only, TTY-bound execution contract; it still has no implemented
 root-token or proof-secret prompt and no live bootstrap execution. P0q
 implements the prompt-only, TTY-bound workload-auth bootstrap route over the
 dedicated bootstrap public/internal helper pair, with no live validation in
-this slice and no ES Vault token brokerage. In these topologies the
+this slice and no ES Vault token brokerage. P0r adds the Mac-side
+`runtime-identity-summary --ssh-target <target> --interactive-tty` evidence
+route over only the public runtime identity helper summary script; it is not
+runtime identity generation, not runtime-profile readiness, and not submit
+readiness. In these topologies the
 facade itself does not prompt for, read, type, log, relay, persist, summarize,
 or accept the unseal key, root token, client token, Vault token, API key,
 private key, password, JWT-SVID payload, proof secret material, or secret
@@ -556,20 +588,26 @@ Execution-context split:
   validation only. P0q also implements the bounded
   `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
   --prepare-summary-path --interactive-tty` preparation form for summary-path
-  writability only.
+  writability only. P0r adds the Mac-side
+  `recovery-session runtime-identity-summary --ssh-target <target>
+  --interactive-tty` evidence route over only
+  `scripts/remote_alpha_runtime_identity_helper_summary.sh`, with fake/static
+  validation only and no summary copy-back.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
-  runtime identity summary and Vault service-user check. The host-local
-  workload-auth helper remains available as a direct helper, but P0n adds the
-  Mac-side operator topology for that evidence route. P0m does not add a
+  and Vault service-user check. The host-local runtime identity helper remains
+  available as a direct helper, but P0r adds the Mac-side operator topology for
+  that evidence route. The host-local workload-auth helper remains available as
+  a direct helper, but P0n adds the Mac-side operator topology for that evidence
+  route. P0m does not add a
   host-local execute-reset route through the operator facade; the reset
   helper's direct host-local capability remains outside the P0m
   operator-facade route.
 - Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning
   route, the P0m explicit execute-reset operator route, the P0n workload-auth
   evidence route, the P0o safe bootstrap planning surface, and the P0q
-  workload-auth bootstrap execution route:
-  generic remote staging, arbitrary shell passthrough, post-unseal/runtime
-  identity/service-user/IM/support-bundle/CP-proof bundling, live execute-reset
+  workload-auth bootstrap execution route, and the P0r runtime identity summary
+  evidence route: generic remote staging, arbitrary shell passthrough,
+  post-unseal/service-user/IM/support-bundle/CP-proof bundling, live execute-reset
   validation, or live Vault workload-auth bootstrap validation.
 
 Proposed v1/v2 slice sequence:
@@ -609,7 +647,12 @@ Proposed v1/v2 slice sequence:
    fake validation only, no live bootstrap, prompt-only secret handling, no
    transcript capture, and no workload-auth check/reset/unseal/IM/support/CP or
    runtime identity bundling
-13. later separate audit/live-validation and post-reset evidence slices before
+13. Mac-side runtime identity summary evidence route over only the fixed public
+   runtime identity helper summary script, with static and fake SSH/SCP
+   validation only, no summary copy-back, no helper overrides, no
+   workload-auth/reset/unseal/IM/support/CP bundling, no readiness claim, and no
+   transcript capture
+14. later separate audit/live-validation and post-reset evidence slices before
    any live destructive execute-reset validation or post-reset authority claim
 
 Sudo model:
@@ -2598,6 +2641,139 @@ P0q tests:
   `ssh -tt` is used only for execution, only the public bootstrap helper is
   invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no
   Mac `.out` copy-back occurs
+
+### P0r Mac-Side Runtime Identity Summary Recovery Session
+
+`Bounded slice rule`: P0r implements exactly one Mac-side runtime identity
+evidence route:
+
+- `scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary
+  --ssh-target <target> --interactive-tty`
+
+P0r is implementation/self-audit with static and fake SSH/SCP validation only.
+It does not run live SSH, sudo, SPIRE commands, Vault, workload-auth
+bootstrap/check, reset, unseal, Infrastructure Manager refresh,
+support-bundle collection, CP proof, runtime identity summary live, runtime
+identity generation, or network-dependent integration tests during validation.
+
+The route is separate from workload-auth bootstrap/check and reset/unseal. It is
+evidence/projection only over the existing host-local runtime identity helper
+summary script; it is not runtime identity generation, not runtime-profile
+readiness, not submit readiness, not retained-result readiness, not governed
+execution proof, not CP proof, not production readiness, and not Remote Alpha
+deployment/provisioning/reconciliation architecture. It does not settle the
+reopened runtime-identity handoff seam.
+
+Topology rules:
+
+- `--ssh-target <target>` is required.
+- `--interactive-tty` is required.
+- local stdin and stdout must both be visible terminals before staging or SSH.
+- `--host-local` is not accepted for this Mac-side route.
+- bare `runtime-identity-summary` execution must fail.
+
+Allowed flags for `runtime-identity-summary` in P0r are:
+
+- `--help`
+- `--ssh-target <target>`
+- `--interactive-tty`
+
+P0r must reject:
+
+- `--host-local`
+- `--dry-run`
+- `--check-only`
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--execute-bootstrap`
+- `--prepare-summary-path`
+- `--prepare-config-readability`
+- `--prepare-spire-bundle-read`
+- `--apply`
+- `--interactive-sudo`
+- `--governed-smoke-command`
+- runtime identity helper override flags
+- output or summary path overrides
+- runtime-support path overrides
+- SPIRE socket overrides
+- workload SPIFFE ID overrides
+- audience overrides
+- arbitrary commands
+- unknown flags
+- duplicate flags
+- extra positional arguments
+- equals-form options
+- secret-like arguments, including root tokens, unseal keys, client tokens,
+  Vault tokens, JWT-SVID payloads, API keys, private keys, passwords, proof
+  secrets, raw identity payloads, and secret payloads
+
+Secret model:
+
+- The route must not accept, parse, print, log, relay, persist, summarize, or
+  copy JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private
+  keys, passwords, proof secrets, raw identity payloads, or secret material.
+- It must not print full summary JSON.
+- It relies on the existing helper's non-secret summary and redaction behavior.
+
+Staging and invocation:
+
+- stage only `scripts/remote_alpha_runtime_identity_helper_summary.sh`
+- do not stage `scripts/remote_alpha_operator.sh`
+- do not stage `scripts/internal/*`
+- do not stage reset/unseal helpers
+- do not stage workload-auth helpers
+- do not stage workload-auth bootstrap helpers
+- do not stage service-user helpers
+- do not stage config/TLS helpers
+- do not stage binary deployment helpers
+- do not stage bundles or unrelated helpers
+- do not introduce generic helper dispatch
+- allocate an interactive SSH TTY with `ssh -tt`
+- invoke only the staged runtime identity helper summary script
+- pass no runtime identity helper override flags
+- never combine runtime identity evidence with workload-auth bootstrap/check,
+  reset, unseal, post-unseal checks, Infrastructure Manager refresh,
+  support-bundle collection, CP proof, runtime identity generation, runtime
+  profile readiness, submit readiness, or retained-result readiness
+- do not capture stdout or stderr to files
+- do not use `tee`
+- do not run `script`
+- cleanup of the staged helper file/root must be attempted by default
+
+Summary/evidence behavior:
+
+- the canonical summary remains remote at
+  `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`
+- no summary is copied back to Mac `.out` in this route
+- no operator summary file is created
+- after remote success, the operator facade may print only the canonical remote
+  summary path, a reminder that the summary is evidence/projection only and
+  non-authoritative, and printed-only next steps such as
+  `recovery-session --evidence-check --runtime-identity-summary <local-path>`
+  after separate evidence collection
+
+Stop conditions for P0r:
+
+- staging the route requires more files than the public runtime identity helper
+  summary script
+- helper override flags are accepted
+- secret-bearing inputs are accepted
+- JWT-SVIDs, token payloads, raw identity payloads, or secret material are
+  printed or copied
+- the route copies the summary back to Mac `.out`
+- the route prints full summary JSON
+- the route creates operator summaries or generated artifacts
+- the route runs Infrastructure Manager refresh, support-bundle collection, CP
+  proof, reset/unseal, workload-auth bootstrap/check, runtime identity
+  generation, or readiness proof
+- a generic helper dispatcher is introduced
+
+P0r remains bounded ES Remote Alpha proof/support workflow glue only. It is not
+runtime-profile readiness, not submit readiness, not retained-result readiness,
+not governed execution proof, not CP proof, not production readiness, and not
+Remote Alpha production, deployment, provisioning, or reconciliation
+architecture.
 
 ### P0d Interactive Validation Evidence
 

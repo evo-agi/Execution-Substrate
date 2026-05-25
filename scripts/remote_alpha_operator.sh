@@ -13,6 +13,7 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_check.sh"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault_workload_auth_bootstrap.sh"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
+REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"
 REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"
 REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-execute"
@@ -23,6 +24,8 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY_DIR="/var/tmp/executio
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_CONFIG="/etc/execution-substrate/vault/workload-zone-vault-config.json"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_SPIRE_SERVER_SOCKET="/run/spire/server/private/api.sock"
+REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-runtime-identity-summary"
+REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
 READINESS_STAGING_RECORD_ARTIFACT_NAME="es-writable-state-readiness-helper-staging-record.json"
 READINESS_SESSION_DEFAULT_OUTPUT_PREFIX=".out/remote-alpha-m75q-readiness-session"
@@ -174,6 +177,7 @@ usage() {
     "Remote Alpha operator facade" \
     "" \
     "P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route, plus --prepare-summary-path, --prepare-config-readability, and --prepare-spire-bundle-read as bounded remote preparation for bootstrap prerequisites, while preserving safe plan/inventory modes and earlier recovery routes." \
+    "P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty as a bounded Mac-side runtime identity evidence route over the existing public helper." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -201,6 +205,7 @@ usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
     "" \
     "Options for printed command text only:" \
     "  --profile-dir .out/remote-alpha-m75q" \
@@ -208,12 +213,12 @@ usage() {
     "  --ssh-alias host_to_remote_linux_m75q" \
     "  --help, -h" \
     "" \
-    "Implemented through P0q:" \
+    "Implemented through P0r:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, and Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair; writes no operator summary." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair, and Mac-side runtime-identity-summary over the fixed public runtime identity helper; writes no operator summary." \
     "" \
-    "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
+    "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity generation, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
 }
 
@@ -225,7 +230,7 @@ inventory() {
     "interactive operator involvement is expected where an explicit mode says so" \
     "IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise" \
     "" \
-    "implemented through P0q:" \
+    "implemented through P0q plus P0r:" \
     "  help - show bounded facade scope and options" \
     "  inventory - show this static non-secret inventory" \
     "  print-refresh-command - print Mac-side IM live-refresh command text only" \
@@ -245,12 +250,12 @@ inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty - Mac-side bounded capability/filesystem preparation route; prepares only helper-user access for the fixed SPIRE server bundle-read command through fixed-path user ACLs when needed; may trigger an OS sudo prompt; no Vault/root/proof prompt, no helper staging, no SPIRE bundle printing, no .out" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - prepare the bootstrap summary path, then config readability, then SPIRE bundle-read access, then stage and invoke the dedicated bootstrap helper; helper preflights still run before Vault/root/proof prompts" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - Mac-side staged bootstrap route; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public bootstrap helper through ssh -tt; leaves the canonical bootstrap summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json; no transcript, no summary copy-back, no support bundle" \
+    "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - Mac-side staged runtime identity evidence route; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json; no transcript, no summary copy-back, no support bundle" \
     "" \
     "future/not implemented:" \
-    "  runtime identity summary generation - not implemented in P0q; requires later audited evidence route" \
-    "  Vault service-user check/apply execution - not implemented in P0q; remains separate" \
-    "  runtime security check - not implemented in P0q; requires later audited slice" \
-    "  other staged ES helper delegation - not implemented in P0q; requires later audited slice" \
+    "  Vault service-user check/apply execution - not implemented in P0r; remains separate" \
+    "  runtime security check - not implemented in P0r; requires later audited slice" \
+    "  other staged ES helper delegation - not implemented in P0r; requires later audited slice" \
     "" \
     "blocked/reopened:" \
     "  live validation of vault-workload-auth-bootstrap execution - not performed in P0q" \
@@ -262,6 +267,7 @@ inventory() {
     "  vault-reset-disposable --execute-reset is destructive and must be run only when the operator intentionally wants to reset disposable Remote Alpha Vault state; it requires --interactive-tty and the existing exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT in the visible remote helper/Vault terminal" \
     "  vault-workload-auth-check is separate post-reset evidence/projection only: not reset/unseal, not workload-auth bootstrap, not ES token brokerage, not IM refresh/support-bundle collection, not CP proof, not runtime identity generation, and not readiness authority" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: not workload-auth success, not reset/unseal, not workload-auth check, not IM/support-bundle/CP proof, not runtime identity generation, and not ES Vault token brokerage" \
+    "  runtime-identity-summary is separate evidence/projection only: not workload-auth bootstrap/check, not reset/unseal, not IM/support-bundle/CP proof, not runtime-profile readiness, not submit readiness, not retained-result readiness, and not production readiness" \
     "  must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture" \
     "  no operator-owned summary, support bundle, report, or new authority artifact is written; readiness artifacts remain delegated helper evidence"
 }
@@ -269,7 +275,7 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0q scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, and Mac-side vault-workload-auth-bootstrap execution." \
+    "P0r scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution, and Mac-side runtime-identity-summary evidence routing." \
     "The human remains the operator. Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI." \
     "Codex must not receive, type, log, relay, persist, or summarize the unseal key." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
@@ -292,6 +298,7 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
     "" \
     "Allowed flags for all modes:" \
     "  --help" \
@@ -320,6 +327,7 @@ recovery_session_usage() {
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty is bounded remote filesystem preparation only; it may use an OS sudo prompt through the visible SSH TTY and must not stage helpers, run Vault, or create a bootstrap summary." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty is bounded remote SPIRE bundle-read access preparation only; it may use an OS sudo prompt through the visible SSH TTY and must not stage helpers, run Vault, print SPIRE bundle material, or create a bootstrap summary." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty is a Mac-side staged bootstrap route; it stages only the bootstrap public/internal helper pair and relies on the human operator to type Vault bootstrap authority and proof secret values only in the visible remote helper prompt." \
+    "Submode exception: recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty is a Mac-side staged evidence route; it stages only the public runtime identity helper summary script, invokes only that staged helper, leaves the canonical summary on the remote host, and does not claim runtime-profile readiness or submit readiness." \
     "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out." \
     "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
 }
@@ -429,6 +437,34 @@ recovery_session_vault_workload_auth_check_usage() {
     "Topology rules: Mac-side only; --ssh-target is required; --interactive-tty is required; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
     "Forbidden in P0n: --host-local, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --apply, --interactive-sudo, --governed-smoke-command, helper override flags, Vault address/role/audience/path/proof-path overrides, SPIFFE ID overrides, config path overrides, summary path overrides, container probe image overrides, SPIRE socket overrides, arbitrary command strings, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
     "Non-claims: not reset/unseal, not workload-auth bootstrap, not ES Vault token brokerage, not IM refresh/support-bundle, not CP proof, not runtime identity generation, not Vault production readiness, not governed execution proof, and not Remote Alpha deployment/provisioning/reconciliation architecture."
+}
+
+recovery_session_runtime_identity_summary_usage() {
+  printf '%s\n' \
+    "Remote Alpha recovery-session mode: runtime-identity-summary" \
+    "P0r scope: explicit Mac-side staged runtime identity evidence route, separate from workload-auth bootstrap/check and reset/unseal." \
+    "Mac-side mode stages only scripts/remote_alpha_runtime_identity_helper_summary.sh to the remote host." \
+    "The remote command invokes only the staged runtime identity helper summary script through ssh -tt and uses the explicit interactive TTY path for root when required." \
+    "No transcript, tee/script capture, log, .out, report, support bundle, operator summary, IM refresh, workload-auth bootstrap/check, reset/unseal, runtime identity generation, ES token brokerage, Vault command, SPIRE live command by the operator facade, or CP proof is created or run by the facade." \
+    "Canonical remote summary: /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json" \
+    "Summary is evidence/projection only, not readiness authority." \
+    "" \
+    "Secret posture:" \
+    "  The route does not accept, parse, print, copy, log, relay, persist, summarize, or handle JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys, passwords, proof secrets, raw identity payloads, or secret material." \
+    "  It relies only on the existing helper's non-secret summary and redaction behavior." \
+    "  It does not print full summary JSON and does not copy the summary back to Mac .out." \
+    "" \
+    "Usage:" \
+    "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
+    "" \
+    "Allowed flags:" \
+    "  --help" \
+    "  --ssh-target <target>" \
+    "  --interactive-tty" \
+    "" \
+    "Topology rules: Mac-side only; --ssh-target is required; --interactive-tty is required; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
+    "Forbidden in P0r: --host-local, --dry-run, --check-only, --execute-reset, --unseal-only, --post-unseal-check, --execute-bootstrap, --prepare-summary-path, --prepare-config-readability, --prepare-spire-bundle-read, --apply, --interactive-sudo, --governed-smoke-command, helper override flags, output/summary path overrides, runtime-support path overrides, SPIRE socket overrides, workload SPIFFE ID overrides, audience overrides, arbitrary command strings, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
+    "Non-claims: not workload-auth bootstrap/check, not reset/unseal, not ES Vault token brokerage, not IM refresh/support-bundle, not CP proof, not runtime-profile readiness, not submit readiness, not retained-result readiness, not production readiness, not governed execution proof, and not Remote Alpha deployment/provisioning/reconciliation architecture."
 }
 
 recovery_session_vault_workload_auth_bootstrap_usage() {
@@ -562,7 +598,7 @@ recovery_session_vault_workload_auth_bootstrap_inventory() {
 
 recovery_session_plan() {
   printf '%s\n' \
-    "Remote Alpha recovery-session plan (P0q Vault workload-auth bootstrap route added)" \
+    "Remote Alpha recovery-session plan (P0r runtime identity summary route added)" \
     "classification: bounded proof/support helper; evidence/projection/diagnostics only; no authority source" \
     "default behavior: print this plan/help and exit zero; no live tools run" \
     "" \
@@ -581,10 +617,10 @@ recovery_session_plan() {
     "  vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty - implemented bounded remote capability/filesystem preparation mode; prepares only fixed SPIRE server bundle-read access by the helper user through ssh -tt, may request OS sudo for user ACLs, and prints no SPIRE bundle contents" \
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - implemented combined preparation plus staged bootstrap mode; summary preparation, config readability preparation, then SPIRE bundle-read preparation run before helper staging and before any Vault/root/proof prompt" \
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only the dedicated bootstrap public/internal helper pair, invokes only the public helper over ssh -tt, leaves the non-secret summary remote, and attempts cleanup without transcript capture" \
+    "  runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only the public runtime identity helper summary script, invokes only that staged helper over ssh -tt, leaves the canonical summary on the remote host, and attempts cleanup without transcript capture" \
     "" \
     "future explicit audited slices:" \
-    "  runtime identity summary generation - future audited evidence route; runtime identity remains a reopened seam" \
-    "  service-user check/apply - remains separate; apply is mutating and not part of P0q recovery-session" \
+    "  service-user check/apply - remains separate; apply is mutating and not part of P0r recovery-session" \
     "  live validation of workload-auth bootstrap execution - future separate validation only if still needed" \
     "" \
     "separate IM actions:" \
@@ -598,8 +634,9 @@ recovery_session_plan() {
     "  vault-reset-disposable --execute-reset is destructive and requires the existing exact confirmation phrase RESET DISPOSABLE REMOTE ALPHA VAULT in the visible remote helper/Vault terminal" \
     "  vault-workload-auth-check is evidence/projection only: it is not workload-auth bootstrap, not ES Vault token brokerage, not readiness authority, and not reset/unseal" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: it is not workload-auth success, not ES Vault token brokerage, and not workload-auth check execution" \
+    "  runtime-identity-summary is evidence/projection only: it is not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation" \
     "  the phrase, Vault init output, root token, unseal key, and Vault prompt interactions are never accepted through args/env/files/logs/artifacts/Codex output" \
-    "  no post-unseal/runtime-identity/service-user/IM/support-bundle/CP-proof bundling is added in P0q; workload-auth evidence and bootstrap execution remain separate routes" \
+    "  no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0r; workload-auth evidence, workload-auth bootstrap execution, and runtime identity summary evidence remain separate routes" \
     "  vault-unseal-existing does not validate default noninteractive readiness"
 }
 
@@ -623,10 +660,11 @@ recovery_session_inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty - bounded remote capability/filesystem preparation only for fixed SPIRE server bundle-read access; may request OS sudo through ssh -tt for fixed-path user ACLs; no helper staging, no Vault, no SPIRE bundle content printing" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - combined route that prepares the summary path, then config readability, then SPIRE bundle-read access before staging the bootstrap helper pair and before any Vault/root/proof prompt" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json on the remote host; no summary copy-back; no transcript capture" \
+    "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "" \
     "check-only evidence helpers:" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; now also reachable through the P0n Mac-side staged evidence route; not bootstrap; not ES token brokerage" \
-    "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; dry-run/check-only available; future audited evidence route" \
+    "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; now also reachable through the P0r Mac-side staged evidence route; dry-run/check-only remain direct-helper modes, not operator route flags" \
     "  scripts/remote_alpha_migrate_vault_service_user.sh --check-only - host-local Vault service-user migration check; check-only default; apply remains separate" \
     "" \
     "secret-sensitive or destructive helpers:" \
@@ -1952,6 +1990,177 @@ recovery_session_vault_workload_auth_check() {
   recovery_session_vault_workload_auth_check_remote "${ssh_target}"
 }
 
+recovery_session_runtime_identity_summary_require_command() {
+  command -v "$1" >/dev/null 2>&1 || recovery_die "$1 is required for Mac-side runtime-identity-summary staging"
+}
+
+recovery_session_runtime_identity_summary_require_local_tty() {
+  [[ -t 0 ]] || recovery_die "recovery-session runtime-identity-summary requires visible local terminal stdin; no staging or SSH occurred"
+  [[ -t 1 ]] || recovery_die "recovery-session runtime-identity-summary requires visible local terminal stdout; no staging or SSH occurred"
+}
+
+recovery_session_runtime_identity_summary_validate_ssh_target() {
+  local ssh_target=$1
+  case "${ssh_target}" in
+    -*|*[[:space:]]*|*';'*|*'`'*|*'$('*|*'|'*|*'&'*|*'<'*|*'>'*)
+      recovery_die "recovery-session runtime-identity-summary --ssh-target must be a single SSH target, not an option or shell command"
+      ;;
+  esac
+}
+
+recovery_session_runtime_identity_summary_stage_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+  local remote_helper_path=$3
+
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_PREPARE'
+set -euo pipefail
+stage_dir=$1
+rm -rf -- "${stage_dir}"
+mkdir -p -- "${stage_dir}/scripts"
+chmod 0700 "${stage_dir}" "${stage_dir}/scripts"
+REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_PREPARE
+
+  scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}" "${ssh_target}:${remote_helper_path}"
+}
+
+recovery_session_runtime_identity_summary_cleanup_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_CLEANUP'
+set -euo pipefail
+stage_dir=$1
+rm -rf -- "${stage_dir}" || true
+REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_CLEANUP
+}
+
+recovery_session_runtime_identity_summary_run_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+  local remote_helper_path=$3
+  local remote_command remote_shell_command
+
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; if [[ "$(id -u)" == "0" ]]; then "${helper_path}"; else sudo "${helper_path}"; fi' "${remote_stage_dir}" "${remote_helper_path}"
+  printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
+  ssh -tt "${ssh_target}" "${remote_shell_command}"
+}
+
+recovery_session_runtime_identity_summary_print_success_next_steps() {
+  printf '%s\n' \
+    "Canonical remote summary path: ${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY}" \
+    "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
+    "The summary is evidence/projection only: it is not runtime-profile readiness, not submit readiness, not retained-result readiness, not governed execution proof, not CP proof, and not production readiness." \
+    "After separate evidence collection makes the summary available locally, use:" \
+    "bash scripts/remote_alpha_operator.sh recovery-session --evidence-check --runtime-identity-summary <local-path-to-runtime-identity-helper-summary.json>"
+}
+
+recovery_session_runtime_identity_summary_remote() {
+  local ssh_target=$1
+  local run_id remote_stage_dir remote_helper_path remote_status cleanup_status
+
+  recovery_session_runtime_identity_summary_require_local_tty
+  recovery_session_runtime_identity_summary_require_command ssh
+  recovery_session_runtime_identity_summary_require_command scp
+
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  remote_stage_dir="${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT}/${run_id}"
+  remote_helper_path="${remote_stage_dir}/scripts/remote_alpha_runtime_identity_helper_summary.sh"
+
+  printf '%s\n' \
+    "Running Mac-side runtime identity helper summary through an explicit interactive SSH TTY." \
+    "Staging only scripts/remote_alpha_runtime_identity_helper_summary.sh." \
+    "Invoking only the staged runtime identity helper summary script; no helper override flags are accepted or passed." \
+    "Canonical summary stays remote at ${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY}." \
+    "No transcript, tee/script capture, .out, report, support bundle, operator summary, operator-generated JSON, workload-auth bootstrap/check, reset/unseal, IM refresh, ES token brokerage, runtime identity generation, or CP proof is created or run by the facade." \
+    "The operator facade will not read, log, relay, persist, summarize, copy, or print JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys, passwords, proof secrets, raw identity payloads, or secret material."
+
+  if ! recovery_session_runtime_identity_summary_stage_remote "${ssh_target}" "${remote_stage_dir}" "${remote_helper_path}"; then
+    recovery_session_runtime_identity_summary_cleanup_remote "${ssh_target}" "${remote_stage_dir}" || true
+    return 1
+  fi
+
+  set +e
+  recovery_session_runtime_identity_summary_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_helper_path}"
+  remote_status=$?
+  set -e
+
+  set +e
+  recovery_session_runtime_identity_summary_cleanup_remote "${ssh_target}" "${remote_stage_dir}"
+  cleanup_status=$?
+  set -e
+  if [[ "${cleanup_status}" -ne 0 ]]; then
+    printf '%s\n' "warning: Mac-side runtime-identity-summary could not verify remote staged helper cleanup; inspect the route-specific scratch path manually from a visible terminal." >&2
+  fi
+
+  if [[ "${remote_status}" -eq 0 ]]; then
+    recovery_session_runtime_identity_summary_print_success_next_steps
+  else
+    printf '%s\n' "Mac-side runtime-identity-summary route failed; staged helper cleanup was attempted." >&2
+  fi
+
+  if [[ "${remote_status}" -eq 0 && "${cleanup_status}" -ne 0 ]]; then
+    return "${cleanup_status}"
+  fi
+  return "${remote_status}"
+}
+
+recovery_session_runtime_identity_summary() {
+  local ssh_target_seen="false"
+  local interactive_tty_seen="false"
+  local ssh_target=""
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        recovery_session_runtime_identity_summary_usage
+        return 0
+        ;;
+      --ssh-target)
+        require_recovery_option_not_seen "$1" "${ssh_target_seen}"
+        require_recovery_option_value "$1" "$#" "${2:-}"
+        ssh_target_seen="true"
+        ssh_target=$2
+        shift 2
+        ;;
+      --interactive-tty)
+        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
+        interactive_tty_seen="true"
+        shift
+        ;;
+      --host-local|--host-local=*|--dry-run|--dry-run=*|--check-only|--check-only=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--execute-bootstrap|--execute-bootstrap=*|--prepare-summary-path|--prepare-summary-path=*|--prepare-config-readability|--prepare-config-readability=*|--prepare-spire-bundle-read|--prepare-spire-bundle-read=*|--apply|--apply=*|--interactive-sudo|--interactive-sudo=*|--governed-smoke-command|--governed-smoke-command=*)
+        recovery_die "recovery-session runtime-identity-summary forbids $1; P0r is a separate Mac-side evidence route and does not combine workload-auth, reset, unseal, IM, support bundles, runtime identity generation, or CP proof"
+        ;;
+      --output|--output=*|--summary-path|--summary-path=*|--runtime-support-path|--runtime-support-path=*|--spire-agent-socket-path|--spire-agent-socket-path=*|--spire-server-socket-path|--spire-server-socket-path=*|--workload-spiffe-id|--workload-spiffe-id=*|--spiffe-id|--spiffe-id=*|--audience|--audience=*)
+        recovery_die "recovery-session runtime-identity-summary forbids helper override flag $1; P0r uses the fixed runtime identity helper defaults and the canonical remote summary path"
+        ;;
+      --*=*)
+        recovery_die "recovery-session runtime-identity-summary does not accept equals-form options: $1"
+        ;;
+      --*)
+        recovery_die "unknown option for recovery-session runtime-identity-summary: $1"
+        ;;
+      *)
+        recovery_die "unexpected positional argument for recovery-session runtime-identity-summary: $1"
+        ;;
+    esac
+  done
+
+  if [[ "${ssh_target_seen}" != "true" ]]; then
+    recovery_die "recovery-session runtime-identity-summary requires --ssh-target <target>"
+  fi
+  if [[ "${interactive_tty_seen}" != "true" ]]; then
+    recovery_die "recovery-session runtime-identity-summary requires --interactive-tty"
+  fi
+  recovery_session_runtime_identity_summary_validate_ssh_target "${ssh_target}"
+
+  if [[ ! -x "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}" ]]; then
+    recovery_die "Runtime identity helper summary script is not executable: ${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}"
+  fi
+
+  recovery_session_runtime_identity_summary_remote "${ssh_target}"
+}
+
 recovery_session_evidence_check() {
   local strict_known_schema=$1
   local evidence_dir=$2
@@ -2258,6 +2467,11 @@ recovery_session() {
     recovery_session_vault_workload_auth_bootstrap "$@"
     return 0
   fi
+  if [[ "$#" -gt 0 && "$1" == "runtime-identity-summary" ]]; then
+    shift
+    recovery_session_runtime_identity_summary "$@"
+    return 0
+  fi
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -2364,7 +2578,7 @@ recovery_session() {
         shift 2
         ;;
       --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session forbids $1 outside explicit submodes; P0q is safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, and vault-workload-auth-bootstrap submodes"
+        recovery_die "recovery-session forbids $1 outside explicit submodes; P0r is safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, and runtime-identity-summary submodes"
         ;;
       --*=*)
         recovery_die "recovery-session does not accept equals-form options: $1"
@@ -2448,7 +2662,7 @@ print_im_commands() {
 
 refuse_not_implemented() {
   local name=$1
-  printf 'error: subcommand %q is not implemented as a top-level P0q route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
+  printf 'error: subcommand %q is not implemented as a top-level P0r route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
   printf 'No helper execution routing occurred.\n' >&2
   exit 2
 }
@@ -3138,7 +3352,7 @@ main() {
       refuse_not_implemented "${subcommand}"
       ;;
     *)
-      printf 'error: unknown subcommand %q is not implemented in P0q and requires a later audited slice.\n' "${subcommand}" >&2
+      printf 'error: unknown subcommand %q is not implemented in P0r and requires a later audited slice.\n' "${subcommand}" >&2
       printf 'No helper execution routing occurred.\n' >&2
       exit 2
       ;;

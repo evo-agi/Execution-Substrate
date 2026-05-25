@@ -879,6 +879,69 @@ staging of exactly the bootstrap public/internal helper pair, `ssh -tt` only for
 explicit `--interactive-tty`, public helper invocation only, cleanup attempts,
 no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
 
+The P0r implementation/self-audit/merge-readiness slice may add exactly one
+Mac-side recovery-session runtime identity evidence route:
+`scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary
+--ssh-target <target> --interactive-tty`. This route is evidence/projection
+only over the existing host-local runtime identity helper summary script. It
+does not settle the reopened runtime-identity handoff seam and does not claim
+runtime-profile readiness, submit readiness, retained-result readiness,
+governed execution proof, CP proof, or production readiness.
+
+P0r may stage only:
+
+- `scripts/remote_alpha_runtime_identity_helper_summary.sh`
+
+It must resolve that helper from `BASH_SOURCE[0]`, stage it to a
+route-specific remote scratch path, invoke only the staged helper over
+`ssh -tt`, and attempt remote staged-helper cleanup by default. It must not
+stage `scripts/remote_alpha_operator.sh`, `scripts/internal/*`, reset/unseal
+helpers, workload-auth helpers, workload-auth bootstrap helpers, service-user
+helpers, config/TLS helpers, binary deployment helpers, bundles, unrelated
+helpers, or a generic helper dispatcher. It must not source helper scripts,
+construct helper paths from user input, use `tee`, run `script`, create
+transcripts, capture stdout/stderr to files, create Mac `.out`, copy summaries
+back to Mac, create an operator summary, call Infrastructure Manager, collect
+support bundles, run CP proof, run reset/unseal, run workload-auth bootstrap or
+check, or run runtime identity generation.
+
+Allowed P0r route flags are only `--help`, `--ssh-target <target>`, and
+`--interactive-tty`. The route must reject `--host-local`, `--dry-run`,
+`--check-only`, `--apply`, `--execute-reset`, `--unseal-only`,
+`--post-unseal-check`, `--execute-bootstrap`, `--prepare-summary-path`,
+`--prepare-config-readability`, `--prepare-spire-bundle-read`,
+`--interactive-sudo`, `--governed-smoke-command`, helper override flags such as
+`--output`, `--runtime-support-path`, `--spire-agent-socket-path`,
+`--spire-server-socket-path`, `--workload-spiffe-id`, and `--audience`,
+arbitrary commands, unknown flags, duplicate flags, extra positional arguments,
+equals-form options, and all secret-like arguments including root tokens,
+unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API keys, private
+keys, passwords, proof secrets, raw identity payloads, and secret payloads.
+
+P0r keeps the canonical runtime identity helper summary on the remote host at
+`/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`.
+The operator facade must not print full summary JSON and must not persist
+JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys,
+passwords, proof secrets, raw identity payloads, or secret material. After
+remote success it may print only the canonical remote summary path, a reminder
+that the summary is evidence/projection only and non-authoritative, and
+printed-only next steps such as the local `recovery-session --evidence-check
+--runtime-identity-summary <path>` command to use after separate evidence
+collection makes the summary available locally.
+
+P0r validation remains fake/static only. Tests must cover help/plan/inventory
+wording and non-claims; `runtime-identity-summary --help`; missing
+`--ssh-target`; missing `--interactive-tty`; forbidden host-local, dry-run,
+check-only, reset/unseal, workload-auth bootstrap/check, preparation, helper
+override, secret-like, unknown, duplicate, equals-form, and positional inputs;
+fake SSH/SCP staging of exactly the one public runtime identity helper; use of
+`ssh -tt` only for the explicit interactive route; public helper invocation
+only with no helper override flags; cleanup attempts; no transcript/`tee`/`script`;
+no `.out`, operator summary, support bundle, IM, CP proof, reset/unseal,
+workload-auth bootstrap/check, runtime identity generation, generic helper
+dispatch, or `scripts/internal/*`; and preservation of the existing
+reset/workload-auth/readiness route boundaries.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
