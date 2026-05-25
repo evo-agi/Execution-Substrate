@@ -376,9 +376,9 @@ Current implementation/design status through P0u:
   only. P0u stages only
   `scripts/remote_alpha_operator_healthcheck_tls_renew.sh` and
   `scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh`, invokes
-  only `--status` or `--execute-renew`, renews only the host-local operator
-  healthcheck client cert/key with the current
-  `spiffe://execution.internal/operator/local` URI SAN, keeps the canonical
+  only `--status` or `--execute-renew`, currently fails closed before mutation
+  for renew with `unsupported_signing_topology` until a documented CA
+  custody/signing design exists, keeps the canonical
   summary on the remote host at
   `/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`,
   does not copy the summary back to Mac `.out`, creates no operator summary,
@@ -579,12 +579,12 @@ Current implementation/design status through P0u:
   operator healthcheck client TLS recovery route. It uses the same staged
   helper pair, invokes only `--execute-renew`, and is bounded to
   `/etc/execution-substrate/tls/operator-client-cert.pem` and
-  `/etc/execution-substrate/tls/operator-client-key.pem`. It renews the client
-  certificate with `URI:spiffe://execution.internal/operator/local`, backs up
-  current cert/key first, preserves existing owner/group/mode policy, does not
-  restart ES, and runs post-renew `/health` and
-  `/v1/executions:contract` probes using the configured healthcheck env and the
-  renewed operator identity. It is not generic TLS deployment, not IM
+  `/etc/execution-substrate/tls/operator-client-key.pem`. Until a documented
+  CA custody/signing design exists, it fails closed with
+  `unsupported_signing_topology` before backup, install, service restart, or
+  post-renew probes. Any future renewed client certificate must use
+  `URI:spiffe://execution.internal/operator/local`. It does not restart ES. It
+  is not generic TLS deployment, not IM
   reconciliation, not CP proof, not Vault/SPIRE/Nomad change, not workload-auth,
   not runtime identity, not ES service TLS renewal, not ES governance TLS
   renewal, and not production readiness.
@@ -3367,7 +3367,7 @@ Identity rule:
 - The previously observed `spiffe://execution.internal/operator` SAN is a
   legacy mismatch for current authorization semantics and must be reported as
   needing renewal.
-- Renewed operator healthcheck client certificates use subject
+- Any future renewed operator healthcheck client certificates use subject
   `CN=client.operator` and SAN
   `URI:spiffe://execution.internal/operator/local`.
 
@@ -3394,13 +3394,18 @@ Renew behavior:
   `scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh`.
 - The remote command invokes only `--status` or `--execute-renew` through
   `ssh -tt`; it passes no helper override flags.
-- Renewal creates a backup directory with non-secret metadata before replacing
-  the operator cert/key.
-- Ownership/mode policy is preserved from the existing operator cert/key files.
+- Current renewal is design-blocked because no authoritative Remote Alpha CA
+  custody/signing topology exists for this host-local operator client
+  identity.
+- The helper must not assume a retained remote CA private key such as
+  `/etc/execution-substrate/tls/runtime-ca-key.pem` and must not accept ad hoc
+  signing material.
+- It fails closed with `unsupported_signing_topology` before backup, install,
+  service restart, or post-renew probes.
+- It records explicit next-step text requiring a future documented CA
+  custody/signing design.
 - It does not restart ES; client certificate renewal is recorded as not
   requiring service restart in this bounded route.
-- Post-renew verification re-runs certificate verification and probes `/health`
-  plus `/v1/executions:contract` using the renewed operator identity.
 
 Summary/evidence behavior:
 
@@ -3413,9 +3418,9 @@ Summary/evidence behavior:
   summary back to Mac `.out`.
 - Allowed summary fields include paths, byte counts, public certificate
   metadata, certificate file SHA-256, public fingerprints, validity windows,
-  identity classification, key-public-digest match status, backup metadata,
-  owner/group/mode preservation metadata, verification statuses, probe statuses,
-  and explicit non-claims.
+  identity classification, key-public-digest match status, verification
+  statuses, unsupported-signing-topology failure classification, next-step
+  text, not-run backup/install/probe metadata, and explicit non-claims.
 - Forbidden summary/output content includes private key PEM bodies, full
   certificate PEM bodies, private-key backup digests, Vault tokens, root
   tokens, unseal keys, client tokens, JWT-SVID payloads, API keys, passwords,
@@ -3470,10 +3475,9 @@ P0u tests:
   healthcheck TLS helper pair is staged
 - fake renew tests prove private key PEM bodies are not printed or persisted to
   summaries
-- fake renew tests prove ownership/mode preservation and backup before
-  replacement
-- fake post-renew verification proves `/health` and
-  `/v1/executions:contract` use the renewed operator identity
+- fake renew tests prove `unsupported_signing_topology` before backup,
+  install, service restart, or post-renew probes
+- fake/static renew tests prove no retained remote CA private key is required
 - docs tests preserve non-authority, non-production, non-IM, and non-CP claims
 - existing P0s/P0t service and governance TLS tests remain passing
 

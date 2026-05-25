@@ -4305,6 +4305,8 @@ func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSRenewStagesOnly
 	assertContainsAll(t, "Mac-side fake operator healthcheck TLS renew output", output,
 		"Running Mac-side operator healthcheck TLS renewal through an explicit interactive SSH TTY.",
 		"Invoking only the staged public helper with --execute-renew",
+		"unsupported_signing_topology",
+		"documented CA custody/signing design",
 		"spiffe://execution.internal/operator/local",
 		"did not restart ES",
 	)

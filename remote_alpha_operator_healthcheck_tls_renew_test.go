@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -63,9 +62,8 @@ func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, s
 		}
 	}
 
-	caCertPEM, caKey, caKeyPEM := remoteAlphaGenerateCA(t, now.Add(-48*time.Hour), now.Add(365*24*time.Hour))
+	caCertPEM, caKey, _ := remoteAlphaGenerateCA(t, now.Add(-48*time.Hour), now.Add(365*24*time.Hour))
 	writeFile(t, filepath.Join(fixture.tlsDir, "runtime-ca.pem"), caCertPEM, 0o640)
-	writeFile(t, filepath.Join(fixture.tlsDir, "runtime-ca-key.pem"), caKeyPEM, 0o600)
 	writeFile(t, filepath.Join(fixture.tlsDir, "server-client-ca.pem"), caCertPEM, 0o640)
 	writeFile(t, filepath.Join(fixture.tlsDir, "combined-service-ca-bundle.pem"), caCertPEM, 0o640)
 
@@ -91,14 +89,11 @@ func (f *remoteAlphaOperatorHealthcheckTLSFixture) helperEnv(extra ...string) []
 		"REMOTE_ALPHA_TEST_BACKUP_ROOT="+f.backupRoot,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+f.sentinel,
 		"REMOTE_ALPHA_TEST_TIMESTAMP=20260525T040000Z",
-		"REMOTE_ALPHA_TEST_CERT_DAYS=30",
 		"remote_alpha_operator_healthcheck_tls_expected_es_config_path="+f.esConfig,
 		"remote_alpha_operator_healthcheck_tls_expected_healthcheck_env_path="+f.healthEnv,
 		"remote_alpha_operator_healthcheck_tls_expected_operator_cert_path="+filepath.Join(f.tlsDir, "operator-client-cert.pem"),
 		"remote_alpha_operator_healthcheck_tls_expected_operator_key_path="+filepath.Join(f.tlsDir, "operator-client-key.pem"),
 		"remote_alpha_operator_healthcheck_tls_expected_healthcheck_server_ca_path="+filepath.Join(f.tlsDir, "combined-service-ca-bundle.pem"),
-		"remote_alpha_operator_healthcheck_tls_expected_signing_ca_cert_path="+filepath.Join(f.tlsDir, "runtime-ca.pem"),
-		"remote_alpha_operator_healthcheck_tls_expected_signing_ca_key_path="+filepath.Join(f.tlsDir, "runtime-ca-key.pem"),
 	)
 	env = append(env, extra...)
 	return env
@@ -113,8 +108,8 @@ func runRemoteAlphaOperatorHealthcheckTLSRenew(t *testing.T, env []string, args 
 	return string(output), err
 }
 
-func TestRemoteAlphaOperatorHealthcheckTLSStatusDetectsExpiredOperatorCert(t *testing.T) {
-	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, true, "spiffe://execution.internal/operator/local")
+func TestRemoteAlphaOperatorHealthcheckTLSStatusDetectsExpiredLegacyOperatorCertAndExpectedIdentity(t *testing.T) {
+	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, true, "spiffe://execution.internal/operator")
 	output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
 	if err == nil {
 		t.Fatalf("expected expired operator healthcheck cert status to fail, output=%s", output)
@@ -127,7 +122,9 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusDetectsExpiredOperatorCert(t *te
 	assertJSONPathEquals(t, summary, "mode.non_mutating", true)
 	assertJSONPathEquals(t, summary, "result.status", "fail")
 	assertJSONPathEquals(t, summary, "certificate.expired", true)
-	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", true)
+	assertJSONPathEquals(t, summary, "identity.expected_uri", "spiffe://execution.internal/operator/local")
+	assertJSONPathEquals(t, summary, "identity.legacy_operator_uri_present", true)
+	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
 	assertJSONPathEquals(t, summary, "security.private_key_pem_bodies_in_summary", false)
 	assertFileContainsNoSecrets(t, fixture.summary)
 }
@@ -176,121 +173,68 @@ func TestRemoteAlphaOperatorHealthcheckTLSRenewHelperRejectsSecretLikeArgs(t *te
 	assertContainsNone(t, "operator healthcheck secret arg refusal", output, "dummy", "BEGIN PRIVATE KEY", "BEGIN CERTIFICATE")
 }
 
-func TestRemoteAlphaOperatorHealthcheckTLSRenewFakeApplyBacksUpPreservesPolicyAndVerifies(t *testing.T) {
+func TestRemoteAlphaOperatorHealthcheckTLSRenewFailsBeforeMutationWithoutDocumentedSignerTopology(t *testing.T) {
 	fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, true, "spiffe://execution.internal/operator")
-	fixture.writeFakeRenewCommands(t)
-	env := fixture.helperEnv("PATH=" + fixture.localBin + string(os.PathListSeparator) + os.Getenv("PATH"))
 
-	output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, env, "--execute-renew", "--summary-path", fixture.summary)
-	if err != nil {
-		t.Fatalf("fake operator healthcheck renew failed: %v\noutput=%s\nsummary=%s\ninstall=%s\ncurl=%s",
-			err, output, readIfExists(fixture.summary), readIfExists(fixture.installLog), readIfExists(fixture.curlLog))
+	output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv(), "--execute-renew", "--summary-path", fixture.summary)
+	if err == nil {
+		t.Fatalf("expected unsupported operator healthcheck renew topology to fail\noutput=%s\nsummary=%s",
+			output, readIfExists(fixture.summary))
 	}
-	assertContainsAll(t, "fake operator healthcheck renew output", output, fixture.summary)
-	assertContainsNone(t, "fake operator healthcheck renew output", output, "BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "BEGIN CERTIFICATE")
+	assertContainsAll(t, "unsupported operator healthcheck renew output",
+		output,
+		"unsupported_signing_topology",
+		"future documented CA custody/signing design",
+		fixture.summary,
+	)
+	assertContainsNone(t, "unsupported operator healthcheck renew output",
+		output,
+		"runtime-ca-key.pem",
+		"BEGIN PRIVATE KEY",
+		"BEGIN RSA PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+	)
 	assertFileContainsNoSecrets(t, fixture.summary)
 
-	backupDir := strings.TrimSpace(mustRead(t, fixture.sentinel))
-	if backupDir == "" {
-		t.Fatalf("expected backup sentinel")
+	if _, err := os.Stat(fixture.sentinel); !os.IsNotExist(err) {
+		t.Fatalf("backup sentinel should not be written before unsupported renew failure: %v", err)
 	}
-	for _, originalPath := range []string{
-		filepath.Join(fixture.tlsDir, "operator-client-cert.pem"),
-		filepath.Join(fixture.tlsDir, "operator-client-key.pem"),
-	} {
-		rel := strings.TrimPrefix(originalPath, string(os.PathSeparator))
-		if _, err := os.Stat(filepath.Join(backupDir, "material", rel)); err != nil {
-			t.Fatalf("expected backup material %s: %v", rel, err)
-		}
+	if _, err := os.Stat(fixture.installLog); !os.IsNotExist(err) {
+		t.Fatalf("install should not run before unsupported renew failure: %v", err)
 	}
-
-	installLog := mustRead(t, fixture.installLog)
-	assertContainsAll(t, "operator healthcheck install policy", installLog,
-		"file owner=",
-		"mode=0644 dest="+filepath.Join(fixture.tlsDir, "operator-client-cert.pem"),
-		"mode=0600 dest="+filepath.Join(fixture.tlsDir, "operator-client-key.pem"),
-	)
-	curlLog := mustRead(t, fixture.curlLog)
-	assertContainsAll(t, "operator healthcheck renewed identity probes", curlLog,
-		"--cert "+filepath.Join(fixture.tlsDir, "operator-client-cert.pem"),
-		"--key "+filepath.Join(fixture.tlsDir, "operator-client-key.pem"),
-		"https://127.0.0.1:9443/health",
-		"https://127.0.0.1:9443/v1/executions:contract",
-	)
+	if _, err := os.Stat(fixture.curlLog); !os.IsNotExist(err) {
+		t.Fatalf("post-renew probes should not run before unsupported renew failure: %v", err)
+	}
 
 	summary := readJSONMap(t, fixture.summary)
-	assertJSONPathEquals(t, summary, "result.status", "pass")
-	assertJSONPathEquals(t, summary, "backup.status", "created")
-	assertJSONPathEquals(t, summary, "backup.private_key_material_in_summary", false)
-	assertJSONPathEquals(t, summary, "install_policy.status", "pass")
+	assertJSONPathEquals(t, summary, "mode.name", "execute_renew")
+	assertJSONPathEquals(t, summary, "result.status", "fail")
+	assertJSONPathEquals(t, summary, "result.failure_class", "unsupported_signing_topology")
+	assertJSONPathEquals(t, summary, "renewal_topology.status", "unsupported")
+	assertJSONPathEquals(t, summary, "renewal_topology.failure_class", "unsupported_signing_topology")
+	assertJSONPathEquals(t, summary, "renewal_topology.mutation_started", false)
+	assertJSONPathEquals(t, summary, "renewal_topology.retained_remote_ca_key_required", false)
+	assertJSONPathEquals(t, summary, "renewal_topology.documented_signing_topology", false)
+	assertJSONPathEquals(t, summary, "backup.status", "not_run")
+	assertJSONPathEquals(t, summary, "install_policy.status", "not_run")
 	assertJSONPathEquals(t, summary, "service_restarts.status", "not_required")
-	assertJSONPathEquals(t, summary, "probes.status", "pass")
+	assertJSONPathEquals(t, summary, "probes.status", "not_run")
 	assertJSONPathEquals(t, summary, "identity.expected_uri", "spiffe://execution.internal/operator/local")
-	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", true)
-	assertJSONPathEquals(t, summary, "certificate.expired", false)
+	assertJSONPathEquals(t, summary, "identity.legacy_operator_uri_present", true)
+	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
+	assertJSONPathEquals(t, summary, "certificate.expired", true)
 	assertJSONPathEquals(t, summary, "security.private_key_pem_bodies_printed", false)
-	for _, item := range summary["probes"].(map[string]any)["items"].([]any) {
-		record := item.(map[string]any)
-		assertJSONProbeUsesRenewedOperatorIdentity(t, record)
-	}
+	assertContainsNone(t, "unsupported operator healthcheck renew summary", readIfExists(fixture.summary), "runtime-ca-key.pem", "BEGIN PRIVATE KEY", "BEGIN CERTIFICATE")
 }
 
-func (f *remoteAlphaOperatorHealthcheckTLSFixture) writeFakeRenewCommands(t *testing.T) {
-	t.Helper()
-	writeExecutable(t, f.localBin, "install", fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-owner=""
-group=""
-mode=""
-operands=()
-while [[ "$#" -gt 0 ]]; do
-  case "$1" in
-    -o)
-      owner="$2"
-      shift 2
-      ;;
-    -g)
-      group="$2"
-      shift 2
-      ;;
-    -m)
-      mode="$2"
-      shift 2
-      ;;
-    --)
-      shift
-      ;;
-    -*)
-      echo "unexpected fake install arg: $1" >&2
-      exit 64
-      ;;
-    *)
-      operands+=("$1")
-      shift
-      ;;
-  esac
-done
-if [[ "${#operands[@]}" -ne 2 ]]; then
-  echo "fake install expected src dest" >&2
-  exit 64
-fi
-if [[ ! -s "${REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH}" ]]; then
-  echo "backup sentinel missing before replacement" >&2
-  exit 65
-fi
-src="${operands[0]}"
-dest="${operands[1]}"
-mkdir -p -- "$(dirname "${dest}")"
-cp -- "${src}" "${dest}"
-[[ -z "${mode}" ]] || chmod "${mode}" "${dest}"
-printf 'file owner=%%s group=%%s mode=%%s dest=%%s\n' "${owner}" "${group}" "${mode}" "${dest}" >> %q
-`, f.installLog))
-
-	writeExecutable(t, f.localBin, "curl", fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-printf '%%s\n' "$*" >> %q
-printf '{"status":"ok"}\n'
-`, f.curlLog))
+func TestRemoteAlphaOperatorHealthcheckTLSRenewDoesNotUseRetainedRuntimeCAKeyTopology(t *testing.T) {
+	source := mustRead(t, filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_operator_healthcheck_tls_renew.sh"))
+	assertContainsNone(t, "operator healthcheck renew retained CA-key topology",
+		source,
+		"runtime-ca-key.pem",
+		"REMOTE_ALPHA_SIGNING_CA_KEY_PATH",
+		"signing CA private key is missing",
+	)
 }
 
 func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURI string, notBefore, notAfter time.Time) ([]byte, []byte) {

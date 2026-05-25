@@ -1191,8 +1191,8 @@ certificate.
 P0u must treat the previously observed operator identity
 `spiffe://execution.internal/operator` as a legacy mismatch for the current ES
 authorization semantics. The current ES/AGS allowlist accepts the repo-owned
-operator path `spiffe://execution.internal/operator/local`, so renewed operator
-healthcheck certificates must use subject `CN=client.operator` and SAN
+operator path `spiffe://execution.internal/operator/local`, so any future
+renewed operator healthcheck certificates must use subject `CN=client.operator` and SAN
 `URI:spiffe://execution.internal/operator/local` plus the bounded DNS label
 `client.operator`. The helper must detect and report the legacy
 `spiffe://execution.internal/operator` SAN as a status failure that requires
@@ -1215,22 +1215,25 @@ P0u renewal mode requires explicit `--execute-renew` and visible
 `--interactive-tty`. The Mac-side facade must stage only the fixed public and
 internal operator healthcheck TLS helper pair, invoke only `--execute-renew`
 over `ssh -tt`, and pass no helper override flags. The helper may use OS sudo
-only through the visible remote terminal when needed. It must back up the
-current operator cert/key before replacement, generate a fresh short-lived
-operator client certificate with the `operator/local` URI SAN, verify the new
-certificate against the ES server client CA before installing it, install the
-new cert/key while preserving the existing owner/group/mode policy on those
-two files, run safe `/health` and `/v1/executions:contract` probes using the
-renewed operator identity, and record only a remote non-secret summary under
-`/var/tmp/execution-substrate-remote-alpha/`. Client certificate renewal must
-not restart ES unless a later documented code path proves a restart is
-strictly necessary; P0u's bounded helper records ES restart as not required.
+only through the visible remote terminal when needed. Current P0u renewal is
+design-blocked because no authoritative Remote Alpha CA custody/signing
+topology exists for this host-local operator client identity. The helper must
+not assume a retained remote CA private key such as
+`/etc/execution-substrate/tls/runtime-ca-key.pem`, must not accept ad hoc
+signing material, and must fail closed with `failure_class` such as
+`unsupported_signing_topology` before backup, install, service restart, or
+post-renew probes. The summary must include explicit next-step text that
+renewal requires a future documented CA custody/signing design. Client
+certificate renewal must not restart ES unless a later documented code path
+proves a restart is strictly necessary; P0u's bounded helper records ES
+restart as not required.
 
 P0u summaries are evidence/projection only. They may include schema, mode,
 paths, byte counts, certificate file SHA-256, public fingerprints, validity
 windows, configured identity classification, cert/key public-key match status,
-verification statuses, backup metadata, owner/group/mode preservation
-metadata, mTLS probe statuses, and explicit non-claims. They must not include
+verification statuses, unsupported-signing-topology failure classification,
+next-step text, not-run backup/install/probe metadata, and explicit
+non-claims. They must not include
 private key PEM bodies, full certificate PEM bodies, Vault tokens, root
 tokens, unseal keys, client tokens, JWT-SVIDs, API keys, passwords, proof
 secrets, private-key backup digests, raw secret-bearing command output,
@@ -1255,10 +1258,9 @@ status detecting the legacy operator URI mismatch, renew refusing without
 `--ssh-target`, secret-like argument rejection, fake SSH/SCP tests proving
 exactly the fixed public/internal operator healthcheck TLS helper pair is
 staged, fake renew tests proving private key PEM bodies are not printed or
-persisted to summaries, fake renew tests proving owner/group/mode preservation,
-fake renew tests proving backups are made before replacement, fake post-renew
-verification proving `/health` and `/v1/executions:contract` probes use the
-renewed operator identity, docs tests preserving
+persisted to summaries, renew failing closed with
+`unsupported_signing_topology` before backup/install/service restart/probes,
+renew not requiring a retained remote CA private key, docs tests preserving
 non-authority/non-production/non-IM/non-CP claims, and preservation of existing
 P0s/P0t service/governance TLS tests.
 

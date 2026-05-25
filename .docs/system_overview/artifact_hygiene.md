@@ -69,15 +69,16 @@ with schema
 also a non-secret helper summary only. It may include paths, byte counts,
 certificate file SHA-256 digests, public fingerprints, validity windows,
 configured SPIFFE URI/SAN classification, cert/key public-key match status,
-backup metadata, owner/group/mode preservation metadata, mTLS `/health` and
-`/v1/executions:contract` probe statuses, verification statuses, and explicit
-non-claim labels. It must not be copied back to Mac `.out` by the operator
-facade, must not become an IM input or CP proof artifact, and must not contain
-private key PEM bodies, full certificate PEM bodies, private-key backup
-digests, Vault tokens, root tokens, unseal keys, client tokens, JWT-SVID
-payloads, API keys, passwords, proof secrets, terminal transcripts,
-support-bundle content, raw retained bundles, raw workspace contents, or raw
-secret-bearing command output.
+current file policy metadata, verification statuses, safe mTLS `/health` and
+`/v1/executions:contract` probe statuses, unsupported-signing-topology failure
+classification, future CA custody/signing next-step text, not-run
+backup/install/probe metadata, and explicit non-claim labels. It must not be
+copied back to Mac `.out` by the operator facade, must not become an IM input
+or CP proof artifact, and must not contain private key PEM bodies, full
+certificate PEM bodies, private-key backup digests, Vault tokens, root tokens,
+unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
+secrets, terminal transcripts, support-bundle content, raw retained bundles,
+raw workspace contents, or raw secret-bearing command output.
 
 ## 3. Tracked generated-artifact allowlist
 

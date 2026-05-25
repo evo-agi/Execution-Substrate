@@ -11,15 +11,12 @@ remote_alpha_operator_healthcheck_tls_defaults() {
   REMOTE_ALPHA_SUMMARY_PATH="${REMOTE_ALPHA_SUMMARY_PATH:-${remote_alpha_operator_healthcheck_tls_summary_path_default}}"
   REMOTE_ALPHA_SUMMARY_PATH_EXPLICIT="false"
   REMOTE_ALPHA_BACKUP_ROOT="${REMOTE_ALPHA_TEST_BACKUP_ROOT:-${remote_alpha_operator_healthcheck_tls_backup_root_default}}"
-  REMOTE_ALPHA_CERT_DAYS="${REMOTE_ALPHA_TEST_CERT_DAYS:-90}"
 
   REMOTE_ALPHA_ES_CONFIG_PATH="${remote_alpha_operator_healthcheck_tls_expected_es_config_path:-/etc/execution-substrate/es.json}"
   REMOTE_ALPHA_HEALTHCHECK_ENV_PATH="${remote_alpha_operator_healthcheck_tls_expected_healthcheck_env_path:-/etc/execution-substrate/healthcheck.env}"
   REMOTE_ALPHA_OPERATOR_CERT_PATH="${remote_alpha_operator_healthcheck_tls_expected_operator_cert_path:-/etc/execution-substrate/tls/operator-client-cert.pem}"
   REMOTE_ALPHA_OPERATOR_KEY_PATH="${remote_alpha_operator_healthcheck_tls_expected_operator_key_path:-/etc/execution-substrate/tls/operator-client-key.pem}"
   REMOTE_ALPHA_HEALTHCHECK_SERVER_CA_PATH="${remote_alpha_operator_healthcheck_tls_expected_healthcheck_server_ca_path:-/etc/execution-substrate/tls/combined-service-ca-bundle.pem}"
-  REMOTE_ALPHA_SIGNING_CA_CERT_PATH="${remote_alpha_operator_healthcheck_tls_expected_signing_ca_cert_path:-/etc/execution-substrate/tls/runtime-ca.pem}"
-  REMOTE_ALPHA_SIGNING_CA_KEY_PATH="${remote_alpha_operator_healthcheck_tls_expected_signing_ca_key_path:-/etc/execution-substrate/tls/runtime-ca-key.pem}"
   REMOTE_ALPHA_EXPECTED_OPERATOR_SPIFFE_URI="${REMOTE_ALPHA_EXPECTED_OPERATOR_SPIFFE_URI:-spiffe://execution.internal/operator/local}"
   REMOTE_ALPHA_LEGACY_OPERATOR_SPIFFE_URI="${REMOTE_ALPHA_LEGACY_OPERATOR_SPIFFE_URI:-spiffe://execution.internal/operator}"
 }
@@ -37,7 +34,9 @@ Optional flags:
   --summary-path </path/to/operator-healthcheck-tls-renew-summary.json>
   --help
 
-Status/check-only is non-mutating. Renew requires --execute-renew.
+Status/check-only is non-mutating. Renew requires --execute-renew and currently
+fails closed with unsupported_signing_topology before backup/install until a
+documented CA custody/signing design exists.
 This helper is bounded to the fixed Remote Alpha host-local operator healthcheck client TLS material only.
 EOF
 }
@@ -143,8 +142,6 @@ remote_alpha_operator_healthcheck_tls_collect_status() {
     "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" \
     "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" \
     "${REMOTE_ALPHA_HEALTHCHECK_SERVER_CA_PATH}" \
-    "${REMOTE_ALPHA_SIGNING_CA_CERT_PATH}" \
-    "${REMOTE_ALPHA_SIGNING_CA_KEY_PATH}" \
     "${REMOTE_ALPHA_EXPECTED_OPERATOR_SPIFFE_URI}" \
     "${REMOTE_ALPHA_LEGACY_OPERATOR_SPIFFE_URI}" <<'PY'
 import datetime as dt
@@ -169,10 +166,8 @@ healthcheck_env_path = pathlib.Path(sys.argv[9])
 operator_cert_path = sys.argv[10]
 operator_key_path = sys.argv[11]
 healthcheck_server_ca_path = sys.argv[12]
-signing_ca_cert_path = sys.argv[13]
-signing_ca_key_path = sys.argv[14]
-expected_spiffe_uri = sys.argv[15]
-legacy_spiffe_uri = sys.argv[16]
+expected_spiffe_uri = sys.argv[13]
+legacy_spiffe_uri = sys.argv[14]
 
 secret_patterns = [
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
@@ -433,6 +428,23 @@ service_restarts = {
 if restart_meta_path and restart_meta_path.is_file():
     service_restarts = json.loads(restart_meta_path.read_text(encoding="utf-8"))
 
+unsupported_renewal_next_step = (
+    "Operator healthcheck client certificate renewal requires a future documented "
+    "CA custody/signing design before any backup, install, service restart, or "
+    "post-renew probe may run."
+)
+renewal_topology = {
+    "status": "unsupported" if mode == "execute_renew" else "not_applicable",
+    "failure_class": "unsupported_signing_topology" if mode == "execute_renew" else "",
+    "mutation_started": False,
+    "backup_allowed": False if mode == "execute_renew" else None,
+    "install_allowed": False if mode == "execute_renew" else None,
+    "service_restart_allowed": False if mode == "execute_renew" else None,
+    "retained_remote_ca_key_required": False,
+    "documented_signing_topology": False,
+    "next_step": unsupported_renewal_next_step if mode == "execute_renew" else "",
+}
+
 blockers = []
 if es_error:
     blockers.append(f"es_config:{es_error}")
@@ -448,12 +460,7 @@ for record in verification:
     if record.get("status") == "fail":
         blockers.append(f"verification {record['label']} failed")
 if mode == "execute_renew":
-    if backup.get("status") != "created":
-        blockers.append("backup was not created before replacement")
-    if install_policy.get("status") != "pass":
-        blockers.append("owner/group/mode preservation install policy did not pass")
-    if probe_meta.get("status") != "pass":
-        blockers.append("post-renew healthcheck probes did not pass")
+    blockers.append("unsupported_signing_topology: renew requires a future documented CA custody/signing design before backup/install")
 
 summary = {
     "schema_version": schema_version,
@@ -478,7 +485,6 @@ summary = {
         "operator_key_path": operator_key_path,
         "server_ca_bundle_path": healthcheck_server_ca_path,
         "es_server_client_ca_path": es_client_ca,
-        "signing_ca_cert_path": signing_ca_cert_path,
         "health_url": health_url,
         "contract_url": contract_url,
         "covered_paths": [operator_cert_path, operator_key_path],
@@ -492,6 +498,7 @@ summary = {
     "certificate": cert,
     "key_pair": key_pair,
     "identity": identity,
+    "renewal_topology": renewal_topology,
     "verification": verification,
     "probes": probe_meta,
     "backup": backup,
@@ -521,6 +528,8 @@ summary = {
     "result": {
         "status": "pass" if not blockers else "fail",
         "ok": not blockers,
+        "failure_class": "unsupported_signing_topology" if mode == "execute_renew" else "",
+        "next_step": unsupported_renewal_next_step if mode == "execute_renew" else "",
         "blockers": blockers,
     },
 }
@@ -598,33 +607,6 @@ PY
   if [[ -n "${REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH:-}" ]]; then
     printf '%s\n' "${backup_dir}" >"${REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH}"
   fi
-}
-
-remote_alpha_operator_healthcheck_tls_generate_material() {
-  local work_dir=$1
-  local ext_path="${work_dir}/operator-client.ext"
-  local csr_path="${work_dir}/operator-client.csr"
-
-  cat >"${ext_path}" <<EOF
-basicConstraints=CA:FALSE
-keyUsage=digitalSignature,keyEncipherment
-extendedKeyUsage=clientAuth
-subjectAltName=DNS:client.operator,URI:${REMOTE_ALPHA_EXPECTED_OPERATOR_SPIFFE_URI}
-EOF
-  openssl req -newkey rsa:2048 -nodes \
-    -keyout "${work_dir}/operator-client-key.pem" \
-    -out "${csr_path}" \
-    -subj "/CN=client.operator" >/dev/null 2>&1
-  openssl x509 -req \
-    -in "${csr_path}" \
-    -CA "${REMOTE_ALPHA_SIGNING_CA_CERT_PATH}" \
-    -CAkey "${REMOTE_ALPHA_SIGNING_CA_KEY_PATH}" \
-    -CAcreateserial \
-    -out "${work_dir}/operator-client-cert.pem" \
-    -days "${REMOTE_ALPHA_CERT_DAYS}" \
-    -sha256 \
-    -extfile "${ext_path}" >/dev/null 2>&1
-  rm -f -- "${csr_path}" "${REMOTE_ALPHA_SIGNING_CA_CERT_PATH}.srl" "${work_dir}"/*.srl
 }
 
 remote_alpha_operator_healthcheck_tls_es_client_ca_path() {
@@ -845,42 +827,8 @@ PY
 }
 
 remote_alpha_operator_healthcheck_tls_main_execute_renew() {
-  local tmpdir=$1
-  local backup_meta_path=$2
-  local install_meta_path=$3
-  local restart_meta_path=$4
-  local probe_meta_path=$5
-  local work_dir=$6
-  local policy_path="${tmpdir}/install-policy-before.json"
-  local es_client_ca_path
-
-  remote_alpha_operator_healthcheck_tls_require_command install || return 1
-  remote_alpha_operator_healthcheck_tls_require_command curl || return 1
-
-  [[ -s "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" ]] || { echo "operator certificate is missing: ${REMOTE_ALPHA_OPERATOR_CERT_PATH}" >&2; return 1; }
-  [[ -s "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" ]] || { echo "operator private key is missing: ${REMOTE_ALPHA_OPERATOR_KEY_PATH}" >&2; return 1; }
-  [[ -s "${REMOTE_ALPHA_SIGNING_CA_CERT_PATH}" ]] || { echo "signing CA certificate is missing: ${REMOTE_ALPHA_SIGNING_CA_CERT_PATH}" >&2; return 1; }
-  [[ -s "${REMOTE_ALPHA_SIGNING_CA_KEY_PATH}" ]] || { echo "signing CA private key is missing; renew cannot proceed without operator-authorized local CA material" >&2; return 1; }
-
-  es_client_ca_path="$(remote_alpha_operator_healthcheck_tls_es_client_ca_path)"
-  [[ -n "${es_client_ca_path}" && -s "${es_client_ca_path}" ]] || { echo "ES server client CA bundle is missing or not configured" >&2; return 1; }
-
-  remote_alpha_operator_healthcheck_tls_create_backup \
-    "${backup_meta_path}" \
-    "${REMOTE_ALPHA_OPERATOR_CERT_PATH}" \
-    "${REMOTE_ALPHA_OPERATOR_KEY_PATH}" || return 1
-
-  mkdir -p -- "${work_dir}"
-  chmod 0700 "${work_dir}" 2>/dev/null || true
-  remote_alpha_operator_healthcheck_tls_generate_material "${work_dir}" || return 1
-  openssl verify -purpose sslclient -CAfile "${es_client_ca_path}" "${work_dir}/operator-client-cert.pem" >/dev/null || {
-    echo "generated operator certificate does not verify against the ES server client CA bundle" >&2
-    return 1
-  }
-
-  remote_alpha_operator_healthcheck_tls_install_material "${work_dir}" "${policy_path}" "${install_meta_path}" || return 1
-  remote_alpha_operator_healthcheck_tls_restart_meta "${restart_meta_path}" || return 1
-  remote_alpha_operator_healthcheck_tls_run_probes "${probe_meta_path}" "${tmpdir}" || return 1
+  echo "unsupported_signing_topology: operator healthcheck TLS renewal requires a future documented CA custody/signing design before backup/install" >&2
+  return 1
 }
 
 remote_alpha_operator_healthcheck_tls_renew_main() {
