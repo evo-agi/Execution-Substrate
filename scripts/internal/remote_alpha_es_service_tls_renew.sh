@@ -3,8 +3,10 @@ set -euo pipefail
 set +x
 
 remote_alpha_es_service_tls_renew_schema_version="execution-substrate.remote-alpha.es-service-tls-renew-summary.v1"
+remote_alpha_es_governance_tls_renew_schema_version="execution-substrate.remote-alpha.es-governance-tls-renew-summary.v1"
 remote_alpha_es_service_tls_renew_backup_root_default="/var/tmp/execution-substrate-remote-alpha"
 remote_alpha_es_service_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json"
+remote_alpha_es_governance_tls_renew_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json"
 
 remote_alpha_es_service_tls_renew_init_expected_inputs() {
   remote_alpha_es_service_tls_renew_expected_ars_config_path="${remote_alpha_es_service_tls_renew_expected_ars_config_path:-/etc/execution-substrate/ars.json}"
@@ -14,11 +16,14 @@ remote_alpha_es_service_tls_renew_init_expected_inputs() {
   remote_alpha_es_service_tls_renew_expected_ars_tls_dir="${remote_alpha_es_service_tls_renew_expected_ars_tls_dir:-/etc/execution-substrate/ars-tls}"
   remote_alpha_es_service_tls_renew_expected_ags_tls_dir="${remote_alpha_es_service_tls_renew_expected_ags_tls_dir:-/etc/execution-substrate/tls}"
   remote_alpha_es_service_tls_renew_expected_es_tls_dir="${remote_alpha_es_service_tls_renew_expected_es_tls_dir:-/etc/execution-substrate/es-tls}"
+  remote_alpha_es_service_tls_renew_expected_egs_tls_dir="${remote_alpha_es_service_tls_renew_expected_egs_tls_dir:-/etc/execution-substrate/egs-tls}"
 }
 
 remote_alpha_es_service_tls_renew_defaults() {
   remote_alpha_es_service_tls_renew_init_expected_inputs
+  REMOTE_ALPHA_TLS_SCOPE="artifact-registry"
   REMOTE_ALPHA_OPERATION_MODE="status"
+  REMOTE_ALPHA_SUMMARY_PATH_EXPLICIT="false"
   REMOTE_ALPHA_SUMMARY_PATH="${REMOTE_ALPHA_SUMMARY_PATH:-${remote_alpha_es_service_tls_renew_summary_path_default}}"
   REMOTE_ALPHA_BACKUP_ROOT="${REMOTE_ALPHA_TEST_BACKUP_ROOT:-${remote_alpha_es_service_tls_renew_backup_root_default}}"
   REMOTE_ALPHA_CERT_DAYS="${REMOTE_ALPHA_TEST_CERT_DAYS:-90}"
@@ -29,6 +34,7 @@ remote_alpha_es_service_tls_renew_defaults() {
   REMOTE_ALPHA_ARS_TLS_DIR="${remote_alpha_es_service_tls_renew_expected_ars_tls_dir}"
   REMOTE_ALPHA_AGS_TLS_DIR="${remote_alpha_es_service_tls_renew_expected_ags_tls_dir}"
   REMOTE_ALPHA_ES_TLS_DIR="${remote_alpha_es_service_tls_renew_expected_es_tls_dir}"
+  REMOTE_ALPHA_EGS_TLS_DIR="${remote_alpha_es_service_tls_renew_expected_egs_tls_dir}"
   REMOTE_ALPHA_ARS_CA_PATH="${REMOTE_ALPHA_ARS_TLS_DIR}/runtime-ca.pem"
   REMOTE_ALPHA_ARS_SERVER_CERT_PATH="${REMOTE_ALPHA_ARS_TLS_DIR}/ars-server-cert.pem"
   REMOTE_ALPHA_ARS_SERVER_KEY_PATH="${REMOTE_ALPHA_ARS_TLS_DIR}/ars-server-key.pem"
@@ -38,6 +44,12 @@ remote_alpha_es_service_tls_renew_defaults() {
   REMOTE_ALPHA_ES_CLIENT_CERT_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/artifact-registry-client-cert.pem"
   REMOTE_ALPHA_ES_CLIENT_KEY_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/artifact-registry-client-key.pem"
   REMOTE_ALPHA_ES_ROOT_CA_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/artifact-registry-root-ca.pem"
+  REMOTE_ALPHA_EGS_CA_PATH="${REMOTE_ALPHA_EGS_TLS_DIR}/runtime-ca.pem"
+  REMOTE_ALPHA_EGS_SERVER_CERT_PATH="${REMOTE_ALPHA_EGS_TLS_DIR}/egs-server-cert.pem"
+  REMOTE_ALPHA_EGS_SERVER_KEY_PATH="${REMOTE_ALPHA_EGS_TLS_DIR}/egs-server-key.pem"
+  REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/execution-governance-client-cert.pem"
+  REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/execution-governance-client-key.pem"
+  REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH="${REMOTE_ALPHA_ES_TLS_DIR}/execution-governance-root-ca.pem"
 }
 
 remote_alpha_es_service_tls_renew_usage() {
@@ -45,15 +57,19 @@ remote_alpha_es_service_tls_renew_usage() {
 Usage:
   sudo scripts/remote_alpha_es_service_tls_renew.sh --status
   sudo scripts/remote_alpha_es_service_tls_renew.sh --execute-renew
+  sudo scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --status
+  sudo scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --execute-renew
 
 Optional flags:
+  --scope artifact-registry|execution-governance
   --status
   --check-only
   --execute-renew
-  --summary-path </path/to/es-service-tls-renew-summary.json>
+  --summary-path </path/to/tls-renew-summary.json>
   --help
 
 Status/check-only is non-mutating. Renew requires --execute-renew.
+Default scope is artifact-registry. execution-governance is bounded to ES -> EGS trust-model mTLS.
 EOF
 }
 
@@ -71,6 +87,22 @@ remote_alpha_es_service_tls_renew_parse_args() {
   while [[ $# -gt 0 ]]; do
     remote_alpha_es_service_tls_renew_reject_secret_arg "$1" || return $?
     case "$1" in
+      --scope)
+        if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+          echo "--scope requires a value" >&2
+          return 2
+        fi
+        case "$2" in
+          artifact-registry|execution-governance)
+            REMOTE_ALPHA_TLS_SCOPE="$2"
+            ;;
+          *)
+            echo "unsupported --scope: $2" >&2
+            return 2
+            ;;
+        esac
+        shift 2
+        ;;
       --status|--check-only)
         REMOTE_ALPHA_OPERATION_MODE="status"
         shift
@@ -85,6 +117,7 @@ remote_alpha_es_service_tls_renew_parse_args() {
           return 2
         fi
         REMOTE_ALPHA_SUMMARY_PATH="$2"
+        REMOTE_ALPHA_SUMMARY_PATH_EXPLICIT="true"
         shift 2
         ;;
       --help|-h)
@@ -111,6 +144,27 @@ remote_alpha_es_service_tls_renew_parse_args() {
         ;;
     esac
   done
+}
+
+remote_alpha_es_service_tls_renew_apply_scope_defaults() {
+  case "${REMOTE_ALPHA_TLS_SCOPE}" in
+    artifact-registry)
+      remote_alpha_es_service_tls_renew_current_schema_version="${remote_alpha_es_service_tls_renew_schema_version}"
+      if [[ "${REMOTE_ALPHA_SUMMARY_PATH_EXPLICIT}" != "true" ]]; then
+        REMOTE_ALPHA_SUMMARY_PATH="${remote_alpha_es_service_tls_renew_summary_path_default}"
+      fi
+      ;;
+    execution-governance)
+      remote_alpha_es_service_tls_renew_current_schema_version="${remote_alpha_es_governance_tls_renew_schema_version}"
+      if [[ "${REMOTE_ALPHA_SUMMARY_PATH_EXPLICIT}" != "true" ]]; then
+        REMOTE_ALPHA_SUMMARY_PATH="${remote_alpha_es_governance_tls_renew_summary_path_default}"
+      fi
+      ;;
+    *)
+      echo "unsupported TLS renewal scope: ${REMOTE_ALPHA_TLS_SCOPE}" >&2
+      return 2
+      ;;
+  esac
 }
 
 remote_alpha_es_service_tls_renew_require_root() {
@@ -284,6 +338,158 @@ print(json.dumps({
 PY
 }
 
+remote_alpha_es_governance_tls_renew_topology_json() {
+  python3 - "$@" <<'PY'
+import json
+import pathlib
+import sys
+from urllib.parse import urlparse
+
+(
+    ars_config_path,
+    ags_config_path,
+    es_config_path,
+    egs_config_path,
+    egs_ca_path,
+    egs_server_cert_path,
+    egs_server_key_path,
+    es_client_cert_path,
+    es_client_key_path,
+    es_root_ca_path,
+) = sys.argv[1:]
+
+covered_paths = {
+    egs_ca_path,
+    egs_server_cert_path,
+    egs_server_key_path,
+    es_client_cert_path,
+    es_client_key_path,
+    es_root_ca_path,
+}
+
+
+def read_json(path_text, required=True):
+    path = pathlib.Path(path_text)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), ""
+    except Exception as exc:  # noqa: BLE001
+        if required:
+            return {}, f"read or parse {path}: {exc}"
+        return {}, ""
+
+
+def nested(payload, *keys):
+    current = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    if current is None:
+        return ""
+    return str(current).strip()
+
+
+def check_eq(items, label, actual, expected, blockers):
+    ok = actual == expected
+    items.append({"field": label, "actual": actual, "expected": expected, "status": "pass" if ok else "fail"})
+    if not ok:
+        blockers.append(f"{label} expected {expected}, got {actual}")
+
+
+def is_loopback_egs_url(value):
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port == 8443
+
+
+payloads = {}
+errors = []
+for label, path in (("ars", ars_config_path), ("ags", ags_config_path), ("es", es_config_path), ("egs", egs_config_path)):
+    payload, error = read_json(path, required=label in {"ags", "es", "egs"})
+    payloads[label] = payload
+    if error:
+        errors.append(error)
+
+blockers = list(errors)
+items = []
+
+ars = payloads["ars"]
+ags = payloads["ags"]
+es = payloads["es"]
+egs = payloads["egs"]
+
+check_eq(items, "egs.tls.cert_file", nested(egs, "tls", "cert_file"), egs_server_cert_path, blockers)
+check_eq(items, "egs.tls.key_file", nested(egs, "tls", "key_file"), egs_server_key_path, blockers)
+check_eq(items, "egs.tls.client_ca_file", nested(egs, "tls", "client_ca_file"), egs_ca_path, blockers)
+
+es_egs_url = nested(es, "dependencies", "execution_governance", "base_url")
+items.append({
+    "field": "es.dependencies.execution_governance.base_url",
+    "actual": es_egs_url,
+    "expected": "https://127.0.0.1:8443 or https://localhost:8443",
+    "status": "pass" if is_loopback_egs_url(es_egs_url) else "fail",
+})
+if not is_loopback_egs_url(es_egs_url):
+    blockers.append(f"es.dependencies.execution_governance.base_url is outside the bounded loopback EGS route: {es_egs_url}")
+check_eq(items, "es.dependencies.execution_governance.client_cert_file", nested(es, "dependencies", "execution_governance", "client_cert_file"), es_client_cert_path, blockers)
+check_eq(items, "es.dependencies.execution_governance.client_key_file", nested(es, "dependencies", "execution_governance", "client_key_file"), es_client_key_path, blockers)
+check_eq(items, "es.dependencies.execution_governance.root_ca_file", nested(es, "dependencies", "execution_governance", "root_ca_file"), es_root_ca_path, blockers)
+check_eq(items, "es.dependencies.execution_governance.server_name", nested(es, "dependencies", "execution_governance", "server_name"), "server.execution-governance.internal", blockers)
+
+ags_dependencies = ags.get("dependencies") if isinstance(ags, dict) else None
+ags_client_to_egs_material = "out_of_scope_absent"
+if isinstance(ags_dependencies, dict) and "execution_governance" in ags_dependencies:
+    ags_client_to_egs_material = "out_of_scope_present"
+    blockers.append("AGS execution_governance dependency material is out of scope for P0t")
+
+related = []
+for service, payload in (("ars", ars), ("ags", ags), ("es", es), ("egs", egs)):
+    for field in ("cert_file", "key_file", "client_ca_file"):
+        value = nested(payload, "tls", field)
+        if value:
+            related.append({"field": f"{service}.tls.{field}", "path": value, "covered_by_renewal": value in covered_paths})
+            if service not in {"egs"} and value in covered_paths:
+                blockers.append(f"{service}.tls.{field} uses a path covered by ES governance renewal: {value}")
+    deps = payload.get("dependencies") if isinstance(payload, dict) else None
+    if isinstance(deps, dict):
+        for dep_name, dep in deps.items():
+            if not isinstance(dep, dict):
+                continue
+            for field in ("client_cert_file", "client_key_file", "root_ca_file"):
+                value = str(dep.get(field) or "").strip()
+                if value:
+                    related.append({"field": f"{service}.dependencies.{dep_name}.{field}", "path": value, "covered_by_renewal": value in covered_paths})
+                    if not (service == "es" and dep_name == "execution_governance") and value in covered_paths:
+                        blockers.append(f"{service}.dependencies.{dep_name}.{field} uses a path covered by ES governance renewal: {value}")
+
+print(json.dumps({
+    "status": "pass" if not blockers else "fail",
+    "blockers": blockers,
+    "config_paths": {
+        "ars": ars_config_path,
+        "ags": ags_config_path,
+        "es": es_config_path,
+        "egs": egs_config_path,
+    },
+    "checks": items,
+    "related_service_tls": related,
+    "covered_paths": sorted(covered_paths),
+    "bounded_topology": {
+        "name": "remote-alpha-internal-es-to-egs-execution-governance-mtls",
+        "egs_dependency_base_urls": [es_egs_url],
+        "server_name": "server.execution-governance.internal",
+        "egs_client_ca_same_runtime_ca_file": nested(egs, "tls", "client_ca_file") == egs_ca_path,
+        "es_root_ca_is_execution_governance_copy": nested(es, "dependencies", "execution_governance", "root_ca_file") == es_root_ca_path,
+        "ags_client_to_egs_material": ags_client_to_egs_material,
+        "services_affected": ["egs.service", "es.service"],
+        "services_intentionally_not_restarted": ["ars.service", "ags.service", "vault.service", "spire-agent.service", "spire-server.service", "nomad.service"],
+    },
+}, sort_keys=True))
+PY
+}
+
 remote_alpha_es_service_tls_renew_collect_status() {
   local mode=$1
   local summary_path=$2
@@ -299,7 +505,8 @@ remote_alpha_es_service_tls_renew_collect_status() {
     "${backup_meta_path}" \
     "${restart_meta_path}" \
     "${curl_meta_path}" \
-    "${remote_alpha_es_service_tls_renew_schema_version}" \
+    "${remote_alpha_es_service_tls_renew_current_schema_version}" \
+    "${REMOTE_ALPHA_TLS_SCOPE}" \
     "${REMOTE_ALPHA_ARS_CA_PATH}" \
     "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
     "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
@@ -308,7 +515,13 @@ remote_alpha_es_service_tls_renew_collect_status() {
     "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
     "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
     "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" <<'PY'
+    "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" \
+    "${REMOTE_ALPHA_EGS_CA_PATH}" \
+    "${REMOTE_ALPHA_EGS_SERVER_CERT_PATH}" \
+    "${REMOTE_ALPHA_EGS_SERVER_KEY_PATH}" \
+    "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH}" \
+    "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH}" \
+    "${REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH}" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -325,6 +538,7 @@ backup_meta_path = pathlib.Path(sys.argv[4]) if sys.argv[4] else None
 restart_meta_path = pathlib.Path(sys.argv[5]) if sys.argv[5] else None
 curl_meta_path = pathlib.Path(sys.argv[6]) if sys.argv[6] else None
 schema_version = sys.argv[7]
+scope = sys.argv[8]
 (
     ars_ca_path,
     ars_server_cert_path,
@@ -335,21 +549,71 @@ schema_version = sys.argv[7]
     es_client_cert_path,
     es_client_key_path,
     es_root_ca_path,
-) = sys.argv[8:]
+    egs_ca_path,
+    egs_server_cert_path,
+    egs_server_key_path,
+    es_governance_client_cert_path,
+    es_governance_client_key_path,
+    es_governance_root_ca_path,
+) = sys.argv[9:]
 
-certs = [
-    ("ars_trusted_runtime_client_ca", ars_ca_path, "ca"),
-    ("ars_server", ars_server_cert_path, "server"),
-    ("ags_artifact_registry_client", ags_client_cert_path, "client"),
-    ("ags_artifact_registry_root_ca", ags_root_ca_path, "ca"),
-    ("es_artifact_registry_client", es_client_cert_path, "client"),
-    ("es_artifact_registry_root_ca", es_root_ca_path, "ca"),
-]
-key_pairs = [
-    ("ars_server", ars_server_cert_path, ars_server_key_path),
-    ("ags_artifact_registry_client", ags_client_cert_path, ags_client_key_path),
-    ("es_artifact_registry_client", es_client_cert_path, es_client_key_path),
-]
+if scope == "artifact-registry":
+    certs = [
+        ("ars_trusted_runtime_client_ca", ars_ca_path, "ca"),
+        ("ars_server", ars_server_cert_path, "server"),
+        ("ags_artifact_registry_client", ags_client_cert_path, "client"),
+        ("ags_artifact_registry_root_ca", ags_root_ca_path, "ca"),
+        ("es_artifact_registry_client", es_client_cert_path, "client"),
+        ("es_artifact_registry_root_ca", es_root_ca_path, "ca"),
+    ]
+    key_pairs = [
+        ("ars_server", ars_server_cert_path, ars_server_key_path),
+        ("ags_artifact_registry_client", ags_client_cert_path, ags_client_key_path),
+        ("es_artifact_registry_client", es_client_cert_path, es_client_key_path),
+    ]
+    verification_inputs = [
+        ("ags_client_cert_against_ars_client_ca", ars_ca_path, ags_client_cert_path, "sslclient", ""),
+        ("es_client_cert_against_ars_client_ca", ars_ca_path, es_client_cert_path, "sslclient", ""),
+        ("ars_server_cert_against_ags_root_ca", ags_root_ca_path, ars_server_cert_path, "sslserver", "server.artifact-registry.internal"),
+        ("ars_server_cert_against_es_root_ca", es_root_ca_path, ars_server_cert_path, "sslserver", "server.artifact-registry.internal"),
+    ]
+    slice_summary = {
+        "name": "remote-alpha-es-service-tls-renewal",
+        "classification": "bounded_remote_alpha_internal_service_tls_recovery",
+        "bounded_topology": "ARS loopback artifact-registry mTLS used by AGS and ES",
+        "not_a_deployment_system": True,
+        "not_im_reconciliation": True,
+        "not_cp_authority": True,
+        "not_production_readiness": True,
+    }
+elif scope == "execution-governance":
+    certs = [
+        ("egs_trusted_runtime_client_ca", egs_ca_path, "ca"),
+        ("egs_server", egs_server_cert_path, "server"),
+        ("es_execution_governance_client", es_governance_client_cert_path, "client"),
+        ("es_execution_governance_root_ca", es_governance_root_ca_path, "ca"),
+    ]
+    key_pairs = [
+        ("egs_server", egs_server_cert_path, egs_server_key_path),
+        ("es_execution_governance_client", es_governance_client_cert_path, es_governance_client_key_path),
+    ]
+    verification_inputs = [
+        ("es_execution_governance_client_cert_against_egs_client_ca", egs_ca_path, es_governance_client_cert_path, "sslclient", ""),
+        ("egs_server_cert_against_es_execution_governance_root_ca", es_governance_root_ca_path, egs_server_cert_path, "sslserver", "server.execution-governance.internal"),
+    ]
+    slice_summary = {
+        "name": "remote-alpha-es-governance-tls-renewal",
+        "classification": "bounded_remote_alpha_internal_es_to_egs_governance_tls_recovery",
+        "bounded_topology": "EGS loopback execution-governance mTLS used by ES trust-model fetch",
+        "not_a_deployment_system": True,
+        "not_im_reconciliation": True,
+        "not_cp_authority": True,
+        "not_egs_trust_model_redesign": True,
+        "not_production_readiness": True,
+    }
+else:
+    print(f"unsupported scope: {scope}", file=sys.stderr)
+    raise SystemExit(2)
 
 secret_patterns = [
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
@@ -525,12 +789,7 @@ def verify_record(label, ca_path, cert_path, purpose="", hostname=""):
 topology = json.loads(topology_path.read_text(encoding="utf-8"))
 cert_records = [cert_record(*item) for item in certs]
 key_records = [key_pair_record(*item) for item in key_pairs]
-verify_records = [
-    verify_record("ags_client_cert_against_ars_client_ca", ars_ca_path, ags_client_cert_path, "sslclient"),
-    verify_record("es_client_cert_against_ars_client_ca", ars_ca_path, es_client_cert_path, "sslclient"),
-    verify_record("ars_server_cert_against_ags_root_ca", ags_root_ca_path, ars_server_cert_path, "sslserver", "server.artifact-registry.internal"),
-    verify_record("ars_server_cert_against_es_root_ca", es_root_ca_path, ars_server_cert_path, "sslserver", "server.artifact-registry.internal"),
-]
+verify_records = [verify_record(*item) for item in verification_inputs]
 
 backup = {"status": "not_run", "path": "", "private_key_material_in_summary": False}
 if backup_meta_path and backup_meta_path.is_file():
@@ -557,25 +816,21 @@ if mode == "execute_renew":
     if restarts.get("status") != "pass":
         blockers.append("service restart set did not pass")
     if curl_probes.get("status") != "pass":
-        blockers.append("post-renew ARS mTLS probes did not pass")
+        blockers.append("post-renew mTLS probes did not pass")
 
 summary = {
     "schema_version": schema_version,
     "checked_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "scope": {
+        "name": scope,
+        "fixed_helper_scope": scope,
+    },
     "mode": {
         "name": mode,
         "non_mutating": mode == "status",
         "execute_renew": mode == "execute_renew",
     },
-    "slice": {
-        "name": "remote-alpha-es-service-tls-renewal",
-        "classification": "bounded_remote_alpha_internal_service_tls_recovery",
-        "bounded_topology": "ARS loopback artifact-registry mTLS used by AGS and ES",
-        "not_a_deployment_system": True,
-        "not_im_reconciliation": True,
-        "not_cp_authority": True,
-        "not_production_readiness": True,
-    },
+    "slice": slice_summary,
     "topology": topology,
     "certificates": cert_records,
     "key_pairs": key_records,
@@ -595,6 +850,7 @@ summary = {
         "infrastructure_manager_authority": "not_claimed",
         "control_plane_authority": "not_claimed",
         "vault_or_spire_or_nomad_changes": "not_claimed",
+        "egs_trust_model_redesign": "not_claimed",
         "governed_execution_proof": "not_claimed",
         "production_readiness": "not_claimed",
         "mac_side_health_refresh": "not_claimed",
@@ -622,6 +878,7 @@ PY
 remote_alpha_es_service_tls_renew_create_backup() {
   local backup_meta_path=$1
   local timestamp backup_dir material_dir path rel target
+  shift
   timestamp="$(remote_alpha_es_service_tls_renew_timestamp)"
   mkdir -p -- "${REMOTE_ALPHA_BACKUP_ROOT}"
   backup_dir="$(mktemp -d "${REMOTE_ALPHA_BACKUP_ROOT}/es-service-tls-renew-${timestamp}-XXXXXX")"
@@ -629,16 +886,7 @@ remote_alpha_es_service_tls_renew_create_backup() {
   mkdir -p -- "${material_dir}"
   chmod 0700 "${backup_dir}" "${material_dir}" 2>/dev/null || true
 
-  for path in \
-    "${REMOTE_ALPHA_ARS_CA_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_ES_ROOT_CA_PATH}"; do
+  for path in "$@"; do
     rel="${path#/}"
     target="${material_dir}/${rel}"
     mkdir -p -- "$(dirname "${target}")"
@@ -679,7 +927,7 @@ payload = {
     "material_dir": str(material_dir),
     "items": items,
     "private_key_material_in_summary": False,
-    "rollback_note": "Restore the backed-up files to their original absolute paths, restore owner/group/mode policy, then restart ars.service, ags.service, and es.service.",
+    "rollback_note": "Restore the backed-up files to their original absolute paths, restore owner/group/mode policy, then restart the services named by the active scope's exact_affected_service_set.",
 }
 backup_meta_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -758,6 +1006,35 @@ remote_alpha_es_service_tls_renew_generate_material() {
   rm -f -- "${work_dir}/runtime-ca-key.pem" "${work_dir}"/*.csr "${work_dir}"/*.srl
 }
 
+remote_alpha_es_governance_tls_renew_generate_material() {
+  local work_dir=$1
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "${work_dir}/runtime-ca-key.pem" \
+    -out "${work_dir}/runtime-ca.pem" \
+    -subj "/CN=Remote Alpha Internal EGS Runtime Root CA" \
+    -days "${REMOTE_ALPHA_CERT_DAYS}" \
+    -sha256 >/dev/null 2>&1
+
+  remote_alpha_es_service_tls_renew_generate_leaf \
+    "${work_dir}" \
+    "${work_dir}/runtime-ca.pem" \
+    "${work_dir}/runtime-ca-key.pem" \
+    "egs-server" \
+    "server.execution-governance.internal" \
+    "DNS:server.execution-governance.internal,IP:127.0.0.1" \
+    "serverAuth"
+  remote_alpha_es_service_tls_renew_generate_leaf \
+    "${work_dir}" \
+    "${work_dir}/runtime-ca.pem" \
+    "${work_dir}/runtime-ca-key.pem" \
+    "es-governance-client" \
+    "client.service.execution" \
+    "DNS:client.execution,URI:spiffe://execution.internal/service/execution" \
+    "clientAuth"
+
+  rm -f -- "${work_dir}/runtime-ca-key.pem" "${work_dir}"/*.csr "${work_dir}"/*.srl
+}
+
 remote_alpha_es_service_tls_renew_install_material() {
   local work_dir=$1
 
@@ -776,6 +1053,21 @@ remote_alpha_es_service_tls_renew_install_material() {
   install -o root -g es -m 0640 "${work_dir}/es-client-cert.pem" "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}"
   install -o root -g es -m 0640 "${work_dir}/es-client-key.pem" "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}"
   install -o root -g es -m 0640 "${work_dir}/runtime-ca.pem" "${REMOTE_ALPHA_ES_ROOT_CA_PATH}"
+}
+
+remote_alpha_es_governance_tls_renew_install_material() {
+  local work_dir=$1
+
+  install -d -o root -g egs -m 0710 "${REMOTE_ALPHA_EGS_TLS_DIR}"
+  install -d -o root -g es -m 0710 "${REMOTE_ALPHA_ES_TLS_DIR}"
+
+  install -o root -g egs -m 0640 "${work_dir}/runtime-ca.pem" "${REMOTE_ALPHA_EGS_CA_PATH}"
+  install -o root -g egs -m 0640 "${work_dir}/egs-server-cert.pem" "${REMOTE_ALPHA_EGS_SERVER_CERT_PATH}"
+  install -o root -g egs -m 0640 "${work_dir}/egs-server-key.pem" "${REMOTE_ALPHA_EGS_SERVER_KEY_PATH}"
+
+  install -o root -g es -m 0640 "${work_dir}/es-governance-client-cert.pem" "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH}"
+  install -o root -g es -m 0640 "${work_dir}/es-governance-client-key.pem" "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH}"
+  install -o root -g es -m 0640 "${work_dir}/runtime-ca.pem" "${REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH}"
 }
 
 remote_alpha_es_service_tls_renew_restart_services() {
@@ -814,6 +1106,51 @@ path.write_text(json.dumps({
 PY
 }
 
+remote_alpha_es_governance_tls_renew_restart_services() {
+  local restart_meta_path=$1
+  local service es_active_status="not_run"
+  local -a services=("egs.service" "es.service")
+  local -a statuses=()
+  local overall="pass"
+
+  for service in "${services[@]}"; do
+    if systemctl restart "${service}"; then
+      statuses+=("${service}:pass")
+    else
+      statuses+=("${service}:fail")
+      overall="fail"
+    fi
+  done
+
+  if systemctl is-active --quiet es.service; then
+    es_active_status="pass"
+  else
+    es_active_status="fail"
+    overall="fail"
+  fi
+
+  python3 - "${restart_meta_path}" "${overall}" "${es_active_status}" "${statuses[@]}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+overall = sys.argv[2]
+es_active_status = sys.argv[3]
+items = []
+for raw in sys.argv[4:]:
+    service, status = raw.split(":", 1)
+    items.append({"service": service, "status": status})
+path.write_text(json.dumps({
+    "status": overall,
+    "services": items,
+    "exact_affected_service_set": ["egs.service", "es.service"],
+    "es_service_active": {"service": "es.service", "status": es_active_status},
+    "intentionally_not_restarted": ["ars.service", "ags.service", "vault.service", "spire-agent.service", "spire-server.service", "nomad.service"],
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
 remote_alpha_es_service_tls_renew_curl_probe() {
   local label=$1
   local cert=$2
@@ -831,6 +1168,22 @@ remote_alpha_es_service_tls_renew_curl_probe() {
     printf '%s:pass\n' "${label}"
   else
     printf '%s:fail:%s\n' "${label}" "$(tr '\n' ' ' <"${error_path}" | cut -c1-300)"
+  fi
+}
+
+remote_alpha_es_governance_tls_renew_curl_probe() {
+  local output_path=$1
+  local error_path=$2
+
+  if curl --fail-with-body --silent --show-error \
+    --resolve server.execution-governance.internal:8443:127.0.0.1 \
+    --cacert "${REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH}" \
+    --cert "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH}" \
+    --key "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH}" \
+    "https://server.execution-governance.internal:8443/v1/trust-model" >"${output_path}" 2>"${error_path}"; then
+    printf 'es_client_to_egs_trust_model:pass\n'
+  else
+    printf 'es_client_to_egs_trust_model:fail:%s\n' "$(tr '\n' ' ' <"${error_path}" | cut -c1-300)"
   fi
 }
 
@@ -863,22 +1216,68 @@ path.write_text(json.dumps({"status": overall, "items": items}, indent=2, sort_k
 PY
 }
 
+remote_alpha_es_governance_tls_renew_post_renew_probes() {
+  local curl_meta_path=$1
+  local tmpdir=$2
+  local result overall
+
+  result="$(remote_alpha_es_governance_tls_renew_curl_probe "${tmpdir}/es-egs-trust-model.json" "${tmpdir}/es-egs-trust-model.err")"
+  overall="pass"
+  [[ "${result}" == *":pass" ]] || overall="fail"
+
+  python3 - "${curl_meta_path}" "${overall}" "${result}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+overall = sys.argv[2]
+raw = sys.argv[3]
+parts = raw.split(":", 2)
+item = {"label": parts[0], "status": parts[1], "url": "https://server.execution-governance.internal:8443/v1/trust-model"}
+if len(parts) == 3:
+    item["error"] = parts[2]
+path.write_text(json.dumps({"status": overall, "items": [item]}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
 remote_alpha_es_service_tls_renew_build_topology() {
   local topology_path=$1
-  remote_alpha_es_service_tls_renew_topology_json \
-    "${REMOTE_ALPHA_ARS_CONFIG_PATH}" \
-    "${REMOTE_ALPHA_AGS_CONFIG_PATH}" \
-    "${REMOTE_ALPHA_ES_CONFIG_PATH}" \
-    "${REMOTE_ALPHA_EGS_CONFIG_PATH}" \
-    "${REMOTE_ALPHA_ARS_CA_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" >"${topology_path}"
+  case "${REMOTE_ALPHA_TLS_SCOPE}" in
+    artifact-registry)
+      remote_alpha_es_service_tls_renew_topology_json \
+        "${REMOTE_ALPHA_ARS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_AGS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_ES_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_EGS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_ARS_CA_PATH}" \
+        "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
+        "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
+        "${REMOTE_ALPHA_AGS_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_AGS_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
+        "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" >"${topology_path}"
+      ;;
+    execution-governance)
+      remote_alpha_es_governance_tls_renew_topology_json \
+        "${REMOTE_ALPHA_ARS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_AGS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_ES_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_EGS_CONFIG_PATH}" \
+        "${REMOTE_ALPHA_EGS_CA_PATH}" \
+        "${REMOTE_ALPHA_EGS_SERVER_CERT_PATH}" \
+        "${REMOTE_ALPHA_EGS_SERVER_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH}" >"${topology_path}"
+      ;;
+    *)
+      echo "unsupported TLS renewal scope: ${REMOTE_ALPHA_TLS_SCOPE}" >&2
+      return 2
+      ;;
+  esac
 }
 
 remote_alpha_es_service_tls_renew_main() {
@@ -889,6 +1288,7 @@ remote_alpha_es_service_tls_renew_main() {
   if [[ "${REMOTE_ALPHA_OPERATION_MODE}" == "help" ]]; then
     return 0
   fi
+  remote_alpha_es_service_tls_renew_apply_scope_defaults || return $?
   remote_alpha_es_service_tls_renew_require_root || return 1
   remote_alpha_es_service_tls_renew_require_command python3 || return 1
   remote_alpha_es_service_tls_renew_require_command openssl || return 1
@@ -917,27 +1317,61 @@ remote_alpha_es_service_tls_renew_main() {
     return 1
   fi
 
-  remote_alpha_es_service_tls_renew_create_backup \
-    "${backup_meta_path}" \
-    "${REMOTE_ALPHA_ARS_CA_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
-    "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_AGS_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
-    "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
-    "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" || return 1
+  case "${REMOTE_ALPHA_TLS_SCOPE}" in
+    artifact-registry)
+      remote_alpha_es_service_tls_renew_create_backup \
+        "${backup_meta_path}" \
+        "${REMOTE_ALPHA_ARS_CA_PATH}" \
+        "${REMOTE_ALPHA_ARS_SERVER_CERT_PATH}" \
+        "${REMOTE_ALPHA_ARS_SERVER_KEY_PATH}" \
+        "${REMOTE_ALPHA_AGS_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_AGS_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_AGS_ROOT_CA_PATH}" \
+        "${REMOTE_ALPHA_ES_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_ES_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_ROOT_CA_PATH}" || return 1
+      ;;
+    execution-governance)
+      remote_alpha_es_service_tls_renew_create_backup \
+        "${backup_meta_path}" \
+        "${REMOTE_ALPHA_EGS_CA_PATH}" \
+        "${REMOTE_ALPHA_EGS_SERVER_CERT_PATH}" \
+        "${REMOTE_ALPHA_EGS_SERVER_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_CERT_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_CLIENT_KEY_PATH}" \
+        "${REMOTE_ALPHA_ES_GOVERNANCE_ROOT_CA_PATH}" || return 1
+      ;;
+    *)
+      echo "unsupported TLS renewal scope: ${REMOTE_ALPHA_TLS_SCOPE}" >&2
+      return 2
+      ;;
+  esac
 
   work_dir="$(mktemp -d)"
   chmod 0700 "${work_dir}" 2>/dev/null || true
-  remote_alpha_es_service_tls_renew_generate_material "${work_dir}" || return 1
-  remote_alpha_es_service_tls_renew_install_material "${work_dir}" || return 1
+  case "${REMOTE_ALPHA_TLS_SCOPE}" in
+    artifact-registry)
+      remote_alpha_es_service_tls_renew_generate_material "${work_dir}" || return 1
+      remote_alpha_es_service_tls_renew_install_material "${work_dir}" || return 1
+      ;;
+    execution-governance)
+      remote_alpha_es_governance_tls_renew_generate_material "${work_dir}" || return 1
+      remote_alpha_es_governance_tls_renew_install_material "${work_dir}" || return 1
+      ;;
+  esac
   rm -rf -- "${work_dir}"
   work_dir=""
 
-  remote_alpha_es_service_tls_renew_restart_services "${restart_meta_path}" || status=1
-  remote_alpha_es_service_tls_renew_post_renew_probes "${curl_meta_path}" "${tmpdir}" || status=1
+  case "${REMOTE_ALPHA_TLS_SCOPE}" in
+    artifact-registry)
+      remote_alpha_es_service_tls_renew_restart_services "${restart_meta_path}" || status=1
+      remote_alpha_es_service_tls_renew_post_renew_probes "${curl_meta_path}" "${tmpdir}" || status=1
+      ;;
+    execution-governance)
+      remote_alpha_es_governance_tls_renew_restart_services "${restart_meta_path}" || status=1
+      remote_alpha_es_governance_tls_renew_post_renew_probes "${curl_meta_path}" "${tmpdir}" || status=1
+      ;;
+  esac
   remote_alpha_es_service_tls_renew_collect_status "execute_renew" "${REMOTE_ALPHA_SUMMARY_PATH}" "${topology_path}" "${backup_meta_path}" "${restart_meta_path}" "${curl_meta_path}" || status=1
   return "${status}"
 }

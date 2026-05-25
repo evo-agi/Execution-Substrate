@@ -46,6 +46,22 @@ unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
 secrets, terminal transcripts, support-bundle content, or raw secret-bearing
 command output.
 
+The P0t ES governance TLS status/renew summary
+`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`
+with schema
+`execution-substrate.remote-alpha.es-governance-tls-renew-summary.v1` is also a
+non-secret helper summary only. It may include scope, paths, byte counts,
+certificate file SHA-256 digests, public fingerprints, validity windows,
+cert/key public-key match status, backup metadata, service restart statuses for
+`egs.service` and `es.service`, EGS `/v1/trust-model` mTLS probe statuses, ES
+service active status, verification statuses, and explicit non-claim labels. It
+must not be copied back to Mac `.out` by the operator facade, must not become an
+IM input or CP proof artifact, and must not contain private key PEM bodies, full
+certificate PEM bodies, private-key backup digests, Vault tokens, root tokens,
+unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
+secrets, terminal transcripts, support-bundle content, or raw secret-bearing
+command output.
+
 ## 3. Tracked generated-artifact allowlist
 
 The source tree intentionally keeps only these generated/binary-ish artifacts

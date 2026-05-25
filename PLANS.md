@@ -1039,6 +1039,123 @@ policy, backups before replacement, exact restart set, post-renew verification
 of AGS/ES client certs against ARS CA and ARS server cert against AGS/ES root
 CAs, and docs tests preserving non-authority and non-production claims.
 
+The P0t implementation/self-audit/merge-readiness slice may extend the
+existing bounded Remote Alpha internal ES service TLS helper pair with exactly
+one additional fixed scope and exactly two Mac-side recovery-session routes for
+the ES -> EGS execution-governance trust-model mTLS path:
+`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-status
+--ssh-target <target> --interactive-tty` and
+`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-renew
+--ssh-target <target> --interactive-tty --execute-renew`. P0t reuses only the
+existing public helper `scripts/remote_alpha_es_service_tls_renew.sh` and the
+existing internal helper `scripts/internal/remote_alpha_es_service_tls_renew.sh`
+with a fixed `--scope execution-governance` helper invocation. It must not add
+a new generic helper dispatcher, helper path override, or deployment
+reconciliation surface. P0t validation remains fake/static only and must not
+run live SSH, sudo, live remote OpenSSL, Vault, reset/unseal, workload-auth
+bootstrap/check, runtime identity summary, Infrastructure Manager refresh,
+support-bundle collection, CP proof, SPIRE/Nomad mutation, or
+network-dependent integration tests.
+
+P0t is an ES-owned Remote Alpha proof/support helper extension only. It is not
+generic TLS deployment, provisioning, reconciliation, production readiness, IM
+authority, CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle,
+workload-auth bootstrap/check, runtime identity evidence, or a redesign of EGS
+trust-model semantics. The route is bounded to the internal EGS loopback
+execution-governance mTLS path consumed by ES when ES fetches the current EGS
+`GET /v1/trust-model` compatibility surface. The fixed covered paths are:
+`/etc/execution-substrate/egs-tls/egs-server-cert.pem`,
+`/etc/execution-substrate/egs-tls/egs-server-key.pem`,
+`/etc/execution-substrate/egs-tls/runtime-ca.pem`,
+`/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`,
+`/etc/execution-substrate/es-tls/execution-governance-client-key.pem`, and
+`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`.
+
+P0t must inspect the current config topology before status or renewal. It may
+proceed only when EGS config proves the server cert/key and client CA are the
+fixed EGS-readable TLS paths above, ES config proves
+`dependencies.execution_governance.base_url` is the bounded loopback EGS route
+on port `8443`, ES config proves the fixed ES execution-governance client
+identity/root-CA paths above plus `server_name` of
+`server.execution-governance.internal`, and AGS config has no
+execution-governance dependency. The current EGS trusted client CA is the same
+runtime CA file at `/etc/execution-substrate/egs-tls/runtime-ca.pem`; the ES
+execution-governance root CA is the ES-readable copy of that trust root at
+`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`. Any AGS
+client-to-EGS material is out of scope for P0t. If config shows AGS
+client-to-EGS material, shared paths with ARS/AGS/ES external TLS, Vault,
+SPIRE, Nomad, workload-zone Vault config, runtime identity material, or any
+broader topology sharing a covered renewal path, the helper must stop with a
+non-secret topology blocker instead of guessing or broadening the renewal.
+
+P0t status mode is non-mutating. It must report public certificate metadata
+only: subject, issuer, SAN, EKU, notBefore, notAfter, expired/not-yet-valid
+status, file SHA-256, public fingerprint, and public-key fingerprint. It must
+confirm ES execution-governance client cert/key and EGS server cert/key
+public-key matches without printing private keys; verify the ES client
+certificate against the EGS trusted runtime/client CA; verify the EGS server
+certificate against the ES execution-governance root CA; and write only an
+optional non-secret remote evidence/projection summary at
+`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`.
+
+P0t renewal mode requires explicit `--execute-renew` and visible
+`--interactive-tty`. The Mac-side facade must stage only the fixed public and
+internal TLS renewal helper pair, invoke only `--scope execution-governance`
+plus `--execute-renew` over `ssh -tt`, and pass no helper override flags. The
+helper may use OS sudo only through the visible remote terminal when needed. It
+must create a backup directory with non-secret metadata before replacing files,
+generate fresh short-lived Remote Alpha internal EGS runtime CA/cert material
+with future notAfter dates, install with the fixed ownership/mode policy
+`root:egs 0640` for EGS TLS material and `root:es 0640` for ES
+execution-governance client/root material, and restart only the bounded
+affected service set `egs.service` and `es.service`. Post-renew verification
+must re-run the client/server certificate verification checks and probe EGS
+`/v1/trust-model` over mTLS using the configured ES execution-governance
+client identity. If safe in fake/static validation, the helper should also
+record that `es.service` is active after restart. Mac-side IM health refresh
+remains a separate later action.
+
+P0t summaries are evidence/projection only. They may include schema, scope,
+mode, paths, byte counts, certificate file SHA-256, public fingerprints,
+validity windows, verification statuses, backup metadata, service restart
+statuses, mTLS trust-model probe statuses, ES service active status, and
+explicit non-claims. They must not include private key PEM bodies, full
+certificate PEM bodies, Vault tokens, root tokens, unseal keys, client tokens,
+JWT-SVIDs, API keys, passwords, proof secrets, private-key backup digests, raw
+secret-bearing command output, terminal transcripts, support-bundle content, or
+Mac `.out` copy-back.
+
+Allowed P0t route flags are only `--help`, `--ssh-target <target>`,
+`--interactive-tty`, and `--execute-renew` for the renew route only. P0t must
+reject `--host-local`, `--dry-run`, `--check-only`, `--status`, `--scope`,
+`--apply`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`,
+`--execute-bootstrap`, `--prepare-summary-path`,
+`--prepare-config-readability`, `--prepare-spire-bundle-read`,
+`--interactive-sudo`, `--governed-smoke-command`, helper override flags,
+TLS/config path overrides, output/summary overrides, arbitrary commands,
+unknown flags, duplicate flags, extra positional arguments, equals-form
+options, and all secret-like arguments.
+
+P0t validation remains fake/static only. Tests must cover status mode detecting
+expired EGS/ES execution-governance certificates, status mode detecting valid
+EGS/ES execution-governance certificates, renew refusing without
+`--execute-renew`, renew refusing without `--interactive-tty` and
+`--ssh-target`, secret-like argument rejection, fake SSH/SCP tests proving
+exactly the fixed public/internal TLS renewal helper pair is staged, fake renew
+tests proving private key PEM bodies are not printed or persisted to summaries,
+fake renew tests proving owner/group/mode policy, fake renew tests proving
+backups are made before replacement, fake renew tests proving services to
+restart are exactly `egs.service` and `es.service`, fake post-renew
+verification exercising the ES -> EGS trust-model TLS path, docs tests
+preserving non-authority/non-production/non-IM/non-CP claims, and preservation
+of existing P0s ARS/AGS/ES artifact-registry TLS tests.
+
+P0t remains bounded ES Remote Alpha proof/support workflow glue only. It is
+not generic TLS deployment, not Infrastructure Manager reconciliation, not
+Control Plane authority, not Vault/SPIRE/Nomad authority, not EGS trust-model
+redesign, not production readiness, and not Remote Alpha production,
+deployment, provisioning, or reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

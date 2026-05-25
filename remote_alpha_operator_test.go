@@ -148,6 +148,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route",
 		"P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"P0s adds recovery-session es-service-tls-status and es-service-tls-renew",
+		"P0t adds recovery-session es-governance-tls-status and es-governance-tls-renew",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -179,6 +180,10 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty",
 		"recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty",
 		"recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
+		"recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty",
+		"recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
+		"recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty",
+		"recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"Implemented through P0s",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
@@ -198,6 +203,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"Mac-side vault-workload-auth-bootstrap execution",
 		"Mac-side runtime-identity-summary",
 		"bounded es-service-tls status/renew",
+		"bounded es-governance-tls status/renew",
 		"fixed workload-auth public/internal helper pair",
 		"fixed bootstrap public/internal helper pair",
 		"fixed public runtime identity helper",
@@ -255,6 +261,8 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"recovery-session es-service-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
+		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
 		"invokes only --unseal-only through ssh -tt",
 		"invokes only --dry-run",
@@ -277,6 +285,9 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"scripts/internal/remote_alpha_es_service_tls_renew.sh",
 		"canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json",
 		"bounded internal ARS artifact-registry mTLS recovery only",
+		"leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json",
+		"bounded ES -> EGS execution-governance trust-model mTLS material",
+		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
 		"no transcript",
 		"secret-sensitive",
 		"destructive",
@@ -575,6 +586,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"does not claim runtime-profile readiness or submit readiness",
 		"stages only the ES service TLS public/internal helper pair",
 		"bounded to ARS/AGS/ES artifact-registry mTLS",
+		"bounded to ES -> EGS trust-model mTLS",
 		"exact confirmation phrase",
 		"visible remote terminal",
 		"non-destructive and does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles",
@@ -616,6 +628,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode",
 		"es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode",
 		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode",
+		"es-governance-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged ES/EGS governance TLS evidence mode",
+		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged ES/EGS governance TLS recovery mode",
 		"RESET DISPOSABLE REMOTE ALPHA VAULT",
 		"visible remote helper/Vault terminal",
 		"service-user check/apply - remains separate",
@@ -630,6 +644,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"not workload-auth success, not ES Vault token brokerage",
 		"runtime-identity-summary is evidence/projection only",
 		"not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation",
+		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
 		"no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0s",
 		"vault-unseal-existing does not validate default noninteractive readiness",
 	)
@@ -650,6 +665,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"es-service-tls-status --ssh-target <target> --interactive-tty",
 		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"es-governance-tls-status --ssh-target <target> --interactive-tty",
+		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"separate IM actions",
 		"non-claims",
 	)
@@ -667,6 +684,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"scripts/internal/remote_alpha_vault_workload_auth_check.sh",
 		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
 		"scripts/remote_alpha_es_service_tls_renew.sh --status",
+		"scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --status",
 		"scripts/remote_alpha_migrate_vault_service_user.sh --check-only",
 		"scripts/remote_alpha_operator.sh readiness-session",
 		"recovery-session vault-unseal-existing --host-local",
@@ -688,6 +706,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"recovery-session es-service-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
+		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"implemented host-local explicit operator mode",
 		"implemented Mac-side explicit operator mode",
 		"invokes only --unseal-only through ssh -tt",
@@ -697,6 +717,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json on the remote host",
 		"leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host",
 		"leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host",
+		"leaves /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json on the remote host",
 		"no summary copy-back",
 		"safe local/print-only planning",
 		"no SSH, no sudo, no Vault, no root-token prompt, no proof secret creation, no workload-auth check, no .out, no JSON, no summary",
@@ -1250,7 +1271,7 @@ func TestRemoteAlphaOperatorRecoverySessionRejectsForbiddenFlagsAndUnsafeArgs(t 
 		{
 			name:     "ssh target",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session forbids --ssh-target outside explicit submodes", "safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, runtime-identity-summary, and es-service-tls submodes", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session forbids --ssh-target outside explicit submodes", "safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, runtime-identity-summary, es-service-tls, and es-governance-tls submodes", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "interactive sudo",
@@ -3413,6 +3434,8 @@ if [[ "$#" -eq 1 && "${1:-}" == exec\ /bin/bash\ -c* ]]; then
   command_string="${1}"
   tls_prefix="/tmp/execution-substrate-remote-alpha-es-service-tls-renew"
   mapped_command="${command_string//${tls_prefix}/${FAKE_REMOTE_ROOT}${tls_prefix}}"
+  governance_tls_prefix="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"
+  mapped_command="${mapped_command//${governance_tls_prefix}/${FAKE_REMOTE_ROOT}${governance_tls_prefix}}"
   exec /bin/bash -c "${mapped_command}"
 fi
 echo "unexpected fake ssh invocation: $*" >&2
@@ -3452,7 +3475,11 @@ fi
 printf 'public_args=%%s\n' "$*" >> %q
 printf 'internal=%%s\n' "${internal}" >> %q
 printf 'Remote Alpha ES service TLS helper finished.\n'
-printf 'Remote summary path: /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json\n'
+if [[ "$*" == *"execution-governance"* ]]; then
+  printf 'Remote summary path: /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json\n'
+else
+  printf 'Remote summary path: /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json\n'
+fi
 printf 'IM refresh, support-bundle collection, CP proof, Vault, SPIRE, Nomad, reset/unseal, workload-auth, and runtime identity were not run.\n'
 REMOTE_ALPHA_FAKE_ES_SERVICE_TLS_PUBLIC
 else
@@ -3774,6 +3801,287 @@ func assertESServiceTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLSHar
 	)
 	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-es-service-tls-renew")); err == nil && len(entries) > 0 {
 		t.Fatalf("expected remote ES service TLS staged helper directory to be cleaned, found %d entries", len(entries))
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRejectsUnsafeArgsBeforeDelegation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		required []string
+	}{
+		{
+			name:     "status missing ssh target",
+			args:     []string{"es-governance-tls-status", "--interactive-tty"},
+			required: []string{"recovery-session es-governance-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "status missing tty",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "host"},
+			required: []string{"recovery-session es-governance-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "status execute renew forbidden",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--execute-renew"},
+			required: []string{"recovery-session es-governance-tls-status forbids --execute-renew", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing execute renew",
+			args:     []string{"es-governance-tls-renew", "--ssh-target", "host", "--interactive-tty"},
+			required: []string{"recovery-session es-governance-tls-renew requires --execute-renew", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing ssh target",
+			args:     []string{"es-governance-tls-renew", "--execute-renew", "--interactive-tty"},
+			required: []string{"recovery-session es-governance-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing tty",
+			args:     []string{"es-governance-tls-renew", "--ssh-target", "host", "--execute-renew"},
+			required: []string{"recovery-session es-governance-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "helper override",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--summary-path", "/tmp/x"},
+			required: []string{"forbids helper override flag --summary-path", "fixed documented ES/EGS governance TLS paths", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "scope override",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--scope", "artifact-registry"},
+			required: []string{"forbids --scope", "fixed execution-governance scope", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "unknown flag",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--unknown-flag"},
+			required: []string{"unknown option for recovery-session es-governance-tls: --unknown-flag", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "equals form",
+			args:     []string{"es-governance-tls-status", "--ssh-target=host", "--interactive-tty"},
+			required: []string{"recovery-session es-governance-tls does not accept equals-form options: --ssh-target=host", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "ssh target option injection",
+			args:     []string{"es-governance-tls-status", "--ssh-target", "-oProxyCommand=sh", "--interactive-tty"},
+			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
+			assertContainsAll(t, "es-governance-tls refusal", output, tc.required...)
+			assertContainsNone(t, "es-governance-tls refusal", output,
+				"Running Mac-side ES governance TLS",
+				"remote_alpha_es_service_tls_renew.sh",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRejectsSecretLikeArgsBeforeDelegation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--api-key=dummy"},
+		{"--root-token", "dummy"},
+		{"--unseal-key", "dummy"},
+		{"--vault-token", "dummy"},
+		{"--client-token", "dummy"},
+		{"--jwt-svid", "dummy"},
+		{"--private-key", "dummy"},
+		{"--password", "dummy"},
+		{"--secret", "dummy"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			routeArgs := append([]string{
+				"recovery-session", "es-governance-tls-renew",
+				"--ssh-target", "host",
+				"--interactive-tty",
+				"--execute-renew",
+			}, args...)
+			output := requireRemoteAlphaOperatorFailure(t, routeArgs...)
+			assertContainsAll(t, "es-governance-tls secret flag refusal", output,
+				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
+			)
+			assertContainsNone(t, "es-governance-tls secret flag refusal", output,
+				"Running Mac-side ES governance TLS",
+				"remote_alpha_es_service_tls_renew.sh",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSNoTTYFailsBeforeStaging(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "es-governance-tls-status",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected no-TTY failure before ES governance TLS staging, got success:\n%s", output)
+	}
+	assertContainsAll(t, "es-governance-tls no tty refusal", output,
+		"requires visible local terminal",
+		"no staging or SSH occurred",
+		"No recovery-session live helper or IM execution occurred.",
+	)
+	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
+		t.Fatalf("ssh should not run when ES governance TLS local TTY guard fails: %v", err)
+	}
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run when ES governance TLS local TTY guard fails: %v", err)
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSStatusStagesOnlyFixedHelperPair(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-governance-tls-renew-summary.json"))...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "es-governance-tls-status",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake ES governance TLS status route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertESGovernanceTLSFakeRoute(t, h, output, "--scope execution-governance --status")
+	assertContainsAll(t, "Mac-side fake ES governance TLS status output", output,
+		"Running Mac-side ES governance TLS status through an explicit interactive SSH TTY.",
+		"Invoking only the staged public helper with --scope execution-governance --status",
+		"Status mode is non-mutating",
+		"Status mode is non-mutating and does not restart services.",
+	)
+	assertContainsNone(t, "Mac-side fake ES governance TLS status output", output,
+		"--execute-renew",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"BEGIN PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+	)
+	assertNoNewPaths(t, "Mac-side fake ES governance TLS status route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRenewStagesOnlyFixedHelperPair(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-governance-tls-renew-summary.json"))...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "es-governance-tls-renew",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+		"--execute-renew",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake ES governance TLS renew route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertESGovernanceTLSFakeRoute(t, h, output, "--scope execution-governance --execute-renew")
+	assertContainsAll(t, "Mac-side fake ES governance TLS renew output", output,
+		"Running Mac-side ES governance TLS renewal through an explicit interactive SSH TTY.",
+		"Invoking only the staged public helper with --scope execution-governance --execute-renew",
+		"bounded to ES/EGS execution-governance trust-model mTLS material",
+		"restarted only egs.service and es.service",
+	)
+	assertContainsNone(t, "Mac-side fake ES governance TLS renew output", output,
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"BEGIN PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+	)
+	assertNoNewPaths(t, "Mac-side fake ES governance TLS renew route", before)
+}
+
+func assertESGovernanceTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLSHarness, output string, helperArgs string) {
+	t.Helper()
+	assertContainsAll(t, "Mac-side fake ES governance TLS output", output,
+		"Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh.",
+		"Canonical summary stays remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json.",
+		"Remote Alpha ES service TLS helper finished.",
+		"Canonical remote summary path: /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json",
+		"did not copy it back to Mac .out",
+		"did not print full summary JSON",
+	)
+
+	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
+	scpLines := strings.Split(scpLog, "\n")
+	if len(scpLines) != 2 {
+		t.Fatalf("expected exactly two staged file uploads, got %q", scpLog)
+	}
+	assertContainsAll(t, "fake ES governance TLS scp log", scpLog,
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_es_service_tls_renew.sh"),
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_service_tls_renew.sh"),
+		"/scripts/remote_alpha_es_service_tls_renew.sh",
+		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
+	)
+	assertContainsNone(t, "fake ES governance TLS scp log", scpLog,
+		"remote_alpha_operator.sh",
+		"remote_alpha_reset_disposable_vault.sh",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+		"remote_alpha_runtime_identity_helper_summary.sh",
+		"remote_alpha_migrate_vault_service_user.sh",
+		"remote_alpha_prepare_es_config_tls",
+		"remote_alpha_deploy_es_binaries",
+		"bundle",
+	)
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty=true"); got != 1 {
+		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	}
+	assertContainsAll(t, "fake ES governance TLS ssh log", sshLog,
+		"tty=true target=ds@m75q-test",
+		"execution-substrate-remote-alpha-es-governance-tls-renew",
+		"exec /bin/bash -c",
+	)
+	assertContainsNone(t, "fake ES governance TLS ssh log forbidden capture", sshLog,
+		" tee ",
+		"script ",
+		"transcript",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		".out",
+	)
+
+	sudoLog := strings.TrimSpace(mustRead(t, h.sudoLog))
+	assertContainsAll(t, "fake ES governance TLS sudo log", sudoLog,
+		"sudo_args=",
+		"/scripts/remote_alpha_es_service_tls_renew.sh",
+		helperArgs,
+	)
+	assertContainsNone(t, "fake ES governance TLS sudo log forbidden args", sudoLog,
+		"--summary-path",
+		"--dry-run",
+		"--check-only",
+		"--egs-config-path",
+		"--es-tls-dir",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_reset_disposable_vault.sh",
+	)
+
+	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
+	assertContainsAll(t, "fake ES governance TLS helper log", helperLog,
+		"public_args="+helperArgs,
+		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
+	)
+	assertContainsNone(t, "fake ES governance TLS helper log forbidden args", helperLog,
+		"--summary-path",
+		"--dry-run",
+		"--check-only",
+		"--root-token",
+	)
+
+	rmLog := mustRead(t, h.rmLogPath)
+	assertContainsAll(t, "fake ES governance TLS remote cleanup log", rmLog,
+		"execution-substrate-remote-alpha-es-governance-tls-renew",
+	)
+	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-es-governance-tls-renew")); err == nil && len(entries) > 0 {
+		t.Fatalf("expected remote ES governance TLS staged helper directory to be cleaned, found %d entries", len(entries))
 	}
 }
 
@@ -5802,6 +6110,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"`,
 		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"`,
 		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"`,
+		`REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"`,
 		`REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"`,
 		`REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"`,
 		`REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-workload-auth-check"`,
@@ -5824,6 +6133,8 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`recovery_session_runtime_identity_summary_remote`,
 		`recovery_session_es_service_tls`,
 		`recovery_session_es_service_tls_remote`,
+		`recovery_session_es_governance_tls`,
+		`recovery_session_es_governance_tls_remote`,
 		`ssh -tt "${ssh_target}"`,
 		`es-writable-state-readiness-check)`,
 		`route_es_writable_state_readiness_check ${subcommand_args[@]+"${subcommand_args[@]}"}`,
