@@ -14,6 +14,8 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault_workload_auth_bootstrap.sh"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"
+REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"
+REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"
 REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"
 REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"
 REMOTE_ALPHA_VAULT_RESET_EXECUTE_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-execute"
@@ -26,6 +28,8 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_CONFIG="/etc/execution-substrate/vaul
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_SPIRE_SERVER_SOCKET="/run/spire/server/private/api.sock"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-runtime-identity-summary"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json"
+REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-service-tls-renew"
+REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
 READINESS_STAGING_RECORD_ARTIFACT_NAME="es-writable-state-readiness-helper-staging-record.json"
 READINESS_SESSION_DEFAULT_OUTPUT_PREFIX=".out/remote-alpha-m75q-readiness-session"
@@ -178,6 +182,7 @@ usage() {
     "" \
     "P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route, plus --prepare-summary-path, --prepare-config-readability, and --prepare-spire-bundle-read as bounded remote preparation for bootstrap prerequisites, while preserving safe plan/inventory modes and earlier recovery routes." \
     "P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty as a bounded Mac-side runtime identity evidence route over the existing public helper." \
+    "P0s adds recovery-session es-service-tls-status and es-service-tls-renew as bounded Mac-side ARS/AGS/ES internal service TLS recovery routes over one fixed public/internal helper pair." \
     "Classification: bounded proof/support helper; evidence/projection only; no authority source." \
     "The human remains the operator; this script is a bounded ES Remote Alpha operator facade/workflow." \
     "Goal: minimize manual stitching, copying, and recovery sequencing; not eliminate prompts." \
@@ -206,6 +211,8 @@ usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
     "" \
     "Options for printed command text only:" \
     "  --profile-dir .out/remote-alpha-m75q" \
@@ -213,12 +220,12 @@ usage() {
     "  --ssh-alias host_to_remote_linux_m75q" \
     "  --help, -h" \
     "" \
-    "Implemented through P0r:" \
+    "Implemented through P0s:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair, and Mac-side runtime-identity-summary over the fixed public runtime identity helper; writes no operator summary." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair, Mac-side runtime-identity-summary over the fixed public runtime identity helper, and bounded es-service-tls status/renew over the fixed TLS renewal public/internal helper pair; writes no operator summary." \
     "" \
-    "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity generation, service-user, config/TLS, binary deployment, writable-state ownership, or generic helper dispatch." \
+    "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity generation, service-user, generic config/TLS deployment, binary deployment, writable-state ownership, or generic helper dispatch." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
 }
 
@@ -230,7 +237,7 @@ inventory() {
     "interactive operator involvement is expected where an explicit mode says so" \
     "IM refresh and support-bundle steps remain separate IM evidence/provenance actions unless a later reviewed contract says otherwise" \
     "" \
-    "implemented through P0q plus P0r:" \
+    "implemented through P0q plus P0r plus P0s:" \
     "  help - show bounded facade scope and options" \
     "  inventory - show this static non-secret inventory" \
     "  print-refresh-command - print Mac-side IM live-refresh command text only" \
@@ -251,6 +258,8 @@ inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - prepare the bootstrap summary path, then config readability, then SPIRE bundle-read access, then stage and invoke the dedicated bootstrap helper; helper preflights still run before Vault/root/proof prompts" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - Mac-side staged bootstrap route; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public bootstrap helper through ssh -tt; leaves the canonical bootstrap summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json; no transcript, no summary copy-back, no support bundle" \
     "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - Mac-side staged runtime identity evidence route; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json; no transcript, no summary copy-back, no support bundle" \
+    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - Mac-side staged internal TLS evidence route; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --status through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json; no transcript, no summary copy-back, no support bundle" \
+    "  recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - Mac-side staged internal TLS recovery route; stages only the same fixed helper pair and invokes only --execute-renew through ssh -tt; renews only the bounded ARS/AGS/ES artifact-registry mTLS material and restarts only ars.service, ags.service, and es.service" \
     "" \
     "future/not implemented:" \
     "  Vault service-user check/apply execution - not implemented in P0r; remains separate" \
@@ -268,6 +277,7 @@ inventory() {
     "  vault-workload-auth-check is separate post-reset evidence/projection only: not reset/unseal, not workload-auth bootstrap, not ES token brokerage, not IM refresh/support-bundle collection, not CP proof, not runtime identity generation, and not readiness authority" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: not workload-auth success, not reset/unseal, not workload-auth check, not IM/support-bundle/CP proof, not runtime identity generation, and not ES Vault token brokerage" \
     "  runtime-identity-summary is separate evidence/projection only: not workload-auth bootstrap/check, not reset/unseal, not IM/support-bundle/CP proof, not runtime-profile readiness, not submit readiness, not retained-result readiness, and not production readiness" \
+    "  es-service-tls status/renew is bounded internal ARS artifact-registry mTLS recovery only: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, and not production readiness" \
     "  must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture" \
     "  no operator-owned summary, support bundle, report, or new authority artifact is written; readiness artifacts remain delegated helper evidence"
 }
@@ -275,7 +285,7 @@ inventory() {
 recovery_session_usage() {
   printf '%s\n' \
     "Remote Alpha operator workflow: recovery-session" \
-    "P0r scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution, and Mac-side runtime-identity-summary evidence routing." \
+    "P0s scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution, Mac-side runtime-identity-summary evidence routing, and bounded Mac-side ARS/AGS/ES internal service TLS status/renew routing." \
     "The human remains the operator. Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI." \
     "Codex must not receive, type, log, relay, persist, or summarize the unseal key." \
     "Outputs are evidence/projection/diagnostics only, never authority." \
@@ -299,6 +309,8 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
     "" \
     "Allowed flags for all modes:" \
     "  --help" \
@@ -319,7 +331,7 @@ recovery_session_usage() {
     "  --evidence-dir <path>" \
     "  --strict-known-schema" \
     "" \
-    "Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --unseal-only, --post-unseal-check, --governed-smoke-command, helper path overrides, arbitrary command strings, unknown flags, positional arguments, duplicate operational flags, secret-like arguments, and equals-form options." \
+    "Forbidden: --ssh-target, --interactive-sudo, --apply, --dry-run, --execute-reset, --execute-renew, --unseal-only, --post-unseal-check, --governed-smoke-command, helper path overrides, arbitrary command strings, unknown flags, positional arguments, duplicate operational flags, secret-like arguments, and equals-form options." \
     "Submode exception: recovery-session vault-reset-disposable --ssh-target <target> --dry-run is implemented as Mac-side dry-run planning only; it is non-destructive and does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles." \
     "Submode exception: recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty is implemented as a destructive Mac-side operator route; it stages only the reset helper, invokes only --execute-reset, and relies on the human operator to type the exact confirmation phrase and Vault secrets only in the visible remote terminal." \
     "Submode exception: recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty is implemented as a Mac-side staged evidence route; it stages only the workload-auth public/internal helper pair, invokes only the staged public helper, leaves the canonical summary on the remote host, and does not bootstrap workload auth or broker Vault tokens." \
@@ -328,6 +340,8 @@ recovery_session_usage() {
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty is bounded remote SPIRE bundle-read access preparation only; it may use an OS sudo prompt through the visible SSH TTY and must not stage helpers, run Vault, print SPIRE bundle material, or create a bootstrap summary." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty is a Mac-side staged bootstrap route; it stages only the bootstrap public/internal helper pair and relies on the human operator to type Vault bootstrap authority and proof secret values only in the visible remote helper prompt." \
     "Submode exception: recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty is a Mac-side staged evidence route; it stages only the public runtime identity helper summary script, invokes only that staged helper, leaves the canonical summary on the remote host, and does not claim runtime-profile readiness or submit readiness." \
+    "Submode exception: recovery-session es-service-tls-status --ssh-target <target> --interactive-tty is a Mac-side staged internal TLS evidence route; it stages only the ES service TLS public/internal helper pair, invokes only --status, leaves the canonical summary on the remote host, and performs no mutation." \
+    "Submode exception: recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew is a Mac-side staged internal TLS recovery route; it stages only the same helper pair, invokes only --execute-renew, and remains bounded to ARS/AGS/ES artifact-registry mTLS." \
     "The evidence-check reads only supplied local JSON files, scans for secret-like content before parsing JSON, prints path/byte/SHA-256/schema/safe status metadata only, prints no full JSON, creates no summary file, and writes no .out." \
     "Recognized schemas are interpreted through explicit safe-field allowlists. Unknown schemas are allowed by default with schema_interpretation=unknown; --strict-known-schema fails unknown schemas."
 }
@@ -598,7 +612,7 @@ recovery_session_vault_workload_auth_bootstrap_inventory() {
 
 recovery_session_plan() {
   printf '%s\n' \
-    "Remote Alpha recovery-session plan (P0r runtime identity summary route added)" \
+    "Remote Alpha recovery-session plan (P0s ES service TLS status/renew route added)" \
     "classification: bounded proof/support helper; evidence/projection/diagnostics only; no authority source" \
     "default behavior: print this plan/help and exit zero; no live tools run" \
     "" \
@@ -618,9 +632,11 @@ recovery_session_plan() {
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - implemented combined preparation plus staged bootstrap mode; summary preparation, config readability preparation, then SPIRE bundle-read preparation run before helper staging and before any Vault/root/proof prompt" \
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only the dedicated bootstrap public/internal helper pair, invokes only the public helper over ssh -tt, leaves the non-secret summary remote, and attempts cleanup without transcript capture" \
     "  runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only the public runtime identity helper summary script, invokes only that staged helper over ssh -tt, leaves the canonical summary on the remote host, and attempts cleanup without transcript capture" \
+    "  es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode; stages only the ES service TLS public/internal helper pair, invokes only --status over ssh -tt, leaves the canonical summary on the remote host, and performs no mutation" \
+    "  es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode; stages only the same helper pair, invokes only --execute-renew over ssh -tt, renews only bounded ARS/AGS/ES artifact-registry mTLS material, and attempts cleanup without transcript capture" \
     "" \
     "future explicit audited slices:" \
-    "  service-user check/apply - remains separate; apply is mutating and not part of P0r recovery-session" \
+    "  service-user check/apply - remains separate; apply is mutating and not part of P0s recovery-session" \
     "  live validation of workload-auth bootstrap execution - future separate validation only if still needed" \
     "" \
     "separate IM actions:" \
@@ -635,8 +651,9 @@ recovery_session_plan() {
     "  vault-workload-auth-check is evidence/projection only: it is not workload-auth bootstrap, not ES Vault token brokerage, not readiness authority, and not reset/unseal" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: it is not workload-auth success, not ES Vault token brokerage, and not workload-auth check execution" \
     "  runtime-identity-summary is evidence/projection only: it is not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation" \
+    "  es-service-tls status/renew is bounded internal ARS artifact-registry mTLS recovery only: it is not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, and not production readiness" \
     "  the phrase, Vault init output, root token, unseal key, and Vault prompt interactions are never accepted through args/env/files/logs/artifacts/Codex output" \
-    "  no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0r; workload-auth evidence, workload-auth bootstrap execution, and runtime identity summary evidence remain separate routes" \
+    "  no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0s; workload-auth evidence, workload-auth bootstrap execution, runtime identity summary evidence, and ES service TLS renewal remain separate routes" \
     "  vault-unseal-existing does not validate default noninteractive readiness"
 }
 
@@ -661,10 +678,13 @@ recovery_session_inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - combined route that prepares the summary path, then config readability, then SPIRE bundle-read access before staging the bootstrap helper pair and before any Vault/root/proof prompt" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host; no summary copy-back; no transcript capture" \
+    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --status through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
+    "  recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --execute-renew through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "" \
     "check-only evidence helpers:" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; now also reachable through the P0n Mac-side staged evidence route; not bootstrap; not ES token brokerage" \
     "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; now also reachable through the P0r Mac-side staged evidence route; dry-run/check-only remain direct-helper modes, not operator route flags" \
+    "  scripts/remote_alpha_es_service_tls_renew.sh --status - host-local internal TLS status helper; now also reachable through the P0s Mac-side staged evidence route; renew remains a separate explicit --execute-renew route" \
     "  scripts/remote_alpha_migrate_vault_service_user.sh --check-only - host-local Vault service-user migration check; check-only default; apply remains separate" \
     "" \
     "secret-sensitive or destructive helpers:" \
@@ -676,7 +696,7 @@ recovery_session_inventory() {
     "  live vault-workload-auth-bootstrap validation - not run in P0q; no workload-auth success claim" \
     "" \
     "classifications present: safe/local, check-only, secret-sensitive, destructive, future, blocked/reopened" \
-    "non-claims: inventory is evidence/projection/diagnostics only, never authority"
+    "non-claims: inventory is evidence/projection/diagnostics only, never authority; es-service-tls is not generic TLS deployment, IM reconciliation, CP proof, Vault/SPIRE/Nomad change, or production readiness"
 }
 
 recovery_session_next_steps() {
@@ -2423,6 +2443,265 @@ for classification, path_text, expected_filename in evidence_specs:
 PY
 }
 
+recovery_session_es_service_tls_usage() {
+  printf '%s\n' \
+    "Remote Alpha recovery-session mode: es-service-tls-status/es-service-tls-renew" \
+    "P0s scope: bounded Mac-side Remote Alpha ARS/AGS/ES internal artifact-registry TLS status and renewal route." \
+    "Mac-side mode stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh to the remote host." \
+    "The remote command invokes only --status or --execute-renew through ssh -tt and uses the explicit interactive TTY path for OS sudo when required." \
+    "No transcript, tee/script capture, .out, report, support bundle, operator summary, IM refresh, CP proof, Vault, SPIRE, Nomad, reset/unseal, workload-auth bootstrap/check, runtime identity summary, or general deployment/provisioning/reconciliation is created or run by the facade." \
+    "Canonical remote summary: /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json" \
+    "Summary is evidence/projection only, not readiness authority." \
+    "" \
+    "Secret posture:" \
+    "  The route does not accept, parse, print, copy, log, relay, persist, summarize, or handle private keys, certificate PEM bodies, Vault tokens, root tokens, unseal keys, API keys, JWT-SVIDs, passwords, proof secrets, or secret payloads." \
+    "  It relies only on the existing helper's public certificate metadata, key-public-digest matching, backup metadata, service restart metadata, and mTLS verification/probe summaries." \
+    "  It does not print full summary JSON and does not copy the summary back to Mac .out." \
+    "" \
+    "Usage:" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
+    "" \
+    "Allowed flags:" \
+    "  --help" \
+    "  --ssh-target <target>" \
+    "  --interactive-tty" \
+    "  --execute-renew (only with es-service-tls-renew)" \
+    "" \
+    "Topology rules: Mac-side only; --ssh-target is required; --interactive-tty is required; --execute-renew is required for es-service-tls-renew and forbidden for es-service-tls-status; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
+    "Forbidden in P0s: --host-local, --dry-run, --check-only, --status, --apply, --execute-reset, --unseal-only, --post-unseal-check, --execute-bootstrap, --prepare-summary-path, --prepare-config-readability, --prepare-spire-bundle-read, --interactive-sudo, --governed-smoke-command, helper override flags, output/summary path overrides, TLS path overrides, arbitrary command strings, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
+    "Non-claims: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not workload-auth bootstrap/check, not runtime identity evidence, not production readiness, and not Remote Alpha deployment/provisioning/reconciliation architecture."
+}
+
+recovery_session_es_service_tls_require_command() {
+  command -v "$1" >/dev/null 2>&1 || recovery_die "$1 is required for Mac-side es-service-tls staging"
+}
+
+recovery_session_es_service_tls_require_local_tty() {
+  [[ -t 0 ]] || recovery_die "recovery-session es-service-tls requires visible local terminal stdin; no staging or SSH occurred"
+  [[ -t 1 ]] || recovery_die "recovery-session es-service-tls requires visible local terminal stdout; no staging or SSH occurred"
+}
+
+recovery_session_es_service_tls_validate_ssh_target() {
+  local ssh_target=$1
+  case "${ssh_target}" in
+    -*|*[[:space:]]*|*';'*|*'`'*|*'$('*|*'|'*|*'&'*|*'<'*|*'>'*)
+      recovery_die "recovery-session es-service-tls --ssh-target must be a single SSH target, not an option or shell command"
+      ;;
+  esac
+}
+
+recovery_session_es_service_tls_stage_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+  local remote_public_helper_path=$3
+  local remote_internal_helper_path=$4
+
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_SERVICE_TLS_PREPARE'
+set -euo pipefail
+stage_dir=$1
+rm -rf -- "${stage_dir}"
+mkdir -p -- "${stage_dir}/scripts/internal"
+chmod 0700 "${stage_dir}" "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
+REMOTE_ALPHA_ES_SERVICE_TLS_PREPARE
+
+  scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
+  scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
+}
+
+recovery_session_es_service_tls_cleanup_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+
+  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_SERVICE_TLS_CLEANUP'
+set -euo pipefail
+stage_dir=$1
+rm -rf -- "${stage_dir}" || true
+REMOTE_ALPHA_ES_SERVICE_TLS_CLEANUP
+}
+
+recovery_session_es_service_tls_run_remote() {
+  local ssh_target=$1
+  local remote_stage_dir=$2
+  local remote_public_helper_path=$3
+  local remote_internal_helper_path=$4
+  local helper_mode=$5
+  local remote_command remote_shell_command
+
+  case "${helper_mode}" in
+    --status|--execute-renew)
+      ;;
+    *)
+      recovery_die "internal error: unsupported es-service-tls helper mode ${helper_mode}"
+      ;;
+  esac
+
+  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
+  printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
+  ssh -tt "${ssh_target}" "${remote_shell_command}"
+}
+
+recovery_session_es_service_tls_print_success_next_steps() {
+  local helper_mode=$1
+  if [[ "${helper_mode}" == "--execute-renew" ]]; then
+    printf '%s\n' \
+      "Mac-side es-service-tls-renew route finished; staged helper cleanup was attempted." \
+      "Canonical remote summary path: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}" \
+      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
+      "The helper renewed only the bounded ARS/AGS/ES artifact-registry mTLS material and restarted only ars.service, ags.service, and es.service if the helper reported success." \
+      "Separate IM refresh/support-bundle and CP proof actions were not run."
+  else
+    printf '%s\n' \
+      "Mac-side es-service-tls-status route finished; staged helper cleanup was attempted." \
+      "Canonical remote summary path: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}" \
+      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
+      "Status mode is non-mutating and does not restart services." \
+      "Renew, IM refresh/support-bundle, and CP proof actions were not run."
+  fi
+}
+
+recovery_session_es_service_tls_remote() {
+  local ssh_target=$1
+  local helper_mode=$2
+  local run_id remote_stage_dir remote_public_helper_path remote_internal_helper_path remote_status cleanup_status
+
+  recovery_session_es_service_tls_require_local_tty
+  recovery_session_es_service_tls_require_command ssh
+  recovery_session_es_service_tls_require_command scp
+
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  remote_stage_dir="${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_STAGE_ROOT}/${run_id}"
+  remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_es_service_tls_renew.sh"
+  remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_es_service_tls_renew.sh"
+
+  if [[ "${helper_mode}" == "--execute-renew" ]]; then
+    printf '%s\n' \
+      "Running Mac-side ES service TLS renewal through an explicit interactive SSH TTY." \
+      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
+      "Invoking only the staged public helper with --execute-renew; no helper override flags are accepted or passed." \
+      "The helper is bounded to ARS/AGS/ES internal artifact-registry mTLS material and may request only OS sudo through the visible remote terminal." \
+      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}." \
+      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, ES token brokerage, or CP proof is created or run." \
+      "The operator facade will not read, log, relay, persist, summarize, copy, or print private keys, PEM bodies, Vault tokens, JWT-SVIDs, API keys, passwords, or secret payloads."
+  else
+    printf '%s\n' \
+      "Running Mac-side ES service TLS status through an explicit interactive SSH TTY." \
+      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
+      "Invoking only the staged public helper with --status; no helper override flags are accepted or passed." \
+      "Status mode is non-mutating and bounded to ARS/AGS/ES internal artifact-registry mTLS evidence." \
+      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}." \
+      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, renew, service restart, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, ES token brokerage, or CP proof is created or run."
+  fi
+
+  if ! recovery_session_es_service_tls_stage_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"; then
+    recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}" || true
+    return 1
+  fi
+
+  set +e
+  recovery_session_es_service_tls_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}"
+  remote_status=$?
+  set -e
+
+  set +e
+  recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}"
+  cleanup_status=$?
+  set -e
+  if [[ "${cleanup_status}" -ne 0 ]]; then
+    printf '%s\n' "warning: Mac-side es-service-tls route could not verify remote staged helper cleanup; inspect the route-specific scratch path manually from a visible terminal." >&2
+  fi
+
+  if [[ "${remote_status}" -eq 0 ]]; then
+    recovery_session_es_service_tls_print_success_next_steps "${helper_mode}"
+  else
+    printf '%s\n' "Mac-side es-service-tls route failed; staged helper cleanup was attempted." >&2
+  fi
+
+  if [[ "${remote_status}" -eq 0 && "${cleanup_status}" -ne 0 ]]; then
+    return "${cleanup_status}"
+  fi
+  return "${remote_status}"
+}
+
+recovery_session_es_service_tls() {
+  local route_kind=$1
+  shift
+  local ssh_target_seen="false"
+  local interactive_tty_seen="false"
+  local execute_renew_seen="false"
+  local ssh_target=""
+  local helper_mode
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        recovery_session_es_service_tls_usage
+        return 0
+        ;;
+      --ssh-target)
+        require_recovery_option_not_seen "$1" "${ssh_target_seen}"
+        require_recovery_option_value "$1" "$#" "${2:-}"
+        ssh_target_seen="true"
+        ssh_target=$2
+        shift 2
+        ;;
+      --interactive-tty)
+        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
+        interactive_tty_seen="true"
+        shift
+        ;;
+      --execute-renew)
+        require_recovery_option_not_seen "$1" "${execute_renew_seen}"
+        execute_renew_seen="true"
+        shift
+        ;;
+      --host-local|--host-local=*|--dry-run|--dry-run=*|--check-only|--check-only=*|--status|--status=*|--apply|--apply=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--execute-bootstrap|--execute-bootstrap=*|--prepare-summary-path|--prepare-summary-path=*|--prepare-config-readability|--prepare-config-readability=*|--prepare-spire-bundle-read|--prepare-spire-bundle-read=*|--interactive-sudo|--interactive-sudo=*|--governed-smoke-command|--governed-smoke-command=*)
+        recovery_die "recovery-session es-service-tls forbids $1; P0s is a separate bounded ARS/AGS/ES internal TLS status/renew route and does not combine reset, unseal, workload-auth, runtime identity, IM, support bundles, Vault/SPIRE/Nomad changes, generic TLS deployment, or CP proof"
+        ;;
+      --summary-path|--summary-path=*|--output|--output=*|--ars-config-path|--ars-config-path=*|--ags-config-path|--ags-config-path=*|--es-config-path|--es-config-path=*|--egs-config-path|--egs-config-path=*|--ars-tls-dir|--ars-tls-dir=*|--ags-tls-dir|--ags-tls-dir=*|--es-tls-dir|--es-tls-dir=*|--ca-path|--ca-path=*|--cert-path|--cert-path=*|--key-path|--key-path=*)
+        recovery_die "recovery-session es-service-tls forbids helper override flag $1; P0s uses fixed documented ARS/AGS/ES TLS paths and the canonical remote summary path"
+        ;;
+      --*=*)
+        recovery_die "recovery-session es-service-tls does not accept equals-form options: $1"
+        ;;
+      --*)
+        recovery_die "unknown option for recovery-session es-service-tls: $1"
+        ;;
+      *)
+        recovery_die "unexpected positional argument for recovery-session es-service-tls: $1"
+        ;;
+    esac
+  done
+
+  if [[ "${ssh_target_seen}" != "true" ]]; then
+    recovery_die "recovery-session es-service-tls requires --ssh-target <target>"
+  fi
+  if [[ "${interactive_tty_seen}" != "true" ]]; then
+    recovery_die "recovery-session es-service-tls requires --interactive-tty"
+  fi
+  if [[ "${route_kind}" == "renew" && "${execute_renew_seen}" != "true" ]]; then
+    recovery_die "recovery-session es-service-tls-renew requires --execute-renew"
+  fi
+  if [[ "${route_kind}" == "status" && "${execute_renew_seen}" == "true" ]]; then
+    recovery_die "recovery-session es-service-tls-status forbids --execute-renew"
+  fi
+  recovery_session_es_service_tls_validate_ssh_target "${ssh_target}"
+
+  if [[ ! -x "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" ]]; then
+    recovery_die "ES service TLS public helper is not executable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"
+  fi
+  if [[ ! -r "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" ]]; then
+    recovery_die "ES service TLS internal helper is not readable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"
+  fi
+
+  if [[ "${route_kind}" == "renew" ]]; then
+    helper_mode="--execute-renew"
+  else
+    helper_mode="--status"
+  fi
+  recovery_session_es_service_tls_remote "${ssh_target}" "${helper_mode}"
+}
+
 recovery_session() {
   local mode=""
   local im_profile_dir="${DEFAULT_PROFILE_DIR}"
@@ -2470,6 +2749,16 @@ recovery_session() {
   if [[ "$#" -gt 0 && "$1" == "runtime-identity-summary" ]]; then
     shift
     recovery_session_runtime_identity_summary "$@"
+    return 0
+  fi
+  if [[ "$#" -gt 0 && "$1" == "es-service-tls-status" ]]; then
+    shift
+    recovery_session_es_service_tls "status" "$@"
+    return 0
+  fi
+  if [[ "$#" -gt 0 && "$1" == "es-service-tls-renew" ]]; then
+    shift
+    recovery_session_es_service_tls "renew" "$@"
     return 0
   fi
 
@@ -2577,8 +2866,8 @@ recovery_session() {
         evidence_specs+=("staging-record" "$2")
         shift 2
         ;;
-      --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session forbids $1 outside explicit submodes; P0r is safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, and runtime-identity-summary submodes"
+      --ssh-target|--ssh-target=*|--interactive-sudo|--interactive-sudo=*|--apply|--apply=*|--dry-run|--dry-run=*|--execute-reset|--execute-reset=*|--execute-renew|--execute-renew=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--governed-smoke-command|--governed-smoke-command=*)
+        recovery_die "recovery-session forbids $1 outside explicit submodes; P0s is safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, runtime-identity-summary, and es-service-tls submodes"
         ;;
       --*=*)
         recovery_die "recovery-session does not accept equals-form options: $1"
@@ -2662,7 +2951,7 @@ print_im_commands() {
 
 refuse_not_implemented() {
   local name=$1
-  printf 'error: subcommand %q is not implemented as a top-level P0r route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
+  printf 'error: subcommand %q is not implemented as a top-level P0s route and requires a later audited slice when not exposed through an implemented recovery-session submode.\n' "${name}" >&2
   printf 'No helper execution routing occurred.\n' >&2
   exit 2
 }
@@ -3352,7 +3641,7 @@ main() {
       refuse_not_implemented "${subcommand}"
       ;;
     *)
-      printf 'error: unknown subcommand %q is not implemented in P0r and requires a later audited slice.\n' "${subcommand}" >&2
+      printf 'error: unknown subcommand %q is not implemented in P0s and requires a later audited slice.\n' "${subcommand}" >&2
       printf 'No helper execution routing occurred.\n' >&2
       exit 2
       ;;

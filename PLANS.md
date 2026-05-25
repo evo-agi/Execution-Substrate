@@ -942,6 +942,103 @@ workload-auth bootstrap/check, runtime identity generation, generic helper
 dispatch, or `scripts/internal/*`; and preservation of the existing
 reset/workload-auth/readiness route boundaries.
 
+The P0s implementation/self-audit/merge-readiness slice may add exactly one
+bounded Remote Alpha internal ES service TLS helper pair and exactly two
+Mac-side recovery-session routes for ARS/AGS/ES artifact-registry mTLS status
+and renewal:
+`scripts/remote_alpha_operator.sh recovery-session es-service-tls-status
+--ssh-target <target> --interactive-tty` and
+`scripts/remote_alpha_operator.sh recovery-session es-service-tls-renew
+--ssh-target <target> --interactive-tty --execute-renew`. P0s may add the
+public helper `scripts/remote_alpha_es_service_tls_renew.sh` and the internal
+helper `scripts/internal/remote_alpha_es_service_tls_renew.sh`, plus static and
+fake tests for that bounded route. P0s must not run live SSH, sudo, live remote
+OpenSSL, Vault, reset/unseal, workload-auth bootstrap/check, runtime identity
+summary, Infrastructure Manager refresh, support-bundle collection, CP proof,
+SPIRE/Nomad mutation, or network-dependent integration tests.
+
+P0s is an ES-owned Remote Alpha proof/support helper only. It is not generic TLS
+deployment, provisioning, reconciliation, production readiness, IM authority,
+CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle, workload-auth
+bootstrap/check, or runtime identity evidence. The route is bounded to the
+internal ARS loopback artifact-registry mTLS path consumed by AGS and ES. The
+fixed covered paths are:
+`/etc/execution-substrate/ars-tls/runtime-ca.pem`,
+`/etc/execution-substrate/ars-tls/ars-server-cert.pem`,
+`/etc/execution-substrate/ars-tls/ars-server-key.pem`,
+`/etc/execution-substrate/tls/ags-client-cert.pem`,
+`/etc/execution-substrate/tls/ags-client-key.pem`,
+`/etc/execution-substrate/tls/runtime-ca.pem`,
+`/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`,
+`/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`, and
+`/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`.
+
+P0s must inspect the current config topology before status or renewal. It may
+proceed only when ARS, AGS, and ES config prove that ARS listens behind the
+bounded loopback artifact-registry dependency and those fixed paths are the
+paths in use for the ARS server/client-CA and AGS/ES artifact-registry client
+identity/root-CA materials. It must inspect related service-facing TLS paths
+for AGS, ES, EGS, and ARS-facing CAs. If AGS external server certs, ES external
+server certs, EGS TLS/CAs, Vault, SPIRE, Nomad, or any broader topology share a
+covered renewal path, the helper must stop with a non-secret topology blocker
+instead of guessing or broadening the renewal. P0s intentionally does not cover
+AGS external server certs, ES external server certs, EGS TLS/CAs, Vault, SPIRE,
+Nomad, workload-zone Vault config, runtime identity material, or general
+service deployment.
+
+P0s status mode is non-mutating. It must report public certificate metadata
+only: subject, issuer, SAN, EKU, notBefore, notAfter, expired/not-yet-valid
+status, file SHA-256, public fingerprint, and public-key fingerprint. It must
+confirm ARS/AGS/ES cert/key public-key matches without printing private keys;
+verify AGS and ES client certificates against the ARS trusted runtime/client
+CA; verify the ARS server certificate against the AGS and ES root CAs; and
+write only an optional non-secret remote evidence/projection summary at
+`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`.
+
+P0s renewal mode requires explicit `--execute-renew` and visible
+`--interactive-tty`. The Mac-side facade must stage only the fixed public and
+internal TLS renewal helper pair, invoke only `--execute-renew` over `ssh -tt`,
+and pass no helper override flags. The helper may use OS sudo only through the
+visible remote terminal when needed. It must create a backup directory with
+non-secret metadata before replacing files, generate fresh short-lived Remote
+Alpha internal CA/cert material with future notAfter dates, install with the
+fixed ownership/mode policy `root:ars 0640` for ARS materials, `root:ags 0640`
+for AGS materials, and `root:es 0640` for ES materials, and restart only the
+bounded affected service set `ars.service`, `ags.service`, and `es.service`.
+Post-renew verification must re-run the client/server certificate verification
+checks and probe ARS `/health` over mTLS using the configured AGS and ES client
+identities. Mac-side IM health refresh remains a separate later action.
+
+P0s summaries are evidence/projection only. They may include schema, mode,
+paths, byte counts, certificate file SHA-256, public fingerprints, validity
+windows, verification statuses, backup metadata, restart statuses, mTLS probe
+statuses, and explicit non-claims. They must not include private key PEM
+bodies, full certificate PEM bodies, Vault tokens, root tokens, unseal keys,
+client tokens, JWT-SVIDs, API keys, passwords, proof secrets, private-key
+digests for backup material, raw secret-bearing command output, terminal
+transcripts, support-bundle content, or Mac `.out` copy-back.
+
+Allowed P0s route flags are only `--help`, `--ssh-target <target>`,
+`--interactive-tty`, and `--execute-renew` for the renew route only. P0s must
+reject `--host-local`, `--dry-run`, `--check-only`, `--status`, `--apply`,
+`--execute-reset`, `--unseal-only`, `--post-unseal-check`,
+`--execute-bootstrap`, `--prepare-summary-path`,
+`--prepare-config-readability`, `--prepare-spire-bundle-read`,
+`--interactive-sudo`, `--governed-smoke-command`, helper override flags,
+TLS/config path overrides, output/summary overrides, arbitrary commands,
+unknown flags, duplicate flags, extra positional arguments, equals-form
+options, and all secret-like arguments.
+
+P0s validation remains fake/static only. Tests must cover status mode detecting
+expired certificates and safe fields, status mode detecting valid
+certificates, renew refusing without `--execute-renew`, renew refusing without
+`--interactive-tty` and `--ssh-target`, secret-like argument rejection, fake
+SSH/SCP staging of exactly the fixed TLS renewal public/internal helper pair,
+private key PEM bodies not printed or persisted to summaries, ownership/mode
+policy, backups before replacement, exact restart set, post-renew verification
+of AGS/ES client certs against ARS CA and ARS server cert against AGS/ES root
+CAs, and docs tests preserving non-authority and non-production claims.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

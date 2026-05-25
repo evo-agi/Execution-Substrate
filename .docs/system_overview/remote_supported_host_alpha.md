@@ -232,7 +232,7 @@ Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation/design status through P0r:
+Current implementation/design status through P0s:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
@@ -336,6 +336,21 @@ Current implementation/design status through P0r:
   bootstrap/check, reset/unseal, IM refresh, support bundles, CP proof,
   runtime identity generation, runtime-profile readiness, submit readiness, and
   retained-result readiness separate.
+- P0s implements exactly one bounded Remote Alpha internal ES service TLS
+  status/renew helper pair and two Mac-side recovery-session routes,
+  `recovery-session es-service-tls-status --ssh-target <target>
+  --interactive-tty` and
+  `recovery-session es-service-tls-renew --ssh-target <target>
+  --interactive-tty --execute-renew`, with static and fake SSH/SCP validation
+  only. P0s stages only `scripts/remote_alpha_es_service_tls_renew.sh` and
+  `scripts/internal/remote_alpha_es_service_tls_renew.sh`, invokes only
+  `--status` or `--execute-renew`, keeps the canonical summary on the remote
+  host at
+  `/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`,
+  does not copy the summary back to Mac `.out`, creates no operator summary,
+  captures no transcript, handles no secrets, and keeps IM refresh,
+  support-bundle collection, CP proof, Vault/SPIRE/Nomad changes,
+  workload-auth, reset/unseal, and runtime identity work separate.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -363,7 +378,8 @@ Current implementation/design status through P0r:
   --execute-bootstrap` submode and bounded
   `vault-workload-auth-bootstrap --prepare-summary-path` preparation submode,
   plus the P0r Mac-side interactive TTY `runtime-identity-summary` evidence
-  submode.
+  submode, plus the P0s Mac-side interactive TTY `es-service-tls-status` and
+  `es-service-tls-renew` submodes.
   Its safe modes
   do not use SSH or remote staging, inspect live host state, dispatch generic
   helpers, or execute destructive or authority-bearing work. Its execution
@@ -469,6 +485,25 @@ Current implementation/design status through P0r:
   identity generation, not runtime-profile readiness, not submit readiness, not
   retained-result readiness, not governed execution proof, not IM
   refresh/support-bundle collection, not CP proof, and not production readiness.
+- The `es-service-tls-status --ssh-target <target> --interactive-tty` route is
+  the P0s Mac-side internal TLS evidence route. It requires a visible local
+  terminal before staging, allocates an interactive SSH TTY, stages exactly the
+  ES service TLS public/internal helper pair, invokes only `--status`, attempts
+  staged-helper cleanup by default, writes no `.out` summary or operator
+  summary, captures no transcript, handles no secrets, does not print full
+  summary JSON, and leaves the canonical summary on the remote host at
+  `/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`.
+  Status mode is non-mutating.
+- The `es-service-tls-renew --ssh-target <target> --interactive-tty
+  --execute-renew` route is the P0s Mac-side internal TLS recovery route. It
+  uses the same staged helper pair, invokes only `--execute-renew`, and is
+  bounded to the ARS loopback artifact-registry mTLS material used by AGS and
+  ES. It may renew the bounded internal CA/certs, back up current material
+  first, restart only `ars.service`, `ags.service`, and `es.service`, and run
+  post-renew ARS mTLS probes using the AGS and ES artifact-registry client
+  identities. It is not generic TLS deployment, not IM reconciliation, not CP
+  proof, not Vault/SPIRE/Nomad change, not workload-auth, not runtime identity,
+  and not production readiness.
 - The combined `vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --prepare-summary-path --prepare-config-readability
   --interactive-tty` route runs summary preparation and then config readability
@@ -483,7 +518,8 @@ Current implementation/design status through P0r:
   the Mac-side secret-sensitive bootstrap execution route described here, in
   addition to the previously landed reset/unseal, readiness, and workload-auth
   evidence routes. P0r adds the separate Mac-side runtime identity summary
-  evidence route. Vault service-user check/apply execution, runtime security
+  evidence route. P0s adds the separate bounded ES service TLS status/renew
+  route. Vault service-user check/apply execution, runtime security
   check, post-unseal check combination, live execute-reset validation, live
   workload-auth bootstrap validation, preinstalled helper bundles, generic
   helper dispatch, and all other staged `es-*` helper delegation remain not
@@ -534,7 +570,12 @@ this slice and no ES Vault token brokerage. P0r adds the Mac-side
 `runtime-identity-summary --ssh-target <target> --interactive-tty` evidence
 route over only the public runtime identity helper summary script; it is not
 runtime identity generation, not runtime-profile readiness, and not submit
-readiness. In these topologies the
+readiness. P0s adds the Mac-side `es-service-tls-status --ssh-target <target>
+--interactive-tty` and `es-service-tls-renew --ssh-target <target>
+--interactive-tty --execute-renew` routes over only the ES service TLS
+public/internal helper pair; they are not generic TLS deployment, IM
+reconciliation, CP proof, Vault/SPIRE/Nomad change, workload-auth, runtime
+identity, or production readiness. In these topologies the
 facade itself does not prompt for, read, type, log, relay, persist, summarize,
 or accept the unseal key, root token, client token, Vault token, API key,
 private key, password, JWT-SVID payload, proof secret material, or secret
@@ -592,11 +633,19 @@ Execution-context split:
   `recovery-session runtime-identity-summary --ssh-target <target>
   --interactive-tty` evidence route over only
   `scripts/remote_alpha_runtime_identity_helper_summary.sh`, with fake/static
+  validation only and no summary copy-back. P0s adds the Mac-side
+  `recovery-session es-service-tls-status --ssh-target <target>
+  --interactive-tty` and `recovery-session es-service-tls-renew --ssh-target
+  <target> --interactive-tty --execute-renew` routes over only
+  `scripts/remote_alpha_es_service_tls_renew.sh` and
+  `scripts/internal/remote_alpha_es_service_tls_renew.sh`, with fake/static
   validation only and no summary copy-back.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
   and Vault service-user check. The host-local runtime identity helper remains
   available as a direct helper, but P0r adds the Mac-side operator topology for
-  that evidence route. The host-local workload-auth helper remains available as
+  that evidence route. The host-local ES service TLS helper remains available
+  as a direct helper, but P0s adds the Mac-side operator topology for the
+  bounded status/renew route. The host-local workload-auth helper remains available as
   a direct helper, but P0n adds the Mac-side operator topology for that evidence
   route. P0m does not add a
   host-local execute-reset route through the operator facade; the reset
@@ -605,8 +654,8 @@ Execution-context split:
 - Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning
   route, the P0m explicit execute-reset operator route, the P0n workload-auth
   evidence route, the P0o safe bootstrap planning surface, and the P0q
-  workload-auth bootstrap execution route, and the P0r runtime identity summary
-  evidence route: generic remote staging, arbitrary shell passthrough,
+  workload-auth bootstrap execution route, the P0r runtime identity summary
+  evidence route, and the P0s ES service TLS status/renew route: generic remote staging, arbitrary shell passthrough,
   post-unseal/service-user/IM/support-bundle/CP-proof bundling, live execute-reset
   validation, or live Vault workload-auth bootstrap validation.
 
@@ -652,7 +701,12 @@ Proposed v1/v2 slice sequence:
    validation only, no summary copy-back, no helper overrides, no
    workload-auth/reset/unseal/IM/support/CP bundling, no readiness claim, and no
    transcript capture
-14. later separate audit/live-validation and post-reset evidence slices before
+14. Mac-side ES service TLS status/renew route over only the fixed public/internal
+   TLS renewal helper pair, with static and fake SSH/SCP validation only, no
+   summary copy-back, no helper overrides, no Vault/SPIRE/Nomad/IM/CP/runtime
+   identity/workload-auth bundling, no production readiness claim, and no
+   transcript capture
+15. later separate audit/live-validation and post-reset evidence slices before
    any live destructive execute-reset validation or post-reset authority claim
 
 Sudo model:
@@ -2773,6 +2827,186 @@ P0r remains bounded ES Remote Alpha proof/support workflow glue only. It is not
 runtime-profile readiness, not submit readiness, not retained-result readiness,
 not governed execution proof, not CP proof, not production readiness, and not
 Remote Alpha production, deployment, provisioning, or reconciliation
+architecture.
+
+### P0s Mac-Side ES Service TLS Status/Renew Recovery Session
+
+`Bounded slice rule`: P0s implements exactly one bounded Remote Alpha internal
+ES service TLS helper pair and exactly two Mac-side recovery-session routes for
+ARS/AGS/ES artifact-registry mTLS status and renewal:
+
+- `scripts/remote_alpha_operator.sh recovery-session es-service-tls-status
+  --ssh-target <target> --interactive-tty`
+- `scripts/remote_alpha_operator.sh recovery-session es-service-tls-renew
+  --ssh-target <target> --interactive-tty --execute-renew`
+
+P0s is implementation/self-audit with static and fake SSH/SCP validation only.
+It does not run live SSH, sudo, live OpenSSL against the remote host, Vault,
+reset, unseal, workload-auth bootstrap/check, runtime identity summary,
+Infrastructure Manager refresh, support-bundle collection, CP proof, SPIRE or
+Nomad mutation, or network-dependent integration tests during validation.
+
+The route is separate from IM, CP, Vault, SPIRE, Nomad, workload-auth, reset,
+unseal, runtime identity, and general deployment. It is evidence/projection
+and bounded repair support only for the ARS loopback artifact-registry mTLS
+path used by AGS and ES. It is not generic TLS deployment, not provisioning,
+not reconciliation, not production readiness, and not Remote Alpha deployment
+architecture.
+
+Covered topology and fixed paths:
+
+- ARS trusted runtime/client CA:
+  `/etc/execution-substrate/ars-tls/runtime-ca.pem`
+- ARS server cert/key:
+  `/etc/execution-substrate/ars-tls/ars-server-cert.pem`
+  and `/etc/execution-substrate/ars-tls/ars-server-key.pem`
+- AGS artifact-registry client cert/key and ARS root CA:
+  `/etc/execution-substrate/tls/ags-client-cert.pem`,
+  `/etc/execution-substrate/tls/ags-client-key.pem`, and
+  `/etc/execution-substrate/tls/runtime-ca.pem`
+- ES artifact-registry client cert/key and ARS root CA:
+  `/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`,
+  `/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`, and
+  `/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`
+
+Topology stop line:
+
+- The helper must inspect ARS, AGS, ES, and related EGS/service-facing TLS
+  config before renewal.
+- It may proceed only when the config proves that AGS and ES use ARS via the
+  bounded loopback artifact-registry dependency and the paths above are the
+  configured ARS/AGS/ES mTLS paths.
+- If AGS external server certs, ES external server certs, EGS TLS/CAs, Vault,
+  SPIRE, Nomad, or any broader service topology shares a covered renewal path,
+  the helper must stop with a non-secret topology blocker.
+- P0s intentionally does not cover AGS external server certs, ES external
+  server certs, EGS TLS/CAs, Vault, SPIRE, Nomad, workload-zone Vault config,
+  runtime identity material, or general service deployment.
+
+Status behavior:
+
+- `es-service-tls-status` is non-mutating.
+- It reports public certificate fields only: subject, issuer, SAN, EKU,
+  notBefore, notAfter, expired/not-yet-valid status, file SHA-256, public
+  fingerprint, and public-key fingerprint.
+- It confirms ARS/AGS/ES cert/key public-key matches without printing private
+  keys.
+- It verifies AGS and ES client certificates against the ARS trusted
+  runtime/client CA.
+- It verifies the ARS server certificate against the AGS and ES root CAs.
+
+Renew behavior:
+
+- `es-service-tls-renew` requires explicit `--execute-renew`.
+- Both status and renew require visible `--interactive-tty` and
+  `--ssh-target <target>`.
+- The Mac-side facade stages only
+  `scripts/remote_alpha_es_service_tls_renew.sh` and
+  `scripts/internal/remote_alpha_es_service_tls_renew.sh`.
+- The remote command invokes only `--status` or `--execute-renew` through
+  `ssh -tt`; it passes no helper override flags.
+- The helper may use OS sudo only through the visible remote terminal.
+- Renewal creates a backup directory with non-secret metadata before replacing
+  files.
+- Renewal generates fresh short-lived Remote Alpha internal CA/certs with
+  future notAfter dates.
+- Ownership/mode policy is fixed: ARS material `root:ars 0640`, AGS material
+  `root:ags 0640`, and ES material `root:es 0640`.
+- It restarts only `ars.service`, `ags.service`, and `es.service`.
+- Post-renew verification re-runs the certificate verification checks and
+  probes ARS `/health` over mTLS using the configured AGS and ES
+  artifact-registry client identities.
+
+Summary/evidence behavior:
+
+- The canonical summary remains remote at
+  `/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`.
+- The schema is
+  `execution-substrate.remote-alpha.es-service-tls-renew-summary.v1`.
+- The summary is evidence/projection only, never authority and not an IM input.
+- The operator facade must not print full summary JSON and must not copy the
+  summary back to Mac `.out`.
+- Allowed summary fields include paths, byte counts, certificate file SHA-256,
+  public fingerprints, validity windows, key-public-digest match status,
+  verification statuses, backup metadata, service restart statuses, mTLS probe
+  statuses, and explicit non-claims.
+- Forbidden summary/output content includes private key PEM bodies, full
+  certificate PEM bodies, Vault tokens, root tokens, unseal keys, client
+  tokens, JWT-SVIDs, API keys, passwords, proof secrets, private-key backup
+  digests, terminal transcripts, support-bundle content, and raw secret-bearing
+  command output.
+
+Allowed flags for P0s are:
+
+- `--help`
+- `--ssh-target <target>`
+- `--interactive-tty`
+- `--execute-renew` only for `es-service-tls-renew`
+
+P0s must reject:
+
+- `--host-local`
+- `--dry-run`
+- `--check-only`
+- `--status`
+- `--apply`
+- `--execute-reset`
+- `--unseal-only`
+- `--post-unseal-check`
+- `--execute-bootstrap`
+- `--prepare-summary-path`
+- `--prepare-config-readability`
+- `--prepare-spire-bundle-read`
+- `--interactive-sudo`
+- `--governed-smoke-command`
+- helper override flags
+- output or summary path overrides
+- TLS/config path overrides
+- arbitrary commands
+- unknown flags
+- duplicate flags
+- extra positional arguments
+- equals-form options
+- secret-like arguments, including private keys, root tokens, unseal keys,
+  client tokens, Vault tokens, JWT-SVID payloads, API keys, passwords, proof
+  secrets, and secret payloads
+
+P0s tests:
+
+- status mode detects expired certs and reports safe fields
+- status mode detects valid certs
+- renew mode refuses without `--execute-renew`
+- renew/status modes refuse without `--interactive-tty` and `--ssh-target`
+- secret-like arguments fail before staging
+- fake SSH/SCP tests prove exactly the fixed public/internal TLS renewal helper
+  pair is staged
+- fake renew tests prove private key PEM bodies are not printed or persisted to
+  summaries
+- fake renew tests prove ownership/mode policy
+- fake renew tests prove backups are made before replacement
+- fake renew tests prove services to restart are exactly `ars.service`,
+  `ags.service`, and `es.service`
+- fake post-renew verification checks AGS/ES client certs against ARS CA and
+  ARS server cert against AGS/ES root CAs
+- docs tests preserve non-authority, non-production, and non-deployment claims
+
+Stop conditions for P0s:
+
+- certificate topology cannot be safely determined from config/docs/tests
+- staging the route requires more files than the fixed helper pair
+- helper override flags are accepted
+- private keys or full certificate PEM bodies are printed or copied into
+  summaries, reports, `.out`, support bundles, retained bundles, or Codex output
+- the route touches Vault, SPIRE, Nomad, workload-auth, runtime identity,
+  reset/unseal, IM refresh/support-bundle collection, CP proof, or generic
+  deployment/provisioning/reconciliation
+- generated artifacts appear outside the documented remote summary/backup path
+  or test temp fixtures
+
+P0s remains bounded ES Remote Alpha proof/support workflow glue only. It is not
+generic TLS deployment, not Infrastructure Manager reconciliation, not Control
+Plane authority, not Vault/SPIRE/Nomad authority, not production readiness, and
+not Remote Alpha production, deployment, provisioning, or reconciliation
 architecture.
 
 ### P0d Interactive Validation Evidence

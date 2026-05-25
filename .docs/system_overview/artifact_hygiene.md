@@ -29,6 +29,23 @@ This applies to `.out/`, proof workspaces, reports, logs, retained bundles,
 example package archives, local build directories, Python bytecode caches, OS
 metadata files, and ad hoc packaging output.
 
+Remote Alpha helper summaries under `/var/tmp/execution-substrate-remote-alpha`
+are remote-host evidence/projection only unless an authoritative doc explicitly
+promotes a specific file. The P0s ES service TLS status/renew summary
+`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`
+with schema
+`execution-substrate.remote-alpha.es-service-tls-renew-summary.v1` is a
+non-secret helper summary only. It may include paths, byte counts, certificate
+file SHA-256 digests, public fingerprints, validity windows, cert/key
+public-key match status, backup metadata, service restart statuses, mTLS probe
+statuses, verification statuses, and explicit non-claim labels. It must not be
+copied back to Mac `.out` by the operator facade, must not become an IM input
+or CP proof artifact, and must not contain private key PEM bodies, full
+certificate PEM bodies, private-key backup digests, Vault tokens, root tokens,
+unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
+secrets, terminal transcripts, support-bundle content, or raw secret-bearing
+command output.
+
 ## 3. Tracked generated-artifact allowlist
 
 The source tree intentionally keeps only these generated/binary-ish artifacts
