@@ -861,6 +861,191 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 	}
 }
 
+func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C0 gate", text: plans},
+		{label: "Workstream C decision C0 gate", text: decision},
+		{label: "system contracts C0 gate", text: contracts},
+		{label: "lifecycle contracts C0 gate", text: lifecycleContracts},
+		{label: "lifecycle design C0 gate", text: lifecycleDesign},
+		{label: "CP consumer runbook C0 gate", text: runbook},
+		{label: "MVP C0 gate", text: mvp},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C0 is the docs and docs-contract-test gate",
+			"Workstream C implementation must not start until C0 docs and docs-contract tests pass.",
+		)
+	}
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C0 ownership", text: plans},
+		{label: "Workstream C decision C0 ownership", text: decision},
+		{label: "system contracts C0 ownership", text: contracts},
+		{label: "system boundaries C0 ownership", text: boundaries},
+		{label: "CP consumer runbook C0 ownership", text: runbook},
+		{label: "MVP C0 ownership", text: mvp},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"ES owns the public admission model, prepare model, submit model, Nomad-backed lifecycle projection, retained opaque result bundles, runtime-profile compatibility, runtime-boundary handoff semantics, and bounded runtime identity/workload credential handoff boundaries.",
+		)
+	}
+
+	assertContainsAll(t, "PLANS C0 no implementation", plans,
+		"C0 makes no runtime implementation changes.",
+	)
+	assertContainsAll(t, "Workstream C decision C0 no implementation", decision,
+		"C0 is the docs and docs-contract-test gate only. It makes no runtime implementation changes",
+	)
+	assertContainsAll(t, "system contracts C0 scope", contracts,
+		"C0 makes no runtime implementation changes",
+	)
+}
+
+func TestWorkstreamC0BoundarySurfaceAssertionsAreDocumented(t *testing.T) {
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+
+	coreBoundaryPhrases := []string{
+		"`GET /v1/executions:contract` remains a narrow producer compatibility declaration, not health, submit readiness, run authority, or a general capability registry.",
+		"`POST /v1/executions:prepare` remains bounded preflight and creates no run object or scheduler handoff.",
+		"`POST /v1/executions:submit` remains the MVP execution handoff surface: async, bounded receipt, and Nomad submission through ES.",
+		"`lifecycle_projection` remains a Nomad-backed projection with `source=nomad` and an opaque read-coordination revision; it is not a Nomad scheduler id, ES lifecycle store, or write guard.",
+		"`outcome_evidence` remains bounded evidence/projection; current labels are compatibility surfaces, not final scheduler/result/log/cancel vocabulary.",
+		"`authority_handoff` remains bounded non-secret runtime handoff evidence; it never becomes a live credential, lease, approval, or scheduler truth.",
+		"ES-retained result bundles remain opaque output artifacts owned by ES; CP may materialize, review, and finalize their contents semantically, but CP does not own the retained bundle as run-control state.",
+		"`control-plane-normal-shell/v1` and `execution_substrate.runtime_profile` compatibility remain preserved unless an explicit migration/versioning plan exists.",
+	}
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C decision boundary assertions", text: decision},
+		{label: "execution lifecycle contracts boundary assertions", text: lifecycleContracts},
+		{label: "execution lifecycle design boundary assertions", text: lifecycleDesign},
+		{label: "CP consumer runbook boundary assertions", text: runbook},
+	} {
+		assertContainsAll(t, doc.label, doc.text, coreBoundaryPhrases...)
+	}
+
+	assertContainsAll(t, "system contracts boundary assertions", contracts, coreBoundaryPhrases...)
+	assertContainsAll(t, "system boundaries boundary assertions", boundaries, coreBoundaryPhrases...)
+	assertContainsAll(t, "MVP boundary assertions", mvp,
+		"`GET /v1/executions:contract` producer declaration | `compatibility edge` | Keep this as the current read-only producer compatibility declaration and early gate. Do not promote it into health, submit readiness, run authority, or a general capability registry.",
+		"`POST /v1/executions:prepare` | `compatibility edge` | Keep this as the current bounded preflight surface. It proves preflight success only and creates no run object or scheduler handoff.",
+		"`POST /v1/executions:submit` | `stable contract` | Freeze this as the MVP execution handoff surface: async, bounded receipt, and Nomad submission through ES.",
+		"`lifecycle_projection` | `stable contract` | Keep `source=nomad` and `revision` as an opaque same-run read-coordination token, not a scheduler id or write guard.",
+		"`outcome_evidence` on status or cancel JSON and successful logs or result responses | `compatibility edge` | Keep the current evidence carriers and labels for the MVP, but do not treat the present vocabulary as the final scheduler, result, log, or cancellation model.",
+		"`authority_handoff` on submit or status | `compatibility edge` | Keep this as bounded non-secret runtime handoff evidence only. It never becomes live credential, lease, approval, or scheduler truth.",
+		"ES-retained result bundles remain opaque output artifacts owned by ES; CP may materialize, review, and finalize their contents semantically, but CP does not own the retained bundle as run-control state.",
+		"`control-plane-normal-shell/v1` plus `execution_substrate.runtime_profile` compatibility | `compatibility edge` | Keep this as the accepted opt-in CP normal-shell runtime edge for the MVP. It is not a general package-kind redesign or a transfer of CP control semantics into ES.",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C decision runtime identity boundary", text: decision},
+		{label: "execution lifecycle contracts runtime identity boundary", text: lifecycleContracts},
+		{label: "execution lifecycle design runtime identity boundary", text: lifecycleDesign},
+		{label: "system contracts runtime identity boundary", text: contracts},
+		{label: "system boundaries runtime identity boundary", text: boundaries},
+		{label: "CP consumer runbook runtime identity boundary", text: runbook},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"Runtime identity and workload credential handoff remain non-secret and workload-side; ES must not become a Vault token broker or Codex credential broker.",
+		)
+	}
+}
+
+func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS external authority", text: plans},
+		{label: "Workstream C decision external authority", text: decision},
+		{label: "system contracts external authority", text: contracts},
+		{label: "system boundaries external authority", text: boundaries},
+		{label: "lifecycle contracts external authority", text: lifecycleContracts},
+		{label: "lifecycle design external authority", text: lifecycleDesign},
+		{label: "CP consumer runbook external authority", text: runbook},
+		{label: "MVP external authority", text: mvp},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"Control Plane owns orchestration, Temporal workflow state, review, checkpoint, finalization, intervention, and operator-facing control semantics.",
+			"CP consumes accepted ES surfaces but does not define ES core contracts.",
+			"IM readiness/profile/support-bundle/provenance artifacts remain evidence/projection/diagnostics only; they do not become ES or CP authority.",
+			"Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs only and do not define ES route semantics.",
+		)
+	}
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C decision ES non-ownership", text: decision},
+		{label: "system contracts ES non-ownership", text: contracts},
+		{label: "system boundaries ES non-ownership", text: boundaries},
+		{label: "lifecycle contracts ES non-ownership", text: lifecycleContracts},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"ES must not absorb CP attempt/review/checkpoint/finalization semantics.",
+			"ES must not become a Vault token broker, Codex credential broker, IM readiness authority, CP run-control authority, or maintenance-agent authority.",
+		)
+	}
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C decision generated evidence", text: decision},
+		{label: "system contracts generated evidence", text: contracts},
+		{label: "system boundaries generated evidence", text: boundaries},
+		{label: "lifecycle design generated evidence", text: lifecycleDesign},
+		{label: "artifact hygiene generated evidence", text: artifactHygiene},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"Generated evidence, `.out`, reports, traces, logs, summaries, support bundles, retained bundles, proof artifacts, and maintenance summaries remain non-authoritative evidence/projection.",
+		)
+	}
+
+	assertContainsAll(t, "artifact hygiene maintenance summaries", artifactHygiene,
+		"Maintenance Agent summaries, if produced by an external scheduler/notifier or local-evidence summarizer, remain scheduler/notifier/local-evidence outputs only.",
+		"They do not define ES route semantics, renewal semantics, runtime authority, IM readiness/provenance authority, CP run-control authority, or maintenance-agent authority inside this repository.",
+	)
+}
+
 func TestWorkstreamDPolicyAuthorizationBoundaryClarificationIsDocumented(t *testing.T) {
 	plansRaw := mustRead(t, "PLANS.md")
 	contractsRaw := mustRead(t, ".docs/system_overview/contracts.md")

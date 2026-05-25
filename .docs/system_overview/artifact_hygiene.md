@@ -30,10 +30,20 @@ semantics. Generated evidence, `.out`, support bundles, retained bundles,
 reports, traces, logs, summaries, and proof artifacts remain
 evidence/projection only.
 
+Generated evidence, `.out`, reports, traces, logs, summaries, support bundles,
+retained bundles, proof artifacts, and maintenance summaries remain
+non-authoritative evidence/projection.
+
 This applies to `.out/`, proof workspaces, generated evidence, reports, traces,
 logs, summaries, support bundles, retained bundles, proof artifacts, example
 package archives, local build directories, Python bytecode caches, OS metadata
 files, and ad hoc packaging output.
+
+Maintenance Agent summaries, if produced by an external scheduler/notifier or
+local-evidence summarizer, remain scheduler/notifier/local-evidence outputs
+only. They do not define ES route semantics, renewal semantics, runtime
+authority, IM readiness/provenance authority, CP run-control authority, or
+maintenance-agent authority inside this repository.
 
 Remote Alpha helper summaries under `/var/tmp/execution-substrate-remote-alpha`
 are remote-host evidence/projection only unless an authoritative doc explicitly

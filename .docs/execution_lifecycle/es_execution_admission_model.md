@@ -33,19 +33,40 @@ the code and tests win and this document must be realigned.
 
 ## 2. Decision summary
 
+- C0 is the docs and docs-contract-test gate only. It makes no runtime
+  implementation changes, and Workstream C implementation must not start until
+  C0 docs and docs-contract tests pass.
 - ES owns admission composition, prepare-time preflight, submit-time execution
   handoff, Nomad-backed lifecycle projection, retained opaque result-bundle
   ownership, and runtime handoff boundary enforcement.
+- ES owns the public admission model, prepare model, submit model,
+  Nomad-backed lifecycle projection, retained opaque result bundles,
+  runtime-profile compatibility, runtime-boundary handoff semantics, and
+  bounded runtime identity/workload credential handoff boundaries.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
   active bounded compatibility surfaces. Neither surface becomes health,
   readiness, run authority, or hidden orchestration.
+- `GET /v1/executions:contract` remains a narrow producer compatibility
+  declaration, not health, submit readiness, run authority, or a general
+  capability registry.
+- `POST /v1/executions:prepare` remains bounded preflight and creates no run
+  object or scheduler handoff.
 - `POST /v1/executions:submit` is the real ES-owned execution handoff surface.
   Its current behavior remains async-only and returns a bounded receipt rather
   than a durable ES lifecycle record.
+- `POST /v1/executions:submit` remains the MVP execution handoff surface:
+  async, bounded receipt, and Nomad submission through ES.
 - Nomad remains authoritative for submitted execution lifecycle. ES projects
   status, logs, and cancel observations from Nomad and serves retained opaque
   result bundles from ES-owned retained storage through the current bounded
   result path.
+- `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
+  and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
+  lifecycle store, or write guard.
+- `outcome_evidence` remains bounded evidence/projection; current labels are
+  compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
+- `authority_handoff` remains bounded non-secret runtime handoff evidence; it
+  never becomes a live credential, lease, approval, or scheduler truth.
 - ES admission composition consumes designed ARS discovery plus
   evidence/payload references, aggregate evidence verification, the narrow
   shared execution/runtime claims in `internal/contracts/evidence/v1`, EGS
@@ -112,16 +133,37 @@ the code and tests win and this document must be realigned.
 - F0 does not change runtime-config ownership from E0/E1, does not consume or
   promote D seams, and does not widen CP, IM, support-bundle, report, trace,
   retained-bundle, profile, log, or `.out` authority.
+- Runtime identity and workload credential handoff remain non-secret and
+  workload-side; ES must not become a Vault token broker or Codex credential
+  broker.
 - ES does not own AGS publish-time fact assembly/signing, ARS blob
   storage/registration/discoverability authority, EGS trust publication, CP
   orchestration semantics, runtime credential minting/brokerage/storage, or
   semantic interpretation of retained result contents.
+- Control Plane owns orchestration, Temporal workflow state, review,
+  checkpoint, finalization, intervention, and operator-facing control
+  semantics. CP consumes accepted ES surfaces but does not define ES core
+  contracts.
+- ES must not absorb CP attempt/review/checkpoint/finalization semantics.
+- IM readiness/profile/support-bundle/provenance artifacts remain
+  evidence/projection/diagnostics only; they do not become ES or CP authority.
+- Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
+  only and do not define ES route semantics.
+- ES must not become a Vault token broker, Codex credential broker, IM
+  readiness authority, CP run-control authority, or maintenance-agent
+  authority.
+- Generated evidence, `.out`, reports, traces, logs, summaries, support
+  bundles, retained bundles, proof artifacts, and maintenance summaries remain
+  non-authoritative evidence/projection.
 - ES resolves payload bytes through designed ARS discovery and explicit
   evidence/payload relationships. It does not treat `artifact_digest` as the
   payload locator by hidden equality.
 - `invocation.annotations["execution_substrate.runtime_profile"]` and the
   bounded `control-plane-normal-shell/v1` profile remain explicit compatibility
   edges on a reopened ES runtime/package seam.
+- `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+  compatibility remain preserved unless an explicit migration/versioning plan
+  exists.
 - `lifecycle_projection`, `authority_handoff`, and `outcome_evidence` remain
   bounded additive read surfaces. They do not become scheduler identity, write
   coordination, credential truth, approval truth, or CP lifecycle state.
@@ -130,6 +172,9 @@ the code and tests win and this document must be realigned.
   workload-zone Vault semantics.
 - ES retained results remain opaque output bundles. They do not become CP
   checkpoint, review, finalization, or orchestration state.
+- ES-retained result bundles remain opaque output artifacts owned by ES; CP
+  may materialize, review, and finalize their contents semantically, but CP
+  does not own the retained bundle as run-control state.
 
 ## 3. Surface classes used here
 

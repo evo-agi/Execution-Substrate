@@ -1618,12 +1618,24 @@ That package is ES-owned. It should deliver a coherent ES milestone by:
 Stable semantic contracts for this next package:
 
 - ES owns admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result bundles, and runtime handoff boundaries.
+- ES owns the public admission model, prepare model, submit model,
+  Nomad-backed lifecycle projection, retained opaque result bundles,
+  runtime-profile compatibility, runtime-boundary handoff semantics, and
+  bounded runtime identity/workload credential handoff boundaries.
 - Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.
 - ES may expose a bounded lifecycle projection revision on status responses as an opaque same-run read-coordination fact derived from Nomad observation. Callers may compare equality/change for the same run only. They must not parse or order it, infer scheduler or backend state from it, use it as a write precondition for cancel/result/logs, or treat it as a Nomad identifier or index. It is not evidence of an ES-owned lifecycle store.
 - ES may expose a bounded `authority_handoff` read surface on submission/status responses for non-secret runtime authority facts ES actually selected and handed off for a run: effective runtime profile, workload-visible identity endpoint handoff, workload-vault auth metadata, selected workload-zone Vault config reference, and bounded profile credential-location metadata. This surface is read-only evidence of the submitted runtime handoff, not live credential state, lease state, scheduler identity, policy approval state, or a Control Plane lifecycle record.
 - ES must not bypass ARS artifact storage/discoverability, EGS runtime-trust publication, or configured runtime-config ownership to make admission easier.
 - ES-owned retained results remain opaque output bundles and must not become Control Plane checkpoint, review, finalization, or orchestration state.
 - ES-owned runtime identity and workload-credential handoff must remain platform-owned, non-secret, and non-brokering: workloads use the discovered endpoint and workload-Vault metadata; ES does not fetch, mint, store, rotate, parse, or validate Vault or Codex credential material.
+- Control Plane owns orchestration, Temporal workflow state, review,
+  checkpoint, finalization, intervention, and operator-facing control
+  semantics. CP consumes accepted ES surfaces but does not define ES core
+  contracts.
+- IM readiness/profile/support-bundle/provenance artifacts remain
+  evidence/projection/diagnostics only; they do not become ES or CP authority.
+- Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
+  only and do not define ES route semantics.
 - Caller authentication and narrow SPIFFE allowlist authorization remain required on the governed execution path.
 
 Temporary compatibility edges to preserve explicitly during this package:
@@ -1900,6 +1912,13 @@ Dependencies:
 
 Current bounded decision status for Milestone 2C.1:
 
+- C0 is the docs and docs-contract-test gate for ES admission, prepare,
+  submit, lifecycle projection, retained-result ownership, runtime-profile
+  compatibility, runtime handoff, outcome evidence, runtime identity/workload
+  credential handoff boundaries, and Control Plane compatibility.
+- C0 makes no runtime implementation changes.
+- Workstream C implementation must not start until C0 docs and docs-contract
+  tests pass.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain

@@ -14,6 +14,11 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, scheduler handoff, compatibility edges, and reopened
 seams lives in `es_execution_admission_model.md`.
 
+C0 is the docs and docs-contract-test gate for the ES-owned public
+execution/admission/runtime model. It makes no runtime implementation changes,
+and Workstream C implementation must not start until C0 docs and docs-contract
+tests pass.
+
 ## 2. How to read this document
 
 - **Observed current lifecycle model**: The phase structure and authority split implemented in the current Go repo.
@@ -39,8 +44,15 @@ These labels are intentionally separate. A rule can be real today, bounded in sc
 Current slice summary:
 
 - `:contract` is a narrow read-only producer compatibility declaration for the current governed-execution contract and mandatory outcome-evidence response surfaces.
+- `GET /v1/executions:contract` remains a narrow producer compatibility
+  declaration, not health, submit readiness, run authority, or a general
+  capability registry.
 - `:prepare` is active today, but it is explicitly a bounded preflight surface.
+- `POST /v1/executions:prepare` remains bounded preflight and creates no run
+  object or scheduler handoff.
 - `:submit` is the real execution-submission surface in the current slice.
+- `POST /v1/executions:submit` remains the MVP execution handoff surface:
+  async, bounded receipt, and Nomad submission through ES.
 - Lifecycle after submission is Nomad-backed.
 - Submitted runs can expose a bounded non-secret `authority_handoff` read fact describing the ES-selected runtime authority path and evidence source for that handoff.
 - Terminal result retrieval is bounded to an ES-retained opaque bundle for the current `static-script` slice.
@@ -111,8 +123,15 @@ At a design level:
 
 - `status` reads Nomad job and allocation state and returns a minimal mapped view centered on `submitted`, `running`, or `terminal`
 - `status` also returns a bounded `lifecycle_projection` read fact whose source is Nomad and whose revision is an opaque same-run read-coordination token
+- `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
+  and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
+  lifecycle store, or write guard.
 - `status` also returns additive `outcome_evidence` that labels which current Nomad observation family backed the served projection and references the same opaque lifecycle projection token
+- `outcome_evidence` remains bounded evidence/projection; current labels are
+  compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
 - `status` may also return `authority_handoff` by recovering ES-submitted non-secret runtime handoff facts from the submitted runtime spec
+- `authority_handoff` remains bounded non-secret runtime handoff evidence; it
+  never becomes a live credential, lease, approval, or scheduler truth.
 - `logs` reads stdout for the selected task from Nomad and labels successful bodies as current Nomad task stdout
 - `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory and labels successful bodies as opaque retained bundles
 - `cancel` asks Nomad to stop the job and labels the receipt as an accepted stop request without turning ES into a broader control-plane owner or claiming observed termination
@@ -133,6 +152,9 @@ At a design level:
 - when ES observes terminal execution through `status`, `logs`, or `result`, it idempotently packages non-empty result contents into a retained tar.gz bundle keyed by `run_id`
 - retained bundles live under `execution.results_root_dir`, outside `execution.staging_root_dir`
 - successful staging cleanup does not remove retained bundles
+- ES-retained result bundles remain opaque output artifacts owned by ES; CP
+  may materialize, review, and finalize their contents semantically, but CP
+  does not own the retained bundle as run-control state.
 
 This is intentionally not a general output platform. It does not create callbacks, streaming output, checkpoint promotion, review/accept/revise branching, or an ES-owned terminal decision model.
 
@@ -161,6 +183,9 @@ This is intentionally not a general output platform. It does not create callback
 - `GET /v1/executions:contract` is active today as a bounded producer-side compatibility declaration, not as a broad capability registry.
 - Submission is currently async-only.
 - `control-plane-normal-shell/v1` is one explicit opt-in runtime-profile overlay on the current `static-script` package/runtime path. It exists to give the CP-owned remote normal-shell attempt path a governed ES-owned runtime-profile-selection and runtime-identity-delivery contract without moving CP orchestration or review semantics into ES.
+- `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+  compatibility remain preserved unless an explicit migration/versioning plan
+  exists.
 - The current slice assumes one meaningful allocation per execution.
 - ES keeps one explicit internal projected-allocation rule that selects the latest allocation by `ModifyIndex` for detailed status/log lookup only; that internal rule does not define public `lifecycle_projection.revision` semantics.
 - The current logs surface is intentionally narrow: task `task`, stdout only, plain text.
@@ -215,6 +240,9 @@ Design-level meaning:
 
 - ES injects the canonical endpoint-discovery environment convention, currently retains a temporary legacy alias, and backs the discovered endpoint with an ES-owned runtime subtree.
 - For `control-plane-normal-shell/v1`, ES also injects non-secret Codex CLI location metadata, workload-vault credential-location metadata, and any configured workload-zone Vault CA trust material. The workload remains responsible for using the existing identity endpoint and workload-vault auth metadata to read the credential material; ES does not become a Vault or Codex token broker.
+- Runtime identity and workload credential handoff remain non-secret and
+  workload-side; ES must not become a Vault token broker or Codex credential
+  broker.
 - The read-side `authority_handoff` surface may report those same non-secret facts and the selected workload-zone Vault config digest. It does not assert that endpoint use, JWT-SVID retrieval, Vault login, secret read, or token lease state succeeded.
 - Caller-provided runtime mounts must not overlap the reserved runtime paths that back that handoff.
 - `/execution/run/result` is workload-writable in the current `static-script` slice and is reserved for opaque terminal result files, not for ES-owned runtime identity material.
@@ -251,6 +279,18 @@ This file should remain the high-level lifecycle design map.
 - Runtime identity reserved-path and endpoint conventions
 - The runtime-profile selection vocabulary and whether profile selection remains annotation based
 - The extent to which current lifecycle minimalism is a durable invariant versus a bounded slice rule
+
+Cross-repo evidence seams remain outside lifecycle ownership.
+Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
+finalization, intervention, and operator-facing control semantics.
+CP consumes accepted ES surfaces but does not define ES core contracts.
+IM readiness/profile/support-bundle/provenance artifacts remain
+evidence/projection/diagnostics only; they do not become ES or CP authority.
+Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
+only and do not define ES route semantics.
+Generated evidence, `.out`, reports, traces, logs, summaries, support bundles,
+retained bundles, proof artifacts, and maintenance summaries remain
+non-authoritative evidence/projection.
 
 These seams are live today and intentionally not fixed.
 

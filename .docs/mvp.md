@@ -46,16 +46,26 @@ The current MVP claims exactly this:
    lifecycle projection, retained opaque result bundles, runtime identity or
    workload-credential handoff boundaries, and what can safely be admitted, run,
    projected, retained, and exposed to callers.
+   ES owns the public admission model, prepare model, submit model,
+   Nomad-backed lifecycle projection, retained opaque result bundles,
+   runtime-profile compatibility, runtime-boundary handoff semantics, and
+   bounded runtime identity/workload credential handoff boundaries.
 2. Control Plane is the MVP UI or orchestration layer. CP owns objective or
    task progression, review or audit or policy gates, checkpoints,
    quarantine/restore, escalation, human intervention semantics, Temporal shell
    state, and operator-facing control semantics for the current MVP or demo
    path. CP consumes accepted ES surfaces; it does not define ES core contracts.
+   Control Plane owns orchestration, Temporal workflow state, review,
+   checkpoint, finalization, intervention, and operator-facing control
+   semantics. CP consumes accepted ES surfaces but does not define ES core
+   contracts.
 3. Infrastructure Manager is bootstrap, readiness, provenance, and diagnostics.
    IM owns supported-local or remote-alpha environment bootstrap,
    readiness/profile emission, bridge/provenance tooling, support-bundle
    assembly, and diagnostics. IM outputs are evidence, projection, or
    diagnostics unless an explicit contract says otherwise.
+   IM readiness/profile/support-bundle/provenance artifacts remain
+   evidence/projection/diagnostics only; they do not become ES or CP authority.
 4. App, iMessage, browser, CLI, report, dashboard, notification, and channel
    surfaces are presentation, notification, or guarded action-adapter surfaces
    only. They can present workflow-authoritative facts, notify operators, or
@@ -79,6 +89,8 @@ The current MVP does not claim:
 - IM ownership of CP run-control truth or ES runtime truth
 - `.out/`, reports, traces, support bundles, profiles, logs, retained bundles,
   or proof artifacts as orchestration authority
+- Maintenance Agent summaries as ES route semantics, IM readiness/provenance
+  authority, CP run-control authority, or maintenance-agent authority
 - app, iMessage, notification, report, dashboard, or channel surfaces as run
   truth
 - remote SSH install automation, remote provisioning automation, or a long-lived
@@ -106,6 +118,7 @@ The current MVP does not claim:
 | Surface | Class | Frozen MVP treatment | Source path(s) |
 | --- | --- | --- | --- |
 | ES primary-program orientation and ES ownership of admission, submission, lifecycle projection, retained results, and runtime handoff boundaries | `stable contract` | Freeze this as the core MVP claim. CP and IM consume it but do not redefine it. This treatment is inferred from planning, boundary, and lifecycle docs together. | `PLANS.md`; `.docs/system_overview/boundaries.md`; `.docs/execution_lifecycle/contracts.md` |
+| C0 ES public execution/admission/runtime ownership gate | `stable contract` | C0 is the docs and docs-contract-test gate for ES admission, prepare, submit, lifecycle projection, retained-result ownership, runtime-profile compatibility, runtime handoff, outcome evidence, runtime identity/workload credential handoff boundaries, and Control Plane compatibility. C0 makes no runtime implementation changes, and Workstream C implementation must not start until C0 docs and docs-contract tests pass. | `PLANS.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md` |
 | Nomad as authoritative for submitted execution lifecycle; ES as lifecycle projector rather than parallel scheduler or lifecycle-store owner | `stable contract` | Preserve Nomad authority and the no-parallel-lifecycle-store rule for the MVP. | `PLANS.md`; `.docs/system_overview/boundaries.md`; `.docs/execution_lifecycle/contracts.md` |
 | Caller authentication and narrow SPIFFE allowlist on governed execution | `stable contract` | Keep authenticated caller identity and configured narrow allowlists as required governed-execution boundaries. | `.docs/execution_lifecycle/contracts.md`; `.docs/system_overview/contracts.md` |
 | `GET /v1/executions:contract` producer declaration | `compatibility edge` | Keep this as the current read-only producer compatibility declaration and early gate. Do not promote it into health, submit readiness, run authority, or a general capability registry. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |
@@ -117,6 +130,7 @@ The current MVP does not claim:
 | `authority_handoff` on submit or status | `compatibility edge` | Keep this as bounded non-secret runtime handoff evidence only. It never becomes live credential, lease, approval, or scheduler truth. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |
 | `GET /v1/executions/{run_id}/logs`, `GET /v1/executions/{run_id}/result`, and `POST /v1/executions/{run_id}:cancel` current consumer path | `compatibility edge` | Preserve the current CP-consumed lifecycle, logs, result, and cancel path for MVP continuity without promoting it into a broader orchestration or scheduler contract. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/system_overview/boundaries.md` |
 | ES-retained opaque result bundles | `stable contract` | Freeze the ownership rule that ES retains opaque output bundles and CP interprets them semantically. | `PLANS.md`; `.docs/system_overview/boundaries.md`; `.docs/execution_lifecycle/contracts.md` |
+| ES-retained result bundle ownership versus CP review/finalization | `stable contract` | ES-retained result bundles remain opaque output artifacts owned by ES; CP may materialize, review, and finalize their contents semantically, but CP does not own the retained bundle as run-control state. | `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |
 | `control-plane-normal-shell/v1` plus `execution_substrate.runtime_profile` compatibility | `compatibility edge` | Keep this as the accepted opt-in CP normal-shell runtime edge for the MVP. It is not a general package-kind redesign or a transfer of CP control semantics into ES. | `PLANS.md`; `.docs/system_overview/boundaries.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |
 | Supported-local ES setup, readiness, and proof surfaces such as `scripts/01_bringup.sh`, `scripts/72_supported_local_setup.sh`, and `scripts/73_supported_local_proof.sh` | `bounded MVP proof` | These substantiate the current claim and operator path without becoming the architecture or the public client contract. | `PLANS.md`; `.docs/supported_local_cp_consumer_runbook.md` |
 | Proof-only Codex shim behavior and repo helper scripts | `bounded MVP proof` | Freeze these as proof scaffolding only. They may demonstrate the bounded runtime contract without becoming a product Codex or helper-script guarantee. | `PLANS.md`; `.docs/supported_local_cp_consumer_runbook.md` |
@@ -167,6 +181,7 @@ The current MVP does not claim:
 | Remote Alpha direct HTTPS+mTLS posture | `bounded MVP proof` | Freeze Remote Alpha as a direct Mac-to-AGS or ES HTTPS+mTLS pre-live posture only, with CP, Temporal, UI, and workers still local. | `.docs/system_overview/remote_supported_host_alpha.md`; `../../Infrastructure Manager/.docs/remote-supported-host-alpha.md` |
 | Browser, CLI, app, report, dashboard, notification, iMessage, and channel surfaces | `stable contract` | Freeze these as presentation, notification, or guarded action-adapter surfaces only. They may show authoritative facts or submit guarded CP actions, but they do not become run truth, ES runtime authority, or hidden control paths. | `../../Control Plane/.docs/architecture.md`; `../../Control Plane/.docs/long-running-operator-mode-contract.md`; `../../Control Plane/README.md` |
 | `.out/`, reports, traces, local proof outputs, support bundles, retained bundles, logs, and generated profiles | `evidence/projection` | Freeze all of these as evidence, projection, diagnostics, or operator convenience outputs. None becomes orchestration authority by drift. | `../../Control Plane/.docs/long-running-operator-mode-contract.md`; `../../Control Plane/.docs/invariants.md`; `../../Infrastructure Manager/.docs/architecture.md`; `../../Infrastructure Manager/.docs/remote-supported-host-alpha.md` |
+| Maintenance Agent summaries | `evidence/projection` | Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs only and do not define ES route semantics. | `PLANS.md`; `.docs/system_overview/artifact_hygiene.md` |
 
 ## Validation matrix
 

@@ -18,6 +18,10 @@ Authority boundary:
 - This runbook documents how CP consumes an accepted ES-owned surface; it is not the source of truth for ES core contracts.
 - If CP documents, probes, examples, or proof-harness expectations ask for behavior beyond `PLANS.md`, `.docs/system_overview/`, and `.docs/execution_lifecycle/`, treat that as a cross-repo compatibility decision to coordinate rather than as an implicit ES contract.
 - Preserving the current CP path matters, but widening ES admission, lifecycle, runtime-profile, runtime-identity, result-retention, or readiness semantics requires ES-side planning and boundary-doc updates first.
+- C0 is the docs and docs-contract-test gate for the ES-owned public
+  execution/admission/runtime model. It makes no runtime implementation
+  changes, and Workstream C implementation must not start until C0 docs and
+  docs-contract tests pass.
 
 Use this alongside:
 
@@ -59,6 +63,10 @@ The supported-local proof image may provide a deterministic proof-only Codex shi
 ES owns:
 
 - governed execution admission and submit-time runtime realization
+- the public admission model, prepare model, submit model, Nomad-backed
+  lifecycle projection, retained opaque result bundles, runtime-profile
+  compatibility, runtime-boundary handoff semantics, and bounded runtime
+  identity/workload credential handoff boundaries
 - the ES runtime profile selection and configured runtime image choice
 - the platform-owned runtime identity handoff boundary
 - non-secret workload-Vault auth metadata and Codex credential-location metadata
@@ -69,6 +77,11 @@ ES owns:
 - bounded non-secret `authority_handoff` facts on submit/status for the selected runtime profile, workload identity endpoint handoff, workload-Vault auth metadata, selected workload-zone Vault config digest, and profile credential-location metadata
 - retained opaque `result.tar.gz` bundles captured from `/execution/run/result`
 - the truth of whether this repo's readiness helpers can honestly claim `submit-ready`
+
+ES owns the public admission model, prepare model, submit model, Nomad-backed
+lifecycle projection, retained opaque result bundles, runtime-profile
+compatibility, runtime-boundary handoff semantics, and bounded runtime
+identity/workload credential handoff boundaries.
 
 The Control Plane long-running operator mode contract freezes how those ES
 facts may be consumed by browser/API operator mode: ES provider run ids,
@@ -82,9 +95,15 @@ terminal run decision.
 Control Plane owns:
 
 - orchestration, review, checkpoint, finalization, and terminal run semantics
+- Temporal workflow state, intervention, and operator-facing control semantics
 - task-attempt progression and CP proof-harness expectations above the ES API
 - semantic interpretation of retained result bundle contents
 - Codex invocation semantics above the bounded ES runtime/tooling contract
+
+Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
+finalization, intervention, and operator-facing control semantics.
+
+CP consumes accepted ES surfaces but does not define ES core contracts.
 
 Infra Manager owns:
 
@@ -92,7 +111,15 @@ Infra Manager owns:
 - emission of the CP-consumable supported-local profile
 - long-lived substrate and service lifecycle coordination outside the bounded ES proof path
 
+IM readiness/profile/support-bundle/provenance artifacts remain
+evidence/projection/diagnostics only; they do not become ES or CP authority.
+Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
+only and do not define ES route semantics.
+
 ES does not fetch, mint, broker, store, rotate, parse, or validate Vault tokens or Codex tokens for CP. The workload uses the runtime identity endpoint plus workload-Vault metadata to acquire credential material itself.
+Runtime identity and workload credential handoff remain non-secret and
+workload-side; ES must not become a Vault token broker or Codex credential
+broker.
 
 Releaseability and scaling alignment for CP consumers:
 
@@ -113,6 +140,9 @@ Releaseability and scaling alignment for CP consumers:
   declaration for the governed-execution contract and mandatory outcome-evidence
   surfaces. It is not service health, submit readiness, run authority,
   credential truth, lifecycle write coordination, or scheduler API.
+- `GET /v1/executions:contract` remains a narrow producer compatibility
+  declaration, not health, submit readiness, run authority, or a general
+  capability registry.
 
 ## 4. Real client surface
 
@@ -137,6 +167,9 @@ Status responses include `lifecycle_projection.source` and
 to detect a changed ES lifecycle observation, but must treat the revision as
 opaque. It is not a Nomad job/allocation identifier, not a cancel/result/logs
 write precondition, and not a Control Plane orchestration checkpoint.
+`lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
+and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
+lifecycle store, or write guard.
 
 Status and cancel JSON responses include additive `outcome_evidence`.
 Successful logs and result responses expose the same outcome-evidence family as
@@ -153,6 +186,8 @@ opaque ES-retained result bundle. CP must not treat them as scheduler IDs,
 global run revisions, write preconditions, stdout/stderr completeness, cancel
 completion proof, retained-result content meaning, policy truth, or credential
 truth.
+`outcome_evidence` remains bounded evidence/projection; current labels are
+compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
 
 Submit responses, and status responses when the submitted handoff facts are
 recoverable, include `authority_handoff`. CP may use that field as ES-owned
@@ -162,6 +197,8 @@ workload-zone Vault config digest, and bounded profile credential-location
 metadata. CP must not treat it as proof that the workload successfully fetched
 a JWT-SVID, logged into Vault, holds a token or lease, read a Codex credential,
 or reached any CP review/checkpoint/finalization state.
+`authority_handoff` remains bounded non-secret runtime handoff evidence; it
+never becomes a live credential, lease, approval, or scheduler truth.
 
 The current repo-owned non-operator caller activation path is:
 
@@ -205,6 +242,12 @@ producer-side sequence:
    equivalent profile only if it preserves the same submit-ready truth.
 5. Use `POST /v1/executions:prepare` for artifact-specific admission proof
    before `:submit` when CP already has the candidate artifact.
+
+`POST /v1/executions:prepare` remains bounded preflight and creates no run
+object or scheduler handoff.
+
+`POST /v1/executions:submit` remains the MVP execution handoff surface: async,
+bounded receipt, and Nomad submission through ES.
 
 A missing `GET /v1/executions:contract`, a non-`200` response, a disabled
 governed-execution declaration, missing mandatory outcome-evidence carriers, or
@@ -337,6 +380,9 @@ The profile remains a `static-script` overlay. It currently requires:
 - configured workload-Vault secret path and field metadata for Codex credential material
 
 The selected profile changes the runtime image and injects non-secret runtime metadata. It does not add ES-owned CP lifecycle, review, checkpoint, or finalization semantics.
+`control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+compatibility remain preserved unless an explicit migration/versioning plan
+exists.
 
 For this profile, `authority_handoff` may include the non-secret Codex
 credential-location metadata ES injected: configured CLI path, credential source
@@ -439,6 +485,9 @@ ES can return `result.tar.gz` when:
 - the CP-owned runner did not produce the expected artifact set
 
 ES does not fabricate a result bundle from stdout, status, staging metadata, or CP expectations. Logs remain the `GET /v1/executions/{run_id}/logs` surface. Retained results are opaque tar.gz output material, not CP checkpoints, review decisions, or finalization records.
+ES-retained result bundles remain opaque output artifacts owned by ES; CP may
+materialize, review, and finalize their contents semantically, but CP does not
+own the retained bundle as run-control state.
 
 If `/execution/run/result` contains result files for a terminal run and ES still returns `result_not_found`, that is an ES-side retention issue to investigate. If the result directory was never written, route first to the workload or CP runner.
 
