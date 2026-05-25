@@ -406,6 +406,28 @@ func TestPublishRejectsRemovedWorkloadBindingFields(t *testing.T) {
 	assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
+func TestWorkstreamBPublishRejectsControlPlaneProofGrammar(t *testing.T) {
+	for _, field := range []string{
+		"attempt_manifest",
+		"retained_result_manifest",
+		"review",
+		"checkpoint",
+		"finalization",
+	} {
+		t.Run(field, func(t *testing.T) {
+			stack := startDependencyStack(t)
+			defer stack.shutdownAll(t)
+
+			response := publishArtifactRequest(t, stack, operatorCallerPath, false, func(body map[string]any) {
+				body[field] = map[string]any{"source": "cp-proof-example"}
+			})
+			defer response.Body.Close()
+
+			assertPublishError(t, response, http.StatusBadRequest, "invalid_request")
+		})
+	}
+}
+
 func TestPrepareRejectsTamperedEvidenceAfterPublish(t *testing.T) {
 	stack := startPublishOnlyStack(t)
 	defer stack.shutdownAll(t)

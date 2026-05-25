@@ -441,6 +441,9 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 
 	for _, required := range []string{
 		"Workstream B artifact publication/storage/discoverability decision",
+		"B1 is the focused code-facing guardrail slice over this decision.",
+		"It adds tests that keep AGS publication output signed and evidence-producing, ARS discovery records runtime-facing, descriptor/manifest/index/support tuples secondary, payload and artifact identity distinct, `claims.package.identity` the identity surface ES consumes, Control Plane proof/example artifacts outside core semantics, and `control-plane-normal-shell/v1` compatibility unchanged.",
+		"It makes no runtime implementation changes.",
 		"AGS publish-time ownership",
 		"ARS post-publication ownership",
 		"ES consumer boundary",
@@ -471,6 +474,8 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 
 	for _, required := range []string{
 		"The Workstream B publication/storage/discoverability decision is recorded in `.docs/system_overview/artifact_publication_storage.md`.",
+		"B1 is the focused code-facing guardrail slice over the same B0 boundary.",
+		"It does not redesign AGS, ARS, or ES runtime behavior.",
 		"The current ARS discovery record remains the canonical runtime-discoverable surface for the current slice.",
 		"the secondary descriptor support path remains a temporary compatibility edge",
 	} {
@@ -536,6 +541,32 @@ func TestWorkstreamBArtifactPublicationStorageDecisionIsDocumented(t *testing.T)
 	if !strings.Contains(arsBoundarySection, "Descriptor read/support path") || !strings.Contains(arsBoundarySection, "Manifest read/support path") {
 		t.Fatalf("ARS boundary section missing descriptor/manifest compatibility-edge alignment")
 	}
+}
+
+func TestWorkstreamB1ArtifactBoundaryGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
+
+	assertContainsAll(t, "PLANS Workstream B1 guardrail posture", plans,
+		"B1 is the focused code-facing guardrail slice over the same B0 boundary.",
+		"AGS publication output",
+		"ARS runtime-facing discovery",
+		"ES admission hot-path consumption",
+		"payload/artifact/package identity separation",
+		"CP proof/example non-authority",
+		"`control-plane-normal-shell/v1` compatibility",
+		"It does not redesign AGS, ARS, or ES runtime behavior.",
+	)
+
+	assertContainsAll(t, "artifact publication/storage B1 guardrail posture", decision,
+		"## 6. Code-facing guardrail posture",
+		"B1 guardrail tests are intentionally narrow.",
+		"they must not make ES own AGS publication semantics",
+		"make ES public DTOs depend on ARS descriptor/manifest/index/support tuple grammar",
+		"collapse `payload_digest` and `artifact_digest`",
+		"promote Control Plane proof/example artifacts into AGS/ARS/ES core semantics",
+		"not themselves a migration plan for the reopened long-term discovery/index/publication-support seam",
+	)
 }
 
 func TestWorkstreamBArtifactCompatibilityEdgesStayConsistent(t *testing.T) {

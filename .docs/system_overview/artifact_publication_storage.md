@@ -32,6 +32,13 @@ the code and tests win and this document must be realigned.
 - B0 is a docs and docs-contract-test gate for artifact publication, storage,
   discoverability, payload identity, artifact identity, and
   compatibility/support shapes. It makes no runtime implementation changes.
+- B1 is the focused code-facing guardrail slice over this decision. It adds
+  tests that keep AGS publication output signed and evidence-producing, ARS
+  discovery records runtime-facing, descriptor/manifest/index/support tuples
+  secondary, payload and artifact identity distinct, `claims.package.identity`
+  the identity surface ES consumes, Control Plane proof/example artifacts
+  outside core semantics, and `control-plane-normal-shell/v1` compatibility
+  unchanged. It makes no runtime implementation changes.
 - AGS owns publication semantics.
 - `AGS` owns publish-time fact assembly, caller-bound publication semantics,
   aggregate evidence assembly, signing, payload/support blob upload, and
@@ -189,3 +196,16 @@ compatibility surfaces.
 - If the current artifact identity derivation inputs change, update the
   authoritative docs, tests, evidence validation, ARS discoverability
   cross-checks, and ES consumer checks together.
+
+## 6. Code-facing guardrail posture
+
+B1 guardrail tests are intentionally narrow. They may assert current AGS/ARS/ES
+shape, behavior, and import boundaries, but they must not make ES own AGS
+publication semantics, make ES public DTOs depend on ARS
+descriptor/manifest/index/support tuple grammar, collapse `payload_digest` and
+`artifact_digest`, or promote Control Plane proof/example artifacts into
+AGS/ARS/ES core semantics.
+
+These tests are evidence that the current B0 boundary remains aligned before
+later Workstream B implementation. They are not themselves a migration plan for
+the reopened long-term discovery/index/publication-support seam.

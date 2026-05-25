@@ -1831,6 +1831,11 @@ Current bounded decision status for Milestone 2B.1:
 - B0 is the docs and docs-contract-test gate for artifact publication,
   storage, discoverability, payload identity, artifact identity, and
   compatibility/support shapes. It makes no runtime implementation changes.
+- B1 is the focused code-facing guardrail slice over the same B0 boundary. It
+  adds tests for AGS publication output, ARS runtime-facing discovery, ES
+  admission hot-path consumption, payload/artifact/package identity separation,
+  CP proof/example non-authority, and `control-plane-normal-shell/v1`
+  compatibility. It does not redesign AGS, ARS, or ES runtime behavior.
 - AGS owns publish-time fact assembly, caller-bound publication semantics,
   aggregate evidence assembly, signing, payload/support upload, and
   registration into ARS.

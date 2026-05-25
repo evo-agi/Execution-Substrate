@@ -153,19 +153,24 @@ func TestValidateRejectsMissingAuthorizationOutputID(t *testing.T) {
 }
 
 func TestDeriveArtifactDigestUsesPackageIdentityOnly(t *testing.T) {
+	payloadDigest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	intentDigest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	first, err := DeriveArtifactDigest(
-		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		payloadDigest,
 		"static-script",
-		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		intentDigest,
 	)
 	if err != nil {
 		t.Fatalf("derive artifact digest: %v", err)
 	}
+	if first == payloadDigest {
+		t.Fatalf("expected artifact_digest to be package identity, not the payload_digest shortcut %q", first)
+	}
 
 	second, err := DeriveArtifactDigest(
-		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		payloadDigest,
 		"static-script",
-		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		intentDigest,
 	)
 	if err != nil {
 		t.Fatalf("derive artifact digest again: %v", err)
@@ -175,7 +180,7 @@ func TestDeriveArtifactDigestUsesPackageIdentityOnly(t *testing.T) {
 	}
 
 	changedIntent, err := DeriveArtifactDigest(
-		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		payloadDigest,
 		"static-script",
 		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	)
@@ -184,5 +189,48 @@ func TestDeriveArtifactDigestUsesPackageIdentityOnly(t *testing.T) {
 	}
 	if first == changedIntent {
 		t.Fatalf("expected intent digest to affect artifact identity, both were %q", first)
+	}
+
+	changedPayload, err := DeriveArtifactDigest(
+		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		"static-script",
+		intentDigest,
+	)
+	if err != nil {
+		t.Fatalf("derive artifact digest with changed payload: %v", err)
+	}
+	if first == changedPayload {
+		t.Fatalf("expected payload digest to affect artifact identity, both were %q", first)
+	}
+
+	changedArtifactType, err := DeriveArtifactDigest(
+		payloadDigest,
+		"archive/static-script",
+		intentDigest,
+	)
+	if err != nil {
+		t.Fatalf("derive artifact digest with changed artifact type: %v", err)
+	}
+	if first == changedArtifactType {
+		t.Fatalf("expected artifact_type to affect artifact identity, both were %q", first)
+	}
+}
+
+func TestWorkstreamBPackageIdentityKeepsPayloadAndArtifactDigestDistinct(t *testing.T) {
+	payloadDigest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	identity, err := NewArtifactIdentity(
+		payloadDigest,
+		"static-script",
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	)
+	if err != nil {
+		t.Fatalf("new artifact identity: %v", err)
+	}
+
+	if identity.PayloadDigest != payloadDigest {
+		t.Fatalf("expected identity to preserve payload digest %q, got %+v", payloadDigest, identity)
+	}
+	if identity.ArtifactDigest == identity.PayloadDigest {
+		t.Fatalf("artifact_digest and payload_digest must not collapse into %q", identity.ArtifactDigest)
 	}
 }
