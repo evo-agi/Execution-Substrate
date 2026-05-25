@@ -25,6 +25,11 @@ not hidden runtime authority, scheduler authority, admission authority, policy
 truth, credential truth, shared-kernel authority, Control Plane orchestration
 state, or architecture source of truth.
 
+CP examples and proof harness artifacts do not define AGS/ARS/ES core
+semantics. Generated evidence, `.out`, support bundles, retained bundles,
+reports, traces, logs, summaries, and proof artifacts remain
+evidence/projection only.
+
 This applies to `.out/`, proof workspaces, generated evidence, reports, traces,
 logs, summaries, support bundles, retained bundles, proof artifacts, example
 package archives, local build directories, Python bytecode caches, OS metadata

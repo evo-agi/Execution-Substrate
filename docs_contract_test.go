@@ -613,6 +613,91 @@ func TestWorkstreamBArtifactCompatibilityEdgesStayConsistent(t *testing.T) {
 	}
 }
 
+func TestWorkstreamB0ArtifactBoundaryGateIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
+	sharedKernel := compactText(mustRead(t, ".docs/system_overview/shared_kernel.md"))
+	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS Workstream B0 gate", text: plans},
+		{label: "artifact publication/storage decision", text: decision},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"B0 is",
+			"docs and docs-contract-test gate",
+			"artifact publication, storage, discoverability, payload identity, artifact identity, and compatibility/support shapes",
+			"no runtime implementation changes",
+		)
+	}
+
+	assertContainsAll(t, "artifact publication/storage B0 ownership and identity", decision,
+		"AGS owns publication semantics.",
+		"ARS owns blob storage, discovery, index, descriptor, manifest, and support read semantics.",
+		"Payload identity and artifact identity are explicit and not interchangeable.",
+		"`payload_digest` identifies payload bytes or payload content identity.",
+		"`artifact_digest` identifies artifact/package identity as currently derived and documented",
+		"`claims.package.identity` is the shared-kernel identity surface ES consumes.",
+		"Descriptor/manifest/index/support tuples are compatibility/support surfaces unless explicitly migrated.",
+		"ES must consume artifacts through a designed discoverability surface, not by inheriting ARS support tuple grammar as ES public grammar.",
+		"CP examples and proof harness artifacts do not define AGS/ARS/ES core semantics.",
+		"Generated evidence, `.out`, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts remain evidence/projection only.",
+	)
+
+	assertContainsAll(t, "shared kernel B0 identity", sharedKernel,
+		"`claims.package.identity` is the shared-kernel identity surface ES consumes.",
+		"`payload_digest` identifies payload bytes or payload content identity",
+		"`artifact_digest` identifies artifact/package identity as currently derived and documented",
+		"ARS route/index/descriptor/manifest/support tuple shapes are not themselves the shared kernel or ES public grammar.",
+	)
+
+	assertContainsAll(t, "contracts B0 boundary", contracts,
+		"`claims.package.identity` is the shared-kernel identity surface ES consumes.",
+		"`payload_digest` identifies payload bytes or payload content identity",
+		"`artifact_digest` identifies artifact/package identity as currently derived and documented.",
+		"Descriptor/manifest/index/support tuples are compatibility/support or implementation-only surfaces unless explicitly migrated.",
+		"ES must consume artifacts through a designed discoverability surface, not by inheriting ARS support tuple grammar as ES public grammar.",
+	)
+
+	assertContainsAll(t, "boundaries B0 boundary", boundaries,
+		"`claims.package.identity` is the shared-kernel identity surface ES consumes:",
+		"`payload_digest` identifies payload bytes or payload content identity",
+		"`artifact_digest` identifies artifact/package identity as currently derived and documented.",
+		"Descriptor/manifest/index/support tuples are compatibility/support or implementation-only surfaces unless explicitly migrated",
+		"ES reads artifacts through designed ARS discoverability outputs rather than inheriting ARS support tuple grammar as ES public grammar",
+	)
+
+	assertContainsAll(t, "artifact hygiene B0 non-authority", artifactHygiene,
+		"CP examples and proof harness artifacts do not define AGS/ARS/ES core semantics.",
+		"Generated evidence, `.out`, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts remain evidence/projection only.",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "artifact publication/storage decision", text: decision},
+		{label: "shared kernel", text: sharedKernel},
+		{label: "contracts", text: contracts},
+		{label: "boundaries", text: boundaries},
+		{label: "artifact hygiene", text: artifactHygiene},
+	} {
+		assertContainsNone(t, doc.label,
+			doc.text,
+			"ES owns AGS publication semantics",
+			"ES public API owns ARS descriptor/manifest/index/support grammar",
+			"`artifact_digest` and `payload_digest` are interchangeable",
+			"CP examples and proof harness artifacts define AGS/ARS/ES core semantics",
+			"Generated evidence, `.out`, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts are authority",
+		)
+	}
+}
+
 func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")

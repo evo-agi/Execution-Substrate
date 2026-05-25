@@ -76,6 +76,10 @@ Workstream A decision explicitly classifies it that way.
   - `publication`
 - The aggregate evidence claims carry explicit `artifact_digest` and `payload_digest` fields inside `claims.package.identity`.
 - `claims.package.identity` is the current kernel-level shared package-identity surface for the `AGS -> ARS -> ES` path.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes.
+  `payload_digest` identifies payload bytes or payload content identity, while
+  `artifact_digest` identifies artifact/package identity as currently derived
+  and documented.
 - `claims.package.publication` remains AGS-owned publish-time meaning carried inside the signed record; ES must not treat those publication claims as ES public admission grammar.
 - `claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`.
 - `claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
@@ -344,6 +348,8 @@ Current registration record is discovery-centered:
 - ARS serves the registered discovery record as the first-class artifact discoverability surface at `/v1/artifacts/{artifact_digest}/discovery`.
 - ARS requires `discovery_digest` for artifact registration.
 - `descriptor_digest` is optional secondary support data for descriptor and manifest reads.
+- Descriptor/manifest/index/support tuples are compatibility/support or
+  implementation-only surfaces unless explicitly migrated.
 - ARS resolves `/evidence` reads through the registered discovery record and `/manifest` reads through the secondary descriptor support path when present, using the current descriptor `package.supporting[name=manifest]` reference.
 - Registration validates every referenced digest by:
   - checking digest syntax
@@ -556,6 +562,8 @@ Current successful response shapes:
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode` and optional Vault CA trust material, and returns bounded preflight success only.
+- ES must consume artifacts through a designed discoverability surface, not by
+  inheriting ARS support tuple grammar as ES public grammar.
 - `:prepare` and `:submit` make ES the current runtime-config consumer and
   lookup orchestrator only. Runtime-config semantics live in
   `internal/contracts/runtimeconfig/v1`, ARS owns blob read by digest, and no

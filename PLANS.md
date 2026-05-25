@@ -1828,24 +1828,38 @@ Current bounded decision status for Milestone 2B.1:
 
 - The Workstream B publication/storage/discoverability decision is recorded in
   `.docs/system_overview/artifact_publication_storage.md`.
+- B0 is the docs and docs-contract-test gate for artifact publication,
+  storage, discoverability, payload identity, artifact identity, and
+  compatibility/support shapes. It makes no runtime implementation changes.
 - AGS owns publish-time fact assembly, caller-bound publication semantics,
   aggregate evidence assembly, signing, payload/support upload, and
   registration into ARS.
 - ARS owns blob storage, content-addressed integrity, artifact registration,
-  runtime-facing discovery records, and the read surfaces ES may later
-  consume.
+  runtime-facing discovery records, index behavior, descriptor/manifest support
+  reads, and the ARS-owned read surfaces ES may later consume.
 - The current ARS discovery record remains the canonical runtime-discoverable
   surface for the current slice. Descriptor/manifest support remains secondary
   publication detail, and the current index entry shape remains
   implementation-only/current-slice detail.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes;
+  AGS-owned publication claims and ARS descriptor/manifest/index/support tuples
+  do not become that identity surface.
 - Payload identity and artifact identity remain separate:
-  `payload_digest` content-addresses bytes, while `artifact_digest` is
-  package-facing identity derived from `payload_digest`, `artifact_type`, and
-  `intent_digest`.
+  `payload_digest` identifies payload bytes or payload content identity, while
+  `artifact_digest` identifies artifact/package identity as currently derived
+  from `payload_digest`, `artifact_type`, and `intent_digest`.
 - The current discovery/register JSON shapes are retained only as bounded
-  slice rules, the secondary descriptor support path remains a temporary
+  slice rules, descriptor/manifest/index/support tuples are
+  compatibility/support or implementation-only surfaces unless explicitly
+  migrated, the secondary descriptor support path remains a temporary
   compatibility edge, and the long-term discovery/index/publication-support
   model remains reopened.
+- ES must consume artifacts through a designed discoverability surface, not by
+  inheriting ARS support tuple grammar as ES public grammar.
+- CP examples and proof harness artifacts do not define AGS/ARS/ES core
+  semantics; generated evidence, `.out`, support bundles, retained bundles,
+  reports, traces, logs, summaries, and proof artifacts remain
+  evidence/projection only.
 
 ### Workstream C - Execution And Admission Reset
 

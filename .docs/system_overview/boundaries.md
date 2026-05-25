@@ -70,7 +70,15 @@ Those absences are current facts, not design commitments.
   and secondary publication/support detail lives in
   `artifact_publication_storage.md`.
 - In the current evidence record, `claims.package.identity`, narrow derivation request-binding authorization, the narrow execution/runtime claims ES actually enforces, and `seal` verification are the kernel-level shared surface. `claims.package.publication` remains AGS-owned publication meaning carried inside the signed record.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes:
+  `payload_digest` identifies payload bytes or payload content identity, while
+  `artifact_digest` identifies artifact/package identity as currently derived
+  and documented.
 - ARS runtime-facing discovery, descriptor, and index shapes are ARS-owned discoverability contracts. ES may consume them, but they are not the shared kernel and must not become ES public grammar by reuse.
+- Descriptor/manifest/index/support tuples are compatibility/support or
+  implementation-only surfaces unless explicitly migrated, and ES must consume
+  artifacts through a designed discoverability surface rather than inheriting
+  ARS support tuple grammar as ES public grammar.
 - ES-owned admission, submission, lifecycle projection, runtime-profile, runtime-identity, retained-result, and readiness semantics are defined by this repository's planning and boundary docs.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
@@ -186,6 +194,8 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 - Registration of evidence-centered artifact records through `/v1/artifacts:register`
 - Fact retrieval through `/v1/artifacts/{artifact_digest}/{kind}`
 - Current artifact index entry shape in `ars/index/index.go`
+- Descriptor, manifest, index, and support read semantics for the current ARS
+  compatibility/support surfaces
 - Read-time guarantees that referenced blobs exist, are integrity-valid, and are JSON-valid where the contract requires JSON facts
 
 **Explicit non-ownership**
@@ -194,11 +204,14 @@ Provide artifact blob storage plus the registration and read surfaces that make 
 - Trust or policy evaluation
 - Runtime execution or lifecycle state
 - Authorization semantics beyond the bounded write and read caller checks implemented by ARS itself
+- ES public grammar for descriptor/manifest/index/support tuples
 
 **Current consumers / collaborators**
 
 - AGS writes blobs and registers artifacts through ARS
 - ES reads blobs and artifact evidence/records through ARS
+- ES reads artifacts through designed ARS discoverability outputs rather than
+  inheriting ARS support tuple grammar as ES public grammar
 - Other configured callers may read through ARS if their SPIFFE path matches allowed prefixes
 
 **Boundary pressure points**
@@ -323,6 +336,7 @@ runtime-profile handling, and compatibility edges lives in
 
 - Artifact publication
 - Artifact storage
+- ARS descriptor/manifest/index/support tuple grammar as ES public grammar
 - Trust model publication
 - Canonical lifecycle state independent of Nomad
 - Control Plane checkpoint, review, accept, revise, fail, hold, resume, reject, escalation, or terminal-run semantics

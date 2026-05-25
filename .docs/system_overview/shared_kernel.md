@@ -46,6 +46,11 @@ the code and tests win and this document must be realigned.
 - Payload identity and artifact identity remain separate. ES consumes payload
   discoverability through ARS and cross-checks it against evidence claims; it
   does not assume `artifact_digest == payload_digest`.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes.
+  `payload_digest` identifies payload bytes or payload content identity, while
+  `artifact_digest` identifies artifact/package identity as currently derived
+  and documented. AGS publication claims and ARS descriptor/manifest/index/support
+  tuples do not replace that identity surface.
 - The current runtime-profile compatibility key is
   `execution_substrate.runtime_profile`, and the current bounded opt-in profile
   name is `control-plane-normal-shell/v1`. Both remain outside the shared
@@ -89,7 +94,7 @@ the code and tests win and this document must be realigned.
 | --- | --- | --- | --- |
 | `claims.package.publication` | `service-owned contract` | `AGS` | `builder_service`, caller-derived `invoker`, `policy_decisions`, and `build_log_digest` remain AGS-owned publish-time facts carried inside the signed evidence record. ES verifies the signed record but must not treat publication claims as public ES admission grammar. |
 | `POST /v1/artifacts:publish` request grammar and AGS manifest/support-data assembly | `service-owned contract` | `AGS` | AGS accepts the publish request, derives artifact identity, builds aggregate evidence, signs it, uploads payload/evidence/supporting blobs, and registers the artifact through ARS. |
-| ARS blob, registration, discovery, descriptor, manifest routes, and index helpers | `service-owned contract` | `ARS` | ARS owns blob storage, integrity enforcement, artifact registration, runtime-facing discoverability, and support-read mechanics. ES consumes designed ARS outputs; ARS route/index/descriptor/manifest shapes are not themselves the shared kernel. |
+| ARS blob, registration, discovery, descriptor, manifest routes, index helpers, and support-read mechanics | `service-owned contract` | `ARS` | ARS owns blob storage, integrity enforcement, artifact registration, runtime-facing discoverability, index behavior, descriptor/manifest support reads, and support-read mechanics. ES consumes designed ARS outputs; ARS route/index/descriptor/manifest/support tuple shapes are not themselves the shared kernel or ES public grammar. |
 | EGS runtime-trust payload and signed response wrapper | `service-owned contract` | `EGS` | EGS owns signer/artifact trust policy publication. ES consumes that trust output but the EGS payload does not become part of the shared artifact kernel. |
 | ES public execution request, lifecycle, result, and `authority_handoff` surfaces | `service-owned contract` | `ES` | ES owns admission composition, runtime-profile handling, scheduler handoff, lifecycle projection, retained-result exposure, and runtime handoff evidence. ES must not let AGS/ARS or CP consumer assumptions define those public ES semantics. |
 
@@ -133,6 +138,8 @@ the code and tests win and this document must be realigned.
   expectations, or retained-result meaning.
 - Do not treat ARS discoverability/index shapes as ES public grammar just
   because ES currently consumes them.
+- Do not treat ARS descriptor/manifest/index/support tuple grammar as the
+  shared-kernel identity surface ES consumes.
 - Do not let CP examples, reports, support artifacts, `.out` artifacts, or
   proof harnesses become ES admission or run authority.
 - Do not treat generated evidence, support bundles, retained bundles, reports,

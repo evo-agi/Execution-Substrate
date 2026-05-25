@@ -29,36 +29,59 @@ the code and tests win and this document must be realigned.
 
 ## 2. Decision summary
 
+- B0 is a docs and docs-contract-test gate for artifact publication, storage,
+  discoverability, payload identity, artifact identity, and
+  compatibility/support shapes. It makes no runtime implementation changes.
+- AGS owns publication semantics.
 - `AGS` owns publish-time fact assembly, caller-bound publication semantics,
   aggregate evidence assembly, signing, payload/support blob upload, and
   artifact registration into `ARS`.
 - `AGS` does not own blob storage, post-publication runtime discoverability,
   runtime execution, lifecycle state, ES admission, semantic interpretation of
   workload outputs, or Control Plane orchestration semantics.
+- ARS owns blob storage, discovery, index, descriptor, manifest, and support
+  read semantics.
 - `ARS` owns content-addressed blob storage, read/write integrity enforcement,
   artifact registration, runtime-facing discovery records, and the read
   surfaces by which ES may later discover payload/evidence relationships.
 - `ARS` does not own publish-time fact assembly, trust evaluation, policy
   evaluation, runtime execution, lifecycle state, or Control Plane
   orchestration semantics.
-- Payload identity and artifact identity remain separate. `payload_digest`
-  addresses payload bytes. `artifact_digest` is package-facing identity derived
-  from `payload_digest`, `artifact_type`, and `intent_digest`.
+- Payload identity and artifact identity are explicit and not interchangeable.
+  `payload_digest` identifies payload bytes or payload content identity.
+  In the current byte-addressed payload case, `payload_digest` addresses
+  payload bytes.
+  `artifact_digest` identifies artifact/package identity as currently derived
+  and documented from `payload_digest`, `artifact_type`, and `intent_digest`.
+  In the current package-facing identity rule, `artifact_digest` is
+  package-facing identity derived from `payload_digest`, `artifact_type`, and
+  `intent_digest`.
+- `claims.package.identity` is the shared-kernel identity surface ES consumes.
+  AGS-owned publication claims and ARS descriptor/manifest/index/support tuples
+  do not replace that identity surface.
 - The current ARS discovery record is the canonical runtime-discoverable
   surface for the current slice. Descriptor/manifest support remains secondary
   publication detail and does not define ES public grammar.
 - The current discovery JSON shape and `POST /v1/artifacts:register` write
   grammar are retained only as bounded current-slice rules. The long-term
   discoverability/index model remains reopened.
+- Descriptor/manifest/index/support tuples are compatibility/support surfaces
+  unless explicitly migrated.
 - ES later consumes designed ARS discovery outputs, explicit
   evidence/payload relationships, and explicit cross-checks. ES must not
   inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane
   examples/probes as public execution grammar.
+- ES must consume artifacts through a designed discoverability surface, not by
+  inheriting ARS support tuple grammar as ES public grammar.
 - Control Plane examples, probes, scripts, proof harnesses, `.out` artifacts,
   generated evidence, retained result bundles, reports, traces, logs,
   summaries, support bundles, proof artifacts, and consumer convenience
   expectations remain outside AGS/ARS/ES core semantics and outside shared
   kernel authority.
+- CP examples and proof harness artifacts do not define AGS/ARS/ES core
+  semantics.
+- Generated evidence, `.out`, support bundles, retained bundles, reports,
+  traces, logs, summaries, and proof artifacts remain evidence/projection only.
 - Workstream B consumes the Workstream A shared-kernel decision without widening
   it. `internal/contracts/evidence/v1` remains the narrow evidence-owned kernel,
   not a dumping ground for AGS publication, ARS discoverability, ES lifecycle, or
@@ -95,14 +118,16 @@ Role labels used in the classification tables below:
 | Surface | Role | Class | Current rule |
 | --- | --- | --- | --- |
 | Aggregate artifact evidence blob (`internal/contracts/evidence/v1.ArtifactEvidence`) | canonical signed publication fact record; runtime-discoverable through ARS discovery | `Current invariant` | AGS assembles and signs this record, ARS stores it by digest, and ES later verifies it after following the ARS discovery record. Descriptor/manifest support data do not replace it as the authoritative publish-time fact record. |
-| Payload blob referenced by `payload_digest` | canonical runtime-consumable payload bytes | `Current invariant` | Payload bytes remain content-addressed by `payload_digest`. ARS stores and re-verifies those bytes by digest, and ES later consumes payload bytes only through an explicit payload reference and cross-check. |
+| `claims.package.identity` | shared-kernel identity surface ES consumes | `Current invariant` | `artifact_digest`, `payload_digest`, `artifact_type`, and `intent_digest` are the package-identity facts ES cross-checks after following ARS discovery. AGS-owned publication claims and ARS support tuples do not replace this identity surface. |
+| Payload blob referenced by `payload_digest` | canonical runtime-consumable payload bytes or content identity | `Current invariant` | `payload_digest` identifies payload bytes or payload content identity. ARS stores and re-verifies those bytes by digest, and ES later consumes payload bytes only through an explicit payload reference and cross-check. |
 | ARS discovery record (`GET /v1/artifacts/{artifact_digest}/discovery`, `ars/api.ArtifactDiscovery`) | canonical runtime-discoverable surface | `Bounded slice rule` | The current record repeats package-facing artifact identity and points to aggregate evidence and payload digests. ES consumes this runtime-facing role today, but the exact JSON/route shape is not frozen beyond the current slice. |
 | AGS -> ARS registration write contract (`POST /v1/artifacts:register` with required `discovery_digest` and optional `descriptor_digest`) | storage registration contract | `Bounded slice rule` | Discovery-centered registration is the intentional current write contract. ARS validates the discovery record, optionally validates secondary descriptor support data, and validates referenced blobs before the artifact becomes discoverable. The long-term write grammar remains open. |
-| Current artifact identity derivation rule | package-facing artifact identity rule | `Bounded slice rule` | `artifact_digest` is derived from `payload_digest`, `artifact_type`, and `intent_digest`. It is not hidden payload equality and is not derived from admission/runtime claim material. Any future change requires explicit migration/versioning and coordinated evidence/discovery updates. |
+| Current artifact identity derivation rule | artifact/package identity rule | `Bounded slice rule` | `artifact_digest` identifies artifact/package identity as currently derived and documented from `payload_digest`, `artifact_type`, and `intent_digest`. It is not hidden payload equality and is not derived from admission/runtime claim material. Any future change requires explicit migration/versioning and coordinated evidence/discovery updates. |
 | Artifact descriptor plus `/descriptor` read surface | support/secondary publication detail | `Temporary compatibility edge` | Descriptor support data remains optional and secondary. It is retained for publication/support reads, not as the canonical runtime-discoverable surface, and ES must not require descriptor presence for current admission. |
 | Manifest support path plus `/manifest` read surface | support/secondary publication detail | `Temporary compatibility edge` | ARS resolves manifest reads only through secondary descriptor support data when present, specifically the current descriptor `package.supporting[name=manifest]` reference. The current ES hot path does not require manifest reads; manifest support remains compatibility scaffolding for publication/support consumers. |
 | Current AGS manifest JSON contents | support-only projection of the current runtime interface | `Implementation-only/current-slice detail` | AGS emits the current manifest blob today, but ES reconstructs its local manifest from aggregate evidence rather than treating the published manifest as the authoritative hot-path input. |
 | `ars/index.Entry` plus `KindDiscovery`, `KindDescriptor`, `KindEvidence`, and `KindManifest` | storage/discoverability mechanic | `Implementation-only/current-slice detail` | These are the current persistence/index helpers that make the ARS slice work. They do not define shared-kernel meaning, canonical runtime discoverability by themselves, or ES public grammar. |
+| Descriptor/manifest/index/support tuple grammar | compatibility/support or implementation-only tuple grammar | `Temporary compatibility edge` / `Implementation-only/current-slice detail` | Descriptor and manifest support reads are compatibility/support surfaces, while index helpers are implementation-only. None of these tuple shapes becomes ES public grammar unless an explicit migration or replacement design promotes it first. |
 | Long-term ARS discovery/index/publication-support model | architecture-defining contract seam | `Reopened redesign seam` | Workstream B settles the current guardrails only. The long-term discovery/index/publication-support model may be re-derived later, but only with explicit documentation and compatibility/migration planning first. |
 
 ### 4C. Temporary compatibility edge metadata
@@ -141,8 +166,14 @@ compatibility surfaces.
 
 - Do not collapse `artifact_digest` and `payload_digest` into a hidden equality
   assumption.
+- Do not treat `payload_digest` and `artifact_digest` as interchangeable.
+- Do not replace `claims.package.identity` with AGS publication claims or ARS
+  descriptor/manifest/index/support tuples as the identity surface ES consumes.
 - Do not let descriptor, manifest, index, or support-data tuples become ES
   public admission grammar by reuse.
+- Do not let ES consume artifacts by inheriting ARS support tuple grammar as ES
+  public grammar; ES must consume artifacts through a designed discoverability
+  surface.
 - Do not widen `internal/contracts/evidence/v1` beyond the Workstream A
   shared-kernel decision just because AGS and ARS currently exchange adjacent
   publication or storage data.
