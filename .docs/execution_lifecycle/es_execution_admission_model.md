@@ -36,6 +36,13 @@ the code and tests win and this document must be realigned.
 - C0 is the docs and docs-contract-test gate only. It makes no runtime
   implementation changes, and Workstream C implementation must not start until
   C0 docs and docs-contract tests pass.
+- C1 is the focused code-facing guardrail slice over this accepted model. It
+  strengthens tests for bounded `:prepare` preflight non-effects, ARS
+  discovery/evidence/payload/package-identity consumption, signed evidence and
+  narrow execution/runtime claim enforcement, AGS/ARS support/CP grammar
+  exclusion, payload-digest versus package-identity mismatch separation,
+  current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
+  non-authority. It does not redesign runtime behavior.
 - ES owns admission composition, prepare-time preflight, submit-time execution
   handoff, Nomad-backed lifecycle projection, retained opaque result-bundle
   ownership, and runtime handoff boundary enforcement.
@@ -309,3 +316,20 @@ ES does not own:
   `authority_handoff` vocabulary, `outcome_evidence` vocabulary, or current
   result-route path/lookup/`application/gzip` bundle behavior requires an explicit
   compatibility, drain, migration, or versioning plan first.
+
+## 6. Code-facing guardrail posture
+
+C1 guardrail tests are intentionally narrow. They may assert current ES route
+shapes, request decoding, admission composition, evidence verification, payload
+and package identity checks, non-authority response vocabulary, and preserved
+compatibility edges, but they must not make `:prepare` create run truth,
+scheduler handoff, provider run IDs, retained results, CP workflow state, or
+lifecycle-store mutation.
+
+They also must not make ES public grammar depend on AGS publication fields,
+ARS descriptor/manifest/index/support tuple fields, or CP
+attempt/review/checkpoint/finalization fields. These tests are evidence that
+the accepted C0 boundary remains aligned during the C1 implementation slice;
+they are not a migration plan for the reopened long-term request,
+runtime-profile, lifecycle, retained-result, runtime-config, or
+runtime-identity seams.

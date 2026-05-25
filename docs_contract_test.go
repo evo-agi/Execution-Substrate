@@ -978,6 +978,59 @@ func TestWorkstreamC0BoundarySurfaceAssertionsAreDocumented(t *testing.T) {
 	}
 }
 
+func TestWorkstreamC1PrepareAdmissionGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	postureSection := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"), "## 6. Code-facing guardrail posture", "")
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C1 guardrail posture", text: plans},
+		{label: "Workstream C decision C1 guardrail posture", text: decision},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C1 is the focused code-facing guardrail slice over",
+			"bounded `:prepare` preflight non-effects",
+			"ARS discovery/evidence/payload/package-identity consumption",
+			"signed evidence",
+			"narrow execution/runtime claim enforcement",
+			"AGS/ARS support/CP grammar exclusion",
+			"payload-digest versus package-identity mismatch separation",
+			"current compatibility surfaces",
+			"`authority_handoff`/`outcome_evidence` non-authority",
+			"It does not redesign runtime behavior.",
+		)
+	}
+
+	assertContainsAll(t, "Workstream C C1 code-facing guardrails", postureSection,
+		"C1 guardrail tests are intentionally narrow.",
+		"current ES route shapes",
+		"request decoding",
+		"admission composition",
+		"evidence verification",
+		"payload and package identity checks",
+		"non-authority response vocabulary",
+		"preserved compatibility edges",
+		"must not make `:prepare` create run truth",
+		"scheduler handoff",
+		"provider run IDs",
+		"retained results",
+		"CP workflow state",
+		"lifecycle-store mutation",
+		"AGS publication fields",
+		"ARS descriptor/manifest/index/support tuple fields",
+		"CP attempt/review/checkpoint/finalization fields",
+		"not a migration plan for the reopened long-term request",
+		"runtime-profile",
+		"lifecycle",
+		"retained-result",
+		"runtime-config",
+		"runtime-identity seams",
+	)
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))

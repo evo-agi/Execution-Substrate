@@ -1919,6 +1919,13 @@ Current bounded decision status for Milestone 2C.1:
 - C0 makes no runtime implementation changes.
 - Workstream C implementation must not start until C0 docs and docs-contract
   tests pass.
+- C1 is the focused code-facing guardrail slice over the accepted C0 model.
+  It adds or strengthens tests for bounded `:prepare` preflight non-effects,
+  ARS discovery/evidence/payload/package-identity consumption, signed evidence
+  and narrow execution/runtime claim enforcement, AGS/ARS support/CP grammar
+  exclusion, payload-digest versus package-identity mismatch separation,
+  current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
+  non-authority. It does not redesign runtime behavior.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain

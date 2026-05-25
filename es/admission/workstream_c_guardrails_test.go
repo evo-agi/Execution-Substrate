@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	esconfig "execution-substrate/es/config"
+	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
 
@@ -44,6 +46,7 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 	if !result.Success {
 		t.Fatalf("expected successful bounded prepare result, got %+v", result)
 	}
+	assertJSONFieldsExact(t, result, "success")
 
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
@@ -65,11 +68,97 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 		`"audit"`,
 		`"allowed"`,
 		`"policy_approval"`,
+		`"provider_run_id"`,
+		`"cp_workflow_id"`,
+		`"scheduler_handoff"`,
+		`"retained_result_bundle"`,
+		`"lifecycle_store"`,
 		`"runtime_auth_plan"`,
 		`"artifact_digest"`,
 		`"descriptor"`,
 		`"manifest"`,
 	)
+}
+
+func TestWorkstreamCAdmissionConsumesDiscoveryEvidencePackageIdentityAndRuntimeClaims(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service := fixture.service()
+	request := fixture.prepareRequest()
+	request.Invocation.Env = map[string]string{
+		"C1_ALLOWED_ENV": "true",
+	}
+
+	evidence := signedWorkstreamAEvidence(t, fixture, func(record *evidencev1.ArtifactEvidence) {
+		record.Claims.Admission.Execution.Runtime.EnvironmentVariables = []string{"C1_ALLOWED_ENV"}
+		record.Claims.Admission.Execution.Runtime.RequiredCapabilities = []string{"c1-special-runtime"}
+		record.Claims.Admission.Execution.Workload.TargetPlatform = "docker"
+		record.Claims.Admission.Execution.Access.NetworkAccess = false
+	})
+
+	artifact, err := service.prepareArtifactFromDiscovery(request, fixture.trustModel, discoveredArtifactWithEvidence(t, fixture.discovery, evidence))
+	if err != nil {
+		t.Fatalf("expected discovery, signed evidence, package identity, and runtime claims to prepare, got %+v", err)
+	}
+	if artifact.payloadDigest != evidence.Claims.Package.Identity.PayloadDigest {
+		t.Fatalf("expected payload digest from claims.package.identity, got %q", artifact.payloadDigest)
+	}
+	if artifact.manifest.ArtifactDigest != evidence.Claims.Package.Identity.ArtifactDigest ||
+		artifact.manifest.ArtifactType != evidence.Claims.Package.Identity.ArtifactType ||
+		artifact.manifest.IntentDigest != evidence.Claims.Package.Identity.IntentDigest {
+		t.Fatalf("expected manifest projection from claims.package.identity, got %+v", artifact.manifest)
+	}
+	if !reflect.DeepEqual(artifact.manifest.RuntimeInterface.EnvironmentVariables, []string{"C1_ALLOWED_ENV"}) {
+		t.Fatalf("expected runtime env allowlist from signed execution claims, got %+v", artifact.manifest.RuntimeInterface.EnvironmentVariables)
+	}
+	if !reflect.DeepEqual(artifact.manifest.RuntimeInterface.RequiredCapabilities, []string{"c1-special-runtime"}) {
+		t.Fatalf("expected required capabilities from signed execution claims, got %+v", artifact.manifest.RuntimeInterface.RequiredCapabilities)
+	}
+	if artifact.targetPlatform != "docker" || artifact.networkAccess {
+		t.Fatalf("expected narrow workload/access claims from signed evidence, got target_platform=%q network_access=%t", artifact.targetPlatform, artifact.networkAccess)
+	}
+
+	tampered := evidence
+	tampered.Claims.Admission.Execution.Runtime.EnvironmentVariables = append(tampered.Claims.Admission.Execution.Runtime.EnvironmentVariables, "UNSIGNED_AFTER_SEAL")
+	_, err = service.prepareArtifactFromDiscovery(request, fixture.trustModel, discoveredArtifactWithEvidence(t, fixture.discovery, tampered))
+	if err == nil || err.Code != codeArtifactEvidenceInvalid || !strings.Contains(err.Message, "signature verification failed") {
+		t.Fatalf("expected signed evidence envelope/seal verification to reject tampered runtime claims, got %+v", err)
+	}
+}
+
+func TestWorkstreamCAdmissionKeepsPayloadDigestAndPackageIdentityMismatchDistinct(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service := fixture.service()
+	request := fixture.prepareRequest()
+
+	payloadDigestUsedAsArtifactID := request
+	payloadDigestUsedAsArtifactID.Invocation.ArtifactDigest = fixture.evidence.Claims.Package.Identity.PayloadDigest
+	_, err := service.prepareArtifactFromDiscovery(payloadDigestUsedAsArtifactID, fixture.trustModel, discoveredArtifact{
+		discovery: fixture.discovery,
+		evidence:  fixture.evidence,
+	})
+	if err == nil || err.Code != codeInvalidRequest || !strings.Contains(err.Message, "artifact digest mismatch between request and artifact discovery") {
+		t.Fatalf("expected artifact/package identity request mismatch to remain invalid_request, got %+v", err)
+	}
+
+	evidencePackageIdentityMismatch := fixture.evidence
+	evidencePackageIdentityMismatch.Claims.Package.Identity.ArtifactDigest = labeledDigest("ee")
+	_, err = service.prepareArtifactFromDiscovery(request, fixture.trustModel, discoveredArtifact{
+		discovery: fixture.discovery,
+		evidence:  evidencePackageIdentityMismatch,
+	})
+	if err == nil || err.Code != codeInvalidRequest || !strings.Contains(err.Message, "artifact digest mismatch between request and artifact evidence") {
+		t.Fatalf("expected artifact/package identity evidence mismatch to remain invalid_request, got %+v", err)
+	}
+
+	payloadReferenceMismatch := fixture.discovery
+	payloadReferenceMismatch.Payload.Digest = fixture.evidence.Claims.Package.Identity.ArtifactDigest
+	_, err = service.prepareArtifactFromDiscovery(request, fixture.trustModel, discoveredArtifact{
+		discovery: payloadReferenceMismatch,
+		evidence:  fixture.evidence,
+	})
+	if err == nil || err.Code != codeArtifactEvidenceInvalid || !strings.Contains(err.Message, "payload reference does not match artifact evidence") {
+		t.Fatalf("expected payload digest reference mismatch to remain artifact_evidence_invalid, got %+v", err)
+	}
 }
 
 func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *testing.T) {
@@ -302,6 +391,68 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 	)
 }
 
+func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(t *testing.T) {
+	handoff := buildExecutionAuthorityHandoff(
+		executionRuntimeProfile{name: runtimeProfileDefaultStaticScript},
+		runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		},
+		esconfig.ResolvedWorkloadVaultAuthPlan{
+			Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "execution",
+			JWTAudience: "vault",
+		},
+		testWorkloadZoneVaultConfigDigest,
+		stagedWorkloadTrustMaterial{},
+	)
+	if handoff.Evidence.Source != executionAuthorityEvidenceSourceSubmittedRuntimeSpec ||
+		handoff.Evidence.RuntimeProfile != executionAuthorityEvidenceRuntimeProfile ||
+		handoff.Evidence.IdentityHandoff != executionAuthorityEvidenceIdentityHandoff ||
+		handoff.Evidence.WorkloadVault != executionAuthorityEvidenceWorkloadVault {
+		t.Fatalf("expected bounded handoff evidence labels, got %+v", handoff.Evidence)
+	}
+
+	projection := LifecycleProjection{Source: lifecycleProjectionSourceNomad, Revision: "opaque-c1-read-token"}
+	payload := mustMarshalWorkstreamCTestJSON(t, struct {
+		AuthorityHandoff ExecutionAuthorityHandoff  `json:"authority_handoff"`
+		OutcomeEvidence  []ExecutionOutcomeEvidence `json:"outcome_evidence"`
+	}{
+		AuthorityHandoff: handoff,
+		OutcomeEvidence: []ExecutionOutcomeEvidence{
+			statusOutcomeEvidence(outcomeObservationNomadTaskStateProjection, projection, true),
+			logsOutcomeEvidence(false),
+			cancelOutcomeEvidence(),
+			retainedResultOutcomeEvidence(),
+		},
+	})
+
+	assertTextOmitsAll(t, payload,
+		`"vault_token"`,
+		`"codex_token"`,
+		`"jwt_svid_token"`,
+		`"lease"`,
+		`"lease_id"`,
+		`"approval"`,
+		`"policy_approval"`,
+		`"workflow"`,
+		`"workflow_id"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"job_id"`,
+		`"allocation_id"`,
+		`"task_id"`,
+		`"eval_id"`,
+		`"provider_run_id"`,
+		`"scheduler_id"`,
+		`"private_key_pem"`,
+		`"pem_body"`,
+		`"raw_spire_socket"`,
+	)
+}
+
 func newWorkstreamCTestService(t *testing.T, fixture preparedArtifactFixture) (*Service, string, string) {
 	t.Helper()
 
@@ -380,6 +531,27 @@ func mustMarshalWorkstreamCTestJSON(t *testing.T, payload any) string {
 		t.Fatalf("marshal payload: %v", err)
 	}
 	return string(data)
+}
+
+func assertJSONFieldsExact(t *testing.T, payload any, want ...string) {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("decode marshaled payload: %v", err)
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("expected JSON fields %v, got %s", want, string(data))
+	}
+	for _, field := range want {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("expected JSON field %q in %s", field, string(data))
+		}
+	}
 }
 
 func assertTextOmitsAll(t *testing.T, text string, forbidden ...string) {

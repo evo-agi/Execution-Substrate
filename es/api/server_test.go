@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"execution-substrate/es/admission"
@@ -101,6 +102,137 @@ func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t
 	}
 }
 
+func TestWorkstreamCPrepareRejectsUpstreamAndControlPlaneGrammarFields(t *testing.T) {
+	baseInvocation := `"invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "ARS descriptor tuple",
+			body: `{"schema_version":"v1","descriptor_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",` + baseInvocation + `}`,
+		},
+		{
+			name: "ARS manifest tuple",
+			body: `{"schema_version":"v1","manifest":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},` + baseInvocation + `}`,
+		},
+		{
+			name: "ARS index support tuple",
+			body: `{"schema_version":"v1","index_entry":{"kind":"manifest"},"supporting":[{"name":"manifest"}],` + baseInvocation + `}`,
+		},
+		{
+			name: "AGS publication fields",
+			body: `{"schema_version":"v1","publication":{"builder_service":"artifact-governance","policy_decisions":[{"rule":"allow","result":"applied"}]},` + baseInvocation + `}`,
+		},
+		{
+			name: "CP attempt fields",
+			body: `{"schema_version":"v1","attempt":{"provider_run_id":"provider-1","workflow_id":"workflow-1"},` + baseInvocation + `}`,
+		},
+		{
+			name: "CP review checkpoint finalization fields",
+			body: `{"schema_version":"v1","review":{"state":"pending"},"checkpoint":{"id":"cp-checkpoint"},"finalization":{"state":"pending"},` + baseInvocation + `}`,
+		},
+		{
+			name: "nested payload digest as public invocation grammar",
+			body: `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","payload_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prepareCalls := 0
+			server := NewServer(fakeLifecycleService{
+				prepareCalls: &prepareCalls,
+				prepareResult: admission.PrepareResult{
+					Success: true,
+				},
+			}, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", tt.body))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected prepare to reject %s grammar with 400, got %d body=%s", tt.name, recorder.Code, recorder.Body.String())
+			}
+			if prepareCalls != 0 {
+				t.Fatalf("prepare service must not receive rejected %s grammar", tt.name)
+			}
+			var payload admission.ErrorResponse
+			if err := json.NewDecoder(recorder.Result().Body).Decode(&payload); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if payload.Code != "invalid_request" {
+				t.Fatalf("expected invalid_request for rejected public grammar, got %+v", payload)
+			}
+		})
+	}
+}
+
+func TestWorkstreamCExecutionCompatibilityRoutesRemainAvailable(t *testing.T) {
+	var prepareRequest admission.PrepareRequest
+	var submitRequest admission.PrepareRequest
+	service := fakeLifecycleService{
+		producerContract: admission.ProducerContractDeclaration{
+			SchemaVersion: "execution-substrate.producer-contract/v1",
+			Service:       "execution",
+			GovernedExecution: admission.GovernedExecutionProducerContractDeclaration{
+				Contract: "governed-execution-producer/v1",
+				Enabled:  true,
+			},
+		},
+		prepareResult: admission.PrepareResult{
+			Success: true,
+		},
+		submitResult: admission.SubmitResult{
+			Success:   true,
+			Submitted: true,
+			RunID:     "run-0123456789abcdef",
+			Status:    "submitted",
+		},
+		prepareRequestSink: &prepareRequest,
+		submitRequestSink:  &submitRequest,
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	contractRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(contractRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions:contract"))
+	if contractRecorder.Code != http.StatusOK {
+		t.Fatalf("expected contract compatibility route 200, got %d body=%s", contractRecorder.Code, contractRecorder.Body.String())
+	}
+
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","annotations":{"execution_substrate.runtime_profile":"control-plane-normal-shell/v1"}},"mode":"async"}`
+	prepareRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prepareRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", body))
+	if prepareRecorder.Code != http.StatusOK {
+		t.Fatalf("expected prepare compatibility route 200, got %d body=%s", prepareRecorder.Code, prepareRecorder.Body.String())
+	}
+	var preparePayload admission.PrepareResult
+	if err := json.NewDecoder(prepareRecorder.Result().Body).Decode(&preparePayload); err != nil {
+		t.Fatalf("decode prepare payload: %v", err)
+	}
+	if !preparePayload.Success {
+		t.Fatalf("expected prepare success payload, got %+v", preparePayload)
+	}
+	if prepareRequest.Invocation.Annotations["execution_substrate.runtime_profile"] != "control-plane-normal-shell/v1" {
+		t.Fatalf("expected runtime profile annotation to remain accepted by decode boundary, got %+v", prepareRequest.Invocation.Annotations)
+	}
+
+	submitRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(submitRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:submit", body))
+	if submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("expected submit compatibility route 202, got %d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+	var submitPayload admission.SubmitResult
+	if err := json.NewDecoder(submitRecorder.Result().Body).Decode(&submitPayload); err != nil {
+		t.Fatalf("decode submit payload: %v", err)
+	}
+	if !submitPayload.Success || !submitPayload.Submitted || submitPayload.Status != "submitted" {
+		t.Fatalf("expected bounded submit compatibility receipt, got %+v", submitPayload)
+	}
+	if submitRequest.Invocation.Annotations["execution_substrate.runtime_profile"] != "control-plane-normal-shell/v1" {
+		t.Fatalf("expected runtime profile annotation to remain accepted by submit decode boundary, got %+v", submitRequest.Invocation.Annotations)
+	}
+}
+
 func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 	server := NewServer(fakeLifecycleService{}, "bootstrap", []string{"service/control-plane"}, func() bool { return true })
 
@@ -126,9 +258,15 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 }
 
 type fakeLifecycleService struct {
-	logsResult       admission.ExecutionLogsResult
-	resultBundle     admission.ExecutionResultBundle
-	producerContract admission.ProducerContractDeclaration
+	logsResult         admission.ExecutionLogsResult
+	resultBundle       admission.ExecutionResultBundle
+	producerContract   admission.ProducerContractDeclaration
+	prepareResult      admission.PrepareResult
+	submitResult       admission.SubmitResult
+	prepareRequestSink *admission.PrepareRequest
+	submitRequestSink  *admission.PrepareRequest
+	prepareCalls       *int
+	submitCalls        *int
 }
 
 func (f fakeLifecycleService) Health(context.Context) admission.HealthSnapshot {
@@ -139,12 +277,24 @@ func (f fakeLifecycleService) ProducerContract(context.Context) admission.Produc
 	return f.producerContract
 }
 
-func (f fakeLifecycleService) Prepare(context.Context, admission.PrepareRequest) (admission.PrepareResult, *admission.Error) {
-	return admission.PrepareResult{}, nil
+func (f fakeLifecycleService) Prepare(_ context.Context, request admission.PrepareRequest) (admission.PrepareResult, *admission.Error) {
+	if f.prepareCalls != nil {
+		*f.prepareCalls = *f.prepareCalls + 1
+	}
+	if f.prepareRequestSink != nil {
+		*f.prepareRequestSink = request
+	}
+	return f.prepareResult, nil
 }
 
-func (f fakeLifecycleService) Submit(context.Context, admission.PrepareRequest) (admission.SubmitResult, *admission.Error) {
-	return admission.SubmitResult{}, nil
+func (f fakeLifecycleService) Submit(_ context.Context, request admission.PrepareRequest) (admission.SubmitResult, *admission.Error) {
+	if f.submitCalls != nil {
+		*f.submitCalls = *f.submitCalls + 1
+	}
+	if f.submitRequestSink != nil {
+		*f.submitRequestSink = request
+	}
+	return f.submitResult, nil
 }
 
 func (f fakeLifecycleService) Status(context.Context, string) (admission.ExecutionStatusResult, *admission.Error) {
@@ -167,8 +317,25 @@ func authorizedLifecycleRequest(method string, target string) *http.Request {
 	return lifecycleRequestWithCaller(method, target, "operator/local")
 }
 
+func authorizedLifecycleRequestWithBody(method string, target string, body string) *http.Request {
+	return lifecycleRequestWithCallerAndBody(method, target, "operator/local", body)
+}
+
 func lifecycleRequestWithCaller(method string, target string, callerPath string) *http.Request {
-	request := httptest.NewRequest(method, target, nil)
+	return lifecycleRequestWithCallerAndBody(method, target, callerPath, "")
+}
+
+func lifecycleRequestWithCallerAndBody(method string, target string, callerPath string, body string) *http.Request {
+	var reader *strings.Reader
+	if body == "" {
+		reader = strings.NewReader("")
+	} else {
+		reader = strings.NewReader(body)
+	}
+	request := httptest.NewRequest(method, target, reader)
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	spiffeURI, _ := url.Parse("spiffe://execution.internal/" + callerPath)
 	request.TLS = &tls.ConnectionState{
 		VerifiedChains: [][]*x509.Certificate{{
