@@ -1156,6 +1156,118 @@ Control Plane authority, not Vault/SPIRE/Nomad authority, not EGS trust-model
 redesign, not production readiness, and not Remote Alpha production,
 deployment, provisioning, or reconciliation architecture.
 
+The P0u implementation/self-audit/merge-readiness slice may add exactly one
+bounded Remote Alpha host-local operator healthcheck client TLS helper pair and
+exactly two Mac-side recovery-session routes:
+`scripts/remote_alpha_operator.sh recovery-session
+operator-healthcheck-tls-status --ssh-target <target> --interactive-tty` and
+`scripts/remote_alpha_operator.sh recovery-session
+operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty
+--execute-renew`. P0u may add the public helper
+`scripts/remote_alpha_operator_healthcheck_tls_renew.sh` and the internal
+helper `scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh`, plus
+static and fake tests for that bounded route. P0u must not run live SSH, sudo,
+live remote OpenSSL, Vault, reset/unseal, workload-auth bootstrap/check,
+runtime identity summary, Infrastructure Manager refresh, support-bundle
+collection, CP proof, SPIRE/Nomad mutation, service deployment, ES binary
+deployment, ES service restart, or network-dependent integration tests.
+
+P0u is an ES-owned Remote Alpha proof/support helper only. It is not generic
+TLS deployment, provisioning, reconciliation, production readiness, IM
+authority, CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle,
+workload-auth bootstrap/check, runtime identity evidence, ES service TLS
+renewal, ES governance TLS renewal, or a change to CP workflow/run-control
+authority. The route is bounded to the host-local operator healthcheck client
+TLS material used by the Remote Alpha operator healthcheck environment. The
+fixed covered paths are:
+`/etc/execution-substrate/tls/operator-client-cert.pem` and
+`/etc/execution-substrate/tls/operator-client-key.pem`.
+The helper may read
+`/etc/execution-substrate/tls/combined-service-ca-bundle.pem` only as the
+healthcheck server trust bundle for safe mTLS probes, and may read ES config
+only to identify the ES server client CA used to verify the operator client
+certificate.
+
+P0u must treat the previously observed operator identity
+`spiffe://execution.internal/operator` as a legacy mismatch for the current ES
+authorization semantics. The current ES/AGS allowlist accepts the repo-owned
+operator path `spiffe://execution.internal/operator/local`, so renewed operator
+healthcheck certificates must use subject `CN=client.operator` and SAN
+`URI:spiffe://execution.internal/operator/local` plus the bounded DNS label
+`client.operator`. The helper must detect and report the legacy
+`spiffe://execution.internal/operator` SAN as a status failure that requires
+renewal rather than renewing back into the old identity.
+
+P0u status mode is non-mutating. It must report public certificate metadata
+only: subject, issuer, SAN, EKU, notBefore, notAfter, expired/not-yet-valid
+status, file SHA-256, public fingerprint, and public-key fingerprint. It must
+confirm the operator cert/key public-key match without printing the private
+key; verify the operator certificate against the ES server client CA bundle
+when that topology is configured; detect the current `operator/local` URI;
+detect the legacy `operator` URI; and write only an optional non-secret remote
+evidence/projection summary at
+`/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`.
+It may probe `/health` and `/v1/executions:contract` only with the configured
+healthcheck env and only when the URLs are safe non-mutating local HTTPS
+targets; probe response bodies must not be recorded.
+
+P0u renewal mode requires explicit `--execute-renew` and visible
+`--interactive-tty`. The Mac-side facade must stage only the fixed public and
+internal operator healthcheck TLS helper pair, invoke only `--execute-renew`
+over `ssh -tt`, and pass no helper override flags. The helper may use OS sudo
+only through the visible remote terminal when needed. It must back up the
+current operator cert/key before replacement, generate a fresh short-lived
+operator client certificate with the `operator/local` URI SAN, verify the new
+certificate against the ES server client CA before installing it, install the
+new cert/key while preserving the existing owner/group/mode policy on those
+two files, run safe `/health` and `/v1/executions:contract` probes using the
+renewed operator identity, and record only a remote non-secret summary under
+`/var/tmp/execution-substrate-remote-alpha/`. Client certificate renewal must
+not restart ES unless a later documented code path proves a restart is
+strictly necessary; P0u's bounded helper records ES restart as not required.
+
+P0u summaries are evidence/projection only. They may include schema, mode,
+paths, byte counts, certificate file SHA-256, public fingerprints, validity
+windows, configured identity classification, cert/key public-key match status,
+verification statuses, backup metadata, owner/group/mode preservation
+metadata, mTLS probe statuses, and explicit non-claims. They must not include
+private key PEM bodies, full certificate PEM bodies, Vault tokens, root
+tokens, unseal keys, client tokens, JWT-SVIDs, API keys, passwords, proof
+secrets, private-key backup digests, raw secret-bearing command output,
+terminal transcripts, support-bundle content, raw retained bundles, raw
+workspace contents, or Mac `.out` copy-back.
+
+Allowed P0u route flags are only `--help`, `--ssh-target <target>`,
+`--interactive-tty`, and `--execute-renew` for the renew route only. P0u must
+reject `--host-local`, `--dry-run`, `--check-only`, `--status`, `--scope`,
+`--apply`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`,
+`--execute-bootstrap`, `--prepare-summary-path`,
+`--prepare-config-readability`, `--prepare-spire-bundle-read`,
+`--interactive-sudo`, `--governed-smoke-command`, helper override flags,
+TLS/config/path overrides, output/summary overrides, arbitrary commands,
+unknown flags, duplicate flags, extra positional arguments, equals-form
+options, and all secret-like arguments.
+
+P0u validation remains fake/static only. Tests must cover status detecting an
+expired operator certificate, status detecting a valid operator certificate,
+status detecting the legacy operator URI mismatch, renew refusing without
+`--execute-renew`, renew refusing without `--interactive-tty` and
+`--ssh-target`, secret-like argument rejection, fake SSH/SCP tests proving
+exactly the fixed public/internal operator healthcheck TLS helper pair is
+staged, fake renew tests proving private key PEM bodies are not printed or
+persisted to summaries, fake renew tests proving owner/group/mode preservation,
+fake renew tests proving backups are made before replacement, fake post-renew
+verification proving `/health` and `/v1/executions:contract` probes use the
+renewed operator identity, docs tests preserving
+non-authority/non-production/non-IM/non-CP claims, and preservation of existing
+P0s/P0t service/governance TLS tests.
+
+P0u remains bounded ES Remote Alpha proof/support workflow glue only. It is
+not generic TLS deployment, not Infrastructure Manager reconciliation, not
+Control Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or
+runtime identity authority, not production readiness, and not Remote Alpha
+production, deployment, provisioning, or reconciliation architecture.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening

@@ -149,6 +149,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"P0s adds recovery-session es-service-tls-status and es-service-tls-renew",
 		"P0t adds recovery-session es-governance-tls-status and es-governance-tls-renew",
+		"P0u adds recovery-session operator-healthcheck-tls-status and operator-healthcheck-tls-renew",
 		"bounded proof/support helper",
 		"evidence/projection only",
 		"no authority source",
@@ -182,9 +183,9 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty",
 		"recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
-		"recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty",
-		"recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
-		"Implemented through P0s",
+		"recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty",
+		"recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
+		"Implemented through P0s, P0t, and P0u",
 		"delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh",
 		"check-only/non-mutating",
 		"requires --ssh-target",
@@ -204,6 +205,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"Mac-side runtime-identity-summary",
 		"bounded es-service-tls status/renew",
 		"bounded es-governance-tls status/renew",
+		"bounded operator-healthcheck-tls status/renew",
 		"fixed workload-auth public/internal helper pair",
 		"fixed bootstrap public/internal helper pair",
 		"fixed public runtime identity helper",
@@ -225,7 +227,7 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfaces(t *testing.T) {
 	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
 	assertContainsAll(t, "operator inventory", inventory,
-		"implemented through P0q plus P0r plus P0s",
+		"implemented through P0q plus P0r plus P0s plus P0t plus P0u",
 		"help",
 		"inventory",
 		"print-refresh-command",
@@ -263,6 +265,8 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
+		"recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
 		"invokes only --unseal-only through ssh -tt",
 		"invokes only --dry-run",
@@ -288,6 +292,10 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json",
 		"bounded ES -> EGS execution-governance trust-model mTLS material",
 		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
+		"scripts/remote_alpha_operator_healthcheck_tls_renew.sh",
+		"scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh",
+		"canonical summary remote at /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json",
+		"operator-healthcheck-tls status/renew is bounded host-local operator healthcheck client TLS recovery only",
 		"no transcript",
 		"secret-sensitive",
 		"destructive",
@@ -451,7 +459,7 @@ func TestRemoteAlphaOperatorBlockedSubcommandsRefuseWithoutRouting(t *testing.T)
 			output := requireRemoteAlphaOperatorFailure(t, subcommand)
 			assertContainsAll(t, "blocked subcommand refusal", output,
 				subcommand,
-				"not implemented as a top-level P0s route",
+				"not implemented as a top-level P0s/P0t/P0u route",
 				"later audited slice",
 				"No helper execution routing occurred.",
 			)
@@ -535,7 +543,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	help := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "--help")
 	assertContainsAll(t, "recovery-session help", help,
 		"Remote Alpha operator workflow: recovery-session",
-		"P0s scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes, Mac-side vault-reset-disposable dry-run planning, Mac-side destructive vault-reset-disposable execute-reset, Mac-side vault-workload-auth-check evidence routing, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution, Mac-side runtime-identity-summary evidence routing, and bounded Mac-side ARS/AGS/ES internal service TLS status/renew routing",
+		"P0u scope: safe/local recovery planning and evidence interpretation plus explicit vault-unseal-existing modes",
+		"bounded Mac-side operator-healthcheck client TLS status/renew routing",
 		"Secret-sensitive unseal key entry happens only in the visible terminal owned by the delegated helper, SSH, and Vault CLI",
 		"Codex must not receive, type, log, relay, persist, or summarize the unseal key",
 		"Outputs are evidence/projection/diagnostics only, never authority",
@@ -565,6 +574,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty",
 		"recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty",
+		"recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty",
+		"recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty",
 		"recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"Mac-side dry-run planning only",
@@ -598,7 +609,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 	defaultOutput := requireRemoteAlphaOperatorSuccess(t, "recovery-session")
 	assertContainsAll(t, "default recovery-session plan", defaultOutput,
 		"Remote Alpha recovery-session plan",
-		"P0s ES service TLS status/renew route added",
+		"P0u operator healthcheck TLS status/renew route added",
 		"default behavior: print this plan/help and exit zero; no live tools run",
 		"inventory/status - safe local planning and static inventory only",
 		"evidence-check - local-only metadata check",
@@ -630,6 +641,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode",
 		"es-governance-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged ES/EGS governance TLS evidence mode",
 		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged ES/EGS governance TLS recovery mode",
+		"operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode",
+		"operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode",
 		"RESET DISPOSABLE REMOTE ALPHA VAULT",
 		"visible remote helper/Vault terminal",
 		"service-user check/apply - remains separate",
@@ -645,7 +658,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"runtime-identity-summary is evidence/projection only",
 		"not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation",
 		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
-		"no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0s",
+		"operator-healthcheck-tls status/renew is bounded host-local operator healthcheck client TLS recovery only",
+		"no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0u",
 		"vault-unseal-existing does not validate default noninteractive readiness",
 	)
 
@@ -667,6 +681,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"es-governance-tls-status --ssh-target <target> --interactive-tty",
 		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
+		"operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"separate IM actions",
 		"non-claims",
 	)
@@ -685,6 +701,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
 		"scripts/remote_alpha_es_service_tls_renew.sh --status",
 		"scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --status",
+		"scripts/remote_alpha_operator_healthcheck_tls_renew.sh --status",
 		"scripts/remote_alpha_migrate_vault_service_user.sh --check-only",
 		"scripts/remote_alpha_operator.sh readiness-session",
 		"recovery-session vault-unseal-existing --host-local",
@@ -708,6 +725,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
+		"recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
+		"recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"implemented host-local explicit operator mode",
 		"implemented Mac-side explicit operator mode",
 		"invokes only --unseal-only through ssh -tt",
@@ -718,6 +737,7 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host",
 		"leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host",
 		"leaves /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json on the remote host",
+		"leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host",
 		"no summary copy-back",
 		"safe local/print-only planning",
 		"no SSH, no sudo, no Vault, no root-token prompt, no proof secret creation, no workload-auth check, no .out, no JSON, no summary",
@@ -1271,7 +1291,7 @@ func TestRemoteAlphaOperatorRecoverySessionRejectsForbiddenFlagsAndUnsafeArgs(t 
 		{
 			name:     "ssh target",
 			args:     []string{"--ssh-target", "host"},
-			required: []string{"recovery-session forbids --ssh-target outside explicit submodes", "safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, runtime-identity-summary, es-service-tls, and es-governance-tls submodes", "No recovery-session live helper or IM execution occurred."},
+			required: []string{"recovery-session forbids --ssh-target outside explicit submodes", "safe/local/print-only/evidence-check plus explicit vault-unseal-existing, vault-reset-disposable, vault-workload-auth-check, vault-workload-auth-bootstrap, runtime-identity-summary, es-service-tls, es-governance-tls, and operator-healthcheck-tls submodes", "No recovery-session live helper or IM execution occurred."},
 		},
 		{
 			name:     "interactive sudo",
@@ -3436,6 +3456,8 @@ if [[ "$#" -eq 1 && "${1:-}" == exec\ /bin/bash\ -c* ]]; then
   mapped_command="${command_string//${tls_prefix}/${FAKE_REMOTE_ROOT}${tls_prefix}}"
   governance_tls_prefix="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"
   mapped_command="${mapped_command//${governance_tls_prefix}/${FAKE_REMOTE_ROOT}${governance_tls_prefix}}"
+  operator_healthcheck_tls_prefix="/tmp/execution-substrate-remote-alpha-operator-healthcheck-tls-renew"
+  mapped_command="${mapped_command//${operator_healthcheck_tls_prefix}/${FAKE_REMOTE_ROOT}${operator_healthcheck_tls_prefix}}"
   exec /bin/bash -c "${mapped_command}"
 fi
 echo "unexpected fake ssh invocation: $*" >&2
@@ -3462,6 +3484,26 @@ if [[ "${src}" == */scripts/internal/remote_alpha_es_service_tls_renew.sh ]]; th
   cat >"${mapped_dest}" <<'REMOTE_ALPHA_FAKE_ES_SERVICE_TLS_INTERNAL'
 # fake ES service TLS internal helper staged for layout verification
 REMOTE_ALPHA_FAKE_ES_SERVICE_TLS_INTERNAL
+elif [[ "${src}" == */scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh ]]; then
+  cat >"${mapped_dest}" <<'REMOTE_ALPHA_FAKE_OPERATOR_HEALTHCHECK_TLS_INTERNAL'
+# fake operator healthcheck TLS internal helper staged for layout verification
+REMOTE_ALPHA_FAKE_OPERATOR_HEALTHCHECK_TLS_INTERNAL
+elif [[ "$(basename "${src}")" == "remote_alpha_operator_healthcheck_tls_renew.sh" ]]; then
+  cat >"${mapped_dest}" <<'REMOTE_ALPHA_FAKE_OPERATOR_HEALTHCHECK_TLS_PUBLIC'
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+internal="${script_dir}/internal/remote_alpha_operator_healthcheck_tls_renew.sh"
+if [[ ! -f "${internal}" ]]; then
+  echo "missing internal helper: ${internal}" >&2
+  exit 65
+fi
+printf 'public_args=%%s\n' "$*" >> %q
+printf 'internal=%%s\n' "${internal}" >> %q
+printf 'Remote Alpha operator healthcheck TLS helper finished.\n'
+printf 'Remote summary path: /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json\n'
+printf 'IM refresh, support-bundle collection, CP proof, Vault, SPIRE, Nomad, reset/unseal, workload-auth, runtime identity, and ES restart were not run.\n'
+REMOTE_ALPHA_FAKE_OPERATOR_HEALTHCHECK_TLS_PUBLIC
 elif [[ "$(basename "${src}")" == "remote_alpha_es_service_tls_renew.sh" ]]; then
   cat >"${mapped_dest}" <<'REMOTE_ALPHA_FAKE_ES_SERVICE_TLS_PUBLIC'
 #!/usr/bin/env bash
@@ -3487,7 +3529,7 @@ else
   exit 64
 fi
 chmod 0700 "${mapped_dest}"
-`, h.scpLogPath, h.helperLog, h.helperLog))
+`, h.scpLogPath, h.helperLog, h.helperLog, h.helperLog, h.helperLog))
 
 	writeExecutable(t, h.remoteBin, "id", `#!/usr/bin/env bash
 set -euo pipefail
@@ -4082,6 +4124,288 @@ func assertESGovernanceTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLS
 	)
 	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-es-governance-tls-renew")); err == nil && len(entries) > 0 {
 		t.Fatalf("expected remote ES governance TLS staged helper directory to be cleaned, found %d entries", len(entries))
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSRejectsUnsafeArgsBeforeDelegation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		required []string
+	}{
+		{
+			name:     "status missing ssh target",
+			args:     []string{"operator-healthcheck-tls-status", "--interactive-tty"},
+			required: []string{"recovery-session operator-healthcheck-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "status missing tty",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "host"},
+			required: []string{"recovery-session operator-healthcheck-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "status execute renew forbidden",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "host", "--interactive-tty", "--execute-renew"},
+			required: []string{"recovery-session operator-healthcheck-tls-status forbids --execute-renew", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing execute renew",
+			args:     []string{"operator-healthcheck-tls-renew", "--ssh-target", "host", "--interactive-tty"},
+			required: []string{"recovery-session operator-healthcheck-tls-renew requires --execute-renew", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing ssh target",
+			args:     []string{"operator-healthcheck-tls-renew", "--execute-renew", "--interactive-tty"},
+			required: []string{"recovery-session operator-healthcheck-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "renew missing tty",
+			args:     []string{"operator-healthcheck-tls-renew", "--ssh-target", "host", "--execute-renew"},
+			required: []string{"recovery-session operator-healthcheck-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "helper override",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "host", "--interactive-tty", "--summary-path", "/tmp/x"},
+			required: []string{"forbids helper override flag --summary-path", "fixed documented operator healthcheck TLS paths", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "forbidden status flag",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "host", "--interactive-tty", "--status"},
+			required: []string{"recovery-session operator-healthcheck-tls forbids --status", "bounded host-local operator healthcheck client TLS status/renew route", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "unknown flag",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "host", "--interactive-tty", "--unknown-flag"},
+			required: []string{"unknown option for recovery-session operator-healthcheck-tls: --unknown-flag", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "equals form",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target=host", "--interactive-tty"},
+			required: []string{"recovery-session operator-healthcheck-tls does not accept equals-form options: --ssh-target=host", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "ssh target option injection",
+			args:     []string{"operator-healthcheck-tls-status", "--ssh-target", "-oProxyCommand=sh", "--interactive-tty"},
+			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
+			assertContainsAll(t, "operator-healthcheck-tls refusal", output, tc.required...)
+			assertContainsNone(t, "operator-healthcheck-tls refusal", output,
+				"Running Mac-side operator healthcheck TLS",
+				"remote_alpha_operator_healthcheck_tls_renew.sh",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSRejectsSecretLikeArgsBeforeDelegation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--api-key=dummy"},
+		{"--root-token", "dummy"},
+		{"--unseal-key", "dummy"},
+		{"--vault-token", "dummy"},
+		{"--client-token", "dummy"},
+		{"--jwt-svid", "dummy"},
+		{"--private-key", "dummy"},
+		{"--password", "dummy"},
+		{"--secret", "dummy"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			routeArgs := append([]string{
+				"recovery-session", "operator-healthcheck-tls-renew",
+				"--ssh-target", "host",
+				"--interactive-tty",
+				"--execute-renew",
+			}, args...)
+			output := requireRemoteAlphaOperatorFailure(t, routeArgs...)
+			assertContainsAll(t, "operator-healthcheck-tls secret flag refusal", output,
+				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
+			)
+			assertContainsNone(t, "operator-healthcheck-tls secret flag refusal", output,
+				"Running Mac-side operator healthcheck TLS",
+				"remote_alpha_operator_healthcheck_tls_renew.sh",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSNoTTYFailsBeforeStaging(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "operator-healthcheck-tls-status",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err == nil {
+		t.Fatalf("expected no-TTY failure before operator healthcheck TLS staging, got success:\n%s", output)
+	}
+	assertContainsAll(t, "operator-healthcheck-tls no tty refusal", output,
+		"requires visible local terminal",
+		"no staging or SSH occurred",
+		"No recovery-session live helper or IM execution occurred.",
+	)
+	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
+		t.Fatalf("ssh should not run when operator healthcheck TLS local TTY guard fails: %v", err)
+	}
+	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
+		t.Fatalf("scp should not run when operator healthcheck TLS local TTY guard fails: %v", err)
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSStatusStagesOnlyFixedHelperPair(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "operator-healthcheck-tls-renew-summary.json"))...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "operator-healthcheck-tls-status",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake operator healthcheck TLS status route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertOperatorHealthcheckTLSFakeRoute(t, h, output, "--status")
+	assertContainsAll(t, "Mac-side fake operator healthcheck TLS status output", output,
+		"Running Mac-side operator healthcheck TLS status through an explicit interactive SSH TTY.",
+		"Invoking only the staged public helper with --status",
+		"Status mode is non-mutating",
+		"Status mode is non-mutating and does not restart services.",
+	)
+	assertContainsNone(t, "Mac-side fake operator healthcheck TLS status output", output,
+		"--execute-renew",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"BEGIN PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+	)
+	assertNoNewPaths(t, "Mac-side fake operator healthcheck TLS status route", before)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionOperatorHealthcheckTLSRenewStagesOnlyFixedHelperPair(t *testing.T) {
+	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
+	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "operator-healthcheck-tls-renew-summary.json"))...)
+
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "operator-healthcheck-tls-renew",
+		"--ssh-target", "ds@m75q-test",
+		"--interactive-tty",
+		"--execute-renew",
+	)
+	if err != nil {
+		t.Fatalf("Mac-side fake operator healthcheck TLS renew route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
+			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
+	}
+
+	assertOperatorHealthcheckTLSFakeRoute(t, h, output, "--execute-renew")
+	assertContainsAll(t, "Mac-side fake operator healthcheck TLS renew output", output,
+		"Running Mac-side operator healthcheck TLS renewal through an explicit interactive SSH TTY.",
+		"Invoking only the staged public helper with --execute-renew",
+		"spiffe://execution.internal/operator/local",
+		"did not restart ES",
+	)
+	assertContainsNone(t, "Mac-side fake operator healthcheck TLS renew output", output,
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		"BEGIN PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+	)
+	assertNoNewPaths(t, "Mac-side fake operator healthcheck TLS renew route", before)
+}
+
+func assertOperatorHealthcheckTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLSHarness, output string, helperMode string) {
+	t.Helper()
+	assertContainsAll(t, "Mac-side fake operator healthcheck TLS output", output,
+		"Staging only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh.",
+		"Canonical summary stays remote at /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json.",
+		"Remote Alpha operator healthcheck TLS helper finished.",
+		"Canonical remote summary path: /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json",
+		"did not copy it back to Mac .out",
+		"did not print full summary JSON",
+	)
+
+	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
+	scpLines := strings.Split(scpLog, "\n")
+	if len(scpLines) != 2 {
+		t.Fatalf("expected exactly two staged file uploads, got %q", scpLog)
+	}
+	assertContainsAll(t, "fake operator healthcheck TLS scp log", scpLog,
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_operator_healthcheck_tls_renew.sh"),
+		filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_operator_healthcheck_tls_renew.sh"),
+		"/scripts/remote_alpha_operator_healthcheck_tls_renew.sh",
+		"/scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh",
+	)
+	assertContainsNone(t, "fake operator healthcheck TLS scp log", scpLog,
+		"remote_alpha_operator.sh",
+		"remote_alpha_reset_disposable_vault.sh",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_vault_workload_auth_bootstrap.sh",
+		"remote_alpha_runtime_identity_helper_summary.sh",
+		"remote_alpha_es_service_tls_renew.sh",
+		"remote_alpha_migrate_vault_service_user.sh",
+		"remote_alpha_prepare_es_config_tls",
+		"remote_alpha_deploy_es_binaries",
+		"bundle",
+	)
+
+	sshLog := mustRead(t, h.sshLogPath)
+	if got := strings.Count(sshLog, "tty=true"); got != 1 {
+		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	}
+	assertContainsAll(t, "fake operator healthcheck TLS ssh log", sshLog,
+		"tty=true target=ds@m75q-test",
+		"execution-substrate-remote-alpha-operator-healthcheck-tls-renew",
+		"exec /bin/bash -c",
+	)
+	assertContainsNone(t, "fake operator healthcheck TLS ssh log forbidden capture", sshLog,
+		" tee ",
+		"script ",
+		"transcript",
+		"remote-alpha-live-refresh",
+		"remote-alpha-live-support-bundle",
+		"cp-proof",
+		".out",
+	)
+
+	sudoLog := strings.TrimSpace(mustRead(t, h.sudoLog))
+	assertContainsAll(t, "fake operator healthcheck TLS sudo log", sudoLog,
+		"sudo_args=",
+		"/scripts/remote_alpha_operator_healthcheck_tls_renew.sh",
+		helperMode,
+	)
+	assertContainsNone(t, "fake operator healthcheck TLS sudo log forbidden args", sudoLog,
+		"--summary-path",
+		"--dry-run",
+		"--check-only",
+		"--operator-cert-path",
+		"--es-config-path",
+		"remote_alpha_vault_workload_auth_check.sh",
+		"remote_alpha_reset_disposable_vault.sh",
+	)
+
+	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
+	assertContainsAll(t, "fake operator healthcheck TLS helper log", helperLog,
+		"public_args="+helperMode,
+		"/scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh",
+	)
+	assertContainsNone(t, "fake operator healthcheck TLS helper log forbidden args", helperLog,
+		"--summary-path",
+		"--dry-run",
+		"--check-only",
+		"--root-token",
+	)
+
+	rmLog := mustRead(t, h.rmLogPath)
+	assertContainsAll(t, "fake operator healthcheck TLS remote cleanup log", rmLog,
+		"execution-substrate-remote-alpha-operator-healthcheck-tls-renew",
+	)
+	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-operator-healthcheck-tls-renew")); err == nil && len(entries) > 0 {
+		t.Fatalf("expected remote operator healthcheck TLS staged helper directory to be cleaned, found %d entries", len(entries))
 	}
 }
 
@@ -6110,7 +6434,10 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"`,
 		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"`,
 		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"`,
+		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_operator_healthcheck_tls_renew.sh"`,
+		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_operator_healthcheck_tls_renew.sh"`,
 		`REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"`,
+		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-operator-healthcheck-tls-renew"`,
 		`REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"`,
 		`REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"`,
 		`REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-workload-auth-check"`,
@@ -6124,6 +6451,8 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}" "${ssh_target}:${remote_helper_path}"`,
 		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
 		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
+		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
+		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
 		`"${helper_path}" --unseal-only`,
 		`"${helper_path}" --dry-run`,
 		`recovery_session_vault_workload_auth_check`,
@@ -6135,6 +6464,8 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`recovery_session_es_service_tls_remote`,
 		`recovery_session_es_governance_tls`,
 		`recovery_session_es_governance_tls_remote`,
+		`recovery_session_operator_healthcheck_tls`,
+		`recovery_session_operator_healthcheck_tls_remote`,
 		`ssh -tt "${ssh_target}"`,
 		`es-writable-state-readiness-check)`,
 		`route_es_writable_state_readiness_check ${subcommand_args[@]+"${subcommand_args[@]}"}`,
@@ -6267,7 +6598,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 			continue
 		}
 		if liveCommand.MatchString(trimmed) {
-			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"`) {
+			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}"`) {
 				continue
 			}
 			if strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for config readability preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`) || strings.HasPrefix(trimmed, `sudo -n "$@"`) || strings.HasPrefix(trimmed, `sudo -n test "${predicate}" "${path}"`) {
