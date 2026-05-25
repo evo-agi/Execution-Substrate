@@ -66,6 +66,125 @@ func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
 	}
 }
 
+func TestWorkstreamC2StatusLogsResultCancelCompatibilityShapesStayUnchanged(t *testing.T) {
+	service := fakeLifecycleService{
+		statusResult: admission.ExecutionStatusResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "running",
+			LifecycleProjection: admission.LifecycleProjection{
+				Source:   "nomad",
+				Revision: "opaque-c2-read-token",
+			},
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "nomad",
+				Observation: "nomad_projected_allocation",
+				LifecycleProjection: &admission.LifecycleProjection{
+					Source:   "nomad",
+					Revision: "opaque-c2-read-token",
+				},
+				ProviderTerminalObserved: boolPtr(false),
+			},
+		},
+		logsResult: admission.ExecutionLogsResult{
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_task_stdout",
+				AccessClass:              "plaintext_stdout",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			Payload: []byte("hello\n"),
+		},
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "es_retained_result_store",
+				Observation: "retained_result_bundle",
+				AccessClass: "opaque_result_bundle",
+			},
+			Payload: []byte("bundle"),
+		},
+		cancelResult: admission.ExecutionCancelResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "cancel_requested",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_stop_request_accepted",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	statusRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/status"))
+	if statusRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+	assertJSONFieldsExactForAPI(t, statusRecorder.Body.Bytes(),
+		"success",
+		"run_id",
+		"status",
+		"lifecycle_projection",
+		"outcome_evidence",
+		"terminal",
+	)
+	assertTextOmitsAllForAPI(t, statusRecorder.Body.String(),
+		`"job_id"`,
+		`"allocation_id"`,
+		`"task_id"`,
+		`"workflow"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"write_guard"`,
+		`"retained_result_id"`,
+	)
+
+	logsRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(logsRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/logs"))
+	if logsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected logs 200, got %d body=%s", logsRecorder.Code, logsRecorder.Body.String())
+	}
+	assertHeader(t, logsRecorder.Result(), "Content-Type", admission.LogsMediaType)
+	assertHeader(t, logsRecorder.Result(), headerOutcomeSource, "nomad")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeObservation, "nomad_task_stdout")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeAccessClass, "plaintext_stdout")
+	assertHeader(t, logsRecorder.Result(), headerProviderTerminalObserved, "false")
+	if logsRecorder.Body.String() != "hello\n" {
+		t.Fatalf("expected logs payload unchanged, got %q", logsRecorder.Body.String())
+	}
+
+	resultRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resultRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d body=%s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+	assertHeader(t, resultRecorder.Result(), "Content-Type", "application/gzip")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeSource, "es_retained_result_store")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeObservation, "retained_result_bundle")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	if resultRecorder.Body.String() != "bundle" {
+		t.Fatalf("expected result payload bytes unchanged, got %q", resultRecorder.Body.String())
+	}
+
+	cancelRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cancelRecorder, authorizedLifecycleRequest(http.MethodPost, "/v1/executions/run-0123456789abcdef:cancel"))
+	if cancelRecorder.Code != http.StatusOK {
+		t.Fatalf("expected cancel 200, got %d body=%s", cancelRecorder.Code, cancelRecorder.Body.String())
+	}
+	assertJSONFieldsExactForAPI(t, cancelRecorder.Body.Bytes(), "success", "run_id", "status", "outcome_evidence")
+	assertTextOmitsAllForAPI(t, cancelRecorder.Body.String(),
+		`"job_id"`,
+		`"allocation_id"`,
+		`"task_id"`,
+		`"workflow"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"write_guard"`,
+	)
+}
+
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
 	service := fakeLifecycleService{
 		producerContract: admission.ProducerContractDeclaration{
@@ -167,6 +286,62 @@ func TestWorkstreamCPrepareRejectsUpstreamAndControlPlaneGrammarFields(t *testin
 	}
 }
 
+func TestWorkstreamC2SubmitRejectsControlPlaneRunControlGrammarBeforeServiceCall(t *testing.T) {
+	baseInvocation := `"invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "CP attempt and provider run id",
+			body: `{"schema_version":"v1","attempt":{"provider_run_id":"provider-1"},` + baseInvocation + `}`,
+		},
+		{
+			name: "CP review checkpoint finalization intervention",
+			body: `{"schema_version":"v1","review":{"state":"pending"},"checkpoint":{"id":"cp-checkpoint"},"finalization":{"state":"pending"},"intervention":{"state":"open"},` + baseInvocation + `}`,
+		},
+		{
+			name: "CP approval hold resume reject",
+			body: `{"schema_version":"v1","approval":{"state":"pending"},"hold":{"reason":"review"},"resume":{"by":"operator"},"reject":{"reason":"policy"},` + baseInvocation + `}`,
+		},
+		{
+			name: "Temporal workflow grammar",
+			body: `{"schema_version":"v1","temporal":{"workflow_id":"workflow-1"},"workflow":{"revision":"cp-rev"},"workflow_id":"workflow-1",` + baseInvocation + `}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			submitCalls := 0
+			server := NewServer(fakeLifecycleService{
+				submitCalls: &submitCalls,
+				submitResult: admission.SubmitResult{
+					Success:   true,
+					Submitted: true,
+					RunID:     "run-0123456789abcdef",
+					Status:    "submitted",
+				},
+			}, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:submit", tt.body))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected submit to reject %s grammar with 400, got %d body=%s", tt.name, recorder.Code, recorder.Body.String())
+			}
+			if submitCalls != 0 {
+				t.Fatalf("submit service must not receive rejected %s grammar", tt.name)
+			}
+			var payload admission.ErrorResponse
+			if err := json.NewDecoder(recorder.Result().Body).Decode(&payload); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if payload.Code != "invalid_request" {
+				t.Fatalf("expected invalid_request for rejected submit grammar, got %+v", payload)
+			}
+		})
+	}
+}
+
 func TestWorkstreamCExecutionCompatibilityRoutesRemainAvailable(t *testing.T) {
 	var prepareRequest admission.PrepareRequest
 	var submitRequest admission.PrepareRequest
@@ -260,6 +435,8 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 type fakeLifecycleService struct {
 	logsResult         admission.ExecutionLogsResult
 	resultBundle       admission.ExecutionResultBundle
+	statusResult       admission.ExecutionStatusResult
+	cancelResult       admission.ExecutionCancelResult
 	producerContract   admission.ProducerContractDeclaration
 	prepareResult      admission.PrepareResult
 	submitResult       admission.SubmitResult
@@ -298,7 +475,7 @@ func (f fakeLifecycleService) Submit(_ context.Context, request admission.Prepar
 }
 
 func (f fakeLifecycleService) Status(context.Context, string) (admission.ExecutionStatusResult, *admission.Error) {
-	return admission.ExecutionStatusResult{}, nil
+	return f.statusResult, nil
 }
 
 func (f fakeLifecycleService) Logs(context.Context, string) (admission.ExecutionLogsResult, *admission.Error) {
@@ -310,7 +487,7 @@ func (f fakeLifecycleService) Result(context.Context, string) (admission.Executi
 }
 
 func (f fakeLifecycleService) Cancel(context.Context, string) (admission.ExecutionCancelResult, *admission.Error) {
-	return admission.ExecutionCancelResult{}, nil
+	return f.cancelResult, nil
 }
 
 func authorizedLifecycleRequest(method string, target string) *http.Request {
@@ -353,6 +530,33 @@ func assertHeader(t *testing.T, response *http.Response, key string, want string
 
 	if got := response.Header.Get(key); got != want {
 		t.Fatalf("expected header %s=%q, got %q", key, want, got)
+	}
+}
+
+func assertJSONFieldsExactForAPI(t *testing.T, data []byte, want ...string) {
+	t.Helper()
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("decode json payload: %v", err)
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("expected JSON fields %v, got %s", want, string(data))
+	}
+	for _, field := range want {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("expected JSON field %q in %s", field, string(data))
+		}
+	}
+}
+
+func assertTextOmitsAllForAPI(t *testing.T, text string, forbidden ...string) {
+	t.Helper()
+
+	for _, item := range forbidden {
+		if strings.Contains(text, item) {
+			t.Fatalf("expected text to omit %q, got %s", item, text)
+		}
 	}
 }
 

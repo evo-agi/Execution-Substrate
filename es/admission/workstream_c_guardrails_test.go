@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -278,10 +279,15 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 	}))
 
 	nomadCalls := 0
+	var submittedNomadJob string
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nomadCalls++
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs" {
 			t.Fatalf("unexpected nomad request %s %q", r.Method, r.URL.Path)
+		}
+		body, readErr := io.ReadAll(r.Body)
+		if readErr == nil {
+			submittedNomadJob = string(body)
 		}
 		_, _ = w.Write([]byte(`{"EvalID":"eval-123"}`))
 	}))
@@ -302,16 +308,59 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 	if nomadCalls != 1 {
 		t.Fatalf("expected exactly one nomad submission call, got %d", nomadCalls)
 	}
+	if !strings.Contains(submittedNomadJob, `"ID":"exec-`) || !strings.Contains(submittedNomadJob, `"Driver":"docker"`) {
+		t.Fatalf("expected submit to hand one Docker job through ES/Nomad, got %s", submittedNomadJob)
+	}
+	assertTextOmitsAll(t, submittedNomadJob,
+		`"review"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"intervention"`,
+		`"approval"`,
+		`"hold"`,
+		`"resume"`,
+		`"reject"`,
+		`"temporal"`,
+		`"Temporal"`,
+		`"workflow"`,
+		`"workflow_id"`,
+		`"cp_workflow_id"`,
+	)
 	if len(arsCalls) != 4 {
 		t.Fatalf("expected submit to use discovery, evidence, runtime-config, and payload reads only, got %v", arsCalls)
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, result)
+	assertJSONFieldsExact(t, result, "success", "submitted", "run_id", "status", "authority_handoff")
 	assertTextOmitsAll(t, payload,
+		`"attempt"`,
+		`"task_attempt"`,
+		`"review"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"intervention"`,
+		`"approval"`,
+		`"hold"`,
+		`"resume"`,
+		`"reject"`,
+		`"temporal"`,
+		`"Temporal"`,
+		`"workflow"`,
+		`"workflow_id"`,
+		`"cp_workflow_id"`,
+		`"run_control"`,
 		`"job_id"`,
 		`"allocation_id"`,
 		`"task_id"`,
 		`"eval_id"`,
+		`"nomad_job_id"`,
+		`"nomad_allocation_id"`,
+		`"scheduler_id"`,
+		`"provider_run_id"`,
+		`"lifecycle_store"`,
+		`"lifecycle_store_key"`,
+		`"write_guard"`,
+		`"write_precondition"`,
 		`"lifecycle_projection"`,
 		`"request_id"`,
 		`"decision_id"`,
@@ -321,6 +370,59 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		`"runtime_auth_plan"`,
 		"exec-"+result.RunID,
 	)
+}
+
+func TestWorkstreamC2PublicSubmitAndLifecycleDTOsExcludeCPRunControlGrammar(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		SubmitResult{},
+		ExecutionStatusResult{},
+		ExecutionCancelResult{},
+		LifecycleProjection{},
+		ExecutionOutcomeEvidence{},
+		ExecutionAuthorityHandoff{},
+		ExecutionAuthorityRuntimeProfile{},
+		ExecutionAuthorityIdentityHandoff{},
+		ExecutionAuthorityWorkloadVault{},
+		ExecutionAuthorityRuntimeConfigRefs{},
+		ExecutionAuthorityCodexCredential{},
+		ExecutionAuthorityEvidence{},
+	)
+
+	for _, forbidden := range []string{
+		"attempt",
+		"task_attempt",
+		"review",
+		"checkpoint",
+		"finalization",
+		"intervention",
+		"approval",
+		"hold",
+		"resume",
+		"reject",
+		"temporal",
+		"workflow",
+		"workflow_id",
+		"cp_workflow_id",
+		"run_control",
+		"review_state",
+		"checkpoint_state",
+		"finalization_state",
+		"intervention_state",
+		"provider_run_id",
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"scheduler_id",
+		"lifecycle_store",
+		"lifecycle_store_key",
+		"write_guard",
+		"write_precondition",
+		"retained_result_id",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("C2 submit/lifecycle public DTOs must not expose CP run-control or scheduler-authority field %q", forbidden)
+		}
+	}
 }
 
 func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *testing.T) {
@@ -391,6 +493,74 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 	)
 }
 
+func TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnly(t *testing.T) {
+	service := Service{
+		cfg: minimalLifecycleConfig(t),
+		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/job/exec-run-0123456789abcdef":
+				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"running","ModifyIndex":42}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/job/exec-run-0123456789abcdef/allocations":
+				_, _ = w.Write([]byte(`[{"ID":"alloc-c2-latest","ModifyIndex":314}]`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/allocation/alloc-c2-latest":
+				_, _ = w.Write([]byte(`{"ID":"alloc-c2-latest","ClientStatus":"running","ModifyIndex":2718,"TaskStates":{"task":{"State":"running"}}}`))
+			default:
+				t.Fatalf("unexpected nomad request %s %q", r.Method, r.URL.Path)
+			}
+		})),
+	}
+
+	result, err := service.Status(context.Background(), "run-0123456789abcdef")
+	if err != nil {
+		t.Fatalf("status: %+v", err)
+	}
+	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad {
+		t.Fatalf("expected lifecycle projection source=nomad, got %+v", result.LifecycleProjection)
+	}
+	assertOpaqueLifecycleProjectionRevision(t, result.LifecycleProjection.Revision)
+	for _, forbiddenRevision := range []string{
+		"42",
+		"314",
+		"2718",
+	} {
+		if result.LifecycleProjection.Revision == forbiddenRevision {
+			t.Fatalf("lifecycle projection revision must not be raw Nomad observation value %q", forbiddenRevision)
+		}
+	}
+	for _, forbiddenRevisionFragment := range []string{
+		"exec-run-0123456789abcdef",
+		"alloc-c2-latest",
+		result.RunID,
+		result.RunID + "/result.tar.gz",
+	} {
+		if result.LifecycleProjection.Revision == forbiddenRevisionFragment || strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision must not be scheduler, store, or retained-result identity %q; got %q", forbiddenRevisionFragment, result.LifecycleProjection.Revision)
+		}
+	}
+	if result.OutcomeEvidence.LifecycleProjection == nil || *result.OutcomeEvidence.LifecycleProjection != result.LifecycleProjection {
+		t.Fatalf("expected outcome evidence to repeat opaque projection token, got %+v", result.OutcomeEvidence)
+	}
+
+	payload := mustMarshalWorkstreamCTestJSON(t, result)
+	assertTextOmitsAll(t, payload,
+		`"nomad_job_id"`,
+		`"job_id"`,
+		`"allocation_id"`,
+		`"task_id"`,
+		`"scheduler_id"`,
+		`"lifecycle_store"`,
+		`"lifecycle_store_key"`,
+		`"write_guard"`,
+		`"write_precondition"`,
+		`"workflow_revision"`,
+		`"cp_workflow_revision"`,
+		`"retained_result_id"`,
+		`"retained_result_bundle"`,
+		"exec-run-0123456789abcdef",
+		"alloc-c2-latest",
+	)
+}
+
 func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(t *testing.T) {
 	handoff := buildExecutionAuthorityHandoff(
 		executionRuntimeProfile{name: runtimeProfileDefaultStaticScript},
@@ -435,8 +605,19 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		`"jwt_svid_token"`,
 		`"lease"`,
 		`"lease_id"`,
+		`"lease_duration"`,
+		`"token_expiry"`,
+		`"credential_material"`,
+		`"credential_value"`,
 		`"approval"`,
 		`"policy_approval"`,
+		`"intervention"`,
+		`"hold"`,
+		`"resume"`,
+		`"reject"`,
+		`"temporal"`,
+		`"Temporal"`,
+		`"run_control"`,
 		`"workflow"`,
 		`"workflow_id"`,
 		`"checkpoint"`,
@@ -451,6 +632,37 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		`"pem_body"`,
 		`"raw_spire_socket"`,
 	)
+}
+
+func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {
+	if runtimeProfileAnnotationKey != "execution_substrate.runtime_profile" {
+		t.Fatalf("runtime profile annotation compatibility key changed to %q", runtimeProfileAnnotationKey)
+	}
+	if runtimeProfileControlPlaneNormalShell != "control-plane-normal-shell/v1" {
+		t.Fatalf("control-plane normal-shell profile compatibility name changed to %q", runtimeProfileControlPlaneNormalShell)
+	}
+
+	profile, err := resolveExecutionRuntimeProfile(controlPlaneNormalShellProfileExecutionConfig(), PrepareRequest{
+		Invocation: ArtifactInvocation{
+			Annotations: map[string]string{
+				runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
+			},
+		},
+	}, preparedArtifact{
+		manifest: Manifest{
+			ArtifactType: "static-script",
+		},
+		networkAccess: true,
+	})
+	if err != nil {
+		t.Fatalf("expected existing control-plane normal-shell profile to resolve, got %+v", err)
+	}
+	if profile.name != runtimeProfileControlPlaneNormalShell ||
+		profile.image != "execution-substrate/control-plane-normal-shell:test" ||
+		profile.env[codexCLIPathEnvKey] != "/usr/local/bin/codex" ||
+		profile.env[codexCredentialSourceEnvKey] != codexCredentialSourceWorkloadVault {
+		t.Fatalf("expected existing profile image and non-secret metadata compatibility, got %+v", profile)
+	}
 }
 
 func newWorkstreamCTestService(t *testing.T, fixture preparedArtifactFixture) (*Service, string, string) {

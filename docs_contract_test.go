@@ -1031,6 +1031,78 @@ func TestWorkstreamC1PrepareAdmissionGuardrailPostureIsDocumented(t *testing.T) 
 	)
 }
 
+func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	systemContracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+	postureSection := compactDocSection(t, decisionRaw, "## 6. Code-facing guardrail posture", "")
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C2 posture", text: plans},
+		{label: "Workstream C decision C2 posture", text: decision},
+		{label: "lifecycle contracts C2 posture", text: lifecycleContracts},
+		{label: "lifecycle design C2 posture", text: lifecycleDesign},
+		{label: "system contracts C2 posture", text: systemContracts},
+		{label: "system boundaries C2 posture", text: systemBoundaries},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C2 is",
+			"tests/docs guardrail slice",
+			"submit",
+			"lifecycle",
+			"ES-owned async",
+			"Nomad",
+			"bounded",
+			"`authority_handoff`",
+			"`lifecycle_projection",
+			"source=nomad",
+			"opaque same-run read-coordination",
+			"status/logs/result/cancel",
+			"`control-plane-normal-shell/v1`",
+			"does not redesign runtime behavior",
+		)
+	}
+
+	assertContainsAll(t, "PLANS C2 CP grammar exclusions", plans,
+		"Control Plane attempt/review/checkpoint/finalization",
+		"intervention",
+		"approval",
+		"hold/resume/reject",
+		"Temporal",
+		"workflow grammar",
+	)
+	assertContainsAll(t, "Workstream C C2 guardrail posture", postureSection,
+		"C2 guardrail tests are also intentionally narrow.",
+		"submit receipt shape",
+		"ES-to-Nomad handoff",
+		"Nomad-backed status/logs/result/cancel compatibility",
+		"bounded `authority_handoff` evidence",
+		"opaque `lifecycle_projection` read-coordination posture",
+		"must not make submit create CP run-control truth",
+		"review state",
+		"checkpoint state",
+		"finalization state",
+		"intervention state",
+		"Temporal workflow state",
+		"CP workflow revisions",
+		"retained-result identity",
+		"scheduler IDs as public lifecycle authority",
+		"write guards",
+		"parallel ES lifecycle store",
+	)
+	assertContainsAll(t, "artifact hygiene C2 generated evidence non-authority", artifactHygiene,
+		"Generated evidence, `.out`, reports, traces, logs, summaries, support bundles, retained bundles, proof artifacts, and maintenance summaries remain non-authoritative evidence/projection.",
+	)
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))

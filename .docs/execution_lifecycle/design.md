@@ -19,6 +19,13 @@ execution/admission/runtime model. It makes no runtime implementation changes,
 and Workstream C implementation must not start until C0 docs and docs-contract
 tests pass.
 
+C2 is the tests/docs guardrail slice for submit and lifecycle projection. It
+pins `:submit` as the ES-owned async Nomad handoff, keeps lifecycle projection
+Nomad-backed with `source=nomad` and an opaque same-run read-coordination
+revision, preserves current status/logs/result/cancel and
+`control-plane-normal-shell/v1` compatibility, and does not redesign runtime
+behavior.
+
 ## 2. How to read this document
 
 - **Observed current lifecycle model**: The phase structure and authority split implemented in the current Go repo.

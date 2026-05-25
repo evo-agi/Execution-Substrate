@@ -43,6 +43,19 @@ the code and tests win and this document must be realigned.
   exclusion, payload-digest versus package-identity mismatch separation,
   current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
   non-authority. It does not redesign runtime behavior.
+- C2 is the focused tests/docs guardrail slice over submit and lifecycle
+  projection. It proves `POST /v1/executions:submit` remains the ES-owned
+  async execution handoff through Nomad, the receipt remains bounded and free
+  of Control Plane attempt/review/checkpoint/finalization/intervention,
+  approval, hold/resume/reject, Temporal, or workflow grammar,
+  `authority_handoff` remains non-secret handoff evidence only,
+  `lifecycle_projection` remains Nomad-backed with `source=nomad` and an
+  opaque same-run read-coordination `revision`, current
+  status/logs/result/cancel compatibility remains unchanged, and
+  `control-plane-normal-shell/v1`
+  compatibility remains unchanged. It does not redesign runtime behavior,
+  retained results, runtime identity, Vault handoff, Nomad integration, or
+  Control Plane behavior.
 - ES owns admission composition, prepare-time preflight, submit-time execution
   handoff, Nomad-backed lifecycle projection, retained opaque result-bundle
   ownership, and runtime handoff boundary enforcement.
@@ -333,3 +346,16 @@ the accepted C0 boundary remains aligned during the C1 implementation slice;
 they are not a migration plan for the reopened long-term request,
 runtime-profile, lifecycle, retained-result, runtime-config, or
 runtime-identity seams.
+
+C2 guardrail tests are also intentionally narrow. They may assert submit
+receipt shape, ES-to-Nomad handoff, Nomad-backed status/logs/result/cancel
+compatibility, bounded `authority_handoff` evidence, and opaque
+`lifecycle_projection` read-coordination posture. They must not make submit
+create CP run-control truth, review state, checkpoint state, finalization
+state, intervention state, Temporal workflow state, CP workflow revisions,
+retained-result identity, scheduler IDs as public lifecycle authority, write
+guards, or a parallel ES lifecycle store.
+
+C2 does not redesign runtime behavior, retained-result materialization,
+runtime identity, Vault handoff, logs/result/cancel behavior, Nomad
+integration, AGS, ARS, Control Plane, or Infrastructure Manager behavior.

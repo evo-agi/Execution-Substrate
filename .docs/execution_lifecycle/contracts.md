@@ -15,6 +15,16 @@ execution/admission/runtime model. It makes no runtime implementation changes,
 and Workstream C implementation must not start until C0 docs and docs-contract
 tests pass.
 
+C2 is the tests/docs guardrail slice for submit and lifecycle projection. It
+keeps `POST /v1/executions:submit` as the ES-owned async handoff through
+Nomad, keeps the submit receipt bounded and free of Control Plane
+attempt/review/checkpoint/finalization/intervention, approval,
+hold/resume/reject, Temporal, or workflow grammar, keeps
+`lifecycle_projection.source=nomad` with an opaque same-run
+read-coordination `revision`, and preserves current status/logs/result/cancel
+plus `control-plane-normal-shell/v1` compatibility. It does not redesign
+runtime behavior.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
 finalization, intervention, and operator-facing control semantics. CP consumes

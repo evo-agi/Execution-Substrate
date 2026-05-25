@@ -422,6 +422,13 @@ runtime-profile handling, and compatibility edges lives in
 - `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
   and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
   lifecycle store, or write guard.
+- C2 is the narrow tests/docs guardrail slice for this submit/lifecycle
+  projection boundary. It preserves ES-owned async submit through Nomad,
+  bounded submit receipts without Control Plane run-control grammar,
+  non-secret `authority_handoff` evidence, status/logs/result/cancel
+  compatibility, and `control-plane-normal-shell/v1` compatibility. It does
+  not redesign runtime behavior, retained results, runtime identity, Vault
+  handoff, Nomad integration, or Control Plane behavior.
 - ES status/cancel JSON and successful logs/result responses now include additive outcome/evidence descriptors that label what ES observed or retained without promoting the current scheduler lookup, projected-allocation rule, stdout path, or retained-result storage layout into broader public contract.
 - ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.

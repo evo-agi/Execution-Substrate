@@ -413,6 +413,15 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
   credential handoff boundaries, and Control Plane compatibility. C0 makes no
   runtime implementation changes, and Workstream C implementation must not
   start until C0 docs and docs-contract tests pass.
+- C2 is the tests/docs guardrail slice for submit and lifecycle projection. It
+  keeps `POST /v1/executions:submit` as the ES-owned async execution handoff
+  through Nomad, keeps the submit receipt bounded and free of Control Plane
+  attempt/review/checkpoint/finalization/intervention, approval,
+  hold/resume/reject, Temporal, or workflow grammar, keeps
+  `lifecycle_projection.source=nomad` with an opaque same-run
+  read-coordination `revision`, preserves status/logs/result/cancel and
+  `control-plane-normal-shell/v1` compatibility, and does not redesign
+  runtime behavior.
 - ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.
 - ES owns the public admission model, prepare model, submit model,
   Nomad-backed lifecycle projection, retained opaque result bundles,

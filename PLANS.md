@@ -1926,6 +1926,19 @@ Current bounded decision status for Milestone 2C.1:
   exclusion, payload-digest versus package-identity mismatch separation,
   current compatibility surfaces, and `authority_handoff`/`outcome_evidence`
   non-authority. It does not redesign runtime behavior.
+- C2 is the focused tests/docs guardrail slice over the accepted submit and
+  lifecycle-projection boundary. It pins `POST /v1/executions:submit` as the
+  ES-owned async execution handoff through Nomad, keeps the submit receipt
+  bounded and free of Control Plane attempt/review/checkpoint/finalization,
+  intervention, approval, hold/resume/reject, Temporal, or workflow grammar,
+  preserves `authority_handoff` as non-secret handoff evidence only, keeps
+  `lifecycle_projection.source=nomad` with an opaque same-run
+  read-coordination `revision`, preserves status/logs/result/cancel and
+  `control-plane-normal-shell/v1` compatibility, and prevents generated
+  evidence, reports, logs, support bundles, retained bundles, proof artifacts,
+  and maintenance summaries from becoming authority. It does not redesign
+  runtime behavior, retained results, runtime identity, Vault handoff, Nomad
+  integration, or Control Plane behavior.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
