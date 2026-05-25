@@ -1787,6 +1787,8 @@ Current bounded decision status for Milestone 2A.1:
 - `internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.
 - Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.
 - AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere; Workstream A does not widen them into the kernel.
+- `internal/contracts/evidence/v1` is not a cross-service semantic dumping ground. Fields, helper DTOs, proof outputs, generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts do not become shared-kernel authority by proximity to the shared evidence package.
+- Workstream A0 preserves the current `execution_substrate.runtime_profile` annotation and bounded `control-plane-normal-shell/v1` compatibility edge. It does not change the runtime path, runtime-profile selection mechanism, or `static-script` overlay behavior.
 
 Dependencies:
 

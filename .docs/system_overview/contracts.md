@@ -47,6 +47,10 @@ service-owned contract, temporary compatibility edge,
 implementation-only/current-slice detail, and reopened seam lives in
 `shared_kernel.md`.
 
+The shared kernel is not a standalone service boundary and not a cross-service
+semantic dumping ground. A contract becomes kernel-level only when the
+Workstream A decision explicitly classifies it that way.
+
 ### Current producers / consumers
 
 - `AGS` produces aggregate artifact evidence using `internal/contracts/evidence/v1` for the publish path.
@@ -58,7 +62,7 @@ implementation-only/current-slice detail, and reopened seam lives in
 
 `Observed current contract`
 
-- The repo now has one active shared artifact kernel:
+- The repo now has one active shared artifact evidence kernel:
   - `internal/contracts/evidence/v1`
 - `internal/contracts/evidence/v1` defines one aggregate `ArtifactEvidence` record with these top-level sections:
   - `claims`
@@ -98,7 +102,13 @@ implementation-only/current-slice detail, and reopened seam lives in
 - `AGS` owns aggregate evidence production.
 - `ES` owns verification of the aggregate evidence record that now drives its first-class admission path.
 - `ARS` owns storage and retrieval, not signature semantics.
-- Shared packages are transport for jointly owned contract logic, not owners of broader system policy.
+- Shared packages are transport for explicitly classified shared contract logic,
+  not owners of broader system policy, publication semantics, discovery
+  semantics, ES lifecycle grammar, CP orchestration semantics, or generated
+  evidence/projection outputs.
+- Generated evidence, `.out` workspaces, support bundles, retained bundles,
+  reports, traces, logs, summaries, and proof artifacts are not shared-kernel
+  authority.
 
 ### Temporary compatibility edges
 

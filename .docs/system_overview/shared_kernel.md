@@ -28,6 +28,9 @@ the code and tests win and this document must be realigned.
   kernel for the current `AGS -> ARS -> ES` path.
 - `internal/contracts/evidence/v1` is not a standalone service boundary and is
   not permission to grow a broad new shared grammar.
+- `internal/contracts/evidence/v1` is not a cross-service semantic dumping
+  ground. A field does not become shared-kernel-owned merely because it lives in
+  or near a shared package.
 - The kernel must remain narrow and evidence-owned. Kernel-level shared meaning
   is currently limited to:
   - package identity
@@ -51,9 +54,13 @@ the code and tests win and this document must be realigned.
   execution/lifecycle grammar, and the long-term workload-zone Vault
   runtime-config owner remain service-owned or reopened elsewhere.
 - Control Plane orchestration, review, checkpoint, finalization,
-  task-attempt/proof-harness expectations, `.out` workspaces, reports, support
-  bundles, and semantic interpretation of retained-result contents remain
-  outside the shared kernel and outside ES run authority.
+  task-attempt/proof-harness expectations, `.out` workspaces, generated
+  evidence, support bundles, retained bundles, reports, traces, logs,
+  summaries, proof artifacts, and semantic interpretation of retained-result
+  contents remain outside the shared kernel and outside ES run authority.
+- This A0 decision preserves the current `control-plane-normal-shell/v1`
+  compatibility edge. It does not change the runtime path, runtime-profile
+  selection mechanism, or `static-script` overlay behavior.
 
 ## 3. Surface classes used here
 
@@ -82,7 +89,7 @@ the code and tests win and this document must be realigned.
 | --- | --- | --- | --- |
 | `claims.package.publication` | `service-owned contract` | `AGS` | `builder_service`, caller-derived `invoker`, `policy_decisions`, and `build_log_digest` remain AGS-owned publish-time facts carried inside the signed evidence record. ES verifies the signed record but must not treat publication claims as public ES admission grammar. |
 | `POST /v1/artifacts:publish` request grammar and AGS manifest/support-data assembly | `service-owned contract` | `AGS` | AGS accepts the publish request, derives artifact identity, builds aggregate evidence, signs it, uploads payload/evidence/supporting blobs, and registers the artifact through ARS. |
-| ARS blob, registration, discovery, descriptor, and manifest routes | `service-owned contract` | `ARS` | ARS owns blob storage, integrity enforcement, artifact registration, and runtime-facing discoverability. ES consumes ARS outputs; ARS route/index shape is not itself the shared kernel. |
+| ARS blob, registration, discovery, descriptor, manifest routes, and index helpers | `service-owned contract` | `ARS` | ARS owns blob storage, integrity enforcement, artifact registration, runtime-facing discoverability, and support-read mechanics. ES consumes designed ARS outputs; ARS route/index/descriptor/manifest shapes are not themselves the shared kernel. |
 | EGS runtime-trust payload and signed response wrapper | `service-owned contract` | `EGS` | EGS owns signer/artifact trust policy publication. ES consumes that trust output but the EGS payload does not become part of the shared artifact kernel. |
 | ES public execution request, lifecycle, result, and `authority_handoff` surfaces | `service-owned contract` | `ES` | ES owns admission composition, runtime-profile handling, scheduler handoff, lifecycle projection, retained-result exposure, and runtime handoff evidence. ES must not let AGS/ARS or CP consumer assumptions define those public ES semantics. |
 
@@ -100,7 +107,7 @@ the code and tests win and this document must be realigned.
 | --- | --- | --- |
 | `ars/index.Entry` plus `KindDiscovery`, `KindDescriptor`, `KindEvidence`, and `KindManifest` | `implementation-only/current-slice detail` | These are current ARS indexing/persistence mechanics. They do not define the minimum cross-service kernel ES should inherit. |
 | `es/admission.Manifest`, `preparedArtifact`, and `manifestFromEvidence` | `implementation-only/current-slice detail` | These are ES-local projections and helpers derived from shared/kernel and service-owned inputs. They are not themselves shared contracts. |
-| Example callers, proof harnesses, `.out` workspaces, reports, support bundles, and semantic interpretation of logs or retained-result bundle contents | `implementation-only/current-slice detail` | These may prove or inspect the current slice, but they do not define shared-kernel meaning and must not become ES run authority. |
+| Example callers, proof harnesses, `.out` workspaces, generated evidence, support bundles, retained bundles, reports, traces, logs, summaries, proof artifacts, and semantic interpretation of logs or retained-result bundle contents | `implementation-only/current-slice detail` | These may prove, inspect, summarize, or diagnose the current slice, but they do not define shared-kernel meaning and must not become ES run authority. |
 
 ### 4E. Reopened seams
 
@@ -115,6 +122,9 @@ the code and tests win and this document must be realigned.
 
 - Do not add new shared-kernel meaning just because a field already exists in a
   shared package.
+- Do not use a shared package as a cross-service semantic dumping ground. Any
+  proposed shared meaning needs an explicit owner, consumer, classification, and
+  reason it cannot remain service-owned.
 - Do not widen `claims.admission.authorization` beyond
   `derivation_spec_digest` and `output_id` without a separate documented
   redesign decision.
@@ -125,6 +135,12 @@ the code and tests win and this document must be realigned.
   because ES currently consumes them.
 - Do not let CP examples, reports, support artifacts, `.out` artifacts, or
   proof harnesses become ES admission or run authority.
+- Do not treat generated evidence, support bundles, retained bundles, reports,
+  traces, logs, summaries, proof artifacts, or `.out` workspaces as shared
+  kernel authority.
+- Do not change or remove the bounded `control-plane-normal-shell/v1`
+  compatibility path in Workstream A. Runtime-profile replacement belongs to an
+  ES-owned compatibility/versioning plan in a later slice.
 - Do not use Workstream A to widen the workload-zone Vault runtime-config
   surface. That surface is active and adjacent, but its long-term owner remains
   a separate reopened seam.

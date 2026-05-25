@@ -22,12 +22,13 @@ state, code and tests win and this document must be realigned.
 
 Generated or proof artifacts are evidence/projection/diagnostics only. They are
 not hidden runtime authority, scheduler authority, admission authority, policy
-truth, credential truth, Control Plane orchestration state, or architecture
-source of truth.
+truth, credential truth, shared-kernel authority, Control Plane orchestration
+state, or architecture source of truth.
 
-This applies to `.out/`, proof workspaces, reports, logs, retained bundles,
-example package archives, local build directories, Python bytecode caches, OS
-metadata files, and ad hoc packaging output.
+This applies to `.out/`, proof workspaces, generated evidence, reports, traces,
+logs, summaries, support bundles, retained bundles, proof artifacts, example
+package archives, local build directories, Python bytecode caches, OS metadata
+files, and ad hoc packaging output.
 
 Remote Alpha helper summaries under `/var/tmp/execution-substrate-remote-alpha`
 are remote-host evidence/projection only unless an authoritative doc explicitly

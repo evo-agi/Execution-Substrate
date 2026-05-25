@@ -286,6 +286,8 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 	contracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
 	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
 	lifecycle := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	artifactPublication := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 
 	assertDocIncludesAuthorityHierarchy(t, sharedKernel, "shared-kernel decision doc")
 	if !strings.Contains(sharedKernel, "Authority for this document follows the repo-wide authority hierarchy:") {
@@ -299,6 +301,8 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"Workstream A shared-contract and shared-kernel decision",
 		"`internal/contracts/evidence/v1` is the only active shared artifact evidence kernel",
 		"`internal/contracts/evidence/v1` is not a standalone service boundary",
+		"`internal/contracts/evidence/v1` is not a cross-service semantic dumping ground.",
+		"A field does not become shared-kernel-owned merely because it lives in or near a shared package.",
 		"`claims.package.identity`",
 		"`claims.package.publication`",
 		"`claims.admission.authorization.derivation`",
@@ -312,6 +316,9 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"Scope",
 		"Removal condition",
 		"AGS publication claims, ARS discoverability/index shapes, ES public execution/lifecycle grammar, and the long-term workload-zone Vault runtime-config owner remain service-owned or reopened elsewhere",
+		"generated evidence, support bundles, retained bundles, reports, traces, logs, summaries, proof artifacts",
+		"This A0 decision preserves the current `control-plane-normal-shell/v1` compatibility edge.",
+		"It does not change the runtime path, runtime-profile selection mechanism, or `static-script` overlay behavior.",
 	} {
 		if !strings.Contains(sharedKernel, required) {
 			t.Fatalf("shared-kernel decision doc missing %q", required)
@@ -322,6 +329,9 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"The Workstream A shared-kernel decision is recorded in `.docs/system_overview/shared_kernel.md`.",
 		"`internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel for the current `AGS -> ARS -> ES` path, but it is not a standalone service boundary.",
 		"Kernel-level shared meaning stays limited to package identity, narrow derivation request-binding authorization, narrow execution/runtime claims ES actually enforces, and evidence canonicalization plus `seal` verification.",
+		"`internal/contracts/evidence/v1` is not a cross-service semantic dumping ground.",
+		"generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts do not become shared-kernel authority",
+		"Workstream A0 preserves the current `execution_substrate.runtime_profile` annotation and bounded `control-plane-normal-shell/v1` compatibility edge.",
 	} {
 		if !strings.Contains(plans, required) {
 			t.Fatalf("PLANS missing Workstream A shared-kernel decision phrase %q", required)
@@ -334,6 +344,10 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"`claims.admission.authorization` is intentionally limited to `derivation_spec_digest` and `output_id`",
 		"`claims.admission.execution` is intentionally limited to runtime env allowlist, required capabilities, `target_platform`, and `network_access`",
 		"`artifact_digest` and `payload_digest` remain separate facts.",
+		"The repo now has one active shared artifact evidence kernel:",
+		"The shared kernel is not a standalone service boundary and not a cross-service semantic dumping ground.",
+		"not owners of broader system policy, publication semantics, discovery semantics, ES lifecycle grammar, CP orchestration semantics, or generated evidence/projection outputs.",
+		"Generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts are not shared-kernel authority.",
 	} {
 		if !strings.Contains(contracts, required) {
 			t.Fatalf("system contracts doc missing shared-kernel phrase %q", required)
@@ -345,6 +359,9 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 		"`claims.package.identity`, narrow derivation request-binding authorization, the narrow execution/runtime claims ES actually enforces, and `seal` verification are the kernel-level shared surface.",
 		"`claims.package.publication` remains AGS-owned publication meaning carried inside the signed record.",
 		"ARS runtime-facing discovery, descriptor, and index shapes are ARS-owned discoverability contracts.",
+		"The shared evidence package is not a cross-service semantic dumping ground.",
+		"Package placement does not make AGS publication claims, ARS discoverability/index/support shapes, ES lifecycle/runtime-profile grammar, CP attempt semantics, or generated evidence/projection outputs shared-kernel owned.",
+		"Generated evidence, `.out` workspaces, support bundles, retained bundles, reports, traces, logs, summaries, and proof artifacts remain evidence/projection/diagnostics only.",
 	} {
 		if !strings.Contains(boundaries, required) {
 			t.Fatalf("system boundaries doc missing shared-kernel phrase %q", required)
@@ -358,6 +375,43 @@ func TestWorkstreamASharedKernelDecisionIsDocumented(t *testing.T) {
 	} {
 		if !strings.Contains(lifecycle, required) {
 			t.Fatalf("execution lifecycle contracts doc missing shared-kernel phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"Workstream B consumes the Workstream A shared-kernel decision without widening it.",
+		"`internal/contracts/evidence/v1` remains the narrow evidence-owned kernel, not a dumping ground for AGS publication, ARS discoverability, ES lifecycle, or CP orchestration meaning.",
+		"generated evidence, retained result bundles, reports, traces, logs, summaries, support bundles, proof artifacts",
+		"outside AGS/ARS/ES core semantics and outside shared kernel authority",
+	} {
+		if !strings.Contains(artifactPublication, required) {
+			t.Fatalf("artifact publication/storage doc missing A0 boundary phrase %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"Generated or proof artifacts are evidence/projection/diagnostics only.",
+		"not hidden runtime authority, scheduler authority, admission authority, policy truth, credential truth, shared-kernel authority",
+		"This applies to `.out/`, proof workspaces, generated evidence, reports, traces, logs, summaries, support bundles, retained bundles, proof artifacts",
+	} {
+		if !strings.Contains(artifactHygiene, required) {
+			t.Fatalf("artifact hygiene doc missing shared-kernel non-authority phrase %q", required)
+		}
+	}
+
+	for _, forbidden := range []struct {
+		label string
+		text  string
+		want  string
+	}{
+		{label: "shared kernel", text: sharedKernel, want: "`claims.package.publication` | `kernel-level shared contract`"},
+		{label: "shared kernel", text: sharedKernel, want: "ARS blob, registration, discovery, descriptor, manifest routes, and index helpers | `kernel-level shared contract`"},
+		{label: "shared kernel", text: sharedKernel, want: "ES public execution request, lifecycle, result, and `authority_handoff` surfaces | `kernel-level shared contract`"},
+		{label: "shared kernel", text: sharedKernel, want: "Control Plane orchestration, review, checkpoint, finalization | `kernel-level shared contract`"},
+		{label: "artifact hygiene", text: artifactHygiene, want: "Generated or proof artifacts are shared-kernel authority"},
+	} {
+		if strings.Contains(forbidden.text, forbidden.want) {
+			t.Fatalf("%s must not promote forbidden shared-kernel ownership phrase %q", forbidden.label, forbidden.want)
 		}
 	}
 }

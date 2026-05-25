@@ -55,8 +55,14 @@ the code and tests win and this document must be realigned.
   inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane
   examples/probes as public execution grammar.
 - Control Plane examples, probes, scripts, proof harnesses, `.out` artifacts,
-  retained result bundles, reports, logs, support bundles, and consumer
-  convenience expectations remain outside AGS/ARS/ES core semantics.
+  generated evidence, retained result bundles, reports, traces, logs,
+  summaries, support bundles, proof artifacts, and consumer convenience
+  expectations remain outside AGS/ARS/ES core semantics and outside shared
+  kernel authority.
+- Workstream B consumes the Workstream A shared-kernel decision without widening
+  it. `internal/contracts/evidence/v1` remains the narrow evidence-owned kernel,
+  not a dumping ground for AGS publication, ARS discoverability, ES lifecycle, or
+  CP orchestration meaning.
 
 ## 3. Surface classes used here
 
@@ -141,8 +147,9 @@ compatibility surfaces.
   shared-kernel decision just because AGS and ARS currently exchange adjacent
   publication or storage data.
 - Do not let Control Plane examples, probes, `.out` artifacts, proof harnesses,
-  retained result bundles, reports, logs, or support bundles become AGS/ARS/ES
-  core semantics.
+  generated evidence, retained result bundles, reports, traces, logs, summaries,
+  proof artifacts, or support bundles become AGS/ARS/ES core semantics or
+  shared-kernel authority.
 - Do not treat ARS as trust, policy, runtime, lifecycle, or output-semantic
   authority.
 - If the current discovery/registration grammar changes, document the

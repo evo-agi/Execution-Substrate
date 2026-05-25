@@ -60,6 +60,11 @@ Those absences are current facts, not design commitments.
   and ES is the current consumer and lookup orchestrator.
 - `internal/contracts/evidence/v1` is now the active shared cross-service kernel for the primary AGS-published artifact path into ES. It is not itself a standalone service boundary.
 - The Workstream A classification of what is kernel-level shared meaning versus service-owned contract lives in `shared_kernel.md`.
+- The shared evidence package is not a cross-service semantic dumping ground.
+  Package placement does not make AGS publication claims, ARS
+  discoverability/index/support shapes, ES lifecycle/runtime-profile grammar, CP
+  attempt semantics, or generated evidence/projection outputs shared-kernel
+  owned.
 - The Workstream B classification of AGS publication ownership, ARS
   storage/discoverability authority, canonical runtime-discoverable surfaces,
   and secondary publication/support detail lives in
@@ -75,6 +80,10 @@ Those absences are current facts, not design commitments.
   SPIRE owns JWT-SVID issuance, and Vault owns token/secret/lease issuance
   after workload-side login.
 - Control Plane is a consumer of accepted AGS and ES surfaces, not an owner of ES core contracts. CP documents, examples, probes, or proof-harness expectations must be treated as consumer compatibility inputs unless `PLANS.md` explicitly promotes a rule into ES-owned semantics.
+- Generated evidence, `.out` workspaces, support bundles, retained bundles,
+  reports, traces, logs, summaries, and proof artifacts remain
+  evidence/projection/diagnostics only. They are not service-boundary authority
+  and do not define shared-kernel meaning.
 
 ## 4A. Proof Bootstrap Ownership
 
