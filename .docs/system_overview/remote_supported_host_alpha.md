@@ -2017,6 +2017,8 @@ Intended Vault objects/config:
 - auth mount `jwt`
 - JWT auth config with SPIRE validation material selected for the workload trust
   domain and bound issuer
+- JWT auth config includes all active JWT-SVID RSA validation public keys for
+  the selected workload trust domain, not just the first key
 - role `service_execution`
 - `role_type=jwt`
 - `user_claim=sub`
@@ -2265,9 +2267,14 @@ Secret prompt model:
   writes. It must not print raw SPIRE output, raw SPIRE stderr, or bundle
   contents. When the SPIFFE bundle output is a bundle map, the helper must select
   JWT validation material from the workload SPIFFE ID trust domain rather than
-  from the first available trust domain. The helper may record only safe
-  source/shape labels, selected trust-domain labels, key counts, and a digest;
-  it must not summarize raw public key material or raw bundle JSON.
+  from the first available trust domain. It must configure all active JWT-SVID
+  RSA validation public keys for that selected trust domain rather than one
+  arbitrary key. The helper may record only safe source/shape labels, selected
+  trust-domain labels, key counts, a validation pubkey count, and a digest set or
+  aggregate digest; it must not summarize raw public key material or raw bundle
+  JSON. This preserves the older safe-diagnostic vocabulary of safe source/shape
+  labels, key counts, selected trust-domain labels, and a digest while adding
+  the all-key count and digest-set detail.
 
 Summary-path preparation:
 
@@ -2398,6 +2405,8 @@ Configured Vault objects/config:
 - auth mount `jwt`
 - JWT auth config with SPIRE validation material selected for the workload trust
   domain and bound issuer
+- JWT auth config includes all active JWT-SVID RSA validation public keys for
+  the selected workload trust domain, not just the first key
 - role `service_execution`
 - `role_type=jwt`
 - `user_claim=sub`
@@ -2553,6 +2562,8 @@ P0q tests:
 - fake bootstrap writes the expected fake Vault objects only
 - fake bootstrap writes the Vault JWT auth config with the expected validation
   material and bound issuer shape
+- fake bootstrap writes all selected workload-trust-domain JWT-SVID RSA
+  validation public keys and ignores non-JWT-SVID RSA keys
 - fake workload-auth check JWT claims align with the bootstrap config labels
 - fake successful bootstrap records the summary preflight and config load as
   passed, records SPIRE JWT validation material as passed, and stores only a

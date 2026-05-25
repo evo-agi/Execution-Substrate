@@ -739,15 +739,20 @@ while obtaining SPIRE JWT validation material from `spire-server bundle show
 therefore treat the fixed SPIRE bundle-read command as a pre-prompt preflight:
 after summary and config preflights/load succeed, and before Vault bootstrap
 authority prompts, proof secret prompts, or Vault writes, it obtains only the
-public JWT validation material for the workload SPIFFE ID trust domain, records
+public JWT validation material for the workload SPIFFE ID trust domain, selects
+all active JWT-SVID RSA validation public keys for that trust domain, records
 `operations.spire_jwt_validation_material` as pass or fail, records only safe
-source/shape labels, key counts, selected trust-domain labels, and a digest on
-success, and records only safe phase/class labels such as
+source/shape labels, key counts, selected trust-domain labels, a validation
+pubkey count, and a digest set or aggregate digest on success, and records only
+safe phase/class labels such as
 `failure_phase=jwt_auth_config`,
 `failure_class=invalid_response`, and
 `failure_message_class=spire_bundle_show_failed` on failure. It must not print
 raw SPIRE stderr/stdout, copy bundle contents to Mac `.out`, include bundle
 contents in the summary, or expose prompt values.
+This preserves the older safe-diagnostic vocabulary of safe source/shape
+labels, key counts, selected trust-domain labels, and a digest while adding the
+all-key count and digest-set detail.
 This is the SPIRE bundle-read preflight before prompts and Vault writes.
 
 The explicit `--prepare-spire-bundle-read` follow-up is OS/filesystem/capability
@@ -807,8 +812,9 @@ passes, the helper must write a safe failure summary with `failure_phase` such a
 contents.
 
 P0q's helper may use an in-process Vault API client for the documented objects:
-auth mount `jwt`; JWT auth config with SPIRE validation material selected for
-the workload trust domain and bound issuer; role `service_execution` with
+auth mount `jwt`; JWT auth config with all active SPIRE JWT-SVID RSA validation
+public keys selected for the workload trust domain and bound issuer; role
+`service_execution` with
 `role_type=jwt`, `user_claim=sub`,
 `bound_audiences=vault`, and
 `bound_subject=spiffe://execution.internal/workload`; policy

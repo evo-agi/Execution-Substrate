@@ -34,7 +34,7 @@ Vault API strategy:
 
 Configured objects:
   auth mount jwt
-  auth/jwt/config with SPIRE JWT validation material and bound issuer
+  auth/jwt/config with all selected SPIRE JWT validation public keys and bound issuer
   role service_execution
   policy runtime-identity-proof
   KV v2 proof paths proof-secrets/data/runtime-identity-vault-login and
@@ -528,7 +528,7 @@ def spire_bundle_validation_keys(payload):
     )
 
 
-def extract_jwt_validation_pubkey():
+def extract_jwt_validation_pubkeys():
     set_next_operation("jwt_auth_config")
     try:
         proc = subprocess.run(
@@ -557,8 +557,9 @@ def extract_jwt_validation_pubkey():
         if key.get("use") == "jwt-svid" and key.get("kty") == "RSA" and key.get("n") and key.get("e"):
             jwt_svid_rsa_keys.append(key)
     if jwt_svid_rsa_keys:
-        key = jwt_svid_rsa_keys[0]
-        pem = rsa_public_key_pem(str(key["n"]), str(key["e"]))
+        pems = [rsa_public_key_pem(str(key["n"]), str(key["e"])) for key in jwt_svid_rsa_keys]
+        public_key_digest_set = ["sha256:" + hashlib.sha256(pem.encode("utf-8")).hexdigest() for pem in pems]
+        aggregate_digest = "sha256:" + hashlib.sha256("\n".join(public_key_digest_set).encode("utf-8")).hexdigest()
         set_status(
             "spire_jwt_validation_material",
             "pass",
@@ -568,15 +569,17 @@ def extract_jwt_validation_pubkey():
             trust_domain_count=trust_domain_count,
             key_count=len(candidates),
             jwt_svid_rsa_key_count=len(jwt_svid_rsa_keys),
+            jwt_validation_pubkeys_count=len(pems),
             vault_jwt_config_shape="jwt_validation_pubkeys_array_pem_bound_issuer",
-            public_key_digest="sha256:" + hashlib.sha256(pem.encode("utf-8")).hexdigest(),
+            public_key_digest=aggregate_digest,
+            public_key_digest_set=public_key_digest_set,
         )
-        return pem
+        return pems
     raise_failure("jwt_auth_config", "invalid_response", operation="spire_jwt_validation_material", message_class="no_jwt_svid_rsa_key")
 
 
 def preflight_spire_bundle_read():
-    return extract_jwt_validation_pubkey()
+    return extract_jwt_validation_pubkeys()
 
 
 def make_opener(ca_bundle_pem):
@@ -683,7 +686,7 @@ path "{PROOF_RUNTIME_SECRET_PATH}" {{
         fail_from_exception(phase, exc)
 
 
-def configure_jwt(opener, token, address, validation_pubkey):
+def configure_jwt(opener, token, address, validation_pubkeys):
     phase = "jwt_auth_config"
     set_next_operation(phase)
     try:
@@ -693,7 +696,7 @@ def configure_jwt(opener, token, address, validation_pubkey):
             "POST",
             address,
             f"auth/{AUTH_MOUNT}/config",
-            {"jwt_validation_pubkeys": [validation_pubkey], "bound_issuer": BOUND_ISSUER},
+            {"jwt_validation_pubkeys": validation_pubkeys, "bound_issuer": BOUND_ISSUER},
             allowed_statuses=(200, 204),
         )
         set_status(
@@ -702,6 +705,7 @@ def configure_jwt(opener, token, address, validation_pubkey):
             auth_mount=AUTH_MOUNT,
             bound_issuer=BOUND_ISSUER,
             validation_material_field="jwt_validation_pubkeys",
+            jwt_validation_pubkeys_count=len(validation_pubkeys),
             vault_jwt_config_shape="jwt_validation_pubkeys_array_pem_bound_issuer",
         )
     except Exception as exc:
@@ -829,7 +833,7 @@ def main():
     try:
         preflight_config_readable()
         address, ca_bundle_pem = load_config()
-        validation_pubkey = preflight_spire_bundle_read()
+        validation_pubkeys = preflight_spire_bundle_read()
         set_next_operation("prompt_bootstrap_authority")
         summary["secret_prompts_started"] = True
         try:
@@ -867,7 +871,7 @@ def main():
         ensure_auth_mount(opener, root_token, address)
         ensure_kv_mount(opener, root_token, address)
         configure_policy(opener, root_token, address)
-        configure_jwt(opener, root_token, address, validation_pubkey)
+        configure_jwt(opener, root_token, address, validation_pubkeys)
         configure_role(opener, root_token, address)
         write_proof_secrets(opener, root_token, address, proof_secret)
         summary["overall_status"] = "pass"
