@@ -1103,6 +1103,65 @@ func TestWorkstreamC2SubmitLifecycleProjectionGuardrailPostureIsDocumented(t *te
 	)
 }
 
+func TestWorkstreamC3RetainedResultAuthorityHandoffGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	systemContracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+	postureSection := compactDocSection(t, decisionRaw, "## 6. Code-facing guardrail posture", "")
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C3 posture", text: plans},
+		{label: "Workstream C decision C3 posture", text: decision},
+		{label: "lifecycle contracts C3 posture", text: lifecycleContracts},
+		{label: "lifecycle design C3 posture", text: lifecycleDesign},
+		{label: "system contracts C3 posture", text: systemContracts},
+		{label: "system boundaries C3 posture", text: systemBoundaries},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C3 is the focused tests/docs guardrail slice for retained-result and `authority_handoff` boundaries.",
+			"C3 is guardrail work, not runtime redesign.",
+			"retained result bundles remain ES-owned opaque output artifacts",
+			"CP may materialize, review, checkpoint, and finalize retained result contents semantically, but CP does not own the retained bundle as run-control state.",
+			"Retained result references, paths, manifests, archives, `.out` copies, and materialized workspaces are evidence/projection or implementation detail, not orchestration authority.",
+			"`GET /v1/executions/{run_id}/result` compatibility shape remains unchanged unless an explicit migration/versioning plan exists.",
+			"`authority_handoff` remains bounded non-secret runtime handoff evidence only.",
+			"`authority_handoff` never carries or implies live credentials, Vault tokens, Codex credentials, leases, approvals, operator authorization, CP workflow state, scheduler truth, or retained-result authority.",
+			"Runtime identity/Vault handoff remains workload-side and non-secret; ES does not become a Vault token broker or Codex credential broker.",
+			"`outcome_evidence` remains bounded evidence/projection; current labels remain compatibility surfaces.",
+			"`control-plane-normal-shell/v1` and `execution_substrate.runtime_profile` compatibility remain preserved unless an explicit migration/versioning plan exists.",
+		)
+	}
+
+	assertContainsAll(t, "Workstream C C3 guardrail posture", postureSection,
+		"C3 guardrail tests are intentionally narrow.",
+		"retained result ownership",
+		"result-route compatibility shape",
+		"public result and authority-handoff grammar exclusions",
+		"bounded `outcome_evidence` label compatibility",
+		"must not redesign retained results",
+		"runtime identity",
+		"Vault handoff",
+		"Nomad integration",
+		"Control Plane behavior",
+	)
+	assertContainsAll(t, "runbook C3 retained-result and authority posture", runbook,
+		"Retained results are opaque tar.gz output material, not CP workflow truth, checkpoint truth, finalization truth, review authority, scheduler truth, or operator authority.",
+		"`authority_handoff` never carries live credentials, Vault tokens, Codex credentials, leases, approvals, operator authorization, CP workflow state, scheduler truth, or retained-result authority.",
+	)
+	assertContainsAll(t, "artifact hygiene C3 generated evidence non-authority", artifactHygiene,
+		"Generated evidence, `.out`, reports, traces, logs, summaries, support bundles, retained bundles, proof artifacts, and maintenance summaries remain non-authoritative evidence/projection.",
+	)
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))

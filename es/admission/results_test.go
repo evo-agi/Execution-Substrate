@@ -58,6 +58,93 @@ func TestRetainTerminalResultPackagesResultDirectory(t *testing.T) {
 	}
 }
 
+func TestWorkstreamC3RetainedResultBundleRemainsESOwnedOpaqueOutput(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	for _, dir := range []string{
+		layout.resultStageDir,
+		filepath.Join(layout.resultStageDir, "materialized-workspace"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, file := range []struct {
+		path string
+		body string
+	}{
+		{
+			path: filepath.Join(layout.resultStageDir, "review.json"),
+			body: `{"review":"cp-owned semantic content"}` + "\n",
+		},
+		{
+			path: filepath.Join(layout.resultStageDir, "checkpoint.txt"),
+			body: "checkpoint belongs above ES\n",
+		},
+		{
+			path: filepath.Join(layout.resultStageDir, "materialized-workspace", "finalization.txt"),
+			body: "finalization remains opaque bundle content\n",
+		},
+	} {
+		if err := os.WriteFile(file.path, []byte(file.body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", file.path, err)
+		}
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err != nil {
+		t.Fatalf("retain terminal result: %v", err)
+	}
+	if !retained {
+		t.Fatalf("expected result retention to report retained bundle")
+	}
+
+	bundlePath := service.retainedResultBundlePath(locator)
+	if !strings.HasPrefix(bundlePath, service.cfg.Execution.ResultsRootDir+string(os.PathSeparator)) {
+		t.Fatalf("expected retained result under ES results root, got %q", bundlePath)
+	}
+	if strings.HasPrefix(bundlePath, service.cfg.Execution.StagingRootDir+string(os.PathSeparator)) {
+		t.Fatalf("retained result bundle must not live under staging root, got %q", bundlePath)
+	}
+
+	bundle, ok, resultErr := service.readRetainedResultBundle(locator)
+	if resultErr != nil {
+		t.Fatalf("read retained result: %+v", resultErr)
+	}
+	if !ok {
+		t.Fatalf("expected retained result bundle")
+	}
+	if bundle.MediaType != resultBundleMediaType {
+		t.Fatalf("expected result media type %q, got %q", resultBundleMediaType, bundle.MediaType)
+	}
+	if bundle.OutcomeEvidence.Source != outcomeEvidenceSourceRetainedResultStore ||
+		bundle.OutcomeEvidence.Observation != outcomeObservationRetainedResultBundle ||
+		bundle.OutcomeEvidence.AccessClass != outcomeAccessClassOpaqueResultBundle {
+		t.Fatalf("unexpected retained result outcome evidence %+v", bundle.OutcomeEvidence)
+	}
+
+	entries := readAdmissionResultBundleEntries(t, bundle.Payload)
+	for _, want := range []string{
+		"review.json",
+		"checkpoint.txt",
+		"materialized-workspace/finalization.txt",
+	} {
+		if _, ok := entries[want]; !ok {
+			t.Fatalf("expected opaque retained result entry %q in %v", want, entries)
+		}
+	}
+	for _, forbiddenSidecar := range []string{
+		"authority_handoff.json",
+		"retained_result_manifest.json",
+		"workflow.json",
+		"cp_checkpoint.json",
+		"scheduler_truth.json",
+	} {
+		if _, ok := entries[forbiddenSidecar]; ok {
+			t.Fatalf("retained bundle must not synthesize authority sidecar %q", forbiddenSidecar)
+		}
+	}
+}
+
 func TestRetainTerminalResultFailsClosedForSymlinkResultEntry(t *testing.T) {
 	service, locator, layout := newResultTestService(t)
 	if err := os.MkdirAll(layout.resultStageDir, 0o755); err != nil {

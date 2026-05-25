@@ -488,6 +488,12 @@ ES does not fabricate a result bundle from stdout, status, staging metadata, or 
 ES-retained result bundles remain opaque output artifacts owned by ES; CP may
 materialize, review, and finalize their contents semantically, but CP does not
 own the retained bundle as run-control state.
+Retained results are opaque tar.gz output material, not CP workflow truth,
+checkpoint truth, finalization truth, review authority, scheduler truth, or
+operator authority.
+`authority_handoff` never carries live credentials, Vault tokens, Codex
+credentials, leases, approvals, operator authorization, CP workflow state,
+scheduler truth, or retained-result authority.
 
 If `/execution/run/result` contains result files for a terminal run and ES still returns `result_not_found`, that is an ES-side retention issue to investigate. If the result directory was never written, route first to the workload or CP runner.
 

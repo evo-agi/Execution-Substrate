@@ -422,6 +422,26 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
   read-coordination `revision`, preserves status/logs/result/cancel and
   `control-plane-normal-shell/v1` compatibility, and does not redesign
   runtime behavior.
+- C3 is the focused tests/docs guardrail slice for retained-result and
+  `authority_handoff` boundaries. C3 is guardrail work, not runtime redesign.
+  C3 pins that retained result bundles remain ES-owned opaque output artifacts
+  and that CP may materialize, review, checkpoint, and finalize retained result
+  contents semantically, but CP does not own the retained bundle as run-control
+  state. Retained result references, paths, manifests, archives, `.out`
+  copies, and materialized workspaces are evidence/projection or
+  implementation detail, not orchestration authority.
+  `GET /v1/executions/{run_id}/result` compatibility shape remains unchanged
+  unless an explicit migration/versioning plan exists. `authority_handoff`
+  remains bounded non-secret runtime handoff evidence only.
+  `authority_handoff` never carries or implies live credentials, Vault tokens,
+  Codex credentials, leases, approvals, operator authorization, CP workflow
+  state, scheduler truth, or retained-result authority. Runtime identity/Vault
+  handoff remains workload-side and non-secret; ES does not become a Vault
+  token broker or Codex credential broker. `outcome_evidence` remains bounded
+  evidence/projection; current labels remain compatibility surfaces.
+  `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+  compatibility remain preserved unless an explicit migration/versioning plan
+  exists.
 - ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.
 - ES owns the public admission model, prepare model, submit model,
   Nomad-backed lifecycle projection, retained opaque result bundles,

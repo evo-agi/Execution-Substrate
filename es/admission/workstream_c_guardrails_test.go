@@ -425,6 +425,87 @@ func TestWorkstreamC2PublicSubmitAndLifecycleDTOsExcludeCPRunControlGrammar(t *t
 	}
 }
 
+func TestWorkstreamC3PublicResultAuthorityAndOutcomeDTOsExcludeRunControlAndLiveAuthorityFields(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		SubmitResult{},
+		ExecutionStatusResult{},
+		ExecutionCancelResult{},
+		LifecycleProjection{},
+		ExecutionOutcomeEvidence{},
+		ExecutionAuthorityHandoff{},
+		ExecutionAuthorityRuntimeProfile{},
+		ExecutionAuthorityIdentityHandoff{},
+		ExecutionAuthorityWorkloadVault{},
+		ExecutionAuthorityRuntimeConfigRefs{},
+		ExecutionAuthorityRuntimeConfigRef{},
+		ExecutionAuthorityCodexCredential{},
+		ExecutionAuthorityEvidence{},
+	)
+
+	for _, forbidden := range []string{
+		"attempt",
+		"task_attempt",
+		"review",
+		"checkpoint",
+		"finalization",
+		"intervention",
+		"approval",
+		"hold",
+		"resume",
+		"reject",
+		"temporal",
+		"workflow",
+		"workflow_id",
+		"cp_workflow_id",
+		"run_control",
+		"review_state",
+		"checkpoint_state",
+		"finalization_state",
+		"intervention_state",
+		"retained_result_ref",
+		"retained_result_reference",
+		"retained_result_id",
+		"retained_result_manifest",
+		"retained_result_archive",
+		"retained_result_path",
+		"materialized_workspace",
+		"workspace_archive",
+		"operator_authorization",
+		"scheduler_truth",
+		"scheduler_id",
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"task_id",
+		"token",
+		"lease",
+		"credential",
+		"secret",
+		"api_key",
+		"vault_token",
+		"codex_credential",
+		"credential_material",
+		"credential_value",
+		"secret_material",
+		"secret_value",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("C3 public result/authority/outcome DTOs must not expose run-control or live-authority field %q", forbidden)
+		}
+	}
+
+	for _, compatibilityField := range []string{
+		"codex_credential_location",
+		"credential_source",
+		"vault_secret_path",
+		"vault_secret_field",
+	} {
+		if _, ok := fieldNames[compatibilityField]; !ok {
+			t.Fatalf("expected current control-plane normal-shell credential-location compatibility field %q to remain present", compatibilityField)
+		}
+	}
+}
+
 func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *testing.T) {
 	service := Service{
 		cfg: minimalLifecycleConfig(t),
@@ -632,6 +713,171 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		`"pem_body"`,
 		`"raw_spire_socket"`,
 	)
+}
+
+func TestWorkstreamC3DefaultAuthorityHandoffExcludesLiveCredentialAndRetainedResultAuthority(t *testing.T) {
+	handoff := buildExecutionAuthorityHandoff(
+		executionRuntimeProfile{name: runtimeProfileDefaultStaticScript},
+		runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		},
+		esconfig.ResolvedWorkloadVaultAuthPlan{
+			Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "execution",
+			JWTAudience: "vault",
+		},
+		testWorkloadZoneVaultConfigDigest,
+		stagedWorkloadTrustMaterial{},
+	)
+
+	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
+	assertTextOmitsAll(t, payload,
+		`"token"`,
+		`"lease"`,
+		`"approval"`,
+		`"credential"`,
+		`"secret"`,
+		`"api_key"`,
+		`"vault_token"`,
+		`"codex_credential"`,
+		`"scheduler_id"`,
+		`"operator_authorization"`,
+		`"workflow"`,
+		`"workflow_id"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"retained_result_authority"`,
+		`"retained_result_id"`,
+		`"retained_result_path"`,
+	)
+}
+
+func TestWorkstreamC3ControlPlaneNormalShellAuthorityHandoffOnlyCarriesCredentialLocationCompatibility(t *testing.T) {
+	handoff := buildExecutionAuthorityHandoff(
+		executionRuntimeProfile{
+			name: runtimeProfileControlPlaneNormalShell,
+			env: map[string]string{
+				codexCLIPathEnvKey:                    "/usr/local/bin/codex",
+				codexCredentialSourceEnvKey:           codexCredentialSourceWorkloadVault,
+				codexCredentialVaultSecretPathEnvKey:  "proof-secrets/data/codex-runtime-profile",
+				codexCredentialVaultSecretFieldEnvKey: "api_key",
+			},
+		},
+		runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		},
+		esconfig.ResolvedWorkloadVaultAuthPlan{
+			Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "execution",
+			JWTAudience: "vault",
+		},
+		testWorkloadZoneVaultConfigDigest,
+		stagedWorkloadTrustMaterial{},
+	)
+	if handoff.CodexCredentialLocation == nil ||
+		handoff.CodexCredentialLocation.CredentialSource != codexCredentialSourceWorkloadVault ||
+		handoff.CodexCredentialLocation.VaultSecretPath != "proof-secrets/data/codex-runtime-profile" ||
+		handoff.CodexCredentialLocation.VaultSecretField != "api_key" {
+		t.Fatalf("expected current non-secret credential-location compatibility metadata, got %+v", handoff.CodexCredentialLocation)
+	}
+
+	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
+	assertTextOmitsAll(t, payload,
+		`"token"`,
+		`"lease"`,
+		`"approval"`,
+		`"vault_token"`,
+		`"codex_token"`,
+		`"credential_material"`,
+		`"credential_value"`,
+		`"secret_material"`,
+		`"secret_value"`,
+		`"scheduler_id"`,
+		`"operator_authorization"`,
+		`"workflow"`,
+		`"workflow_id"`,
+		`"checkpoint"`,
+		`"finalization"`,
+		`"retained_result_authority"`,
+		`"retained_result_id"`,
+	)
+}
+
+func TestWorkstreamC3OutcomeEvidenceLabelsRemainBoundedCompatibilityVocabulary(t *testing.T) {
+	projection := LifecycleProjection{Source: lifecycleProjectionSourceNomad, Revision: "opaque-c3-read-token"}
+
+	tests := []struct {
+		name     string
+		evidence ExecutionOutcomeEvidence
+		want     ExecutionOutcomeEvidence
+	}{
+		{
+			name:     "status",
+			evidence: statusOutcomeEvidence(outcomeObservationNomadTaskStateProjection, projection, true),
+			want: ExecutionOutcomeEvidence{
+				Source:      outcomeEvidenceSourceNomad,
+				Observation: outcomeObservationNomadTaskStateProjection,
+				LifecycleProjection: &LifecycleProjection{
+					Source:   lifecycleProjectionSourceNomad,
+					Revision: "opaque-c3-read-token",
+				},
+				ProviderTerminalObserved: boolPointer(true),
+			},
+		},
+		{
+			name:     "logs",
+			evidence: logsOutcomeEvidence(false),
+			want: ExecutionOutcomeEvidence{
+				Source:                   outcomeEvidenceSourceNomad,
+				Observation:              outcomeObservationNomadTaskStdout,
+				AccessClass:              outcomeAccessClassPlaintextStdout,
+				ProviderTerminalObserved: boolPointer(false),
+			},
+		},
+		{
+			name:     "cancel",
+			evidence: cancelOutcomeEvidence(),
+			want: ExecutionOutcomeEvidence{
+				Source:                   outcomeEvidenceSourceNomad,
+				Observation:              outcomeObservationNomadStopAccepted,
+				ProviderTerminalObserved: boolPointer(false),
+			},
+		},
+		{
+			name:     "retained result",
+			evidence: retainedResultOutcomeEvidence(),
+			want: ExecutionOutcomeEvidence{
+				Source:      outcomeEvidenceSourceRetainedResultStore,
+				Observation: outcomeObservationRetainedResultBundle,
+				AccessClass: outcomeAccessClassOpaqueResultBundle,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !reflect.DeepEqual(tt.evidence, tt.want) {
+				t.Fatalf("outcome evidence label compatibility changed: got %+v want %+v", tt.evidence, tt.want)
+			}
+			payload := mustMarshalWorkstreamCTestJSON(t, tt.evidence)
+			assertTextOmitsAll(t, payload,
+				`"scheduler_id"`,
+				`"workflow"`,
+				`"checkpoint"`,
+				`"finalization"`,
+				`"approval"`,
+				`"credential"`,
+				`"token"`,
+				`"retained_result_authority"`,
+			)
+		})
+	}
 }
 
 func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {

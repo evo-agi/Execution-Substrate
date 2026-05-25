@@ -185,6 +185,53 @@ func TestWorkstreamC2StatusLogsResultCancelCompatibilityShapesStayUnchanged(t *t
 	)
 }
 
+func TestWorkstreamC3ResultRouteCompatibilityReturnsOpaqueGzipWithoutRunControlShape(t *testing.T) {
+	opaquePayload := []byte(`{"review":"opaque workload content","checkpoint":"not ES grammar","finalization":"not ES grammar"}`)
+	service := fakeLifecycleService{
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "es_retained_result_store",
+				Observation: "retained_result_bundle",
+				AccessClass: "opaque_result_bundle",
+			},
+			Payload: opaquePayload,
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	assertHeader(t, recorder.Result(), "Content-Type", "application/gzip")
+	assertHeader(t, recorder.Result(), headerOutcomeSource, "es_retained_result_store")
+	assertHeader(t, recorder.Result(), headerOutcomeObservation, "retained_result_bundle")
+	assertHeader(t, recorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	if string(recorder.Body.Bytes()) != string(opaquePayload) {
+		t.Fatalf("expected opaque result bytes unchanged, got %q", recorder.Body.String())
+	}
+
+	headers := compactHeaderText(recorder.Result().Header)
+	assertTextOmitsAllForAPI(t, headers,
+		"review",
+		"checkpoint",
+		"finalization",
+		"approval",
+		"intervention",
+		"hold",
+		"resume",
+		"reject",
+		"Temporal",
+		"workflow",
+		"scheduler",
+		"credential",
+		"token",
+		"lease",
+	)
+}
+
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
 	service := fakeLifecycleService{
 		producerContract: admission.ProducerContractDeclaration{
@@ -558,6 +605,15 @@ func assertTextOmitsAllForAPI(t *testing.T, text string, forbidden ...string) {
 			t.Fatalf("expected text to omit %q, got %s", item, text)
 		}
 	}
+}
+
+func compactHeaderText(header http.Header) string {
+	parts := make([]string, 0, len(header))
+	for key, values := range header {
+		parts = append(parts, key)
+		parts = append(parts, values...)
+	}
+	return strings.Join(parts, " ")
 }
 
 func boolPtr(value bool) *bool {

@@ -429,6 +429,26 @@ runtime-profile handling, and compatibility edges lives in
   compatibility, and `control-plane-normal-shell/v1` compatibility. It does
   not redesign runtime behavior, retained results, runtime identity, Vault
   handoff, Nomad integration, or Control Plane behavior.
+- C3 is the focused tests/docs guardrail slice for retained-result and
+  `authority_handoff` boundaries. C3 is guardrail work, not runtime redesign.
+  C3 pins that retained result bundles remain ES-owned opaque output artifacts
+  and that CP may materialize, review, checkpoint, and finalize retained result
+  contents semantically, but CP does not own the retained bundle as run-control
+  state. Retained result references, paths, manifests, archives, `.out`
+  copies, and materialized workspaces are evidence/projection or
+  implementation detail, not orchestration authority.
+  `GET /v1/executions/{run_id}/result` compatibility shape remains unchanged
+  unless an explicit migration/versioning plan exists. `authority_handoff`
+  remains bounded non-secret runtime handoff evidence only.
+  `authority_handoff` never carries or implies live credentials, Vault tokens,
+  Codex credentials, leases, approvals, operator authorization, CP workflow
+  state, scheduler truth, or retained-result authority. Runtime identity/Vault
+  handoff remains workload-side and non-secret; ES does not become a Vault
+  token broker or Codex credential broker. `outcome_evidence` remains bounded
+  evidence/projection; current labels remain compatibility surfaces.
+  `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
+  compatibility remain preserved unless an explicit migration/versioning plan
+  exists.
 - ES status/cancel JSON and successful logs/result responses now include additive outcome/evidence descriptors that label what ES observed or retained without promoting the current scheduler lookup, projected-allocation rule, stdout path, or retained-result storage layout into broader public contract.
 - ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.
