@@ -3502,6 +3502,68 @@ Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or runtime
 identity authority, not production readiness, and not Remote Alpha production,
 deployment, provisioning, or reconciliation architecture.
 
+### Remote Alpha Maintenance Monitor Boundary
+
+This section is documentation/contract alignment only. It does not implement a
+monitor, create a new project, add a scheduler, invoke helpers, run proof, or
+renew anything.
+
+`Bounded slice rule`: a future Mac-side Remote Alpha maintenance project may
+exist only as scheduler, notifier, local-evidence summarizer, and allowlisted
+invoker of ES-owned commands. ES remains the owner of all Remote Alpha status,
+renewal, repair, helper routing, topology validation, mutation semantics, and
+route contracts.
+
+External schedulers may invoke documented allowlisted ES commands, but they may
+not define command semantics, infer route eligibility from implementation
+details, bypass ES topology checks, construct helper paths from user input,
+pass secrets through args/env/logs/notifications, or become ES runtime
+authority, IM readiness/provenance authority, CP run-control authority, a
+hidden remote reconciler, or broad provisioning automation.
+
+Remote Alpha remains bounded proof/support posture only. Maintenance summaries,
+helper summaries, support bundles, proof summaries, IM readiness reports, and
+CP warnings are evidence/projection/diagnostics. They are not production
+readiness, deployment authority, lifecycle truth, renewal authority, or run
+authority.
+
+Maintenance route eligibility:
+
+| Route | Read-only monitor | Operator-approved renewal now | Future automatic renewal | Boundary |
+| --- | --- | --- | --- | --- |
+| `es-service-tls-status` | eligible | not a renewal route | not a renewal route | non-mutating ES-owned status over ARS/AGS/ES artifact-registry TLS |
+| `es-service-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates | ES-owned bounded repair support; requires explicit route docs/tests/audit |
+| `es-governance-tls-status` | eligible | not a renewal route | not a renewal route | non-mutating ES-owned status over ES -> EGS execution-governance TLS |
+| `es-governance-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates | ES-owned bounded repair support; requires explicit route docs/tests/audit |
+| `operator-healthcheck-tls-status` | eligible | not a renewal route | not a renewal route | non-mutating status over the host-local operator client certificate |
+| `operator-healthcheck-tls-renew` | blocked/status-only | not eligible | blocked | missing authoritative CA custody/signing topology; future identity must be `spiffe://execution.internal/operator/local` |
+| binary deployment check | eligible | not a renewal route | not eligible | check-only deployment evidence; no monitor-driven apply |
+| binary deployment apply | evidence may be summarized after an operator-run helper | not eligible through a monitor | not eligible | deployment/provisioning-like mutation, not maintenance renewal |
+| workload-auth check | eligible | not a renewal route | not eligible | evidence/projection only |
+| workload-auth bootstrap | evidence may be summarized after an operator-run helper | not eligible through a monitor | not eligible | authority-bearing Vault/bootstrap surface, not renewal |
+| runtime identity summary | eligible | not a renewal route | not eligible | monitorable evidence only; not runtime identity authority |
+
+Automatic renewal eligibility requires all of the following before a route can
+be marked eligible: route-specific docs, route-specific tests, audit evidence,
+idempotence, backup-before-replace, post-renew verification, fail-closed
+topology and capability behavior, explicit no-secret monitor-controlled
+surfaces, explicit notification/audit records, and an ES-owned helper that
+defines the full mutation semantics. No route may become auto-renew eligible by
+inference from an existing helper.
+
+Stop conditions for the future monitor:
+
+- any doc or implementation implies the monitor owns ES renewal semantics
+- any route becomes auto-renew eligible without route-specific docs, tests, and
+  audit gates
+- any renewal requires secrets in monitor-controlled args, env, logs, evidence,
+  or notifications
+- any scheduler behavior becomes a hidden remote reconciliation loop
+- binary deployment apply, workload-auth bootstrap, CP proof, IM refresh, or
+  support-bundle collection is treated as renewal authority
+- operator healthcheck renewal proceeds before CA custody/signing topology is
+  documented
+
 ### P0d Interactive Validation Evidence
 
 The P0d interactive validation artifact directory

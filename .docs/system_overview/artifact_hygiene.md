@@ -80,6 +80,18 @@ unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
 secrets, terminal transcripts, support-bundle content, raw retained bundles,
 raw workspace contents, or raw secret-bearing command output.
 
+Future Mac-side Remote Alpha maintenance-monitor summaries, if introduced by a
+separate project later, are local evidence/projection only. They may summarize
+route names, owners, monitor mode, eligibility classification, timestamps,
+expiry windows, public fingerprints, command ids, exit codes, digest refs,
+notification decisions, and blocked-action reasons from documented ES, IM, or
+CP evidence. They must not become ES renewal semantics, IM readiness authority,
+CP run-control authority, production readiness, or deployment/reconciliation
+truth. They must never record private keys, token values, secret environment
+values, raw PEM bodies, raw support bundles, raw workspaces, raw logs, terminal
+transcripts, command arguments containing secrets, or notification payloads
+containing secrets.
+
 ## 3. Tracked generated-artifact allowlist
 
 The source tree intentionally keeps only these generated/binary-ish artifacts

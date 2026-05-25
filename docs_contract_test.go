@@ -4464,6 +4464,51 @@ func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T
 	)
 }
 
+func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	monitorSection := compactDocSection(t, remoteRaw, "### Remote Alpha Maintenance Monitor Boundary", "### P0d Interactive Validation Evidence")
+	monitor := compactText(monitorSection)
+	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+
+	assertContainsAll(t, "Remote Alpha maintenance monitor PLANS boundary", plans,
+		"maintenance-monitor contract alignment slice is docs/static contract work only",
+		"ES keeps ownership of every Remote Alpha status, renewal, repair, and route-contract semantic",
+		"External schedulers may invoke only documented allowlisted ES commands",
+		"Remote Alpha remains bounded proof/support posture only",
+		"`operator-healthcheck-tls-renew` remains blocked/status-only until a signing topology and operator/local identity renewal authority are documented",
+	)
+
+	assertContainsAll(t, "Remote Alpha maintenance monitor docs boundary", monitor,
+		"documentation/contract alignment only",
+		"future Mac-side Remote Alpha maintenance project may exist only as scheduler, notifier, local-evidence summarizer, and allowlisted invoker of ES-owned commands",
+		"ES remains the owner of all Remote Alpha status, renewal, repair, helper routing, topology validation, mutation semantics, and route contracts",
+		"External schedulers may invoke documented allowlisted ES commands, but they may not define command semantics",
+		"hidden remote reconciler",
+		"broad provisioning automation",
+		"Remote Alpha remains bounded proof/support posture only",
+		"`es-service-tls-status` | eligible",
+		"`es-service-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates",
+		"`es-governance-tls-status` | eligible",
+		"`es-governance-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates",
+		"`operator-healthcheck-tls-status` | eligible",
+		"`operator-healthcheck-tls-renew` | blocked/status-only | not eligible | blocked",
+		"`spiffe://execution.internal/operator/local`",
+		"binary deployment check | eligible",
+		"binary deployment apply | evidence may be summarized after an operator-run helper | not eligible through a monitor | not eligible",
+		"workload-auth check | eligible",
+		"workload-auth bootstrap | evidence may be summarized after an operator-run helper | not eligible through a monitor | not eligible",
+		"runtime identity summary | eligible",
+		"Automatic renewal eligibility requires all of the following before a route can be marked eligible: route-specific docs, route-specific tests, audit evidence, idempotence, backup-before-replace, post-renew verification, fail-closed topology and capability behavior, explicit no-secret monitor-controlled surfaces",
+	)
+
+	assertContainsAll(t, "Remote Alpha maintenance monitor artifact hygiene", artifact,
+		"Future Mac-side Remote Alpha maintenance-monitor summaries, if introduced by a separate project later, are local evidence/projection only.",
+		"They must not become ES renewal semantics, IM readiness authority, CP run-control authority, production readiness, or deployment/reconciliation truth.",
+		"They must never record private keys, token values, secret environment values, raw PEM bodies",
+	)
+}
+
 func TestDocsRemoteAlphaOperatorP0cFirstDelegationBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")

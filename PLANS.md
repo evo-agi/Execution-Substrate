@@ -1270,6 +1270,31 @@ Control Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or
 runtime identity authority, not production readiness, and not Remote Alpha
 production, deployment, provisioning, or reconciliation architecture.
 
+The Remote Alpha maintenance-monitor contract alignment slice is docs/static
+contract work only. It may codify a future Mac-side maintenance project as a
+scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
+invoker, but it must not implement that project or create a new repository in
+this slice. ES keeps ownership of every Remote Alpha status, renewal, repair,
+and route-contract semantic. External schedulers may invoke only documented
+allowlisted ES commands and may not define their meaning, infer renewal
+eligibility, broaden helper scope, or become ES runtime authority, IM
+readiness/provenance authority, CP run-control authority, a hidden remote
+reconciler, or broad provisioning automation. Remote Alpha remains bounded
+proof/support posture only.
+
+Remote Alpha maintenance route eligibility is fixed for this planning slice:
+`es-service-tls-status`, `es-governance-tls-status`,
+`operator-healthcheck-tls-status`, binary deployment check, workload-auth
+check, and runtime identity summary are read-only monitor-eligible;
+`es-service-tls-renew` and `es-governance-tls-renew` are operator-approved now
+and future automatic-renewal candidates only after route-specific docs, tests,
+audit, idempotence, backup-before-replace, post-verify, fail-closed behavior,
+and no secrets in monitor-controlled surfaces are all present;
+`operator-healthcheck-tls-renew` remains blocked/status-only until a signing
+topology and operator/local identity renewal authority are documented; binary
+deployment apply and workload-auth bootstrap are not monitor auto-renewal
+routes.
+
 ## Current Remote Alpha Hardening Tranche
 
 `Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
