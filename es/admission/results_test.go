@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -249,6 +250,74 @@ func TestResultReturnsRetainedBundleWithoutRuntimeLookup(t *testing.T) {
 	}
 }
 
+func TestResultReturnsRuntimeUnavailableWhenRuntimeUnconfiguredAfterNoRetainedBundle(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	locator := newExecutionLocatorFromRunID("run-0123456789abcdea")
+	service := &Service{
+		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("runtime-unconfigured result lookup reached Nomad: %s %s", r.Method, r.URL.Path)
+		})),
+	}
+
+	err := assertResultRuntimeUnavailableNoPanic(t, func() *Error {
+		_, err := service.Result(context.Background(), locator.RunID)
+		return err
+	})
+	payload := resultErrorResponsePayload(t, err)
+	assertResultPayloadOmitsAll(t, payload,
+		"workflow",
+		"review",
+		"checkpoint",
+		"finalization",
+		"temporal",
+		"approval",
+		"intervention",
+		"attempt",
+		"hold",
+		"resume",
+		"reject",
+		"control_plane",
+		"control-plane",
+		"run_control",
+		"run-control",
+	)
+}
+
+func TestResultReturnsRuntimeUnavailableWhenConfiguredRuntimeHasNilNomadClientAfterNoRetainedBundle(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+
+	err := assertResultRuntimeUnavailableNoPanic(t, func() *Error {
+		_, err := service.Result(context.Background(), locator.RunID)
+		return err
+	})
+	_ = resultErrorResponsePayload(t, err)
+}
+
+func TestResultRuntimeUnavailableErrorResponseExcludesCredentialSecurityFields(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+
+	err := assertResultRuntimeUnavailableNoPanic(t, func() *Error {
+		_, err := service.Result(context.Background(), locator.RunID)
+		return err
+	})
+	payload := resultErrorResponsePayload(t, err)
+	assertResultPayloadOmitsAll(t, payload,
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+	)
+}
+
 func TestResultReturnsNotFoundForTerminalExecutionWithoutOutput(t *testing.T) {
 	service, locator, _ := newResultTestService(t)
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +377,62 @@ func newResultTestService(t *testing.T) (*Service, executionLocator, executionPa
 	}
 	layout := newExecutionPackageLayout(service.cfg, locator)
 	return service, locator, layout
+}
+
+func assertResultRuntimeUnavailableNoPanic(t *testing.T, call func() *Error) (err *Error) {
+	t.Helper()
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("expected runtime-unavailable error without panic, got panic: %v", recovered)
+		}
+	}()
+
+	err = call()
+	if err == nil {
+		t.Fatalf("expected result runtime-unavailable error")
+	}
+	if err.Status != http.StatusServiceUnavailable || err.Code != codeExecutionRuntimeUnavailable {
+		t.Fatalf("expected result runtime-unavailable 503, got %+v", err)
+	}
+	return err
+}
+
+func resultErrorResponsePayload(t *testing.T, err *Error) string {
+	t.Helper()
+
+	payload, marshalErr := json.Marshal(ErrorResponse{
+		Success: false,
+		Error:   err.Message,
+		Code:    err.Code,
+	})
+	if marshalErr != nil {
+		t.Fatalf("marshal result error response: %v", marshalErr)
+	}
+
+	var fields map[string]json.RawMessage
+	if unmarshalErr := json.Unmarshal(payload, &fields); unmarshalErr != nil {
+		t.Fatalf("decode result error response: %v", unmarshalErr)
+	}
+	for _, field := range []string{"success", "error", "code"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("expected structured result error field %q in %s", field, string(payload))
+		}
+	}
+	if len(fields) != 3 {
+		t.Fatalf("expected only structured result error fields, got %s", string(payload))
+	}
+	return string(payload)
+}
+
+func assertResultPayloadOmitsAll(t *testing.T, payload string, forbidden ...string) {
+	t.Helper()
+
+	for _, item := range forbidden {
+		if strings.Contains(payload, item) {
+			t.Fatalf("expected result error response to omit %q, got %s", item, payload)
+		}
+	}
 }
 
 func readAdmissionResultBundleEntries(t *testing.T, payload []byte) map[string]string {

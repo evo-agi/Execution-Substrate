@@ -33,8 +33,8 @@ func (s *Service) Result(ctx context.Context, runID string) (ExecutionResultBund
 	if bundle, ok, err := s.readRetainedResultBundle(locator); ok || err != nil {
 		return bundle, err
 	}
-	if s.nomadClient == nil {
-		return ExecutionResultBundle{}, nomadUnavailableError("execution runtime is unavailable")
+	if err := s.lifecycleRuntimeUnavailableError(); err != nil {
+		return ExecutionResultBundle{}, err
 	}
 
 	job, err := s.nomadClient.fetchJob(ctx, locator.JobID())
