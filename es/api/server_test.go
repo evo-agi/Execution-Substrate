@@ -320,6 +320,152 @@ func TestWorkstreamC4PublicRuntimeIdentityVaultResponsesExcludeCredentialLeaseAn
 	assertWorkstreamC4PublicResponseOmitsCredentialLeaseAndRawSPIRE(t, statusRecorder.Body.String())
 }
 
+func TestWorkstreamC5LifecycleEnvelopesAndHeadersExcludeRunControlAndCredentialFields(t *testing.T) {
+	handoff := &admission.ExecutionAuthorityHandoff{
+		AuthorityPath: "workload_identity_endpoint/workload_vault",
+		RuntimeProfile: admission.ExecutionAuthorityRuntimeProfile{
+			Name: "control-plane-normal-shell/v1",
+		},
+		IdentityHandoff: admission.ExecutionAuthorityIdentityHandoff{
+			Mode:          "workload_identity_endpoint",
+			EndpointEnv:   "EXEC_WORKLOAD_IDENTITY_ENDPOINT",
+			EndpointURI:   "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+			JWTSVIDTarget: "workload_vault",
+		},
+		WorkloadVault: admission.ExecutionAuthorityWorkloadVault{
+			AuthMode:    "vault_identity_jwt",
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "service_execution",
+			JWTAudience: "vault",
+		},
+		RuntimeConfigRefs: admission.ExecutionAuthorityRuntimeConfigRefs{
+			WorkloadZoneVaultConfig: admission.ExecutionAuthorityRuntimeConfigRef{
+				Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+		CodexCredentialLocation: &admission.ExecutionAuthorityCodexCredential{
+			CLIPath:          "/usr/local/bin/codex",
+			CredentialSource: "workload_vault",
+			VaultSecretPath:  "proof-secrets/data/codex-runtime-profile",
+			VaultSecretField: "runtime_profile_key_label",
+		},
+		Evidence: admission.ExecutionAuthorityEvidence{
+			Source:                  "submitted_runtime_spec",
+			RuntimeProfile:          "es_selected_runtime_profile",
+			IdentityHandoff:         "submitted_runtime_environment",
+			WorkloadVault:           "submitted_runtime_environment",
+			RuntimeConfigRefs:       "submitted_runtime_metadata",
+			CodexCredentialLocation: "submitted_runtime_environment",
+		},
+	}
+	logPayload := "raw log payload keeps review/checkpoint/vault_token words as content only\n"
+	resultPayload := []byte("raw result bundle bytes keep finalization/private_key words as content only\n")
+	service := fakeLifecycleService{
+		statusResult: admission.ExecutionStatusResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "running",
+			LifecycleProjection: admission.LifecycleProjection{
+				Source:   "nomad",
+				Revision: "opaque-c5-read-token",
+			},
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "nomad",
+				Observation: "nomad_task_state_projection",
+				LifecycleProjection: &admission.LifecycleProjection{
+					Source:   "nomad",
+					Revision: "opaque-c5-read-token",
+				},
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			AuthorityHandoff: handoff,
+		},
+		logsResult: admission.ExecutionLogsResult{
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_task_stdout",
+				AccessClass:              "plaintext_stdout",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			Payload: []byte(logPayload),
+		},
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "es_retained_result_store",
+				Observation: "retained_result_bundle",
+				AccessClass: "opaque_result_bundle",
+			},
+			Payload: resultPayload,
+		},
+		cancelResult: admission.ExecutionCancelResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "cancel_requested",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_stop_request_accepted",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	statusRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/status"))
+	if statusRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+	assertJSONFieldsExactForAPI(t, statusRecorder.Body.Bytes(),
+		"success",
+		"run_id",
+		"status",
+		"lifecycle_projection",
+		"outcome_evidence",
+		"authority_handoff",
+		"terminal",
+	)
+	assertWorkstreamC5EnvelopeOmitsRunControlCredentialAndBackendAuthority(t, statusRecorder.Body.String())
+
+	logsRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(logsRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/logs"))
+	if logsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected logs 200, got %d body=%s", logsRecorder.Code, logsRecorder.Body.String())
+	}
+	assertHeader(t, logsRecorder.Result(), "Content-Type", admission.LogsMediaType)
+	assertHeader(t, logsRecorder.Result(), headerOutcomeSource, "nomad")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeObservation, "nomad_task_stdout")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeAccessClass, "plaintext_stdout")
+	assertHeader(t, logsRecorder.Result(), headerProviderTerminalObserved, "false")
+	assertWorkstreamC5HeaderOmitsRunControlCredentialAndBackendAuthority(t, logsRecorder.Result().Header)
+	if logsRecorder.Body.String() != logPayload {
+		t.Fatalf("expected logs payload bytes unchanged, got %q", logsRecorder.Body.String())
+	}
+
+	resultRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resultRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d body=%s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+	assertHeader(t, resultRecorder.Result(), "Content-Type", "application/gzip")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeSource, "es_retained_result_store")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeObservation, "retained_result_bundle")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	assertWorkstreamC5HeaderOmitsRunControlCredentialAndBackendAuthority(t, resultRecorder.Result().Header)
+	if string(resultRecorder.Body.Bytes()) != string(resultPayload) {
+		t.Fatalf("expected result payload bytes unchanged, got %q", resultRecorder.Body.String())
+	}
+
+	cancelRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cancelRecorder, authorizedLifecycleRequest(http.MethodPost, "/v1/executions/run-0123456789abcdef:cancel"))
+	if cancelRecorder.Code != http.StatusOK {
+		t.Fatalf("expected cancel 200, got %d body=%s", cancelRecorder.Code, cancelRecorder.Body.String())
+	}
+	assertJSONFieldsExactForAPI(t, cancelRecorder.Body.Bytes(), "success", "run_id", "status", "outcome_evidence")
+	assertWorkstreamC5EnvelopeOmitsRunControlCredentialAndBackendAuthority(t, cancelRecorder.Body.String())
+}
+
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
 	service := fakeLifecycleService{
 		producerContract: admission.ProducerContractDeclaration{
@@ -733,4 +879,91 @@ func assertWorkstreamC4PublicResponseOmitsCredentialLeaseAndRawSPIRE(t *testing.
 		"/run/spire/server/private/api.sock",
 		"/run/es-runtime-identity/run-0123456789abcdef/internal/spire-agent.sock",
 	)
+}
+
+func assertWorkstreamC5EnvelopeOmitsRunControlCredentialAndBackendAuthority(t *testing.T, text string) {
+	t.Helper()
+
+	assertTextOmitsAllForAPI(t, text, workstreamC5ForbiddenEnvelopeTermsForAPI()...)
+	assertTextOmitsAllForAPI(t, text,
+		"exec-run-0123456789abcdef",
+		"alloc-",
+		`"nomad_job_id":`,
+		`"job_id":`,
+		`"allocation_id":`,
+		`"task_id":`,
+		`"scheduler_id":`,
+		`"write_guard":`,
+		`"write_precondition":`,
+		`"lifecycle_store":`,
+		`"retained_result_id":`,
+	)
+}
+
+func assertWorkstreamC5HeaderOmitsRunControlCredentialAndBackendAuthority(t *testing.T, header http.Header) {
+	t.Helper()
+
+	assertTextOmitsAllForAPI(t, compactHeaderText(header), workstreamC5ForbiddenHeaderTermsForAPI()...)
+}
+
+func workstreamC5ForbiddenEnvelopeTermsForAPI() []string {
+	terms := []string{
+		`"review":`,
+		`"checkpoint":`,
+		`"finalization":`,
+		`"intervention":`,
+		`"approval":`,
+		`"hold":`,
+		`"resume":`,
+		`"reject":`,
+		`"temporal":`,
+		`"Temporal":`,
+		`"workflow":`,
+		`"workflow_id":`,
+		`"cp_workflow_id":`,
+	}
+	for _, field := range workstreamC5ForbiddenCredentialFieldNamesForAPI() {
+		terms = append(terms, `"`+field+`":`)
+	}
+	return terms
+}
+
+func workstreamC5ForbiddenHeaderTermsForAPI() []string {
+	return append([]string{
+		"review",
+		"checkpoint",
+		"finalization",
+		"intervention",
+		"approval",
+		"hold",
+		"resume",
+		"reject",
+		"Temporal",
+		"workflow",
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"task_id",
+		"scheduler_id",
+		"write_guard",
+		"lifecycle_store",
+		"retained_result_id",
+	}, workstreamC5ForbiddenCredentialFieldNamesForAPI()...)
+}
+
+func workstreamC5ForbiddenCredentialFieldNamesForAPI() []string {
+	return []string{
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+	}
 }

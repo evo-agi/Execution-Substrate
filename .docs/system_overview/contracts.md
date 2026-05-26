@@ -471,6 +471,20 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
   an explicit migration/versioning plan exists. Existing workload-auth Remote
   Alpha helpers remain bounded operator/support surfaces, not ES token
   brokerage or production Vault readiness.
+- C5 is the focused tests/docs guardrail slice for current
+  status/logs/result/cancel compatibility and non-authority posture. C5 is
+  guardrail work, not runtime redesign, live proof, or remote validation.
+  Status remains Nomad-backed lifecycle projection and evidence, not CP
+  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
+  compatibility/evidence surface, not final log architecture, CP run-control
+  truth, or scheduler authority. Result remains opaque ES-retained output
+  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+  bounded ES/Nomad cancellation handoff, not CP intervention authority,
+  operator approval authority, or Temporal workflow truth. Status/cancel JSON
+  envelopes and successful logs/result headers must exclude CP run-control
+  grammar and live credential/security fields, while logs/result bodies remain
+  payload/output surfaces under the existing compatibility contract and are
+  not newly sanitized, interpreted, or promoted into authority.
 - ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.
 - ES owns the public admission model, prepare model, submit model,
   Nomad-backed lifecycle projection, retained opaque result bundles,
@@ -493,6 +507,11 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 - ES lifecycle/status/result/log/cancel surfaces may expose additive `outcome_evidence` descriptors for evidence ES directly observed or retained: Nomad-backed status projection depth, accepted Nomad stop requests, Nomad task stdout, and opaque ES-retained result bundles. These descriptors are read-only evidence labels, not lifecycle ownership, scheduler identifiers, policy truth, credential truth, or write preconditions.
 - `outcome_evidence` remains bounded evidence/projection; current labels are
   compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
+- Status/cancel JSON envelopes and successful logs/result headers must not
+  expose Control Plane run-control grammar, Temporal workflow truth, operator
+  approval authority, backend scheduler IDs as public authority, or live
+  credential/security material. Logs and result bodies remain payload/output
+  surfaces; their raw content is not an ES-owned authority source.
 - ES submit/status expose a bounded `authority_handoff` read fact for submitted runs when ES can recover the submitted runtime handoff. It contains only non-secret facts ES selected or derived during admission/runtime handoff: runtime profile, workload identity endpoint handoff, workload-vault auth plan metadata, selected workload-zone Vault config digest, and bounded profile credential-location metadata. It is not live credential, lease, token-expiry, approval, scheduler-ID, or lifecycle-store state.
 - `authority_handoff` remains bounded non-secret runtime handoff evidence; it
   never becomes a live credential, lease, approval, or scheduler truth.

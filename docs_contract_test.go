@@ -1227,6 +1227,97 @@ func TestWorkstreamC4RuntimeIdentityVaultHandoffGuardrailPostureIsDocumented(t *
 	)
 }
 
+func TestWorkstreamC5StatusLogsResultCancelCompatibilityGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleContracts := compactText(lifecycleContractsRaw)
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	systemContracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+	postureSection := compactDocSection(t, decisionRaw, "## 6. Code-facing guardrail posture", "")
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C5 posture", text: plans},
+		{label: "Workstream C decision C5 posture", text: decision},
+		{label: "lifecycle contracts C5 posture", text: lifecycleContracts},
+		{label: "lifecycle design C5 posture", text: lifecycleDesign},
+		{label: "system contracts C5 posture", text: systemContracts},
+		{label: "system boundaries C5 posture", text: systemBoundaries},
+		{label: "CP consumer runbook C5 posture", text: runbook},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C5 is the focused tests/docs guardrail slice for current status/logs/result/cancel compatibility and non-authority posture.",
+			"C5 is guardrail work, not runtime redesign, live proof, or remote validation.",
+			"Status remains Nomad-backed lifecycle projection and evidence, not CP workflow truth or ES lifecycle-store truth.",
+			"Logs remain a bounded current compatibility/evidence surface, not final log architecture, CP run-control truth, or scheduler authority.",
+			"Result remains opaque ES-retained output delivery, not CP checkpoint, finalization, or review state.",
+			"Cancel remains a bounded ES/Nomad cancellation handoff, not CP intervention authority, operator approval authority, or Temporal workflow truth.",
+			"Status/cancel JSON envelopes and successful logs/result headers",
+			"live credential/security fields",
+			"payload/output",
+			"newly sanitized, interpreted, or promoted into authority.",
+		)
+	}
+
+	assertContainsAll(t, "Workstream C C5 guardrail posture", postureSection,
+		"C5 guardrail tests are intentionally narrow.",
+		"status/logs/result/cancel response envelopes",
+		"successful logs/result outcome-evidence headers",
+		"bounded `outcome_evidence` label compatibility",
+		"opaque `lifecycle_projection` read-coordination posture",
+		"backend-ID non-authority",
+		"non-secret `authority_handoff` posture",
+		"raw logs/result payload opacity",
+		"generated-artifact non-authority",
+		"unchanged `control-plane-normal-shell/v1` compatibility",
+		"must not redesign status, logs, result, cancel",
+		"must not require new sanitization or interpretation of raw logs/result payloads",
+		"must not run live proof, remote validation, Vault, SPIRE, reset/unseal, workload-auth, renewal, CP proof, IM refresh, support-bundle, binary deployment, or remote mutation helpers",
+	)
+
+	statusSection := compactDocSection(t, lifecycleContractsRaw, "## 7. Status contract", "### Authority handoff read surface")
+	logsSection := compactDocSection(t, lifecycleContractsRaw, "## 8. Logs contract", "## 9. Result contract")
+	resultSection := compactDocSection(t, lifecycleContractsRaw, "## 9. Result contract", "## 10. Cancel contract")
+	cancelSection := compactDocSection(t, lifecycleContractsRaw, "## 10. Cancel contract", "## 11. Run-ID and scheduler lookup contract")
+
+	assertContainsAll(t, "C5 status contract envelope", statusSection,
+		"The status JSON envelope remains lifecycle projection and evidence only.",
+		"must not add Control Plane run-control grammar",
+		"Vault tokens, client/root tokens, unseal keys, JWT-SVIDs, X.509 SVIDs, private keys, API keys, proof secrets, secret payloads, lease IDs, or lease durations",
+	)
+	assertContainsAll(t, "C5 logs contract envelope", logsSection,
+		"The successful response headers remain the logs envelope.",
+		"The stdout body remains payload content under the existing compatibility contract",
+		"ES does not sanitize, interpret, or promote raw log content into scheduler, CP run-control, credential, or policy authority.",
+	)
+	assertContainsAll(t, "C5 result contract envelope", resultSection,
+		"The successful response headers remain the result envelope.",
+		"The bundle body remains opaque output content under the existing compatibility contract",
+		"ES does not sanitize, parse, or promote bundle contents into CP checkpoint, finalization, review, scheduler, credential, or policy authority.",
+	)
+	assertContainsAll(t, "C5 cancel contract envelope", cancelSection,
+		"The cancel JSON envelope remains a bounded ES/Nomad handoff receipt.",
+		"Control Plane intervention, approval, hold/resume/reject, Temporal, workflow, review, checkpoint, finalization",
+		"operator-approval, scheduler authority, or live credential/security fields",
+	)
+	assertContainsAll(t, "C5 runbook consumption boundary", runbook,
+		"Status/cancel JSON envelopes and successful logs/result headers are the compatibility envelopes CP may consume.",
+		"Raw logs and result bundles remain payload/output content; CP owns any semantic interpretation above ES",
+		"ES does not sanitize or promote that content into run-control authority.",
+	)
+	assertContainsAll(t, "artifact hygiene C5 generated evidence non-authority", artifactHygiene,
+		"Status/logs/result/cancel evidence, generated `.out` files, reports, traces, raw logs, summaries, support bundles, retained bundles, proof artifacts, Remote Alpha summaries, and Maintenance Agent summaries remain non-authoritative evidence/projection.",
+		"must not become CP run-control truth, ES lifecycle-store truth, scheduler authority, operator approval authority, credential authority, or the final scheduler/result/log/cancel vocabulary",
+	)
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))

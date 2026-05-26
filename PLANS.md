@@ -1988,6 +1988,20 @@ Current bounded decision status for Milestone 2C.1:
   an explicit migration/versioning plan exists. Existing workload-auth Remote
   Alpha helpers remain bounded operator/support surfaces, not ES token
   brokerage or production Vault readiness.
+- C5 is the focused tests/docs guardrail slice for current
+  status/logs/result/cancel compatibility and non-authority posture. C5 is
+  guardrail work, not runtime redesign, live proof, or remote validation.
+  Status remains Nomad-backed lifecycle projection and evidence, not CP
+  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
+  compatibility/evidence surface, not final log architecture, CP run-control
+  truth, or scheduler authority. Result remains opaque ES-retained output
+  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+  bounded ES/Nomad cancellation handoff, not CP intervention authority,
+  operator approval authority, or Temporal workflow truth. Status/cancel JSON
+  envelopes and successful logs/result headers must exclude CP run-control
+  grammar and live credential/security fields; logs/result bodies remain
+  payload/output surfaces governed by the existing compatibility contract and
+  must not be newly sanitized, interpreted, or promoted into authority.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain

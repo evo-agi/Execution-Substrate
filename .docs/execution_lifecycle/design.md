@@ -75,6 +75,21 @@ explicit migration/versioning plan exists. Existing workload-auth Remote Alpha
 helpers remain bounded operator/support surfaces, not ES token brokerage or
 production Vault readiness.
 
+C5 is the focused tests/docs guardrail slice for current
+status/logs/result/cancel compatibility and non-authority posture. C5 is
+guardrail work, not runtime redesign, live proof, or remote validation.
+Status remains Nomad-backed lifecycle projection and evidence, not CP workflow
+truth or ES lifecycle-store truth. Logs remain a bounded current
+compatibility/evidence surface, not final log architecture, CP run-control
+truth, or scheduler authority. Result remains opaque ES-retained output
+delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+bounded ES/Nomad cancellation handoff, not CP intervention authority,
+operator approval authority, or Temporal workflow truth. Status/cancel JSON
+envelopes and successful logs/result headers exclude CP run-control grammar
+and live credential/security fields. Logs/result bodies remain raw
+payload/output content under the existing compatibility contract and are not
+newly sanitized, interpreted, or promoted into authority.
+
 ## 2. How to read this document
 
 - **Observed current lifecycle model**: The phase structure and authority split implemented in the current Go repo.
@@ -191,6 +206,13 @@ At a design level:
 - `logs` reads stdout for the selected task from Nomad and labels successful bodies as current Nomad task stdout
 - `result` returns an ES-retained opaque tar.gz bundle for files the workload wrote under the bounded reserved result directory and labels successful bodies as opaque retained bundles
 - `cancel` asks Nomad to stop the job and labels the receipt as an accepted stop request without turning ES into a broader control-plane owner or claiming observed termination
+- status/cancel JSON envelopes and successful logs/result headers remain
+  evidence/compatibility envelopes; they do not carry CP review, checkpoint,
+  finalization, intervention, approval, hold/resume/reject, Temporal,
+  workflow, or live credential/security vocabulary
+- logs and result bodies remain payload/output surfaces under the existing
+  compatibility contract; ES does not sanitize, interpret, or promote raw
+  content into scheduler, CP run-control, credential, or policy authority
 
 This is a bounded projection model, not rich execution tracking. ES does not maintain a run store, aggregate multiple allocations into its own timeline, or synthesize lifecycle state from staging side effects.
 The lifecycle projection revision lets consumers compare equality or change for the same run without treating Nomad job IDs, allocation IDs, or ES staging side effects as contract. It is not parseable or orderable scheduler state.

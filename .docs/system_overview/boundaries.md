@@ -478,6 +478,20 @@ runtime-profile handling, and compatibility edges lives in
   an explicit migration/versioning plan exists. Existing workload-auth Remote
   Alpha helpers remain bounded operator/support surfaces, not ES token
   brokerage or production Vault readiness.
+- C5 is the focused tests/docs guardrail slice for current
+  status/logs/result/cancel compatibility and non-authority posture. C5 is
+  guardrail work, not runtime redesign, live proof, or remote validation.
+  Status remains Nomad-backed lifecycle projection and evidence, not CP
+  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
+  compatibility/evidence surface, not final log architecture, CP run-control
+  truth, or scheduler authority. Result remains opaque ES-retained output
+  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+  bounded ES/Nomad cancellation handoff, not CP intervention authority,
+  operator approval authority, or Temporal workflow truth. Status/cancel JSON
+  envelopes and successful logs/result headers must exclude CP run-control
+  grammar and live credential/security fields, while logs/result bodies remain
+  payload/output surfaces under the existing compatibility contract and are
+  not newly sanitized, interpreted, or promoted into authority.
 - ES status/cancel JSON and successful logs/result responses now include additive outcome/evidence descriptors that label what ES observed or retained without promoting the current scheduler lookup, projected-allocation rule, stdout path, or retained-result storage layout into broader public contract.
 - ES exposes `GET /v1/executions:contract` so allowed CP/IM consumers can verify the current producer contract and mandatory outcome-evidence carriers before submitting a high-value run, without treating the declaration as readiness, run authority, credential truth, or scheduler API.
 - ES submit/status now expose a bounded `authority_handoff` fact for non-secret runtime authority handoff evidence; it still does not expose live credential state or scheduler identifiers.

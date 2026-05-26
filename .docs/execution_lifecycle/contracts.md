@@ -74,6 +74,21 @@ explicit migration/versioning plan exists. Existing workload-auth Remote Alpha
 helpers remain bounded operator/support surfaces, not ES token brokerage or
 production Vault readiness.
 
+C5 is the focused tests/docs guardrail slice for current
+status/logs/result/cancel compatibility and non-authority posture. C5 is
+guardrail work, not runtime redesign, live proof, or remote validation.
+Status remains Nomad-backed lifecycle projection and evidence, not CP workflow
+truth or ES lifecycle-store truth. Logs remain a bounded current
+compatibility/evidence surface, not final log architecture, CP run-control
+truth, or scheduler authority. Result remains opaque ES-retained output
+delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+bounded ES/Nomad cancellation handoff, not CP intervention authority,
+operator approval authority, or Temporal workflow truth. Status/cancel JSON
+envelopes and successful logs/result headers must exclude CP run-control
+grammar and live credential/security fields; logs/result bodies remain
+payload/output surfaces governed by the existing compatibility contract and
+must not be newly sanitized, interpreted, or promoted into authority.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
 finalization, intervention, and operator-facing control semantics. CP consumes
@@ -519,6 +534,13 @@ Successful response is `200` JSON with these current fields:
 - `authority_handoff.runtime_config_refs` is non-secret handoff evidence only.
   It is not runtime-config authority, live credential truth, token or lease
   truth, or workload-zone Vault semantic ownership.
+- The status JSON envelope remains lifecycle projection and evidence only. It
+  must not add Control Plane run-control grammar such as review, checkpoint,
+  finalization, intervention, approval, hold/resume/reject, Temporal, or
+  workflow, and it must not add live credential or security fields such as
+  Vault tokens, client/root tokens, unseal keys, JWT-SVIDs, X.509 SVIDs,
+  private keys, API keys, proof secrets, secret payloads, lease IDs, or lease
+  durations.
 - If the job exists but no allocation is yet selected, status still succeeds with `status = "submitted"`.
 - Once an allocation is selected and not terminal, status returns `status = "running"`.
 - Once the selected job/allocation path reaches a terminal state, status returns `status = "terminal"`.
@@ -668,6 +690,11 @@ Successful response is:
 - Output source is stdout only.
 - Successful `200` responses may still carry an empty stdout body if the selected allocation has not produced visible stdout bytes yet.
 - The successful response headers are additive descriptors for the bytes being returned. They say ES fetched current stdout through the bounded Nomad log path for the selected task; they are not pagination cursors, log revisions, scheduler IDs, stderr indicators, or write preconditions.
+- The successful response headers remain the logs envelope. They must not add
+  Control Plane run-control grammar or live credential/security fields. The
+  stdout body remains payload content under the existing compatibility
+  contract; ES does not sanitize, interpret, or promote raw log content into
+  scheduler, CP run-control, credential, or policy authority.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
 - If logs observes a terminal task, ES first attempts idempotent retention of any files under `/execution/run/result`.
 - If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout and attempting result retention.
@@ -760,6 +787,11 @@ Successful response is:
 - ES does not synthesize Control Plane checkpoints, review decisions, or task-finalization outcomes from retained result files.
 - ES does not require callers to know host staging paths, Nomad allocation IDs, or Docker bind-mount sources.
 - The successful response headers label the body as an opaque ES-retained result bundle. They do not reveal bundle contents, host paths, retention filesystem paths, or any semantic interpretation of the files inside the archive.
+- The successful response headers remain the result envelope. They must not add
+  Control Plane run-control grammar or live credential/security fields. The
+  bundle body remains opaque output content under the existing compatibility
+  contract; ES does not sanitize, parse, or promote bundle contents into CP
+  checkpoint, finalization, review, scheduler, credential, or policy authority.
 - Logs are not the result contract; stdout remains a separate narrow logs surface.
 
 ### Error contract
@@ -814,6 +846,10 @@ Successful response is `200` JSON with these fields:
 - Current successful cancel receipts use `status = "cancel_requested"`.
 - Cancel is a bounded Nomad stop request, not a wider cancellation model.
 - `outcome_evidence.source` is `nomad`, `outcome_evidence.observation` is `nomad_stop_request_accepted`, and `outcome_evidence.provider_terminal_observed` is `false` on the current successful receipt because ES has only observed Nomad accepting the stop request, not provider termination.
+- The cancel JSON envelope remains a bounded ES/Nomad handoff receipt. It must
+  not add Control Plane intervention, approval, hold/resume/reject, Temporal,
+  workflow, review, checkpoint, finalization, operator-approval, scheduler
+  authority, or live credential/security fields.
 
 ### Error contract
 

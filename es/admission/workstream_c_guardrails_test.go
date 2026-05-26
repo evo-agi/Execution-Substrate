@@ -1018,6 +1018,164 @@ func TestWorkstreamC3OutcomeEvidenceLabelsRemainBoundedCompatibilityVocabulary(t
 	}
 }
 
+func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		ExecutionStatusResult{},
+		ExecutionCancelResult{},
+		LifecycleProjection{},
+		ExecutionOutcomeEvidence{},
+		ExecutionAuthorityHandoff{},
+		ExecutionAuthorityRuntimeProfile{},
+		ExecutionAuthorityIdentityHandoff{},
+		ExecutionAuthorityWorkloadVault{},
+		ExecutionAuthorityRuntimeConfigRefs{},
+		ExecutionAuthorityRuntimeConfigRef{},
+		ExecutionAuthorityCodexCredential{},
+		ExecutionAuthorityEvidence{},
+	)
+
+	for _, forbidden := range []string{
+		"review",
+		"checkpoint",
+		"finalization",
+		"intervention",
+		"approval",
+		"hold",
+		"resume",
+		"reject",
+		"temporal",
+		"workflow",
+		"workflow_id",
+		"cp_workflow_id",
+		"operator_approval",
+		"operator_authorization",
+		"cp_run_control",
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"task_id",
+		"scheduler_id",
+		"scheduler_authority",
+		"lifecycle_store",
+		"write_guard",
+		"write_precondition",
+		"retained_result_id",
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("C5 status/cancel envelopes and evidence DTOs must not expose authority field %q", forbidden)
+		}
+	}
+
+	for _, compatibilityField := range []string{
+		"success",
+		"run_id",
+		"status",
+		"lifecycle_projection",
+		"source",
+		"revision",
+		"outcome_evidence",
+		"provider_terminal_observed",
+		"access_class",
+		"authority_handoff",
+		"runtime_profile",
+		"workload_vault",
+		"runtime_config_refs",
+		"codex_credential_location",
+	} {
+		if _, ok := fieldNames[compatibilityField]; !ok {
+			t.Fatalf("expected C5 compatibility field %q to remain present", compatibilityField)
+		}
+	}
+
+	if runtimeProfileAnnotationKey != "execution_substrate.runtime_profile" {
+		t.Fatalf("runtime profile annotation compatibility key changed to %q", runtimeProfileAnnotationKey)
+	}
+	if runtimeProfileControlPlaneNormalShell != "control-plane-normal-shell/v1" {
+		t.Fatalf("control-plane normal-shell profile compatibility name changed to %q", runtimeProfileControlPlaneNormalShell)
+	}
+
+	projection := lifecycleProjectionFromNomad(42, 314)
+	assertOpaqueLifecycleProjectionRevision(t, projection.Revision)
+	if strings.Contains(projection.Revision, "42") ||
+		strings.Contains(projection.Revision, "314") ||
+		strings.Contains(projection.Revision, "exec-run-") ||
+		strings.Contains(projection.Revision, "alloc-") {
+		t.Fatalf("C5 lifecycle projection revision must stay opaque, got %q", projection.Revision)
+	}
+
+	evidenceBySurface := map[string]ExecutionOutcomeEvidence{
+		"status": statusOutcomeEvidence(outcomeObservationNomadTaskStateProjection, projection, true),
+		"logs":   logsOutcomeEvidence(false),
+		"result": retainedResultOutcomeEvidence(),
+		"cancel": cancelOutcomeEvidence(),
+	}
+	if evidenceBySurface["status"].Source != outcomeEvidenceSourceNomad ||
+		evidenceBySurface["status"].Observation != outcomeObservationNomadTaskStateProjection ||
+		evidenceBySurface["status"].LifecycleProjection == nil ||
+		*evidenceBySurface["status"].LifecycleProjection != projection {
+		t.Fatalf("unexpected C5 status outcome evidence %+v", evidenceBySurface["status"])
+	}
+	if evidenceBySurface["logs"].Source != outcomeEvidenceSourceNomad ||
+		evidenceBySurface["logs"].Observation != outcomeObservationNomadTaskStdout ||
+		evidenceBySurface["logs"].AccessClass != outcomeAccessClassPlaintextStdout {
+		t.Fatalf("unexpected C5 logs outcome evidence %+v", evidenceBySurface["logs"])
+	}
+	if evidenceBySurface["result"].Source != outcomeEvidenceSourceRetainedResultStore ||
+		evidenceBySurface["result"].Observation != outcomeObservationRetainedResultBundle ||
+		evidenceBySurface["result"].AccessClass != outcomeAccessClassOpaqueResultBundle {
+		t.Fatalf("unexpected C5 retained result outcome evidence %+v", evidenceBySurface["result"])
+	}
+	if evidenceBySurface["cancel"].Source != outcomeEvidenceSourceNomad ||
+		evidenceBySurface["cancel"].Observation != outcomeObservationNomadStopAccepted ||
+		evidenceBySurface["cancel"].ProviderTerminalObserved == nil ||
+		*evidenceBySurface["cancel"].ProviderTerminalObserved {
+		t.Fatalf("unexpected C5 cancel outcome evidence %+v", evidenceBySurface["cancel"])
+	}
+
+	payload := mustMarshalWorkstreamCTestJSON(t, evidenceBySurface)
+	assertTextOmitsAll(t, payload,
+		`"review":`,
+		`"checkpoint":`,
+		`"finalization":`,
+		`"intervention":`,
+		`"approval":`,
+		`"hold":`,
+		`"resume":`,
+		`"reject":`,
+		`"temporal":`,
+		`"workflow":`,
+		`"nomad_job_id":`,
+		`"job_id":`,
+		`"allocation_id":`,
+		`"task_id":`,
+		`"scheduler_id":`,
+		`"vault_token":`,
+		`"client_token":`,
+		`"root_token":`,
+		`"unseal_key":`,
+		`"jwt_svid":`,
+		`"x509_svid":`,
+		`"private_key":`,
+		`"api_key":`,
+		`"proof_secret":`,
+		`"secret_payload":`,
+		`"lease_id":`,
+		`"lease_duration":`,
+	)
+}
+
 func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {
 	if runtimeProfileAnnotationKey != "execution_substrate.runtime_profile" {
 		t.Fatalf("runtime profile annotation compatibility key changed to %q", runtimeProfileAnnotationKey)

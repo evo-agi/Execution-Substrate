@@ -52,6 +52,21 @@ explicit migration/versioning plan exists. Existing workload-auth Remote Alpha
 helpers remain bounded operator/support surfaces, not ES token brokerage or
 production Vault readiness.
 
+C5 is the focused tests/docs guardrail slice for current
+status/logs/result/cancel compatibility and non-authority posture. C5 is
+guardrail work, not runtime redesign, live proof, or remote validation.
+Status remains Nomad-backed lifecycle projection and evidence, not CP workflow
+truth or ES lifecycle-store truth. Logs remain a bounded current
+compatibility/evidence surface, not final log architecture, CP run-control
+truth, or scheduler authority. Result remains opaque ES-retained output
+delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+bounded ES/Nomad cancellation handoff, not CP intervention authority,
+operator approval authority, or Temporal workflow truth. Status/cancel JSON
+envelopes and successful logs/result headers exclude CP run-control grammar
+and live credential/security fields. Logs/result bodies remain raw
+payload/output content under the existing compatibility contract and are not
+newly sanitized, interpreted, or promoted into authority.
+
 Use this alongside:
 
 - [Control Plane long-running operator mode contract](../../Control%20Plane/.docs/long-running-operator-mode-contract.md)
@@ -217,6 +232,13 @@ completion proof, retained-result content meaning, policy truth, or credential
 truth.
 `outcome_evidence` remains bounded evidence/projection; current labels are
 compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
+Status/cancel JSON envelopes and successful logs/result headers are the
+compatibility envelopes CP may consume. They must not be read as CP
+review/checkpoint/finalization/intervention/approval state, Temporal workflow
+truth, scheduler authority, operator approval authority, or credential truth.
+Raw logs and result bundles remain payload/output content; CP owns any
+semantic interpretation above ES and ES does not sanitize or promote that
+content into run-control authority.
 
 Submit responses, and status responses when the submitted handoff facts are
 recoverable, include `authority_handoff`. CP may use that field as ES-owned

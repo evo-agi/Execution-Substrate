@@ -105,6 +105,20 @@ the code and tests win and this document must be realigned.
   an explicit migration/versioning plan exists. Existing workload-auth Remote
   Alpha helpers remain bounded operator/support surfaces, not ES token
   brokerage or production Vault readiness.
+- C5 is the focused tests/docs guardrail slice for current
+  status/logs/result/cancel compatibility and non-authority posture. C5 is
+  guardrail work, not runtime redesign, live proof, or remote validation.
+  Status remains Nomad-backed lifecycle projection and evidence, not CP
+  workflow truth or ES lifecycle-store truth. Logs remain a bounded current
+  compatibility/evidence surface, not final log architecture, CP run-control
+  truth, or scheduler authority. Result remains opaque ES-retained output
+  delivery, not CP checkpoint, finalization, or review state. Cancel remains a
+  bounded ES/Nomad cancellation handoff, not CP intervention authority,
+  operator approval authority, or Temporal workflow truth. Status/cancel JSON
+  envelopes and successful logs/result headers must exclude CP run-control
+  grammar and live credential/security fields; logs/result bodies remain
+  payload/output surfaces governed by the existing compatibility contract and
+  must not be newly sanitized, interpreted, or promoted into authority.
 - ES owns admission composition, prepare-time preflight, submit-time execution
   handoff, Nomad-backed lifecycle projection, retained opaque result-bundle
   ownership, and runtime handoff boundary enforcement.
@@ -427,5 +441,20 @@ only, and unchanged `control-plane-normal-shell/v1` compatibility. They must
 not redesign runtime identity, Vault handoff, retained results, lifecycle,
 Nomad integration, AGS, ARS, Control Plane, Infrastructure Manager, or
 Maintenance Agent behavior, and they must not run live Vault, SPIRE,
+reset/unseal, workload-auth, renewal, CP proof, IM refresh, support-bundle,
+binary deployment, or remote mutation helpers.
+
+C5 guardrail tests are intentionally narrow. They may assert current
+status/logs/result/cancel response envelopes, successful logs/result
+outcome-evidence headers, bounded `outcome_evidence` label compatibility,
+opaque `lifecycle_projection` read-coordination posture, backend-ID
+non-authority, non-secret `authority_handoff` posture where it appears near
+status/cancel, raw logs/result payload opacity, generated-artifact
+non-authority, and unchanged `control-plane-normal-shell/v1` compatibility.
+They must not redesign status, logs, result, cancel, retained results,
+runtime identity, Vault handoff, lifecycle, submit, Nomad integration, AGS,
+ARS, Control Plane, Infrastructure Manager, or Maintenance Agent behavior.
+They must not require new sanitization or interpretation of raw logs/result
+payloads, and they must not run live proof, remote validation, Vault, SPIRE,
 reset/unseal, workload-auth, renewal, CP proof, IM refresh, support-bundle,
 binary deployment, or remote mutation helpers.
