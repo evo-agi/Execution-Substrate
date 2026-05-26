@@ -79,6 +79,9 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 	if err != nil {
 		return ExecutionStatusResult{}, err
 	}
+	if err := s.lifecycleRuntimeUnavailableError(); err != nil {
+		return ExecutionStatusResult{}, err
+	}
 
 	job, err := s.nomadClient.fetchJob(ctx, locator.JobID())
 	if err != nil {
@@ -178,6 +181,9 @@ func (s *Service) Logs(ctx context.Context, runID string) (ExecutionLogsResult, 
 	if err != nil {
 		return ExecutionLogsResult{}, err
 	}
+	if err := s.lifecycleRuntimeUnavailableError(); err != nil {
+		return ExecutionLogsResult{}, err
+	}
 
 	if _, err := s.nomadClient.fetchJob(ctx, locator.JobID()); err != nil {
 		return ExecutionLogsResult{}, err
@@ -236,6 +242,9 @@ func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResu
 	if err != nil {
 		return ExecutionCancelResult{}, err
 	}
+	if err := s.lifecycleRuntimeUnavailableError(); err != nil {
+		return ExecutionCancelResult{}, err
+	}
 
 	if _, err := s.nomadClient.fetchJob(ctx, locator.JobID()); err != nil {
 		return ExecutionCancelResult{}, err
@@ -251,6 +260,13 @@ func (s *Service) Cancel(ctx context.Context, runID string) (ExecutionCancelResu
 		Status:          executionLifecycleStatusCancelRequested,
 		OutcomeEvidence: cancelOutcomeEvidence(),
 	}, nil
+}
+
+func (s *Service) lifecycleRuntimeUnavailableError() *Error {
+	if s.nomadClient == nil || !s.cfg.SubmitConfigured() {
+		return nomadUnavailableError("execution runtime is unavailable")
+	}
+	return nil
 }
 
 func isTerminalAllocationStatus(status string) bool {

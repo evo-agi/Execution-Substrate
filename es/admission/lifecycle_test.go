@@ -147,3 +147,111 @@ func TestStatusRetainsLostStageRootForDebugging(t *testing.T) {
 		t.Fatalf("did not expect retained result bundle for lost allocation, got %v", statErr)
 	}
 }
+
+func TestLifecycleStatusReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
+	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
+				_, err := tt.service.Status(context.Background(), "run-0123456789abcdef")
+				return err
+			})
+			assertTextOmitsAll(t, err.Code+" "+err.Message,
+				"workflow",
+				"review",
+				"checkpoint",
+				"finalization",
+				"temporal",
+				"approval",
+				"intervention",
+			)
+		})
+	}
+}
+
+func TestLifecycleLogsReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
+	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
+				_, err := tt.service.Logs(context.Background(), "run-0123456789abcdef")
+				return err
+			})
+			assertTextOmitsAll(t, err.Code+" "+err.Message,
+				"credential",
+				"security",
+				"vault_token",
+				"client_token",
+				"root_token",
+				"unseal_key",
+				"jwt_svid",
+				"x509_svid",
+				"private_key",
+				"api_key",
+				"proof_secret",
+				"secret_payload",
+				"lease",
+			)
+		})
+	}
+}
+
+func TestLifecycleCancelReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
+	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
+				_, err := tt.service.Cancel(context.Background(), "run-0123456789abcdef")
+				return err
+			})
+			assertTextOmitsAll(t, err.Code+" "+err.Message,
+				"intervention",
+				"approval",
+				"temporal",
+				"authority",
+				"workflow",
+				"review",
+				"checkpoint",
+				"finalization",
+			)
+		})
+	}
+}
+
+func lifecycleRuntimeUnavailableCases(t *testing.T) []struct {
+	name    string
+	service Service
+} {
+	t.Helper()
+
+	return []struct {
+		name    string
+		service Service
+	}{
+		{
+			name: "configured_service_without_nomad_client",
+			service: Service{
+				cfg: minimalLifecycleConfig(t),
+			},
+		},
+		{
+			name: "unconfigured_service_with_nomad_client",
+			service: Service{
+				nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Fatalf("runtime-unconfigured lifecycle call reached Nomad: %s %s", r.Method, r.URL.Path)
+				})),
+			},
+		},
+	}
+}
+
+func assertNoPanicRuntimeUnavailable(t *testing.T, call func() *Error) (err *Error) {
+	t.Helper()
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("expected runtime-unavailable error without panic, got panic: %v", recovered)
+		}
+	}()
+
+	err = call()
+	assertAdmissionError(t, err, http.StatusServiceUnavailable, codeExecutionRuntimeUnavailable)
+	return err
+}
