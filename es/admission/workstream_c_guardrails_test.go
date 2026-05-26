@@ -506,6 +506,144 @@ func TestWorkstreamC3PublicResultAuthorityAndOutcomeDTOsExcludeRunControlAndLive
 	}
 }
 
+func TestWorkstreamC4RuntimeIdentityVaultPublicDTOsExcludeCredentialLeaseAndRawSPIREFields(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		SubmitResult{},
+		ExecutionStatusResult{},
+		ExecutionCancelResult{},
+		LifecycleProjection{},
+		ExecutionOutcomeEvidence{},
+		ExecutionAuthorityHandoff{},
+		ExecutionAuthorityRuntimeProfile{},
+		ExecutionAuthorityIdentityHandoff{},
+		ExecutionAuthorityWorkloadVault{},
+		ExecutionAuthorityRuntimeConfigRefs{},
+		ExecutionAuthorityRuntimeConfigRef{},
+		ExecutionAuthorityCodexCredential{},
+		ExecutionAuthorityEvidence{},
+		ProducerContractDeclaration{},
+		GovernedExecutionProducerContractDeclaration{},
+		ProducerRuntimeProfileDeclaration{},
+		ProducerOutcomeEvidenceDeclaration{},
+		ProducerOutcomeEvidenceSurfaceDeclaration{},
+	)
+
+	for _, forbidden := range workstreamC4ForbiddenCredentialFieldNames() {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("C4 public DTOs must not expose runtime credential, Vault lease, or raw SPIRE field %q", forbidden)
+		}
+	}
+
+	for _, compatibilityField := range []string{
+		"endpoint_env",
+		"endpoint_uri",
+		"jwt_svid_target",
+		"workload_vault",
+		"runtime_config_refs",
+		"codex_credential_location",
+		"vault_secret_path",
+		"vault_secret_field",
+	} {
+		if _, ok := fieldNames[compatibilityField]; !ok {
+			t.Fatalf("expected non-secret C4 compatibility metadata field %q to remain present", compatibilityField)
+		}
+	}
+}
+
+func TestWorkstreamC4AuthorityHandoffCarriesOnlyNonSecretRuntimeIdentityVaultMetadata(t *testing.T) {
+	handoff := buildExecutionAuthorityHandoff(
+		executionRuntimeProfile{
+			name: runtimeProfileControlPlaneNormalShell,
+			env: map[string]string{
+				codexCLIPathEnvKey:                    "/usr/local/bin/codex",
+				codexCredentialSourceEnvKey:           codexCredentialSourceWorkloadVault,
+				codexCredentialVaultSecretPathEnvKey:  "proof-secrets/data/codex-runtime-profile",
+				codexCredentialVaultSecretFieldEnvKey: "runtime_profile_key_label",
+			},
+		},
+		runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		},
+		esconfig.ResolvedWorkloadVaultAuthPlan{
+			Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "service_execution",
+			JWTAudience: "vault",
+		},
+		testWorkloadZoneVaultConfigDigest,
+		stagedWorkloadTrustMaterial{
+			vaultCACert:       true,
+			workloadTLSBundle: true,
+		},
+	)
+
+	if handoff.IdentityHandoff.EndpointEnv != runtimeIdentityEndpointEnvKey {
+		t.Fatalf("expected workload-visible identity endpoint env, got %+v", handoff.IdentityHandoff)
+	}
+	if strings.Contains(handoff.IdentityHandoff.EndpointURI, "spire") || strings.Contains(handoff.IdentityHandoff.EndpointURI, "/internal/") {
+		t.Fatalf("authority_handoff endpoint URI must not expose raw SPIRE internals, got %q", handoff.IdentityHandoff.EndpointURI)
+	}
+	if handoff.WorkloadVault.AuthMode != string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT) ||
+		handoff.WorkloadVault.Address != "https://vault.internal:8200" ||
+		handoff.WorkloadVault.AuthMount != "jwt" ||
+		handoff.WorkloadVault.AuthRole != "service_execution" ||
+		handoff.WorkloadVault.JWTAudience != "vault" ||
+		handoff.RuntimeConfigRefs.WorkloadZoneVaultConfig.Digest != testWorkloadZoneVaultConfigDigest {
+		t.Fatalf("expected workload-zone Vault handoff metadata only, got %+v", handoff)
+	}
+
+	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
+	assertTextOmitsAll(t, payload, workstreamC4ForbiddenCredentialJSONKeys()...)
+	assertTextOmitsAll(t, payload,
+		"/run/spire/sockets/agent.sock",
+		"/run/spire/server/private/api.sock",
+		"/run/es-runtime-identity/run-0123456789abcdef/internal/spire-agent.sock",
+		`"raw_spire_socket_path":`,
+	)
+}
+
+func TestWorkstreamC4AuthorityHandoffRecoveryIgnoresCredentialLikeSubmittedEnv(t *testing.T) {
+	env := map[string]string{
+		runtimeIdentityEndpointEnvKey:      "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		"VAULT_ADDR":                       "https://vault.internal:8200",
+		"EXEC_WORKLOAD_VAULT_AUTH_MODE":    string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT),
+		"EXEC_WORKLOAD_VAULT_AUTH_MOUNT":   "jwt",
+		"EXEC_WORKLOAD_VAULT_AUTH_ROLE":    "service_execution",
+		"EXEC_WORKLOAD_VAULT_JWT_AUDIENCE": "vault",
+		"VAULT_TOKEN":                      "blocked-test-value",
+		"CLIENT_TOKEN":                     "blocked-test-value",
+		"ROOT_TOKEN":                       "blocked-test-value",
+		"UNSEAL_KEY":                       "blocked-test-value",
+		"JWT_SVID":                         "blocked-test-value",
+		"X509_SVID":                        "blocked-test-value",
+		"PRIVATE_KEY":                      "blocked-test-value",
+		"API_KEY":                          "blocked-test-value",
+		"PROOF_SECRET":                     "blocked-test-value",
+		"SECRET_PAYLOAD":                   "blocked-test-value",
+		"LEASE_ID":                         "blocked-test-value",
+		"LEASE_DURATION":                   "blocked-test-value",
+		"SPIRE_WORKLOAD_API_SOCKET":        "/run/spire/sockets/agent.sock",
+	}
+
+	handoff, ok := executionAuthorityHandoffFromSubmittedRuntimeSpec(
+		runtimeProfileDefaultStaticScript,
+		testWorkloadZoneVaultConfigDigest,
+		env,
+	)
+	if !ok {
+		t.Fatal("expected authority handoff recovery from submitted non-secret runtime metadata")
+	}
+	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
+	assertTextOmitsAll(t, payload, workstreamC4ForbiddenCredentialJSONKeys()...)
+	assertTextOmitsAll(t, payload,
+		"blocked-test-value",
+		"/run/spire/sockets/agent.sock",
+		`"spire_workload_api_socket":`,
+	)
+}
+
 func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *testing.T) {
 	service := Service{
 		cfg: minimalLifecycleConfig(t),
@@ -1020,4 +1158,31 @@ func assertTextOmitsAll(t *testing.T, text string, forbidden ...string) {
 			t.Fatalf("expected text to omit %q, got %s", item, text)
 		}
 	}
+}
+
+func workstreamC4ForbiddenCredentialFieldNames() []string {
+	return []string{
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+		"raw_spire_socket",
+	}
+}
+
+func workstreamC4ForbiddenCredentialJSONKeys() []string {
+	fields := workstreamC4ForbiddenCredentialFieldNames()
+	keys := make([]string, 0, len(fields))
+	for _, field := range fields {
+		keys = append(keys, `"`+field+`":`)
+	}
+	return keys
 }

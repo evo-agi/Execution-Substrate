@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -247,6 +248,41 @@ func TestWorkloadVaultAuthResolveUsesVaultRuntimeFields(t *testing.T) {
 	}
 }
 
+func TestWorkloadVaultAuthPlanCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
+	fieldNames := collectConfigStructFieldNames(t, ResolvedWorkloadVaultAuthPlan{})
+	for _, forbidden := range []string{
+		"VaultToken",
+		"ClientToken",
+		"RootToken",
+		"UnsealKey",
+		"JWTSVID",
+		"X509SVID",
+		"PrivateKey",
+		"APIKey",
+		"ProofSecret",
+		"SecretPayload",
+		"LeaseID",
+		"LeaseDuration",
+		"RawSPIRESocket",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("resolved workload Vault auth plan must not carry token, secret, lease, or raw SPIRE field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"Mode",
+		"Address",
+		"AuthMount",
+		"AuthRole",
+		"JWTAudience",
+		"CABundlePEM",
+	} {
+		if _, ok := fieldNames[required]; !ok {
+			t.Fatalf("expected non-secret workload Vault metadata field %q", required)
+		}
+	}
+}
+
 func TestWorkloadVaultAuthResolveRejectsMissingVaultRole(t *testing.T) {
 	cfg := WorkloadVaultAuthConfig{
 		DefaultMode: WorkloadVaultAuthModeVaultIdentityJWT,
@@ -367,6 +403,28 @@ func TestWorkloadVaultAuthValidateRejectsUnsupportedMode(t *testing.T) {
 	if !strings.Contains(err.Error(), "workload_vault_auth.default_mode") {
 		t.Fatalf("expected workload vault auth mode validation error, got %v", err)
 	}
+}
+
+func collectConfigStructFieldNames(t *testing.T, values ...any) map[string]struct{} {
+	t.Helper()
+
+	names := map[string]struct{}{}
+	for _, value := range values {
+		typ := reflect.TypeOf(value)
+		for typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct {
+			t.Fatalf("expected struct, got %s", typ.Kind())
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			if field.PkgPath == "" {
+				names[field.Name] = struct{}{}
+			}
+		}
+	}
+	return names
 }
 
 func validTestConfig() Config {

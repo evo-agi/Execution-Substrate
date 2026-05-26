@@ -232,6 +232,94 @@ func TestWorkstreamC3ResultRouteCompatibilityReturnsOpaqueGzipWithoutRunControlS
 	)
 }
 
+func TestWorkstreamC4PublicRuntimeIdentityVaultResponsesExcludeCredentialLeaseAndRawSPIREMaterial(t *testing.T) {
+	handoff := &admission.ExecutionAuthorityHandoff{
+		AuthorityPath: "workload_identity_endpoint/workload_vault",
+		RuntimeProfile: admission.ExecutionAuthorityRuntimeProfile{
+			Name: "control-plane-normal-shell/v1",
+		},
+		IdentityHandoff: admission.ExecutionAuthorityIdentityHandoff{
+			Mode:          "workload_identity_endpoint",
+			EndpointEnv:   "EXEC_WORKLOAD_IDENTITY_ENDPOINT",
+			EndpointURI:   "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+			JWTSVIDTarget: "workload_vault",
+		},
+		WorkloadVault: admission.ExecutionAuthorityWorkloadVault{
+			AuthMode:    "vault_identity_jwt",
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "service_execution",
+			JWTAudience: "vault",
+			CACertEnv:   "VAULT_CACERT",
+			CACertPath:  "/execution/run/platform/workload-vault-ca.pem",
+		},
+		RuntimeConfigRefs: admission.ExecutionAuthorityRuntimeConfigRefs{
+			WorkloadZoneVaultConfig: admission.ExecutionAuthorityRuntimeConfigRef{
+				Digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+		CodexCredentialLocation: &admission.ExecutionAuthorityCodexCredential{
+			CLIPath:          "/usr/local/bin/codex",
+			CredentialSource: "workload_vault",
+			VaultSecretPath:  "proof-secrets/data/codex-runtime-profile",
+			VaultSecretField: "runtime_profile_key_label",
+		},
+		Evidence: admission.ExecutionAuthorityEvidence{
+			Source:                  "submitted_runtime_spec",
+			RuntimeProfile:          "es_selected_runtime_profile",
+			IdentityHandoff:         "submitted_runtime_environment",
+			WorkloadVault:           "submitted_runtime_environment",
+			RuntimeConfigRefs:       "submitted_runtime_metadata",
+			CodexCredentialLocation: "submitted_runtime_environment",
+		},
+	}
+	service := fakeLifecycleService{
+		submitResult: admission.SubmitResult{
+			Success:          true,
+			Submitted:        true,
+			RunID:            "run-0123456789abcdef",
+			Status:           "submitted",
+			AuthorityHandoff: handoff,
+		},
+		statusResult: admission.ExecutionStatusResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "running",
+			LifecycleProjection: admission.LifecycleProjection{
+				Source:   "nomad",
+				Revision: "opaque-c4-read-token",
+			},
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "nomad",
+				Observation: "nomad_task_state_projection",
+				LifecycleProjection: &admission.LifecycleProjection{
+					Source:   "nomad",
+					Revision: "opaque-c4-read-token",
+				},
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			AuthorityHandoff: handoff,
+			Terminal:         false,
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"mode":"async"}`
+
+	submitRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(submitRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:submit", body))
+	if submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("expected submit 202, got %d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+	assertWorkstreamC4PublicResponseOmitsCredentialLeaseAndRawSPIRE(t, submitRecorder.Body.String())
+
+	statusRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/status"))
+	if statusRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+	assertWorkstreamC4PublicResponseOmitsCredentialLeaseAndRawSPIRE(t, statusRecorder.Body.String())
+}
+
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
 	service := fakeLifecycleService{
 		producerContract: admission.ProducerContractDeclaration{
@@ -618,4 +706,31 @@ func compactHeaderText(header http.Header) string {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func assertWorkstreamC4PublicResponseOmitsCredentialLeaseAndRawSPIRE(t *testing.T, text string) {
+	t.Helper()
+
+	for _, field := range []string{
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+		"raw_spire_socket",
+	} {
+		assertTextOmitsAllForAPI(t, text, `"`+field+`":`)
+	}
+	assertTextOmitsAllForAPI(t, text,
+		"/run/spire/sockets/agent.sock",
+		"/run/spire/server/private/api.sock",
+		"/run/es-runtime-identity/run-0123456789abcdef/internal/spire-agent.sock",
+	)
 }

@@ -630,6 +630,73 @@ func TestRemoteAlphaVaultWorkloadAuthCheckPassWritesSafeSummary(t *testing.T) {
 	}
 }
 
+func TestRemoteAlphaVaultWorkloadAuthCheckSummaryRemainsC4EvidenceProjectionOnly(t *testing.T) {
+	t.Parallel()
+
+	jwt := buildJWT(t, "spiffe://execution.internal/workload", []string{"vault"})
+	server, _, caBundlePEM := startFakeVault(
+		t,
+		jwt,
+		false,
+		remoteAlphaDefaultProofReadPath,
+		remoteAlphaDefaultProofRuntimeSecretPath,
+		remoteAlphaDefaultProofRuntimeSecretField,
+	)
+
+	summary, summaryText, output, err := runWorkloadAuthCheckForFakeVault(t, jwt, server.URL, caBundlePEM)
+	if err != nil {
+		t.Fatalf("check failed: %v\n%s", err, output)
+	}
+
+	forbiddenKeys := []string{
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+		"raw_spire_socket",
+		"runtime_profile_ready_authority",
+		"submit_ready_authority",
+		"producer_contract_authority",
+	}
+	for _, key := range forbiddenKeys {
+		if strings.Contains(summaryText, `"`+key+`":`) {
+			t.Fatalf("C4 workload-auth summary must not expose authority or secret-bearing key %q", key)
+		}
+	}
+
+	readiness := jsonMap(t, summary["readiness_not_claimed"])
+	for _, field := range []string{
+		"runtime_profile_ready",
+		"submit_ready",
+		"es_services_healthy",
+		"producer_contract_compatible",
+		"retained_result_fetch",
+	} {
+		if got := readiness[field]; got != "not_claimed" {
+			t.Fatalf("C4 workload-auth summary must keep %s as not_claimed, got %v", field, got)
+		}
+	}
+	redaction := jsonMap(t, summary["redaction"])
+	for _, field := range []string{
+		"jwt_persisted",
+		"vault_client_token_persisted",
+		"root_token_persisted",
+		"secret_payload_persisted",
+	} {
+		if got := redaction[field]; got != false {
+			t.Fatalf("C4 workload-auth summary must keep redaction.%s=false, got %v", field, got)
+		}
+	}
+}
+
 func TestRemoteAlphaVaultWorkloadAuthCheckWritesSafeFailureSummaryOnVaultLoginFailure(t *testing.T) {
 	t.Parallel()
 

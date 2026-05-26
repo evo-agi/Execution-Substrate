@@ -34,6 +34,10 @@ Generated evidence, `.out`, reports, traces, logs, summaries, support bundles,
 retained bundles, proof artifacts, and maintenance summaries remain
 non-authoritative evidence/projection.
 
+Runtime identity and Vault handoff evidence in summaries, outcome evidence,
+retained result metadata, support bundles, logs, reports, `.out`, and proof
+artifacts remains non-authoritative and redacted.
+
 This applies to `.out/`, proof workspaces, generated evidence, reports, traces,
 logs, summaries, support bundles, retained bundles, proof artifacts, example
 package archives, local build directories, Python bytecode caches, OS metadata

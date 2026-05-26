@@ -442,6 +442,35 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
   `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
   compatibility remain preserved unless an explicit migration/versioning plan
   exists.
+- C4 is the focused tests/docs guardrail slice for runtime identity and Vault
+  handoff boundaries. C4 is guardrail work, not runtime redesign and not live
+  helper execution. Runtime identity acquisition is workload-side or
+  helper-mediated at runtime, not CP-owned and not IM-owned. ES may stage
+  non-secret runtime identity and Vault configuration metadata, but ES must
+  not mint, fetch, broker, parse, store, rotate, or validate Vault tokens. ES
+  must not record or expose JWT-SVID bodies, SPIFFE JWTs, X.509 SVID bodies,
+  private keys, API keys, proof secrets, root tokens, unseal keys, Vault client
+  tokens, or secret payloads through public DTOs, lifecycle responses,
+  retained-result metadata, summaries, logs, reports, `.out`, support bundles,
+  or proof artifacts. `authority_handoff` may include non-secret
+  credential-location and configuration metadata only. `authority_handoff`
+  must not carry live credentials, leases, approvals, Vault tokens, Codex
+  credentials, JWT-SVIDs, API keys, or scheduler truth. Workload-side Vault
+  auth remains workload-side; Vault owns token, secret, and lease authority.
+  SPIRE owns identity issuance and SVID material. ES must not expose raw SPIRE
+  socket access to workloads as public ES grammar.
+  `EXEC_WORKLOAD_IDENTITY_ENDPOINT` remains the workload-facing identity
+  endpoint contract rather than raw SPIRE socket access. Runtime identity and
+  Vault handoff evidence remains non-authoritative and redacted. CP may
+  consume runtime identity/Vault handoff evidence, but CP does not own
+  credential acquisition, Vault tokens, SPIRE identity issuance, or ES runtime
+  handoff boundaries. IM and Maintenance Agent may report
+  diagnostics/readiness/status, but do not own runtime identity or Vault
+  authority. `control-plane-normal-shell/v1` and
+  `execution_substrate.runtime_profile` compatibility remain preserved unless
+  an explicit migration/versioning plan exists. Existing workload-auth Remote
+  Alpha helpers remain bounded operator/support surfaces, not ES token
+  brokerage or production Vault readiness.
 - ES owns governed admission composition, submission handoff, Nomad-backed lifecycle projection, retained opaque result-bundle ownership, and runtime handoff boundary enforcement.
 - ES owns the public admission model, prepare model, submit model,
   Nomad-backed lifecycle projection, retained opaque result bundles,

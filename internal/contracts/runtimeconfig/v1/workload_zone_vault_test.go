@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,42 @@ func TestWorkloadZoneVaultConfigBlobRejectsInvalidCABundle(t *testing.T) {
 	}
 }
 
+func TestWorkloadZoneVaultConfigBlobCarriesOnlyNonSecretVaultMetadata(t *testing.T) {
+	fieldNames := collectRuntimeConfigJSONFieldNames(t, WorkloadZoneVaultConfigRef{}, WorkloadZoneVaultConfigBlob{}, WorkloadZoneVaultConfig{})
+	for _, forbidden := range []string{
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+		"proof_secret",
+		"secret_payload",
+		"lease_id",
+		"lease_duration",
+		"raw_spire_socket",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("workload-zone Vault config must not expose token, secret, lease, or raw SPIRE field %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"digest",
+		"vault_config",
+		"address",
+		"auth_mount",
+		"auth_role",
+		"jwt_audience",
+		"ca_bundle_pem",
+	} {
+		if _, ok := fieldNames[required]; !ok {
+			t.Fatalf("expected non-secret workload-zone Vault metadata field %q", required)
+		}
+	}
+}
+
 func testCertificatePEM(t *testing.T) string {
 	t.Helper()
 
@@ -125,4 +162,36 @@ func strconvQuoteForJSON(value string) string {
 		panic(err)
 	}
 	return string(encoded)
+}
+
+func collectRuntimeConfigJSONFieldNames(t *testing.T, values ...any) map[string]struct{} {
+	t.Helper()
+
+	names := map[string]struct{}{}
+	seen := map[reflect.Type]bool{}
+	for _, value := range values {
+		collectRuntimeConfigJSONFieldNamesFromType(reflect.TypeOf(value), names, seen)
+	}
+	return names
+}
+
+func collectRuntimeConfigJSONFieldNamesFromType(typ reflect.Type, names map[string]struct{}, seen map[reflect.Type]bool) {
+	for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
+		typ = typ.Elem()
+	}
+	if typ.Kind() != reflect.Struct || seen[typ] {
+		return
+	}
+	seen[typ] = true
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		tagName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if tagName != "" && tagName != "-" {
+			names[tagName] = struct{}{}
+		}
+		collectRuntimeConfigJSONFieldNamesFromType(field.Type, names, seen)
+	}
 }

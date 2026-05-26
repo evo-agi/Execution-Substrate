@@ -1162,6 +1162,71 @@ func TestWorkstreamC3RetainedResultAuthorityHandoffGuardrailPostureIsDocumented(
 	)
 }
 
+func TestWorkstreamC4RuntimeIdentityVaultHandoffGuardrailPostureIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	lifecycleDesign := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	systemContracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	artifactHygiene := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+	postureSection := compactDocSection(t, decisionRaw, "## 6. Code-facing guardrail posture", "")
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C4 posture", text: plans},
+		{label: "Workstream C decision C4 posture", text: decision},
+		{label: "lifecycle contracts C4 posture", text: lifecycleContracts},
+		{label: "lifecycle design C4 posture", text: lifecycleDesign},
+		{label: "system contracts C4 posture", text: systemContracts},
+		{label: "system boundaries C4 posture", text: systemBoundaries},
+		{label: "CP consumer runbook C4 posture", text: runbook},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"C4 is the focused tests/docs guardrail slice for runtime identity and Vault handoff boundaries.",
+			"C4 is guardrail work, not runtime redesign and not live helper execution.",
+			"Runtime identity acquisition is workload-side or helper-mediated at runtime, not CP-owned and not IM-owned.",
+			"ES may stage non-secret runtime identity and Vault configuration metadata, but ES must not mint, fetch, broker, parse, store, rotate, or validate Vault tokens.",
+			"ES must not record or expose JWT-SVID bodies, SPIFFE JWTs, X.509 SVID bodies, private keys, API keys, proof secrets, root tokens, unseal keys, Vault client tokens, or secret payloads through public DTOs, lifecycle responses, retained-result metadata, summaries, logs, reports, `.out`, support bundles, or proof artifacts.",
+			"`authority_handoff` may include non-secret credential-location and configuration metadata only.",
+			"`authority_handoff` must not carry live credentials, leases, approvals, Vault tokens, Codex credentials, JWT-SVIDs, API keys, or scheduler truth.",
+			"Workload-side Vault auth remains workload-side; Vault owns token, secret, and lease authority.",
+			"SPIRE owns identity issuance and SVID material.",
+			"ES must not expose raw SPIRE socket access to workloads as public ES grammar.",
+			"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` remains the workload-facing identity endpoint contract rather than raw SPIRE socket access.",
+			"Runtime identity and Vault handoff evidence remains non-authoritative and redacted.",
+			"CP may consume runtime identity/Vault handoff evidence, but CP does not own credential acquisition, Vault tokens, SPIRE identity issuance, or ES runtime handoff boundaries.",
+			"IM and Maintenance Agent may report diagnostics/readiness/status, but do not own runtime identity or Vault authority.",
+			"`control-plane-normal-shell/v1` and `execution_substrate.runtime_profile` compatibility remain preserved unless an explicit migration/versioning plan exists.",
+			"Existing workload-auth Remote Alpha helpers remain bounded operator/support surfaces, not ES token brokerage or production Vault readiness.",
+		)
+	}
+
+	assertContainsAll(t, "Workstream C C4 guardrail posture", postureSection,
+		"C4 guardrail tests are intentionally narrow.",
+		"runtime identity and Vault handoff public DTO exclusions",
+		"non-secret `authority_handoff` credential-location/configuration metadata",
+		"workload-zone Vault config as non-secret metadata",
+		"`EXEC_WORKLOAD_IDENTITY_ENDPOINT` as the workload-facing endpoint contract",
+		"Remote Alpha workload-auth evidence as evidence/projection only",
+		"must not redesign runtime identity",
+		"must not run live Vault, SPIRE, reset/unseal, workload-auth, renewal, CP proof, IM refresh, support-bundle, binary deployment, or remote mutation helpers",
+	)
+	assertContainsAll(t, "remote alpha C4 workload-auth evidence", remoteAlpha,
+		"Existing workload-auth Remote Alpha helpers remain bounded operator/support surfaces, not ES token brokerage or production Vault readiness.",
+		"Runtime identity and Vault handoff evidence remains non-authoritative and redacted.",
+		"`readiness_not_claimed.*`: literal `not_claimed`",
+	)
+	assertContainsAll(t, "artifact hygiene C4 generated evidence non-authority", artifactHygiene,
+		"Runtime identity and Vault handoff evidence in summaries, outcome evidence, retained result metadata, support bundles, logs, reports, `.out`, and proof artifacts remains non-authoritative and redacted.",
+	)
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
