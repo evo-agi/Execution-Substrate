@@ -225,7 +225,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		trustModelVerifier:         trustModelVerifier,
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
-		admissionPolicyEvaluator:   defaultAdmissionPolicyEvaluator(),
+		admissionPolicyEvaluator:   admissionPolicyEvaluatorFromConfig(cfg.AdmissionPolicy),
 	}, nil
 }
 

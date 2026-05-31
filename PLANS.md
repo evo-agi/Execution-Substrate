@@ -2019,6 +2019,24 @@ Current bounded decision status for Milestone 2C.1:
   parsing, workspace archive decoding, binary payload inspection, retained
   bundle scanning, support-bundle scanning, or raw payload/matched-content
   disclosure.
+- The C6 configurable-input follow-up is a bounded slice refinement of ES
+  Admission Policy Layer v0. It may add ES deployment/admin configuration for
+  inputs to built-in ES admission policies only. The follow-up adds the
+  built-in
+  `execution-substrate.admission.configured-static-script-literal-deny/v1`
+  policy with reason code `configured_static_script_content_denied`, safe
+  message `static script content denied by admission policy`, mode `disabled`
+  or `enforce`, safe entry IDs, a bounded list of literal deny entries, and
+  the fixed input class
+  `static_script_payload_text`. These inputs are ES deployment/admin config
+  only; CP does not define or supply them, IM remains readiness/provenance/
+  diagnostics only, and request payloads cannot carry policy entries. This
+  follow-up must not add evaluator injection, OPA/Rego, a DSL, arbitrary
+  regex/glob/shell-expression config, customer-authored policy bundles, an
+  external evaluator service, CGS `id.conf` reuse, user-defined reason codes,
+  user-defined API messages, CP prompt/workspace parsing, workspace archive
+  decoding, binary payload inspection, or raw configured-literal/matched-
+  content disclosure. Denials remain redacted.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain

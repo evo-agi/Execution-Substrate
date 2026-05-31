@@ -154,6 +154,30 @@ func TestProducerContractDeclarationDoesNotExposeAuthorityOrSchedulerClaims(t *t
 	}
 }
 
+func TestProducerContractDeclarationDoesNotExposeConfiguredAdmissionPolicyLiteral(t *testing.T) {
+	cfg := producerContractSubmitConfig(true)
+	cfg.AdmissionPolicy = &esconfig.AdmissionPolicyConfig{
+		ConfiguredStaticScriptLiteralDeny: &esconfig.ConfiguredStaticScriptLiteralDenyPolicyConfig{
+			Mode: esconfig.ConfiguredStaticScriptLiteralDenyModeEnforce,
+			Entries: []esconfig.ConfiguredStaticScriptLiteralDenyEntryConfig{
+				{
+					ID:         "demo-marker",
+					InputClass: esconfig.ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+					Literal:    configuredPolicyFixtureMarker(),
+				},
+			},
+		},
+	}
+	declaration := producerContractDeclaration(cfg)
+	payload, err := json.Marshal(declaration)
+	if err != nil {
+		t.Fatalf("marshal producer declaration: %v", err)
+	}
+	if strings.Contains(string(payload), configuredPolicyFixtureMarker()) {
+		t.Fatalf("producer declaration must not expose configured admission policy literal")
+	}
+}
+
 func TestProducerContractDeclarationMarksSubmitlessServiceDisabled(t *testing.T) {
 	service := Service{cfg: esconfig.Config{}}
 

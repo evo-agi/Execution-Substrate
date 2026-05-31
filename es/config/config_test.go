@@ -309,6 +309,254 @@ func TestConfigValidateAllowsPrepareOnlyConfiguration(t *testing.T) {
 	}
 }
 
+func TestAdmissionPolicyConfigValidateAcceptsHarmlessStaticScriptLiteralMarker(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+
+	if err := cfg.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+		t.Fatalf("expected configured static-script literal deny policy to validate, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsInvalidEntryID(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries[0].ID = "not safe"
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected invalid configured literal deny entry ID to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].id") {
+		t.Fatalf("expected entry ID validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsDuplicateEntryIDs(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries = append(cfg.Entries, ConfiguredStaticScriptLiteralDenyEntryConfig{
+		ID:         cfg.Entries[0].ID,
+		InputClass: ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+		Literal:    "ES_DEMO_LITERAL_MARKER_DUPLICATE",
+	})
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected duplicate configured literal deny entry ID to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[1].id") || !strings.Contains(err.Error(), "unique") {
+		t.Fatalf("expected duplicate entry ID validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsOversizedLiteralWithoutEchoingValue(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	unsafeLiteral := "ES_PRIVATE_MARKER_" + strings.Repeat("X", MaxConfiguredStaticScriptLiteralDenyLiteralBytes+1)
+	cfg.Entries[0].Literal = unsafeLiteral
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected oversized configured literal to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+	if strings.Contains(err.Error(), unsafeLiteral) {
+		t.Fatalf("configured literal validation error must not echo the literal value")
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsEmptyLiteral(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries[0].Literal = ""
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected empty configured literal to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsWhitespaceOnlyLiteral(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	unsafeLiteral := "   "
+	cfg.Entries[0].Literal = unsafeLiteral
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected whitespace-only configured literal to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+	assertConfigValidationErrorOmitsLiteral(t, err, unsafeLiteral)
+}
+
+func TestAdmissionPolicyConfigValidateRejectsTooManyEntries(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	for len(cfg.Entries) <= MaxConfiguredStaticScriptLiteralDenyEntries {
+		cfg.Entries = append(cfg.Entries, ConfiguredStaticScriptLiteralDenyEntryConfig{
+			ID:         "marker-extra",
+			InputClass: ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+			Literal:    "ES_DEMO_LITERAL_MARKER_EXTRA",
+		})
+	}
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected too many configured literal deny entries to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("expected entries validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsEnforceWithoutEntries(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries = nil
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected enforce mode without configured literal entries to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("expected entries validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsInvalidMode(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Mode = ConfiguredStaticScriptLiteralDenyPolicyMode("audit")
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected invalid configured literal deny mode to fail validation")
+	}
+	if !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("expected mode validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateAllowsDisabledWithoutEntries(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Mode = ConfiguredStaticScriptLiteralDenyModeDisabled
+	cfg.Entries = nil
+
+	if err := cfg.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+		t.Fatalf("expected disabled configured literal deny policy without entries to validate, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateAllowsDisabledWithValidEntries(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Mode = ConfiguredStaticScriptLiteralDenyModeDisabled
+
+	if err := cfg.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+		t.Fatalf("expected disabled configured literal deny policy with valid entries to validate, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsDisabledWithInvalidEntries(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Mode = ConfiguredStaticScriptLiteralDenyModeDisabled
+	cfg.Entries[0].Literal = ""
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected disabled configured literal deny policy with invalid entries to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsUnsupportedInputClass(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries[0].InputClass = ConfiguredStaticScriptLiteralDenyInputClass("workspace_archive")
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected unsupported configured literal deny input class to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].input_class") {
+		t.Fatalf("expected input class validation error, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateTreatsRegexLikeLiteralAsLiteralConfig(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	cfg.Entries[0].Literal = "^ES_DEMO_LITERAL_MARKER.*$"
+
+	if err := cfg.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+		t.Fatalf("expected regex-looking configured literal to validate as literal text, got %v", err)
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsControlCharactersWithoutEchoingValue(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	unsafeLiteral := "ES_PRIVATE_MARKER_WITH_CONTROL\n"
+	cfg.Entries[0].Literal = unsafeLiteral
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected configured literal with control character to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+	if strings.Contains(err.Error(), unsafeLiteral) {
+		t.Fatalf("configured literal validation error must not echo the literal value")
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsUnicodeControlAndNonPrintableLiteralsWithoutEchoingValue(t *testing.T) {
+	tests := []struct {
+		name          string
+		unsafeLiteral string
+	}{
+		{name: "non_ascii_control", unsafeLiteral: "ES_PRIVATE_MARKER_\u0085"},
+		{name: "format_invisible", unsafeLiteral: "ES_PRIVATE_MARKER_\u200b"},
+		{name: "unassigned_non_printable", unsafeLiteral: "ES_PRIVATE_MARKER_\u0378"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+			cfg.Entries[0].Literal = tt.unsafeLiteral
+
+			err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+			if err == nil {
+				t.Fatalf("expected configured literal with non-printable Unicode to fail validation")
+			}
+			if !strings.Contains(err.Error(), "entries[0].literal") {
+				t.Fatalf("expected literal validation error, got %v", err)
+			}
+			assertConfigValidationErrorOmitsLiteral(t, err, tt.unsafeLiteral)
+		})
+	}
+}
+
+func TestAdmissionPolicyConfigValidateRejectsInvalidUTF8Literal(t *testing.T) {
+	cfg := validConfiguredStaticScriptLiteralDenyPolicyConfig()
+	unsafeLiteral := string([]byte{0xff})
+	cfg.Entries[0].Literal = unsafeLiteral
+
+	err := cfg.Validate("admission_policy.configured_static_script_literal_deny")
+	if err == nil {
+		t.Fatalf("expected configured literal with invalid UTF-8 to fail validation")
+	}
+	if !strings.Contains(err.Error(), "entries[0].literal") {
+		t.Fatalf("expected literal validation error, got %v", err)
+	}
+	assertConfigValidationErrorOmitsLiteral(t, err, unsafeLiteral)
+}
+
+func assertConfigValidationErrorOmitsLiteral(t *testing.T, err error, unsafeLiteral string) {
+	t.Helper()
+	if unsafeLiteral != "" && strings.Contains(err.Error(), unsafeLiteral) {
+		t.Fatalf("configured literal validation error must not echo the literal value")
+	}
+}
+
 func TestConfigValidateAllowsNarrowSPIFFEPathPrefixes(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.Authorization.AllowedSPIFFEPathPrefixes = []string{
@@ -562,5 +810,18 @@ func validTestSignerVerifierConfig() SignerVerifierConfig {
 		Algorithm:    "ed25519",
 		KeyID:        "test-key",
 		PublicKeyHex: strings.Repeat("00", 32),
+	}
+}
+
+func validConfiguredStaticScriptLiteralDenyPolicyConfig() ConfiguredStaticScriptLiteralDenyPolicyConfig {
+	return ConfiguredStaticScriptLiteralDenyPolicyConfig{
+		Mode: ConfiguredStaticScriptLiteralDenyModeEnforce,
+		Entries: []ConfiguredStaticScriptLiteralDenyEntryConfig{
+			{
+				ID:         "demo-marker",
+				InputClass: ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+				Literal:    "ES_DEMO_LITERAL_MARKER",
+			},
+		},
 	}
 }

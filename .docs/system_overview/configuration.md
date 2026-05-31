@@ -235,6 +235,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `security`
 - `authorization`
 - `dependencies`
+- optional `admission_policy`
 - `verification`
 - `workload_vault_auth`
 - `nomad` for `:submit`
@@ -285,6 +286,29 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `workload_vault_auth` no longer carries per-workload selectors in the current slice; ES consumes workload-zone vault runtime fields directly and applies only the configured default auth mode
 - `workload_vault_auth.default_mode` is current ES config residue and bounded
   current behavior, not a generalized runtime-auth-plan contract
+- optional `admission_policy.configured_static_script_literal_deny` is ES
+  deployment/admin configuration for one built-in ES admission policy only
+  - supported `mode` values are `disabled` and `enforce`
+  - entries are bounded literal deny entries only; each entry has a safe `id`,
+    `input_class`, and `literal`
+  - `enforce` mode requires at least one entry; `disabled` mode does not
+    enforce entries
+  - the only supported `input_class` is `static_script_payload_text`
+  - current validation limits are at most 32 entries, at most 256 bytes per
+    literal, and at most 64 bytes per entry ID
+  - entry IDs must be unique, start and end with an ASCII letter or digit, and
+    contain only ASCII letters, digits, dot, underscore, or hyphen
+  - literals must be non-empty, not whitespace-only, valid UTF-8 printable text
+    and must not contain NUL, control, format/invisible, or other non-printable
+    characters
+  - regex-looking text is treated as literal text; there is no regex, glob,
+    shell expression, Boolean policy language, OPA/Rego, DSL, customer policy
+    bundle, external evaluator service, user-defined reason code,
+    user-defined API message, request-supplied policy entry, CP-supplied policy
+    input, or CGS `id.conf` reuse
+  - configured literals and matched content must not be exposed through API
+    responses, the producer contract, logs, retained bundles, support bundles,
+    docs examples other than harmless placeholder markers, or test output
 - `verification.derivation_attestation.*` and `verification.workload_identity_binding.*` remain required because the current ES startup path still constructs those verifier shapes
 - those two verifier config groups are current configuration/startup-verifier residue, not active shared-kernel authorization meaning, not CGS policy truth, and not a settlement of Workstream E runtime-config ownership or Workstream F runtime-identity handoff
 - `runtime_config.workload_zone_vault_config_ref.digest` must point at the current workload-zone Vault config blob in ARS

@@ -104,6 +104,19 @@ cancel/failure/intervention proof, CP-owned final ES policy, IM-owned policy
 authority, or semantic understanding of all Control Plane prompts, workspaces,
 scripts, retained bundles, logs, model outputs, or generated artifacts.
 
+The C6 configurable-input follow-up adds ES deployment/admin configuration for
+inputs to built-in ES admission policies only. It adds
+`execution-substrate.admission.configured-static-script-literal-deny/v1` with
+mode `disabled` or `enforce`, safe entry IDs, a bounded literal-entry list, and
+the fixed input class `static_script_payload_text`. The deny reason code is
+`configured_static_script_content_denied`, and the safe public message is
+`static script content denied by admission policy`. This is not a broad policy
+engine, evaluator injection, OPA/Rego, DSL, regex engine, glob or shell
+expression engine, customer-authored policy bundle path, external evaluator
+service, CGS `id.conf` reuse, CP-defined ES policy input, request-supplied
+policy entry path, user-defined reason-code path, or user-defined API-message
+path. Denials remain redacted.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
 finalization, intervention, and operator-facing control semantics. CP consumes
@@ -366,6 +379,21 @@ Successful response is `200` JSON with these contract fields:
   `execution-substrate.admission.selected-destructive-shell-command/v1`,
   deny reason code `destructive_shell_command_denied`, and safe deny message
   `destructive shell command denied by admission policy`.
+- The built-in configured literal content policy has policy ID
+  `execution-substrate.admission.configured-static-script-literal-deny/v1`,
+  deny reason code `configured_static_script_content_denied`, and safe deny
+  message `static script content denied by admission policy`.
+- Configurable admission policy inputs are ES deployment/admin config only.
+  CP does not define or supply ES admission-policy inputs, requests cannot
+  carry policy entries, and IM remains readiness/provenance/diagnostics only.
+  The current config shape supports only mode `disabled` or `enforce`, safe
+  entry IDs, valid UTF-8 printable non-control literal deny entries that are not
+  whitespace-only, and input class `static_script_payload_text`; `enforce` mode
+  requires at least one entry;
+  regex, glob, shell expressions, Boolean policy logic, OPA/Rego, DSLs,
+  customer policy bundles, external evaluators, user-defined reason codes,
+  user-defined API messages, and CGS `id.conf` reuse remain deliberate
+  absences.
 - If required policy input cannot be safely inspected, ES fails closed with
   reason code `admission_policy_input_unavailable` and safe message
   `admission policy input unavailable`.
@@ -400,7 +428,7 @@ Successful response is `200` JSON with these contract fields:
 | Aggregate artifact evidence blob or response is unavailable after registration | `503` | `artifact_evidence_unavailable` |
 | Workload-zone vault lookup or blob unavailable | `503` | `workload_zone_vault_unavailable` |
 | Unsupported, disabled, or invalid runtime profile selection | `400` | `unsupported_runtime_profile` |
-| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` |
+| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` or `configured_static_script_content_denied` |
 | Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Dependency payload invalid or dependency request failed | `503` | current endpoint-specific code is preserved and the logical class remains the same as the missing dependency |
 
@@ -496,7 +524,7 @@ Successful response is `202` JSON with these fields:
 | Missing authenticated caller | `401` | plain text |
 | Disallowed or bootstrap caller | `403` | plain text |
 | Prepare-time validation or trust errors | same as `:prepare` | propagated |
-| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` |
+| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` or `configured_static_script_content_denied` |
 | Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Unsupported submission mode | `400` | `unsupported_execution_mode` |
 | Unsupported artifact type or target platform | `400` | `unsupported_artifact_type` |

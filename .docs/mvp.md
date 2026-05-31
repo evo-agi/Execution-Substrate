@@ -107,6 +107,11 @@ The current MVP does not claim:
   authority, or semantic understanding of all Control Plane prompts,
   workspaces, scripts, retained bundles, logs, model outputs, or generated
   artifacts
+- configurable inputs for built-in ES admission policies as a broad policy
+  engine, evaluator injection hook, OPA/Rego, DSL, regex engine,
+  customer-authored policy bundles, external evaluator service, CP-defined ES
+  policy input, request-supplied policy entries, CGS `id.conf` reuse,
+  user-defined reason codes, or user-defined API messages
 
 ## Surface classes
 
@@ -131,7 +136,7 @@ The current MVP does not claim:
 | Caller authentication and narrow SPIFFE allowlist on governed execution | `stable contract` | Keep authenticated caller identity and configured narrow allowlists as required governed-execution boundaries. | `.docs/execution_lifecycle/contracts.md`; `.docs/system_overview/contracts.md` |
 | `GET /v1/executions:contract` producer declaration | `compatibility edge` | Keep this as the current read-only producer compatibility declaration and early gate. Do not promote it into health, submit readiness, run authority, or a general capability registry. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |
 | `POST /v1/executions:prepare` | `compatibility edge` | Keep this as the current bounded preflight surface. It proves preflight success only and creates no run object or scheduler handoff. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md` |
-| ES Admission Policy Layer v0 | `stable contract` | ES remains the final admission-policy gate for ES-bound executions. The v0 implementation is intentionally small and replaceable, with redacted denials and one bounded selected-pattern static-script content policy. CP may preflight or render ES decisions later, but CP does not become the final ES gate; IM remains readiness/provenance/diagnostics only. | `PLANS.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md` |
+| ES Admission Policy Layer v0 | `stable contract` | ES remains the final admission-policy gate for ES-bound executions. The v0 implementation is intentionally small and replaceable, with redacted denials and one bounded selected-pattern static-script content policy, plus one built-in configured static-script literal-deny policy whose inputs come only from ES deployment/admin config. CP may preflight or render ES decisions later, but CP does not become the final ES gate; IM remains readiness/provenance/diagnostics only. This is not a broad policy engine, OPA/Rego, DSL, regex policy config, customer-authored policy bundle path, external evaluator service, CP-defined ES policy input, request-supplied policy entry path, or CGS `id.conf` reuse. | `PLANS.md`; `.docs/execution_lifecycle/es_execution_admission_model.md`; `.docs/execution_lifecycle/contracts.md` |
 | `POST /v1/executions:submit` | `stable contract` | Freeze this as the MVP execution handoff surface: async, bounded receipt, and Nomad submission through ES. The long-term request or receipt shape stays open elsewhere in this document. | `.docs/execution_lifecycle/contracts.md`; `.docs/system_overview/boundaries.md` |
 | `GET /v1/executions/{run_id}/status` and minimal Nomad-backed status projection | `stable contract` | Keep status as a Nomad-backed projection only. Do not widen it into an ES-owned lifecycle model. | `.docs/execution_lifecycle/contracts.md`; `.docs/system_overview/boundaries.md` |
 | `lifecycle_projection` | `stable contract` | Keep `source=nomad` and `revision` as an opaque same-run read-coordination token, not a scheduler id or write guard. | `PLANS.md`; `.docs/execution_lifecycle/contracts.md`; `.docs/supported_local_cp_consumer_runbook.md` |

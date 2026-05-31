@@ -143,6 +143,28 @@ the code and tests win and this document must be realigned.
   proof, CP-owned final ES policy, IM-owned policy authority, or semantic
   understanding of all Control Plane prompts, workspaces, scripts, retained
   bundles, logs, model outputs, or generated artifacts.
+- The configurable-input follow-up to C6 adds a second built-in ES policy:
+  `execution-substrate.admission.configured-static-script-literal-deny/v1`.
+  Its deny reason code is `configured_static_script_content_denied`, and its
+  safe deny message is
+  `static script content denied by admission policy`. It is configurable input
+  for a built-in ES admission policy, not a broad policy engine. ES
+  deployment/admin config may set mode `disabled` or `enforce` and provide a
+  bounded list of literal deny entries with safe entry IDs and the fixed input
+  class `static_script_payload_text`. CP does not define or supply these
+  inputs, IM remains readiness/provenance/diagnostics only, and requests cannot
+  carry policy entries. The current validation limits are at
+  most 32 entries, at most 256 bytes per literal, at most 64 bytes per entry
+  ID, valid UTF-8 printable non-control literal text only, no whitespace-only
+  literals, unique safe entry IDs, and only the `static_script_payload_text`
+  input class. `enforce` mode requires at least one entry; `disabled` mode does
+  not enforce entries.
+  Regex-looking text is treated as literal text; no regex, glob, shell
+  expression, Boolean policy language, OPA/Rego, DSL, customer policy bundle,
+  external evaluator service, user-defined reason code, user-defined API
+  message, CGS `id.conf` reuse, CP policy input, or request-supplied policy
+  entry is added. Denials remain redacted and must not expose the configured
+  literal, matched content, or raw payload text.
 - `:prepare` may perform bounded payload-byte reads when an enabled ES
   admission policy requires payload inspection. That read must use the
   explicit ARS payload digest carried by the discovery/evidence relationship
@@ -327,7 +349,7 @@ the code and tests win and this document must be realigned.
 | Surface | Class | Current rule |
 | --- | --- | --- |
 | ES admission composition at `:prepare`/`:submit` | `stable contract` | ES composes ARS discovery plus evidence/payload refs, aggregate evidence verification, narrow shared execution/runtime claims from `internal/contracts/evidence/v1`, EGS runtime-trust output, the configured workload-zone Vault runtime-config reference/blob, and caller authentication plus configured SPIFFE allowlist authorization. CGS authorize remains outside the current hot path. |
-| ES Admission Policy Layer v0 | `bounded slice rule` | ES evaluates a package-local policy seam during the shared `:prepare`/`:submit` admission path. Deny decisions carry stable policy ID, reason code, safe message, and inspected input classes as internal safe metadata, while the public API keeps the current redacted error envelope. |
+| ES Admission Policy Layer v0 | `bounded slice rule` | ES evaluates a package-local policy seam during the shared `:prepare`/`:submit` admission path. Deny decisions carry stable policy ID, reason code, safe message, and inspected input classes as internal safe metadata, while the public API keeps the current redacted error envelope. The configurable-input follow-up allows ES deployment/admin config to provide bounded literal inputs to built-in ES policies only; it does not add a policy language, evaluator injection, CP-supplied inputs, request-supplied entries, CGS `id.conf` reuse, or an external policy service. |
 | Scheduler handoff after `:submit` | `stable contract` | Successful submit hands execution to Nomad. ES keeps only the bounded receipt and read-through projection responsibilities after that handoff. |
 | `lifecycle_projection` | `bounded slice rule` | `source` and `revision` are opaque same-run read-coordination facts derived from Nomad observation only. |
 | Payload/runtime package resolution | `stable contract` | ES resolves payload bytes through designed ARS discovery plus explicit evidence/payload relationships, cross-checks those facts against aggregate evidence, and keeps descriptor/manifest support outside ES hot-path public grammar. |
@@ -413,6 +435,11 @@ ES does not own:
 - Do not let ES Admission Policy Layer v0 become OPA/Rego, a DSL, customer
   regex config, CGS `id.conf`, signed policy bundles, external policy
   decision service, or durable policy-decision storage by drift.
+- Do not let configurable inputs for built-in ES policies become evaluator
+  injection, arbitrary regex/glob/shell-expression configuration,
+  customer-authored policy bundles, request-supplied entries, CP-defined ES
+  policy, an external evaluator service, user-defined reason codes,
+  user-defined API messages, or CGS `id.conf` reuse.
 - Do not let the selected static-script content policy claim universal malware
   detection, complete command sandboxing, endpoint security, independent
   audit, public/demo readiness, runtime identity/Vault proof, IM

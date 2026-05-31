@@ -719,6 +719,36 @@ func TestAdmissionPolicyPrepareAndSubmitErrorsUseRedactedEnvelope(t *testing.T) 
 	assertPolicyErrorEnvelopeForAPI(t, submitRecorder.Body.String(), rawFixture)
 }
 
+func TestConfiguredAdmissionPolicyPrepareAndSubmitErrorsUseRedactedEnvelope(t *testing.T) {
+	rawFixture := apiConfiguredPolicyFixtureText()
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"mode":"async"}`
+	policyErr := &admission.Error{
+		Status:  http.StatusForbidden,
+		Code:    "configured_static_script_content_denied",
+		Message: "static script content denied by admission policy",
+	}
+	server := NewServer(fakeLifecycleService{
+		prepareErr: policyErr,
+		submitErr:  policyErr,
+	}, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	prepareRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prepareRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", body))
+	if prepareRecorder.Code != http.StatusForbidden {
+		t.Fatalf("expected prepare configured policy denial 403, got %d", prepareRecorder.Code)
+	}
+	assertJSONFieldsExactForAPI(t, prepareRecorder.Body.Bytes(), "success", "error", "code")
+	assertConfiguredPolicyErrorEnvelopeForAPI(t, prepareRecorder.Body.String(), rawFixture)
+
+	submitRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(submitRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:submit", body))
+	if submitRecorder.Code != http.StatusForbidden {
+		t.Fatalf("expected submit configured policy denial 403, got %d", submitRecorder.Code)
+	}
+	assertJSONFieldsExactForAPI(t, submitRecorder.Body.Bytes(), "success", "error", "code")
+	assertConfiguredPolicyErrorEnvelopeForAPI(t, submitRecorder.Body.String(), rawFixture)
+}
+
 func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 	server := NewServer(fakeLifecycleService{}, "bootstrap", []string{"service/control-plane"}, func() bool { return true })
 
@@ -904,6 +934,31 @@ func assertPolicyErrorEnvelopeForAPI(t *testing.T, body string, rawFixture strin
 	)
 }
 
+func assertConfiguredPolicyErrorEnvelopeForAPI(t *testing.T, body string, rawFixture string) {
+	t.Helper()
+
+	var payload admission.ErrorResponse
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode configured policy error envelope: %v", err)
+	}
+	if payload.Success || payload.Error != "static script content denied by admission policy" || payload.Code != "configured_static_script_content_denied" {
+		t.Fatalf("unexpected configured policy error envelope success=%t code=%q message=%q", payload.Success, payload.Code, payload.Error)
+	}
+	if strings.Contains(body, rawFixture) {
+		t.Fatal("expected configured policy error envelope to omit configured literal content")
+	}
+	assertTextOmitsAllForAPI(t, body,
+		`"policy_id"`,
+		`"matched"`,
+		`"prompt"`,
+		`"workspace"`,
+		`"model_output"`,
+		`"logs"`,
+		`"result_bundle"`,
+		`"support_bundle"`,
+	)
+}
+
 func apiPolicyFixtureText() string {
 	return strings.Join([]string{
 		"#!/bin/sh",
@@ -912,6 +967,10 @@ func apiPolicyFixtureText() string {
 		"/",
 		"# inert API redaction fixture; never executed",
 	}, "\n")
+}
+
+func apiConfiguredPolicyFixtureText() string {
+	return "ES_DEMO_LITERAL_MARKER"
 }
 
 func compactHeaderText(header http.Header) string {

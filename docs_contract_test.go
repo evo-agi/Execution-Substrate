@@ -1392,6 +1392,69 @@ func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
 	)
 }
 
+func TestWorkstreamC6ConfigurableAdmissionPolicyInputsAreDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "PLANS C6 configurable inputs", text: plans},
+		{label: "Workstream C6 decision configurable inputs", text: decision},
+		{label: "lifecycle contracts C6 configurable inputs", text: lifecycleContracts},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"configurable-input follow-up",
+			"`execution-substrate.admission.configured-static-script-literal-deny/v1`",
+			"`configured_static_script_content_denied`",
+			"`static script content denied by admission policy`",
+			"`disabled`",
+			"`enforce`",
+			"`static_script_payload_text`",
+			"ES deployment/admin config",
+			"CP does not define or supply",
+			"IM remains readiness",
+			"request",
+			"OPA/Rego",
+			"DSL",
+			"CGS `id.conf` reuse",
+			"external evaluator",
+			"Denials remain redacted",
+		)
+	}
+
+	assertContainsAll(t, "configuration C6 configurable input shape", configuration,
+		"optional `admission_policy.configured_static_script_literal_deny` is ES deployment/admin configuration for one built-in ES admission policy only",
+		"supported `mode` values are `disabled` and `enforce`",
+		"the only supported `input_class` is `static_script_payload_text`",
+		"current validation limits are at most 32 entries, at most 256 bytes per literal, and at most 64 bytes per entry ID",
+		"not whitespace-only",
+		"format/invisible",
+		"regex-looking text is treated as literal text",
+		"there is no regex, glob, shell expression, Boolean policy language, OPA/Rego, DSL, customer policy bundle, external evaluator service",
+		"request-supplied policy entry",
+		"CP-supplied policy input",
+		"CGS `id.conf` reuse",
+	)
+
+	assertContainsAll(t, "MVP C6 configurable input non-claims", mvp,
+		"configurable inputs for built-in ES admission policies as a broad policy engine",
+		"evaluator injection hook",
+		"OPA/Rego",
+		"DSL",
+		"regex engine",
+		"customer-authored policy bundles",
+		"external evaluator service",
+		"CP-defined ES policy input",
+		"request-supplied policy entries",
+		"CGS `id.conf` reuse",
+	)
+}
+
 func TestWorkstreamC6AdmissionPolicyNonClaimsAreDocumented(t *testing.T) {
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
 	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))

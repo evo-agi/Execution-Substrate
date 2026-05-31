@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	esconfig "execution-substrate/es/config"
 )
 
 func TestAdmissionPolicyDecisionShapeRecordsSafeMetadataOnly(t *testing.T) {
@@ -74,6 +76,95 @@ func TestSelectedStaticScriptPolicyAllowsBenignAndDeniesSelectedPattern(t *testi
 	assertOmitsPolicyFixture(t, denied.SafeMessage, selectedFixture)
 	decisionPayload := mustMarshalWorkstreamCTestJSON(t, denied)
 	assertOmitsPolicyFixture(t, decisionPayload, selectedFixture)
+}
+
+func TestConfiguredStaticScriptLiteralDenyPolicyAllowsBenignPayload(t *testing.T) {
+	policy := configuredStaticScriptLiteralDenyPolicyForTest(configuredPolicyFixtureMarker())
+
+	decision := policy.Evaluate(context.Background(), newStaticScriptPolicyContext(benignPolicyFixtureText()))
+	if !decision.Allow {
+		t.Fatalf("expected configured literal deny policy to allow benign payload, got %s", decision.ReasonCode)
+	}
+	assertAdmissionPolicyInputClasses(t, decision.InspectedInputClasses,
+		AdmissionPolicyInputArtifactEvidenceMetadata,
+		AdmissionPolicyInputPayloadDigestAndByteCount,
+		AdmissionPolicyInputStaticScriptPayloadText,
+	)
+}
+
+func TestConfiguredStaticScriptLiteralDenyPolicyDeniesConfiguredMarkerWithSafeMetadata(t *testing.T) {
+	marker := configuredPolicyFixtureMarker()
+	policy := configuredStaticScriptLiteralDenyPolicyForTest(marker)
+
+	denied := policy.Evaluate(context.Background(), newStaticScriptPolicyContext("echo before\n"+marker+"\necho after\n"))
+	if denied.Allow {
+		t.Fatal("expected configured literal marker to be denied")
+	}
+	if denied.PolicyID != configuredStaticScriptLiteralDenyPolicyID ||
+		denied.ReasonCode != AdmissionPolicyReasonCode(codeConfiguredStaticScriptDenied) ||
+		denied.SafeMessage != configuredStaticScriptLiteralDenyMessage {
+		t.Fatalf("unexpected configured literal denial metadata: %s %s %q", denied.PolicyID, denied.ReasonCode, denied.SafeMessage)
+	}
+	assertOmitsPolicyFixture(t, denied.SafeMessage, marker)
+	decisionPayload := mustMarshalWorkstreamCTestJSON(t, denied)
+	assertOmitsPolicyFixture(t, decisionPayload, marker)
+}
+
+func TestConfiguredStaticScriptLiteralDenyPolicyTreatsRegexLikeEntryAsLiteral(t *testing.T) {
+	regexLookingLiteral := "^ES_DEMO_LITERAL_MARKER.*$"
+	policy := configuredStaticScriptLiteralDenyPolicyForTest(regexLookingLiteral)
+
+	regexMatchOnly := policy.Evaluate(context.Background(), newStaticScriptPolicyContext("echo ES_DEMO_LITERAL_MARKER_SUFFIX"))
+	if !regexMatchOnly.Allow {
+		t.Fatalf("regex-looking configured entry must not act as regex, got %s", regexMatchOnly.ReasonCode)
+	}
+
+	exactLiteral := policy.Evaluate(context.Background(), newStaticScriptPolicyContext("echo "+regexLookingLiteral))
+	if exactLiteral.Allow {
+		t.Fatal("expected exact regex-looking literal text to be denied")
+	}
+	assertOmitsPolicyFixture(t, exactLiteral.SafeMessage, regexLookingLiteral)
+}
+
+func TestConfiguredStaticScriptLiteralDenyPolicyIsBuiltFromESAdminConfigOnly(t *testing.T) {
+	evaluator := admissionPolicyEvaluatorFromConfig(&esconfig.AdmissionPolicyConfig{
+		ConfiguredStaticScriptLiteralDeny: &esconfig.ConfiguredStaticScriptLiteralDenyPolicyConfig{
+			Mode: esconfig.ConfiguredStaticScriptLiteralDenyModeEnforce,
+			Entries: []esconfig.ConfiguredStaticScriptLiteralDenyEntryConfig{
+				{
+					ID:         "demo-marker",
+					InputClass: esconfig.ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+					Literal:    configuredPolicyFixtureMarker(),
+				},
+			},
+		},
+	})
+
+	denied := evaluator.Evaluate(context.Background(), newStaticScriptPolicyContext(configuredPolicyFixtureMarker()))
+	if denied.Allow || denied.PolicyID != configuredStaticScriptLiteralDenyPolicyID {
+		t.Fatalf("expected ES-admin configured built-in policy denial, got allow=%v policy=%s", denied.Allow, denied.PolicyID)
+	}
+}
+
+func TestConfiguredStaticScriptLiteralDenyPolicyDisabledModeDoesNotDenyMatchingLiteral(t *testing.T) {
+	marker := configuredPolicyFixtureMarker()
+	evaluator := admissionPolicyEvaluatorFromConfig(&esconfig.AdmissionPolicyConfig{
+		ConfiguredStaticScriptLiteralDeny: &esconfig.ConfiguredStaticScriptLiteralDenyPolicyConfig{
+			Mode: esconfig.ConfiguredStaticScriptLiteralDenyModeDisabled,
+			Entries: []esconfig.ConfiguredStaticScriptLiteralDenyEntryConfig{
+				{
+					ID:         "configured-marker",
+					InputClass: esconfig.ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+					Literal:    marker,
+				},
+			},
+		},
+	})
+
+	decision := evaluator.Evaluate(context.Background(), newStaticScriptPolicyContext(marker))
+	if !decision.Allow {
+		t.Fatalf("expected disabled configured literal policy not to deny, got %s", decision.ReasonCode)
+	}
 }
 
 func TestAdmissionPolicyPayloadInputExtractsBoundedStaticScriptText(t *testing.T) {
@@ -213,6 +304,42 @@ func newStaticScriptPolicyContext(text string) AdmissionPolicyContext {
 
 func benignPolicyFixtureText() string {
 	return "#!/bin/sh\nprintf '%s\\n' policy-fixture-ok\n"
+}
+
+func configuredPolicyFixtureMarker() string {
+	return "ES_DEMO_LITERAL_MARKER"
+}
+
+func configuredStaticScriptLiteralDenyPolicyForTest(literal string) configuredStaticScriptLiteralDenyPolicy {
+	return configuredStaticScriptLiteralDenyPolicy{
+		entries: []configuredStaticScriptLiteralDenyEntry{
+			{
+				id:      "demo-marker",
+				literal: literal,
+			},
+		},
+	}
+}
+
+func configureConfiguredStaticScriptLiteralDenyService(service *Service, literal string) {
+	configureConfiguredStaticScriptLiteralDenyServiceMode(service, esconfig.ConfiguredStaticScriptLiteralDenyModeEnforce, literal)
+}
+
+func configureConfiguredStaticScriptLiteralDenyServiceMode(service *Service, mode esconfig.ConfiguredStaticScriptLiteralDenyPolicyMode, literal string) {
+	cfg := &esconfig.AdmissionPolicyConfig{
+		ConfiguredStaticScriptLiteralDeny: &esconfig.ConfiguredStaticScriptLiteralDenyPolicyConfig{
+			Mode: mode,
+			Entries: []esconfig.ConfiguredStaticScriptLiteralDenyEntryConfig{
+				{
+					ID:         "demo-marker",
+					InputClass: esconfig.ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText,
+					Literal:    literal,
+				},
+			},
+		},
+	}
+	service.cfg.AdmissionPolicy = cfg
+	service.admissionPolicyEvaluator = admissionPolicyEvaluatorFromConfig(cfg)
 }
 
 func selectedPatternFixtureText() string {

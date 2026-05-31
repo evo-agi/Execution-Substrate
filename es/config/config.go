@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
 )
@@ -21,6 +23,7 @@ type Config struct {
 	Security          SecurityConfig          `json:"security"`
 	Authorization     AuthorizationConfig     `json:"authorization"`
 	Dependencies      DependenciesConfig      `json:"dependencies"`
+	AdmissionPolicy   *AdmissionPolicyConfig  `json:"admission_policy,omitempty"`
 	RuntimeConfig     RuntimeConfigConfig     `json:"runtime_config"`
 	Verification      VerificationConfig      `json:"verification"`
 	WorkloadVaultAuth WorkloadVaultAuthConfig `json:"workload_vault_auth"`
@@ -66,6 +69,40 @@ type DependencyConfig struct {
 	ClientKeyFile  string `json:"client_key_file"`
 	RootCAFile     string `json:"root_ca_file"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+type AdmissionPolicyConfig struct {
+	ConfiguredStaticScriptLiteralDeny *ConfiguredStaticScriptLiteralDenyPolicyConfig `json:"configured_static_script_literal_deny,omitempty"`
+}
+
+type ConfiguredStaticScriptLiteralDenyPolicyMode string
+
+const (
+	ConfiguredStaticScriptLiteralDenyModeDisabled ConfiguredStaticScriptLiteralDenyPolicyMode = "disabled"
+	ConfiguredStaticScriptLiteralDenyModeEnforce  ConfiguredStaticScriptLiteralDenyPolicyMode = "enforce"
+)
+
+type ConfiguredStaticScriptLiteralDenyInputClass string
+
+const (
+	ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText ConfiguredStaticScriptLiteralDenyInputClass = "static_script_payload_text"
+)
+
+const (
+	MaxConfiguredStaticScriptLiteralDenyEntries      = 32
+	MaxConfiguredStaticScriptLiteralDenyLiteralBytes = 256
+	MaxConfiguredStaticScriptLiteralDenyEntryIDBytes = 64
+)
+
+type ConfiguredStaticScriptLiteralDenyPolicyConfig struct {
+	Mode    ConfiguredStaticScriptLiteralDenyPolicyMode    `json:"mode"`
+	Entries []ConfiguredStaticScriptLiteralDenyEntryConfig `json:"entries,omitempty"`
+}
+
+type ConfiguredStaticScriptLiteralDenyEntryConfig struct {
+	ID         string                                      `json:"id"`
+	InputClass ConfiguredStaticScriptLiteralDenyInputClass `json:"input_class"`
+	Literal    string                                      `json:"literal"`
 }
 
 type NomadConfig struct {
@@ -202,6 +239,11 @@ func (c Config) Validate() error {
 	if err := c.Dependencies.ExecutionGovernance.Validate("dependencies.execution_governance"); err != nil {
 		return err
 	}
+	if c.AdmissionPolicy != nil {
+		if err := c.AdmissionPolicy.Validate(); err != nil {
+			return err
+		}
+	}
 	if err := c.RuntimeConfig.Validate(); err != nil {
 		return err
 	}
@@ -301,6 +343,105 @@ func (c DependencyConfig) Validate(field string) error {
 		return fmt.Errorf("%s.timeout_seconds must be greater than 0", field)
 	}
 	return nil
+}
+
+func (c AdmissionPolicyConfig) Validate() error {
+	if c.ConfiguredStaticScriptLiteralDeny != nil {
+		if err := c.ConfiguredStaticScriptLiteralDeny.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c ConfiguredStaticScriptLiteralDenyPolicyConfig) Validate(field string) error {
+	mode := strings.TrimSpace(string(c.Mode))
+	if mode != string(c.Mode) {
+		return fmt.Errorf("%s.mode must be disabled or enforce", field)
+	}
+	switch ConfiguredStaticScriptLiteralDenyPolicyMode(mode) {
+	case ConfiguredStaticScriptLiteralDenyModeDisabled, ConfiguredStaticScriptLiteralDenyModeEnforce:
+	default:
+		return fmt.Errorf("%s.mode must be disabled or enforce", field)
+	}
+
+	if len(c.Entries) > MaxConfiguredStaticScriptLiteralDenyEntries {
+		return fmt.Errorf("%s.entries must not contain more than %d entries", field, MaxConfiguredStaticScriptLiteralDenyEntries)
+	}
+	if ConfiguredStaticScriptLiteralDenyPolicyMode(mode) == ConfiguredStaticScriptLiteralDenyModeEnforce && len(c.Entries) == 0 {
+		return fmt.Errorf("%s.entries is required when mode is enforce", field)
+	}
+	seenIDs := map[string]struct{}{}
+	for i, entry := range c.Entries {
+		if err := entry.Validate(fmt.Sprintf("%s.entries[%d]", field, i)); err != nil {
+			return err
+		}
+		id := strings.TrimSpace(entry.ID)
+		if _, ok := seenIDs[id]; ok {
+			return fmt.Errorf("%s.entries[%d].id must be unique", field, i)
+		}
+		seenIDs[id] = struct{}{}
+	}
+	return nil
+}
+
+func (e ConfiguredStaticScriptLiteralDenyEntryConfig) Validate(field string) error {
+	if err := validateConfiguredStaticScriptLiteralDenyEntryID(field+".id", e.ID); err != nil {
+		return err
+	}
+	inputClass := strings.TrimSpace(string(e.InputClass))
+	if inputClass != string(e.InputClass) {
+		return fmt.Errorf("%s.input_class must be static_script_payload_text", field)
+	}
+	if ConfiguredStaticScriptLiteralDenyInputClass(inputClass) != ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText {
+		return fmt.Errorf("%s.input_class must be static_script_payload_text", field)
+	}
+	if e.Literal == "" || strings.TrimSpace(e.Literal) == "" {
+		return fmt.Errorf("%s.literal must be non-empty printable text", field)
+	}
+	if len(e.Literal) > MaxConfiguredStaticScriptLiteralDenyLiteralBytes {
+		return fmt.Errorf("%s.literal must not exceed %d bytes", field, MaxConfiguredStaticScriptLiteralDenyLiteralBytes)
+	}
+	if !utf8.ValidString(e.Literal) {
+		return fmt.Errorf("%s.literal must be valid UTF-8 text", field)
+	}
+	for _, r := range e.Literal {
+		if !isConfiguredStaticScriptLiteralDenyPrintableRune(r) {
+			return fmt.Errorf("%s.literal must contain only printable non-control text", field)
+		}
+	}
+	return nil
+}
+
+func isConfiguredStaticScriptLiteralDenyPrintableRune(r rune) bool {
+	return unicode.IsPrint(r) && !unicode.Is(unicode.Cc, r) && !unicode.Is(unicode.Cf, r)
+}
+
+func validateConfiguredStaticScriptLiteralDenyEntryID(field string, id string) error {
+	if id == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if id != strings.TrimSpace(id) {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", field)
+	}
+	if len(id) > MaxConfiguredStaticScriptLiteralDenyEntryIDBytes {
+		return fmt.Errorf("%s must not exceed %d bytes", field, MaxConfiguredStaticScriptLiteralDenyEntryIDBytes)
+	}
+	if !isConfiguredStaticScriptLiteralDenyEntryIDAlnum(id[0]) || !isConfiguredStaticScriptLiteralDenyEntryIDAlnum(id[len(id)-1]) {
+		return fmt.Errorf("%s must start and end with an ASCII letter or digit", field)
+	}
+	for i := 0; i < len(id); i++ {
+		b := id[i]
+		if isConfiguredStaticScriptLiteralDenyEntryIDAlnum(b) || b == '.' || b == '_' || b == '-' {
+			continue
+		}
+		return fmt.Errorf("%s may contain only ASCII letters, digits, dot, underscore, or hyphen", field)
+	}
+	return nil
+}
+
+func isConfiguredStaticScriptLiteralDenyEntryIDAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 func (c NomadConfig) Validate(field string) error {

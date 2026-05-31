@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	esconfig "execution-substrate/es/config"
 )
 
 func TestAdmissionPolicyPrepareRejectsSelectedStaticScriptPayloadSafely(t *testing.T) {
@@ -110,6 +112,159 @@ func TestAdmissionPolicySubmitBackstopRejectsBeforeStagingAndNomad(t *testing.T)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
 	if len(arsCalls) != 4 {
 		t.Fatalf("expected submit policy denial to stop before staging and submit payload reread, got %d ARS calls", len(arsCalls))
+	}
+}
+
+func TestConfiguredStaticScriptLiteralDenyPrepareRejectsConfiguredMarkerSafely(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	marker := configuredPolicyFixtureMarker()
+	configureConfiguredStaticScriptLiteralDenyService(service, marker)
+	request := fixture.prepareRequest()
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte("echo before\n" + marker + "\necho after\n"),
+	})
+
+	arsCalls := map[string]int{}
+	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arsCalls[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
+			writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
+		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
+			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
+		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("prepare reached unexpected ARS path before configured literal denial: %q", r.URL.Path)
+		}
+	}))
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("configured literal prepare denial must not call nomad, got %s %q", r.Method, r.URL.Path)
+	}))
+
+	result, err := service.Prepare(context.Background(), request)
+	assertAdmissionError(t, err, http.StatusForbidden, codeConfiguredStaticScriptDenied)
+	if result.Success {
+		t.Fatalf("prepare must not report success on configured literal denial")
+	}
+	if err.Message != configuredStaticScriptLiteralDenyMessage {
+		t.Fatalf("unexpected configured literal denial message %q", err.Message)
+	}
+	body, marshalErr := json.Marshal(ErrorResponse{Success: false, Error: err.Message, Code: err.Code})
+	if marshalErr != nil {
+		t.Fatalf("marshal error response: %v", marshalErr)
+	}
+	assertOmitsPolicyFixture(t, string(body), marker)
+	assertDirectoryEmpty(t, stagingRoot)
+	assertDirectoryEmpty(t, resultsRoot)
+	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
+	if len(arsCalls) != 4 {
+		t.Fatalf("expected configured literal prepare denial to stop before staging, got %d ARS calls", len(arsCalls))
+	}
+}
+
+func TestConfiguredStaticScriptLiteralDenySubmitBackstopRejectsBeforeStagingAndNomad(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	marker := configuredPolicyFixtureMarker()
+	configureConfiguredStaticScriptLiteralDenyService(service, marker)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte("echo before\n" + marker + "\necho after\n"),
+	})
+
+	arsCalls := map[string]int{}
+	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arsCalls[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
+			writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
+		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
+			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
+		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("submit reached unexpected ARS path before configured literal denial: %q", r.URL.Path)
+		}
+	}))
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("configured literal submit denial must not call nomad, got %s %q", r.Method, r.URL.Path)
+	}))
+
+	result, err := service.Submit(context.Background(), request)
+	assertAdmissionError(t, err, http.StatusForbidden, codeConfiguredStaticScriptDenied)
+	if result.RunID != "" || result.Submitted {
+		t.Fatalf("submit denial must not create run ID or submitted receipt")
+	}
+	if err.Message != configuredStaticScriptLiteralDenyMessage {
+		t.Fatalf("unexpected configured literal denial message %q", err.Message)
+	}
+	assertOmitsPolicyFixture(t, err.Code+" "+err.Message, marker)
+	assertDirectoryEmpty(t, stagingRoot)
+	assertDirectoryEmpty(t, resultsRoot)
+	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
+	if len(arsCalls) != 4 {
+		t.Fatalf("expected configured literal submit denial to stop before staging and nomad, got %d ARS calls", len(arsCalls))
+	}
+}
+
+func TestConfiguredStaticScriptLiteralDenyDisabledModeAllowsMatchingPayload(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
+	marker := configuredPolicyFixtureMarker()
+	configureConfiguredStaticScriptLiteralDenyServiceMode(service, esconfig.ConfiguredStaticScriptLiteralDenyModeDisabled, marker)
+	request := fixture.prepareRequest()
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte("echo " + marker),
+	})
+
+	arsCalls := map[string]int{}
+	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arsCalls[r.URL.Path]++
+		switch r.URL.Path {
+		case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
+			writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
+		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
+			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
+		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(payload)
+		default:
+			t.Fatalf("prepare reached unexpected ARS path %q", r.URL.Path)
+		}
+	}))
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
+	}))
+
+	result, err := service.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatalf("expected disabled configured literal policy to allow prepare, got %+v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected disabled configured literal policy prepare to succeed")
+	}
+	assertDirectoryEmpty(t, stagingRoot)
+	assertDirectoryEmpty(t, resultsRoot)
+	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
+	if len(arsCalls) != 4 {
+		t.Fatalf("expected disabled configured literal prepare to use only bounded admission reads, got %d ARS calls", len(arsCalls))
 	}
 }
 

@@ -23,7 +23,7 @@ const (
 func (s *Service) enforceAdmissionPolicy(ctx context.Context, req PrepareRequest, artifact preparedArtifact) ([]byte, bool, *Error) {
 	evaluator := s.admissionPolicyEvaluator
 	if evaluator == nil {
-		evaluator = defaultAdmissionPolicyEvaluator()
+		evaluator = admissionPolicyEvaluatorFromConfig(s.cfg.AdmissionPolicy)
 	}
 
 	policyCtx := newAdmissionPolicyContext(req, artifact)

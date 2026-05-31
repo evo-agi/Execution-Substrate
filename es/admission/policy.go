@@ -5,15 +5,20 @@ import (
 	"net/http"
 	"strings"
 	"unicode"
+
+	esconfig "execution-substrate/es/config"
 )
 
 const (
 	codeDestructiveShellCommandDenied   = "destructive_shell_command_denied"
+	codeConfiguredStaticScriptDenied    = "configured_static_script_content_denied"
 	codeAdmissionPolicyInputUnavailable = "admission_policy_input_unavailable"
 
-	selectedDestructiveShellCommandPolicyID AdmissionPolicyID = "execution-substrate.admission.selected-destructive-shell-command/v1"
-	selectedDestructiveShellCommandMessage  string            = "destructive shell command denied by admission policy"
-	admissionPolicyInputUnavailableMessage  string            = "admission policy input unavailable"
+	selectedDestructiveShellCommandPolicyID   AdmissionPolicyID = "execution-substrate.admission.selected-destructive-shell-command/v1"
+	selectedDestructiveShellCommandMessage    string            = "destructive shell command denied by admission policy"
+	configuredStaticScriptLiteralDenyPolicyID AdmissionPolicyID = "execution-substrate.admission.configured-static-script-literal-deny/v1"
+	configuredStaticScriptLiteralDenyMessage  string            = "static script content denied by admission policy"
+	admissionPolicyInputUnavailableMessage    string            = "admission policy input unavailable"
 )
 
 type AdmissionPolicyID string
@@ -78,10 +83,18 @@ type admissionPolicySet struct {
 }
 
 func defaultAdmissionPolicyEvaluator() AdmissionPolicyEvaluator {
+	return admissionPolicyEvaluatorFromConfig(nil)
+}
+
+func admissionPolicyEvaluatorFromConfig(cfg *esconfig.AdmissionPolicyConfig) AdmissionPolicyEvaluator {
+	policies := []AdmissionPolicyEvaluator{
+		selectedDestructiveShellCommandPolicy{},
+	}
+	if policy := configuredStaticScriptLiteralDenyPolicyFromConfig(cfg); policy != nil {
+		policies = append(policies, policy)
+	}
 	return admissionPolicySet{
-		policies: []AdmissionPolicyEvaluator{
-			selectedDestructiveShellCommandPolicy{},
-		},
+		policies: policies,
 	}
 }
 
@@ -136,6 +149,70 @@ func (selectedDestructiveShellCommandPolicy) Evaluate(_ context.Context, ctx Adm
 			selectedDestructiveShellCommandMessage,
 			inspected...,
 		)
+	}
+	return AllowAdmissionPolicyDecision(inspected...)
+}
+
+type configuredStaticScriptLiteralDenyPolicy struct {
+	entries []configuredStaticScriptLiteralDenyEntry
+}
+
+type configuredStaticScriptLiteralDenyEntry struct {
+	id      string
+	literal string
+}
+
+func configuredStaticScriptLiteralDenyPolicyFromConfig(cfg *esconfig.AdmissionPolicyConfig) AdmissionPolicyEvaluator {
+	if cfg == nil || cfg.ConfiguredStaticScriptLiteralDeny == nil {
+		return nil
+	}
+	policyCfg := cfg.ConfiguredStaticScriptLiteralDeny
+	if policyCfg.Mode != esconfig.ConfiguredStaticScriptLiteralDenyModeEnforce || len(policyCfg.Entries) == 0 {
+		return nil
+	}
+	entries := make([]configuredStaticScriptLiteralDenyEntry, 0, len(policyCfg.Entries))
+	for _, entry := range policyCfg.Entries {
+		entries = append(entries, configuredStaticScriptLiteralDenyEntry{
+			id:      strings.TrimSpace(entry.ID),
+			literal: entry.Literal,
+		})
+	}
+	return configuredStaticScriptLiteralDenyPolicy{
+		entries: entries,
+	}
+}
+
+func (p configuredStaticScriptLiteralDenyPolicy) RequiredInputClasses(ctx AdmissionPolicyContext) []AdmissionPolicyInputClass {
+	if len(p.entries) == 0 || strings.TrimSpace(ctx.ArtifactType) != "static-script" {
+		return nil
+	}
+	return []AdmissionPolicyInputClass{
+		AdmissionPolicyInputArtifactEvidenceMetadata,
+		AdmissionPolicyInputPayloadDigestAndByteCount,
+		AdmissionPolicyInputStaticScriptPayloadText,
+	}
+}
+
+func (p configuredStaticScriptLiteralDenyPolicy) Evaluate(_ context.Context, ctx AdmissionPolicyContext) AdmissionPolicyDecision {
+	inspected := []AdmissionPolicyInputClass{
+		AdmissionPolicyInputArtifactEvidenceMetadata,
+	}
+	if len(p.entries) == 0 || strings.TrimSpace(ctx.ArtifactType) != "static-script" {
+		return AllowAdmissionPolicyDecision(inspected...)
+	}
+	inspected = append(inspected,
+		AdmissionPolicyInputPayloadDigestAndByteCount,
+		AdmissionPolicyInputStaticScriptPayloadText,
+	)
+	for _, entry := range p.entries {
+		if entry.literal != "" && strings.Contains(ctx.StaticScriptPayloadText, entry.literal) {
+			return DenyAdmissionPolicyDecision(
+				configuredStaticScriptLiteralDenyPolicyID,
+				AdmissionPolicyReasonCode(codeConfiguredStaticScriptDenied),
+				configuredStaticScriptLiteralDenyMessage,
+				inspected...,
+			)
+		}
 	}
 	return AllowAdmissionPolicyDecision(inspected...)
 }
