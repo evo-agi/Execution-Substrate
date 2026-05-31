@@ -459,6 +459,14 @@ func workstreamASourceLine(lines []string, line int) string {
 }
 
 func allowedWorkstreamAPublicationOccurrence(occurrence workstreamASourceOccurrence) bool {
+	if occurrence.spelling == "PolicyDecision" &&
+		filepath.Base(occurrence.file) == "policy.go" &&
+		strings.Contains(occurrence.source, "AdmissionPolicyDecision") {
+		// ES Admission Policy Layer v0 owns AdmissionPolicyDecision as a local
+		// policy seam type. This is not AGS claims.package.publication
+		// PolicyDecision grammar.
+		return true
+	}
 	if occurrence.spelling != "Publication" && occurrence.spelling != "publication" {
 		return false
 	}

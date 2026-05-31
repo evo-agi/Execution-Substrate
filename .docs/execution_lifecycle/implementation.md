@@ -25,6 +25,7 @@ These labels matter because implementation shape and public contract are related
 | `es/api/server.go` | HTTP route registration, caller authorization, request decoding, lifecycle path parsing, HTTP error shaping, handler-to-service dispatch | Admission logic, Nomad interaction, lifecycle state | This is where public lifecycle requests first enter ES |
 | `es/app/app.go` | App construction, service/server assembly, TLS HTTP server startup/shutdown, startup initialization sequencing | Admission rules, submit logic, lifecycle projection logic | This is the lifecycle slice's top-level wiring entrypoint |
 | `es/admission/service.go` | Core service construction, dependency clients, verifier setup, runtime-trust initialization, health snapshot, `Prepare` path, shared fetch/verify helpers | Nomad job construction, logs/cancel projection, runtime token ownership | This is the main admission implementation hub |
+| `es/admission/policy.go` and `es/admission/policy_payload.go` | ES-local admission policy seam, typed policy context/decision structures, built-in selected static-script content policy, and bounded static-script payload text extraction | CGS/EGS policy-language redesign, OPA/Rego, customer policy config, external policy services, durable policy-decision storage, CP prompt/workspace parsing | This keeps ES final admission policy local and replaceable without turning policy into a broad language or cross-service authority surface |
 | `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, reserved result-path staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
 | `es/admission/runtimeprofile.go` | Bounded runtime-profile selection, validation, image selection, and non-secret profile environment metadata | Package-kind redesign, lifecycle semantics, secret brokerage | This keeps the Control Plane normal-shell runtime contract explicit without moving CP control behavior into ES |
 | `es/admission/authorityhandoff.go` | Bounded non-secret authority handoff DTO assembly and recovery from submitted runtime specs | Live credential state, policy approval state, scheduler identity, lifecycle storage | This keeps the CP-consumable handoff read surface grounded in facts ES selected and injected |
@@ -153,7 +154,12 @@ What the app layer delegates:
 5. Read the workload-zone Vault config reference captured from validated ES startup config.
 6. Fetch the workload-zone Vault config blob from ARS using that reference.
 7. Decode and validate the workload-zone Vault blob through `internal/contracts/runtimeconfig/v1`, then resolve the workload-vault auth plan from that typed config plus ES `workload_vault_auth.default_mode`, including optional non-secret Vault CA trust material.
-8. Assemble and return `PrepareResult`.
+8. Evaluate ES Admission Policy Layer v0 in the same shared admission helper
+   used by `Prepare` and `Submit`. If an enabled policy requires payload
+   inspection, read only bounded static-script payload text through the
+   explicit payload digest already discovered through ARS and cross-checked
+   against aggregate evidence.
+9. Assemble and return `PrepareResult`.
 
 There is no ACS hop in this runtime-config path.
 
@@ -162,6 +168,8 @@ What `Prepare` reads:
 - ARS runtime-facing discovery plus aggregate artifact evidence from ARS
 - the validated workload-zone Vault config reference from ES startup config
 - Runtime-trust state loaded from EGS at startup
+- bounded static-script payload text from ARS only when an enabled ES
+  admission policy requires that input class
 - CGS is not a current read dependency of `Prepare` or `Submit`
 
 **Implementation invariants**
@@ -170,6 +178,15 @@ What `Prepare` reads:
 - `Prepare` does not build or submit a Nomad job.
 - `Prepare` does not create local staging directories.
 - `Prepare` does not call CGS or consume a CGS authorize response.
+- `Prepare` may read bounded payload bytes for policy input only through the
+  explicit ARS payload digest carried by the already validated
+  discovery/evidence relationship; it does not treat `artifact_digest` as a
+  payload locator.
+- Policy denials use stable reason codes and safe messages only. The
+  implementation must not log or return raw payload text, matched content, CP
+  prompt/workspace material, model output, logs, retained bundles, support
+  bundles, credentials, environment values, DB contents, process records, or
+  cert/key/TLS/SPIFFE/Vault/WebAuthn/passkey/API-key material.
 - `Prepare` returns a bounded result assembled in memory after verification and resolution steps complete.
 - The richer signer/workload/workload-vault composition data stays internal to the shared admission helper instead of leaking through the public `PrepareResult`.
 - `workload_vault_auth.default_mode` is current ES config residue and bounded
@@ -184,7 +201,8 @@ What `Prepare` reads:
 1. Reject submission if the Nomad client is unavailable or submit is not configured.
 2. Default omitted mode to `async`.
 3. Reject non-async mode.
-4. Reuse the shared admission helper that also powers `Prepare`.
+4. Reuse the shared admission helper that also powers `Prepare`, including ES
+   Admission Policy Layer v0.
 5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
 6. Resolve the optional bounded runtime profile selection from invocation annotations.
 7. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
@@ -219,6 +237,9 @@ Where ES stops and Nomad takes over:
 **Implementation invariants**
 
 - `Submit` reuses `Prepare` instead of duplicating the full admission path inline.
+- `Submit` cannot bypass the policy evaluation path used by `Prepare`; policy
+  denial happens before run ID creation, payload staging, mount staging, and
+  Nomad submission.
 - Failed submits remove the staging root immediately through deferred cleanup.
 - Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.

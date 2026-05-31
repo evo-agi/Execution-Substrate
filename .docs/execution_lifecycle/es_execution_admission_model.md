@@ -119,6 +119,45 @@ the code and tests win and this document must be realigned.
   grammar and live credential/security fields; logs/result bodies remain
   payload/output surfaces governed by the existing compatibility contract and
   must not be newly sanitized, interpreted, or promoted into authority.
+- C6 is ES Admission Policy Layer v0. C6 is a Workstream C admission
+  extension, not the Workstream D CGS/EGS policy-language redesign. ES owns
+  final admission policy for ES-bound executions. Control Plane may later
+  preflight or render ES policy decisions, but CP is not the final ES
+  admission gate. IM remains readiness, provenance, and diagnostics only.
+  C6 adds a small ES-local, replaceable policy-evaluation seam in the shared
+  `:prepare`/`:submit` admission path with typed context, decision, policy ID,
+  reason-code, safe-message, and input-class labels.
+- The first built-in ES policy is
+  `execution-substrate.admission.selected-destructive-shell-command/v1`.
+  Its deny reason code is `destructive_shell_command_denied`, and its safe
+  deny message is `destructive shell command denied by admission policy`.
+  If required policy input cannot be safely inspected, ES fails closed with
+  reason code `admission_policy_input_unavailable` and safe message
+  `admission policy input unavailable`.
+  The policy claim is only that ES rejects selected destructive shell-pattern
+  content in inspected static-script payload text surfaces during admission.
+  It is not universal malware detection, complete command sandboxing, proof
+  that all destructive behavior is impossible, production endpoint security
+  proof, runtime identity or Vault proof, IM support-bundle proof, public/demo
+  readiness proof, independent audit proof, cancel/failure/intervention
+  proof, CP-owned final ES policy, IM-owned policy authority, or semantic
+  understanding of all Control Plane prompts, workspaces, scripts, retained
+  bundles, logs, model outputs, or generated artifacts.
+- `:prepare` may perform bounded payload-byte reads when an enabled ES
+  admission policy requires payload inspection. That read must use the
+  explicit ARS payload digest carried by the discovery/evidence relationship
+  already cross-checked by admission. ES must not treat `artifact_digest` as a
+  payload locator by hidden equality. Static-script payload text inspection is
+  an ES-visible input class only; it is not CP prompt parsing, CP workspace
+  parsing, a package-grammar redesign, arbitrary binary inspection, or
+  recursive workspace archive decoding.
+- Policy denials are redacted. Public API errors expose only the existing
+  error envelope with safe message and reason code where the current contract
+  supports those fields. Policy denials must not expose raw payload text,
+  matched content, prompts, workspaces, model output, logs, retained bundles,
+  support bundles, credentials, environment values, DB contents, local process
+  records, cert/key/TLS/SPIFFE/Vault/WebAuthn/passkey/API-key material, or
+  generated artifact contents.
 - ES owns admission composition, prepare-time preflight, submit-time execution
   handoff, Nomad-backed lifecycle projection, retained opaque result-bundle
   ownership, and runtime handoff boundary enforcement.
@@ -288,6 +327,7 @@ the code and tests win and this document must be realigned.
 | Surface | Class | Current rule |
 | --- | --- | --- |
 | ES admission composition at `:prepare`/`:submit` | `stable contract` | ES composes ARS discovery plus evidence/payload refs, aggregate evidence verification, narrow shared execution/runtime claims from `internal/contracts/evidence/v1`, EGS runtime-trust output, the configured workload-zone Vault runtime-config reference/blob, and caller authentication plus configured SPIFFE allowlist authorization. CGS authorize remains outside the current hot path. |
+| ES Admission Policy Layer v0 | `bounded slice rule` | ES evaluates a package-local policy seam during the shared `:prepare`/`:submit` admission path. Deny decisions carry stable policy ID, reason code, safe message, and inspected input classes as internal safe metadata, while the public API keeps the current redacted error envelope. |
 | Scheduler handoff after `:submit` | `stable contract` | Successful submit hands execution to Nomad. ES keeps only the bounded receipt and read-through projection responsibilities after that handoff. |
 | `lifecycle_projection` | `bounded slice rule` | `source` and `revision` are opaque same-run read-coordination facts derived from Nomad observation only. |
 | Payload/runtime package resolution | `stable contract` | ES resolves payload bytes through designed ARS discovery plus explicit evidence/payload relationships, cross-checks those facts against aggregate evidence, and keeps descriptor/manifest support outside ES hot-path public grammar. |
@@ -329,12 +369,18 @@ ES does not own:
    compatibility gate only.
 2. `POST /v1/executions:prepare` validates the request, follows ARS discovery
    to aggregate evidence and payload references, verifies the narrow shared
-   execution/runtime claims plus EGS trust/runtime-config inputs, and returns
-   bounded preflight success only.
+   execution/runtime claims plus EGS trust/runtime-config inputs, evaluates
+   ES Admission Policy Layer v0, and returns bounded preflight success only.
+   When an enabled ES admission policy requires payload inspection, `:prepare`
+   may read bounded static-script payload text through the explicit ARS
+   payload digest already cross-checked by admission. It still creates no run
+   object, staging root, scheduler handoff, or proto-execution state.
 3. `POST /v1/executions:submit` reuses the full prepare path, resolves payload
    bytes, stages the current execution package, assembles bounded
    `authority_handoff` facts, submits one Nomad batch job, and returns a
-   bounded receipt.
+   bounded receipt. Submit cannot bypass the admission policy path used by
+   prepare, and policy denial occurs before payload staging or Nomad
+   submission.
 4. `GET /v1/executions/{run_id}/status`,
    `GET /v1/executions/{run_id}/logs`, and
    `POST /v1/executions/{run_id}:cancel` read through Nomad. `GET
@@ -350,6 +396,7 @@ ES does not own:
 | --- | --- | --- |
 | Long-term request DTO and submit receipt vocabulary | `reopened seam` | Workstream C settles the ES-owned route roles and authority boundaries, not the final long-term DTO family. |
 | Long-term role of `POST /v1/executions:prepare` | `reopened seam` | `:prepare` remains active today, but whether it survives unchanged as part of a later public execution model remains open. |
+| Long-term ES admission policy model | `reopened seam` | C6 proves only a replaceable ES-owned policy seam and one built-in bounded content policy. It does not settle a broad policy language, customer policy distribution, CGS/EGS policy redesign, external policy service, audit model, or durable policy-decision store. |
 | Runtime-profile selection vocabulary and whether it remains annotation based | `reopened seam` | The current annotation plus profile name are compatibility edges, not the final ES runtime-selection model. |
 | Internal execution-locator and projected-allocation policies | `reopened seam` | `run_id -> exec-<run_id>` and latest-allocation selection remain active current-slice lookup mechanics, not settled lifecycle architecture. |
 | Long-term execution-package layout and `/execution/...` conventions | `reopened seam` | The current runtime package layout is localized inside ES, but its long-term path and reserved-directory conventions remain open. |
@@ -363,6 +410,16 @@ ES does not own:
   authority, or scheduler API semantics.
 - Do not widen `POST /v1/executions:prepare` into hidden orchestration,
   scheduler metadata creation, or proto-run state.
+- Do not let ES Admission Policy Layer v0 become OPA/Rego, a DSL, customer
+  regex config, CGS `id.conf`, signed policy bundles, external policy
+  decision service, or durable policy-decision storage by drift.
+- Do not let the selected static-script content policy claim universal malware
+  detection, complete command sandboxing, endpoint security, independent
+  audit, public/demo readiness, runtime identity/Vault proof, IM
+  support-bundle proof, or Control Plane prompt/workspace semantics.
+- Do not include raw payload text or matched content in API responses, logs,
+  docs, test names, test failure helpers, reports, traces, retained bundles,
+  support bundles, or generated artifacts.
 - Do not expose Nomad job IDs, allocation IDs, task IDs, staging paths, result
   filesystem paths, or bundle internals as public lifecycle authority.
 - Do not bypass ARS storage/discoverability authority, EGS runtime-trust

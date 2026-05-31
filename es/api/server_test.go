@@ -689,6 +689,36 @@ func TestWorkstreamCExecutionCompatibilityRoutesRemainAvailable(t *testing.T) {
 	}
 }
 
+func TestAdmissionPolicyPrepareAndSubmitErrorsUseRedactedEnvelope(t *testing.T) {
+	rawFixture := apiPolicyFixtureText()
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"},"mode":"async"}`
+	policyErr := &admission.Error{
+		Status:  http.StatusForbidden,
+		Code:    "destructive_shell_command_denied",
+		Message: "destructive shell command denied by admission policy",
+	}
+	server := NewServer(fakeLifecycleService{
+		prepareErr: policyErr,
+		submitErr:  policyErr,
+	}, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	prepareRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prepareRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", body))
+	if prepareRecorder.Code != http.StatusForbidden {
+		t.Fatalf("expected prepare policy denial 403, got %d", prepareRecorder.Code)
+	}
+	assertJSONFieldsExactForAPI(t, prepareRecorder.Body.Bytes(), "success", "error", "code")
+	assertPolicyErrorEnvelopeForAPI(t, prepareRecorder.Body.String(), rawFixture)
+
+	submitRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(submitRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:submit", body))
+	if submitRecorder.Code != http.StatusForbidden {
+		t.Fatalf("expected submit policy denial 403, got %d", submitRecorder.Code)
+	}
+	assertJSONFieldsExactForAPI(t, submitRecorder.Body.Bytes(), "success", "error", "code")
+	assertPolicyErrorEnvelopeForAPI(t, submitRecorder.Body.String(), rawFixture)
+}
+
 func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 	server := NewServer(fakeLifecycleService{}, "bootstrap", []string{"service/control-plane"}, func() bool { return true })
 
@@ -721,6 +751,8 @@ type fakeLifecycleService struct {
 	producerContract   admission.ProducerContractDeclaration
 	prepareResult      admission.PrepareResult
 	submitResult       admission.SubmitResult
+	prepareErr         *admission.Error
+	submitErr          *admission.Error
 	prepareRequestSink *admission.PrepareRequest
 	submitRequestSink  *admission.PrepareRequest
 	prepareCalls       *int
@@ -742,6 +774,9 @@ func (f fakeLifecycleService) Prepare(_ context.Context, request admission.Prepa
 	if f.prepareRequestSink != nil {
 		*f.prepareRequestSink = request
 	}
+	if f.prepareErr != nil {
+		return admission.PrepareResult{}, f.prepareErr
+	}
 	return f.prepareResult, nil
 }
 
@@ -751,6 +786,9 @@ func (f fakeLifecycleService) Submit(_ context.Context, request admission.Prepar
 	}
 	if f.submitRequestSink != nil {
 		*f.submitRequestSink = request
+	}
+	if f.submitErr != nil {
+		return admission.SubmitResult{}, f.submitErr
 	}
 	return f.submitResult, nil
 }
@@ -839,6 +877,41 @@ func assertTextOmitsAllForAPI(t *testing.T, text string, forbidden ...string) {
 			t.Fatalf("expected text to omit %q, got %s", item, text)
 		}
 	}
+}
+
+func assertPolicyErrorEnvelopeForAPI(t *testing.T, body string, rawFixture string) {
+	t.Helper()
+
+	var payload admission.ErrorResponse
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode policy error envelope: %v", err)
+	}
+	if payload.Success || payload.Error != "destructive shell command denied by admission policy" || payload.Code != "destructive_shell_command_denied" {
+		t.Fatalf("unexpected policy error envelope success=%t code=%q message=%q", payload.Success, payload.Code, payload.Error)
+	}
+	if strings.Contains(body, rawFixture) {
+		t.Fatal("expected policy error envelope to omit raw policy fixture content")
+	}
+	assertTextOmitsAllForAPI(t, body,
+		`"policy_id"`,
+		`"matched"`,
+		`"prompt"`,
+		`"workspace"`,
+		`"model_output"`,
+		`"logs"`,
+		`"result_bundle"`,
+		`"support_bundle"`,
+	)
+}
+
+func apiPolicyFixtureText() string {
+	return strings.Join([]string{
+		"#!/bin/sh",
+		strings.Join([]string{"r", "m"}, ""),
+		"-rf",
+		"/",
+		"# inert API redaction fixture; never executed",
+	}, "\n")
 }
 
 func compactHeaderText(header http.Header) string {

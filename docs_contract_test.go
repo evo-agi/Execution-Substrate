@@ -1318,6 +1318,143 @@ func TestWorkstreamC5StatusLogsResultCancelCompatibilityGuardrailPostureIsDocume
 	)
 }
 
+func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	artifactStorage := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+
+	assertContainsAll(t, "PLANS C6 admission policy posture", plans,
+		"C6 is the focused ES Admission Policy Layer v0 slice.",
+		"It is a Workstream C admission extension, not the Workstream D CGS/EGS policy-language redesign.",
+		"small ES-owned, replaceable policy-evaluation seam in the shared `:prepare`/`:submit` admission path",
+		"one built-in selected-pattern static-script content policy to prove the seam",
+		"ES remains the final admission-policy gate for ES-bound executions.",
+		"Control Plane may later preflight or render ES policy decisions, but CP is not the final ES admission gate.",
+		"IM remains readiness, provenance, and diagnostics only.",
+		"only through the explicit ARS payload digest relationship already discovered and cross-checked by ES admission",
+		"the ES-owned Admission Policy Layer v0 seam",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C6 decision metadata", text: decision},
+		{label: "lifecycle contracts C6 metadata", text: lifecycleContracts},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"ES Admission Policy Layer v0",
+			"`execution-substrate.admission.selected-destructive-shell-command/v1`",
+			"`destructive_shell_command_denied`",
+			"`destructive shell command denied by admission policy`",
+			"`admission_policy_input_unavailable`",
+			"`admission policy input unavailable`",
+			"Policy denial",
+			"redacted",
+		)
+	}
+
+	assertContainsAll(t, "Workstream C6 decision prepare and submit path", decision,
+		"C6 adds a small ES-local, replaceable policy-evaluation seam in the shared `:prepare`/`:submit` admission path",
+		"`POST /v1/executions:prepare` validates the request",
+		"evaluates ES Admission Policy Layer v0",
+		"It still creates no run object, staging root, scheduler handoff, or proto-execution state.",
+		"`POST /v1/executions:submit` reuses the full prepare path",
+		"Submit cannot bypass the admission policy path used by prepare",
+		"policy denial occurs before payload staging or Nomad submission.",
+	)
+	assertContainsAll(t, "lifecycle contracts C6 prepare and submit path", lifecycleContracts,
+		"`:prepare` evaluates ES Admission Policy Layer v0 before success.",
+		"No `run_id` is created.",
+		"No scheduler handoff occurs.",
+		"Submit reuses the same ES Admission Policy Layer v0 path as `:prepare`",
+		"cannot bypass a policy that `:prepare` would deny.",
+		"Policy denial happens before payload staging, mount staging, run ID creation, and Nomad submission.",
+	)
+	assertContainsAll(t, "system boundary C6 final authority", systemBoundaries,
+		"ES Admission Policy Layer v0 is ES-owned final admission policy for ES-bound executions.",
+		"does not make CP the final ES gate",
+		"make IM policy/run/runtime authority",
+	)
+	assertContainsAll(t, "artifact storage C6 bounded payload relationship", artifactStorage,
+		"ES Admission Policy Layer v0 may cause `:prepare` to read bounded static-script payload text",
+		"explicit evidence/payload relationship",
+		"does not treat `artifact_digest` as a payload locator",
+	)
+	assertContainsAll(t, "MVP C6 admission policy row", mvp,
+		"ES Admission Policy Layer v0 | `stable contract`",
+		"redacted denials and one bounded selected-pattern static-script content policy",
+		"CP may preflight or render ES decisions later, but CP does not become the final ES gate; IM remains readiness/provenance/diagnostics only.",
+	)
+}
+
+func TestWorkstreamC6AdmissionPolicyNonClaimsAreDocumented(t *testing.T) {
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	lifecycleContracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	mvp := compactText(mustRead(t, ".docs/mvp.md"))
+
+	nonClaims := []string{
+		"not universal malware detection",
+		"complete command sandboxing",
+		"proof that all destructive behavior is impossible",
+		"production endpoint security proof",
+		"runtime identity or Vault proof",
+		"IM support-bundle proof",
+		"public/demo readiness proof",
+		"independent audit proof",
+		"cancel/failure/intervention proof",
+		"CP-owned final ES policy",
+		"IM-owned policy authority",
+		"semantic understanding of all Control Plane prompts, workspaces, scripts",
+	}
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C6 decision non-claims", text: decision},
+		{label: "lifecycle contracts C6 non-claims", text: lifecycleContracts},
+	} {
+		assertContainsAll(t, doc.label, doc.text, nonClaims...)
+	}
+	assertContainsAll(t, "MVP C6 non-claims", mvp,
+		"The current MVP does not claim:",
+		"ES Admission Policy Layer v0 as universal malware detection",
+		"complete command sandboxing",
+		"proof that all destructive behavior is impossible",
+		"production endpoint security proof",
+		"runtime identity or Vault proof",
+		"IM support-bundle proof",
+		"public/demo readiness proof",
+		"independent audit proof",
+		"cancel/failure/intervention proof",
+		"CP-owned final ES policy",
+		"IM-owned policy authority",
+		"semantic understanding of all Control Plane prompts, workspaces, scripts",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C6 decision overclaims", text: decision},
+		{label: "lifecycle contracts C6 overclaims", text: lifecycleContracts},
+		{label: "MVP C6 overclaims", text: mvp},
+	} {
+		assertContainsNone(t, doc.label, doc.text,
+			"ES Admission Policy Layer v0 is universal malware detection",
+			"ES Admission Policy Layer v0 proves all destructive behavior is impossible",
+			"ES Admission Policy Layer v0 is production endpoint security proof",
+			"Control Plane is the final ES admission gate",
+			"IM owns ES admission policy",
+			"ES understands all Control Plane prompts, workspaces, and scripts",
+		)
+	}
+}
+
 func TestWorkstreamC0ExternalAuthorityAndEvidenceNonOwnershipIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))

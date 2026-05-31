@@ -104,9 +104,10 @@ type Service struct {
 	arsClient                  *dependencyClient
 	egsClient                  *dependencyClient
 
-	trustModelVerifier *ed25519Verifier
-	provenanceVerifier *ed25519Verifier
-	nomadClient        *nomadClient
+	trustModelVerifier       *ed25519Verifier
+	provenanceVerifier       *ed25519Verifier
+	nomadClient              *nomadClient
+	admissionPolicyEvaluator AdmissionPolicyEvaluator
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.RuntimeTrustPolicy
@@ -161,10 +162,12 @@ type preparedArtifact struct {
 }
 
 type preparedAdmission struct {
-	result            PrepareResult
-	artifact          preparedArtifact
-	workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan
-	trustModel        egsmodel.RuntimeTrustPolicy
+	result                      PrepareResult
+	artifact                    preparedArtifact
+	workloadVaultPlan           esconfig.ResolvedWorkloadVaultAuthPlan
+	trustModel                  egsmodel.RuntimeTrustPolicy
+	policyPayloadBytes          []byte
+	policyPayloadBytesAvailable bool
 }
 
 func NewService(cfg esconfig.Config) (*Service, error) {
@@ -222,6 +225,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		trustModelVerifier:         trustModelVerifier,
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
+		admissionPolicyEvaluator:   defaultAdmissionPolicyEvaluator(),
 	}, nil
 }
 
@@ -365,13 +369,20 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 		}
 	}
 
+	policyPayloadBytes, policyPayloadBytesAvailable, policyErr := s.enforceAdmissionPolicy(ctx, req, artifact)
+	if policyErr != nil {
+		return preparedAdmission{}, policyErr
+	}
+
 	return preparedAdmission{
 		result: PrepareResult{
 			Success: true,
 		},
-		artifact:          artifact,
-		workloadVaultPlan: plan,
-		trustModel:        *trustModel,
+		artifact:                    artifact,
+		workloadVaultPlan:           plan,
+		trustModel:                  *trustModel,
+		policyPayloadBytes:          policyPayloadBytes,
+		policyPayloadBytesAvailable: policyPayloadBytesAvailable,
 	}, nil
 }
 

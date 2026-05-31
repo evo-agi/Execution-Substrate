@@ -78,6 +78,12 @@ the code and tests win and this document must be realigned.
   evidence/payload relationships, and explicit cross-checks. ES must not
   inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane
   examples/probes as public execution grammar.
+- ES Admission Policy Layer v0 may cause `:prepare` to read bounded
+  static-script payload text when an enabled ES admission policy requires that
+  input class. That read still follows the designed ARS discovery output and
+  explicit evidence/payload relationship; it does not treat `artifact_digest`
+  as a payload locator and does not promote descriptor, manifest, index, or
+  support tuples into ES public grammar.
 - ES must consume artifacts through a designed discoverability surface, not by
   inheriting ARS support tuple grammar as ES public grammar.
 - Control Plane examples, probes, scripts, proof harnesses, `.out` artifacts,
@@ -168,6 +174,10 @@ compatibility surfaces.
 7. ES reads the ARS discovery record, follows the evidence reference, verifies
    the signed evidence, cross-checks payload/artifact identity facts, and later
    resolves payload bytes through the designed ARS discoverability surface.
+   With ES Admission Policy Layer v0, `:prepare` may also resolve bounded
+   static-script payload text through that explicit payload reference when an
+   enabled ES admission policy requires inspection. ES must not use
+   `artifact_digest` as a payload locator by hidden equality.
 
 ## 5. Guardrails for future edits
 

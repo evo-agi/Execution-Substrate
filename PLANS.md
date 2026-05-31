@@ -2002,6 +2002,23 @@ Current bounded decision status for Milestone 2C.1:
   grammar and live credential/security fields; logs/result bodies remain
   payload/output surfaces governed by the existing compatibility contract and
   must not be newly sanitized, interpreted, or promoted into authority.
+- C6 is the focused ES Admission Policy Layer v0 slice. It is a Workstream C
+  admission extension, not the Workstream D CGS/EGS policy-language redesign.
+  It adds a small ES-owned, replaceable policy-evaluation seam in the shared
+  `:prepare`/`:submit` admission path and one built-in selected-pattern
+  static-script content policy to prove the seam. ES remains the final
+  admission-policy gate for ES-bound executions. Control Plane may later
+  preflight or render ES policy decisions, but CP is not the final ES
+  admission gate. IM remains readiness, provenance, and diagnostics only. C6
+  may read bounded payload bytes during `:prepare` only when an enabled ES
+  admission policy requires the ES-visible static-script text input class, and
+  only through the explicit ARS payload digest relationship already discovered
+  and cross-checked by ES admission. C6 must not add OPA/Rego, a DSL, customer
+  regex configuration, CGS `id.conf` reuse, signed policy bundles, an external
+  policy-decision service, durable policy-decision storage, CP prompt/workspace
+  parsing, workspace archive decoding, binary payload inspection, retained
+  bundle scanning, support-bundle scanning, or raw payload/matched-content
+  disclosure.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain
@@ -2012,8 +2029,9 @@ Current bounded decision status for Milestone 2C.1:
   retrieval remains ES-owned opaque bundle access.
 - ES admission composition remains limited to caller auth/allowlist plus ARS
   discovery/evidence/payload refs, narrow `internal/contracts/evidence/v1`
-  execution claims, EGS runtime-trust output, and the configured workload-zone
-  Vault runtime-config reference/blob.
+  execution claims, EGS runtime-trust output, the configured workload-zone
+  Vault runtime-config reference/blob, and the ES-owned Admission Policy Layer
+  v0 seam.
 - `invocation.annotations["execution_substrate.runtime_profile"]`,
   `control-plane-normal-shell/v1`, the current `/execution/...` conventions,
   the current `authority_handoff` vocabulary, the current `outcome_evidence`

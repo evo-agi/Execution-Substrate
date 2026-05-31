@@ -80,6 +80,11 @@ Those absences are current facts, not design commitments.
   artifacts through a designed discoverability surface rather than inheriting
   ARS support tuple grammar as ES public grammar.
 - ES-owned admission, submission, lifecycle projection, runtime-profile, runtime-identity, retained-result, and readiness semantics are defined by this repository's planning and boundary docs.
+- ES Admission Policy Layer v0 is ES-owned final admission policy for ES-bound
+  executions. It is local to ES admission and does not make CP the final ES
+  gate, make IM policy/run/runtime authority, or import CGS `id.conf`,
+  OPA/Rego, a DSL, customer regex config, signed policy bundles, an external
+  policy service, or durable policy-decision storage into ES.
 - For Workstream C0, ES owns the public admission model, prepare model, submit
   model, Nomad-backed lifecycle projection, retained opaque result bundles,
   runtime-profile compatibility, runtime-boundary handoff semantics, and

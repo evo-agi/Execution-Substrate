@@ -21,6 +21,9 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +35,8 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
 		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
 			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(policyPayload)
 		default:
 			t.Fatalf("prepare reached unexpected ARS path %q", r.URL.Path)
 		}
@@ -54,8 +59,9 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
-	if len(arsCalls) != 3 {
-		t.Fatalf("expected prepare to use only discovery, evidence, and runtime-config reads, got %v", arsCalls)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
+	if len(arsCalls) != 4 {
+		t.Fatalf("expected prepare to use discovery, evidence, runtime-config, and bounded policy payload reads, got %v", arsCalls)
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, result)
@@ -169,6 +175,9 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 	request.Invocation.Annotations = map[string]string{
 		runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
 	}
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +189,8 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
 		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
 			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(policyPayload)
 		default:
 			t.Fatalf("prepare reached unexpected ARS path %q", r.URL.Path)
 		}
@@ -192,7 +203,7 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 	assertAdmissionError(t, err, http.StatusBadRequest, codeUnsupportedRuntimeProfile)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
-	if len(arsCalls) != 3 {
+	if len(arsCalls) != 4 {
 		t.Fatalf("expected runtime-profile failure to remain admission-bounded, got ARS calls %v", arsCalls)
 	}
 }
@@ -260,6 +271,9 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 	service, _, _ := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
 	request.Mode = ExecutionModeAsync
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +286,7 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
 			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
 		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
-			_, _ = w.Write([]byte("#!/bin/sh\necho bounded-submit\n"))
+			_, _ = w.Write(policyPayload)
 		default:
 			t.Fatalf("submit reached unexpected ARS path %q", r.URL.Path)
 		}

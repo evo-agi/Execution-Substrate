@@ -86,9 +86,13 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		return SubmitResult{}, profileErr
 	}
 
-	payloadBytes, err := s.fetchPayloadBytes(ctx, prepared.artifact.payloadDigest)
-	if err != nil {
-		return SubmitResult{}, err
+	payloadBytes := prepared.policyPayloadBytes
+	if !prepared.policyPayloadBytesAvailable {
+		payload, err := s.fetchPayloadBytes(ctx, prepared.artifact.payloadDigest)
+		if err != nil {
+			return SubmitResult{}, err
+		}
+		payloadBytes = payload
 	}
 
 	locator, locatorErr := newExecutionLocator()

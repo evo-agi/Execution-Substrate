@@ -490,6 +490,12 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
   Nomad-backed lifecycle projection, retained opaque result bundles,
   runtime-profile compatibility, runtime-boundary handoff semantics, and
   bounded runtime identity/workload credential handoff boundaries.
+- ES owns final admission policy for ES-bound executions. ES Admission Policy
+  Layer v0 is a small local policy-evaluation seam in the shared
+  `:prepare`/`:submit` admission path, not a CGS/EGS policy-language
+  redesign, OPA/Rego surface, DSL, customer regex configuration, signed
+  policy-bundle system, external policy service, or durable policy-decision
+  store.
 - ES does not own artifact publication, artifact storage, runtime-trust publication, scheduler state, Control Plane orchestration, checkpoint, review, finalization, Vault token brokerage, or Codex token brokerage.
 - Control Plane owns orchestration, Temporal workflow state, review,
   checkpoint, finalization, intervention, and operator-facing control
@@ -680,6 +686,10 @@ Current successful response shapes:
 - The first repo-owned non-operator ES caller activation path is Control Plane at:
   - `spiffe://execution.internal/service/control-plane`
 - `:prepare` validates request shape, fetches the artifact discovery record from ARS, follows that record to aggregate evidence and payload references, verifies the evidence record with `internal/contracts/evidence/v1`, enforces the current EGS runtime-trust payload against the evidence signer key, reads the configured workload-zone Vault blob from ARS through `internal/contracts/runtimeconfig/v1`, derives the bounded workload-vault handoff directly from that runtime config plus ES `workload_vault_auth.default_mode` and optional Vault CA trust material, and returns bounded preflight success only.
+- `:prepare` evaluates ES Admission Policy Layer v0 before success. When an
+  enabled ES admission policy requires payload inspection, `:prepare` may read
+  bounded static-script payload text through the explicit ARS payload digest
+  already discovered and cross-checked by ES admission.
 - ES must consume artifacts through a designed discoverability surface, not by
   inheriting ARS support tuple grammar as ES public grammar.
 - `:prepare` and `:submit` make ES the current runtime-config consumer and
@@ -698,6 +708,9 @@ Current successful response shapes:
 - ES currently interprets EGS `runtime_trust.signer_policy.allowed_signers` as artifact publication evidence signer key IDs.
 - ES verifies and enforces only the signed EGS runtime-trust payload and does not surface EGS publication metadata in `:prepare` results.
 - `:submit` reuses the full `:prepare` path first.
+- `:submit` cannot bypass the ES Admission Policy Layer v0 path used by
+  `:prepare`; policy denial happens before run ID creation, payload staging,
+  and Nomad submission.
 - `:submit` is async-only in the current execution slice.
 - `:submit` currently supports only:
   - `static-script` artifacts

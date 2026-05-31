@@ -89,6 +89,21 @@ grammar and live credential/security fields; logs/result bodies remain
 payload/output surfaces governed by the existing compatibility contract and
 must not be newly sanitized, interpreted, or promoted into authority.
 
+C6 is ES Admission Policy Layer v0. It is a Workstream C admission extension
+and keeps ES as the final admission-policy gate for ES-bound executions. CP
+may later preflight or render ES policy decisions, but CP is not the final ES
+gate. IM remains readiness, provenance, and diagnostics only. C6 adds a small
+ES-local replaceable policy seam to the shared `:prepare`/`:submit` admission
+path and one built-in selected-pattern static-script content policy. Policy
+denials use the existing redacted ES error envelope with safe reason code and
+message only. The v0 policy claim is not universal malware detection, complete
+command sandboxing, proof that all destructive behavior is impossible,
+production endpoint security proof, runtime identity or Vault proof, IM
+support-bundle proof, public/demo readiness proof, independent audit proof,
+cancel/failure/intervention proof, CP-owned final ES policy, IM-owned policy
+authority, or semantic understanding of all Control Plane prompts, workspaces,
+scripts, retained bundles, logs, model outputs, or generated artifacts.
+
 Control Plane may consume the accepted lifecycle surface, including the bounded `control-plane-normal-shell/v1` runtime-profile path, but CP documents, probes, examples, and proof harnesses do not define ES lifecycle contracts. Any widening or breaking change must be planned in `PLANS.md` and the ES docs before implementation spreads outward.
 Control Plane owns orchestration, Temporal workflow state, review, checkpoint,
 finalization, intervention, and operator-facing control semantics. CP consumes
@@ -324,6 +339,10 @@ Successful response is `200` JSON with these contract fields:
 - `:prepare` verifies publish-time evidence and EGS runtime-trust constraints before success.
 - `:prepare` uses only the narrow shared execution/runtime claims ES currently enforces from aggregate artifact evidence: runtime env allowlist, required capabilities, `target_platform`, and `network_access`.
 - `:prepare` resolves workload-zone vault information through the configured workload-zone Vault config reference and ARS before success.
+- `:prepare` evaluates ES Admission Policy Layer v0 before success. When an
+  enabled policy requires payload inspection, `:prepare` may fetch bounded
+  payload bytes through the explicit ARS payload digest carried by the
+  discovery/evidence relationship already cross-checked by admission.
 - The Workstream E E0 decision in
   `.docs/system_overview/runtime_config_ownership.md` classifies this path:
   runtime-config semantics live in `internal/contracts/runtimeconfig/v1`, ARS
@@ -338,6 +357,23 @@ Successful response is `200` JSON with these contract fields:
 - `.docs/system_overview/artifact_publication_storage.md` records the authoritative Workstream B publication/storage/discoverability decision that this prepare contract consumes. On the current hot path ES follows ARS discovery plus explicit evidence/payload references, keeps descriptor/manifest support paths as secondary compatibility support rather than ES public grammar, and preserves the explicit separation between `artifact_digest` and `payload_digest`.
 - `:prepare` does not surface EGS publication metadata or internal composition detail as part of its preparation result.
 - `:prepare` does not treat Control Plane orchestration, review, checkpoint, finalization, task-attempt, or proof-harness metadata as shared admission facts.
+- Static-script payload text inspection is an ES-visible input class only. It
+  is not CP prompt parsing, CP workspace parsing, CP package grammar, decoded
+  workspace archive inspection, binary payload inspection, retained bundle
+  scanning, support-bundle scanning, raw log scanning, model-output scanning,
+  or generated-artifact scanning.
+- The built-in selected-pattern content policy has policy ID
+  `execution-substrate.admission.selected-destructive-shell-command/v1`,
+  deny reason code `destructive_shell_command_denied`, and safe deny message
+  `destructive shell command denied by admission policy`.
+- If required policy input cannot be safely inspected, ES fails closed with
+  reason code `admission_policy_input_unavailable` and safe message
+  `admission policy input unavailable`.
+- Policy denial responses must not expose raw payload text, matched content,
+  prompts, workspaces, model outputs, logs, retained bundles, support bundles,
+  credentials, environment values, DB contents, local process records,
+  cert/key/TLS/SPIFFE/Vault/WebAuthn/passkey/API-key material, or generated
+  artifact contents.
 - Successful `:prepare` returns bounded preflight success only, not execution state.
 
 ### Explicit non-effects
@@ -364,6 +400,8 @@ Successful response is `200` JSON with these contract fields:
 | Aggregate artifact evidence blob or response is unavailable after registration | `503` | `artifact_evidence_unavailable` |
 | Workload-zone vault lookup or blob unavailable | `503` | `workload_zone_vault_unavailable` |
 | Unsupported, disabled, or invalid runtime profile selection | `400` | `unsupported_runtime_profile` |
+| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` |
+| Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Dependency payload invalid or dependency request failed | `503` | current endpoint-specific code is preserved and the logical class remains the same as the missing dependency |
 
 ### Bounded slice notes
@@ -415,6 +453,10 @@ bounded receipt, and Nomad submission through ES.
 - In the repo-owned supported-local runtime surface, submit-readiness for that enabled profile also requires the configured image to be present and Nomad Docker image cleanup to be disabled through `docker.cleanup.image=false`, so repeated client runs from the same prepared environment are not invalidated merely by Nomad's stopped-task image cleanup.
 - Runtime mounts, when present, must satisfy both the prepare-time mount request rules and submit-time reserved-path checks.
 - Submit resolves payload bytes through the explicit payload digest carried in aggregate evidence.
+- Submit reuses the same ES Admission Policy Layer v0 path as `:prepare` and
+  cannot bypass a policy that `:prepare` would deny.
+- Policy denial happens before payload staging, mount staging, run ID creation,
+  and Nomad submission.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
 - Successful submit staging remains available only while the running workload may still depend on those host bind mounts. Terminal result files written under the bounded reserved runtime result directory are retained outside staging before successful staging cleanup.
 - For the current `static-script` slice, ES reserves `/execution/run/result` as a writable workload-authored terminal output directory. The workload may write result files there, and ES treats those files as opaque bundle content rather than interpreting their semantics.
@@ -454,6 +496,8 @@ Successful response is `202` JSON with these fields:
 | Missing authenticated caller | `401` | plain text |
 | Disallowed or bootstrap caller | `403` | plain text |
 | Prepare-time validation or trust errors | same as `:prepare` | propagated |
+| ES admission policy denial | `403` | policy reason code, such as `destructive_shell_command_denied` |
+| Required ES admission policy input unavailable | `403` | `admission_policy_input_unavailable` |
 | Unsupported submission mode | `400` | `unsupported_execution_mode` |
 | Unsupported artifact type or target platform | `400` | `unsupported_artifact_type` |
 | Unsupported required capabilities | `400` | `unsupported_capabilities` |

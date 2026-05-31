@@ -11,6 +11,9 @@ func TestWorkstreamBAdmissionHotPathUsesDiscoveryAndEvidenceNotSupportTupleGramm
 	fixture := newPreparedArtifactFixture(t)
 	service, stagingRoot, resultsRoot := newWorkstreamCTestService(t, fixture)
 	request := fixture.prepareRequest()
+	payload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
 
 	arsCalls := map[string]int{}
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,6 +25,8 @@ func TestWorkstreamBAdmissionHotPathUsesDiscoveryAndEvidenceNotSupportTupleGramm
 			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
 		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
 			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(payload)
 		default:
 			t.Fatalf("admission hot path reached unexpected ARS support path %q", r.URL.Path)
 		}
@@ -42,6 +47,7 @@ func TestWorkstreamBAdmissionHotPathUsesDiscoveryAndEvidenceNotSupportTupleGramm
 	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
 	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
+	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
 	for path := range arsCalls {
 		for _, forbidden := range []string{"/descriptor", "/manifest", "/index", "/support"} {
 			if strings.Contains(path, forbidden) {
