@@ -318,6 +318,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`
 - the companion example templates for that path are `.examples/config/ags.operator_and_control_plane.json` and `.examples/config/es.operator_and_control_plane.json`
 - the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
+- `.examples/config/es.configured_literal_policy_demo.json` is a separate
+  non-default full ES config template for the harmless configured-literal
+  prepare-denial demo. Its configured literal is a public inert replace-me
+  placeholder; real filming/demo literals must be installed only in the actual
+  ES runtime config selected by `$ES_CONFIG` for supported-local runs or
+  `/etc/execution-substrate/es.json` on Remote Alpha/systemd hosts.
 - for full end-to-end execution verification, include:
   - `nomad.base_url`
   - `nomad.datacenter`

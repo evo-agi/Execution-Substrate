@@ -4,14 +4,21 @@ This directory contains the first repo-owned non-operator integration path for:
 
 - `spiffe://execution.internal/service/control-plane`
 
-It is intentionally narrow. It proves that a Control Plane caller can drive the current HTTPS+mTLS API surface directly for:
+It is intentionally narrow. The current governed sequencing for a Control Plane caller is:
 
+- `GET /v1/executions:contract` as the narrow producer compatibility check
 - `POST /v1/artifacts:publish`
+- `POST /v1/executions:prepare`
 - `POST /v1/executions:submit`
-- `GET /v1/executions/{run_id}/status`
-- `GET /v1/executions/{run_id}/logs`
-- optional `GET /v1/executions/{run_id}/result`
-- optional `POST /v1/executions/{run_id}:cancel`
+- `GET /v1/executions/{run_id}/status` only for submitted runs
+- `GET /v1/executions/{run_id}/logs` only for submitted runs
+- optional `GET /v1/executions/{run_id}/result` only for submitted terminal runs
+- optional `POST /v1/executions/{run_id}:cancel` only for submitted runs
+
+The current `run.sh` helper remains a lower-level direct compatibility helper:
+it publishes and then submits by default. `POST /v1/executions:submit` still
+reuses ES admission internally, so this helper does not define CP policy
+ownership and does not imply submit can bypass `:prepare` or ES admission.
 
 It does **not** use:
 
@@ -46,13 +53,13 @@ Optional:
 - `GENERATE_RESULT_PAYLOAD=1`
 - `FETCH_RESULT=1`
 
-By default the example proves publish, submit, status, and logs over the real HTTPS+mTLS API.
+By default the helper proves publish, submit, status, and logs over the real HTTPS+mTLS API.
 The supported-local guest path is the grounded positive verification path for that logs step on this Mac.
 When the example waits for terminal status without `CANCEL_AFTER_SUBMIT=1`, it now exits nonzero if ES reports a terminal nonzero workload exit.
 
-Set `GENERATE_RESULT_PAYLOAD=1 FETCH_RESULT=1 WAIT_FOR_TERMINAL=1` to generate a compact static-script payload that writes files under `/execution/run/result` and then fetches the retained `GET /v1/executions/{run_id}/result` bundle into the example work directory. That mode proves the bounded terminal-result contract without requiring Control Plane to scrape stdout or know host staging paths.
+Set `GENERATE_RESULT_PAYLOAD=1 FETCH_RESULT=1 WAIT_FOR_TERMINAL=1` to generate a compact static-script payload that writes files under `/execution/run/result` and then fetches the retained `GET /v1/executions/{run_id}/result` bundle into the example work directory after submit reaches terminal status. That mode proves the bounded terminal-result contract without requiring Control Plane to scrape stdout or know host staging paths.
 
-Set `CANCEL_AFTER_SUBMIT=1` only when `PAYLOAD_PATH` points to a long-running static-script payload. In that bounded cancel mode, also set `FETCH_LOGS=0`; the same direct API example then proves publish, submit, status, and `POST /v1/executions/{run_id}:cancel`, then polls bounded ES status until terminal if `WAIT_FOR_TERMINAL=1`.
+Set `CANCEL_AFTER_SUBMIT=1` only when `PAYLOAD_PATH` points to a long-running static-script payload. In that bounded cancel mode, also set `FETCH_LOGS=0`; the same direct API helper then proves publish, submit, status, and `POST /v1/executions/{run_id}:cancel`, then polls bounded ES status until terminal if `WAIT_FOR_TERMINAL=1`.
 
 The focused AGS/ES app integration harness at [es/app/control_plane_integration_path_test.go](../../es/app/control_plane_integration_path_test.go) remains the repo-owned verification layer for the same direct API path, including retained result fetch and disallowed-caller failures. On this Mac, positive logs activation is still grounded through the supported-local guest path above.
 

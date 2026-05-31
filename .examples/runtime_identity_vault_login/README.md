@@ -12,8 +12,8 @@ The workload:
 - proves the raw SPIRE socket remains helper-private
 - requests a bounded real SPIRE-backed JWT-SVID for the `workload_vault` target
 - performs `auth/jwt/login` itself against a proof-scoped real Vault dev/test target
-- uses the returned Vault token to read one secret
-- prints explicit success markers and a final JSON status line
+- uses the returned Vault token to perform one proof-scoped secret-read check
+- prints redacted proof success labels and a final compact status line
 - stays alive briefly after printing success so the operator proof path can capture workload logs before Nomad client log state disappears on this fast-completing example
 
 This is the current bounded usefulness proof for slice `1A` and slice `1B`. It keeps identity delivery platform-owned while keeping Vault login and secret use workload-local.
@@ -54,12 +54,17 @@ Optional:
 
 - `WORKLOAD_VAULT_SECRET_PATH`
 
-## Expected Markers
+## Expected Redacted Outputs
 
-Successful runs print:
+Successful runs emit proof-observable labels for:
 
-- `PLATFORM-ENDPOINT-USED`
-- `RAW-SPIRE-DENIED`
-- `IDENTITY-JWT-RECEIVED`
-- `VAULT-LOGIN-SUCCESS`
-- `SECRET-READ-SUCCESS:<message>`
+- platform endpoint use
+- raw SPIRE socket denial
+- identity JWT receipt
+- Vault login success
+- bounded secret-read success
+
+Keep exact marker strings in code/tests only when the fixture requires them.
+Public docs and demos should use these redacted labels and must not show secret
+values, Vault tokens, JWT/SVID material, raw Vault responses, or secret-like
+output patterns from a run.

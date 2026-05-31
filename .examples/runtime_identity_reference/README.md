@@ -15,8 +15,8 @@ The reference workload:
 - reads bounded non-secret Vault auth metadata from the environment
 - obtains a JWT from `REFERENCE_IDENTITY_URL` through that local bridge
 - authenticates to Vault locally
-- reads one test secret from Vault
-- prints success markers and the secret message to stdout
+- performs one proof-scoped secret-read check
+- prints redacted proof success labels and a redacted secret-read status to stdout
 
 That workload-authored bridge is retained only as example scaffolding. Slice 1 replaces this ownership model with a platform-owned helper launched by the platform supervisor inside the workload task.
 
@@ -35,7 +35,7 @@ Request:
 Response:
 
 ```json
-{"jwt":"reference-runtime-identity-jwt"}
+{"jwt":"<redacted-reference-jwt>"}
 ```
 
 The platform contract does not require this protocol. This request shape exists only for the legacy reference workload and its helper scripts.
@@ -49,12 +49,16 @@ The upstream identity URL in `REFERENCE_IDENTITY_URL` is expected to accept:
 and respond with:
 
 ```json
-{"jwt":"reference-runtime-identity-jwt"}
+{"jwt":"<redacted-reference-jwt>"}
 ```
 
 `REFERENCE_IDENTITY_URL`, the upstream helper protocol, and the local bridge protocol are all reference-workload choices. They are not platform requirements and they are not the slice-1 platform-owned endpoint shape.
 
 The current reference entrypoint also uses permissive local socket permissions as a validation convenience. That is not part of the platform contract, not a production recommendation, and not the slice-1 platform-owned runtime boundary.
+
+Public docs and demos should use redacted labels for this reference workload.
+Do not publish exact marker strings, Vault tokens, JWT/SVID material, secret
+values, raw Vault responses, or secret-like output patterns from a run.
 
 ## Files
 

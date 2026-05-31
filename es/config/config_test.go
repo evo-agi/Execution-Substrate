@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -314,6 +315,40 @@ func TestAdmissionPolicyConfigValidateAcceptsHarmlessStaticScriptLiteralMarker(t
 
 	if err := cfg.Validate("admission_policy.configured_static_script_literal_deny"); err != nil {
 		t.Fatalf("expected configured static-script literal deny policy to validate, got %v", err)
+	}
+}
+
+func TestConfiguredLiteralPolicyDemoExampleActivatesAdmissionPolicy(t *testing.T) {
+	examplePath := filepath.Join("..", "..", ".examples", "config", "es.configured_literal_policy_demo.json")
+	raw, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("read configured literal policy demo example: %v", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("decode configured literal policy demo example: %v", err)
+	}
+	if cfg.AdmissionPolicy == nil || cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny == nil {
+		t.Fatalf("configured literal policy demo example must activate configured_static_script_literal_deny")
+	}
+
+	policy := cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny
+	if policy.Mode != ConfiguredStaticScriptLiteralDenyModeEnforce {
+		t.Fatalf("configured literal policy demo example must use enforce mode")
+	}
+	if len(policy.Entries) != 1 {
+		t.Fatalf("configured literal policy demo example must carry exactly one placeholder entry")
+	}
+	entry := policy.Entries[0]
+	if entry.InputClass != ConfiguredStaticScriptLiteralDenyInputClassStaticScriptPayloadText {
+		t.Fatalf("configured literal policy demo example must use static_script_payload_text")
+	}
+	if strings.TrimSpace(entry.ID) == "" || strings.TrimSpace(entry.Literal) == "" {
+		t.Fatalf("configured literal policy demo example must use a safe ID and placeholder literal")
+	}
+	if err := cfg.AdmissionPolicy.Validate(); err != nil {
+		t.Fatalf("configured literal policy demo admission policy must validate: %v", err)
 	}
 }
 
