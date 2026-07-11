@@ -2119,6 +2119,14 @@ Current bounded decision status for Milestone 2C.1:
   user-defined API messages, CP prompt/workspace parsing, workspace archive
   decoding, binary payload inspection, or raw configured-literal/matched-
   content disclosure. Denials remain redacted.
+- C7 is a docs/static-test-only consolidation checkpoint recorded in
+  `.docs/execution_lifecycle/workstream_c7_checkpoint.md`. It records that
+  Workstream A/B gates are satisfied, C0-C6 are present, Remote Alpha
+  operator-healthcheck TLS is paused/blocked due to source-insufficient
+  signer/custody evidence, and next behavior-changing C work must preserve CP
+  compatibility and CP/IM non-authority boundaries. It makes no behavior, API,
+  route, runtime, TLS, CP diagnose, IM refresh, live proof, or route
+  eligibility change.
 - The Workstream C ES public admission/execution model decision is recorded in
   `.docs/execution_lifecycle/es_execution_admission_model.md`.
 - `GET /v1/executions:contract` and `POST /v1/executions:prepare` remain

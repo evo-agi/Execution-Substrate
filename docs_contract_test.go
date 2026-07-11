@@ -891,6 +891,136 @@ func TestWorkstreamCESExecutionAdmissionModelDecisionIsDocumented(t *testing.T) 
 	}
 }
 
+func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	checkpointRaw := mustRead(t, ".docs/execution_lifecycle/workstream_c7_checkpoint.md")
+	checkpoint := compactText(checkpointRaw)
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	tlsDecision := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md"))
+	tlsResolution := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md"))
+	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	assertDocIncludesAuthorityHierarchy(t, checkpointRaw, "workstream C7 checkpoint doc")
+	assertContainsAll(t, "Workstream C7 checkpoint status", checkpoint,
+		"Workstream C7 consolidation checkpoint",
+		"`Docs-only checkpoint`",
+		"`No behavior/API/runtime change`",
+		"C7 is a consolidation checkpoint, not a new route or runtime feature.",
+		"No route/API behavior changed by C7.",
+		"C7 adds no route, API shape, runtime profile, admission policy, scheduler behavior, signer option, renewal eligibility, CP diagnostic behavior, IM profile lineage behavior, or MA scheduling eligibility.",
+	)
+	assertContainsAll(t, "Workstream C7 A/B gates", checkpoint,
+		"Workstream A shared-kernel gate is satisfied and remains narrow.",
+		"`internal/contracts/evidence/v1` remains the only active shared artifact evidence kernel",
+		"Workstream B artifact publication/storage gate is satisfied and remains evidence-owned.",
+		"ES must consume artifacts through the designed ARS discoverability surface",
+	)
+	assertContainsAll(t, "Workstream C7 C0-C6 summary", checkpoint,
+		"Workstream C0-C6 are present.",
+		"C0: docs and docs-contract gate only",
+		"C1: prepare/admission guardrail tests",
+		"C2: submit and lifecycle-projection guardrails",
+		"C3: retained-result and `authority_handoff` guardrails",
+		"C4: runtime identity and Vault handoff guardrails",
+		"C5: status/logs/result/cancel compatibility and non-authority guardrails.",
+		"C6: ES Admission Policy Layer v0 and its configurable-input follow-up.",
+	)
+	assertContainsAll(t, "Workstream C7 compatibility edges", checkpoint,
+		"`control-plane-normal-shell/v1`.",
+		"`execution_substrate.runtime_profile`.",
+		"`GET /v1/executions:contract` remains a narrow producer declaration, not health/readiness/run authority.",
+		"`POST /v1/executions:prepare` remains bounded preflight, not hidden orchestration.",
+		"`POST /v1/executions:submit` remains the ES handoff surface.",
+		"Status remains a Nomad-backed projection, not an ES-owned lifecycle model.",
+		"ES-retained opaque `application/gzip` result bundles by `run_id`.",
+		"CP owns orchestration, review, checkpoint, and finalization.",
+		"IM profile/readiness/provenance remain diagnostics only.",
+	)
+	assertContainsAll(t, "Workstream C7 reopened seams", checkpoint,
+		"long-term ES request/submit DTOs",
+		"long-term `:prepare` role",
+		"admission policy model beyond C6 v0",
+		"runtime-profile vocabulary",
+		"execution locator/allocation projection",
+		"`/execution/...` package layout",
+		"retained-result route evolution",
+		"runtime identity handoff owner",
+		"workload-zone runtime-config owner",
+		"ARS discovery/index long-term shape",
+		"C7 records these reopened seams without settling them",
+	)
+	assertContainsAll(t, "Workstream C7 TLS closeout", checkpoint,
+		"Remote Alpha TLS blocked decision reference:",
+		"source-insufficient",
+		"No signer/custody option is selected.",
+		"operator-healthcheck TLS replacement remains blocked.",
+		"`operator-healthcheck-tls-renew` remains blocked by `unsupported_signing_topology`.",
+		"P0v noninteractive status remains design/static only.",
+		"No CP diagnose rerun, IM refresh, ES route execution, renewal, replacement, or live proof occurred",
+		"The TLS branch should not block Workstream C product work unless new source-grounded signer/custody evidence appears.",
+	)
+	assertContainsAll(t, "Workstream C7 next safe slices", checkpoint,
+		"Producer Contract / Prepare Boundary Tests",
+		"Runtime Profile Compatibility Matrix Cleanup",
+		"Retained Result Bundle Contract Clarification",
+		"Lifecycle Projection Authority Labels",
+		"Artifact Identity / Discovery Seam",
+		"CP Compatibility Fixture Alignment",
+		"Stop conditions:",
+		"Validation hints:",
+	)
+	assertContainsAll(t, "PLANS Workstream C7 pointer", plans,
+		"C7 is a docs/static-test-only consolidation checkpoint recorded in `.docs/execution_lifecycle/workstream_c7_checkpoint.md`.",
+		"Workstream A/B gates are satisfied",
+		"C0-C6 are present",
+		"next behavior-changing C work must preserve CP compatibility and CP/IM non-authority boundaries",
+		"It makes no behavior, API, route, runtime, TLS, CP diagnose, IM refresh, live proof, or route eligibility change.",
+	)
+	assertContainsAll(t, "Workstream C source decision still records C0-C6", decision,
+		"C0 is the docs and docs-contract-test gate only",
+		"C1 is the focused code-facing guardrail slice over",
+		"C2 is the focused tests/docs guardrail slice over",
+		"C3 is the focused tests/docs guardrail slice for retained-result",
+		"C4 is the focused tests/docs guardrail slice for runtime identity and Vault handoff boundaries.",
+		"C5 is the focused tests/docs guardrail slice for current status/logs/result/cancel compatibility and non-authority posture.",
+		"C6 is ES Admission Policy Layer v0.",
+	)
+	assertContainsAll(t, "Remote Alpha TLS blocked decision remains blocked", tlsDecision,
+		"Decision status: blocked.",
+		"No option is selected.",
+		"`operator-healthcheck-tls-renew` remains blocked by `unsupported_signing_topology`.",
+		"P0v remains design/static only and no fallback emitter is introduced",
+	)
+	assertContainsAll(t, "Remote Alpha TLS resolution remains blocked", tlsResolution,
+		"Current resolution verdict: blocked.",
+		"No current ES source satisfies the signer authority and custody evidence gate",
+		"no replacement, renewal, profile-lineage refresh, CP diagnose rerun, MA execution, Bridge projection, or live proof may proceed by inference",
+	)
+	assertContainsAll(t, "Remote Alpha TLS route matrix still blocked", remoteAlpha,
+		"P0v is design/static-test prep only",
+		"It preserves `operator-healthcheck-tls-renew` as blocked with `unsupported_signing_topology`",
+		"`operator-healthcheck-tls-renew` | blocked/status-only",
+	)
+	assertContainsAll(t, "CP and IM non-authority labels remain preserved", runbook,
+		"Control Plane owns orchestration, Temporal workflow state, review, checkpoint, finalization, intervention, and operator-facing control semantics.",
+		"CP consumes accepted ES surfaces but does not define ES core contracts.",
+		"IM readiness/profile/support-bundle/provenance artifacts remain evidence/projection/diagnostics only",
+	)
+	assertContainsNone(t, "Workstream C7 no TLS or authority widening claim", checkpoint,
+		"operator-healthcheck TLS replacement is unblocked",
+		"operator-healthcheck-tls-renew is eligible",
+		"renewal is enabled",
+		"source-grounded signer/custody evidence exists",
+		"CP diagnose rerun occurred",
+		"IM refresh occurred",
+		"MA scheduled execution is eligible",
+		"C7 implements",
+		"C7 changes API",
+		"C7 changes runtime",
+	)
+}
+
 func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
