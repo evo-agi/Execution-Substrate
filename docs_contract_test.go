@@ -5582,6 +5582,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 	assertContainsAll(t, "operator healthcheck replacement PLANS boundary", plans,
 		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
 		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`",
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
 		"not a P0v route implementation",
 		"not renewal execution",
 		"not Bridge or Maintenance Agent authority",
@@ -5594,6 +5595,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 	assertContainsAll(t, "operator healthcheck replacement remote overview", compactText(remoteRaw),
 		"operator-authorized operator-healthcheck TLS replacement design",
 		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`",
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
 		"does not implement renewal, replacement, noninteractive status, CP diagnose, IM profile-lineage refresh",
 		"route eligibility widening",
 		"preserves `operator-healthcheck-tls-renew` as blocked with `unsupported_signing_topology`",
@@ -5604,6 +5606,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 		"`Design/static-test prep only`",
 		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
 		"`operator-healthcheck-tls-status` route is the only implemented operator-healthcheck TLS status route",
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
+		"`Reopened redesign seam`: signing authority and private-key custody",
 		"operator-authorized replacement design",
 		"CP `diagnose-remote-profile` command consumes `control-plane.remote-supported-host-profile.v1` profile metadata",
 		"not a live remote TLS handshake, ES route execution, CP proof, Temporal proof, ES submit, or Remote Alpha live proof",
@@ -5612,9 +5616,12 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 		"`client.operator`",
 		"Current signing topology is undocumented for this scope.",
 		"That is why `operator-healthcheck-tls-renew` still fails closed with `unsupported_signing_topology`",
+		"currently records no allowed signer for this scope",
+		"CP, IM, Maintenance Agent, and Bridge are explicitly not signing authorities.",
 		"A future Maintenance Agent biometric lease may approve only an exact canonical plan digest.",
 		"Private keys remain inside ES-owned or host-local custody",
 		"Bridge, Maintenance Agent, Control Plane, Infrastructure Manager reports, support bundles, readiness reports, and profile lineage artifacts must never retain, print, copy, expose, parse, or summarize private keys.",
+		"Key reuse, key replacement, and key rotation are not enabled by this design.",
 		"ES owns TLS route/material semantics",
 		"IM owns Remote Alpha profile, provenance, readiness, support-bundle, and profile-lineage refresh emission.",
 		"CP owns remote-supported-host profile parsing, profile diagnostics, profile acceptance",
@@ -5641,7 +5648,12 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 
 	assertContainsAll(t, "operator healthcheck replacement stop conditions", stopConditions,
 		"signing topology is unclear",
+		"signing authority is unclear",
+		"signer custody is unclear",
 		"key custody is unclear",
+		"CSR flow is unclear",
+		"key-pair match cannot be proven without exposing private key material",
+		"backup evidence is unavailable",
 		"profile lineage owner is unclear",
 		"CP diagnose expected input is unclear",
 		"rollback evidence is unavailable",
@@ -5660,6 +5672,129 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesig
 		"IM owns TLS signing",
 		"fallback emitter is allowed",
 		"scheduled execution is allowed",
+	)
+}
+
+func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	replacement := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md"))
+	signingRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md")
+	signing := compactText(signingRaw)
+	stopConditions := compactDocSection(t, signingRaw, "## 10. Stop Conditions", "## 11. Static-Test Expectations")
+	staticExpectations := compactDocSection(t, signingRaw, "## 11. Static-Test Expectations", "")
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	dispatchSections := docSection(t, source, "recovery_session() {", "\nprint_refresh_command() {") +
+		"\n" + docSection(t, source, "main() {", "\nmain \"$@\"")
+	assertNoActiveShellDispatchArm(t, "Remote Alpha operator P0v source dispatch", dispatchSections, "operator-healthcheck-tls-status-noninteractive")
+
+	assertContainsAll(t, "operator healthcheck signing custody PLANS boundary", plans,
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
+		"blocked/status-only with `unsupported_signing_topology`",
+		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody remote overview", compactText(remoteRaw),
+		"with signing/custody hardening in `.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
+		"does not implement renewal, replacement, noninteractive status, CP diagnose, IM profile-lineage refresh",
+		"route eligibility widening",
+		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain explicit ES unresolved stop conditions",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody replacement linkage", replacement,
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`",
+		"companion records the stricter material-custody stop conditions",
+		"currently records no allowed signer for this scope",
+		"CP, IM, Maintenance Agent, and Bridge are explicitly not signing authorities.",
+		"Key reuse, key replacement, and key rotation are not enabled by this design.",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody design", signing,
+		"Remote Alpha Operator-Healthcheck TLS Signing And Custody Design",
+		"`Design/static-test prep only`: this document does not execute replacement",
+		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
+		"`Reopened redesign seam`: signing authority and private-key custody",
+		"Current answer: unresolved. No ES-owned or host-local authority is currently documented as allowed to sign replacement operator-healthcheck client certificates for this scope.",
+		"Therefore no replacement may proceed today.",
+		"continue to fail closed with `unsupported_signing_topology`",
+		"explicit statement that CP, IM, Maintenance Agent, and Bridge are not signing authorities",
+		"The future design must not assume a retained runtime CA private-key topology",
+		"must not accept ad hoc signing material",
+		"must not infer authority from service or governance TLS routes",
+		"Only an ES-owned host-local process running under the documented operator healthcheck TLS route/custody model may read or use the key.",
+		"Reuse existing host-local key for cert-only replacement",
+		"`unresolved stop condition`",
+		"Replace or rotate the key through host-local generation",
+		"Import, export, copy, escrow, print, hash for evidence, or pass private key material outside host-local ES custody",
+		"`prohibited`",
+		"Any key reuse, replacement, rotation, or generation in this tranche",
+		"CSR flow, if selected later:",
+		"Cert-only replacement, if selected later:",
+		"checks that the replacement certificate public key matches the host-local private key by comparing public-key fingerprints derived locally",
+		"Before any future replacement, the owning ES path must record safe backup evidence",
+		"Rollback after a failed replacement remains an owner-path action, not authority widening.",
+		"Allowed safe fields",
+		"Cert metadata freshness",
+		"Safe identity/SAN/SPIFFE match",
+		"Trust-chain match",
+		"Key-pair match without exposing key",
+		"CP `diagnose-remote-profile` pass",
+		"IM profile lineage refresh",
+		"No live proof claim is allowed until the later Milestone 3 path actually runs.",
+		"`operator-healthcheck-tls-renew` still blocks because ES has not documented an allowed signer",
+		"Before the renew route could move from blocked to operator-approved renewal",
+		"Before auto-renew eligibility could even be discussed",
+		"None of those are enabled here.",
+		"`es-service-tls-renew` and `es-governance-tls-renew` are separate scopes.",
+		"Service or governance TLS renewal cannot repair operator-healthcheck TLS by inference",
+		"A future biometric lease may approve only the exact canonical plan digest",
+		"It cannot create signing authority, signer custody, key custody, CSR flow, profile lineage, CP diagnose ownership, renewal eligibility",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody stop conditions", stopConditions,
+		"signing authority is unclear",
+		"signer custody is unclear",
+		"key custody is unclear",
+		"CSR flow is unclear",
+		"key-pair match cannot be proven without private-key exposure",
+		"backup evidence is unavailable",
+		"rollback evidence is unavailable",
+		"redaction cannot be guaranteed",
+		"CP diagnose expected input is unclear",
+		"IM profile lineage owner is unclear",
+		"hidden SSH, hidden provisioning, hidden helper staging, or hidden reconciler behavior would be required",
+		"fallback emitter behavior would be required",
+		"route eligibility would be widened by implication",
+		"plan digest mismatches",
+		"future biometric lease gating is invalid, expired, consumed, mismatched, or outside route eligibility",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody static tests", staticExpectations,
+		"signing authority and key custody are explicit unresolved stop conditions",
+		"no renewal is enabled by this design",
+		"`unsupported_signing_topology` remains the current renewal blocker",
+		"service and governance TLS scopes remain separate",
+		"raw PEM, private-key, and raw certificate bodies are absent from the design docs",
+		"route eligibility is not widened",
+		"P0v noninteractive status remains unimplemented and no fallback emitter is introduced",
+		"CP, IM, Maintenance Agent, and Bridge authority boundaries remain preserved",
+		"biometric leases remain exact-plan-digest approval only and not authority",
+	)
+
+	assertContainsNone(t, "operator healthcheck signing custody forbidden raw material", signingRaw,
+		"-----BEGIN",
+		"BEGIN PRIVATE KEY",
+		"BEGIN RSA PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+		"PRIVATE KEY-----",
+		"CERTIFICATE-----",
+		"renewal is now supported",
+		"scheduled execution is allowed",
+		"fallback emitter is allowed",
+		"CP owns TLS signing",
+		"IM owns TLS signing",
+		"Maintenance Agent may define signing topology",
+		"Bridge may approve replacement",
 	)
 }
 

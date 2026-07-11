@@ -7,6 +7,12 @@ operator-authorized replacement of Remote Alpha operator-healthcheck TLS public
 material, followed by owner-repo profile/provenance refresh and Control Plane
 profile diagnostics.
 
+The signing, private-key custody, CSR/cert flow, backup/rollback, redaction,
+and post-check gates for that future path are hardened in the companion design
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`. The companion
+is separate so this document can remain the end-to-end replacement sequence,
+while the companion records the stricter material-custody stop conditions.
+
 Status:
 
 - `Design/static-test prep only`: this document does not implement renewal,
@@ -17,6 +23,9 @@ Status:
 - `Bounded slice rule`: the existing interactive
   `operator-healthcheck-tls-status` route is the only implemented
   operator-healthcheck TLS status route.
+- `Reopened redesign seam`: signing authority and private-key custody for this
+  host-local operator client identity remain unresolved until ES documents and
+  tests the exact owner path.
 - This is an operator-authorized replacement design. It is not generic TLS
   deployment, broad repair automation, a hidden reconciler, or proof that
   Remote Alpha is live-ready.
@@ -81,6 +90,13 @@ post-renew probes. Existing ES tests also preserve that the helper must not
 assume a retained runtime CA private-key topology or accept ad hoc signing
 material.
 
+The companion signing/custody design currently records no allowed signer for
+this scope. Replacement can proceed only after ES documents source-grounded
+evidence for the allowed signer owner label, signer custody label, public
+issuer/trust labels or digests, key custody, CSR/cert flow, backup/rollback
+evidence, redaction, route eligibility, and post-check ownership. CP, IM,
+Maintenance Agent, and Bridge are explicitly not signing authorities.
+
 A future Maintenance Agent biometric lease may approve only an exact canonical
 plan digest. The lease cannot define signing topology, create signing
 authority, choose key custody, make the blocked route eligible, make an
@@ -99,6 +115,14 @@ If replacement requires private-key exposure outside the documented custody
 boundary, the replacement stops. If custody is unresolved, replacement stops.
 If backup or rollback cannot be described without private-key material in
 evidence, replacement stops.
+
+Key reuse, key replacement, and key rotation are not enabled by this design.
+The companion signing/custody design classifies reuse of the existing
+host-local key and host-local key rotation as unresolved stop conditions until
+ES documents the exact key action, owner process, custody boundary,
+backup/rollback model, and no-exposure key-pair match. Importing, exporting,
+copying, escrowing, printing, or passing private key material outside
+host-local ES custody is prohibited.
 
 ## 5. Public Material And Profile Emission Ownership
 
@@ -176,6 +200,8 @@ Required post-checks for a future replacement:
 - identity/SAN/SPIFFE labels match `spiffe://execution.internal/operator/local`;
 - trust chain metadata matches the documented ES signing topology;
 - key-pair match is checked without printing key material;
+- backup and rollback evidence labels are present before mutation is considered
+  complete;
 - CP `diagnose-remote-profile` passes on refreshed profile material;
 - IM profile lineage/provenance is refreshed and digest-compatible;
 - redaction confirms no raw secret, PEM, cert body, env, endpoint, raw log,
@@ -253,7 +279,12 @@ explicitly says so.
 Replacement must stop when any of these are true:
 
 - signing topology is unclear;
+- signing authority is unclear;
+- signer custody is unclear;
 - key custody is unclear;
+- CSR flow is unclear;
+- key-pair match cannot be proven without exposing private key material;
+- backup evidence is unavailable;
 - owner is unclear;
 - any private key, PEM body, raw certificate body, raw profile payload, raw
   env value, endpoint secret, unsafe path, raw log, support-bundle payload,
@@ -268,6 +299,8 @@ Replacement must stop when any of these are true:
 - a future biometric lease is invalid, expired, consumed, or mismatched;
 - service/governance TLS renewal is being used as a substitute for
   operator-healthcheck TLS without ES docs proving a shared scope;
+- hidden SSH, provisioning, helper staging, or reconciler behavior would be
+  required outside the owner contract;
 - a consumer attempts to treat replacement evidence as live proof, production
   readiness, CP run-control truth, IM authority, Bridge authority, or MA
   authority.

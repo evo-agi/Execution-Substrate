@@ -634,13 +634,16 @@ Current implementation/design status through P0u:
   noninteractive auth or redaction cannot be proven.
 - The operator-authorized operator-healthcheck TLS replacement design is
   recorded separately in
-  `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`.
+  `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`,
+  with signing/custody hardening in
+  `.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`.
   It is docs/static-test only and does not implement renewal, replacement,
   noninteractive status, CP diagnose, IM profile-lineage refresh, Bridge
   authority, Maintenance Agent authority, route eligibility widening, or live
   proof. It preserves `operator-healthcheck-tls-renew` as blocked with
-  `unsupported_signing_topology` until ES documents signing topology, key
-  custody, backup/rollback evidence, redaction, and post-check semantics for
+  `unsupported_signing_topology` because signing authority, signer custody, key
+  custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check
+  semantics remain explicit ES unresolved stop conditions for
   `spiffe://execution.internal/operator/local`.
 - The combined `vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --prepare-summary-path --prepare-config-readability

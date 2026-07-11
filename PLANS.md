@@ -1340,14 +1340,17 @@ proof, or widen any cross-repo authority boundary.
 The operator-authorized operator-healthcheck TLS replacement design tranche is
 also docs/static-test only. It records an ES-owned future replacement path in
 `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
+with signing/custody hardening in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`
 and an IM-owned profile-lineage refresh counterpart in the Infrastructure
 Manager repo. It is not a P0v route implementation, not renewal execution, not
 Bridge or Maintenance Agent authority, not CP diagnose execution, and not
 profile mutation. It preserves `operator-healthcheck-tls-renew` as
-blocked/status-only with `unsupported_signing_topology` until ES documents the
-signing topology, key custody, backup/rollback evidence, redaction, and
-post-check semantics for the `spiffe://execution.internal/operator/local`
-operator identity.
+blocked/status-only with `unsupported_signing_topology` because signing
+authority, signer custody, key custody, CSR/cert flow, backup/rollback
+evidence, redaction, and post-check semantics remain ES unresolved stop
+conditions for the `spiffe://execution.internal/operator/local` operator
+identity.
 
 The Remote Alpha maintenance-monitor contract alignment slice is docs/static
 contract work only. It may codify a future Mac-side maintenance project as a
