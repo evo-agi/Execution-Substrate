@@ -9,9 +9,13 @@ profile diagnostics.
 
 The signing, private-key custody, CSR/cert flow, backup/rollback, redaction,
 and post-check gates for that future path are hardened in the companion design
-`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`. The companion
-is separate so this document can remain the end-to-end replacement sequence,
-while the companion records the stricter material-custody stop conditions.
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md`. The evidence
+checklist for resolving those stop conditions is recorded separately in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md`.
+The companions are separate so this document can remain the end-to-end
+replacement sequence. The signing/custody companion records the stricter
+material-custody stop conditions, while custody requirements and resolution
+criteria remain explicit non-execution gates.
 
 Status:
 

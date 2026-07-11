@@ -27,7 +27,10 @@ This is a companion to
 The companion is separate because the replacement document records the
 end-to-end owner sequence, while this document records the stricter custody and
 material-flow gates that decide whether any future replacement path is allowed
-to proceed.
+to proceed. The resolution criteria and evidence checklist live in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md`;
+that document is separate so checklist completion cannot be confused with
+replacement execution or renewal authorization.
 
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` design records, and then
