@@ -415,6 +415,13 @@ Current implementation/design status through P0u:
   refresh, support-bundle collection, CP proof, Vault/SPIRE/Nomad changes,
   workload-auth, reset/unseal, runtime identity work, ES service TLS renewal,
   and ES governance TLS renewal separate.
+- P0v is design/static-test prep only for the future ES-owned noninteractive
+  read-only status route
+  `recovery-session operator-healthcheck-tls-status-noninteractive
+  --ssh-target <target> --format json`. The design is recorded in
+  `.docs/remote_alpha_operator_healthcheck_noninteractive_status.md`; it
+  implements no route, runs no remote contact, changes no MA route metadata,
+  and performs no renewal or mutation.
 - Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
   `print-support-bundle-command`, `print-im-commands`,
   `es-writable-state-readiness-check`, `readiness-session`, and
@@ -617,6 +624,14 @@ Current implementation/design status through P0u:
   reconciliation, not CP proof, not Vault/SPIRE/Nomad change, not workload-auth,
   not runtime identity, not ES service TLS renewal, not ES governance TLS
   renewal, and not production readiness.
+- The future `operator-healthcheck-tls-status-noninteractive --ssh-target
+  <target> --format json` route is proposed only by P0v. It is not implemented
+  in the operator facade. The proposed route preserves the current interactive
+  status route and defines a separate no-prompt, read-only JSON route that must
+  require no local TTY, create no pseudo-TTY, use no prompt-capable SSH or sudo,
+  avoid password storage/replay, avoid remote helper staging, avoid remote
+  summary mutation, emit only bounded JSON, and fail closed when
+  noninteractive auth or redaction cannot be proven.
 - The combined `vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --prepare-summary-path --prepare-config-readability
   --interactive-tty` route runs summary preparation and then config readability
@@ -635,7 +650,9 @@ Current implementation/design status through P0u:
   route for ARS/AGS/ES artifact-registry mTLS. P0t adds the separate bounded
   ES governance TLS status/renew route for ES -> EGS trust-model mTLS. P0u adds
   the separate bounded operator healthcheck TLS status/renew route for the
-  host-local operator client identity. Vault service-user check/apply execution, runtime security
+  host-local operator client identity. P0v records the future noninteractive
+  operator-healthcheck TLS status contract as design/static-test prep only.
+  Vault service-user check/apply execution, runtime security
   check, post-unseal check combination, live execute-reset validation, live
   workload-auth bootstrap validation, preinstalled helper bundles, generic
   helper dispatch, and all other staged `es-*` helper delegation remain not
@@ -3530,6 +3547,75 @@ generic TLS deployment, not Infrastructure Manager reconciliation, not Control
 Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or runtime
 identity authority, not production readiness, and not Remote Alpha production,
 deployment, provisioning, or reconciliation architecture.
+
+### P0v Operator Healthcheck TLS Noninteractive Status Design
+
+`Bounded slice rule`: P0v is design/static-test prep only for a future
+ES-owned read-only operator healthcheck TLS status route:
+
+```text
+scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json
+```
+
+The authoritative route-contract design is
+`.docs/remote_alpha_operator_healthcheck_noninteractive_status.md`.
+
+P0v chooses a new route id, `operator-healthcheck-tls-status-noninteractive`,
+instead of adding a mode flag to the current interactive
+`operator-healthcheck-tls-status` route. The existing interactive route remains
+the current implemented foreground operator route with required
+`--interactive-tty`, local stdin/stdout TTY preflight, `ssh -tt`, visible
+sudo/password prompt behavior, fixed helper-pair staging, and remote summary
+retention. P0v does not implement the new route and does not change MA route
+metadata.
+
+The proposed future route contract requires:
+
+- no local stdin/stdout TTY requirement
+- no pseudo-TTY creation
+- no prompt-capable SSH or sudo path
+- fail-closed behavior when noninteractive auth is not already ready
+- no password storage or replay
+- no certificate, key, trust bundle, profile, env, support-bundle,
+  retained-bundle, proof artifact, SQLite state, or remote-state mutation
+- no remote helper staging and no remote summary mutation
+- JSON-only bounded status evidence using schema
+  `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`
+- no raw stdout/stderr transcripts, helper transcripts, SSH transcripts, PEM
+  bodies, private keys, env values, endpoint secrets, remote paths, raw logs,
+  TLS/SPIFFE/Vault material, connector/workspace/org IDs, raw payloads,
+  support-bundle content, retained-bundle content, or unsafe local paths
+- evidence/projection-only semantics for CP, IM, MA, and Bridge consumers
+
+Proposed failure classes include local no-contact refusals such as
+`facade_usage_failed` and `remote_auth_not_ready`, auth/read-only contact
+classes such as `noninteractive_auth_required`, `ssh_batch_mode_failed`, and
+`remote_status_unavailable`, status blockers such as `cert_metadata_expired`,
+`trust_chain_unavailable`, and `identity_mismatch`, and future helper-output
+classes such as `helper_usage_failed`, `unsupported_signing_topology`,
+`unexpected_output_shape`, `forbidden_output_material`, and
+`unknown_helper_failure`.
+
+P0v status evidence remains non-authoritative. CP may later consume it only as
+remote-profile diagnostic evidence after a CP docs/tests tranche. IM may later
+consume it only for readiness/profile/provenance evidence after an IM
+docs/tests tranche. MA may run it only after ES implements and audits the route
+and a later MA tranche updates route metadata to `supports_noninteractive=true`
+and `scheduled_execution_allowed=true`. Bridge remains an evidence/projection
+adapter only.
+
+Stop conditions for P0v:
+
+- the route would require a local TTY, pseudo-TTY, SSH prompt, sudo prompt, or
+  password storage/replay
+- the route would stage helpers, mutate a remote summary, or mutate certificate,
+  key, trust, profile, env, support, retained, proof, SQLite, or remote state
+- bounded JSON redaction cannot be guaranteed
+- forbidden output material or unsafe path/token/env/cert/log content could be
+  emitted or retained
+- the route would be treated as renewal, CP run-control truth, ES runtime
+  truth, IM authority, MA authority, Bridge authority, production readiness,
+  live proof, or infrastructure reconciliation truth
 
 ### Remote Alpha Maintenance Monitor Boundary
 

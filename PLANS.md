@@ -1270,6 +1270,55 @@ Control Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or
 runtime identity authority, not production readiness, and not Remote Alpha
 production, deployment, provisioning, or reconciliation architecture.
 
+The P0v design/static-test prep slice may define, but must not implement, a
+future ES-owned noninteractive read-only operator-healthcheck TLS status route:
+`scripts/remote_alpha_operator.sh recovery-session
+operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format
+json`. The design lives at
+`.docs/remote_alpha_operator_healthcheck_noninteractive_status.md`.
+P0v is a route-contract design extension over the P0u operator-healthcheck TLS
+status surface, not renewal, not a signing-topology decision, not a profile
+mutation path, and not a Maintenance Agent scheduling change. It must not run
+live SSH, scp, BatchMode probes, sudo, remote helpers, live remote OpenSSL,
+Vault, reset/unseal, workload-auth bootstrap/check, runtime identity summary,
+Infrastructure Manager refresh, support-bundle collection, CP proof,
+SPIRE/Nomad mutation, service deployment, ES submit, Docker/Nomad jobs,
+certificate mutation, profile mutation, env/state mutation, proof generation,
+or network-dependent integration tests.
+
+P0v chooses a new route id instead of adding a mode flag to the current
+interactive `operator-healthcheck-tls-status` route. The existing route remains
+the foreground operator route with required `--interactive-tty`, local
+stdin/stdout TTY preflight, `ssh -tt`, visible sudo/password prompt behavior,
+fixed helper-pair staging, and remote summary retention. The proposed future
+noninteractive route must require no local stdin/stdout TTY, allocate no
+pseudo-TTY, use no-prompt SSH semantics if SSH is used, use no prompt-capable
+sudo, fail closed when noninteractive auth is not ready, avoid password
+storage/replay, avoid remote helper staging, avoid remote summary mutation, and
+emit only bounded JSON evidence.
+
+P0v's proposed status schema is
+`execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.
+It may carry route id/version, generated time, live-contact-attempted status,
+status availability, bounded failure class, numeric transport/helper exit
+codes when safe, public certificate metadata, safe identity labels, safe trust
+chain labels/digests, redaction flags, non-authority labels, owning-repo
+contract labels, and profile-lineage hints only. It must not carry raw stdout,
+raw stderr, helper or SSH transcripts, full certificate PEM bodies, private-key
+PEM bodies, env values, endpoint secrets, remote paths, raw logs,
+TLS/SPIFFE/Vault material, connector/workspace/org IDs, raw payloads, support
+bundle contents, retained bundle contents, or unsafe local paths.
+
+P0v status evidence remains evidence/projection only. CP may later consume it
+as diagnostic evidence only after a CP docs/tests tranche; IM may later consume
+it for readiness/profile/provenance only after an IM docs/tests tranche; MA may
+run it only after ES implements and audits the route and a later MA tranche
+updates route metadata to `supports_noninteractive=true` and
+`scheduled_execution_allowed=true`. Until those later changes land, current MA
+scheduled/background execution remains disallowed for
+`operator-healthcheck-tls-status`, and `operator-healthcheck-tls-renew` remains
+blocked/status-only with `unsupported_signing_topology`.
+
 The Remote Alpha maintenance-monitor contract alignment slice is docs/static
 contract work only. It may codify a future Mac-side maintenance project as a
 scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
