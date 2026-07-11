@@ -12,6 +12,10 @@ Status:
 - `Design/static-test prep only`: this document proposes a future
   noninteractive route contract. It does not implement a route, renewal, SSH
   changes, profile mutation, or scheduled execution.
+- `No fallback emitters`: ES machine-readable route JSON is promised only
+  after declared route prerequisites pass. Missing local runtime/validator
+  dependencies are caller/integration preflight failures, not ES route-output
+  obligations.
 - The proposed route is an extension of the ES-owned Remote Alpha
   operator-helper/status surface. It is not a redefinition of CP, IM, MA, or
   Bridge authority.
@@ -229,13 +233,36 @@ Required local inputs:
 - A single SSH target string.
 - ES-owned route metadata that resolves the fixed remote read-only status
   command. The user must not supply a helper path or shell command.
-- Local `ssh` capability.
+- Local runtime/validator availability, or a dedicated checked-in
+  runtime/validator available to the route implementation.
+- Schema and redaction checks available before the route promises ES-owned
+  machine-readable output.
+- Local `ssh` capability only if the implementation is a remote-contact route.
+- A known-host entry that already exists when the implementation contacts a
+  remote host.
+- Noninteractive auth material that is already available when the
+  implementation contacts a remote host.
 - A route config stating whether noninteractive execution is implemented and
   audited.
 
+Prerequisite and no-fallback contract:
+
+- No fallback emitters are allowed.
+- ES machine-readable route JSON is promised only after the declared
+  prerequisites above pass.
+- Missing local runtime/validator dependencies are caller/integration preflight
+  failures, not ES route-output obligations.
+- Caller/integration preflight may record separately owned local evidence and
+  stop before invoking the ES route.
+- A future ES implementation may assume declared prerequisites or use a
+  dedicated checked-in runtime/validator, but it must not split one schema
+  contract across a primary runtime plus shell fallback JSON assembly.
+- If prerequisites cannot be proven, the ES route must not pretend that it
+  produced `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.
+
 Allowed output formats:
 
-- JSON only for the route contract.
+- JSON only for the route contract after prerequisites pass.
 - Help text is allowed for `--help`.
 - No Markdown, human transcript, raw helper stdout, raw helper stderr, raw SSH
   transcript, remote summary copy-back, or support bundle is part of the route
@@ -244,11 +271,12 @@ Allowed output formats:
 Exit-code vocabulary:
 
 - `0`: bounded JSON emitted, `status_available=true`, and no status blocker.
-- `1`: bounded JSON emitted or local safe failure JSON emitted, but status is
+- `1`: bounded JSON emitted after route prerequisites passed, but status is
   blocked, unavailable, redaction failed, remote contact failed, helper failed,
   or a fail-closed condition was reached.
 - `2`: usage, local preflight, policy/refusal, forbidden argument, or invalid
-  route metadata. Remote contact must not occur for facade exit `2`.
+  route metadata. Remote contact must not occur for facade exit `2`, and
+  missing runtime/validator prerequisites do not require ES route JSON.
 
 Consumers may retain the bounded JSON evidence document and numeric exit code.
 Consumers must not retain raw stdout/stderr transcripts. If stdout is the JSON
@@ -296,26 +324,35 @@ Implementation implication:
   or another ES-owned fixed remote command that can emit bounded JSON without
   remote staging and without remote summary mutation. Reusing the current
   staged `ssh -tt` facade is not sufficient.
+- A future implementation must use declared prerequisites or a dedicated
+  checked-in runtime/validator for schema and redaction. It must not add a
+  shell fallback JSON branch for cases where that runtime/validator is missing.
 
 ## 6. Auth Posture Classification
 
-Failure classes are stable strings in the bounded JSON evidence. They do not
-authorize retries, mutation, renewal, profile acceptance, or run-control.
+Failure classes are stable strings in bounded JSON evidence only after route
+prerequisites pass. Missing local runtime/validator prerequisites are
+caller/integration preflight blockers and are not represented by ES fallback
+JSON. Failure classes do not authorize retries, mutation, renewal, profile
+acceptance, or run-control.
 
 Local preflight classes:
 
 - `facade_usage_failed`: invalid local argv, duplicate flag, forbidden flag,
   helper override, secret-like argument, invalid SSH target, or invalid route
   metadata. Exit `2`, no remote contact.
-- `noninteractive_auth_required`: local route metadata or configured command
-  shows the route would need a TTY, password prompt, prompt-capable sudo, or
-  unsupported auth topology. Exit `1` or `2` depending on whether this is config
-  refusal or usage.
+- `noninteractive_auth_required`: after schema/redaction prerequisites are
+  available, local route metadata or configured command shows the route would
+  need a TTY, password prompt, prompt-capable sudo, or unsupported auth
+  topology. Exit `1` or `2` depending on whether this is config refusal or
+  usage.
 - `remote_auth_not_ready`: contact-free local evidence says required
   noninteractive auth material is absent, stale, disabled, or unsupported. No
-  remote contact.
-- `redaction_unavailable`: the route cannot prove bounded output/redaction
-  before returning evidence.
+  remote contact, after schema/redaction prerequisites are available.
+- `redaction_unavailable`: after the route runtime is available, the route
+  cannot prove bounded output/redaction for collected status evidence. Missing
+  redaction/runtime dependencies before route execution are preflight blockers,
+  not fallback JSON.
 
 Remote-read-only contact classes:
 
@@ -482,7 +519,10 @@ Schema rules:
 - `route.current_status` remains `proposed` until implementation and audit.
 - `scheduled_execution_allowed=true` is part of the proposed target contract,
   not current executable metadata.
-- `live_contact_attempted=false` is valid for local preflight failures.
+- `live_contact_attempted=false` is valid for no-contact route classifications
+  only after the route can emit bounded JSON. Missing local runtime/validator
+  prerequisites remain caller/integration preflight blockers outside this ES
+  schema.
 - `helper_exit_code` is set only if the remote helper ran.
 - `transport_exit_code` is numeric-only and optional.
 - Certificate metadata is public metadata only. Raw certificate bodies and PEM
@@ -527,9 +567,12 @@ MA:
 
 Bridge:
 
-- Bridge may project already-safe evidence only. It must not start, control,
-  or infer route execution, renewal, CP acceptance, IM readiness, or ES runtime
-  authority.
+- Bridge may record ChatGPT/Codex coordination evidence or project already-safe
+  evidence only. It must not start, control, or infer route execution, renewal,
+  CP acceptance, IM readiness, or ES runtime authority.
+- Bridge-owned preflight evidence for missing ES prerequisites must use a
+  Bridge-owned schema, not this ES route schema. Bridge, MA, CP, and IM must
+  not wrap missing ES prerequisites into ES status truth.
 
 ## 9. Stop Conditions
 
@@ -538,6 +581,8 @@ The proposed route must fail closed when:
 - Local argv is invalid.
 - A TTY is required.
 - A pseudo-TTY would be needed.
+- The local runtime/validator prerequisite is missing.
+- Schema or redaction checks are unavailable before route output is promised.
 - SSH would prompt for a password.
 - Sudo would prompt for a password.
 - Noninteractive auth material cannot be proven ready.
@@ -553,6 +598,7 @@ The proposed route must fail closed when:
 - Redaction cannot be guaranteed.
 - A service/governance TLS route would be needed to explain
   operator-healthcheck TLS status.
+- A fallback JSON emitter would be needed to preserve schema-shaped output.
 - A consumer attempts to treat the output as CP, IM, MA, Bridge, ES runtime, or
   infrastructure authority.
 
@@ -569,6 +615,10 @@ Future implementation tests must include:
   prompt-capable sudo would be required.
 - Tests proving the route does not stage helper files to the remote host.
 - Tests proving the route does not write or require a remote summary file.
+- Tests proving no fallback JSON emitter exists when the local runtime,
+  validator, schema checker, or redaction checker is unavailable.
+- Tests proving missing local runtime/validator dependencies are
+  caller/integration preflight blockers, not ES route-output obligations.
 - Tests for failure-class mapping:
   `facade_usage_failed`, `remote_auth_not_ready`,
   `noninteractive_auth_required`, `ssh_batch_mode_failed`,
@@ -610,7 +660,13 @@ to this design tranche.
 
 Recommended next tranches:
 
-- Implement the ES noninteractive status route.
+- Land docs-only no-fallback Bridge/ES design alignment.
+- Implement a Bridge-owned local preflight evidence tool, if still needed, as a
+  separate audited tranche that does not invoke this ES route.
+- Settle the ES prerequisite/runtime strategy, including whether a dedicated
+  checked-in runtime/validator is required.
+- Implement the ES noninteractive status route only after that prerequisite
+  strategy is settled.
 - Audit the ES route implementation and redaction.
 - Update MA to consume ES route metadata.
 - Plan CP `diagnose-remote-profile` rerun over refreshed profile material.

@@ -1297,6 +1297,17 @@ sudo, fail closed when noninteractive auth is not ready, avoid password
 storage/replay, avoid remote helper staging, avoid remote summary mutation, and
 emit only bounded JSON evidence.
 
+No fallback emitters are allowed for P0v. ES machine-readable route JSON is
+promised only after declared route prerequisites pass. Missing local
+runtime/validator dependencies are caller/integration preflight failures, not
+ES route-output obligations. A later ES route implementation may assume
+declared prerequisites or use a dedicated checked-in runtime/validator, but it
+must not split one schema contract across a primary runtime plus shell fallback
+JSON assembly. Until those prerequisites and the implementation audit land,
+the script still has no active dispatch arm for
+`operator-healthcheck-tls-status-noninteractive`; the existing P0u interactive
+route remains the only implemented operator-healthcheck status route.
+
 P0v's proposed status schema is
 `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.
 It may carry route id/version, generated time, live-contact-attempted status,
@@ -1318,6 +1329,13 @@ updates route metadata to `supports_noninteractive=true` and
 scheduled/background execution remains disallowed for
 `operator-healthcheck-tls-status`, and `operator-healthcheck-tls-renew` remains
 blocked/status-only with `unsupported_signing_topology`.
+
+Bridge/MA/CP/IM consumers must not wrap missing ES prerequisites into ES status
+truth. Bridge may record only Bridge-owned ChatGPT/Codex coordination preflight
+evidence when ES prerequisites are not declared or the route is not invoked.
+CP diagnose rerun and IM profile-lineage refresh remain future owning-repo
+tranches; P0v does not renew, mutate cert/profile/key/trust/env/state, run live
+proof, or widen any cross-repo authority boundary.
 
 The Remote Alpha maintenance-monitor contract alignment slice is docs/static
 contract work only. It may codify a future Mac-side maintenance project as a

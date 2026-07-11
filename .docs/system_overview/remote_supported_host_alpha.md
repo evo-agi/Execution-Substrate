@@ -3574,6 +3574,9 @@ The proposed future route contract requires:
 - no local stdin/stdout TTY requirement
 - no pseudo-TTY creation
 - no prompt-capable SSH or sudo path
+- declared local runtime/validator availability or a dedicated checked-in
+  runtime/validator before ES-owned JSON is promised
+- schema and redaction checks available before ES-owned JSON is promised
 - fail-closed behavior when noninteractive auth is not already ready
 - no password storage or replay
 - no certificate, key, trust bundle, profile, env, support-bundle,
@@ -3586,6 +3589,17 @@ The proposed future route contract requires:
   TLS/SPIFFE/Vault material, connector/workspace/org IDs, raw payloads,
   support-bundle content, retained-bundle content, or unsafe local paths
 - evidence/projection-only semantics for CP, IM, MA, and Bridge consumers
+
+No fallback emitters are allowed. ES machine-readable route JSON is promised
+only after declared route prerequisites pass. Missing local runtime/validator
+dependencies are caller/integration preflight failures, not ES route-output
+obligations. A later ES implementation may assume declared prerequisites or use
+a dedicated checked-in runtime/validator, but it must not split one schema
+contract across a primary runtime plus shell fallback JSON assembly. The script
+still has no active dispatch arm for
+`operator-healthcheck-tls-status-noninteractive`, and the existing P0u
+interactive route remains the only implemented operator-healthcheck status
+route.
 
 Proposed failure classes include local no-contact refusals such as
 `facade_usage_failed` and `remote_auth_not_ready`, auth/read-only contact
@@ -3603,11 +3617,17 @@ docs/tests tranche. MA may run it only after ES implements and audits the route
 and a later MA tranche updates route metadata to `supports_noninteractive=true`
 and `scheduled_execution_allowed=true`. Bridge remains an evidence/projection
 adapter only.
+Bridge/MA/CP/IM must not wrap missing ES prerequisites into ES status truth.
+MA scheduled eligibility remains false until the later ES and MA tranches land.
+CP diagnose rerun and IM profile-lineage refresh remain future owning-repo
+tranches.
 
 Stop conditions for P0v:
 
 - the route would require a local TTY, pseudo-TTY, SSH prompt, sudo prompt, or
   password storage/replay
+- the route would need fallback JSON assembly because local runtime/validator,
+  schema, or redaction prerequisites are unavailable
 - the route would stage helpers, mutate a remote summary, or mutate certificate,
   key, trust, profile, env, support, retained, proof, SQLite, or remote state
 - bounded JSON redaction cannot be guaranteed
