@@ -632,6 +632,16 @@ Current implementation/design status through P0u:
   avoid password storage/replay, avoid remote helper staging, avoid remote
   summary mutation, emit only bounded JSON, and fail closed when
   noninteractive auth or redaction cannot be proven.
+- The operator-authorized operator-healthcheck TLS replacement design is
+  recorded separately in
+  `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`.
+  It is docs/static-test only and does not implement renewal, replacement,
+  noninteractive status, CP diagnose, IM profile-lineage refresh, Bridge
+  authority, Maintenance Agent authority, route eligibility widening, or live
+  proof. It preserves `operator-healthcheck-tls-renew` as blocked with
+  `unsupported_signing_topology` until ES documents signing topology, key
+  custody, backup/rollback evidence, redaction, and post-check semantics for
+  `spiffe://execution.internal/operator/local`.
 - The combined `vault-workload-auth-bootstrap --ssh-target <target>
   --execute-bootstrap --prepare-summary-path --prepare-config-readability
   --interactive-tty` route runs summary preparation and then config readability

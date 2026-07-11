@@ -5571,6 +5571,98 @@ func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDes
 	)
 }
 
+func TestRemoteAlphaOperatorHealthcheckTLSDocsOperatorAuthorizedReplacementDesign(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
+	replacement := compactText(replacementRaw)
+	phases := compactDocSection(t, replacementRaw, "## 7. Operator-Authorized Replacement Phases", "## 8. Post-Checks")
+	stopConditions := compactDocSection(t, replacementRaw, "## 14. Stop Conditions", "## 15. Validation Plan")
+
+	assertContainsAll(t, "operator healthcheck replacement PLANS boundary", plans,
+		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
+		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`",
+		"not a P0v route implementation",
+		"not renewal execution",
+		"not Bridge or Maintenance Agent authority",
+		"not CP diagnose execution",
+		"not profile mutation",
+		"`operator-healthcheck-tls-renew` as blocked/status-only with `unsupported_signing_topology`",
+		"`spiffe://execution.internal/operator/local`",
+	)
+
+	assertContainsAll(t, "operator healthcheck replacement remote overview", compactText(remoteRaw),
+		"operator-authorized operator-healthcheck TLS replacement design",
+		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`",
+		"does not implement renewal, replacement, noninteractive status, CP diagnose, IM profile-lineage refresh",
+		"route eligibility widening",
+		"preserves `operator-healthcheck-tls-renew` as blocked with `unsupported_signing_topology`",
+	)
+
+	assertContainsAll(t, "operator healthcheck replacement design", replacement,
+		"Remote Alpha Operator-Authorized Operator-Healthcheck TLS Replacement Design",
+		"`Design/static-test prep only`",
+		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
+		"`operator-healthcheck-tls-status` route is the only implemented operator-healthcheck TLS status route",
+		"operator-authorized replacement design",
+		"CP `diagnose-remote-profile` command consumes `control-plane.remote-supported-host-profile.v1` profile metadata",
+		"not a live remote TLS handshake, ES route execution, CP proof, Temporal proof, ES submit, or Remote Alpha live proof",
+		"`spiffe://execution.internal/operator/local`",
+		"`spiffe://execution.internal/operator`",
+		"`client.operator`",
+		"Current signing topology is undocumented for this scope.",
+		"That is why `operator-healthcheck-tls-renew` still fails closed with `unsupported_signing_topology`",
+		"A future Maintenance Agent biometric lease may approve only an exact canonical plan digest.",
+		"Private keys remain inside ES-owned or host-local custody",
+		"Bridge, Maintenance Agent, Control Plane, Infrastructure Manager reports, support bundles, readiness reports, and profile lineage artifacts must never retain, print, copy, expose, parse, or summarize private keys.",
+		"ES owns TLS route/material semantics",
+		"IM owns Remote Alpha profile, provenance, readiness, support-bundle, and profile-lineage refresh emission.",
+		"CP owns remote-supported-host profile parsing, profile diagnostics, profile acceptance",
+		"Backup And Rollback Evidence Requirements",
+		"Renewing service or governance TLS does not refresh the operator-healthcheck client certificate",
+		"This replacement design is separate from P0v.",
+		"Bridge preflight evidence is local-only and non-authoritative.",
+		"Neither CP nor IM becomes ES signing authority",
+	)
+
+	assertContainsAll(t, "operator healthcheck replacement phases", phases,
+		"Source-of-truth confirmation",
+		"Backup and safe inventory",
+		"Signing and custody confirmation",
+		"Plan digest generation",
+		"Operator authorization lease approval",
+		"Public cert/profile replacement by owning path",
+		"IM profile/provenance refresh",
+		"CP diagnose rerun",
+		"Optional ES/IM read-only status evidence",
+		"Remote Alpha proof resumption gate",
+		"No live proof claim until the proof path runs.",
+	)
+
+	assertContainsAll(t, "operator healthcheck replacement stop conditions", stopConditions,
+		"signing topology is unclear",
+		"key custody is unclear",
+		"profile lineage owner is unclear",
+		"CP diagnose expected input is unclear",
+		"rollback evidence is unavailable",
+		"redaction cannot be guaranteed",
+		"the exact plan digest does not match",
+		"a future biometric lease is invalid, expired, consumed, or mismatched",
+		"service/governance TLS renewal is being used as a substitute for operator-healthcheck TLS",
+	)
+
+	assertContainsNone(t, "operator healthcheck replacement design forbidden overclaims", replacement,
+		"renewal is now supported",
+		"Remote Alpha proof is complete",
+		"Bridge may approve replacement",
+		"Maintenance Agent may define signing topology",
+		"CP owns TLS signing",
+		"IM owns TLS signing",
+		"fallback emitter is allowed",
+		"scheduled execution is allowed",
+	)
+}
+
 func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
