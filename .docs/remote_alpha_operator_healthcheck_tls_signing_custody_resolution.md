@@ -27,7 +27,11 @@ This criteria document is separate from
 document records the custody design and stop conditions, while this document is
 the checklist for resolving those stop conditions. It is also separate from
 `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
-because replacement sequencing must not be treated as signer authority.
+because replacement sequencing must not be treated as signer authority. The
+signer/custody decision record lives in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md`
+because options comparison and selection status must not be confused with
+resolution criteria.
 
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` records, and then current

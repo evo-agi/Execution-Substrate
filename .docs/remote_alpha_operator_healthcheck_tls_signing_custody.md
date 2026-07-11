@@ -30,7 +30,11 @@ material-flow gates that decide whether any future replacement path is allowed
 to proceed. The resolution criteria and evidence checklist live in
 `.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md`;
 that document is separate so checklist completion cannot be confused with
-replacement execution or renewal authorization.
+replacement execution or renewal authorization. The signer/custody decision
+record lives in
+`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md`; it
+compares candidate signer/custody options and records that no option is
+selected today.
 
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` design records, and then

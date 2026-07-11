@@ -6025,6 +6025,155 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 	)
 }
 
+func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remoteOverview := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	replacementRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md")
+	signingRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md")
+	resolutionRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md")
+	decisionRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md")
+	decision := compactText(decisionRaw)
+	options := compactDocSection(t, decisionRaw, "## 2. Options Compared", "## 3. External Evidence Requirements")
+	externalEvidence := compactDocSection(t, decisionRaw, "## 3. External Evidence Requirements", "## 4. Decision Consequences")
+	consequences := compactDocSection(t, decisionRaw, "## 4. Decision Consequences", "## 5. Relationship To Existing Docs")
+	relationships := compactDocSection(t, decisionRaw, "## 5. Relationship To Existing Docs", "## 6. Static-Test Expectations")
+	staticExpectations := compactDocSection(t, decisionRaw, "## 6. Static-Test Expectations", "")
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	dispatchSections := docSection(t, source, "recovery_session() {", "\nprint_refresh_command() {") +
+		"\n" + docSection(t, source, "main() {", "\nmain \"$@\"")
+
+	assertNoActiveShellDispatchArm(t, "Remote Alpha operator decision keeps noninteractive status unimplemented", dispatchSections, "operator-healthcheck-tls-status-noninteractive")
+	assertNoActiveShellDispatchArm(t, "Remote Alpha operator decision keeps replacement unimplemented", dispatchSections, "operator-healthcheck-tls-replace")
+	assertNoActiveShellDispatchArm(t, "Remote Alpha operator decision keeps replacement unimplemented", dispatchSections, "operator-healthcheck-tls-replacement")
+
+	assertContainsAll(t, "operator healthcheck signing custody decision PLANS boundary", plans,
+		"operator-authorized operator-healthcheck TLS replacement design tranche is also docs/static-test only",
+		"`operator-healthcheck-tls-renew` remains blocked/status-only with `unsupported_signing_topology`",
+		"signing authority, signer custody, key custody, CSR/cert flow, backup/rollback evidence, redaction, and post-check semantics remain ES unresolved stop conditions",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision overview link", remoteOverview,
+		"blocked signer/custody decision record in `.docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md`",
+		"preserves `operator-healthcheck-tls-renew` as blocked with `unsupported_signing_topology`",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision cross links",
+		compactText(replacementRaw+"\n"+signingRaw+"\n"+resolutionRaw),
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md`",
+		"records that no signer/custody option is selected today",
+		"compares candidate signer/custody options and records that no option is selected today",
+		"options comparison and selection status must not be confused with resolution criteria",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision record", decision,
+		"Remote Alpha Operator-Healthcheck TLS Signer/Custody Decision Record",
+		"Decision status: blocked.",
+		"What signer authority and private-key custody model may be used for operator-healthcheck client TLS replacement?",
+		"`Design/static-test prep only`: this record does not execute replacement",
+		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
+		"`operator-healthcheck-tls-status` route remains the only implemented operator-healthcheck TLS status route",
+		"`Reopened redesign seam`: signer authority, signer custody, key custody, key reuse, key rotation, and CSR/cert material flow remain unresolved",
+		"No option is selected.",
+		"Replacement remains blocked.",
+		"Service and governance TLS signers cannot be reused by inference.",
+		"CP, IM, Maintenance Agent, Bridge, biometric leases, profile diagnostics, profile lineage, preflight evidence, support bundles, retained bundles, proof artifacts, and reports cannot create ES signer authority or key custody.",
+		"Future work must source-ground signer authority, signer custody, CA/trust ownership, key custody, key action classification, CSR/cert flow, backup/rollback, redaction, and post-check ownership",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision options", options,
+		"Option A: Reuse Service TLS Signer/CA",
+		"Current source evidence: ES documents service TLS renewal as a separate ARS/AGS/ES artifact-registry mTLS scope.",
+		"Disposition: rejected by inference; blocked and not selected.",
+		"Option B: Reuse Governance TLS Signer/CA",
+		"Current source evidence: ES documents governance TLS renewal as a separate ES to EGS execution-governance trust-model mTLS scope.",
+		"Option C: Define A Dedicated ES-Owned Operator-Healthcheck Signer/CA",
+		"Disposition: deferred candidate; blocked and not selected.",
+		"Option D: Define A Host-Local Operator-Healthcheck Signer",
+		"Option E: External/Manual Operator-Provided Public Cert Only",
+		"Manual public cert input cannot be accepted as ad hoc signer authority.",
+		"Option F: CSR Flow From Host-Local Key To Future ES-Approved Signer",
+		"Option G: Cert-Only Replacement Against Existing Host-Local Key",
+		"no current source selects it, approves key reuse, or identifies an approved signer",
+		"Stop conditions:",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision external evidence", externalEvidence,
+		"signer owner",
+		"signer custody",
+		"CA/trust ownership",
+		"issuer/trust metadata expected by CP",
+		"key custody owner",
+		"reuse vs rotation decision",
+		"CSR vs cert-only decision",
+		"key-pair match method that does not expose private-key material",
+		"backup/rollback owner and evidence labels",
+		"redaction proof",
+		"CP diagnose input contract",
+		"IM lineage refresh input contract",
+		"source-grounded in ES-owned docs/tests or in an owning-repo contract that ES explicitly adopts",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision consequences", consequences,
+		"no replacement execution",
+		"no renewal",
+		"no route eligibility widening",
+		"no noninteractive renewal route",
+		"no MA scheduled execution",
+		"no biometric lease approval path for renewal",
+		"no CP diagnose rerun",
+		"no IM refresh execution",
+		"no Remote Alpha proof resumption",
+		"no Bridge projection or preflight may become ES status truth",
+		"no service/governance TLS signer may be reused by inference",
+		"The current helper and route behavior remains fail-closed.",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision relationships", relationships,
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md` records custody boundaries and stop conditions.",
+		"`.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md` records the evidence gate and exact criteria",
+		"`.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md` records the future replacement sequence",
+		"`.docs/remote_alpha_operator_healthcheck_noninteractive_status.md` records P0v as a no-fallback, design/static-only status-route proposal",
+		"IM `remote-alpha-operator-healthcheck-profile-lineage-refresh.md`",
+		"CP `diagnose-remote-profile` owns contact-free profile diagnostics",
+		"MA `macos-biometric-maintenance-authorization.md`",
+		"Bridge `es-operator-healthcheck-preflight-design.md` records local-only, non-authoritative preflight evidence",
+	)
+
+	assertContainsAll(t, "operator healthcheck signing custody decision static tests", staticExpectations,
+		"this decision record exists",
+		"decision status is blocked, not selected",
+		"options A through G are enumerated",
+		"no option is selected today",
+		"service/governance TLS reuse is not selected by inference",
+		"replacement remains blocked",
+		"`operator-healthcheck-tls-renew` remains blocked by `unsupported_signing_topology`",
+		"route eligibility is not widened",
+		"P0v remains design/static only and no fallback emitter is introduced",
+		"external evidence requirements are documented",
+		"no raw PEM/key/cert material is present",
+		"CP, IM, Maintenance Agent, Bridge, and biometric leases cannot provide ES signer authority",
+		"no route execution, renewal, CP diagnose, IM refresh, MA scheduled execution, Bridge control, or live proof is enabled",
+	)
+
+	assertContainsNone(t, "operator healthcheck signing custody decision forbidden raw material and overclaims", decisionRaw,
+		"-----BEGIN",
+		"BEGIN PRIVATE KEY",
+		"BEGIN RSA PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+		"PRIVATE KEY-----",
+		"CERTIFICATE-----",
+		"Decision status: selected",
+		"renewal is now enabled",
+		"replacement execution is now enabled",
+		"replacement is authorized",
+		"auto-renew is eligible",
+		"CP owns TLS signing",
+		"IM owns TLS signing",
+		"Maintenance Agent may define signing topology",
+		"Bridge may approve replacement",
+	)
+}
+
 func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")

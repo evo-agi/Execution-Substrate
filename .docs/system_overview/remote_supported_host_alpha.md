@@ -638,7 +638,9 @@ Current implementation/design status through P0u:
   with signing/custody hardening in
   `.docs/remote_alpha_operator_healthcheck_tls_signing_custody.md` and
   resolution criteria in
-  `.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md`.
+  `.docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md`,
+  plus a blocked signer/custody decision record in
+  `.docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md`.
   It is docs/static-test only and does not implement renewal, replacement,
   noninteractive status, CP diagnose, IM profile-lineage refresh, Bridge
   authority, Maintenance Agent authority, route eligibility widening, or live
