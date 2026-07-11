@@ -110,6 +110,36 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 	}
 }
 
+func assertNoActiveShellDispatchArm(t *testing.T, label string, source string, route string) {
+	t.Helper()
+
+	for lineNumber, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, route) {
+			continue
+		}
+		for _, marker := range []string{
+			`"$1" == "` + route + `"`,
+			`"$1" = "` + route + `"`,
+			`"${1}" == "` + route + `"`,
+			`"${1}" = "` + route + `"`,
+			`"$subcommand" == "` + route + `"`,
+			`"$subcommand" = "` + route + `"`,
+			`"${subcommand}" == "` + route + `"`,
+			`"${subcommand}" = "` + route + `"`,
+			route + `)`,
+			`"` + route + `")`,
+			`'` + route + `')`,
+			route + `|`,
+			`|` + route,
+		} {
+			if strings.Contains(trimmed, marker) {
+				t.Fatalf("%s must not contain active dispatch arm for %q at line %d: %s", label, route, lineNumber+1, trimmed)
+			}
+		}
+	}
+}
+
 func assertOmitsLifecycleProjectionSchedulerDerivation(t *testing.T, label string, text string) {
 	t.Helper()
 
@@ -5361,9 +5391,15 @@ func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T
 
 func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDesign(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
-	design := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md"))
+	designRaw := mustRead(t, ".docs/remote_alpha_operator_healthcheck_noninteractive_status.md")
+	design := compactText(designRaw)
+	authPosture := compactDocSection(t, designRaw, "## 6. Auth Posture Classification", "## 7. Status Evidence Schema")
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	p0vSection := compactDocSection(t, remoteRaw, "### P0v Operator Healthcheck TLS Noninteractive Status Design", "### Remote Alpha Maintenance Monitor Boundary")
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	dispatchSections := docSection(t, source, "recovery_session() {", "\nprint_refresh_command() {") +
+		"\n" + docSection(t, source, "main() {", "\nmain \"$@\"")
+	assertNoActiveShellDispatchArm(t, "Remote Alpha operator P0v source dispatch", dispatchSections, "operator-healthcheck-tls-status-noninteractive")
 
 	assertContainsAll(t, "Remote Alpha operator P0v PLANS boundary", plans,
 		"The P0v design/static-test prep slice may define, but must not implement",
@@ -5439,6 +5475,18 @@ func TestRemoteAlphaOperatorP0vDocsOperatorHealthcheckTLSNoninteractiveStatusDes
 		"Bridge may project already-safe evidence only.",
 		"Preserve the existing interactive `operator-healthcheck-tls-status` route for foreground operator use.",
 		"Preserve the existing blocked `operator-healthcheck-tls-renew` route and `unsupported_signing_topology` classification.",
+	)
+	assertContainsAll(t, "Remote Alpha operator P0v redaction/output failure classes", authPosture,
+		"Failure classes are stable strings in the bounded JSON evidence. They do not authorize retries, mutation, renewal, profile acceptance, or run-control.",
+		"`redaction_unavailable`: the route cannot prove bounded output/redaction before returning evidence.",
+		"`unexpected_output_shape`: helper output is not valid bounded JSON or does not match the schema.",
+		"`forbidden_output_material`: output contains or may contain forbidden secret/raw material.",
+	)
+	assertContainsNone(t, "Remote Alpha operator P0v redaction/output failure class overclaims", authPosture,
+		"renewal success",
+		"renewal succeeded",
+		"runtime authority",
+		"proof authority",
 	)
 	assertContainsNone(t, "Remote Alpha operator P0v design overclaims", design,
 		"implement the route now",
