@@ -163,6 +163,7 @@ func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
 	}{
 		{label: "system contracts doc", path: ".docs/system_overview/contracts.md"},
 		{label: "system boundaries doc", path: ".docs/system_overview/boundaries.md"},
+		{label: "hybrid integration architecture ADR", path: ".docs/system_overview/hybrid_integration_architecture_adr.md"},
 	} {
 		text := mustRead(t, doc.path)
 		assertDocIncludesAuthorityHierarchy(t, text, doc.label)
@@ -170,6 +171,64 @@ func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
 			t.Fatalf("%s missing repo-wide authority preface", doc.label)
 		}
 	}
+}
+
+func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
+	adr := compactText(mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"))
+	plans := compactText(mustRead(t, "PLANS.md"))
+
+	assertContainsAll(t, "hybrid integration ADR", adr,
+		"Status: proposed / draft",
+		"architecture discovery / ADR, not implementation",
+		"Symphony is optional candidate only",
+		"Remote Linux path is currently blocked by operator-healthcheck TLS signer/custody",
+		"does not enable real write, real Codex execution, remote maintenance, ES submit, CP diagnose, IM refresh, or live proof",
+		"Current invariant",
+		"Bounded slice rule",
+		"Temporary compatibility edge",
+		"Reopened redesign seam",
+		"ES remains execution substrate",
+		"CP remains run-control",
+		"IM remains profile/provenance/readiness",
+		"Bridge <-> Codex",
+		"designed only",
+		"Bridge no-mutation Codex handoff packet/design",
+		"no repository write",
+		"no shell execution",
+		"Maintenance Agent is not optional for reducing infra babysitting",
+		"must not become a hidden reconciler",
+		"ES Workstream C guardrails",
+		"Operator-healthcheck TLS signer/custody",
+		"Harness Vs Product Classification",
+		"Over-Constraint Policy",
+		"what would allow this to change?",
+		"Symphony <-> Codex/Bridge",
+		"no secret/raw material in ADR",
+	)
+
+	assertContainsAll(t, "PLANS hybrid integration pointer", plans,
+		"Cross-Repo Hybrid Integration ADR Pointer",
+		"architecture discovery / ADR only, not implementation",
+		"Bridge no-mutation Codex handoff packet/design",
+		"Current invariant: ES remains execution substrate; CP remains run-control; IM remains profile/provenance/readiness",
+		"Bounded slice rule: Bridge and Maintenance Agent may record or consume non-authoritative proposals",
+		"Temporary compatibility edge: Remote Alpha helper/status/renewal routes remain proof/support containment",
+		"Reopened redesign seam: operator-healthcheck TLS signer/custody remains blocked and source-insufficient",
+		"no-write, no-shell, and no-Codex-invocation",
+	)
+
+	assertContainsNone(t, "hybrid integration ADR raw material", mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"),
+		"-----BEGIN",
+		"BEGIN PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+		"https://",
+		"http://",
+		"spiffe://",
+		"/Users/",
+		"/var/",
+		"/tmp/",
+		"Authorization:",
+	)
 }
 
 func TestSupportedLocalCPConsumerRunbookPreservesControlPlaneBoundaries(t *testing.T) {

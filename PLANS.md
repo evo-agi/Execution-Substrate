@@ -59,6 +59,41 @@ Current bounded implementation status:
 - Remote Supported-Host Alpha may now extend the narrower helper-install proof with a separate host-local Vault/workload-auth proof slice: install a single-node Alpha/internal Vault system service on the remote Linux host, constrain it to the helper SPIFFE identity JWT path needed by future ES runtime identity, and record only non-secret host evidence without claiming `runtime_profile_ready`, `submit_ready`, `es_services_healthy`, `producer_contract_compatible`, or retained-result readiness.
 - Remote Supported-Host Alpha may now also use one separate operator-owned Vault service-user migration helper slice: default `check_only`, require explicit `--apply`, stay bounded to the dedicated Vault service account, the Vault systemd drop-in, and the minimum config/storage/log/audit/TLS ownership or readability changes needed for Vault, record backup plus rollback evidence before mutation, and run honest post-apply Vault plus ES health or contract checks. That helper must preserve workload-side Vault JWT login, the ES-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` handoff, and the no-ES-Vault-token-brokerage rule; it does not claim `runtime_profile_ready`, `submit_ready`, Vault production readiness, governed execution proof, full ES/runtime de-root, full Nomad client de-root, or SPIRE redesign.
 
+## Cross-Repo Hybrid Integration ADR Pointer
+
+The proposed/draft Hybrid Integration Architecture ADR is recorded at
+`.docs/system_overview/hybrid_integration_architecture_adr.md`. It is
+architecture discovery / ADR only, not implementation.
+
+This planning pointer reopens only the cross-repo integration path needed to
+evaluate a future Bridge no-mutation Codex handoff packet/design and a parallel
+Maintenance Agent autonomous-maintenance capability matrix. It does not reopen
+accepted Workstream C admission/runtime boundaries, does not change ES route
+eligibility, and does not enable Bridge real write, real Codex execution,
+remote maintenance, ES submit, CP diagnose, IM refresh, live proof, push, PR,
+merge, shell execution, or repository mutation.
+
+Classification for this ADR tranche:
+
+- Current invariant: ES remains execution substrate; CP remains run-control;
+  IM remains profile/provenance/readiness; Workstream C guardrails remain
+  integration-enabling product boundaries.
+- Bounded slice rule: Bridge and Maintenance Agent may record or consume
+  non-authoritative proposals, summaries, and evidence only under their own
+  documented boundaries.
+- Temporary compatibility edge: Remote Alpha helper/status/renewal routes
+  remain proof/support containment until promoted by explicit ES route
+  contracts and tests.
+- Reopened redesign seam: operator-healthcheck TLS signer/custody remains
+  blocked and source-insufficient; the next TLS step requires source-grounded
+  signer/custody evidence or an explicit ES product decision.
+
+The first implementation candidate after this ADR is Bridge no-mutation Codex
+handoff packet/design. It must remain no-write, no-shell, and
+no-Codex-invocation unless separately approved. The parallel Maintenance Agent
+candidate is route-by-route autonomous maintenance capability matrix plus
+lease-approved execution design, not autonomous execution.
+
 ## Highest-Priority Backlog Entry
 
 P0: ES Remote Alpha operator-helper consolidation and manual recovery
