@@ -624,12 +624,16 @@ Successful response is `200` JSON with these current fields:
 
 - Status is a Nomad-backed projection.
 - `lifecycle_projection.source` is `nomad` in the current contract because Nomad is the submitted-execution lifecycle authority.
+- No alternate successful `lifecycle_projection.source` value is currently documented. Any future projection source must be recorded in `PLANS.md` and this lifecycle contract before it appears in public status JSON.
 - `lifecycle_projection.revision` is an opaque same-run read-coordination token produced by ES from implementation-private lifecycle observation inputs while serving the status request.
 - Callers may compare `lifecycle_projection.revision` values for the same `run_id` to detect that ES observed a different lifecycle projection.
 - Callers must not parse or order `lifecycle_projection.revision`, infer scheduler or backend state from it, treat it as a Nomad job/allocation identifier or index, or use it as a write precondition for `logs`, `result`, or `cancel`.
 - `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
   and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
   lifecycle store, or write guard.
+- `lifecycle_projection.revision` is not a Control Plane workflow version or
+  revision, scheduler allocation id, result-reference id, or proof of global
+  freshness outside the documented same-run status read model.
 - `authority_handoff`, when present, is recovered from the submitted runtime spec and remains a bounded non-secret read fact. It does not make status a run store, scheduler abstraction, live credential observation, or Control Plane orchestration record.
 - `authority_handoff.runtime_config_refs` is non-secret handoff evidence only.
   It is not runtime-config authority, live credential truth, token or lease
@@ -747,6 +751,11 @@ Current shape:
 - The projection revision is the only current status lifecycle read-coordination fact; it does not imply an ES-owned lifecycle-state store.
 - `authority_handoff`, when present, is a separate runtime-handoff evidence fact, not a lifecycle revision or write-coordination token.
 - `outcome_evidence` is a current-slice status evidence descriptor. It does not make Nomad job IDs, allocation IDs, task IDs, task-state detail, or the current latest-allocation rule public contract.
+- Lifecycle vocabulary beyond this current Nomad-backed projection, execution
+  locator/allocation projection, retained-result route evolution, runtime
+  identity handoff ownership, workload-zone runtime-config ownership, and ARS
+  discovery/index long-term shape remain reopened seams unless a future source
+  explicitly re-derives them.
 
 ### Reopened seams
 

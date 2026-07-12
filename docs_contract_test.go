@@ -1533,6 +1533,125 @@ func TestWorkstreamC5StatusLogsResultCancelCompatibilityGuardrailPostureIsDocume
 	)
 }
 
+func TestWorkstreamCLifecycleProjectionAuthorityLabelsAreDocumented(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	checkpoint := compactText(mustRead(t, ".docs/execution_lifecycle/workstream_c7_checkpoint.md"))
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	decision := compactText(decisionRaw)
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleContracts := compactText(lifecycleContractsRaw)
+	statusSection := compactDocSection(t, lifecycleContractsRaw, "## 7. Status contract", "### Authority handoff read surface")
+	fullStatusSection := compactDocSection(t, lifecycleContractsRaw, "## 7. Status contract", "## 8. Logs contract")
+	logsSection := compactDocSection(t, lifecycleContractsRaw, "## 8. Logs contract", "## 9. Result contract")
+	resultSection := compactDocSection(t, lifecycleContractsRaw, "## 9. Result contract", "## 10. Cancel contract")
+	cancelSection := compactDocSection(t, lifecycleContractsRaw, "## 10. Cancel contract", "## 11. Run-ID and scheduler lookup contract")
+	systemContracts := compactText(mustRead(t, ".docs/system_overview/contracts.md"))
+	systemBoundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	assertContainsAll(t, "C7 lifecycle projection authority label slice", checkpoint,
+		"Lifecycle Projection Authority Labels",
+		"Why safe: sharpens existing status/cancel/logs/result non-authority labels while preserving the current Nomad-backed projection model.",
+		"Risks: exposing scheduler identifiers, turning projection revision into a write precondition, or implying an ES-owned lifecycle store.",
+		"Stop conditions: proposed labels require new Nomad fields, changed lifecycle JSON, changed cancel semantics, or live scheduler validation.",
+	)
+	assertContainsAll(t, "PLANS lifecycle projection authority labels", plans,
+		"Nomad remains authoritative for submitted execution lifecycle; ES must not invent a parallel lifecycle store or scheduler authority.",
+		"Callers may compare equality/change for the same run only.",
+		"not a Control Plane workflow version or revision",
+		"not proof of freshness outside the documented same-run status read model",
+		"Control Plane owns orchestration, Temporal workflow state, review, checkpoint, finalization, intervention, and operator-facing control semantics.",
+		"IM readiness/profile/support-bundle/provenance artifacts remain evidence/projection/diagnostics only; they do not become ES or CP authority.",
+	)
+	assertContainsAll(t, "status lifecycle projection authority labels", statusSection,
+		"Status is a Nomad-backed projection.",
+		"`lifecycle_projection.source` is `nomad`",
+		"No alternate successful `lifecycle_projection.source` value is currently documented.",
+		"Any future projection source must be recorded in `PLANS.md` and this lifecycle contract before it appears in public status JSON.",
+		"`lifecycle_projection.revision` is an opaque same-run read-coordination token",
+		"Callers must not parse or order `lifecycle_projection.revision`",
+		"Nomad job/allocation identifier or index",
+		"not a Control Plane workflow version or revision",
+		"scheduler allocation id",
+		"result-reference id",
+		"proof of global freshness outside the documented same-run status read model",
+		"The status JSON envelope remains lifecycle projection and evidence only.",
+		"must not add Control Plane run-control grammar",
+	)
+	assertContainsAll(t, "status reopened seams stay open", fullStatusSection,
+		"Lifecycle vocabulary beyond this current Nomad-backed projection",
+		"execution locator/allocation projection",
+		"retained-result route evolution",
+		"runtime identity handoff ownership",
+		"workload-zone runtime-config ownership",
+		"ARS discovery/index long-term shape remain reopened seams",
+	)
+	assertContainsAll(t, "status result logs cancel relationship", lifecycleContracts,
+		"Status remains Nomad-backed lifecycle projection and evidence, not CP workflow truth or ES lifecycle-store truth.",
+		"Logs remain a bounded current compatibility/evidence surface, not final log architecture, CP run-control truth, or scheduler authority.",
+		"Result remains opaque ES-retained output delivery, not CP checkpoint, finalization, or review state.",
+		"Cancel remains a bounded ES/Nomad cancellation handoff, not CP intervention authority, operator approval authority, or Temporal workflow truth.",
+	)
+	assertContainsAll(t, "logs route remains separate", logsSection,
+		"The successful response headers remain the logs envelope.",
+		"The stdout body remains payload content under the existing compatibility contract",
+		"ES does not sanitize, interpret, or promote raw log content into scheduler, CP run-control, credential, or policy authority.",
+	)
+	assertContainsAll(t, "result route remains separate", resultSection,
+		"Result availability is evidence/projection for the ES-retained output surface.",
+		"`result_not_found` means ES has no retained bundle for that `run_id`; it is not, by itself, Control Plane workflow failure, review failure, checkpoint failure, finalization failure, or Temporal run-control truth.",
+		"Logs are not the result contract; stdout remains a separate narrow logs surface.",
+		"ES does not add raw logs, proof payloads, support bundle payloads, retained-internal metadata, credentials, environment values, TLS/SPIFFE/Vault material",
+	)
+	assertContainsAll(t, "cancel remains bounded", cancelSection,
+		"Cancel is a bounded Nomad stop request, not a wider cancellation model.",
+		"The cancel JSON envelope remains a bounded ES/Nomad handoff receipt.",
+		"Cancel does not create a richer cancellation state model.",
+		"Cancel does not return proof that the workload has stopped.",
+	)
+	assertContainsAll(t, "decision lifecycle authority labels", decision,
+		"The current documented projection source is `nomad`; any future projection source must be documented before it appears in public status JSON.",
+		"`lifecycle_projection.revision` is not a Nomad allocation id, scheduler id, CP workflow version or revision, result-reference id, write guard, or proof of global freshness outside the documented same-run status read model.",
+		"Lifecycle vocabulary beyond the current projection",
+		"not settled lifecycle architecture",
+	)
+	assertContainsAll(t, "system contract lifecycle authority labels", systemContracts,
+		"not a Control Plane workflow version or revision",
+		"not proof of global freshness outside the documented same-run status read model",
+	)
+	assertContainsAll(t, "system boundary lifecycle authority labels", systemBoundaries,
+		"CP workflow versions or revisions",
+		"freshness proof outside the documented same-run read model",
+	)
+	assertContainsAll(t, "CP consumer lifecycle authority labels", runbook,
+		"Status responses include `lifecycle_projection.source` and",
+		"must treat the revision as opaque.",
+		"not a CP workflow version or revision",
+		"not proof of global freshness outside the documented same-run ES status read model",
+		"CP may use these labels to tell whether ES served a Nomad-backed status projection, accepted Nomad stop request receipt, Nomad task stdout body, or opaque ES-retained result bundle.",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "status authority labels", text: statusSection},
+		{label: "decision authority labels", text: decision},
+		{label: "system contract authority labels", text: systemContracts},
+		{label: "system boundary authority labels", text: systemBoundaries},
+		{label: "CP runbook authority labels", text: runbook},
+	} {
+		assertContainsNone(t, doc.label, doc.text,
+			"`lifecycle_projection.revision` is a scheduler id",
+			"`lifecycle_projection.revision` is a write guard",
+			"`lifecycle_projection.revision` is a CP workflow version",
+			"`lifecycle_projection.revision` proves global freshness",
+			"status is CP workflow truth",
+			"status is ES lifecycle-store truth",
+		)
+	}
+}
+
 func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")

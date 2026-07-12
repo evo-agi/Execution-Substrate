@@ -506,7 +506,7 @@ Stable semantic contracts for the ES Admission And Runtime Boundary Realignment 
 - Maintenance Agent summaries remain scheduler/notifier/local-evidence outputs
   only and do not define ES route semantics.
 - Nomad remains authoritative for submitted execution lifecycle; ES exposes a bounded projection and must not synthesize a parallel lifecycle authority.
-- ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque same-run read-coordination token for status reads; callers may compare equality/change for the same run only. It is not parseable or orderable scheduler state, a scheduler ID, a write precondition, or an ES-owned lifecycle record.
+- ES status exposes a bounded `lifecycle_projection` read-coordination fact derived from Nomad observation. Its `revision` is an opaque same-run read-coordination token for status reads; callers may compare equality/change for the same run only. It is not parseable or orderable scheduler state, a scheduler ID, a write precondition, or an ES-owned lifecycle record. It is not a Control Plane workflow version or revision, result-reference id, or Nomad allocation id, and not proof of global freshness outside the documented same-run status read model.
 - `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
   and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
   lifecycle store, or write guard.

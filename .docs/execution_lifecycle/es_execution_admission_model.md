@@ -207,6 +207,11 @@ the code and tests win and this document must be realigned.
 - `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
   and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
   lifecycle store, or write guard.
+- The current documented projection source is `nomad`; any future projection
+  source must be documented before it appears in public status JSON.
+- `lifecycle_projection.revision` is not a Nomad allocation id, scheduler id,
+  CP workflow version or revision, result-reference id, write guard, or proof
+  of global freshness outside the documented same-run status read model.
 - `outcome_evidence` remains bounded evidence/projection; current labels are
   compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
 - `authority_handoff` remains bounded non-secret runtime handoff evidence; it
@@ -351,7 +356,7 @@ the code and tests win and this document must be realigned.
 | ES admission composition at `:prepare`/`:submit` | `stable contract` | ES composes ARS discovery plus evidence/payload refs, aggregate evidence verification, narrow shared execution/runtime claims from `internal/contracts/evidence/v1`, EGS runtime-trust output, the configured workload-zone Vault runtime-config reference/blob, and caller authentication plus configured SPIFFE allowlist authorization. CGS authorize remains outside the current hot path. |
 | ES Admission Policy Layer v0 | `bounded slice rule` | ES evaluates a package-local policy seam during the shared `:prepare`/`:submit` admission path. Deny decisions carry stable policy ID, reason code, safe message, and inspected input classes as internal safe metadata, while the public API keeps the current redacted error envelope. The configurable-input follow-up allows ES deployment/admin config to provide bounded literal inputs to built-in ES policies only; it does not add a policy language, evaluator injection, CP-supplied inputs, request-supplied entries, CGS `id.conf` reuse, or an external policy service. |
 | Scheduler handoff after `:submit` | `stable contract` | Successful submit hands execution to Nomad. ES keeps only the bounded receipt and read-through projection responsibilities after that handoff. |
-| `lifecycle_projection` | `bounded slice rule` | `source` and `revision` are opaque same-run read-coordination facts derived from Nomad observation only. |
+| `lifecycle_projection` | `bounded slice rule` | The current documented `source` is `nomad`; `revision` is an opaque same-run read-coordination fact derived from Nomad observation only, not a scheduler id, Nomad allocation id, CP workflow version, write guard, result-reference id, or global freshness proof. |
 | Payload/runtime package resolution | `stable contract` | ES resolves payload bytes through designed ARS discovery plus explicit evidence/payload relationships, cross-checks those facts against aggregate evidence, and keeps descriptor/manifest support outside ES hot-path public grammar. |
 | Workload-zone Vault runtime-config lookup | `bounded slice rule` | ES is the current consumer and lookup orchestrator during `:prepare` and `:submit`: it reads the validated startup ref, fetches the ARS blob by digest, and decodes typed `internal/contracts/runtimeconfig/v1` data. Runtime-config semantics live in that contract surface, ARS owns blob read by digest only, and no ACS hop exists. |
 | Current `/execution/...` runtime path conventions | `temporary compatibility edge` | `/execution/staged`, `/execution/run`, `/execution/run/result`, and the run-scoped runtime-identity backing tree remain current runtime/package conventions only. |
@@ -420,6 +425,7 @@ ES does not own:
 | Long-term role of `POST /v1/executions:prepare` | `reopened seam` | `:prepare` remains active today, but whether it survives unchanged as part of a later public execution model remains open. |
 | Long-term ES admission policy model | `reopened seam` | C6 proves only a replaceable ES-owned policy seam and one built-in bounded content policy. It does not settle a broad policy language, customer policy distribution, CGS/EGS policy redesign, external policy service, audit model, or durable policy-decision store. |
 | Runtime-profile selection vocabulary and whether it remains annotation based | `reopened seam` | The current annotation plus profile name are compatibility edges, not the final ES runtime-selection model. |
+| Lifecycle vocabulary beyond the current projection | `reopened seam` | Current public status remains centered on the bounded Nomad-backed projection; any richer lifecycle vocabulary must be re-derived before becoming public contract. |
 | Internal execution-locator and projected-allocation policies | `reopened seam` | `run_id -> exec-<run_id>` and latest-allocation selection remain active current-slice lookup mechanics, not settled lifecycle architecture. |
 | Long-term execution-package layout and `/execution/...` conventions | `reopened seam` | The current runtime package layout is localized inside ES, but its long-term path and reserved-directory conventions remain open. |
 | Retained-result route evolution and result-reference vocabulary | `reopened seam` | The current public lookup is `GET /v1/executions/{run_id}/result`; any later result reference vocabulary must be a documented safe handle scoped to `run_id` or another explicit result reference, not a raw path, scheduler ID, support/proof path, or artifact-discovery/index leak. |

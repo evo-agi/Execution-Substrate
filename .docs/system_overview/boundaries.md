@@ -382,7 +382,7 @@ runtime-profile handling, and compatibility edges lives in
 - Live credential possession, lease, token-expiry, or rich approval-state observation behind the `authority_handoff` read surface
 - `authority_handoff` remains bounded non-secret runtime handoff evidence; it
   never becomes a live credential, lease, approval, or scheduler truth.
-- Scheduler identifiers, backend allocation/task IDs, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, or write-precondition semantics behind the `outcome_evidence` descriptor surface
+- Scheduler identifiers, backend allocation/task IDs, Control Plane workflow versions or revisions, global ES run revisions, cancel completion truth, result-content meaning, stdout/stderr completeness, global freshness proof, or write-precondition semantics behind the `outcome_evidence` descriptor surface
 - `outcome_evidence` remains bounded evidence/projection; current labels are
   compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
 - Service health, submit readiness, run authority, credential truth, lifecycle write coordination, policy truth, or scheduler API semantics behind the producer compatibility declaration
@@ -423,7 +423,7 @@ runtime-profile handling, and compatibility edges lives in
 - ES now requires aggregate artifact evidence for first-class admission and mount preparation; absence or corruption of that evidence fails the ES path instead of reviving the legacy fact family.
 - ES submit now consumes the payload reference discovered through ARS and cross-checked against aggregate evidence claims; it does not depend on artifact identity equaling payload identity.
 - ES now localizes its current lifecycle lookup and projected-allocation rules inside explicit internal policy code instead of letting those Nomad-shaped assumptions drift across helpers and tests.
-- ES status now exposes only the bounded `lifecycle_projection.source` and opaque same-run read-coordination `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, task-state detail, or scheduler sequencing semantics as public lifecycle contract.
+- ES status now exposes only the bounded `lifecycle_projection.source` and opaque same-run read-coordination `lifecycle_projection.revision` facts from that projection path; it still does not expose Nomad job IDs, allocation IDs, task-state detail, CP workflow versions or revisions, freshness proof outside the documented same-run read model, or scheduler sequencing semantics as public lifecycle contract.
 - `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
   and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
   lifecycle store, or write guard.

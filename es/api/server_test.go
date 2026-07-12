@@ -548,6 +548,161 @@ func TestWorkstreamC5LifecycleEnvelopesAndHeadersExcludeRunControlAndCredentialF
 	assertWorkstreamC5EnvelopeOmitsRunControlCredentialAndBackendAuthority(t, cancelRecorder.Body.String())
 }
 
+func TestWorkstreamCLifecycleProjectionAuthorityLabelsStaySeparatedAtAPIBoundary(t *testing.T) {
+	statusCalls := 0
+	logsCalls := 0
+	resultCalls := 0
+	cancelCalls := 0
+	logPayload := "raw log payload with workflow/private_key words remains logs body only\n"
+	resultPayload := []byte("opaque retained bundle with checkpoint/vault_token words remains result body only\n")
+	service := fakeLifecycleService{
+		statusCalls: &statusCalls,
+		logsCalls:   &logsCalls,
+		resultCalls: &resultCalls,
+		cancelCalls: &cancelCalls,
+		statusResult: admission.ExecutionStatusResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "running",
+			LifecycleProjection: admission.LifecycleProjection{
+				Source:   "nomad",
+				Revision: "opaque-authority-read-token",
+			},
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "nomad",
+				Observation: "nomad_task_state_projection",
+				LifecycleProjection: &admission.LifecycleProjection{
+					Source:   "nomad",
+					Revision: "opaque-authority-read-token",
+				},
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			Terminal: false,
+		},
+		logsResult: admission.ExecutionLogsResult{
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_task_stdout",
+				AccessClass:              "plaintext_stdout",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+			Payload: []byte(logPayload),
+		},
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "es_retained_result_store",
+				Observation: "retained_result_bundle",
+				AccessClass: "opaque_result_bundle",
+			},
+			Payload: resultPayload,
+		},
+		cancelResult: admission.ExecutionCancelResult{
+			Success: true,
+			RunID:   "run-0123456789abcdef",
+			Status:  "cancel_requested",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_stop_request_accepted",
+				ProviderTerminalObserved: boolPtr(false),
+			},
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	statusRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/status"))
+	if statusRecorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+	if statusCalls != 1 || logsCalls != 0 || resultCalls != 0 || cancelCalls != 0 {
+		t.Fatalf("status route must call only status service, got status=%d logs=%d result=%d cancel=%d", statusCalls, logsCalls, resultCalls, cancelCalls)
+	}
+	assertJSONFieldsExactForAPI(t, statusRecorder.Body.Bytes(),
+		"success",
+		"run_id",
+		"status",
+		"lifecycle_projection",
+		"outcome_evidence",
+		"terminal",
+	)
+	var statusPayload admission.ExecutionStatusResult
+	if err := json.Unmarshal(statusRecorder.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("decode status payload: %v", err)
+	}
+	if statusPayload.LifecycleProjection.Source != "nomad" ||
+		statusPayload.LifecycleProjection.Revision != "opaque-authority-read-token" ||
+		statusPayload.OutcomeEvidence.LifecycleProjection == nil ||
+		*statusPayload.OutcomeEvidence.LifecycleProjection != statusPayload.LifecycleProjection {
+		t.Fatalf("unexpected lifecycle projection authority labels %+v", statusPayload)
+	}
+	assertWorkstreamCLifecycleAuthorityEnvelopeOmitsForbidden(t, statusRecorder.Body.String())
+	assertTextOmitsAllForAPI(t, statusRecorder.Body.String(),
+		logPayload,
+		string(resultPayload),
+		`"retained_result_bundle":`,
+		`"raw_logs":`,
+		`"result_bundle":`,
+	)
+
+	logsRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(logsRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/logs"))
+	if logsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected logs 200, got %d body=%s", logsRecorder.Code, logsRecorder.Body.String())
+	}
+	if statusCalls != 1 || logsCalls != 1 || resultCalls != 0 || cancelCalls != 0 {
+		t.Fatalf("logs route must call only logs after status, got status=%d logs=%d result=%d cancel=%d", statusCalls, logsCalls, resultCalls, cancelCalls)
+	}
+	assertHeader(t, logsRecorder.Result(), "Content-Type", admission.LogsMediaType)
+	assertHeader(t, logsRecorder.Result(), headerOutcomeSource, "nomad")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeObservation, "nomad_task_stdout")
+	assertHeader(t, logsRecorder.Result(), headerOutcomeAccessClass, "plaintext_stdout")
+	assertWorkstreamCLifecycleAuthorityHeaderOmitsForbidden(t, logsRecorder.Result().Header)
+	if logsRecorder.Body.String() != logPayload {
+		t.Fatalf("expected logs body to remain separate payload content, got %q", logsRecorder.Body.String())
+	}
+	assertTextOmitsAllForAPI(t, logsRecorder.Body.String(), string(resultPayload))
+
+	resultRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resultRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if resultRecorder.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d body=%s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+	if statusCalls != 1 || logsCalls != 1 || resultCalls != 1 || cancelCalls != 0 {
+		t.Fatalf("result route must call only result after status/logs, got status=%d logs=%d result=%d cancel=%d", statusCalls, logsCalls, resultCalls, cancelCalls)
+	}
+	assertHeader(t, resultRecorder.Result(), "Content-Type", "application/gzip")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeSource, "es_retained_result_store")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeObservation, "retained_result_bundle")
+	assertHeader(t, resultRecorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	assertWorkstreamCLifecycleAuthorityHeaderOmitsForbidden(t, resultRecorder.Result().Header)
+	if string(resultRecorder.Body.Bytes()) != string(resultPayload) {
+		t.Fatalf("expected result body to remain separate opaque payload content, got %q", resultRecorder.Body.String())
+	}
+	assertTextOmitsAllForAPI(t, resultRecorder.Body.String(), logPayload)
+
+	cancelRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cancelRecorder, authorizedLifecycleRequest(http.MethodPost, "/v1/executions/run-0123456789abcdef:cancel"))
+	if cancelRecorder.Code != http.StatusOK {
+		t.Fatalf("expected cancel 200, got %d body=%s", cancelRecorder.Code, cancelRecorder.Body.String())
+	}
+	if statusCalls != 1 || logsCalls != 1 || resultCalls != 1 || cancelCalls != 1 {
+		t.Fatalf("cancel route must call only cancel after status/logs/result, got status=%d logs=%d result=%d cancel=%d", statusCalls, logsCalls, resultCalls, cancelCalls)
+	}
+	assertJSONFieldsExactForAPI(t, cancelRecorder.Body.Bytes(), "success", "run_id", "status", "outcome_evidence")
+	var cancelPayload admission.ExecutionCancelResult
+	if err := json.Unmarshal(cancelRecorder.Body.Bytes(), &cancelPayload); err != nil {
+		t.Fatalf("decode cancel payload: %v", err)
+	}
+	if cancelPayload.OutcomeEvidence.Source != "nomad" ||
+		cancelPayload.OutcomeEvidence.Observation != "nomad_stop_request_accepted" ||
+		cancelPayload.OutcomeEvidence.ProviderTerminalObserved == nil ||
+		*cancelPayload.OutcomeEvidence.ProviderTerminalObserved {
+		t.Fatalf("unexpected cancel authority labels %+v", cancelPayload)
+	}
+	assertWorkstreamCLifecycleAuthorityEnvelopeOmitsForbidden(t, cancelRecorder.Body.String())
+}
+
 func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t *testing.T) {
 	service := fakeLifecycleService{
 		producerContract: admission.ProducerContractDeclaration{
@@ -1471,5 +1626,108 @@ func workstreamC5ForbiddenCredentialFieldNamesForAPI() []string {
 		"secret_payload",
 		"lease_id",
 		"lease_duration",
+	}
+}
+
+func assertWorkstreamCLifecycleAuthorityEnvelopeOmitsForbidden(t *testing.T, text string) {
+	t.Helper()
+
+	assertTextOmitsAllForAPI(t, text, workstreamCLifecycleAuthorityForbiddenJSONTermsForAPI()...)
+	assertTextOmitsAllForAPI(t, text,
+		"exec-run-0123456789abcdef",
+		"alloc-",
+		"cp-workflow-version",
+		"global_freshness",
+		"support payload",
+		"proof payload",
+	)
+}
+
+func assertWorkstreamCLifecycleAuthorityHeaderOmitsForbidden(t *testing.T, header http.Header) {
+	t.Helper()
+
+	assertTextOmitsAllForAPI(t, compactHeaderText(header), workstreamCLifecycleAuthorityForbiddenHeaderTermsForAPI()...)
+}
+
+func workstreamCLifecycleAuthorityForbiddenJSONTermsForAPI() []string {
+	fields := []string{
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"nomad_allocation_id",
+		"task_id",
+		"scheduler_id",
+		"scheduler_revision",
+		"lifecycle_store",
+		"write_guard",
+		"write_precondition",
+		"cp_workflow_id",
+		"cp_workflow_version",
+		"workflow_version",
+		"workflow_revision",
+		"cp_workflow_revision",
+		"global_freshness",
+		"freshness_proof",
+		"retained_result_id",
+		"retained_result_path",
+		"retained_bundle_internals",
+		"support_payload",
+		"proof_payload",
+		"env_values",
+		"endpoint_secret",
+		"pem_body",
+		"raw_cert_body",
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
+	}
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		terms = append(terms, `"`+field+`":`)
+	}
+	return terms
+}
+
+func workstreamCLifecycleAuthorityForbiddenHeaderTermsForAPI() []string {
+	return []string{
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"nomad_allocation_id",
+		"task_id",
+		"scheduler_id",
+		"scheduler_revision",
+		"lifecycle_store",
+		"write_guard",
+		"write_precondition",
+		"cp_workflow_id",
+		"cp_workflow_version",
+		"workflow_version",
+		"workflow_revision",
+		"cp_workflow_revision",
+		"global_freshness",
+		"freshness_proof",
+		"retained_result_id",
+		"retained_result_path",
+		"retained_bundle_internals",
+		"support_payload",
+		"proof_payload",
+		"env_values",
+		"endpoint_secret",
+		"pem_body",
+		"raw_cert_body",
+		"vault_token",
+		"client_token",
+		"root_token",
+		"unseal_key",
+		"jwt_svid",
+		"x509_svid",
+		"private_key",
+		"api_key",
 	}
 }

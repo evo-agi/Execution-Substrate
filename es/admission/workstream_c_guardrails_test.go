@@ -1190,6 +1190,92 @@ func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *te
 	)
 }
 
+func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		ExecutionStatusResult{},
+		ExecutionCancelResult{},
+		LifecycleProjection{},
+		ExecutionOutcomeEvidence{},
+		ExecutionLogsResult{},
+		ExecutionResultBundle{},
+	)
+
+	for _, forbidden := range workstreamCLifecycleProjectionAuthorityForbiddenFields() {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("lifecycle/status projection DTOs must not expose authority field %q", forbidden)
+		}
+	}
+
+	projection := lifecycleProjectionFromNomad(101, 202, 303)
+	if projection.Source != lifecycleProjectionSourceNomad {
+		t.Fatalf("expected current documented projection source nomad, got %+v", projection)
+	}
+	assertOpaqueLifecycleProjectionRevision(t, projection.Revision)
+	for _, forbidden := range []string{
+		"101",
+		"202",
+		"303",
+		"exec-run-0123456789abcdef",
+		"alloc-authority",
+		"workflow",
+		"cp-workflow",
+		"fresh",
+		"result.tar.gz",
+	} {
+		if strings.Contains(projection.Revision, forbidden) {
+			t.Fatalf("lifecycle projection revision must stay opaque and non-authoritative; found %q in %q", forbidden, projection.Revision)
+		}
+	}
+
+	statusEvidence := statusOutcomeEvidence(outcomeObservationNomadTaskStateProjection, projection, true)
+	if statusEvidence.Source != outcomeEvidenceSourceNomad ||
+		statusEvidence.LifecycleProjection == nil ||
+		*statusEvidence.LifecycleProjection != projection {
+		t.Fatalf("status outcome evidence must repeat the same opaque Nomad projection token, got %+v", statusEvidence)
+	}
+	if logsOutcomeEvidence(false).Source != outcomeEvidenceSourceNomad ||
+		cancelOutcomeEvidence().Source != outcomeEvidenceSourceNomad ||
+		retainedResultOutcomeEvidence().Source != outcomeEvidenceSourceRetainedResultStore {
+		t.Fatal("expected status/logs/cancel labels to stay Nomad-backed and result labels to stay retained-result-store backed")
+	}
+
+	payload := mustMarshalWorkstreamCTestJSON(t, struct {
+		Status ExecutionStatusResult          `json:"status"`
+		Logs   ExecutionOutcomeEvidence       `json:"logs"`
+		Result ExecutionOutcomeEvidence       `json:"result"`
+		Cancel ExecutionCancelResult          `json:"cancel"`
+		Meta   map[string]LifecycleProjection `json:"meta"`
+	}{
+		Status: ExecutionStatusResult{
+			Success:             true,
+			RunID:               "run-0123456789abcdef",
+			Status:              "terminal",
+			LifecycleProjection: projection,
+			OutcomeEvidence:     statusEvidence,
+			Terminal:            true,
+		},
+		Logs:   logsOutcomeEvidence(false),
+		Result: retainedResultOutcomeEvidence(),
+		Cancel: ExecutionCancelResult{
+			Success:         true,
+			RunID:           "run-0123456789abcdef",
+			Status:          "cancel_requested",
+			OutcomeEvidence: cancelOutcomeEvidence(),
+		},
+		Meta: map[string]LifecycleProjection{"same_run_read_model": projection},
+	})
+	assertTextOmitsAll(t, payload, workstreamCLifecycleProjectionAuthorityForbiddenJSONTerms()...)
+	assertTextOmitsAll(t, payload,
+		"exec-run-0123456789abcdef",
+		"alloc-authority",
+		"cp-workflow-version",
+		"global_freshness",
+		"support payload",
+		"proof payload",
+		"raw log payload",
+	)
+}
+
 func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {
 	if runtimeProfileAnnotationKey != "execution_substrate.runtime_profile" {
 		t.Fatalf("runtime profile annotation compatibility key changed to %q", runtimeProfileAnnotationKey)
@@ -1357,4 +1443,51 @@ func workstreamC4ForbiddenCredentialJSONKeys() []string {
 		keys = append(keys, `"`+field+`":`)
 	}
 	return keys
+}
+
+func workstreamCLifecycleProjectionAuthorityForbiddenFields() []string {
+	return []string{
+		"nomad_job_id",
+		"job_id",
+		"allocation_id",
+		"nomad_allocation_id",
+		"task_id",
+		"scheduler_id",
+		"scheduler_revision",
+		"scheduler_authority",
+		"lifecycle_store",
+		"lifecycle_store_key",
+		"write_guard",
+		"write_precondition",
+		"cp_workflow_id",
+		"cp_workflow_version",
+		"workflow_version",
+		"workflow_revision",
+		"cp_workflow_revision",
+		"global_freshness",
+		"freshness_proof",
+		"retained_result_id",
+		"retained_result_path",
+		"retained_bundle_internals",
+		"raw_logs",
+		"support_payload",
+		"proof_payload",
+		"env_values",
+		"endpoint_secret",
+		"pem_body",
+		"raw_cert_body",
+		"private_key",
+		"vault_token",
+		"jwt_svid",
+		"x509_svid",
+	}
+}
+
+func workstreamCLifecycleProjectionAuthorityForbiddenJSONTerms() []string {
+	fields := workstreamCLifecycleProjectionAuthorityForbiddenFields()
+	terms := make([]string, 0, len(fields))
+	for _, field := range fields {
+		terms = append(terms, `"`+field+`":`)
+	}
+	return terms
 }

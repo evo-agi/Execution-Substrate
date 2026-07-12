@@ -210,7 +210,9 @@ Status responses include `lifecycle_projection.source` and
 `lifecycle_projection.revision`. CP may compare revisions for the same `run_id`
 to detect a changed ES lifecycle observation, but must treat the revision as
 opaque. It is not a Nomad job/allocation identifier, not a cancel/result/logs
-write precondition, and not a Control Plane orchestration checkpoint.
+write precondition, not a Control Plane orchestration checkpoint, not a CP
+workflow version or revision, and not proof of global freshness outside the
+documented same-run ES status read model.
 `lifecycle_projection` remains a Nomad-backed projection with `source=nomad`
 and an opaque read-coordination revision; it is not a Nomad scheduler id, ES
 lifecycle store, or write guard.
