@@ -502,6 +502,274 @@ func TestProducerContractEndpointRequiresAuthorizedCallerAndReturnsDeclaration(t
 	}
 }
 
+func TestWorkstreamCProducerContractEndpointStaysReadOnlyProducerDeclaration(t *testing.T) {
+	healthCalls := 0
+	contractCalls := 0
+	prepareCalls := 0
+	submitCalls := 0
+	statusCalls := 0
+	logsCalls := 0
+	resultCalls := 0
+	cancelCalls := 0
+	service := fakeLifecycleService{
+		healthCalls:           &healthCalls,
+		producerContractCalls: &contractCalls,
+		prepareCalls:          &prepareCalls,
+		submitCalls:           &submitCalls,
+		statusCalls:           &statusCalls,
+		logsCalls:             &logsCalls,
+		resultCalls:           &resultCalls,
+		cancelCalls:           &cancelCalls,
+		producerContract: admission.ProducerContractDeclaration{
+			SchemaVersion: "execution-substrate.producer-contract/v1",
+			Service:       "execution",
+			GovernedExecution: admission.GovernedExecutionProducerContractDeclaration{
+				Contract: "governed-execution-producer/v1",
+				Enabled:  true,
+				RuntimeProfiles: []admission.ProducerRuntimeProfileDeclaration{
+					{Name: "static-script/default", Status: "enabled"},
+					{Name: "control-plane-normal-shell/v1", Status: "enabled"},
+				},
+				OutcomeEvidence: admission.ProducerOutcomeEvidenceDeclaration{
+					Required: true,
+					StatusJSON: admission.ProducerOutcomeEvidenceSurfaceDeclaration{
+						Required: true,
+						Carrier:  "json_field",
+						Field:    "outcome_evidence",
+						Source:   "nomad",
+					},
+					CancelJSON: admission.ProducerOutcomeEvidenceSurfaceDeclaration{
+						Required: true,
+						Carrier:  "json_field",
+						Field:    "outcome_evidence",
+						Source:   "nomad",
+					},
+					LogsHeaders: admission.ProducerOutcomeEvidenceSurfaceDeclaration{
+						Required:    true,
+						Carrier:     "http_headers",
+						MediaType:   admission.LogsMediaType,
+						Source:      "nomad",
+						AccessClass: "plaintext_stdout",
+					},
+					ResultHeaders: admission.ProducerOutcomeEvidenceSurfaceDeclaration{
+						Required:    true,
+						Carrier:     "http_headers",
+						MediaType:   "application/gzip",
+						Source:      "es_retained_result_store",
+						AccessClass: "opaque_result_bundle",
+					},
+				},
+			},
+			NonAuthority: []string{
+				"not_service_health",
+				"not_submit_readiness",
+				"not_artifact_admission_proof",
+				"not_run_authority",
+				"not_run_existence_proof",
+				"not_lifecycle_truth",
+				"not_lifecycle_write_coordination",
+				"not_credential_truth",
+				"not_policy_truth",
+				"not_scheduler_api",
+			},
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions:contract"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected contract probe 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	assertJSONFieldsExactForAPI(t, recorder.Body.Bytes(), "schema_version", "service", "governed_execution", "non_authority")
+	if contractCalls != 1 {
+		t.Fatalf("expected exactly one producer contract call, got %d", contractCalls)
+	}
+	for name, calls := range map[string]int{
+		"health":  healthCalls,
+		"prepare": prepareCalls,
+		"submit":  submitCalls,
+		"status":  statusCalls,
+		"logs":    logsCalls,
+		"result":  resultCalls,
+		"cancel":  cancelCalls,
+	} {
+		if calls != 0 {
+			t.Fatalf("contract endpoint must not call %s, got %d calls", name, calls)
+		}
+	}
+
+	body := recorder.Body.String()
+	assertTextOmitsAllForAPI(t, body,
+		`"ready":`,
+		`"health":`,
+		`"submit_ready":`,
+		`"run_id":`,
+		`"status": "running"`,
+		`"lifecycle_projection":`,
+		`"authority_handoff":`,
+		`"nomad_job_id":`,
+		`"job_id":`,
+		`"allocation_id":`,
+		`"task_id":`,
+		`"scheduler_id":`,
+		`"vault_token":`,
+		`"client_token":`,
+		`"jwt_svid":`,
+		`"x509_svid":`,
+		`"private_key":`,
+		`"pem_body":`,
+		`"raw_cert_body":`,
+		`"env":`,
+		`"endpoint_secret":`,
+		`"raw_payload":`,
+		`"raw_logs":`,
+		`"support_bundle_payload":`,
+		`"proof_payload":`,
+		`"host_path":`,
+		`"result_path":`,
+		`"workflow":`,
+		`"checkpoint":`,
+		`"finalization":`,
+	)
+	for _, required := range []string{
+		"not_service_health",
+		"not_submit_readiness",
+		"not_run_existence_proof",
+		"not_scheduler_api",
+		"control-plane-normal-shell/v1",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("expected contract declaration to include %q, got %s", required, body)
+		}
+	}
+}
+
+func TestWorkstreamCContractPrepareAndSubmitRemainSeparatedAtAPIBoundary(t *testing.T) {
+	contractCalls := 0
+	prepareCalls := 0
+	submitCalls := 0
+	var prepareRequest admission.PrepareRequest
+	service := fakeLifecycleService{
+		producerContractCalls: &contractCalls,
+		prepareCalls:          &prepareCalls,
+		submitCalls:           &submitCalls,
+		prepareRequestSink:    &prepareRequest,
+		producerContract: admission.ProducerContractDeclaration{
+			SchemaVersion: "execution-substrate.producer-contract/v1",
+			Service:       "execution",
+			GovernedExecution: admission.GovernedExecutionProducerContractDeclaration{
+				Contract: "governed-execution-producer/v1",
+				Enabled:  true,
+			},
+			NonAuthority: []string{"not_submit_readiness", "not_run_existence_proof"},
+		},
+		prepareResult: admission.PrepareResult{
+			Success: true,
+		},
+		submitResult: admission.SubmitResult{
+			Success:   true,
+			Submitted: true,
+			RunID:     "run-0123456789abcdef",
+			Status:    "submitted",
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	contractRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(contractRecorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions:contract"))
+	if contractRecorder.Code != http.StatusOK {
+		t.Fatalf("expected contract 200, got %d body=%s", contractRecorder.Code, contractRecorder.Body.String())
+	}
+	if contractCalls != 1 || prepareCalls != 0 || submitCalls != 0 {
+		t.Fatalf("contract must not imply prepare or submit, got contract=%d prepare=%d submit=%d", contractCalls, prepareCalls, submitCalls)
+	}
+
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","annotations":{"execution_substrate.runtime_profile":"control-plane-normal-shell/v1"}},"mode":"async"}`
+	prepareRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(prepareRecorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", body))
+	if prepareRecorder.Code != http.StatusOK {
+		t.Fatalf("expected prepare 200, got %d body=%s", prepareRecorder.Code, prepareRecorder.Body.String())
+	}
+	if prepareCalls != 1 || submitCalls != 0 {
+		t.Fatalf("prepare must not submit, got prepare=%d submit=%d", prepareCalls, submitCalls)
+	}
+	if prepareRequest.Invocation.Annotations["execution_substrate.runtime_profile"] != "control-plane-normal-shell/v1" {
+		t.Fatalf("prepare must preserve runtime-profile annotation, got %+v", prepareRequest.Invocation.Annotations)
+	}
+	assertJSONFieldsExactForAPI(t, prepareRecorder.Body.Bytes(), "success")
+	assertTextOmitsAllForAPI(t, prepareRecorder.Body.String(),
+		`"run_id":`,
+		`"submitted":`,
+		`"status":`,
+		`"authority_handoff":`,
+		`"lifecycle_projection":`,
+		`"outcome_evidence":`,
+		`"retained_result_bundle":`,
+		`"nomad_job_id":`,
+		`"allocation_id":`,
+		`"scheduler_id":`,
+		`"workflow":`,
+		`"checkpoint":`,
+		`"finalization":`,
+	)
+}
+
+func TestWorkstreamCPrepareFailureEnvelopeIsAdmissionBoundaryNotCPRunFailure(t *testing.T) {
+	prepareCalls := 0
+	submitCalls := 0
+	server := NewServer(fakeLifecycleService{
+		prepareCalls: &prepareCalls,
+		submitCalls:  &submitCalls,
+		prepareErr: &admission.Error{
+			Status:  http.StatusBadRequest,
+			Code:    "unsupported_runtime_profile",
+			Message: "unsupported runtime profile",
+		},
+	}, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	body := `{"schema_version":"v1","invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime","annotations":{"execution_substrate.runtime_profile":"unsupported/v1"}},"mode":"async"}`
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequestWithBody(http.MethodPost, "/v1/executions:prepare", body))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected prepare runtime profile rejection 400, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if prepareCalls != 1 || submitCalls != 0 {
+		t.Fatalf("prepare failure must not submit, got prepare=%d submit=%d", prepareCalls, submitCalls)
+	}
+	assertJSONFieldsExactForAPI(t, recorder.Body.Bytes(), "success", "error", "code")
+	var payload admission.ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode prepare failure envelope: %v", err)
+	}
+	if payload.Success || payload.Code != "unsupported_runtime_profile" {
+		t.Fatalf("unexpected prepare failure envelope %+v", payload)
+	}
+	assertTextOmitsAllForAPI(t, recorder.Body.String(),
+		`"run_id":`,
+		`"status":`,
+		`"terminal":`,
+		`"exit_code":`,
+		`"submitted":`,
+		`"authority_handoff":`,
+		`"lifecycle_projection":`,
+		`"outcome_evidence":`,
+		`"provider_run_id":`,
+		`"workflow":`,
+		`"checkpoint":`,
+		`"finalization":`,
+		`"review":`,
+		`"approval":`,
+		`"nomad_job_id":`,
+		`"allocation_id":`,
+		`"scheduler_id":`,
+		`"vault_token":`,
+		`"private_key":`,
+		`"raw_payload":`,
+		`"raw_logs":`,
+	)
+}
+
 func TestWorkstreamCPrepareRejectsUpstreamAndControlPlaneGrammarFields(t *testing.T) {
 	baseInvocation := `"invocation":{"schema_version":"v1","artifact_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","derivation_spec_digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_id":"runtime"}`
 	tests := []struct {
@@ -774,26 +1042,38 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 }
 
 type fakeLifecycleService struct {
-	logsResult         admission.ExecutionLogsResult
-	resultBundle       admission.ExecutionResultBundle
-	statusResult       admission.ExecutionStatusResult
-	cancelResult       admission.ExecutionCancelResult
-	producerContract   admission.ProducerContractDeclaration
-	prepareResult      admission.PrepareResult
-	submitResult       admission.SubmitResult
-	prepareErr         *admission.Error
-	submitErr          *admission.Error
-	prepareRequestSink *admission.PrepareRequest
-	submitRequestSink  *admission.PrepareRequest
-	prepareCalls       *int
-	submitCalls        *int
+	logsResult            admission.ExecutionLogsResult
+	resultBundle          admission.ExecutionResultBundle
+	statusResult          admission.ExecutionStatusResult
+	cancelResult          admission.ExecutionCancelResult
+	producerContract      admission.ProducerContractDeclaration
+	prepareResult         admission.PrepareResult
+	submitResult          admission.SubmitResult
+	prepareErr            *admission.Error
+	submitErr             *admission.Error
+	prepareRequestSink    *admission.PrepareRequest
+	submitRequestSink     *admission.PrepareRequest
+	healthCalls           *int
+	producerContractCalls *int
+	prepareCalls          *int
+	submitCalls           *int
+	statusCalls           *int
+	logsCalls             *int
+	resultCalls           *int
+	cancelCalls           *int
 }
 
 func (f fakeLifecycleService) Health(context.Context) admission.HealthSnapshot {
+	if f.healthCalls != nil {
+		*f.healthCalls = *f.healthCalls + 1
+	}
 	return admission.HealthSnapshot{}
 }
 
 func (f fakeLifecycleService) ProducerContract(context.Context) admission.ProducerContractDeclaration {
+	if f.producerContractCalls != nil {
+		*f.producerContractCalls = *f.producerContractCalls + 1
+	}
 	return f.producerContract
 }
 
@@ -824,18 +1104,30 @@ func (f fakeLifecycleService) Submit(_ context.Context, request admission.Prepar
 }
 
 func (f fakeLifecycleService) Status(context.Context, string) (admission.ExecutionStatusResult, *admission.Error) {
+	if f.statusCalls != nil {
+		*f.statusCalls = *f.statusCalls + 1
+	}
 	return f.statusResult, nil
 }
 
 func (f fakeLifecycleService) Logs(context.Context, string) (admission.ExecutionLogsResult, *admission.Error) {
+	if f.logsCalls != nil {
+		*f.logsCalls = *f.logsCalls + 1
+	}
 	return f.logsResult, nil
 }
 
 func (f fakeLifecycleService) Result(context.Context, string) (admission.ExecutionResultBundle, *admission.Error) {
+	if f.resultCalls != nil {
+		*f.resultCalls = *f.resultCalls + 1
+	}
 	return f.resultBundle, nil
 }
 
 func (f fakeLifecycleService) Cancel(context.Context, string) (admission.ExecutionCancelResult, *admission.Error) {
+	if f.cancelCalls != nil {
+		*f.cancelCalls = *f.cancelCalls + 1
+	}
 	return f.cancelResult, nil
 }
 

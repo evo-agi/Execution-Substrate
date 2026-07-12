@@ -3,6 +3,8 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -152,6 +154,166 @@ func TestProducerContractDeclarationDoesNotExposeAuthorityOrSchedulerClaims(t *t
 			t.Fatalf("producer declaration must not expose %q: %s", forbidden, text)
 		}
 	}
+}
+
+func TestProducerContractDeclarationIsReadOnlyAndDoesNotCreateRunState(t *testing.T) {
+	cfg := producerContractSubmitConfig(true)
+	root := t.TempDir()
+	stagingRoot := root + "/staging"
+	resultsRoot := root + "/results"
+	cfg.Execution.StagingRootDir = stagingRoot
+	cfg.Execution.ResultsRootDir = resultsRoot
+
+	service := Service{
+		cfg: cfg,
+		arsClient: newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("producer contract must not read ARS, got %s %q", r.Method, r.URL.Path)
+		})),
+		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("producer contract must not contact Nomad, got %s %q", r.Method, r.URL.Path)
+		})),
+	}
+
+	declaration := service.ProducerContract(context.Background())
+	if !declaration.GovernedExecution.Enabled {
+		t.Fatalf("expected configured producer declaration to stay enabled, got %+v", declaration.GovernedExecution)
+	}
+	for _, path := range []string{stagingRoot, resultsRoot} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("producer contract must not create execution state directory %s; stat err=%v", path, err)
+		}
+	}
+}
+
+func TestProducerContractSuccessDoesNotImplyPrepareSuccessOrSubmitReadiness(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service := Service{cfg: producerContractSubmitConfig(true)}
+
+	declaration := service.ProducerContract(context.Background())
+	if !declaration.GovernedExecution.Enabled ||
+		declaration.GovernedExecution.Contract != governedExecutionProducerContract {
+		t.Fatalf("expected successful producer declaration, got %+v", declaration)
+	}
+
+	_, err := service.Prepare(context.Background(), fixture.prepareRequest())
+	assertAdmissionError(t, err, http.StatusServiceUnavailable, "trust_model_unavailable")
+}
+
+func TestProducerContractPublicDTOStaysNarrowProducerDeclarationOnly(t *testing.T) {
+	fieldNames := collectJSONFieldNames(t,
+		ProducerContractDeclaration{},
+		GovernedExecutionProducerContractDeclaration{},
+		ProducerRuntimeProfileDeclaration{},
+		ProducerOutcomeEvidenceDeclaration{},
+		ProducerOutcomeEvidenceSurfaceDeclaration{},
+	)
+
+	for _, expected := range []string{
+		"schema_version",
+		"service",
+		"governed_execution",
+		"contract",
+		"enabled",
+		"disabled_reason",
+		"runtime_profiles",
+		"outcome_evidence",
+		"non_authority",
+		"name",
+		"status",
+		"required",
+		"status_json",
+		"cancel_json",
+		"logs_headers",
+		"result_headers",
+		"carrier",
+		"field",
+		"media_type",
+		"required_fields",
+		"required_headers",
+		"source",
+		"observations",
+		"access_class",
+	} {
+		if _, ok := fieldNames[expected]; !ok {
+			t.Fatalf("expected producer declaration compatibility field %q to remain present", expected)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"health",
+		"ready",
+		"readiness",
+		"submit_ready",
+		"run_id",
+		"run_exists",
+		"job_id",
+		"nomad_job_id",
+		"allocation_id",
+		"task_id",
+		"scheduler_id",
+		"provider_run_id",
+		"authority_handoff",
+		"runtime_auth_plan",
+		"credential",
+		"credential_material",
+		"secret",
+		"token",
+		"lease",
+		"pem_body",
+		"raw_cert_body",
+		"private_key",
+		"env",
+		"raw_payload",
+		"raw_log",
+		"support_bundle",
+		"proof_payload",
+		"retained_bundle_payload",
+		"path",
+		"workflow",
+		"checkpoint",
+		"finalization",
+	} {
+		if _, ok := fieldNames[forbidden]; ok {
+			t.Fatalf("producer declaration DTO must not expose authority/readiness/security field %q", forbidden)
+		}
+	}
+}
+
+func TestProducerContractDeclarationDoesNotExposeSecretPayloadOrPathMaterial(t *testing.T) {
+	cfg := producerContractSubmitConfig(true)
+	cfg.Execution.SPIREWorkloadAPISocketPath = "/run/spire/sockets/agent.sock"
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.CredentialVaultSecretPath = "proof-secrets/data/codex-runtime-profile"
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.CredentialVaultSecretField = "api_key"
+
+	payload := mustMarshalWorkstreamCTestJSON(t, producerContractDeclaration(cfg))
+	assertTextOmitsAll(t, payload,
+		"proof-secrets/data/codex-runtime-profile",
+		"api_key",
+		"/run/spire/sockets/agent.sock",
+		"-----BEGIN",
+		"BEGIN CERTIFICATE",
+		"BEGIN PRIVATE KEY",
+		`"private_key":`,
+		`"pem_body":`,
+		`"raw_cert_body":`,
+		`"env":`,
+		`"endpoint_secret":`,
+		`"vault_token":`,
+		`"client_token":`,
+		`"root_token":`,
+		`"unseal_key":`,
+		`"jwt_svid":`,
+		`"x509_svid":`,
+		`"lease_id":`,
+		`"lease_duration":`,
+		`"raw_payload":`,
+		`"raw_logs":`,
+		`"support_bundle_payload":`,
+		`"proof_payload":`,
+		`"retained_bundle_payload":`,
+		`"host_path":`,
+		`"result_path":`,
+	)
 }
 
 func TestProducerContractDeclarationDoesNotExposeConfiguredAdmissionPolicyLiteral(t *testing.T) {

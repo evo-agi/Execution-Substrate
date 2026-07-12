@@ -1021,6 +1021,61 @@ func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
 	)
 }
 
+func TestWorkstreamCProducerContractPrepareBoundaryTestsAreDocumented(t *testing.T) {
+	checkpoint := compactText(mustRead(t, ".docs/execution_lifecycle/workstream_c7_checkpoint.md"))
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleContract := compactText(lifecycleContractsRaw)
+	producerSection := compactDocSection(t, lifecycleContractsRaw, "## 4A. Producer Contract Declaration", "## 5. Prepare contract")
+	prepareSection := compactDocSection(t, lifecycleContractsRaw, "## 5. Prepare contract", "## 6. Submit contract")
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	assertContainsAll(t, "C7 next safe producer/prepare slice", checkpoint,
+		"Producer Contract / Prepare Boundary Tests",
+		"Why safe: strengthens existing C0-C1 guardrails around `GET /v1/executions:contract` and `POST /v1/executions:prepare` without changing runtime behavior.",
+		"Stop conditions: a test requires new route behavior, run state, scheduler contact, CP workflow grammar, or changed public DTOs.",
+	)
+
+	assertContainsAll(t, "producer contract boundary contract", producerSection,
+		"The declaration is read-only and non-secret.",
+		"The declaration is not service health, submit readiness, artifact-specific admission proof, run existence proof, lifecycle state, lifecycle write coordination, credential possession, policy approval, or scheduler API.",
+		"The current `non_authority` classifications include `not_service_health`, `not_submit_readiness`, `not_artifact_admission_proof`, `not_run_authority`, `not_run_existence_proof`, `not_lifecycle_truth`, `not_lifecycle_write_coordination`, `not_credential_truth`, `not_policy_truth`, and `not_scheduler_api`.",
+		"The declaration must not expose Nomad job IDs, allocation IDs, task IDs, host paths, result filesystem paths, Vault tokens, Codex credential material, JWT-SVIDs, leases, or policy approval state.",
+		"Consumers must still use `/health`, submit-readiness checks, and `:prepare` for service health, environment readiness, and artifact-specific admission proof.",
+	)
+
+	assertContainsAll(t, "prepare boundary contract", prepareSection,
+		"`POST /v1/executions:prepare` returns bounded preflight success for a requested artifact execution without creating execution state.",
+		"Unsupported or disabled profile selections fail during `:prepare` before any run ID exists.",
+		"Successful `:prepare` returns bounded preflight success only, not execution state.",
+		"No `run_id` is created.",
+		"No Nomad job or eval ID is returned.",
+		"No scheduler handoff occurs.",
+		"No proto-execution state or durable ES execution record is created.",
+		"No workload-vault plan, signer detail, or workload identity detail is returned.",
+	)
+
+	for _, doc := range []struct {
+		label string
+		text  string
+	}{
+		{label: "Workstream C decision producer/prepare separation", text: decision},
+		{label: "execution lifecycle contracts producer/prepare separation", text: lifecycleContract},
+		{label: "system boundaries producer/prepare separation", text: boundaries},
+		{label: "CP consumer runbook producer/prepare separation", text: runbook},
+	} {
+		assertContainsAll(t, doc.label, doc.text,
+			"`GET /v1/executions:contract` remains a narrow producer compatibility declaration, not health, submit readiness, run authority, or a general capability registry.",
+			"`POST /v1/executions:prepare` remains bounded preflight and creates no run object or scheduler handoff.",
+			"`POST /v1/executions:submit` remains the MVP execution handoff surface: async, bounded receipt, and Nomad submission through ES.",
+			"Control Plane owns orchestration, Temporal workflow state, review, checkpoint, finalization, intervention, and operator-facing control semantics.",
+			"IM readiness/profile/support-bundle/provenance artifacts remain evidence/projection/diagnostics only; they do not become ES or CP authority.",
+			"Runtime identity and workload credential handoff remain non-secret and workload-side; ES must not become a Vault token broker or Codex credential broker.",
+		)
+	}
+}
+
 func TestWorkstreamC0ExecutionOwnershipGateIsDocumented(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
