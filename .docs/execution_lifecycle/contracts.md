@@ -860,6 +860,8 @@ Successful response is:
 - `run_id` validation and internal execution-locator resolution follow the same rules as `status` and `logs`.
 - Retained result bundles are stored outside `execution.staging_root_dir` under `execution.results_root_dir`.
 - Retained bundles are keyed by `run_id`.
+- The only public retained-result lookup reference documented today is the `run_id` in `GET /v1/executions/{run_id}/result`.
+- Any later retained-result reference vocabulary must be documented as a safe handle scoped to a `run_id` or another explicitly documented result reference. It must not expose retention filesystem paths, host paths, scheduler IDs, Nomad allocation IDs, support-bundle paths, proof paths, or artifact-discovery/index internals as public lookup material.
 - The retained bundle is a tar.gz archive of the reserved result directory contents.
 - The current route shape, public `run_id` lookup, `application/gzip` encoding, and successful outcome-evidence headers are the active bounded compatibility retrieval path for those ES-owned bundles.
 - Result retention is idempotent:
@@ -867,6 +869,7 @@ Successful response is:
   - if the bundle already exists, ES reuses it
   - successful staging cleanup does not remove retained result bundles
 - If no retained bundle exists yet, `result` uses the same bounded Nomad-backed terminal observation model as `status` to decide whether retention can be attempted.
+- Result availability is evidence/projection for the ES-retained output surface. `result_not_found` means ES has no retained bundle for that `run_id`; it is not, by itself, Control Plane workflow failure, review failure, checkpoint failure, finalization failure, or Temporal run-control truth.
 
 ### Response contract
 
@@ -892,6 +895,18 @@ Successful response is:
   bundle body remains opaque output content under the existing compatibility
   contract; ES does not sanitize, parse, or promote bundle contents into CP
   checkpoint, finalization, review, scheduler, credential, or policy authority.
+- ES does not add raw logs, proof payloads, support bundle payloads,
+  retained-internal metadata, credentials, environment values, TLS/SPIFFE/Vault
+  material, PEM/cert/key bodies, endpoint secrets, unsafe paths, scheduler IDs,
+  CP workflow fields, review fields, checkpoint fields, or finalization fields
+  to the result response envelope or synthesized retained-result sidecars.
+  Workload-authored files under `/execution/run/result` remain opaque bundle
+  content; this is not a sanitization guarantee over those workload-authored
+  bytes.
+- The result route is not a CP artifact-serving authority. CP may consume and
+  interpret retrieved bytes semantically, but ES storage layout, retention
+  mechanics, and result availability do not become CP materialization,
+  checkpoint, review, finalization, or run-control state.
 - Logs are not the result contract; stdout remains a separate narrow logs surface.
 
 ### Error contract
@@ -913,6 +928,10 @@ Successful response is:
 - The result endpoint is intentionally limited to retained opaque bundles for the current `static-script` slice.
 - It does not introduce background lifecycle reconciliation, callbacks, streaming output, or a broad runtime-output platform.
 - It does not change ES into the orchestration owner.
+- Retained-result route evolution, result-reference vocabulary, result payload
+  identity versus artifact identity, CP materialization semantics, and
+  artifact discovery/index long-term shape remain reopened seams unless a
+  future source explicitly re-derives them.
 
 ## 10. Cancel contract
 

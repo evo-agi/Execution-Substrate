@@ -228,13 +228,7 @@ func TestResultBundleEntryNameRejectsPathTraversal(t *testing.T) {
 
 func TestResultReturnsRetainedBundleWithoutRuntimeLookup(t *testing.T) {
 	service, locator, _ := newResultTestService(t)
-	bundlePath := service.retainedResultBundlePath(locator)
-	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o755); err != nil {
-		t.Fatalf("mkdir retained result dir: %v", err)
-	}
-	if err := os.WriteFile(bundlePath, []byte("already retained"), 0o600); err != nil {
-		t.Fatalf("write retained bundle: %v", err)
-	}
+	writeRetainedResultBundleBytes(t, service, locator, []byte("already retained"))
 
 	bundle, err := service.Result(context.Background(), locator.RunID)
 	if err != nil {
@@ -247,6 +241,106 @@ func TestResultReturnsRetainedBundleWithoutRuntimeLookup(t *testing.T) {
 		bundle.OutcomeEvidence.Observation != outcomeObservationRetainedResultBundle ||
 		bundle.OutcomeEvidence.AccessClass != outcomeAccessClassOpaqueResultBundle {
 		t.Fatalf("unexpected retained result outcome evidence %+v", bundle.OutcomeEvidence)
+	}
+}
+
+func TestResultRetainedBundleLookupIsScopedToRunID(t *testing.T) {
+	service, first, _ := newResultTestService(t)
+	second := newExecutionLocatorFromRunID("run-fedcba9876543210")
+	writeRetainedResultBundleBytes(t, service, first, []byte("first retained bundle"))
+	writeRetainedResultBundleBytes(t, service, second, []byte("second retained bundle"))
+
+	firstBundle, err := service.Result(context.Background(), first.RunID)
+	if err != nil {
+		t.Fatalf("read first retained bundle: %+v", err)
+	}
+	if string(firstBundle.Payload) != "first retained bundle" {
+		t.Fatalf("expected first run bundle only, got %q", string(firstBundle.Payload))
+	}
+
+	secondBundle, err := service.Result(context.Background(), second.RunID)
+	if err != nil {
+		t.Fatalf("read second retained bundle: %+v", err)
+	}
+	if string(secondBundle.Payload) != "second retained bundle" {
+		t.Fatalf("expected second run bundle only, got %q", string(secondBundle.Payload))
+	}
+}
+
+func TestResultRejectsUnsafeResultReferencesBeforeStorageLookup(t *testing.T) {
+	service, locator, _ := newResultTestService(t)
+	writeRetainedResultBundleBytes(t, service, locator, []byte("retained bundle"))
+
+	for _, runID := range []string{
+		"",
+		"not-a-run-id",
+		locator.RunID + "/result.tar.gz",
+		"../" + locator.RunID,
+		"run-0123456789abcdef/../run-fedcba9876543210",
+	} {
+		_, err := service.Result(context.Background(), runID)
+		if err == nil || err.Status != http.StatusBadRequest || err.Code != codeInvalidRunID {
+			t.Fatalf("expected invalid_run_id for result reference %q, got %+v", runID, err)
+		}
+	}
+
+	bundle, err := service.Result(context.Background(), locator.RunID)
+	if err != nil {
+		t.Fatalf("valid run_id should still retrieve retained bundle: %+v", err)
+	}
+	if string(bundle.Payload) != "retained bundle" {
+		t.Fatalf("unexpected valid retained bundle payload %q", string(bundle.Payload))
+	}
+}
+
+func TestRetainTerminalResultDoesNotSynthesizeInternalResultSidecars(t *testing.T) {
+	service, locator, layout := newResultTestService(t)
+	if err := os.MkdirAll(layout.resultStageDir, 0o755); err != nil {
+		t.Fatalf("mkdir result dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.resultStageDir, "summary.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatalf("write result file: %v", err)
+	}
+
+	retained, err := service.retainTerminalResult(locator)
+	if err != nil {
+		t.Fatalf("retain terminal result: %v", err)
+	}
+	if !retained {
+		t.Fatalf("expected result retention to report retained bundle")
+	}
+
+	bundle, ok, resultErr := service.readRetainedResultBundle(locator)
+	if resultErr != nil {
+		t.Fatalf("read retained result: %+v", resultErr)
+	}
+	if !ok {
+		t.Fatalf("expected retained bundle to be readable")
+	}
+	entries := readAdmissionResultBundleEntries(t, bundle.Payload)
+	if len(entries) != 1 || entries["summary.txt"] != "ok\n" {
+		t.Fatalf("expected only workload-authored summary entry, got %#v", entries)
+	}
+	for _, forbidden := range []string{
+		"logs.txt",
+		"stdout.log",
+		"proof.json",
+		"support-bundle.json",
+		"retained-internal-metadata.json",
+		"credentials.json",
+		"endpoint-secrets.json",
+		"tls.pem",
+		"spiffe.jwt",
+		"cp-workflow.json",
+		"review.json",
+		"checkpoint.json",
+		"finalization.json",
+		"authority_handoff.json",
+		"scheduler_truth.json",
+	} {
+		if _, ok := entries[forbidden]; ok {
+			t.Fatalf("retained bundle must not synthesize internal sidecar %q", forbidden)
+		}
 	}
 }
 
@@ -377,6 +471,18 @@ func newResultTestService(t *testing.T) (*Service, executionLocator, executionPa
 	}
 	layout := newExecutionPackageLayout(service.cfg, locator)
 	return service, locator, layout
+}
+
+func writeRetainedResultBundleBytes(t *testing.T, service *Service, locator executionLocator, payload []byte) {
+	t.Helper()
+
+	bundlePath := service.retainedResultBundlePath(locator)
+	if err := os.MkdirAll(filepath.Dir(bundlePath), 0o755); err != nil {
+		t.Fatalf("mkdir retained result dir: %v", err)
+	}
+	if err := os.WriteFile(bundlePath, payload, 0o600); err != nil {
+		t.Fatalf("write retained bundle: %v", err)
+	}
 }
 
 func assertResultRuntimeUnavailableNoPanic(t *testing.T, call func() *Error) (err *Error) {

@@ -540,6 +540,14 @@ ES can return `result.tar.gz` when:
 - the workload created at least one result file under `/execution/run/result`
 - ES successfully packaged that content into `execution.results_root_dir/<run_id>/result.tar.gz`
 
+The public result reference documented today is the `run_id` in
+`GET /v1/executions/{run_id}/result`. CP must not derive or pass retention
+filesystem paths, host paths, scheduler IDs, Nomad allocation IDs, support
+bundle paths, proof paths, artifact-discovery/index internals, or guessed
+bundle names as result references. Any future result-reference vocabulary must
+be documented by ES as a safe handle scoped to a `run_id` or another explicit
+result reference.
+
 `result_not_found` means the execution is terminal but ES has no retained result bundle for that `run_id`. Common causes include:
 
 - the workload never started
@@ -555,9 +563,25 @@ own the retained bundle as run-control state.
 Retained results are opaque tar.gz output material, not CP workflow truth,
 checkpoint truth, finalization truth, review authority, scheduler truth, or
 operator authority.
+Result availability is evidence/projection for ES-retained output. A missing
+retained bundle is not, by itself, CP workflow failure, review failure,
+checkpoint failure, finalization failure, or Temporal run-control truth.
+ES does not add raw logs, proof payloads, support bundle payloads,
+retained-internal metadata, credentials, environment values, TLS/SPIFFE/Vault
+material, PEM/cert/key bodies, endpoint secrets, unsafe paths, scheduler IDs,
+CP workflow fields, review fields, checkpoint fields, or finalization fields to
+the result response envelope or synthesized retained-result sidecars.
+Workload-authored files under `/execution/run/result` remain opaque bundle
+content; this is not a sanitization guarantee over those workload-authored
+bytes.
 `authority_handoff` never carries live credentials, Vault tokens, Codex
 credentials, leases, approvals, operator authorization, CP workflow state,
 scheduler truth, or retained-result authority.
+
+Retained-result route evolution, result-reference vocabulary, result payload
+identity versus artifact identity, CP materialization semantics, and artifact
+discovery/index long-term shape remain reopened seams unless a future ES source
+explicitly re-derives them.
 
 If `/execution/run/result` contains result files for a terminal run and ES still returns `result_not_found`, that is an ES-side retention issue to investigate. If the result directory was never written, route first to the workload or CP runner.
 

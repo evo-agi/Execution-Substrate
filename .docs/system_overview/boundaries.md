@@ -556,7 +556,7 @@ runtime-profile handling, and compatibility edges lives in
 - The `authority_handoff` field layout and evidence labels are current read vocabulary for the bounded handoff slice, not a durable policy or lifecycle model.
 - The `outcome_evidence` JSON field layout, successful logs/result evidence headers, and observation labels are current read vocabulary for the bounded Nomad/retained-result slice, not durable scheduler, result, log, cancellation, or lifecycle architecture.
 - ES currently supports only async submit mode and only `static-script` artifacts for real execution.
-- The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform.
+- The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform, raw path reference model, artifact-serving authority, or CP materialization authority.
 - `control-plane-normal-shell/v1` is a bounded `static-script` runtime-profile overlay for the CP normal-shell attempt slice. It is not a broad package-kind redesign, a general developer image contract, or a transfer of CP control semantics into ES.
 - `control-plane-normal-shell/v1` and `execution_substrate.runtime_profile`
   compatibility remain preserved unless an explicit migration/versioning plan
@@ -567,7 +567,8 @@ runtime-profile handling, and compatibility edges lives in
 
 - The long-term ES request model and package-resolution shape
 - The current division between prepare-time composition and submit-time execution
-- The current execution-package layout, retained-result behavior, and reserved path conventions
+- The current execution-package layout, retained-result behavior, result-reference vocabulary, and reserved path conventions
+- Retained-result route evolution, result payload identity versus artifact identity, CP materialization semantics, and artifact discovery/index long-term shape
 - The final owner and vocabulary for the remaining shared execution/runtime inputs
 - Whether runtime profiles remain annotation-selected overlays or become part of a later re-derived ES admission model
 - The long-term runtime-identity owner, helper/root/task-user model, SPIRE

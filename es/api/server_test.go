@@ -232,6 +232,88 @@ func TestWorkstreamC3ResultRouteCompatibilityReturnsOpaqueGzipWithoutRunControlS
 	)
 }
 
+func TestWorkstreamCRetainedResultRouteStaysSeparateFromSubmitStatusLogsAndCancel(t *testing.T) {
+	submitCalls := 0
+	statusCalls := 0
+	logsCalls := 0
+	resultCalls := 0
+	cancelCalls := 0
+	resultPayload := []byte("opaque retained bundle")
+	service := fakeLifecycleService{
+		submitCalls: &submitCalls,
+		statusCalls: &statusCalls,
+		logsCalls:   &logsCalls,
+		resultCalls: &resultCalls,
+		cancelCalls: &cancelCalls,
+		logsResult: admission.ExecutionLogsResult{
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:                   "nomad",
+				Observation:              "nomad_task_stdout",
+				AccessClass:              "plaintext_stdout",
+				ProviderTerminalObserved: boolPtr(true),
+			},
+			Payload: []byte("raw log payload\n"),
+		},
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			OutcomeEvidence: admission.ExecutionOutcomeEvidence{
+				Source:      "es_retained_result_store",
+				Observation: "retained_result_bundle",
+				AccessClass: "opaque_result_bundle",
+			},
+			Payload: resultPayload,
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected result 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if resultCalls != 1 || submitCalls != 0 || statusCalls != 0 || logsCalls != 0 || cancelCalls != 0 {
+		t.Fatalf("result route must call only result service, got submit=%d status=%d logs=%d result=%d cancel=%d", submitCalls, statusCalls, logsCalls, resultCalls, cancelCalls)
+	}
+	assertHeader(t, recorder.Result(), "Content-Type", "application/gzip")
+	assertHeader(t, recorder.Result(), headerOutcomeSource, "es_retained_result_store")
+	assertHeader(t, recorder.Result(), headerOutcomeObservation, "retained_result_bundle")
+	assertHeader(t, recorder.Result(), headerOutcomeAccessClass, "opaque_result_bundle")
+	assertWorkstreamC5HeaderOmitsRunControlCredentialAndBackendAuthority(t, recorder.Result().Header)
+	if string(recorder.Body.Bytes()) != string(resultPayload) {
+		t.Fatalf("expected retained result bytes, got %q", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "raw log payload") {
+		t.Fatalf("result route must not expose logs payload through result")
+	}
+}
+
+func TestWorkstreamCRetainedResultRouteRejectsPathLikeReferencesBeforeService(t *testing.T) {
+	resultCalls := 0
+	service := fakeLifecycleService{
+		resultCalls: &resultCalls,
+		resultBundle: admission.ExecutionResultBundle{
+			MediaType: "application/gzip",
+			Payload:   []byte("bundle"),
+		},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+
+	for _, target := range []string{
+		"/v1/executions/run-0123456789abcdef/result.tar.gz/result",
+		"/v1/executions/run-0123456789abcdef/retained/run-fedcba9876543210/result",
+		"/v1/executions/run-0123456789abcdef/result/extra",
+	} {
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, target))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("expected path-like result reference %q to fail with 404, got %d body=%s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if resultCalls != 0 {
+		t.Fatalf("path-like result references must not reach result service, got %d calls", resultCalls)
+	}
+}
+
 func TestWorkstreamC4PublicRuntimeIdentityVaultResponsesExcludeCredentialLeaseAndRawSPIREMaterial(t *testing.T) {
 	handoff := &admission.ExecutionAuthorityHandoff{
 		AuthorityPath: "workload_identity_endpoint/workload_vault",

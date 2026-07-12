@@ -2919,20 +2919,75 @@ func TestWorkstreamCResultSurfaceClassificationStaysConsistent(t *testing.T) {
 	)
 
 	assertContainsAll(t, "system boundaries retained-result compatibility section", esBoundaryCompatibility,
-		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform.",
+		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and retained `application/gzip` bundle retrieval shape are active compatibility edges for the bounded retained-result slice, not a broad output platform, raw path reference model, artifact-serving authority, or CP materialization authority.",
 	)
 
 	assertContainsAll(t, "execution lifecycle retained-result ownership section", resultRuntimeOutput,
 		"ES packages retained result content opaquely and does not parse Control Plane semantics, checkpoint decisions, review outcomes, or finalization metadata from those files.",
 	)
 	assertContainsAll(t, "execution lifecycle retained-result lookup section", resultLookup,
+		"The only public retained-result lookup reference documented today is the `run_id` in `GET /v1/executions/{run_id}/result`.",
+		"Any later retained-result reference vocabulary must be documented as a safe handle scoped to a `run_id` or another explicitly documented result reference.",
 		"The current route shape, public `run_id` lookup, `application/gzip` encoding, and successful outcome-evidence headers are the active bounded compatibility retrieval path for those ES-owned bundles.",
+		"Result availability is evidence/projection for the ES-retained output surface.",
+		"`result_not_found` means ES has no retained bundle for that `run_id`; it is not, by itself, Control Plane workflow failure, review failure, checkpoint failure, finalization failure, or Temporal run-control truth.",
 	)
 	assertContainsAll(t, "execution lifecycle design retained-result materialization", designTerminalResult,
 		"ES treats the directory contents as opaque output material",
 	)
 	assertContainsAll(t, "execution lifecycle design retained-result bounded-slice rule", designBoundedSliceRules,
 		"The current `GET /v1/executions/{run_id}/result` route, public `run_id` lookup, and opaque tar.gz bundle encoding remain the bounded compatibility retrieval path for that retained bundle surface.",
+	)
+}
+
+func TestWorkstreamCRetainedResultBundleClarificationIsDocumented(t *testing.T) {
+	decisionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	lifecycleRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	boundariesRaw := mustRead(t, ".docs/system_overview/boundaries.md")
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+
+	decisionPublic := compactDocSection(t, decisionRaw, "### 4A. Public execution surfaces", "### 4B. Admission, handoff, and projection ownership surfaces")
+	decisionReopened := compactDocSection(t, decisionRaw, "### 4E. Reopened seams", "## 5. Guardrails for future edits")
+	resultContract := compactDocSection(t, lifecycleRaw, "## 9. Result contract", "## 10. Cancel contract")
+	resultResponse := compactDocSection(t, resultContract, "### Response contract", "### Error contract")
+	resultBoundedSlice := compactDocSection(t, resultContract, "### Bounded slice notes", "")
+	boundaryReopened := compactDocSection(t, boundariesRaw, "**Reopened seams**", "## 9. EGS boundary")
+
+	assertContainsAll(t, "workstream C retained result public non-claims", decisionPublic,
+		"`GET /v1/executions/{run_id}/result` | `temporary compatibility edge`",
+		"Current retained-result retrieval route for ES-owned opaque bundles keyed by public `run_id`.",
+		"Not a logs wrapper, checkpoint API, finalization record, semantic result interpretation surface, artifact-serving authority, or CP materialization authority.",
+	)
+	assertContainsAll(t, "workstream C retained result reopened seams", decisionReopened,
+		"Retained-result route evolution and result-reference vocabulary",
+		"documented safe handle scoped to `run_id` or another explicit result reference",
+		"not a raw path, scheduler ID, support/proof path, or artifact-discovery/index leak",
+		"Result payload identity, artifact identity, and CP materialization semantics",
+		"This decision does not settle whether future result payload identity differs from artifact identity",
+		"how artifact discovery/index should expose result material",
+		"how CP materializes retrieved content beyond CP-owned review/checkpoint/finalization semantics",
+	)
+	assertContainsAll(t, "execution lifecycle result envelope redaction", resultResponse,
+		"ES does not add raw logs, proof payloads, support bundle payloads",
+		"retained-internal metadata",
+		"credentials, environment values, TLS/SPIFFE/Vault material, PEM/cert/key bodies, endpoint secrets, unsafe paths, scheduler IDs",
+		"CP workflow fields, review fields, checkpoint fields, or finalization fields",
+		"this is not a sanitization guarantee over those workload-authored bytes",
+		"The result route is not a CP artifact-serving authority.",
+	)
+	assertContainsAll(t, "execution lifecycle result reopened seams", resultBoundedSlice,
+		"Retained-result route evolution, result-reference vocabulary, result payload identity versus artifact identity, CP materialization semantics, and artifact discovery/index long-term shape remain reopened seams",
+	)
+	assertContainsAll(t, "system boundaries retained result reopened seams", boundaryReopened,
+		"The current execution-package layout, retained-result behavior, result-reference vocabulary, and reserved path conventions",
+		"Retained-result route evolution, result payload identity versus artifact identity, CP materialization semantics, and artifact discovery/index long-term shape",
+	)
+	assertContainsAll(t, "CP consumer retained result contract clarification", runbook,
+		"The public result reference documented today is the `run_id` in `GET /v1/executions/{run_id}/result`.",
+		"CP must not derive or pass retention filesystem paths, host paths, scheduler IDs, Nomad allocation IDs, support bundle paths, proof paths, artifact-discovery/index internals, or guessed bundle names as result references.",
+		"Result availability is evidence/projection for ES-retained output.",
+		"A missing retained bundle is not, by itself, CP workflow failure, review failure, checkpoint failure, finalization failure, or Temporal run-control truth.",
+		"Retained-result route evolution, result-reference vocabulary, result payload identity versus artifact identity, CP materialization semantics, and artifact discovery/index long-term shape remain reopened seams",
 	)
 }
 
