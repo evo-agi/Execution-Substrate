@@ -162,6 +162,26 @@ Parallel MA candidate: autonomous maintenance capability matrix / lease-approved
 
 No implementation is included in this ADR.
 
+## Repo-Scoped Codex Subagent Role Definitions
+
+Repo-local Codex custom subagent configs under `.codex/agents/` are auditable
+project-scoped role definitions only. They are not authority, credentials,
+approvals, execution capability, or transport configuration. They are not proof
+that every Codex surface can invoke custom agents by name. If a Codex surface
+cannot invoke custom agents by name, parent prompts may still instruct generic
+read-only subagents with copied role instructions.
+
+These configs must remain portable and non-secret. They must not contain
+endpoint values, connector/tunnel/workspace/org identifiers, local private
+paths, environment values, certificate material, private key material, raw
+payloads, provider/auth/base-url/profile overrides, telemetry settings,
+notification settings, hooks, or behavior-enabling product configuration.
+
+Adding or updating these role definitions does not reopen accepted Workstream C
+admission/runtime boundaries, does not resolve the operator-healthcheck TLS
+signer/custody seam, and does not change any ES Current invariant, Bounded
+slice rule, Temporary compatibility edge, or Reopened redesign seam.
+
 ## Static Contract Expectations
 
 Repo-local docs tests should assert:
