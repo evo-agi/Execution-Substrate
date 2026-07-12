@@ -283,6 +283,33 @@ Runtime-profile disabled reasons are part of the current declaration shape:
 - The long-term ES public execution shape remains reopened.
 - The declaration is retained as current compatibility support while the request, runtime-profile, lifecycle, and evidence vocabularies remain bounded.
 
+## 4B. Runtime profile compatibility matrix
+
+This matrix records the current runtime-profile vocabulary and adjacent
+runtime-profile-looking values. It is a compatibility cleanup, not a final
+runtime-selection design.
+
+| Surface or value | Current classification | Current behavior | Non-claim |
+| --- | --- | --- | --- |
+| `execution_substrate.runtime_profile` | `Temporary compatibility edge` | The only current request annotation key for opt-in runtime-profile selection. Omitted or empty keeps the default current `static-script` runtime behavior. | Not the final runtime-profile selection model, not a shared-kernel grammar, and not CP workflow authority. |
+| omitted or empty `execution_substrate.runtime_profile` | `Bounded slice rule` | Accepted. Resolves to the current default runtime name `static-script/default`, uses `execution.base_image`, and injects no profile-specific Codex credential-location metadata. | Not a package-kind redesign, not proof that every advertised runtime profile can prepare, and not a final default-runtime vocabulary. |
+| `static-script/default` | `Bounded slice rule` | The current default runtime name used in producer declarations, submit metadata, and `authority_handoff`. It is selected by omitting the annotation or leaving it empty; current source does not treat a non-empty annotation value of `static-script/default` as a separate opt-in selector. | Not the final package model and not a promise that the explicit annotation value is accepted unless a future ES-owned migration documents that change. |
+| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, and signed evidence has `network_access=true`. | Not the default runtime model, not a package-kind redesign, not a general image/tool marketplace, and not a transfer of CP orchestration, review, checkpoint, or finalization semantics into ES. |
+| `execution.runtime_profiles.control_plane_normal_shell.*` | `Bounded slice rule` | ES deployment/admin config for enabling and parameterizing the bounded Control Plane normal-shell profile image, Codex CLI path metadata, and workload-Vault credential-location metadata. | Not a public runtime-profile name, not credential material, not credential brokerage, and not runtime identity ownership. |
+| `execution-substrate/control-plane-normal-shell:supported-local`, `execution-substrate/control-plane-normal-shell:local`, and the supported-local proof Codex shim | `Proof-only or bounded local proof` | Runtime support image/shim values that can realize the configured Control Plane normal-shell profile in local proof paths. They are not accepted runtime-profile annotation values. | Not production Codex availability, not a runtime-profile vocabulary entry, not submit readiness by itself, and not a long-term image lifecycle architecture. |
+| unsupported or unknown non-empty profile values | `Rejected/unsupported` | Rejected by `:prepare` and by the configured `:submit` path as `unsupported_runtime_profile` before run ID creation, staging, scheduler handoff, or CP run failure. | No fallback profile is selected and no CP review/checkpoint/finalization state is created. |
+| long-term runtime-profile vocabulary, runtime identity handoff owner, and workload-zone runtime-config owner | `Reopened redesign seam` | Remain open beyond the bounded CP normal-shell compatibility edge and the current default runtime behavior. | This cleanup does not settle final package layout, DTOs, runtime identity, workload-zone config, credential acquisition, or final runtime vocabulary. |
+
+Runtime-profile public surfaces remain non-secret. Producer declarations expose
+only profile names, status, disabled reasons, and outcome-evidence declarations.
+`authority_handoff` may expose only the documented non-secret runtime profile,
+workload identity endpoint, workload-Vault metadata, runtime-config digest, and
+Codex credential-location labels. Runtime-profile fields must not expose
+private keys, PEM bodies, raw cert bodies, env values, endpoint secrets,
+TLS/SPIFFE/Vault material beyond documented safe labels, raw logs,
+support/retained/proof payloads, unsafe paths, or CP workflow, review,
+checkpoint, and finalization fields.
+
 ## 5. Prepare contract
 
 ### Purpose

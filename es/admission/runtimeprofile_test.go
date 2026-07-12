@@ -30,6 +30,59 @@ func TestResolveExecutionRuntimeProfileKeepsDefaultWhenAnnotationAbsent(t *testi
 	}
 }
 
+func TestRuntimeProfileCompatibilityMatrixKeepsDefaultImplicitAndRejectsNonSelectors(t *testing.T) {
+	artifact := preparedArtifact{
+		manifest: Manifest{
+			ArtifactType: "static-script",
+		},
+		networkAccess: true,
+	}
+	cfg := controlPlaneNormalShellProfileExecutionConfig()
+
+	for _, request := range []PrepareRequest{
+		{},
+		{
+			Invocation: ArtifactInvocation{
+				Annotations: map[string]string{
+					runtimeProfileAnnotationKey: "",
+				},
+			},
+		},
+		{
+			Invocation: ArtifactInvocation{
+				Annotations: map[string]string{
+					runtimeProfileAnnotationKey: "   ",
+				},
+			},
+		},
+	} {
+		profile, err := resolveExecutionRuntimeProfile(cfg, request, artifact)
+		if err != nil {
+			t.Fatalf("expected omitted or empty annotation to keep default runtime profile, got %+v", err)
+		}
+		if profile.name != runtimeProfileDefaultStaticScript || profile.image != "alpine:3.20" || len(profile.env) != 0 {
+			t.Fatalf("expected implicit default static-script profile, got %+v", profile)
+		}
+	}
+
+	for _, requested := range []string{
+		runtimeProfileDefaultStaticScript,
+		"execution-substrate/control-plane-normal-shell:supported-local",
+		"execution-substrate/control-plane-normal-shell:local",
+		"future-runtime/v1",
+		"unknown/v1",
+	} {
+		_, err := resolveExecutionRuntimeProfile(cfg, PrepareRequest{
+			Invocation: ArtifactInvocation{
+				Annotations: map[string]string{
+					runtimeProfileAnnotationKey: requested,
+				},
+			},
+		}, artifact)
+		assertRuntimeProfileError(t, err, "unsupported runtime profile")
+	}
+}
+
 func TestResolveExecutionRuntimeProfileRejectsUnknownDisabledAndNetworklessProfile(t *testing.T) {
 	artifact := preparedArtifact{
 		manifest: Manifest{
@@ -68,6 +121,23 @@ func TestResolveExecutionRuntimeProfileRejectsUnknownDisabledAndNetworklessProfi
 	assertRuntimeProfileError(t, err, "requires network_access=true")
 }
 
+func TestResolveExecutionRuntimeProfileKeepsControlPlaneNormalShellAsStaticScriptOverlay(t *testing.T) {
+	cfg := controlPlaneNormalShellProfileExecutionConfig()
+	_, err := resolveExecutionRuntimeProfile(cfg, PrepareRequest{
+		Invocation: ArtifactInvocation{
+			Annotations: map[string]string{
+				runtimeProfileAnnotationKey: runtimeProfileControlPlaneNormalShell,
+			},
+		},
+	}, preparedArtifact{
+		manifest: Manifest{
+			ArtifactType: "workspace-archive",
+		},
+		networkAccess: true,
+	})
+	assertRuntimeProfileError(t, err, "requires static-script artifacts")
+}
+
 func TestResolveExecutionRuntimeProfileReturnsControlPlaneNormalShellMetadata(t *testing.T) {
 	profile, err := resolveExecutionRuntimeProfile(controlPlaneNormalShellProfileExecutionConfig(), PrepareRequest{
 		Invocation: ArtifactInvocation{
@@ -102,6 +172,51 @@ func TestResolveExecutionRuntimeProfileReturnsControlPlaneNormalShellMetadata(t 
 	if profile.env["EXEC_CODEX_CREDENTIAL_VAULT_SECRET_FIELD"] != "api_key" {
 		t.Fatalf("expected credential secret field metadata, got %#v", profile.env)
 	}
+
+	handoff := buildExecutionAuthorityHandoff(
+		profile,
+		runtimeIdentityHandoff{
+			endpointEnvKey: runtimeIdentityEndpointEnvKey,
+			endpointURI:    "unix:///run/es-runtime-identity/run-0123456789abcdef/endpoint",
+		},
+		esconfig.ResolvedWorkloadVaultAuthPlan{
+			Mode:        esconfig.WorkloadVaultAuthModeVaultIdentityJWT,
+			Address:     "https://vault.internal:8200",
+			AuthMount:   "jwt",
+			AuthRole:    "execution",
+			JWTAudience: "vault",
+		},
+		testWorkloadZoneVaultConfigDigest,
+		stagedWorkloadTrustMaterial{},
+	)
+	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
+	assertTextOmitsAll(t, payload,
+		`"private_key":`,
+		`"pem_body":`,
+		`"raw_cert_body":`,
+		`"endpoint_secret":`,
+		`"vault_token":`,
+		`"client_token":`,
+		`"root_token":`,
+		`"unseal_key":`,
+		`"jwt_svid":`,
+		`"x509_svid":`,
+		`"lease_id":`,
+		`"lease_duration":`,
+		`"credential_material":`,
+		`"credential_value":`,
+		`"secret_material":`,
+		`"secret_value":`,
+		`"raw_payload":`,
+		`"raw_logs":`,
+		`"support_bundle_payload":`,
+		`"proof_payload":`,
+		`"retained_bundle_payload":`,
+		`"workflow":`,
+		`"review":`,
+		`"checkpoint":`,
+		`"finalization":`,
+	)
 }
 
 func assertRuntimeProfileError(t *testing.T, err *Error, messageSubstring string) {

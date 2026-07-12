@@ -2962,7 +2962,7 @@ func TestWorkstreamCRuntimeProfileBoundaryStaysNarrow(t *testing.T) {
 		"`control-plane-normal-shell/v1` plus `execution_substrate.runtime_profile` compatibility | `stable contract`",
 	)
 	assertContainsAll(t, "workstream C decision runtime-profile row", decisionRuntimeProfile,
-		"| Runtime-profile selection | `temporary compatibility edge` | `invocation.annotations[\"execution_substrate.runtime_profile\"]` plus `control-plane-normal-shell/v1` remains the current opt-in `static-script` runtime overlay. Unsupported or disabled selection fails `:prepare`/`:submit`. |",
+		"| Runtime-profile selection | `temporary compatibility edge` | `invocation.annotations[\"execution_substrate.runtime_profile\"]` plus `control-plane-normal-shell/v1` remains the current opt-in `static-script` runtime overlay. Omitted or empty annotation resolves to the current default `static-script/default` runtime name; unsupported or disabled non-empty selection fails `:prepare`/`:submit`. |",
 	)
 	assertContainsNone(t, "workstream C decision runtime-profile row", decisionRuntimeProfile,
 		"| Runtime-profile selection | `stable contract` |",
@@ -3037,6 +3037,59 @@ func TestWorkstreamCRuntimeProfileBoundaryStaysNarrow(t *testing.T) {
 			"tooling guarantee",
 		)
 	}
+}
+
+func TestWorkstreamCRuntimeProfileCompatibilityMatrixIsDocumented(t *testing.T) {
+	lifecycleContractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	lifecycleContracts := compactText(lifecycleContractsRaw)
+	matrix := compactDocSection(t, lifecycleContractsRaw, "## 4B. Runtime profile compatibility matrix", "## 5. Prepare contract")
+	decision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	runbookRaw := mustRead(t, ".docs/supported_local_cp_consumer_runbook.md")
+	runbookRuntimeProfile := compactDocSection(t, runbookRaw, "## 6. Runtime profile selection", "## 7. Workload runtime contract")
+
+	assertContainsAll(t, "runtime profile compatibility matrix scope", matrix,
+		"This matrix records the current runtime-profile vocabulary and adjacent runtime-profile-looking values.",
+		"It is a compatibility cleanup, not a final runtime-selection design.",
+	)
+	assertContainsAll(t, "runtime profile compatibility matrix values", matrix,
+		"| `execution_substrate.runtime_profile` | `Temporary compatibility edge` | The only current request annotation key for opt-in runtime-profile selection. Omitted or empty keeps the default current `static-script` runtime behavior.",
+		"| omitted or empty `execution_substrate.runtime_profile` | `Bounded slice rule` | Accepted. Resolves to the current default runtime name `static-script/default`, uses `execution.base_image`, and injects no profile-specific Codex credential-location metadata.",
+		"| `static-script/default` | `Bounded slice rule` | The current default runtime name used in producer declarations, submit metadata, and `authority_handoff`. It is selected by omitting the annotation or leaving it empty; current source does not treat a non-empty annotation value of `static-script/default` as a separate opt-in selector.",
+		"| `control-plane-normal-shell/v1` | `Temporary compatibility edge` | Accepted only as an explicit opt-in annotation when submit is configured, `execution.runtime_profiles.control_plane_normal_shell.enabled=true`, the artifact is `static-script`, and signed evidence has `network_access=true`.",
+		"| `execution.runtime_profiles.control_plane_normal_shell.*` | `Bounded slice rule` | ES deployment/admin config for enabling and parameterizing the bounded Control Plane normal-shell profile image, Codex CLI path metadata, and workload-Vault credential-location metadata.",
+		"| `execution-substrate/control-plane-normal-shell:supported-local`, `execution-substrate/control-plane-normal-shell:local`, and the supported-local proof Codex shim | `Proof-only or bounded local proof` | Runtime support image/shim values that can realize the configured Control Plane normal-shell profile in local proof paths. They are not accepted runtime-profile annotation values.",
+		"| unsupported or unknown non-empty profile values | `Rejected/unsupported` | Rejected by `:prepare` and by the configured `:submit` path as `unsupported_runtime_profile` before run ID creation, staging, scheduler handoff, or CP run failure.",
+		"| long-term runtime-profile vocabulary, runtime identity handoff owner, and workload-zone runtime-config owner | `Reopened redesign seam` | Remain open beyond the bounded CP normal-shell compatibility edge and the current default runtime behavior.",
+	)
+	assertContainsAll(t, "runtime profile matrix non-claims", matrix,
+		"Not the default runtime model, not a package-kind redesign, not a general image/tool marketplace, and not a transfer of CP orchestration, review, checkpoint, or finalization semantics into ES.",
+		"Not a public runtime-profile name, not credential material, not credential brokerage, and not runtime identity ownership.",
+		"No fallback profile is selected and no CP review/checkpoint/finalization state is created.",
+		"This cleanup does not settle final package layout, DTOs, runtime identity, workload-zone config, credential acquisition, or final runtime vocabulary.",
+	)
+	assertContainsAll(t, "runtime profile matrix redaction", matrix,
+		"Runtime-profile public surfaces remain non-secret.",
+		"Producer declarations expose only profile names, status, disabled reasons, and outcome-evidence declarations.",
+		"`authority_handoff` may expose only the documented non-secret runtime profile, workload identity endpoint, workload-Vault metadata, runtime-config digest, and Codex credential-location labels.",
+		"Runtime-profile fields must not expose private keys, PEM bodies, raw cert bodies, env values, endpoint secrets, TLS/SPIFFE/Vault material beyond documented safe labels, raw logs, support/retained/proof payloads, unsafe paths, or CP workflow, review, checkpoint, and finalization fields.",
+	)
+	assertContainsAll(t, "runtime profile decision row names default and unsupported behavior", decision,
+		"Omitted or empty annotation resolves to the current default `static-script/default` runtime name; unsupported or disabled non-empty selection fails `:prepare`/`:submit`.",
+	)
+	assertContainsAll(t, "CP runbook runtime profile matrix reference", runbookRuntimeProfile,
+		"The authoritative current matrix is in `.docs/execution_lifecycle/contracts.md`.",
+		"the runtime-profile vocabulary remains a reopened seam beyond the bounded CP normal-shell compatibility edge.",
+		"Omitting `execution_substrate.runtime_profile` or setting it to an empty value keeps the current default `static-script/default` runtime behavior.",
+		"`static-script/default` may appear in producer declarations and `authority_handoff`, but current source does not treat a non-empty annotation value of `static-script/default` as a separate opt-in selector.",
+		"Supported-local image tags and proof shims are runtime support/proof assets, not additional runtime-profile annotation values.",
+	)
+	assertContainsNone(t, "runtime profile matrix avoids finalized vocabulary", lifecycleContracts,
+		"runtime profile vocabulary is final",
+		"final runtime-profile vocabulary",
+		"all runtime profiles are supported",
+		"enables package-kind redesign",
+		"enables credential brokerage",
+	)
 }
 
 func TestGoldenProducerProofPathIsDocumented(t *testing.T) {

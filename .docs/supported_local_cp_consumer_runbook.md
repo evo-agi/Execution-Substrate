@@ -408,6 +408,11 @@ After any such change, re-run `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_C
 
 ## 6. Runtime profile selection
 
+The authoritative current matrix is in
+`.docs/execution_lifecycle/contracts.md`. The matrix is descriptive only: the
+runtime-profile vocabulary remains a reopened seam beyond the bounded CP
+normal-shell compatibility edge.
+
 The bounded CP normal-shell profile is selected by:
 
 ```json
@@ -419,6 +424,14 @@ The bounded CP normal-shell profile is selected by:
   }
 }
 ```
+
+Omitting `execution_substrate.runtime_profile` or setting it to an empty value
+keeps the current default `static-script/default` runtime behavior.
+`static-script/default` may appear in producer declarations and
+`authority_handoff`, but current source does not treat a non-empty annotation
+value of `static-script/default` as a separate opt-in selector. Supported-local
+image tags and proof shims are runtime support/proof assets, not additional
+runtime-profile annotation values.
 
 The profile remains a `static-script` overlay. It currently requires:
 

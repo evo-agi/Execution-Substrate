@@ -279,6 +279,42 @@ func TestProducerContractPublicDTOStaysNarrowProducerDeclarationOnly(t *testing.
 	}
 }
 
+func TestProducerContractRuntimeProfileMatrixStaysBoundedAndNonSecret(t *testing.T) {
+	cfg := producerContractSubmitConfig(true)
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.Image = "execution-substrate/control-plane-normal-shell:supported-local"
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.CodexCLIPath = "/usr/local/bin/codex"
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.CredentialVaultSecretPath = "proof-secrets/data/codex-runtime-profile"
+	cfg.Execution.RuntimeProfiles.ControlPlaneNormalShell.CredentialVaultSecretField = "api_key"
+
+	declaration := producerContractDeclaration(cfg)
+	profiles := declaration.GovernedExecution.RuntimeProfiles
+	if len(profiles) != 2 {
+		t.Fatalf("producer contract must declare only the bounded current runtime profiles, got %+v", profiles)
+	}
+	assertRuntimeProfileStatus(t, profiles, runtimeProfileDefaultStaticScript, "enabled")
+	assertRuntimeProfileStatus(t, profiles, runtimeProfileControlPlaneNormalShell, "enabled")
+
+	payload := mustMarshalWorkstreamCTestJSON(t, declaration)
+	assertTextOmitsAll(t, payload,
+		"execution-substrate/control-plane-normal-shell:supported-local",
+		"/usr/local/bin/codex",
+		"proof-secrets/data/codex-runtime-profile",
+		"api_key",
+		`"image":`,
+		`"codex_cli_path":`,
+		`"credential_vault_secret_path":`,
+		`"credential_vault_secret_field":`,
+		`"package_kind":`,
+		`"runtime_auth_plan":`,
+		`"credential_material":`,
+		`"secret_material":`,
+		`"cp_workflow_id":`,
+		`"review":`,
+		`"checkpoint":`,
+		`"finalization":`,
+	)
+}
+
 func TestProducerContractDeclarationDoesNotExposeSecretPayloadOrPathMaterial(t *testing.T) {
 	cfg := producerContractSubmitConfig(true)
 	cfg.Execution.SPIREWorkloadAPISocketPath = "/run/spire/sockets/agent.sock"
