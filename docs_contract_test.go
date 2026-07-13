@@ -110,6 +110,34 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 	}
 }
 
+func markdownTableRowByFirstCell(t *testing.T, doc string, rowKey string) []string {
+	t.Helper()
+
+	var matches [][]string
+	for _, line := range strings.Split(doc, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		parts := strings.Split(strings.Trim(trimmed, "|"), "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		if len(parts) > 0 && parts[0] == rowKey {
+			matches = append(matches, parts)
+		}
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly one %q table row, found %d", rowKey, len(matches))
+	}
+	return matches[0]
+}
+
+func compactTableRow(row []string) string {
+	return compactText(strings.Join(row, " "))
+}
+
 func assertNoActiveShellDispatchArm(t *testing.T, label string, source string, route string) {
 	t.Helper()
 
@@ -190,11 +218,27 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"ES remains execution substrate",
 		"CP remains run-control",
 		"IM remains profile/provenance/readiness",
+		"Bridge connector-safe source intake and no-mutation handoff are implemented and live-tested as Bridge-local evidence/projection",
+		"They do not invoke Codex or mutate repos",
+		"Local real Codex execution and local acceptance remain separate CLI-only and non-MCP-visible paths",
+		"Nightly Work Protocol v0 is proposed as a bounded development-harness/evidence protocol",
+		"Full policy-bounded autonomy is the long-term target",
+		"operator's target role is strategy, budgets, periodic reports, and exception handling",
+		"No durable coordinator is currently selected",
+		"API and Symphony remain future adapter/dispatcher candidates only",
+		"Repo ownership boundaries remain unchanged",
+		"NWP/autonomy does not redefine ES Workstream C or runtime authority",
+		"CP compatibility remains bounded",
+		"There is no TLS/noninteractive route widening in this ADR",
+		"Economic or financial goals do not alter ES admission/security contracts",
+		"No current unattended execution is claimed",
 		"Bridge <-> Codex",
-		"designed only",
 		"Bridge no-mutation Codex handoff packet/design",
+		"no-mutation source intake and evidence recorder implemented/live-tested",
 		"no repository write",
 		"no shell execution",
+		"no Codex invocation through connector",
+		"no local acceptance",
 		"Maintenance Agent is not optional for reducing infra babysitting",
 		"must not become a hidden reconciler",
 		"ES Workstream C guardrails",
@@ -208,13 +252,14 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 
 	assertContainsAll(t, "PLANS hybrid integration pointer", plans,
 		"Cross-Repo Hybrid Integration ADR Pointer",
-		"architecture discovery / ADR only, not implementation",
-		"Bridge no-mutation Codex handoff packet/design",
+		"architecture discovery / ADR only for ES and does not implement or change ES product behavior",
+		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
+		"future cross-repo integration work: guarded execution linkage, durable coordination, connector-triggered Codex",
 		"Current invariant: ES remains execution substrate; CP remains run-control; IM remains profile/provenance/readiness",
 		"Bounded slice rule: Bridge and Maintenance Agent may record or consume non-authoritative proposals",
 		"Temporary compatibility edge: Remote Alpha helper/status/renewal routes remain proof/support containment",
 		"Reopened redesign seam: operator-healthcheck TLS signer/custody remains blocked and source-insufficient",
-		"no-write, no-shell, and no-Codex-invocation",
+		"no-write, no-shell, no-Codex-invocation",
 	)
 
 	assertContainsNone(t, "hybrid integration ADR raw material", mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"),
@@ -228,6 +273,44 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"/var/",
 		"/tmp/",
 		"Authorization:",
+	)
+}
+
+func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
+	adrRaw := mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md")
+	row := compactTableRow(markdownTableRowByFirstCell(t, adrRaw, "Bridge <-> Codex"))
+	plans := compactText(mustRead(t, "PLANS.md"))
+
+	assertContainsAll(t, "Bridge <-> Codex integration row", row,
+		"no-mutation source intake and evidence recorder implemented/live-tested",
+		"source ledger evidence/projection",
+		"no-mutation handoff packet recording",
+		"implemented/live-tested",
+		"exact retry reuse",
+		"same-source conflict handling",
+		"not Codex invocation",
+		"repository mutation",
+		"ES admission/runtime/lifecycle authority",
+		"local runner/acceptance",
+		"connector-triggered execution",
+		"durable coordination",
+	)
+	assertContainsNone(t, "Bridge <-> Codex integration row", row,
+		"designed only",
+		"first candidate only",
+		"connector-triggered Codex implemented",
+		"Bridge owns durable coordination",
+	)
+
+	assertContainsAll(t, "PLANS and ADR Bridge evidence agreement", plans,
+		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
+		"They do not invoke Codex, run shell, mutate repositories, or alter ES admission, runtime, lifecycle, status, route, TLS, or noninteractive-route authority",
+		"future cross-repo integration work: guarded execution linkage, durable coordination, connector-triggered Codex",
+		"already implemented Bridge source/handoff evidence slice must remain no-write, no-shell, no-Codex-invocation, non-authoritative for ES",
+	)
+	assertContainsNone(t, "PLANS and ADR Bridge evidence agreement", plans,
+		"evaluate a future Bridge no-mutation Codex handoff packet/design",
+		"The first implementation candidate after this ADR is Bridge no-mutation Codex handoff packet/design",
 	)
 }
 

@@ -35,13 +35,37 @@ This ADR records the candidate integration architecture across Bridge, Codex, Ma
 
 It does not implement tools, start runtimes, create certs or profiles, renew material, mutate repositories, invoke shell execution, contact remote systems, invoke Codex, submit to ES, run CP diagnostics, run IM refresh, push, create PRs, or merge.
 
+## NWP v0 And Strategic Autonomy Alignment
+
+Bridge connector-safe source intake and no-mutation handoff are implemented and
+live-tested as Bridge-local evidence/projection. They do not invoke Codex or
+mutate repos. Local real Codex execution and local acceptance remain separate
+CLI-only and non-MCP-visible paths.
+
+Nightly Work Protocol v0 is proposed as a bounded development-harness/evidence
+protocol. It is not a stable product contract, not unattended execution, not
+durable orchestration authority, and not hidden run truth. Full policy-bounded
+autonomy is the long-term target: the operator's target role is strategy,
+budgets, periodic reports, and exception handling.
+
+No durable coordinator is currently selected. API and Symphony remain future
+adapter/dispatcher candidates only. Repo ownership boundaries remain unchanged:
+Bridge remains adapter/evidence; CP remains product workflow authority; ES
+remains admission/runtime authority; IM remains readiness/provenance/diagnostics;
+MA remains owner-contracted maintenance.
+
+NWP/autonomy does not redefine ES Workstream C or runtime authority. CP
+compatibility remains bounded. There is no TLS/noninteractive route widening in
+this ADR. Economic or financial goals do not alter ES admission/security
+contracts. No current unattended execution is claimed.
+
 ## Candidate Architecture
 
 | Component | Current evidence | Current authority | Candidate role | Non-claims | Unresolved integration points |
 | --- | --- | --- | --- | --- | --- |
 | ChatGPT | Human-facing review and intent surface is the initiating context for Bridge proposals. | Human/operator intent and review only. | Create or review assignments that Bridge can validate and record. | Not run-control, not ES authority, not repository writer, not hidden execution truth. | Exact connector UX, assignment schema, and review checkpoints. |
 | Connector / MCP tunnel | Bridge tunnel docs describe an externally/platform-owned transport path. | Transport/integration path, externally/platform-owned. | Carry guarded Bridge calls when the operator has configured the transport. | Not lifecycle authority, not repo authority, not proof authority, not Codex authority. | Live readiness, deployment ownership, production support model, and platform custody. |
-| Bridge | Dry-run lifecycle, assignment/evidence projection, local preflight evidence, and separate real-write design gates exist. | Assignment/evidence adapter; local Bridge policy gate. | Future gate that emits a no-mutation Codex handoff packet or local handoff plan. | Does not own ES, CP, IM, MA, tunnel, repository mutation, shell execution, push, PR, merge, or live proof. | Handoff packet contract, idempotency, evidence retention, redaction, and Codex invocation boundary. |
+| Bridge | Dry-run lifecycle, assignment/evidence projection, local preflight evidence, connector-safe no-mutation Codex handoff source intake, Bridge-local no-mutation Codex handoff evidence recording, idempotent retry/conflict handling, and separate real-write design gates exist. | Assignment/evidence adapter; local Bridge policy gate. | Record or reuse connector-safe source ledger evidence and no-mutation Codex handoff packets as Bridge-local evidence while preserving future real-write separation. | Does not own ES, CP, IM, MA, tunnel, repository mutation, shell execution, push, PR, merge, local acceptance, real Codex execution, or live proof. | Any future Codex invocation boundary. |
 | Codex | Candidate coding worker exists outside this ADR; Bridge docs currently do not enable real Codex through connector/tunnel. | Candidate worker only when separately invoked under its own guardrails. | Consume a handoff packet after separate approval and perform human-reviewed work in an isolated future path. | Not enabled by this ADR; not invoked by Bridge here; not lifecycle or maintenance authority. | Invocation method, workspace isolation, diff validation, review loop, and audit handback. |
 | Maintenance Agent | Automation ladder, route eligibility, canonical digest, biometric lease, and verifier designs exist. | Governed maintenance scanner/planner/proposer; route execution only where eligible and approved. | Required governed maintenance planner/proposer and future lease-approved executor for eligible routes. | Not a hidden reconciler; not signer/custody authority; not ES runtime authority; not CP run-control; not IM readiness owner. | Route-by-route autonomy matrix, owner route contracts, lease verifier implementation, rollback, and stop conditions. |
 | ES | Workstream C guardrails and Remote Linux TLS signer/custody blocked decisions exist. | Governed execution substrate: admission, execution lifecycle, route semantics, runtime identity, retained results. | Keep execution substrate authority and define eligible route contracts that MA/CP/Bridge may only consume. | Does not delegate route truth to Bridge, MA, CP, IM, Symphony, or ChatGPT. | Operator-healthcheck TLS signer/custody, noninteractive status contract, remote proof readiness. |
@@ -57,7 +81,7 @@ It does not implement tools, start runtimes, create certs or profiles, renew mat
 | ChatGPT <-> connector | unknown | Platform/external path is candidate transport; this ADR performs no connector smoke or live call. |
 | connector <-> tunnel | unknown | Tunnel readiness is not exercised here. |
 | tunnel <-> Bridge | dry-run only | Bridge can expose guarded dry-run/evidence tools; real-write and real Codex remain disabled through this path. |
-| Bridge <-> Codex | designed only | First candidate is a no-mutation handoff packet/design, not invocation. |
+| Bridge <-> Codex | no-mutation source intake and evidence recorder implemented/live-tested | Bridge source ledger evidence/projection and no-mutation handoff packet recording are implemented/live-tested with exact retry reuse and same-source conflict handling only; they are not Codex invocation, repository mutation, ES admission/runtime/lifecycle authority, local runner/acceptance, connector-triggered execution, or durable coordination. |
 | Bridge <-> repo workspace | dry-run only | Future real-write gates are documented, but this ADR does not enable repository mutation. |
 | Bridge <-> ES | dry-run only | Bridge ES preflight evidence is local, non-authoritative, and not ES status truth. |
 | Bridge <-> MA | designed only | Future proposal/evidence handoff only; no maintenance execution. |
@@ -74,14 +98,15 @@ It does not implement tools, start runtimes, create certs or profiles, renew mat
 
 ## Message-Bus Reduction Path
 
-The first Bridge/Codex path is a no-mutation handoff:
+The implemented Bridge/Codex evidence path is a no-mutation handoff:
 
-1. ChatGPT creates or validates an assignment through Bridge.
-2. Bridge records assignment/evidence under Bridge policy.
-3. Bridge emits a sealed handoff packet or local handoff plan for Codex.
-4. The handoff contains safe labels, assignment metadata, non-authority notices, and redacted evidence references only.
+1. ChatGPT creates or validates an assignment through Bridge when the sealed packet path is appropriate.
+2. When connector dispatch should avoid local paths or sealed raw assignment payloads, ChatGPT may record connector-safe source ledger evidence through `record_no_mutation_codex_handoff_source`.
+3. Bridge records assignment/evidence or source evidence under Bridge policy.
+4. Bridge may record a sealed no-mutation handoff packet through `record_no_mutation_codex_handoff`.
+5. The source evidence and handoff contain safe labels, assignment metadata, non-authority notices, and redacted evidence references only.
 
-This first slice has no repository write, no shell execution, no Codex invocation through connector, no push, no PR, no merge, and no ES/CP/IM lifecycle authority. Any later Codex invocation through connector/tunnel requires a separate design.
+This first slice has no repository write, no shell execution, no Codex invocation through connector, no push, no PR, no merge, no local acceptance, and no ES/CP/IM/MA lifecycle authority. Real Codex execution and local acceptance remain separate CLI-only and non-MCP-visible paths. Any later Codex invocation through connector/tunnel requires a separate design.
 
 Future real-write requires all of these gates before implementation:
 
@@ -154,13 +179,13 @@ If the class is not stable product invariant, the guardrail must answer: what wo
 
 This prevents integration scaffolding from becoming permanent architecture by inertia, while also preventing blocked seams from being bypassed by convenience.
 
-## Recommended First Implementation Candidates
+## Implemented Evidence Slice And Remaining Candidates
 
-Primary candidate: Bridge no-mutation Codex handoff packet/design. It must remain no-write, no-shell, and no-Codex-invocation unless separately approved.
+Implemented first slice: Bridge no-mutation Codex handoff packet/design through connector-safe source intake and no-mutation handoff evidence recording. It remains Bridge-local evidence only and must stay no-write, no-shell, no-push/PR/merge, no-local-runner, no-local-acceptance, and no-Codex-invocation unless separately approved.
 
-Parallel MA candidate: autonomous maintenance capability matrix / lease-approved execution design. It must remain design-only until owner route contracts, leases, rollback, evidence, and stop conditions are approved.
+Next unimplemented candidates: guarded execution linkage, durable NWP coordination, connector-triggered Codex invocation, autonomous acceptance/publication, and any Symphony or API dispatcher remain future-only until separately designed and approved. Parallel MA candidate: autonomous maintenance capability matrix / lease-approved execution design. It must remain design-only until owner route contracts, leases, rollback, evidence, and stop conditions are approved.
 
-No implementation is included in this ADR.
+No ES implementation is included in this ADR.
 
 ## Repo-Scoped Codex Subagent Role Definitions
 
@@ -191,7 +216,8 @@ Repo-local docs tests should assert:
 - Symphony optional/candidate only;
 - TLS remains blocked;
 - Bridge real-write is not enabled;
-- Bridge no-mutation handoff is first candidate only;
+- Bridge source intake and no-mutation handoff are implemented evidence-only;
+- connector-triggered Codex, durable coordination, acceptance, and publication remain future/unimplemented;
 - MA autonomous maintenance is required but bounded;
 - no hidden reconciler;
 - ES/CP/IM ownership boundaries preserved;

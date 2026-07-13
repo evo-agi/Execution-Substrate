@@ -63,15 +63,23 @@ Current bounded implementation status:
 
 The proposed/draft Hybrid Integration Architecture ADR is recorded at
 `.docs/system_overview/hybrid_integration_architecture_adr.md`. It is
-architecture discovery / ADR only, not implementation.
+architecture discovery / ADR only for ES and does not implement or change ES
+product behavior.
 
-This planning pointer reopens only the cross-repo integration path needed to
-evaluate a future Bridge no-mutation Codex handoff packet/design and a parallel
-Maintenance Agent autonomous-maintenance capability matrix. It does not reopen
-accepted Workstream C admission/runtime boundaries, does not change ES route
-eligibility, and does not enable Bridge real write, real Codex execution,
-remote maintenance, ES submit, CP diagnose, IM refresh, live proof, push, PR,
-merge, shell execution, or repository mutation.
+The ADR now records a current Bridge evidence fact: Bridge connector-safe source
+intake and no-mutation Codex handoff are implemented/live-tested as
+Bridge-local evidence/projection only. They do not invoke Codex, run shell,
+mutate repositories, or alter ES admission, runtime, lifecycle, status, route,
+TLS, or noninteractive-route authority.
+
+This planning pointer reopens only future cross-repo integration work:
+guarded execution linkage, durable coordination, connector-triggered Codex,
+cross-repo execution, unattended NWP behavior, and the parallel Maintenance
+Agent autonomous-maintenance capability matrix. It does not reopen accepted
+Workstream C admission/runtime boundaries, does not change ES route eligibility,
+and does not enable Bridge real write, real Codex execution, remote maintenance,
+ES submit, CP diagnose, IM refresh, live proof, push, PR, merge, shell
+execution, or repository mutation.
 
 Classification for this ADR tranche:
 
@@ -88,11 +96,13 @@ Classification for this ADR tranche:
   blocked and source-insufficient; the next TLS step requires source-grounded
   signer/custody evidence or an explicit ES product decision.
 
-The first implementation candidate after this ADR is Bridge no-mutation Codex
-handoff packet/design. It must remain no-write, no-shell, and
-no-Codex-invocation unless separately approved. The parallel Maintenance Agent
-candidate is route-by-route autonomous maintenance capability matrix plus
-lease-approved execution design, not autonomous execution.
+The already implemented Bridge source/handoff evidence slice must remain
+no-write, no-shell, no-Codex-invocation, non-authoritative for ES, and separate
+from local runner, acceptance, commit, push, PR, merge, and durable coordination.
+The next implementation candidates are any guarded execution linkage or durable
+coordination design, plus the parallel Maintenance Agent route-by-route
+autonomous maintenance capability matrix and lease-approved execution design,
+not autonomous execution.
 
 ## Highest-Priority Backlog Entry
 
