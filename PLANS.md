@@ -72,14 +72,23 @@ Bridge-local evidence/projection only. They do not invoke Codex, run shell,
 mutate repositories, or alter ES admission, runtime, lifecycle, status, route,
 TLS, or noninteractive-route authority.
 
+The selected A2 target architecture is a future separate local Governed
+Execution NWP Coordinator. It is docs/static only and unimplemented here. The
+coordinator is a future durable local development-work state owner only. It has
+no ES admission, runtime, lifecycle, retained-result, profile, identity, route,
+Workstream C, TLS, noninteractive-route, or Remote Alpha authority. No
+coordinator repo, worker loop, state store, lease verifier, sandbox, repair,
+local commit, publication behavior, runtime schema, or ES route implementation
+exists in this repo or this planning pointer.
+
 This planning pointer reopens only future cross-repo integration work:
-guarded execution linkage, durable coordination, connector-triggered Codex,
-cross-repo execution, unattended NWP behavior, and the parallel Maintenance
-Agent autonomous-maintenance capability matrix. It does not reopen accepted
-Workstream C admission/runtime boundaries, does not change ES route eligibility,
-and does not enable Bridge real write, real Codex execution, remote maintenance,
-ES submit, CP diagnose, IM refresh, live proof, push, PR, merge, shell
-execution, or repository mutation.
+guarded execution linkage, the selected future separate NWP Coordinator design,
+connector-triggered Codex, cross-repo execution, unattended NWP behavior, and
+the parallel Maintenance Agent autonomous-maintenance capability matrix. It does
+not reopen accepted Workstream C admission/runtime boundaries, does not change
+ES priorities or ES route eligibility, and does not enable Bridge real write,
+real Codex execution, remote maintenance, ES submit, CP diagnose, IM refresh,
+live proof, push, PR, merge, shell execution, or repository mutation.
 
 Classification for this ADR tranche:
 
@@ -89,6 +98,8 @@ Classification for this ADR tranche:
 - Bounded slice rule: Bridge and Maintenance Agent may record or consume
   non-authoritative proposals, summaries, and evidence only under their own
   documented boundaries.
+- Compatibility edge: `control-plane-normal-shell/v1` remains a bounded
+  compatibility edge and is not changed by the A2 coordinator target.
 - Temporary compatibility edge: Remote Alpha helper/status/renewal routes
   remain proof/support containment until promoted by explicit ES route
   contracts and tests.
@@ -98,11 +109,12 @@ Classification for this ADR tranche:
 
 The already implemented Bridge source/handoff evidence slice must remain
 no-write, no-shell, no-Codex-invocation, non-authoritative for ES, and separate
-from local runner, acceptance, commit, push, PR, merge, and durable coordination.
-The next implementation candidates are any guarded execution linkage or durable
-coordination design, plus the parallel Maintenance Agent route-by-route
-autonomous maintenance capability matrix and lease-approved execution design,
-not autonomous execution.
+from local runner, acceptance, commit, push, PR, merge, and the selected future
+NWP Coordinator durable development-work state. The next implementation
+candidates are any guarded execution linkage or coordinator design outside ES
+product runtime, plus the parallel Maintenance Agent route-by-route autonomous
+maintenance capability matrix and lease-approved execution design, not
+autonomous execution.
 
 ## Highest-Priority Backlog Entry
 

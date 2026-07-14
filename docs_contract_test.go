@@ -203,7 +203,9 @@ func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
 
 func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 	adr := compactText(mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"))
-	plans := compactText(mustRead(t, "PLANS.md"))
+	plansRaw := mustRead(t, "PLANS.md")
+	plansPointer := compactDocSection(t, plansRaw, "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
+	nwpCoordinatorRow := compactTableRow(markdownTableRowByFirstCell(t, mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"), "NWP Coordinator"))
 
 	assertContainsAll(t, "hybrid integration ADR", adr,
 		"Status: proposed / draft",
@@ -224,12 +226,19 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"Nightly Work Protocol v0 is proposed as a bounded development-harness/evidence protocol",
 		"Full policy-bounded autonomy is the long-term target",
 		"operator's target role is strategy, budgets, periodic reports, and exception handling",
-		"No durable coordinator is currently selected",
-		"API and Symphony remain future adapter/dispatcher candidates only",
+		"A2 target durable-state owner is now selected as a future separate local Governed Execution NWP Coordinator",
+		"no coordinator repo, storage backend, scheduler, worker loop, repair loop, local commit behavior, or publication behavior is created",
+		"API and Symphony remain future optional planning/ingress/reporting or dispatch adapter candidates only",
+		"Neither is implemented for A2, and neither owns durable state or lease authority",
 		"Repo ownership boundaries remain unchanged",
+		"unknown platform contract",
+		"bounded operator-provided/live-tested connector-to-Bridge A0 operational evidence",
+		"grants no A2 authority",
 		"NWP/autonomy does not redefine ES Workstream C or runtime authority",
 		"CP compatibility remains bounded",
 		"There is no TLS/noninteractive route widening in this ADR",
+		"Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, or Workstream C authority",
+		"no ES admission/runtime, Workstream C, route, TLS, or noninteractive authority drift",
 		"Economic or financial goals do not alter ES admission/security contracts",
 		"No current unattended execution is claimed",
 		"Bridge <-> Codex",
@@ -250,16 +259,28 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"no secret/raw material in ADR",
 	)
 
-	assertContainsAll(t, "PLANS hybrid integration pointer", plans,
+	assertContainsAll(t, "PLANS hybrid integration pointer", plansPointer,
 		"Cross-Repo Hybrid Integration ADR Pointer",
 		"architecture discovery / ADR only for ES and does not implement or change ES product behavior",
 		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
-		"future cross-repo integration work: guarded execution linkage, durable coordination, connector-triggered Codex",
+		"selected A2 target architecture is a future separate local Governed Execution NWP Coordinator",
+		"docs/static only and unimplemented here",
+		"future durable local development-work state owner only",
+		"no ES admission, runtime, lifecycle, retained-result, profile, identity, route, Workstream C, TLS, noninteractive-route, or Remote Alpha authority",
+		"No coordinator repo, worker loop, state store, lease verifier, sandbox, repair, local commit, publication behavior, runtime schema, or ES route implementation exists",
+		"future cross-repo integration work: guarded execution linkage, the selected future separate NWP Coordinator design, connector-triggered Codex",
+		"does not change ES priorities or ES route eligibility",
 		"Current invariant: ES remains execution substrate; CP remains run-control; IM remains profile/provenance/readiness",
 		"Bounded slice rule: Bridge and Maintenance Agent may record or consume non-authoritative proposals",
+		"Compatibility edge: `control-plane-normal-shell/v1` remains a bounded compatibility edge and is not changed by the A2 coordinator target",
 		"Temporary compatibility edge: Remote Alpha helper/status/renewal routes remain proof/support containment",
 		"Reopened redesign seam: operator-healthcheck TLS signer/custody remains blocked and source-insufficient",
 		"no-write, no-shell, no-Codex-invocation",
+	)
+	assertContainsAll(t, "ADR NWP Coordinator row", nwpCoordinatorRow,
+		"Future local coding-work durable state owner, not implemented",
+		"Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, or Workstream C authority",
+		"no repo, state store, scheduler, worker loop, repair, commit, publication, ES route, or ES runtime behavior exists",
 	)
 
 	assertContainsNone(t, "hybrid integration ADR raw material", mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"),
@@ -279,7 +300,7 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
 	adrRaw := mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md")
 	row := compactTableRow(markdownTableRowByFirstCell(t, adrRaw, "Bridge <-> Codex"))
-	plans := compactText(mustRead(t, "PLANS.md"))
+	plans := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
 
 	assertContainsAll(t, "Bridge <-> Codex integration row", row,
 		"no-mutation source intake and evidence recorder implemented/live-tested",
@@ -294,6 +315,7 @@ func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
 		"local runner/acceptance",
 		"connector-triggered execution",
 		"durable coordination",
+		"A2 durable work-item state",
 	)
 	assertContainsNone(t, "Bridge <-> Codex integration row", row,
 		"designed only",
@@ -305,7 +327,7 @@ func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
 	assertContainsAll(t, "PLANS and ADR Bridge evidence agreement", plans,
 		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
 		"They do not invoke Codex, run shell, mutate repositories, or alter ES admission, runtime, lifecycle, status, route, TLS, or noninteractive-route authority",
-		"future cross-repo integration work: guarded execution linkage, durable coordination, connector-triggered Codex",
+		"future cross-repo integration work: guarded execution linkage, the selected future separate NWP Coordinator design, connector-triggered Codex",
 		"already implemented Bridge source/handoff evidence slice must remain no-write, no-shell, no-Codex-invocation, non-authoritative for ES",
 	)
 	assertContainsNone(t, "PLANS and ADR Bridge evidence agreement", plans,

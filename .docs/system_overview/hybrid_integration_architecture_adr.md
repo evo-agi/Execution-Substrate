@@ -48,11 +48,16 @@ durable orchestration authority, and not hidden run truth. Full policy-bounded
 autonomy is the long-term target: the operator's target role is strategy,
 budgets, periodic reports, and exception handling.
 
-No durable coordinator is currently selected. API and Symphony remain future
-adapter/dispatcher candidates only. Repo ownership boundaries remain unchanged:
-Bridge remains adapter/evidence; CP remains product workflow authority; ES
-remains admission/runtime authority; IM remains readiness/provenance/diagnostics;
-MA remains owner-contracted maintenance.
+The A2 target durable-state owner is now selected as a future separate local
+Governed Execution NWP Coordinator. It is not implemented by this ADR and no
+coordinator repo, storage backend, scheduler, worker loop, repair loop, local
+commit behavior, or publication behavior is created. API and Symphony remain
+future optional planning/ingress/reporting or dispatch adapter candidates only.
+Neither is implemented for A2, and neither owns durable state or lease
+authority. Repo ownership boundaries remain unchanged: Bridge remains
+adapter/evidence; CP remains product workflow authority; ES remains
+admission/runtime authority; IM remains readiness/provenance/diagnostics; MA
+remains owner-contracted maintenance.
 
 NWP/autonomy does not redefine ES Workstream C or runtime authority. CP
 compatibility remains bounded. There is no TLS/noninteractive route widening in
@@ -67,6 +72,7 @@ contracts. No current unattended execution is claimed.
 | Connector / MCP tunnel | Bridge tunnel docs describe an externally/platform-owned transport path. | Transport/integration path, externally/platform-owned. | Carry guarded Bridge calls when the operator has configured the transport. | Not lifecycle authority, not repo authority, not proof authority, not Codex authority. | Live readiness, deployment ownership, production support model, and platform custody. |
 | Bridge | Dry-run lifecycle, assignment/evidence projection, local preflight evidence, connector-safe no-mutation Codex handoff source intake, Bridge-local no-mutation Codex handoff evidence recording, idempotent retry/conflict handling, and separate real-write design gates exist. | Assignment/evidence adapter; local Bridge policy gate. | Record or reuse connector-safe source ledger evidence and no-mutation Codex handoff packets as Bridge-local evidence while preserving future real-write separation. | Does not own ES, CP, IM, MA, tunnel, repository mutation, shell execution, push, PR, merge, local acceptance, real Codex execution, or live proof. | Any future Codex invocation boundary. |
 | Codex | Candidate coding worker exists outside this ADR; Bridge docs currently do not enable real Codex through connector/tunnel. | Candidate worker only when separately invoked under its own guardrails. | Consume a handoff packet after separate approval and perform human-reviewed work in an isolated future path. | Not enabled by this ADR; not invoked by Bridge here; not lifecycle or maintenance authority. | Invocation method, workspace isolation, diff validation, review loop, and audit handback. |
+| NWP Coordinator | A2 target architecture is documented in Bridge A2 ADR/prerequisite docs only. | Future local coding-work durable state owner, not implemented. | Own future lease-bound finite backlog state, durable work-item state, scheduling, attempt/repair accounting, recovery, reporting, global-stop enforcement, and later local-commit eligibility. | Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, or Workstream C authority; no repo, state store, scheduler, worker loop, repair, commit, publication, ES route, or ES runtime behavior exists in this ADR. | Coordinator repo skeleton, coding lease verifier, sandbox, and first zero-repair/no-commit executable slice outside ES product runtime. |
 | Maintenance Agent | Automation ladder, route eligibility, canonical digest, biometric lease, and verifier designs exist. | Governed maintenance scanner/planner/proposer; route execution only where eligible and approved. | Required governed maintenance planner/proposer and future lease-approved executor for eligible routes. | Not a hidden reconciler; not signer/custody authority; not ES runtime authority; not CP run-control; not IM readiness owner. | Route-by-route autonomy matrix, owner route contracts, lease verifier implementation, rollback, and stop conditions. |
 | ES | Workstream C guardrails and Remote Linux TLS signer/custody blocked decisions exist. | Governed execution substrate: admission, execution lifecycle, route semantics, runtime identity, retained results. | Keep execution substrate authority and define eligible route contracts that MA/CP/Bridge may only consume. | Does not delegate route truth to Bridge, MA, CP, IM, Symphony, or ChatGPT. | Operator-healthcheck TLS signer/custody, noninteractive status contract, remote proof readiness. |
 | IM | Remote profile/readiness/provenance/support-bundle docs and tests exist. | Profile/provenance/readiness/diagnostics owner. | Emit and refresh profile/readiness/provenance facts when separately authorized. | Not ES runtime authority, not CP run-control, not signer/custody authority, not hidden reconciler. | Profile lineage acceptance for operator-healthcheck TLS metadata after ES source evidence. |
@@ -78,10 +84,10 @@ contracts. No current unattended execution is claimed.
 
 | Integration point | Status | Notes |
 | --- | --- | --- |
-| ChatGPT <-> connector | unknown | Platform/external path is candidate transport; this ADR performs no connector smoke or live call. |
+| ChatGPT <-> connector | unknown platform contract | Bridge documents bounded operator-provided/live-tested connector-to-Bridge A0 operational evidence, but ES owns no platform contract; this ADR performs no connector smoke or live call and grants no A2 authority. |
 | connector <-> tunnel | unknown | Tunnel readiness is not exercised here. |
 | tunnel <-> Bridge | dry-run only | Bridge can expose guarded dry-run/evidence tools; real-write and real Codex remain disabled through this path. |
-| Bridge <-> Codex | no-mutation source intake and evidence recorder implemented/live-tested | Bridge source ledger evidence/projection and no-mutation handoff packet recording are implemented/live-tested with exact retry reuse and same-source conflict handling only; they are not Codex invocation, repository mutation, ES admission/runtime/lifecycle authority, local runner/acceptance, connector-triggered execution, or durable coordination. |
+| Bridge <-> Codex | no-mutation source intake and evidence recorder implemented/live-tested | Bridge source ledger evidence/projection and no-mutation handoff packet recording are implemented/live-tested with exact retry reuse and same-source conflict handling only; they are not Codex invocation, repository mutation, ES admission/runtime/lifecycle authority, local runner/acceptance, connector-triggered execution, durable coordination, or A2 durable work-item state. |
 | Bridge <-> repo workspace | dry-run only | Future real-write gates are documented, but this ADR does not enable repository mutation. |
 | Bridge <-> ES | dry-run only | Bridge ES preflight evidence is local, non-authoritative, and not ES status truth. |
 | Bridge <-> MA | designed only | Future proposal/evidence handoff only; no maintenance execution. |
@@ -94,7 +100,7 @@ contracts. No current unattended execution is claimed.
 | IM <-> CP profile emission | exists and tested | CP may consume IM profile facts without becoming IM authority. |
 | CP <-> ES | exists and tested | CP ES adapter is opt-in consumer integration; ES remains admission/runtime authority. |
 | CP <-> IM profiles | exists and tested | CP diagnostics consume profile/provenance facts; they do not create proof or signer authority. |
-| Symphony <-> Codex/Bridge | designed only | Optional candidate/harness only, not required and not authority. |
+| Symphony <-> Codex/Bridge | designed only | Optional candidate/harness only, not required and not authority; it may not own durable state, choose work outside coordinator policy, or expand the finite backlog. |
 
 ## Message-Bus Reduction Path
 
@@ -183,7 +189,14 @@ This prevents integration scaffolding from becoming permanent architecture by in
 
 Implemented first slice: Bridge no-mutation Codex handoff packet/design through connector-safe source intake and no-mutation handoff evidence recording. It remains Bridge-local evidence only and must stay no-write, no-shell, no-push/PR/merge, no-local-runner, no-local-acceptance, and no-Codex-invocation unless separately approved.
 
-Next unimplemented candidates: guarded execution linkage, durable NWP coordination, connector-triggered Codex invocation, autonomous acceptance/publication, and any Symphony or API dispatcher remain future-only until separately designed and approved. Parallel MA candidate: autonomous maintenance capability matrix / lease-approved execution design. It must remain design-only until owner route contracts, leases, rollback, evidence, and stop conditions are approved.
+Next unimplemented candidates: coordinator repo skeleton, standing coding-lease
+verifier, finite backlog admission, durable NWP work-item state,
+executable-validation sandbox, guarded execution linkage, connector-triggered
+Codex invocation, autonomous acceptance/publication, and any Symphony or API
+adapter remain future-only until separately designed and approved. Parallel MA
+candidate: autonomous maintenance capability matrix / lease-approved execution
+design. It must remain design-only until owner route contracts, leases,
+rollback, evidence, and stop conditions are approved.
 
 No ES implementation is included in this ADR.
 
@@ -217,7 +230,9 @@ Repo-local docs tests should assert:
 - TLS remains blocked;
 - Bridge real-write is not enabled;
 - Bridge source intake and no-mutation handoff are implemented evidence-only;
-- connector-triggered Codex, durable coordination, acceptance, and publication remain future/unimplemented;
+- separate local NWP Coordinator selected as future A2 durable-state owner but not implemented;
+- no ES admission/runtime, Workstream C, route, TLS, or noninteractive authority drift;
+- connector-triggered Codex, coordinator repo, state store, scheduler, repair, acceptance, commit, and publication remain future/unimplemented;
 - MA autonomous maintenance is required but bounded;
 - no hidden reconciler;
 - ES/CP/IM ownership boundaries preserved;
