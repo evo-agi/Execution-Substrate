@@ -48,10 +48,11 @@ durable orchestration authority, and not hidden run truth. Full policy-bounded
 autonomy is the long-term target: the operator's target role is strategy,
 budgets, periodic reports, and exception handling.
 
-The A2 target durable-state owner is now selected as a future separate local
-Governed Execution NWP Coordinator. It is not implemented by this ADR and no
-coordinator repo, storage backend, scheduler, worker loop, repair loop, local
-commit behavior, or publication behavior is created. API and Symphony remain
+The A2 target durable-state owner is the separate local NWP Coordinator. The
+current repository name is Governed Execution Coordinator and is provisional,
+not a schema or authority identity. The A2-P1 skeleton exists locally, but no
+production storage backend, scheduler, worker loop, repair loop, local commit
+behavior, or publication behavior is created here. API and Symphony remain
 future optional planning/ingress/reporting or dispatch adapter candidates only.
 Neither is implemented for A2, and neither owns durable state or lease
 authority. Repo ownership boundaries remain unchanged: Bridge remains
@@ -72,7 +73,7 @@ contracts. No current unattended execution is claimed.
 | Connector / MCP tunnel | Bridge tunnel docs describe an externally/platform-owned transport path. | Transport/integration path, externally/platform-owned. | Carry guarded Bridge calls when the operator has configured the transport. | Not lifecycle authority, not repo authority, not proof authority, not Codex authority. | Live readiness, deployment ownership, production support model, and platform custody. |
 | Bridge | Dry-run lifecycle, assignment/evidence projection, local preflight evidence, connector-safe no-mutation Codex handoff source intake, Bridge-local no-mutation Codex handoff evidence recording, idempotent retry/conflict handling, and separate real-write design gates exist. | Assignment/evidence adapter; local Bridge policy gate. | Record or reuse connector-safe source ledger evidence and no-mutation Codex handoff packets as Bridge-local evidence while preserving future real-write separation. | Does not own ES, CP, IM, MA, tunnel, repository mutation, shell execution, push, PR, merge, local acceptance, real Codex execution, or live proof. | Any future Codex invocation boundary. |
 | Codex | Candidate coding worker exists outside this ADR; Bridge docs currently do not enable real Codex through connector/tunnel. | Candidate worker only when separately invoked under its own guardrails. | Consume a handoff packet after separate approval and perform human-reviewed work in an isolated future path. | Not enabled by this ADR; not invoked by Bridge here; not lifecycle or maintenance authority. | Invocation method, workspace isolation, diff validation, review loop, and audit handback. |
-| NWP Coordinator | A2 target architecture is documented in Bridge A2 ADR/prerequisite docs only. | Future local coding-work durable state owner, not implemented. | Own future lease-bound finite backlog state, durable work-item state, scheduling, attempt/repair accounting, recovery, reporting, global-stop enforcement, and later local-commit eligibility. | Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, or Workstream C authority; no repo, state store, scheduler, worker loop, repair, commit, publication, ES route, or ES runtime behavior exists in this ADR. | Coordinator repo skeleton, coding lease verifier, sandbox, and first zero-repair/no-commit executable slice outside ES product runtime. |
+| NWP Coordinator | A2-P1 skeleton exists locally in the current `Governed Execution Coordinator` repository. | Future local coding-work durable state owner; P1 has a state-store port only. | Own future lease-bound finite backlog state, durable work-item state, scheduling, attempt/repair accounting, recovery, reporting, global-stop enforcement, and later local-commit eligibility. P1 provides lease identity parsing/canonicalization, fail-closed unsupported authorization, finite backlog parsing, pure state transitions, global stop checks, and report projections. | Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, or Workstream C authority; no production store, executable authorization, scheduler, worker loop, sandbox, repair, commit, publication, ES route, or ES runtime behavior exists in this ADR. | Production state backend decision, executable authorization model, sandbox, and first zero-repair/no-commit executable slice outside ES product runtime. |
 | Maintenance Agent | Automation ladder, route eligibility, canonical digest, biometric lease, and verifier designs exist. | Governed maintenance scanner/planner/proposer; route execution only where eligible and approved. | Required governed maintenance planner/proposer and future lease-approved executor for eligible routes. | Not a hidden reconciler; not signer/custody authority; not ES runtime authority; not CP run-control; not IM readiness owner. | Route-by-route autonomy matrix, owner route contracts, lease verifier implementation, rollback, and stop conditions. |
 | ES | Workstream C guardrails and Remote Linux TLS signer/custody blocked decisions exist. | Governed execution substrate: admission, execution lifecycle, route semantics, runtime identity, retained results. | Keep execution substrate authority and define eligible route contracts that MA/CP/Bridge may only consume. | Does not delegate route truth to Bridge, MA, CP, IM, Symphony, or ChatGPT. | Operator-healthcheck TLS signer/custody, noninteractive status contract, remote proof readiness. |
 | IM | Remote profile/readiness/provenance/support-bundle docs and tests exist. | Profile/provenance/readiness/diagnostics owner. | Emit and refresh profile/readiness/provenance facts when separately authorized. | Not ES runtime authority, not CP run-control, not signer/custody authority, not hidden reconciler. | Profile lineage acceptance for operator-healthcheck TLS metadata after ES source evidence. |
@@ -189,9 +190,8 @@ This prevents integration scaffolding from becoming permanent architecture by in
 
 Implemented first slice: Bridge no-mutation Codex handoff packet/design through connector-safe source intake and no-mutation handoff evidence recording. It remains Bridge-local evidence only and must stay no-write, no-shell, no-push/PR/merge, no-local-runner, no-local-acceptance, and no-Codex-invocation unless separately approved.
 
-Next unimplemented candidates: coordinator repo skeleton, standing coding-lease
-verifier, finite backlog admission, durable NWP work-item state,
-executable-validation sandbox, guarded execution linkage, connector-triggered
+Next unimplemented candidates: executable authorization model,
+executable-validation sandbox, production state backend, guarded execution linkage, connector-triggered
 Codex invocation, autonomous acceptance/publication, and any Symphony or API
 adapter remain future-only until separately designed and approved. Parallel MA
 candidate: autonomous maintenance capability matrix / lease-approved execution
@@ -230,9 +230,9 @@ Repo-local docs tests should assert:
 - TLS remains blocked;
 - Bridge real-write is not enabled;
 - Bridge source intake and no-mutation handoff are implemented evidence-only;
-- separate local NWP Coordinator selected as future A2 durable-state owner but not implemented;
+- separate local NWP Coordinator A2-P1 skeleton exists as future A2 durable-state owner; current repository name is Governed Execution Coordinator and is not schema/authority identity;
 - no ES admission/runtime, Workstream C, route, TLS, or noninteractive authority drift;
-- connector-triggered Codex, coordinator repo, state store, scheduler, repair, acceptance, commit, and publication remain future/unimplemented;
+- connector-triggered Codex, production state store, scheduler, repair, acceptance, commit, and publication remain future/unimplemented;
 - MA autonomous maintenance is required but bounded;
 - no hidden reconciler;
 - ES/CP/IM ownership boundaries preserved;

@@ -72,17 +72,18 @@ Bridge-local evidence/projection only. They do not invoke Codex, run shell,
 mutate repositories, or alter ES admission, runtime, lifecycle, status, route,
 TLS, or noninteractive-route authority.
 
-The selected A2 target architecture is a future separate local Governed
-Execution NWP Coordinator. It is docs/static only and unimplemented here. The
-coordinator is a future durable local development-work state owner only. It has
-no ES admission, runtime, lifecycle, retained-result, profile, identity, route,
-Workstream C, TLS, noninteractive-route, or Remote Alpha authority. No
-coordinator repo, worker loop, state store, lease verifier, sandbox, repair,
-local commit, publication behavior, runtime schema, or ES route implementation
-exists in this repo or this planning pointer.
+The selected A2 target architecture is the separate local NWP Coordinator. Its
+current repository name is Governed Execution Coordinator and that operational
+name is not a schema, authority, or durable identity. The A2-P1 skeleton exists
+locally, but the coordinator is a future durable local development-work state
+owner only. It has no ES admission, runtime, lifecycle, retained-result,
+profile, identity, route, Workstream C, TLS, noninteractive-route, or Remote
+Alpha authority. No production state store, worker loop, executable
+authorization, sandbox, repair, local commit, publication behavior, runtime
+schema, or ES route implementation exists in this repo or this planning pointer.
 
 This planning pointer reopens only future cross-repo integration work:
-guarded execution linkage, the selected future separate NWP Coordinator design,
+guarded execution linkage, the selected NWP Coordinator A2-P1 follow-on design,
 connector-triggered Codex, cross-repo execution, unattended NWP behavior, and
 the parallel Maintenance Agent autonomous-maintenance capability matrix. It does
 not reopen accepted Workstream C admission/runtime boundaries, does not change
