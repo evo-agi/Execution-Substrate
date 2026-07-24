@@ -61,46 +61,61 @@ Current bounded implementation status:
 
 ## Cross-Repo Hybrid Integration ADR Pointer
 
-The proposed/draft Hybrid Integration Architecture ADR is recorded at
-`.docs/system_overview/hybrid_integration_architecture_adr.md`. It is
-architecture discovery / ADR only for ES and does not implement or change ES
-product behavior.
+The accepted Hybrid Integration Architecture ADR is recorded at
+`.docs/system_overview/hybrid_integration_architecture_adr.md`. It is the
+canonical cross-repository architecture/status decision for this alignment
+tranche. It does not implement or change ES product behavior, and it enables no
+integration behavior.
 
-The ADR now records a current Bridge evidence fact: Bridge connector-safe source
-intake and no-mutation Codex handoff are implemented/live-tested as
-Bridge-local evidence/projection only. They do not invoke Codex, run shell,
-mutate repositories, or alter ES admission, runtime, lifecycle, status, route,
-TLS, or noninteractive-route authority.
+Phase D is complete for planning status: Coordinator is parallel to CP as a
+bounded coding-work domain authority, not a CP subordinate internally and not a
+product workflow by itself. The connector -> Bridge -> Coordinator -> ES route
+without CP is only a bounded coding-work proof candidate. It is not an
+established compatibility path and not a product workflow. Shape A, the
+CP-authoritative product path, remains the enduring architecture target.
 
-The selected A2 target architecture is the separate local NWP Coordinator. Its
-current repository name is Governed Execution Coordinator and that operational
-name is not a schema, authority, or durable identity. The A2-P1 skeleton exists
-locally, but the coordinator is a future durable local development-work state
-owner only. It has no ES admission, runtime, lifecycle, retained-result,
-profile, identity, route, Workstream C, TLS, noninteractive-route, or Remote
-Alpha authority. No production state store, worker loop, executable
-authorization, sandbox, repair, local commit, publication behavior, runtime
-schema, or ES route implementation exists in this repo or this planning pointer.
+Phase E is complete with Symphony deferred. Symphony is source/reference
+material only, useful for worker-supervision mechanics, not included in the MVP
+or product architecture, and no Symphony experiment, installation, or
+integration is authorized.
 
-This planning pointer reopens only future cross-repo integration work:
-guarded execution linkage, the selected NWP Coordinator A2-P1 follow-on design,
-connector-triggered Codex, cross-repo execution, unattended NWP behavior, and
-the parallel Maintenance Agent autonomous-maintenance capability matrix. It does
-not reopen accepted Workstream C admission/runtime boundaries, does not change
-ES priorities or ES route eligibility, and does not enable Bridge real write,
-real Codex execution, remote maintenance, ES submit, CP diagnose, IM refresh,
-live proof, push, PR, merge, shell execution, or repository mutation.
+Integration implementation is blocked by four missing contract packages:
+
+- Authority Issuance;
+- Coordinator Ingress;
+- Worker / Runtime Handoff;
+- Correlation And Recovery.
+
+The Coordinator current status is bounded durable SQLite mutation authority for
+coding-work state: internal durable writer issuance, private atomic transition
+and global-stop persistence, guarded public delegation, verification of
+already-persisted decision receipts, fencing, idempotency, replay, CAS, rollback,
+one COMMIT attempt, commit uncertainty, and retry. Coordinator still does not
+own work-item production provisioning, lease issuance, executable authorization
+issuance, decision-receipt provisioning, a worker, scheduler, queue consumer,
+Codex invocation, ES runtime, CP workflow, publication, or general
+orchestration.
+
+Architecture/status alignment is the immediate documentation program. After
+alignment, the next implementation selection is contract design for the four
+missing packages, not end-to-end execution. ES Admission And Runtime Boundary
+Realignment remains the ES planning authority and is not displaced by
+Coordinator integration work; it remains parallel to and required for the
+enduring architecture.
 
 Classification for this ADR tranche:
 
-- Current invariant: ES remains execution substrate; CP remains run-control;
-  IM remains profile/provenance/readiness; Workstream C guardrails remain
-  integration-enabling product boundaries.
+- Current invariant: ES remains admission/runtime authority; CP remains
+  workflow, progression, review, checkpoint, cancellation decision,
+  intervention, and finalization authority; IM remains
+  profile/provenance/readiness/diagnostics authority; Workstream C guardrails
+  remain integration-enabling product boundaries.
 - Bounded slice rule: Bridge and Maintenance Agent may record or consume
   non-authoritative proposals, summaries, and evidence only under their own
-  documented boundaries.
+  documented boundaries; Coordinator bounded SQLite mutation authority remains
+  coding-work state authority only.
 - Compatibility edge: `control-plane-normal-shell/v1` remains a bounded
-  compatibility edge and is not changed by the A2 coordinator target.
+  compatibility edge and is not changed by Coordinator integration planning.
 - Temporary compatibility edge: Remote Alpha helper/status/renewal routes
   remain proof/support containment until promoted by explicit ES route
   contracts and tests.
@@ -108,14 +123,16 @@ Classification for this ADR tranche:
   blocked and source-insufficient; the next TLS step requires source-grounded
   signer/custody evidence or an explicit ES product decision.
 
-The already implemented Bridge source/handoff evidence slice must remain
-no-write, no-shell, no-Codex-invocation, non-authoritative for ES, and separate
-from local runner, acceptance, commit, push, PR, merge, and the selected future
-NWP Coordinator durable development-work state. The next implementation
-candidates are any guarded execution linkage or coordinator design outside ES
-product runtime, plus the parallel Maintenance Agent route-by-route autonomous
-maintenance capability matrix and lease-approved execution design, not
-autonomous execution.
+Bridge connector-safe source intake and no-mutation Codex handoff are
+implemented/live-tested as Bridge-local evidence/projection only. The already
+implemented Bridge source/handoff evidence slice must remain no-write,
+no-shell, no-Codex-invocation, non-authoritative for ES, and separate from local
+runner, acceptance, commit, push, PR, merge, and Coordinator durable coding-work
+state. They do not invoke Codex, run shell, mutate repositories, or alter ES
+admission, runtime, lifecycle, status, route, TLS, or noninteractive-route
+authority. This planning pointer does not change ES priorities or ES route
+eligibility. Contract design may proceed only within the missing package
+boundaries above and must not authorize autonomous execution.
 
 ## Highest-Priority Backlog Entry
 
