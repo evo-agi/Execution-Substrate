@@ -3,6 +3,7 @@ package executionsubstrate_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -90,6 +91,43 @@ func compactDocSection(t *testing.T, doc string, start string, end string) strin
 	return compactText(docSection(t, doc, start, end))
 }
 
+func markedDocSection(t *testing.T, label string, doc string, start string, end string) string {
+	t.Helper()
+
+	if strings.Count(doc, start) != 1 {
+		t.Fatalf("%s expected exactly one start marker %q", label, start)
+	}
+	startIndex := strings.Index(doc, start)
+
+	var sectionEnd int
+	if end == "" {
+		sectionEnd = len(doc)
+	} else {
+		if strings.Count(doc, end) != 1 {
+			t.Fatalf("%s expected exactly one end marker %q", label, end)
+		}
+		endIndex := strings.Index(doc, end)
+		if endIndex <= startIndex {
+			t.Fatalf("%s end marker %q must appear after start marker %q", label, end, start)
+		}
+		sectionEnd = endIndex
+	}
+
+	bodyStart := startIndex + len(start)
+	if strings.TrimSpace(doc[bodyStart:sectionEnd]) == "" {
+		t.Fatalf("%s selected subsection between %q and %q is empty", label, start, end)
+	}
+	if end == "" && strings.Contains(doc[bodyStart:sectionEnd], "\n## ") {
+		t.Fatalf("%s unbounded subsection after %q consumed a later top-level section", label, start)
+	}
+	return doc[startIndex:sectionEnd]
+}
+
+func compactMarkedDocSection(t *testing.T, label string, doc string, start string, end string) string {
+	t.Helper()
+	return compactText(markedDocSection(t, label, doc, start, end))
+}
+
 func assertContainsAll(t *testing.T, label string, text string, required ...string) {
 	t.Helper()
 
@@ -107,6 +145,253 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 		if strings.Contains(text, phrase) {
 			t.Fatalf("%s must not contain %q", label, phrase)
 		}
+	}
+}
+
+const (
+	staleTargetMaxRelationSpan = 200
+)
+
+// This deliberately bounded grammar catches stale target-architecture
+// relationships in either direction; it is not general semantic parsing.
+// The closed grammar is section-scoped by its call sites, uses only the
+// protected subject/target vocabularies below, recognizes is/remains/becomes
+// and is-designated-as relationships, treats only direct is-not,
+// is-no-longer, and no-longer-remains forms as negated, scans only within
+// sentence units terminated by '.', '!', or '?', and caps relation spans.
+var (
+	staleTargetProtectedSubjectPattern = regexp.MustCompile(`(?i)\b(?:shape\s+a|(?:the\s+)?cp-authoritative(?:\s+product)?[-\s]+path)\b`)
+	staleTargetPhrasePattern           = regexp.MustCompile(`(?i)\b(?:the\s+)?(?:enduring|permanent)\s+target\s+architecture\b`)
+	staleTargetRelationshipVerbPattern = regexp.MustCompile(`(?i)\b(?:no\s+longer\s+remains|is(?:\s+(?:not|no\s+longer))?(?:\s+designated(?:\s+as)?)?|remains|becomes)\b`)
+	staleTargetDirectNegationPattern   = regexp.MustCompile(`(?i)\b(?:is\s+(?:not|no\s+longer)(?:\s+designated(?:\s+as)?)?|no\s+longer\s+remains)\b`)
+)
+
+func staleTargetRelationshipUnits(text string) []string {
+	compact := compactText(text)
+	if compact == "" {
+		return nil
+	}
+
+	var units []string
+	start := 0
+	for index, char := range compact {
+		if char != '.' && char != '!' && char != '?' {
+			continue
+		}
+		unit := strings.TrimSpace(compact[start : index+1])
+		if unit != "" {
+			units = append(units, unit)
+		}
+		start = index + 1
+	}
+	if tail := strings.TrimSpace(compact[start:]); tail != "" {
+		units = append(units, tail)
+	}
+	return units
+}
+
+func staleTargetRelationshipIsAffirmative(relationText string) bool {
+	for _, match := range staleTargetRelationshipVerbPattern.FindAllString(relationText, -1) {
+		if !staleTargetDirectNegationPattern.MatchString(match) {
+			return true
+		}
+	}
+	return false
+}
+
+func staleTargetRelationshipMatch(text string) (string, string, bool) {
+	for _, unit := range staleTargetRelationshipUnits(text) {
+		subjects := staleTargetProtectedSubjectPattern.FindAllStringIndex(unit, -1)
+		targets := staleTargetPhrasePattern.FindAllStringIndex(unit, -1)
+		for _, subject := range subjects {
+			for _, target := range targets {
+				if subject[1] <= target[0] && target[0]-subject[1] <= staleTargetMaxRelationSpan {
+					relation := unit[subject[1]:target[0]]
+					if staleTargetRelationshipIsAffirmative(relation) {
+						return "protected subject first", strings.TrimSpace(unit[subject[0]:target[1]]), true
+					}
+				}
+				if target[1] <= subject[0] && subject[0]-target[1] <= staleTargetMaxRelationSpan {
+					relation := unit[target[1]:subject[0]]
+					if staleTargetRelationshipIsAffirmative(relation) {
+						return "protected target first", strings.TrimSpace(unit[target[0]:subject[1]]), true
+					}
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+
+func assertNoStaleTargetRelationship(t *testing.T, label string, text string) {
+	t.Helper()
+
+	relationship, match, found := staleTargetRelationshipMatch(text)
+	if found {
+		t.Fatalf("%s must not contain stale target relationship %s: %q", label, relationship, match)
+	}
+}
+
+func assertStaleTargetRelationshipExamples(t *testing.T) {
+	t.Helper()
+
+	for _, tc := range []struct {
+		name       string
+		text       string
+		wantReject bool
+	}{
+		{
+			name:       "subject first shape a remains permanent target",
+			text:       "Shape A remains the permanent target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "subject first shape a becomes enduring target",
+			text:       "Shape A becomes the enduring target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "subject first cp authoritative path is enduring target",
+			text:       "The CP-authoritative path is the enduring target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "subject first cp authoritative product path designated permanent target",
+			text:       "The CP-authoritative product path is designated as the permanent target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "target first permanent target remains shape a",
+			text:       "The permanent target architecture remains Shape A.",
+			wantReject: true,
+		},
+		{
+			name:       "target first enduring target is cp authoritative path",
+			text:       "The enduring target architecture is the CP-authoritative path.",
+			wantReject: true,
+		},
+		{
+			name:       "target first permanent target becomes shape a",
+			text:       "The permanent target architecture becomes Shape A.",
+			wantReject: true,
+		},
+		{
+			name:       "target first enduring target designated cp authoritative path",
+			text:       "The enduring target architecture is designated as the CP-authoritative path.",
+			wantReject: true,
+		},
+		{
+			name:       "subject first shape a not permanent target",
+			text:       "Shape A is not the permanent target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "subject first shape a no longer permanent target",
+			text:       "Shape A is no longer the permanent target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "subject first cp authoritative path not enduring target",
+			text:       "The CP-authoritative path is not the enduring target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "target first permanent target not shape a",
+			text:       "The permanent target architecture is not Shape A.",
+			wantReject: false,
+		},
+		{
+			name:       "target first enduring target no longer cp authoritative path",
+			text:       "The enduring target architecture is no longer the CP-authoritative path.",
+			wantReject: false,
+		},
+		{
+			name:       "subject first shape a no longer remains permanent target",
+			text:       "Shape A no longer remains the permanent target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "subject first cp authoritative path no longer remains enduring target",
+			text:       "The CP-authoritative path no longer remains the enduring target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "subject first cp authoritative product path no longer remains permanent target",
+			text:       "The CP-authoritative product path no longer remains the permanent target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "target first permanent target no longer remains shape a",
+			text:       "The permanent target architecture no longer remains Shape A.",
+			wantReject: false,
+		},
+		{
+			name:       "target first enduring target no longer remains cp authoritative path",
+			text:       "The enduring target architecture no longer remains the CP-authoritative path.",
+			wantReject: false,
+		},
+		{
+			name:       "target first permanent target no longer remains cp authoritative product path",
+			text:       "The permanent target architecture no longer remains the CP-authoritative product path.",
+			wantReject: false,
+		},
+		{
+			name:       "sentence terminal period boundary",
+			text:       "Shape A remains only a historical label. The permanent target architecture is intentionally left open.",
+			wantReject: false,
+		},
+		{
+			name:       "sentence terminal exclamation boundary",
+			text:       "Shape A remains only a historical label! The permanent target architecture is intentionally left open.",
+			wantReject: false,
+		},
+		{
+			name:       "sentence terminal question boundary",
+			text:       "Shape A remains only a historical label? The permanent target architecture is intentionally left open.",
+			wantReject: false,
+		},
+		{
+			name:       "unrelated not does not negate affirmative stale relation",
+			text:       "Shape A is, not merely was, the permanent target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "unrelated no longer does not negate affirmative stale relation",
+			text:       "Shape A is no longer only historical and remains the permanent target architecture.",
+			wantReject: true,
+		},
+		{
+			name:       "historical former shape a",
+			text:       "Shape A was the former target architecture.",
+			wantReject: false,
+		},
+		{
+			name:       "historical shape a migration discussion",
+			text:       "Shape A appears only in a historical migration discussion.",
+			wantReject: false,
+		},
+		{
+			name:       "historical descriptions may mention shape a",
+			text:       "Historical descriptions may say Shape A was a former target for migration context.",
+			wantReject: false,
+		},
+		{
+			name:       "cp authoritative current compatibility only",
+			text:       "The CP-authoritative path is not the target and remains current demo or migration context only.",
+			wantReject: false,
+		},
+		{
+			name:       "bare vocabulary only",
+			text:       "Shape A, CP, Control Plane, CP-authoritative, target architecture, historical, and migration are allowed vocabulary.",
+			wantReject: false,
+		},
+	} {
+		t.Run("stale target relationship/"+tc.name, func(t *testing.T) {
+			_, match, gotReject := staleTargetRelationshipMatch(tc.text)
+			if gotReject != tc.wantReject {
+				t.Fatalf("stale relationship detection mismatch: got reject=%v match=%q, want reject=%v", gotReject, match, tc.wantReject)
+			}
+		})
 	}
 }
 
@@ -202,15 +487,37 @@ func TestSystemOverviewAuthorityHeadersFollowRepoHierarchy(t *testing.T) {
 }
 
 func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
-	adr := compactText(mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"))
+	assertStaleTargetRelationshipExamples(t)
+
+	adrRaw := mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md")
+	adr := compactText(adrRaw)
 	plansRaw := mustRead(t, "PLANS.md")
 	plansPointer := compactDocSection(t, plansRaw, "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
-	nwpCoordinatorRow := compactTableRow(markdownTableRowByFirstCell(t, mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"), "NWP Coordinator"))
+	adrCurrentDecision := compactDocSection(t, adrRaw, "## Current Integration Decision And Target Reclassification", "## Preserved ES And NWP Boundaries")
+	adrReopenedSeams := compactDocSection(t, adrRaw, "## Reopened Contract-Seam Inventory", "## Integration Point Map")
+	adrComponentMap := compactDocSection(t, adrRaw, "## Component Map", "## Symphony Phase E Decision")
+	adrDownstreamFollowupsRaw := docSection(t, adrRaw, "## Downstream Migration Follow-Ups", "")
+	adrDownstreamFollowups := compactText(adrDownstreamFollowupsRaw)
+	adrImmediateFollowups := compactMarkedDocSection(t,
+		"hybrid integration ADR immediate active-contract follow-ups",
+		adrDownstreamFollowupsRaw,
+		"Immediate active-contract alignment follow-ups are",
+		"Legacy/demo/helper record inventory:",
+	)
+	adrLegacyHelperInventory := compactMarkedDocSection(t,
+		"hybrid integration ADR legacy/demo/helper inventory",
+		adrDownstreamFollowupsRaw,
+		"Legacy/demo/helper record inventory:",
+		"",
+	)
+	nwpCoordinatorRow := compactTableRow(markdownTableRowByFirstCell(t, adrRaw, "NWP Coordinator"))
 
 	assertContainsAll(t, "hybrid integration ADR", adr,
-		"Status: accepted architecture/status decision; implementation blocked by missing authority contracts; no integration behavior enabled.",
-		"canonical cross-repository integration architecture/status decision record",
+		"Status: accepted current-status and migration-boundary record; strategic target routing and component decomposition reopened; no integration behavior enabled.",
+		"canonical cross-repository current-status and migration-boundary record",
+		"not the complete target operating model",
 		"does not enable real write, real Codex execution, remote maintenance, ES submit, CP diagnose, IM refresh, live proof, connector-triggered execution, worker dispatch, scheduler behavior, queue consumption, Coordinator provisioning, receipt provisioning, or publication",
+		"Strategic target statements in this ADR are not implementation claims",
 		"Current invariant",
 		"Bounded slice rule",
 		"Temporary compatibility edge",
@@ -220,12 +527,14 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"`control-plane-normal-shell/v1` remains a bounded compatibility edge",
 		"ES still owns no parallel scheduler or lifecycle store",
 		"admission/runtime authority; lifecycle projection; runtime identity handoff; retained opaque results",
-		"Workflow, progression, review, checkpoint, cancellation decision, intervention, and finalization authority",
+		"Current maintained MVP/demo workflow, progression, review, checkpoint, cancellation decision, intervention, and finalization authority",
+		"not target autonomous-development architecture owner",
 		"Bounded durable coding-work state; transition/global-stop apply; writer fencing; idempotency; CAS; event receipt; commit uncertainty; replay",
 		"Guarded adapters and evidence/projection only",
 		"Readiness, profile, provenance, and diagnostics",
 		"Maintenance routes under maintenance-specific authority only",
-		"Intended lease issuance; executable authorization; global-stop decisions; operator-decision receipt provisioning",
+		"Current policy and decision boundary for lease issuance where existing contracts require it",
+		"Target issuer and delegation topology are reopened",
 		"Bridge connector-safe source intake and no-mutation handoff are implemented and live-tested as Bridge-local evidence/projection",
 		"They do not invoke Codex or mutate repos",
 		"Local real Codex execution and local acceptance remain separate CLI-only and non-MCP-visible paths",
@@ -256,16 +565,23 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"CP workflow",
 		"publication",
 		"general orchestration",
-		"Shape A, the CP-authoritative product path, is the enduring architecture target",
-		"without CP is currently only a bounded coding-work proof candidate",
-		"not an established compatibility path, not a product workflow, and not an authorized integration implementation",
-		"ES Admission And Runtime Boundary Realignment remains a parallel track",
+		"CP-authoritative path is the current maintained MVP/demo compatibility path",
+		"CP is absent from the target autonomous-development architecture",
+		"No connector -> Bridge -> Coordinator -> ES product route is implemented or established by this ADR",
+		"Future CP-less or Coordinator-centered routing remains a reopened target seam",
+		"not be represented as a current CP replacement, ES admission authority, Bridge execution authority, or current Coordinator general orchestration",
+		"ES Admission And Runtime Boundary Realignment remains parallel ES planning authority",
+		"user is not expected to remain a routine per-task approval service",
+		"does not make connector availability, a first-class Development Program, full append-only event sourcing, finite backlog, external-only authority issuance, or current IM/Maintenance Agent repository survival a prerequisite",
+		"Reopened Contract-Seam Inventory",
+		"current capability-gap inventory",
+		"not a fixed global implementation sequence",
 		"Authority Issuance",
-		"lease issuance",
+		"lease and executable authorization issuance where current contracts require them",
 		"executable authorization",
 		"operator-decision receipt provisioning",
 		"Coordinator Ingress",
-		"finite backlog admission",
+		"work-source, backlog, and intent-to-work admission models",
 		"work-item provisioning",
 		"transition/global-stop command producers",
 		"Worker / Runtime Handoff",
@@ -284,7 +600,8 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"no shell execution",
 		"no Codex invocation through connector",
 		"no local acceptance",
-		"Maintenance Agent is not optional for reducing infra babysitting",
+		"Maintenance Agent current evidence and maintenance-route boundaries remain current facts",
+		"target component survival and mandatory role are reopened",
 		"must not become a hidden reconciler",
 		"ES Workstream C guardrails",
 		"Operator-healthcheck TLS signer/custody",
@@ -299,53 +616,133 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"Do not claim that the specification is Linear-only or inherently impossible to adapt",
 		"Do not recommend installing, integrating, cloning, or running Symphony under this decision",
 		"Coordinator current status: `Governed Execution Coordinator/.docs/architecture.md`; `Governed Execution Coordinator/.docs/authority-boundaries.md`",
-		"CP workflow authority: `Control Plane/.docs/long-running-operator-mode-contract.md`",
+		"Current CP MVP/demo workflow authority: `Control Plane/.docs/long-running-operator-mode-contract.md`",
 		"Bridge/Symphony detailed decision: `Governed Execution OpenAI Bridge/docs/symphony-placement.md`",
 		"ES admission/runtime: `Execution Substrate/PLANS.md`; `Execution Substrate/.docs/system_overview/boundaries.md`; `Execution Substrate/.docs/execution_lifecycle/contracts.md`",
+		"Downstream Migration Follow-Ups",
+		"does not claim cross-repository alignment is complete",
+		"Governed Execution OpenAI Bridge/docs/hybrid-integration-architecture-adr.md",
+		"Governed Execution OpenAI Bridge/tests/test_nwp_docs_boundaries.py",
+		"Governed Execution Coordinator/.docs/architecture.md",
+		"Governed Execution Coordinator/tests/test_finite_backlog.py",
+		"must not be read as claiming their local contracts are already revised",
+		"CP/IM/MA local hybrid ADRs or equivalent records remain legacy/demo/helper record inventory only",
+		"not aligned target-architecture authorities and not prerequisites for defining the target",
 		"no secret/raw material in ADR",
+	)
+	assertContainsAll(t, "hybrid integration ADR downstream follow-up scope", adrDownstreamFollowups,
+		"immediate active-contract alignment follow-ups",
+		"legacy/demo/helper record inventory",
+		"Bridge and Coordinator remain the immediate downstream follow-ups",
+		"active-contract reset",
+		"Control Plane/.docs/hybrid-integration-architecture-adr.md",
+		"current MVP/demo, compatibility, filming, freeze, reference, or retirement context only",
+		"not part of the target autonomous-development architecture",
+		"not an alignment prerequisite for defining that target",
+		"Infrastructure Manager/.docs/hybrid-integration-architecture-adr.md",
+		"Governed Execution Maintenance Agent/.docs/hybrid-integration-architecture-adr.md",
+		"bounded helper/proof/topology-specific records",
+		"retained, absorbed, re-derived, or retired",
+		"current repository survival is not frozen",
+		"not target-architecture authorities",
+		"not claimed already aligned",
+		"not a prerequisite for Coordinator or ES target work",
+	)
+	assertContainsAll(t, "hybrid integration ADR immediate active-contract follow-ups", adrImmediateFollowups,
+		"Immediate active-contract alignment follow-ups",
+		"active cross-repository architecture, authority, backlog, lease, ingress, or lifecycle statements",
+		"Bridge and Coordinator remain the immediate downstream follow-ups",
+		"active-contract reset",
+		"Bridge follow-ups",
+		"Governed Execution OpenAI Bridge/docs/hybrid-integration-architecture-adr.md",
+		"Governed Execution OpenAI Bridge/tests/test_nwp_docs_boundaries.py",
+		"Coordinator follow-ups",
+		"Governed Execution Coordinator/.docs/architecture.md",
+		"Governed Execution Coordinator/tests/test_finite_backlog.py",
+		"must not be read as claiming their local contracts are already revised",
+	)
+	assertContainsNone(t, "hybrid integration ADR immediate active-contract follow-ups", adrImmediateFollowups,
+		"Control Plane",
+		"Control Plane/.docs/hybrid-integration-architecture-adr.md",
+		"Infrastructure Manager",
+		"Infrastructure Manager/.docs/hybrid-integration-architecture-adr.md",
+		"Governed Execution Maintenance Agent",
+		"Governed Execution Maintenance Agent/.docs/hybrid-integration-architecture-adr.md",
+		"Maintenance Agent",
+	)
+	assertContainsAll(t, "hybrid integration ADR legacy/demo/helper inventory", adrLegacyHelperInventory,
+		"Legacy/demo/helper record inventory",
+		"Control Plane/.docs/hybrid-integration-architecture-adr.md",
+		"current MVP/demo, compatibility, filming, freeze, reference, or retirement context only",
+		"not part of the target autonomous-development architecture",
+		"not an alignment prerequisite for defining that target",
+		"Infrastructure Manager/.docs/hybrid-integration-architecture-adr.md",
+		"Governed Execution Maintenance Agent/.docs/hybrid-integration-architecture-adr.md",
+		"bounded helper/proof/topology-specific records",
+		"retained, absorbed, re-derived, or retired",
+		"current repository survival is not frozen",
+		"not target-architecture authorities",
+		"not claimed already aligned",
+		"eventual cleanup, freeze, retirement, absorption, or re-derivation remains repository-scoped follow-up",
+		"not a prerequisite for Coordinator or ES target work",
 	)
 
 	assertContainsAll(t, "PLANS hybrid integration pointer", plansPointer,
 		"Cross-Repo Hybrid Integration ADR Pointer",
 		"accepted Hybrid Integration Architecture ADR",
-		"canonical cross-repository architecture/status decision",
+		"canonical cross-repository current-status and migration-boundary decision",
 		"enables no integration behavior",
 		"Phase D is complete",
 		"Coordinator is parallel to CP as a bounded coding-work domain authority",
 		"not a CP subordinate internally and not a product workflow by itself",
-		"without CP is only a bounded coding-work proof candidate",
-		"not an established compatibility path and not a product workflow",
-		"Shape A, the CP-authoritative product path, remains the enduring architecture target",
+		"The connector -> Bridge -> Coordinator -> ES route without CP is not an established compatibility path, product workflow, or authorized integration implementation",
+		"not an established compatibility path, product workflow, or authorized integration implementation",
+		"does not freeze no-CP routing as proof-only target architecture",
+		"current maintained MVP/demo compatibility path only",
+		"CP is absent from the target autonomous-development architecture",
+		"Strategic target direction is recorded here only as target direction",
+		"model reasoning may become the cognitive engineering lead",
+		"user is not expected to remain a routine per-task approval service",
+		"Coordinator is intended to become a durable autonomy core while ES remains admission/runtime authority",
+		"That target direction does not describe current implementation behavior",
+		"does not make connector availability, a first-class Development Program, full append-only event sourcing, finite backlog, external-only authority issuance",
 		"Phase E is complete with Symphony deferred",
 		"Symphony is source/reference material only",
 		"no Symphony experiment, installation, or integration is authorized",
-		"Integration implementation is blocked by four missing contract packages",
+		"Earlier planning identified four unresolved contract-seam themes",
 		"Authority Issuance",
 		"Coordinator Ingress",
 		"Worker / Runtime Handoff",
 		"Correlation And Recovery",
+		"current capability-gap inventory only",
+		"not a fixed package decomposition, global blocker, or mandatory next implementation sequence",
 		"bounded durable SQLite mutation authority for coding-work state",
 		"private atomic transition and global-stop persistence",
 		"verification of already-persisted decision receipts",
 		"does not own work-item production provisioning, lease issuance, executable authorization issuance, decision-receipt provisioning, a worker, scheduler, queue consumer",
 		"Architecture/status alignment is the immediate documentation program",
-		"next implementation selection is contract design for the four missing packages, not end-to-end execution",
+		"next implementation selection is reopened contract-seam design, not end-to-end execution or a fixed global sequence",
 		"ES Admission And Runtime Boundary Realignment remains the ES planning authority and is not displaced by Coordinator integration work",
+		"required for any ES-owned admission/runtime change",
 		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
+		"They do not invoke Codex, run shell, mutate repositories, or alter ES admission, runtime, lifecycle, status, route, TLS, or noninteractive-route authority",
 		"does not change ES priorities or ES route eligibility",
-		"Current invariant: ES remains admission/runtime authority; CP remains workflow, progression, review, checkpoint, cancellation decision, intervention, and finalization authority",
+		"Contract design may proceed only within reopened seam boundaries above and must not authorize autonomous execution",
+		"Current invariant: ES remains admission/runtime authority; CP remains workflow, progression, review, checkpoint, cancellation decision, intervention, and finalization authority inside the current maintained MVP/demo compatibility path",
 		"Bounded slice rule: Bridge and Maintenance Agent may record or consume non-authoritative proposals",
 		"Compatibility edge: `control-plane-normal-shell/v1` remains a bounded compatibility edge and is not changed by Coordinator integration planning",
 		"Temporary compatibility edge: Remote Alpha helper/status/renewal routes remain proof/support containment",
 		"Reopened redesign seam: operator-healthcheck TLS signer/custody remains blocked and source-insufficient",
+		"Reopened target seam: work-source shape, backlog model, authority issuance/delegation, Coordinator ingress, worker/runtime handoff, correlation/recovery, package boundaries, and current component survival are reopened",
 		"no-write, no-shell, no-Codex-invocation",
 	)
 	assertContainsAll(t, "ADR NWP Coordinator row", nwpCoordinatorRow,
 		"Current bounded SQLite mutation authority exists",
 		"Bounded durable coding-work state authority",
 		"Apply transition and global-stop commands through writer-fenced SQLite mutation with idempotency, replay, CAS, receipts, uncertainty, and retry",
+		"Target direction intends Coordinator to become durable autonomy core",
 		"Not ES admission, runtime, lifecycle, status, route, TLS, noninteractive, Workstream C, CP workflow, worker, scheduler, queue, Codex invocation, provisioning, receipt provisioning, executable authorization, publication, or general orchestration authority",
-		"Authority issuance; Coordinator ingress; worker/runtime handoff; correlation and recovery",
+		"Authority issuance/delegation seam; Coordinator ingress/work-source seam; worker/runtime handoff seam; correlation/recovery seam",
 	)
 	assertContainsNone(t, "hybrid integration ADR stale Coordinator status", adr,
 		"Status: proposed / draft",
@@ -355,6 +752,64 @@ func TestHybridIntegrationArchitectureADRDocsContract(t *testing.T) {
 		"no production storage backend",
 		"no production store",
 		"future durable local development-work state owner only",
+		"CP product path is permanently settled by this ADR",
+		"four packages are the required global implementation sequence",
+		"Maintenance Agent is a mandatory target component",
+	)
+	assertContainsNone(t, "PLANS stale target relationships", plansPointer,
+		"without CP is only a bounded coding-work proof candidate",
+		"no-CP routing is only a proof candidate",
+		"CP-less routing is proof-only",
+		"Integration implementation is blocked by four missing contract packages",
+		"contract design for the four missing packages",
+		"four packages are the only authorized next sequence",
+		"four packages are a fixed global sequence",
+		"finite backlog admission",
+		"finite immutable backlog",
+		"finite backlog is the fixed target ingress",
+		"Coordinator is permanently non-orchestration",
+		"Coordinator non-orchestration is a permanent target constraint",
+		"Coordinator must remain non-orchestration in the target",
+		"IM is a mandatory target component",
+		"IM is a permanent target component",
+		"Maintenance Agent is a mandatory target component",
+		"Maintenance Agent is a permanent target component",
+		"current IM/Maintenance Agent repository survival is required",
+	)
+	assertNoStaleTargetRelationship(t, "PLANS stale target relationships", plansPointer)
+	assertContainsNone(t, "ADR current decision stale target relationships", adrCurrentDecision,
+		"CP-authoritative path is the enduring",
+		"CP-authoritative path is the permanent",
+		"target architecture is CP",
+		"permanent CP target",
+		"without CP is only a bounded coding-work proof candidate",
+		"no-CP routing is only a proof candidate",
+		"CP-less routing is proof-only",
+		"current Coordinator general orchestration is permanently forbidden as target",
+	)
+	assertNoStaleTargetRelationship(t, "ADR current decision stale target relationships", adrCurrentDecision)
+	assertContainsNone(t, "ADR reopened seam stale fixed sequence", adrReopenedSeams,
+		"Missing Contract Packages",
+		"Implementation is blocked by four missing contract packages",
+		"four packages are the required global implementation sequence",
+		"four packages are the only authorized next sequence",
+		"four packages are a fixed global sequence",
+		"finite backlog admission",
+		"finite immutable backlog",
+		"finite backlog is the fixed target ingress model",
+		"finite backlog remains the target ingress model",
+	)
+	assertContainsNone(t, "ADR component map stale mandatory topology", adrComponentMap,
+		"Enduring product workflow authority for Shape A",
+		"Coordinator is permanently non-orchestration",
+		"Coordinator non-orchestration is a permanent target constraint",
+		"Coordinator must remain non-orchestration in the target",
+		"IM is a mandatory target component",
+		"IM is a permanent target component",
+		"Maintenance Agent is a mandatory target component",
+		"Maintenance Agent is a permanent target component",
+		"current IM/Maintenance Agent repository survival is required",
+		"current component survival is settled",
 	)
 
 	assertContainsNone(t, "hybrid integration ADR raw material", mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"),
@@ -401,7 +856,7 @@ func TestHybridIntegrationBridgeCodexRowPinsEvidenceBoundary(t *testing.T) {
 	assertContainsAll(t, "PLANS and ADR Bridge evidence agreement", plans,
 		"Bridge connector-safe source intake and no-mutation Codex handoff are implemented/live-tested as Bridge-local evidence/projection only",
 		"They do not invoke Codex, run shell, mutate repositories, or alter ES admission, runtime, lifecycle, status, route, TLS, or noninteractive-route authority",
-		"next implementation selection is contract design for the four missing packages, not end-to-end execution",
+		"next implementation selection is reopened contract-seam design, not end-to-end execution or a fixed global sequence",
 		"already implemented Bridge source/handoff evidence slice must remain no-write, no-shell, no-Codex-invocation, non-authoritative for ES",
 	)
 	assertContainsNone(t, "PLANS and ADR Bridge evidence agreement", plans,

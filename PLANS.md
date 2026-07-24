@@ -63,28 +63,45 @@ Current bounded implementation status:
 
 The accepted Hybrid Integration Architecture ADR is recorded at
 `.docs/system_overview/hybrid_integration_architecture_adr.md`. It is the
-canonical cross-repository architecture/status decision for this alignment
-tranche. It does not implement or change ES product behavior, and it enables no
-integration behavior.
+canonical cross-repository current-status and migration-boundary decision for
+this alignment tranche. It does not implement or change ES product behavior,
+and it enables no integration behavior.
 
 Phase D is complete for planning status: Coordinator is parallel to CP as a
 bounded coding-work domain authority, not a CP subordinate internally and not a
 product workflow by itself. The connector -> Bridge -> Coordinator -> ES route
-without CP is only a bounded coding-work proof candidate. It is not an
-established compatibility path and not a product workflow. Shape A, the
-CP-authoritative product path, remains the enduring architecture target.
+without CP is not an established compatibility path, product workflow, or
+authorized integration implementation. That current non-claim does not freeze
+no-CP routing as proof-only target architecture. The CP-authoritative path is
+the current maintained MVP/demo compatibility path only; CP is absent from the
+target autonomous-development architecture except as current behavior,
+compatibility, filming, migration, or retirement context.
+
+Strategic target direction is recorded here only as target direction: model
+reasoning may become the cognitive engineering lead, the user is not expected
+to remain a routine per-task approval service, and Coordinator is intended to
+become a durable autonomy core while ES remains admission/runtime authority.
+That target direction does not describe current implementation behavior and does
+not make connector availability, a first-class Development Program, full
+append-only event sourcing, finite backlog, external-only authority issuance,
+or current IM/Maintenance Agent repository survival a global prerequisite.
 
 Phase E is complete with Symphony deferred. Symphony is source/reference
 material only, useful for worker-supervision mechanics, not included in the MVP
 or product architecture, and no Symphony experiment, installation, or
 integration is authorized.
 
-Integration implementation is blocked by four missing contract packages:
+Earlier planning identified four unresolved contract-seam themes:
 
 - Authority Issuance;
 - Coordinator Ingress;
 - Worker / Runtime Handoff;
 - Correlation And Recovery.
+
+Those names remain a current capability-gap inventory only. Their exact
+contents, ownership, repository placement, and sequencing are reopened target
+seams, not a fixed package decomposition, global blocker, or mandatory next
+implementation sequence.
 
 The Coordinator current status is bounded durable SQLite mutation authority for
 coding-work state: internal durable writer issuance, private atomic transition
@@ -97,19 +114,20 @@ Codex invocation, ES runtime, CP workflow, publication, or general
 orchestration.
 
 Architecture/status alignment is the immediate documentation program. After
-alignment, the next implementation selection is contract design for the four
-missing packages, not end-to-end execution. ES Admission And Runtime Boundary
-Realignment remains the ES planning authority and is not displaced by
-Coordinator integration work; it remains parallel to and required for the
-enduring architecture.
+alignment, the next implementation selection is reopened contract-seam design,
+not end-to-end execution or a fixed global sequence. ES Admission And Runtime
+Boundary Realignment remains the ES planning authority and is not displaced by
+Coordinator integration work; it remains required for any ES-owned
+admission/runtime change.
 
 Classification for this ADR tranche:
 
 - Current invariant: ES remains admission/runtime authority; CP remains
   workflow, progression, review, checkpoint, cancellation decision,
-  intervention, and finalization authority; IM remains
-  profile/provenance/readiness/diagnostics authority; Workstream C guardrails
-  remain integration-enabling product boundaries.
+  intervention, and finalization authority inside the current maintained
+  MVP/demo compatibility path; IM remains profile/provenance/readiness/
+  diagnostics authority; Workstream C guardrails remain integration-enabling
+  product boundaries.
 - Bounded slice rule: Bridge and Maintenance Agent may record or consume
   non-authoritative proposals, summaries, and evidence only under their own
   documented boundaries; Coordinator bounded SQLite mutation authority remains
@@ -122,6 +140,10 @@ Classification for this ADR tranche:
 - Reopened redesign seam: operator-healthcheck TLS signer/custody remains
   blocked and source-insufficient; the next TLS step requires source-grounded
   signer/custody evidence or an explicit ES product decision.
+- Reopened target seam: work-source shape, backlog model, authority
+  issuance/delegation, Coordinator ingress, worker/runtime handoff,
+  correlation/recovery, package boundaries, and current component survival are
+  reopened and not settled by this ADR pointer.
 
 Bridge connector-safe source intake and no-mutation Codex handoff are
 implemented/live-tested as Bridge-local evidence/projection only. The already
@@ -131,8 +153,8 @@ runner, acceptance, commit, push, PR, merge, and Coordinator durable coding-work
 state. They do not invoke Codex, run shell, mutate repositories, or alter ES
 admission, runtime, lifecycle, status, route, TLS, or noninteractive-route
 authority. This planning pointer does not change ES priorities or ES route
-eligibility. Contract design may proceed only within the missing package
-boundaries above and must not authorize autonomous execution.
+eligibility. Contract design may proceed only within reopened seam boundaries
+above and must not authorize autonomous execution.
 
 ## Highest-Priority Backlog Entry
 
