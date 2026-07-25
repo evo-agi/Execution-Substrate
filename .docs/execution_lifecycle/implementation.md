@@ -10,10 +10,14 @@ This file is specifically about where lifecycle behavior lives in code today: ha
 
 The target submit idempotency, submit correlation, and recovery contract is
 documented in `submit_idempotency_correlation_and_recovery.md`, but that
-target contract is not implemented in the current code.
+target runtime contract is not implemented in the current code.
 The public opt-in/versioning posture selected there is also future work: the
 current server still decodes the current `PrepareRequest` body for submit, and
 the current producer declaration has no reliable-submit producer sub-contract.
+Current source now includes only the first pure, admission-local internal model
+tranche for that target under `es/admission/internal/reliablesubmit`; it is not
+wired to submit, prepare, handlers, producer declaration, staging, lifecycle,
+results, Nomad behavior, persistence, or recovery.
 
 ## 2. How to read this document
 
@@ -265,6 +269,20 @@ Where ES stops and Nomad takes over:
 
 - The detailed target contract is
   `submit_idempotency_correlation_and_recovery.md`.
+- Current source includes the pure internal package
+  `es/admission/internal/reliablesubmit`. It models local phase, opaque
+  `RunRef`, disclosure, progression, replay, conflict, privacy, and
+  effective-plan completeness invariants only.
+- That package is not wired to current `Submit` and is not lifecycle truth.
+  It does not implement the producer sub-contract, reliable request DTO,
+  persistence, durable concurrency, staging, Nomad reconciliation, recovery
+  lookup, or public error vocabulary.
+- The pure package cannot enforce one winning assignment across stale or
+  concurrent snapshots. Later persistence and compare-and-swap or equivalent
+  transaction semantics own the authoritative caller/key claim and assigned
+  `run_id` transition. The next source-bearing reliable-submit tranche must
+  consume this package or explicitly stop and revise it; no second unused
+  abstraction tranche may be layered on top without a concrete consumer.
 - Current `Submit` has no submit idempotency key input, no submit correlation
   key, no exact replay path, no conflicting reuse path, no pending outcome
   path, no durable submit-correlation record, and no recovery lookup by
@@ -286,8 +304,8 @@ Where ES stops and Nomad takes over:
   Current non-confirmation may still return `submission_failed` and run the
   non-submitted cleanup path; that is current implementation behavior, not a
   reliable proof that no provider effect was accepted.
-- The target reliable keyed-submit contract is not implemented here and must
-  not be described as current behavior.
+- The target reliable keyed-submit runtime contract is not implemented here and
+  must not be described as current behavior.
 - The selected future public shape remains: one additive narrow reliable-submit
   producer sub-contract, the existing `POST /v1/executions:submit` route, a
   distinct submit-specific reliable request family, producer-declaration

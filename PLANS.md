@@ -107,12 +107,18 @@ Active bounded contract tranche: submit idempotency, submit correlation, and
 recovery are now selected as the ES-owned documentation seam for the
 Correlation And Recovery inventory item. The detailed target contract lives in
 `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
-This tranche is documentation and docs-contract coverage only. It does not
-implement runtime behavior, does not change the current unkeyed submit request
-or response, and does not displace unrelated ES product priorities globally.
-It now freezes only the public opt-in/versioning posture for a future reliable
-keyed-submit implementation: keep the current outer producer-contract v1
-identity and current governed-execution contract identity, add one narrow
+The first source-bearing reliable-submit tranche now adds only the
+admission-local pure Go model and tests in
+`es/admission/internal/reliablesubmit`. The package is transport-neutral,
+persistence-neutral, unwired, and effect-free. It models opaque caller/key,
+effective-plan binding, phase, replay, disclosure, and Coordinator-progression
+rules without changing the current unkeyed submit request or response. Reliable
+submit is not implemented. Persistence and concurrency still own the future
+one winning durable caller/key claim and globally authoritative run assignment.
+This planning tranche does not displace unrelated ES product priorities
+globally. It freezes only the public opt-in/versioning posture for a future
+reliable keyed-submit implementation: keep the current outer producer-contract
+v1 identity and current governed-execution contract identity, add one narrow
 versioned reliable-submit producer sub-contract under the governed-execution
 declaration, keep `POST /v1/executions:submit` as the route for both legacy and
 future reliable variants, require a submit-specific reliable request family

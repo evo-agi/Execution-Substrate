@@ -10,6 +10,30 @@ This record freezes the target ES-owned contract seam for future reliable keyed 
 
 This document now selects only the public opt-in and versioning posture for a future implementation: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, durable store, migration, Nomad behavior, or runtime behavior is implemented by this document.
 
+The first source-bearing reliable-submit tranche is now present as the
+admission-local internal pure Go package
+`es/admission/internal/reliablesubmit`. That package models local phase
+validity, opaque claim identity, opaque effective-plan binding, completeness
+witnesses, replay views, conflict, unauthorized, unavailable-correlation,
+same-caller run-reference disclosure policy, and Coordinator-progression
+eligibility. It is not wired to current submit. It implements no public DTO,
+producer declaration field, persistence, durable lock, staging behavior, Nomad
+behavior, recovery route, or runtime integration.
+
+The pure model validates one supplied current snapshot at a time. It can reject
+invalid phase shapes, reject missing effective-plan binding before
+effect-capable assignment, treat reassignment with the same opaque `RunRef` as
+idempotent, and fail closed on reassignment with a different `RunRef`. It
+cannot enforce one globally winning caller/key assignment across stale copied
+pre-assignment values, process restarts, or concurrent writers. That authority
+belongs to the later persistence/concurrency layer with uniqueness rules and
+compare-and-swap or equivalent transaction semantics.
+
+Later transport, persistence, and reconciliation code must consume rather than
+bypass this package. If the next source-bearing reliable-submit tranche cannot
+consume it coherently, that tranche must stop and revise the model instead of
+layering a second unused abstraction on top.
+
 ## 2. Current Implementation Reality
 
 The current submit request body is the current `PrepareRequest` body. Its top-level fields are `schema_version`, `invocation`, `mode`, `timeout_seconds`, and `resources`. The nested invocation carries `schema_version`, `artifact_digest`, `derivation_spec_digest`, `output_id`, optional `argv`, optional `env`, optional `mounts`, and optional `annotations`.
@@ -31,6 +55,12 @@ Current `run_id` creation happens before execution-package staging. Execution-pa
 Current ES has no broad durable run registry and no ES-owned lifecycle store. Status is projected from Nomad. Retained results are ES-owned opaque bundles keyed by `run_id`, not lifecycle truth.
 
 On an in-process non-submitted return after staging, current submit removes the staged root through its current cleanup path. That cleanup behavior is current implementation reality; it is not proof that no external execution-producing effect happened when a Nomad response is uncertain.
+
+Current source now also contains the unwired pure internal package
+`es/admission/internal/reliablesubmit`. Current `Submit`, current `Prepare`,
+current handlers, the current producer declaration, the current execution
+locator, staging, lifecycle projection, results, and Nomad interaction do not
+import or use that package.
 
 ## 3. Dual Ambiguity Model
 
@@ -77,6 +107,13 @@ A different authenticated caller cannot probe, reuse, conflict with, or learn th
 A transport retry is not a new semantic execution. A new semantic execution requires a new caller key.
 
 The final `run_id` generation algorithm remains open.
+
+The pure internal model names the assigned ES reference `RunRef` to avoid
+freezing the current execution-locator implementation. `RunRef` is opaque,
+non-empty, immutable, equality-only, and has no JSON, database, scheduler, job,
+allocation, trace, request, or session identity role. A later admission adapter
+may map an already validated current or future ES locator into `RunRef`; that
+adapter is outside this tranche.
 
 ## run_id Phase And Disclosure Invariants
 
@@ -169,6 +206,27 @@ Cancellation identity is required only when a cancellation effect is requested. 
 Requiredness at the boundary does not mean every ES field becomes a native first-class Coordinator database column or Coordinator domain field. Coordinator may retain an immutable execution-plan reference, safe binding, or typed boundary value while ES remains validation and execution-admission authority. The complete boundary request must nevertheless be resolved before dispatch. Coordinator must not reimplement ES defaulting, admission, or runtime-profile semantics merely to make fields "mandatory."
 
 The `run_id` phase matrix and field-requiredness/effective-plan matrix are binding local-gate inputs to later ES request, receipt, and error models and to Coordinator dispatch, command, and observation models. Those model tranches must not begin until they can make the required and forbidden combinations unrepresentable or fail closed. This is a local dependency gate for those model tranches, not a prerequisite for unrelated project work.
+
+The pure model encodes the first internal gate with distinct phase types rather
+than one optional-field state bag. Claim phases are separate from views and
+decisions: pending before assignment, ambiguous before assignment,
+effect-capable assigned, pending after assignment, ambiguous after assignment,
+accepted, and provably-not-accepted after assignment are claim phases;
+recovered accepted and exact replay are views over valid existing state; conflict,
+unauthorized, and expired/unavailable correlation are decisions that disclose no
+existing claim run or receipt.
+
+The model's effective-plan witness covers fourteen effect-time categories:
+request schema or version, execution mode, effective timeout semantics,
+effective CPU, effective memory, runtime profile or immutable profile
+reference, artifact identity, derivation-spec identity, output identity,
+effective command and argument vector, environment additions, mounts, network
+posture, and authority-handoff applicability. CPU and memory are separate
+categories. Empty argument additions, environment additions, and mounts are
+resolved concrete values. Unresolved categories prevent witness construction.
+Output identity can be explicitly inapplicable only through a future
+execution-kind rule, and authority handoff can be explicitly inapplicable;
+generic inapplicability for required categories fails closed.
 
 ## 7. Narrow Durable Correlation Semantics
 
@@ -307,6 +365,7 @@ Public recovery surfaces return only bounded submit correlation and receipt fact
 
 This target contract makes these explicit non-claims:
 
+- no reliable submit runtime integration implemented;
 - no runtime behavior implemented;
 - no producer declaration field implemented;
 - no request DTO implemented;
@@ -328,6 +387,7 @@ This target contract makes these explicit non-claims:
 - no Nomad behavior implemented;
 - no broad lifecycle store;
 - no scheduler;
+- no durable exactly-once assignment from the pure model alone;
 - no Coordinator schema;
 - no Bridge widening;
 - no gateway service;
@@ -344,6 +404,7 @@ This target contract makes these explicit non-claims:
 Implementation requires these local gates before runtime behavior changes:
 
 - preserved public opt-in and versioning docs-contract coverage;
+- pure internal reliable-submit model tests;
 - reliable request and producer sub-contract model tests;
 - private request-equivalence and plan-binding decision;
 - narrow persistence and concurrency decision;
@@ -372,6 +433,7 @@ The following seams remain open:
 - canonicalization;
 - private binding mechanism;
 - plan snapshot versus immutable references;
+- exact persistence/concurrency and compare-and-swap shape;
 - Nomad reconciliation mechanism;
 - deterministic versus random assigned `run_id`;
 - bootstrap exception;

@@ -364,6 +364,41 @@ Nomad lifecycle truth, not a scheduler, not a runtime status timeline, not
 result-content storage, and not Coordinator desired state. Nomad remains
 authoritative for submitted execution lifecycle.
 
+The first source-bearing tranche for this seam is the admission-local internal
+pure Go package `es/admission/internal/reliablesubmit`. The placement is below
+`es/admission` so future admission transport, persistence, and reconciliation
+code can consume it, while unrelated ES packages and other repositories cannot
+turn it into a shared kernel. The package remains separate from package
+`admission` so constructors and private fields enforce phase creation instead
+of letting current submit code construct invalid states directly.
+
+That pure model separates claim phases from views and decisions. The claim
+phases are pending before assignment, ambiguous before assignment,
+effect-capable assigned, pending after assignment, ambiguous after assignment,
+accepted, and provably-not-accepted after assignment. Recovered accepted and
+exact replay are views over valid state, not new effects. Conflict,
+unauthorized, and expired/unavailable correlation are decisions that disclose no
+existing claim run or receipt. Accepted and recovered accepted are the only
+progression-eligible successful correlation shapes; exact replay follows the
+underlying phase.
+
+The pure model uses an opaque `RunRef` rather than the current execution-locator
+format or scheduler lookup rule. It also uses an opaque private `PlanBinding`
+plus a fixed fourteen-category `EffectivePlanWitness`: request schema or
+version, execution mode, timeout semantics, CPU, memory, runtime profile,
+artifact identity, derivation-spec identity, output identity, command and
+argument vector, environment additions, mounts, network posture, and
+authority-handoff applicability. The witness proves category completeness only;
+it stores no execution values and does not duplicate ES admission, defaulting,
+runtime-profile, resource, environment, mount, or authority-handoff resolution.
+
+The pure model is not a lifecycle store, scheduler, persistence schema, public
+DTO, or Coordinator model. It validates one supplied snapshot and one
+transition. It cannot stop two stale copied pre-assignment snapshots from being
+assigned independently; the later persistence/concurrency layer must provide
+one durable winning caller/key claim and one authoritative run assignment with
+uniqueness and compare-and-swap or equivalent transaction semantics.
+
 This document does not select storage, transaction API, exact reliable JSON
 field names, exact reliable schema/version strings, TTL, HTTP-code or error
 vocabulary, recovery route, supplemental header, deterministic-identity, or
