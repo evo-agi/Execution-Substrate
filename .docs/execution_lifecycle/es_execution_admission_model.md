@@ -56,6 +56,15 @@ the code and tests win and this document must be realigned.
   compatibility remains unchanged. It does not redesign runtime behavior,
   retained results, runtime identity, Vault handoff, Nomad integration, or
   Control Plane behavior.
+- Submit idempotency, submit correlation, and recovery are a target-only
+  reopened seam documented in
+  `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
+  Current no-key submit remains the stable current handoff behavior, current
+  public DTOs remain unchanged, and current `run_id` lifecycle lookup remains
+  the current compatibility path. The target reliable keyed-submit contract is
+  not implemented and does not add a current request field, response field,
+  header, route, durable store, error vocabulary, Nomad behavior, Coordinator
+  behavior, or Bridge behavior.
 - C3 is the focused tests/docs guardrail slice for retained-result and
   `authority_handoff` boundaries. C3 is guardrail work, not runtime redesign.
   C3 pins that retained result bundles remain ES-owned opaque output artifacts
@@ -200,6 +209,14 @@ the code and tests win and this document must be realigned.
   than a durable ES lifecycle record.
 - `POST /v1/executions:submit` remains the MVP execution handoff surface:
   async, bounded receipt, and Nomad submission through ES.
+- Reliable keyed submit remains a target-only reopened seam. The detailed
+  target contract for submit idempotency key handling, submit correlation,
+  exact replay, conflicting reuse, pending outcome, ambiguous outcome, narrow
+  durable submit-correlation records, caller isolation, caller-to-ES response
+  loss, and ES-to-Nomad registration-response uncertainty lives in
+  `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
+  It preserves the current no-key submit DTOs and current `run_id` lifecycle
+  routes until a later versioned implementation exists.
 - Nomad remains authoritative for submitted execution lifecycle. ES projects
   status, logs, and cancel observations from Nomad and serves retained opaque
   result bundles from ES-owned retained storage through the current bounded

@@ -89,6 +89,17 @@ Those absences are current facts, not design commitments.
   model, Nomad-backed lifecycle projection, retained opaque result bundles,
   runtime-profile compatibility, runtime-boundary handoff semantics, and
   bounded runtime identity/workload credential handoff boundaries.
+- ES owns the target submit idempotency, submit correlation, and recovery
+  contract seam documented in
+  `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
+  That ownership is limited to reliable keyed submit protocol semantics and a
+  future narrow submit-correlation record. It does not make ES a broad
+  lifecycle store, scheduler, allocation history, runtime status timeline, log
+  index, result-content store, cancellation-completion authority, Coordinator
+  desired-state owner, or Nomad mirror. Nomad remains authoritative for
+  submitted execution lifecycle. Coordinator and adapters must not compensate
+  for the seam by scraping Nomad, treating trace IDs or request IDs as recovery
+  authority, or storing parallel submitted-runtime lifecycle truth.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
   ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
@@ -567,6 +578,11 @@ runtime-profile handling, and compatibility edges lives in
 
 - The long-term ES request model and package-resolution shape
 - The current division between prepare-time composition and submit-time execution
+- Submit idempotency, submit correlation, and recovery: the target contract is
+  ES-owned, current no-key submit remains current behavior, and future
+  reliable keyed submit must handle caller-to-ES response loss and ES-to-Nomad
+  registration-response uncertainty without creating a broad ES lifecycle
+  store.
 - The current execution-package layout, retained-result behavior, result-reference vocabulary, and reserved path conventions
 - Retained-result route evolution, result payload identity versus artifact identity, CP materialization semantics, and artifact discovery/index long-term shape
 - The final owner and vocabulary for the remaining shared execution/runtime inputs

@@ -103,6 +103,24 @@ contents, ownership, repository placement, and sequencing are reopened target
 seams, not a fixed package decomposition, global blocker, or mandatory next
 implementation sequence.
 
+Active bounded contract tranche: submit idempotency, submit correlation, and
+recovery are now selected as the ES-owned documentation seam for the
+Correlation And Recovery inventory item. The detailed target contract lives in
+`.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
+This tranche is documentation and docs-contract coverage only. It does not
+implement runtime behavior, does not change the current unkeyed submit request
+or response, does not select a route, header, body field, schema, storage
+engine, TTL, HTTP vocabulary, Nomad reconciliation algorithm, or `run_id`
+generation strategy, and does not displace unrelated ES product priorities
+globally.
+
+Reliable dispatch remains blocked until later implementation and audit. Both
+caller-to-ES response loss and ES-to-Nomad registration-response uncertainty
+are in scope for the target contract. The target must prevent duplicate
+semantic execution from transport redelivery while preserving the current
+no-key submit compatibility path, `control-plane-normal-shell/v1`, Nomad
+lifecycle authority, and the prohibition on a broad ES lifecycle store.
+
 The Coordinator current status is bounded durable SQLite mutation authority for
 coding-work state: internal durable writer issuance, private atomic transition
 and global-stop persistence, guarded public delegation, verification of

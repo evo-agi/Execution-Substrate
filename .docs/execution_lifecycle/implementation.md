@@ -8,6 +8,10 @@ The current implementation slice is real, exercised by integration tests, and vi
 
 This file is specifically about where lifecycle behavior lives in code today: handlers, wiring, call paths, local side effects, and where Nomad becomes authoritative.
 
+The target submit idempotency, submit correlation, and recovery contract is
+documented in `submit_idempotency_correlation_and_recovery.md`, but that
+target contract is not implemented in the current code.
+
 ## 2. How to read this document
 
 - **Observed current implementation path**: A code path or sequencing rule implemented in the current Go repo.
@@ -253,6 +257,27 @@ Where ES stops and Nomad takes over:
   state.
 - `Submit` does not broker Vault tokens, Vault secrets, JWT-SVID payloads,
   leases, Codex credential material, or credential payloads.
+
+**Current keyed-recovery absence**
+
+- The detailed target contract is
+  `submit_idempotency_correlation_and_recovery.md`.
+- Current `Submit` has no submit idempotency key input, no submit correlation
+  key, no exact replay path, no conflicting reuse path, no pending outcome
+  path, no durable submit-correlation record, and no recovery lookup by
+  caller key.
+- Current `SubmitResult` has no replay or submit-correlation vocabulary. It is
+  the current bounded unkeyed receipt after confirmed Nomad response.
+- Current code can be ambiguous at the caller-to-ES boundary when ES accepts a
+  submission and produces a `run_id` but the caller or adapter loses the
+  response.
+- Current code can also be ambiguous at the ES-to-Nomad boundary when ES sends
+  a Nomad registration request but cannot confirm whether Nomad accepted it.
+  Current non-confirmation may still return `submission_failed` and run the
+  non-submitted cleanup path; that is current implementation behavior, not a
+  reliable proof that no provider effect was accepted.
+- The target reliable keyed-submit contract is not implemented here and must
+  not be described as current behavior.
 
 ## 8. Lifecycle projection implementation
 

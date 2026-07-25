@@ -14,6 +14,13 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, scheduler handoff, compatibility edges, and reopened
 seams lives in `es_execution_admission_model.md`.
 
+The target submit idempotency, submit correlation, and recovery seam lives in
+`submit_idempotency_correlation_and_recovery.md`. That record is target-only:
+it does not implement reliable keyed submit, does not change current unkeyed
+submit, and does not select a route, header, body field, schema, storage
+engine, TTL, HTTP vocabulary, Nomad reconciliation algorithm, or `run_id`
+generation strategy.
+
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
 and Workstream C implementation must not start until C0 docs and docs-contract
@@ -303,6 +310,41 @@ These absences are part of the current design shape, not missing implementation 
 - Runtime identity handoff depends on reserved path and workspace conventions that are active but not settled.
 - `:submit` now localizes its current staging, result directory, and package-resolution behavior behind one internal execution-package layout, but the current `/execution/...` runtime path conventions, result directory convention, and mount layout remain bounded slice rules rather than settled architecture.
 - ES is coherent today as a thin admission and Nomad handoff boundary, but it still carries redesign pressure around how much lifecycle minimalism is fundamental versus merely bounded.
+
+## 9A. Submit Idempotency And Recovery Pressure
+
+**Target-only reliable keyed-submit pressure**
+
+Current unkeyed submit remains the active implementation. It has no submit
+idempotency key, no submit correlation key, no exact replay contract, no
+conflicting reuse contract, no pending outcome contract, and no recovery lookup
+when a caller loses the bounded `202` receipt.
+
+The detailed target contract is
+`submit_idempotency_correlation_and_recovery.md`.
+
+The target reliable keyed-submit contract addresses two separate ambiguity
+boundaries:
+
+- caller-to-ES response loss, where ES may have accepted a submission and
+  produced a `run_id` but the caller or adapter never receives the receipt;
+- ES-to-Nomad registration-response uncertainty, where ES may have sent a
+  registration request that Nomad accepted but ES cannot confirm because the
+  response was lost, malformed, missing, timed out, or otherwise uncertain.
+
+The target design rule is that transport redelivery is not a new semantic
+execution. A future reliable keyed submit must converge exact retry on one
+authenticated-caller/key claim and at most one assigned ES `run_id`; it must
+not restage or submit a second Nomad job for the same exact keyed request.
+
+The target contract reserves only narrow ES-owned submit correlation for
+recovery across ES restart. That state is protocol recovery evidence, not
+Nomad lifecycle truth, not a scheduler, not a runtime status timeline, not
+result-content storage, and not Coordinator desired state. Nomad remains
+authoritative for submitted execution lifecycle.
+
+This document does not select a storage, transaction, route, schema, TTL,
+HTTP-code, header, body-field, deterministic-identity, or Nomad query design.
 
 ## 10. Runtime identity and lifecycle interaction
 

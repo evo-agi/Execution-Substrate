@@ -126,6 +126,19 @@ Earlier planning used four package names to describe unresolved integration work
 - restart reconciliation;
 - review and finalization recovery.
 
+The ES-owned submit idempotency, submit correlation, and recovery target
+contract is now documented in
+`../execution_lifecycle/submit_idempotency_correlation_and_recovery.md`. It is
+not implemented by this ADR and does not change current ES request, response,
+route, storage, Nomad, Coordinator, or Bridge behavior.
+
+Reliable Coordinator-backed dispatch depends on a later implementation of that
+ES-owned contract or an explicitly named bootstrap exception. Coordinator,
+Bridge, connectors, adapters, and reports must not compensate by scraping
+Nomad, using trace IDs or request IDs as recovery authority, storing parallel
+runtime lifecycle truth, or treating adapter/session state as durable
+execution authority.
+
 ## Bridge <-> Codex Evidence Boundary
 
 Bridge connector-safe source intake and no-mutation handoff are implemented and

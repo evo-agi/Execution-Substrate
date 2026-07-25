@@ -10,6 +10,13 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, compatibility edges, and reopened seams lives in
 `es_execution_admission_model.md`.
 
+The target submit idempotency, submit correlation, and recovery contract seam
+is documented in
+`submit_idempotency_correlation_and_recovery.md`. That document is target-only:
+it does not change current endpoint behavior, does not add a current request
+field, response field, route, header, persistence implementation, error code,
+or Nomad behavior, and does not make reliable keyed submit available today.
+
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
 and Workstream C implementation must not start until C0 docs and docs-contract
@@ -581,6 +588,35 @@ Successful response is `202` JSON with these fields:
 - The long-term receipt shape of `:submit`
 - The current async-only public contract
 - The current execution-package layout and container path conventions behind submission
+
+### Target reliable keyed-submit contract
+
+The current submit contract above remains implemented behavior. A future
+reliable keyed submit mode is an opt-in target contract only, governed by
+`submit_idempotency_correlation_and_recovery.md`.
+
+That target contract keeps current unkeyed submit valid while defining the
+future ES-owned semantics for submit idempotency key handling, submit
+correlation, exact replay, conflicting reuse, pending outcome, ambiguous
+outcome, expiry, caller isolation, and response-loss recovery.
+
+The target contract covers both ambiguity boundaries:
+
+- caller or adapter to ES response loss after ES may have accepted a
+  submission and produced a `run_id`;
+- ES to Nomad registration-response uncertainty where ES attempted an
+  execution-producing provider effect but cannot prove whether Nomad accepted
+  or rejected it.
+
+The target contract reserves only a narrow ES-owned durable
+submit-correlation record. It must not become an allocation history, runtime
+status timeline, log index, result-content store, cancellation-completion
+truth, runtime retry or reschedule policy store, semantic work store,
+Coordinator desired state, or Nomad mirror.
+
+The target contract leaves transport, route, schema, storage, lock,
+concurrency, TTL, tombstone, HTTP vocabulary, private binding mechanism,
+Nomad reconciliation mechanism, and `run_id` generation strategy open.
 
 ## 7. Status contract
 
