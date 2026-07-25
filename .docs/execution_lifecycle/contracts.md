@@ -268,6 +268,37 @@ Runtime-profile disabled reasons are part of the current declaration shape:
 - Consumers that require the bounded Control Plane normal-shell path must also require an enabled `control-plane-normal-shell/v1` runtime-profile entry.
 - Consumers must still use `/health`, submit-readiness checks, and `:prepare` for service health, environment readiness, and artifact-specific admission proof.
 
+### Target reliable-submit producer sub-contract selection
+
+**Target-only public selection; not implemented by the current server**
+
+The current producer-contract outer identity remains
+`execution-substrate.producer-contract/v1`, and the current governed-execution
+contract remains `governed-execution-producer/v1`.
+
+A later implementation may add one explicitly named and versioned
+reliable-submit producer sub-contract under the governed-execution declaration.
+That addition is narrow and additive to the current declaration. It declares
+only the reliable-submit contract family/version supported, whether reliable
+submit is enabled for this installation, a bounded safe unavailable or disabled
+reason, and the minimum safe request-contract discriminator required by a
+reliable client.
+
+The reliable-submit producer sub-contract is not a generic `capabilities` map,
+feature registry, plugin registry, cross-service probing framework, health
+check, submit-readiness proof, admission proof, run authority, run existence
+proof, lifecycle truth, scheduler API, or execution permission.
+
+Reliable clients must treat this declaration as a preflight compatibility gate
+only. They must authenticate, read the producer declaration, require the exact
+reliable-submit sub-contract and enabled status, and then submit a structurally
+distinct reliable request body. The declaration alone is not sufficient opt-in;
+the request body discriminator remains an independent fail-closed gate.
+
+Exact JSON field names and exact reliable-submit contract/version strings
+remain open for the later producer-declaration model tranche. The current
+producer declaration has no implemented reliable-submit sub-contract.
+
 ### Error contract
 
 | Outcome | HTTP | Current code / class |
@@ -614,9 +645,34 @@ status timeline, log index, result-content store, cancellation-completion
 truth, runtime retry or reschedule policy store, semantic work store,
 Coordinator desired state, or Nomad mirror.
 
-The target contract leaves transport, route, schema, storage, lock,
-concurrency, TTL, tombstone, HTTP vocabulary, private binding mechanism,
-Nomad reconciliation mechanism, and `run_id` generation strategy open.
+The target public opt-in/versioning selection uses the existing
+`POST /v1/executions:submit` route for both the current legacy variant and the
+future reliable variant. The reliable variant uses a future submit-specific
+request family or envelope distinct from `PrepareRequest`. It must carry a
+required in-band structural reliable-submit discriminator or nested marker that
+current strict `PrepareRequest` decoding rejects before current `Submit`
+behavior can run. A changed value in the current `schema_version` field alone is
+not the selected discriminator.
+
+Reliable clients must pass two independent fail-closed gates: producer
+declaration preflight requiring the exact enabled reliable-submit sub-contract,
+and in-band request discrimination. Header-only reliable opt-in is rejected
+because current servers may ignore unknown headers and execute the current
+unkeyed body. A future supplemental header remains unselected and could only be
+supplemental to the required body discriminator.
+
+If reliable support is absent, incompatible, disabled, or unavailable, a
+reliable Coordinator or adapter stops before submit. If a reliable body reaches
+a future server where reliable mode is disabled or unsupported, that server must
+reject before admission is treated as successful, before effect-capable `run_id`
+assignment, before execution-package staging, before Nomad registration, and
+before fallback to current unkeyed submit.
+
+The target contract leaves exact reliable producer field names, exact reliable
+request field names, exact reliable schema/version strings, recovery route,
+storage, lock, concurrency, TTL, tombstone, HTTP vocabulary, private binding
+mechanism, Nomad reconciliation mechanism, and `run_id` generation strategy
+open.
 
 ## 7. Status contract
 

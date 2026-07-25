@@ -6,9 +6,9 @@ TARGET-ONLY: submit idempotency, correlation, and recovery in this document are 
 
 CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.
 
-This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select a request shape, does not select a response shape, does not select a route, does not select a persistence implementation, and does not enable Coordinator-backed dispatch. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
+This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, does not select a persistence implementation, and does not enable Coordinator-backed dispatch. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
 
-No current request field, response DTO field, header, query route, durable store, migration, Nomad behavior, or handler behavior is selected by this document.
+This document now selects only the public opt-in and versioning posture for a future implementation: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, durable store, migration, Nomad behavior, or runtime behavior is implemented by this document.
 
 ## 2. Current Implementation Reality
 
@@ -21,6 +21,8 @@ Current submit reuses the prepare/admission request shape. It has no caller-prov
 Current no-key submit has no exact replay contract.
 
 Current no-key submit has no recovery lookup.
+
+Current `validatePrepareRequest` defaults a blank `schema_version` to the current compatibility value. A changed value in that existing `schema_version` field is not, by itself, the selected reliable-submit discriminator.
 
 ES currently assigns a random public `run_id` and then uses the current internal execution locator whose Nomad job ID is `exec-<run_id>`. The current locator is an implementation rule for the active slice, not a final run identifier strategy.
 
@@ -263,9 +265,35 @@ Current submit without the new key remains valid current behavior. Current no-ke
 
 Reliable Coordinator-backed dispatch must use the future explicit opt-in. `control-plane-normal-shell/v1` remains unchanged. Current submit, status, logs, result, cancel, `authority_handoff`, and `outcome_evidence` compatibility remain unchanged by this tranche.
 
-Adding a request-body field would be a versioning event because current decoding is strict. Header, body, versioned DTO, or another explicit opt-in remains open.
+The existing producer declaration keeps its current outer identity:
+
+- `schema_version = "execution-substrate.producer-contract/v1"`;
+- `governed_execution.contract = "governed-execution-producer/v1"`.
+
+The future declaration adds one explicitly named and versioned reliable-submit producer sub-contract under the governed-execution declaration. That additive sub-contract is narrow: it semantically declares only the reliable-submit contract family/version supported, whether reliable submit is enabled for the installation, a bounded safe unavailable or disabled reason, and the minimum safe request-contract discriminator required by a reliable client. It is not a generic `capabilities` map, feature registry, plugin registry, or cross-service probing framework. Exact JSON field names and exact reliable-submit contract/version strings remain open.
+
+A future reliable client must use two independent fail-closed gates:
+
+1. authenticate and read the producer declaration, then require the exact reliable-submit sub-contract and enabled status;
+2. send a structurally distinct reliable-submit request variant.
+
+The producer declaration alone is not execution authorization, admission, run existence, lifecycle truth, submit readiness, or proof that a specific request will be accepted. The request discriminator alone does not replace producer compatibility negotiation.
+
+The target reliable request uses the existing `POST /v1/executions:submit` route. This tranche does not select a new route. A separate route remains a possible later fallback only if future concrete security or compatibility evidence invalidates the same-route design. Recovery-by-key or query-route shape remains open.
+
+The current unkeyed compatibility variant remains the current `PrepareRequest`-compatible request body. The reliable variant uses a future submit-specific request family or envelope and must not remain merely an optional semantic interpretation of `PrepareRequest`.
+
+The reliable envelope must carry a required in-band structural reliable-submit discriminator or nested reliable-submit marker that is unknown to the current `PrepareRequest` decoder. Because current body decoding is strict, a current server rejects the future reliable body before calling current `Submit` behavior. A changed value in the existing `schema_version` field alone is not the selected discriminator.
+
+Header-only reliable-submit opt-in is rejected. A current server may ignore an unknown header and execute the current unkeyed body, violating fail-closed reliable semantics. A future header may be supplemental only when the body still carries the required structural reliable discriminator; this tranche selects no supplemental header.
+
+When the reliable sub-contract is absent, incompatible, disabled, or unavailable, a reliable Coordinator or adapter must stop before submit. When a reliable body reaches a future server on which reliable mode is disabled or unsupported, the server must reject it before admission is treated as successful, before effect-capable `run_id` assignment, before execution-package staging, before Nomad registration, and before any fallback to current unkeyed `Submit`.
 
 Disabling the future reliable mode must fail closed for reliable dispatch, not silently fall back to unkeyed submission.
+
+Current `POST /v1/executions:prepare` remains the current bounded preflight surface. This tranche does not select a reliable prepare variant, claim creation during prepare, `run_id` allocation during prepare, persistence during prepare, or prepare-to-submit claim transfer.
+
+Current CP/demo and `control-plane-normal-shell/v1` compatibility remains unchanged. Current CP and IM consumers may ignore the additive reliable-submit sub-declaration, while future reliable clients must require it explicitly. CP and IM compatibility evidence does not make CP or IM part of the target autonomous-development topology.
 
 ## 14. Safe Projection And Privacy
 
@@ -279,16 +307,25 @@ Public recovery surfaces return only bounded submit correlation and receipt fact
 
 This target contract makes these explicit non-claims:
 
-- no behavior implemented;
-- no public field or header selected;
-- no route selected;
+- no runtime behavior implemented;
+- no producer declaration field implemented;
+- no request DTO implemented;
+- no handler or decoder implemented;
+- no route implementation;
+- no persistence;
+- no schema or migration;
 - no exact HTTP code selected;
 - no error string selected;
-- no database or migration;
 - no persistent receipt-store implementation;
+- no final reliable request field names;
+- no final reliable schema/version strings;
 - no final `run_id` generation strategy;
 - no deterministic `run_id` decision;
+- no recovery query selected;
+- no supplemental header selected;
+- no reliable prepare selected;
 - no Nomad registration retry decision;
+- no Nomad behavior implemented;
 - no broad lifecycle store;
 - no scheduler;
 - no Coordinator schema;
@@ -298,13 +335,16 @@ This target contract makes these explicit non-claims:
 - no Development Program prerequisite;
 - no direct local Codex target path;
 - no CP target topology;
+- no general capability registry;
+- no silent unkeyed fallback;
 - no automatic merge or deployment behavior.
 
 ## 16. Required-Before-Implementation Gates
 
 Implementation requires these local gates before runtime behavior changes:
 
-- public opt-in and versioning decision;
+- preserved public opt-in and versioning docs-contract coverage;
+- reliable request and producer sub-contract model tests;
 - private request-equivalence and plan-binding decision;
 - narrow persistence and concurrency decision;
 - ES-to-Nomad uncertain-outcome reconciliation decision;
@@ -318,7 +358,12 @@ Implementation requires these local gates before runtime behavior changes:
 
 The following seams remain open:
 
-- header, body, or versioned DTO;
+- exact reliable producer sub-contract JSON field names;
+- exact reliable producer sub-contract family/version strings;
+- exact reliable request envelope field names;
+- exact reliable request schema/version strings;
+- submit key field name;
+- recovery field names;
 - replay-only versus query route;
 - exact outcome and error vocabulary;
 - storage implementation;

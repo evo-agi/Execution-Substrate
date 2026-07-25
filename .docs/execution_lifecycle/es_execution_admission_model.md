@@ -216,7 +216,18 @@ the code and tests win and this document must be realigned.
   loss, and ES-to-Nomad registration-response uncertainty lives in
   `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
   It preserves the current no-key submit DTOs and current `run_id` lifecycle
-  routes until a later versioned implementation exists.
+  routes until a later versioned implementation exists. The selected target
+  public shape keeps the existing `POST /v1/executions:submit` route while
+  requiring a future submit-specific reliable request family or envelope
+  distinct from `PrepareRequest`, with an in-band structural discriminator that
+  current strict decoding rejects. A changed current `schema_version` value
+  alone is not the selected reliable discriminator.
+- Future reliable clients must use both producer-declaration preflight and
+  in-band request discrimination. The additive reliable-submit producer
+  sub-contract remains narrow and versioned under the current
+  governed-execution declaration; it is not a generic capability registry,
+  health check, submit-readiness proof, admission proof, run authority,
+  lifecycle truth, scheduler API, or execution permission.
 - Nomad remains authoritative for submitted execution lifecycle. ES projects
   status, logs, and cancel observations from Nomad and serves retained opaque
   result bundles from ES-owned retained storage through the current bounded
@@ -438,7 +449,7 @@ ES does not own:
 
 | Surface | Class | What remains open |
 | --- | --- | --- |
-| Long-term request DTO and submit receipt vocabulary | `reopened seam` | Workstream C settles the ES-owned route roles and authority boundaries, not the final long-term DTO family. |
+| Long-term request DTO and submit receipt vocabulary | `reopened seam` | The reliable keyed-submit public opt-in/versioning tranche selects the shape class for the future reliable submit path: existing `POST /v1/executions:submit` route, additive narrow reliable-submit producer sub-contract, producer preflight plus structural body discrimination, and a submit-specific reliable request family distinct from `PrepareRequest`. Exact DTO field names, exact reliable schema/version strings, receipt vocabulary, error vocabulary, and recovery route remain open. |
 | Long-term role of `POST /v1/executions:prepare` | `reopened seam` | `:prepare` remains active today, but whether it survives unchanged as part of a later public execution model remains open. |
 | Long-term ES admission policy model | `reopened seam` | C6 proves only a replaceable ES-owned policy seam and one built-in bounded content policy. It does not settle a broad policy language, customer policy distribution, CGS/EGS policy redesign, external policy service, audit model, or durable policy-decision store. |
 | Runtime-profile selection vocabulary and whether it remains annotation based | `reopened seam` | The current annotation plus profile name are compatibility edges, not the final ES runtime-selection model. |

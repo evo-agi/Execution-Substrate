@@ -17,9 +17,12 @@ seams lives in `es_execution_admission_model.md`.
 The target submit idempotency, submit correlation, and recovery seam lives in
 `submit_idempotency_correlation_and_recovery.md`. That record is target-only:
 it does not implement reliable keyed submit, does not change current unkeyed
-submit, and does not select a route, header, body field, schema, storage
-engine, TTL, HTTP vocabulary, Nomad reconciliation algorithm, or `run_id`
-generation strategy.
+submit, and selects only the public opt-in/versioning posture for a later
+implementation: same submit route, distinct reliable request envelope, producer
+declaration preflight plus in-band body discrimination, no header-only opt-in,
+and no silent downgrade. It does not select final JSON field names, exact
+reliable schema/version strings, storage engine, TTL, HTTP vocabulary, recovery
+route, Nomad reconciliation algorithm, or `run_id` generation strategy.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -334,8 +337,26 @@ boundaries:
 
 The target design rule is that transport redelivery is not a new semantic
 execution. A future reliable keyed submit must converge exact retry on one
-authenticated-caller/key claim and at most one assigned ES `run_id`; it must
-not restage or submit a second Nomad job for the same exact keyed request.
+authenticated-caller/key claim and exactly one assigned ES `run_id` once the
+claim becomes effect-capable; it must not restage or submit a second Nomad job
+for the same exact keyed request.
+
+The selected public opt-in/versioning posture has two independent fail-closed
+gates. A reliable caller first authenticates and reads the current producer
+declaration, then requires the future narrow reliable-submit producer
+sub-contract and enabled status. The caller then sends a structurally distinct
+reliable request family or envelope on the existing
+`POST /v1/executions:submit` route. That reliable body carries an in-band
+structural discriminator unknown to the current `PrepareRequest` decoder, so a
+current server rejects it through strict body decoding rather than executing it
+as current unkeyed submit.
+
+Header-only reliable-submit opt-in is rejected because a current server may
+ignore an unknown header and run the current unkeyed request. The producer
+declaration is compatibility preflight only; it is not authorization, admission,
+health, submit readiness, run authority, lifecycle truth, scheduler API, or a
+generic capability registry. The reliable request discriminator is also not a
+substitute for producer-declaration preflight.
 
 The target contract reserves only narrow ES-owned submit correlation for
 recovery across ES restart. That state is protocol recovery evidence, not
@@ -343,8 +364,10 @@ Nomad lifecycle truth, not a scheduler, not a runtime status timeline, not
 result-content storage, and not Coordinator desired state. Nomad remains
 authoritative for submitted execution lifecycle.
 
-This document does not select a storage, transaction, route, schema, TTL,
-HTTP-code, header, body-field, deterministic-identity, or Nomad query design.
+This document does not select storage, transaction API, exact reliable JSON
+field names, exact reliable schema/version strings, TTL, HTTP-code or error
+vocabulary, recovery route, supplemental header, deterministic-identity, or
+Nomad query design.
 
 ## 10. Runtime identity and lifecycle interaction
 

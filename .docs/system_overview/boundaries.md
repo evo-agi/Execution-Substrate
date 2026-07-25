@@ -352,6 +352,13 @@ runtime-profile handling, and compatibility edges lives in
 - `GET /v1/executions:contract` remains a narrow producer compatibility
   declaration, not health, submit readiness, run authority, or a general
   capability registry.
+- ES also owns the future narrow reliable-submit producer sub-contract selected
+  by `submit_idempotency_correlation_and_recovery.md`. That sub-contract remains
+  additive under the current governed-execution declaration, versioned, and
+  limited to reliable-submit support, enabled status, bounded safe unavailable
+  reason, and minimum request discriminator; it is not a general capability
+  registry, plugin registry, health check, submit-readiness proof, admission
+  proof, run authority, lifecycle truth, or scheduler API.
 - `POST /v1/executions:prepare` remains bounded preflight and creates no run
   object or scheduler handoff.
 - `POST /v1/executions:submit` remains the MVP execution handoff surface:
@@ -556,6 +563,16 @@ runtime-profile handling, and compatibility edges lives in
 
 - `/v1/executions:prepare` exists as a bounded milestone surface and is explicitly not the permanent public API endpoint.
 - `/v1/executions:contract` exists as a bounded producer compatibility declaration for the current CP governed-execution path. It should not grow into a general capability registry by drift.
+- The future reliable-submit producer sub-contract is a bounded additive
+  declaration owned by ES. Reliable adapters and Coordinator consumers must
+  require it before reliable submit, but they do not own it and cannot use it as
+  execution authorization, admission proof, health, submit readiness, runtime
+  lifecycle truth, or a generic probing framework.
+- Future reliable keyed submit uses the existing `POST /v1/executions:submit`
+  route with a distinct submit-specific reliable request family and an in-band
+  structural discriminator that current strict decoding rejects. Header-only
+  opt-in is rejected, and disabled or unsupported reliable mode must not fall
+  back to current unkeyed submit.
 - Current runtime mount conventions use `/execution/staged`, `/execution/run`, `/execution/run/result`, and the current ES-owned runtime-identity backing layout.
 - The workload-visible runtime identity convention currently injects `EXEC_WORKLOAD_IDENTITY_ENDPOINT`.
 - `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the bounded workload-visible discovery
@@ -573,6 +590,11 @@ runtime-profile handling, and compatibility edges lives in
   compatibility remain preserved unless an explicit migration/versioning plan
   exists.
 - Current CP compatibility for publish -> prepare -> submit -> status/logs/result/cancel is a retained consumer edge. Breaking it requires an explicit compatibility, drain, migration, or versioning plan rather than an implied ES boundary change.
+- Current CP/demo, IM, and `control-plane-normal-shell/v1` compatibility remain
+  unchanged by the reliable-submit public opt-in/versioning docs tranche. CP and
+  IM may ignore the future additive reliable-submit sub-declaration for their
+  current compatibility checks; that evidence does not make CP or IM part of the
+  target autonomous-development topology.
 
 **Reopened seams**
 

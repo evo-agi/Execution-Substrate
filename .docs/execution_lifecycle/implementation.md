@@ -11,6 +11,9 @@ This file is specifically about where lifecycle behavior lives in code today: ha
 The target submit idempotency, submit correlation, and recovery contract is
 documented in `submit_idempotency_correlation_and_recovery.md`, but that
 target contract is not implemented in the current code.
+The public opt-in/versioning posture selected there is also future work: the
+current server still decodes the current `PrepareRequest` body for submit, and
+the current producer declaration has no reliable-submit producer sub-contract.
 
 ## 2. How to read this document
 
@@ -268,6 +271,13 @@ Where ES stops and Nomad takes over:
   caller key.
 - Current `SubmitResult` has no replay or submit-correlation vocabulary. It is
   the current bounded unkeyed receipt after confirmed Nomad response.
+- Current `handleSubmit` still decodes the current `PrepareRequest` body and
+  delegates that request to `Submit`; no submit-specific reliable request
+  envelope, reliable discriminator, or reliable request DTO is implemented.
+- The current producer contract declaration still has the current outer
+  `execution-substrate.producer-contract/v1` identity and current
+  `governed-execution-producer/v1` governed-execution identity only. No
+  reliable-submit producer sub-contract field or DTO is implemented.
 - Current code can be ambiguous at the caller-to-ES boundary when ES accepts a
   submission and produces a `run_id` but the caller or adapter loses the
   response.
@@ -278,6 +288,11 @@ Where ES stops and Nomad takes over:
   reliable proof that no provider effect was accepted.
 - The target reliable keyed-submit contract is not implemented here and must
   not be described as current behavior.
+- The selected future public shape remains: one additive narrow reliable-submit
+  producer sub-contract, the existing `POST /v1/executions:submit` route, a
+  distinct submit-specific reliable request family, producer-declaration
+  preflight plus in-band request discrimination, no header-only opt-in, and no
+  silent fallback to current unkeyed submit.
 
 ## 8. Lifecycle projection implementation
 

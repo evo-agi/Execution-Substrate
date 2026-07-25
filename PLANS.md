@@ -109,10 +109,21 @@ Correlation And Recovery inventory item. The detailed target contract lives in
 `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
 This tranche is documentation and docs-contract coverage only. It does not
 implement runtime behavior, does not change the current unkeyed submit request
-or response, does not select a route, header, body field, schema, storage
-engine, TTL, HTTP vocabulary, Nomad reconciliation algorithm, or `run_id`
-generation strategy, and does not displace unrelated ES product priorities
-globally.
+or response, and does not displace unrelated ES product priorities globally.
+It now freezes only the public opt-in/versioning posture for a future reliable
+keyed-submit implementation: keep the current outer producer-contract v1
+identity and current governed-execution contract identity, add one narrow
+versioned reliable-submit producer sub-contract under the governed-execution
+declaration, keep `POST /v1/executions:submit` as the route for both legacy and
+future reliable variants, require a submit-specific reliable request family
+distinct from `PrepareRequest`, require an in-band structural reliable-submit
+discriminator that current strict decoding rejects, require producer-declaration
+preflight plus in-band request discrimination as independent fail-closed gates,
+reject header-only opt-in, and forbid silent downgrade to current unkeyed
+submit. This tranche still does not select exact reliable JSON field names,
+exact reliable schema/version strings, storage engine, TTL, HTTP vocabulary,
+recovery route, Nomad reconciliation algorithm, or `run_id` generation
+strategy.
 
 Reliable dispatch remains blocked until later implementation and audit. Both
 caller-to-ES response loss and ES-to-Nomad registration-response uncertainty
