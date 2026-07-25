@@ -113,8 +113,15 @@ admission-local pure Go model and tests in
 persistence-neutral, unwired, and effect-free. It models opaque caller/key,
 effective-plan binding, phase, replay, disclosure, and Coordinator-progression
 rules without changing the current unkeyed submit request or response. Reliable
-submit is not implemented. Persistence and concurrency still own the future
-one winning durable caller/key claim and globally authoritative run assignment.
+submit is not implemented. The docs-contract ADR
+`.docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md`
+now freezes the future persistence/concurrency direction: a narrow ES-owned
+submit-correlation store, local embedded SQLite as the storage family, the
+current `CGO_ENABLED=0` build posture, an eventual CGO-free SQLite driver, a
+private same-package durable-record codec in
+`es/admission/internal/reliablesubmit`, revision/CAS semantics, and durable
+provider-effect intent before external I/O. It does not add a database,
+dependency, schema, migration, config, production source, or runtime behavior.
 This planning tranche does not displace unrelated ES product priorities
 globally. It freezes only the public opt-in/versioning posture for a future
 reliable keyed-submit implementation: keep the current outer producer-contract
@@ -127,9 +134,9 @@ discriminator that current strict decoding rejects, require producer-declaration
 preflight plus in-band request discrimination as independent fail-closed gates,
 reject header-only opt-in, and forbid silent downgrade to current unkeyed
 submit. This tranche still does not select exact reliable JSON field names,
-exact reliable schema/version strings, storage engine, TTL, HTTP vocabulary,
-recovery route, Nomad reconciliation algorithm, or `run_id` generation
-strategy.
+exact reliable schema/version strings, exact SQLite driver or version, schema
+or migration shape, state-path config key, TTL, HTTP vocabulary, recovery
+route, Nomad reconciliation algorithm, or `run_id` generation strategy.
 
 Reliable dispatch remains blocked until later implementation and audit. Both
 caller-to-ES response loss and ES-to-Nomad registration-response uncertainty

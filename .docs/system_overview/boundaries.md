@@ -100,6 +100,16 @@ Those absences are current facts, not design commitments.
   submitted execution lifecycle. Coordinator and adapters must not compensate
   for the seam by scraping Nomad, treating trace IDs or request IDs as recovery
   authority, or storing parallel submitted-runtime lifecycle truth.
+- ES also owns the target reliable-submit persistence and concurrency ADR at
+  `.docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md`.
+  That ADR selects only a narrow local SQLite submit-correlation store family,
+  the current `CGO_ENABLED=0` build posture, an eventual CGO-free SQLite driver,
+  private same-package hydration in `es/admission/internal/reliablesubmit`,
+  revision/CAS, durable provider-effect intent, tombstone/no-reuse retention,
+  and fail-closed corruption behavior. It does not implement persistence,
+  select a driver/version, add schema/config/source, reuse staging or retained
+  results as the database path, import Coordinator writer-session authority, or
+  make provider metadata a recovery source.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
   ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
@@ -359,6 +369,14 @@ runtime-profile handling, and compatibility edges lives in
   reason, and minimum request discriminator; it is not a general capability
   registry, plugin registry, health check, submit-readiness proof, admission
   proof, run authority, lifecycle truth, or scheduler API.
+- ES also owns the reliable-submit persistence and concurrency target decision
+  in `reliable_submit_persistence_and_concurrency.md`: a narrow local SQLite
+  submit-correlation store family, the current `CGO_ENABLED=0` build posture,
+  an eventual CGO-free SQLite driver, private same-package hydration,
+  revision/CAS, durable provider-effect intent, tombstone/no-reuse retention,
+  and fail-closed corruption behavior. It does not implement persistence, reuse
+  staging or retained results as the database path, import Coordinator
+  writer-session authority, or make provider metadata a recovery source.
 - `POST /v1/executions:prepare` remains bounded preflight and creates no run
   object or scheduler handoff.
 - `POST /v1/executions:submit` remains the MVP execution handoff surface:

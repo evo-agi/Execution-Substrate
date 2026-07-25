@@ -283,6 +283,14 @@ Where ES stops and Nomad takes over:
   `run_id` transition. The next source-bearing reliable-submit tranche must
   consume this package or explicitly stop and revise it; no second unused
   abstraction tranche may be layered on top without a concrete consumer.
+- The persistence and concurrency ADR
+  `reliable_submit_persistence_and_concurrency.md` is target-only
+  documentation. It selects local embedded SQLite as the future storage family,
+  preserves the current `CGO_ENABLED=0` build posture, requires an eventual
+  CGO-free SQLite driver, and selects private same-package persistence
+  hydration inside `es/admission/internal/reliablesubmit`. It does not add a
+  database, dependency, schema, migration, config field, production source, or
+  runtime behavior.
 - Current `Submit` has no submit idempotency key input, no submit correlation
   key, no exact replay path, no conflicting reuse path, no pending outcome
   path, no durable submit-correlation record, and no recovery lookup by

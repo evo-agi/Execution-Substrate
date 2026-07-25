@@ -15,14 +15,17 @@ admission composition, scheduler handoff, compatibility edges, and reopened
 seams lives in `es_execution_admission_model.md`.
 
 The target submit idempotency, submit correlation, and recovery seam lives in
-`submit_idempotency_correlation_and_recovery.md`. That record is target-only:
-it does not implement reliable keyed submit, does not change current unkeyed
-submit, and selects only the public opt-in/versioning posture for a later
-implementation: same submit route, distinct reliable request envelope, producer
-declaration preflight plus in-band body discrimination, no header-only opt-in,
-and no silent downgrade. It does not select final JSON field names, exact
-reliable schema/version strings, storage engine, TTL, HTTP vocabulary, recovery
-route, Nomad reconciliation algorithm, or `run_id` generation strategy.
+`submit_idempotency_correlation_and_recovery.md`, with the persistence and
+concurrency decision in `reliable_submit_persistence_and_concurrency.md`. Those
+records are target-only: they do not implement reliable keyed submit and do not
+change current unkeyed submit. They select the public opt-in/versioning posture,
+local embedded SQLite as the storage family, the current `CGO_ENABLED=0` build
+posture, an eventual CGO-free SQLite driver, private same-package persistence
+hydration in `es/admission/internal/reliablesubmit`, revision/CAS, and
+provider-effect intent before external I/O. They do not select final JSON field
+names, exact reliable schema/version strings, exact SQLite driver or version,
+table names, state-path config key, TTL, HTTP vocabulary, recovery route, Nomad
+reconciliation algorithm, or `run_id` generation strategy.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -399,9 +402,21 @@ assigned independently; the later persistence/concurrency layer must provide
 one durable winning caller/key claim and one authoritative run assignment with
 uniqueness and compare-and-swap or equivalent transaction semantics.
 
-This document does not select storage, transaction API, exact reliable JSON
-field names, exact reliable schema/version strings, TTL, HTTP-code or error
-vocabulary, recovery route, supplemental header, deterministic-identity, or
+The persistence and concurrency ADR is
+`reliable_submit_persistence_and_concurrency.md`. It selects a narrow ES-owned
+submit-correlation store, local embedded SQLite as the storage family, the
+current `CGO_ENABLED=0` build posture, an eventual CGO-free SQLite driver,
+private same-package persistence hydration in
+`es/admission/internal/reliablesubmit`, revision/CAS semantics, durable
+provider-effect intent before external I/O, tombstone/no-reuse retention, and
+fail-closed corruption behavior. It remains docs/tests only and implements no
+database, dependency, schema, migration, config, production source, or runtime
+behavior.
+
+This document still does not select exact reliable JSON field names, exact
+reliable schema/version strings, exact SQLite driver or version, table names,
+journal mode, busy timeout, state-path config key, TTL, HTTP-code or error
+vocabulary, recovery route, supplemental header, deterministic identity, or
 Nomad query design.
 
 ## 10. Runtime identity and lifecycle interaction

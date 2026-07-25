@@ -6,9 +6,9 @@ TARGET-ONLY: submit idempotency, correlation, and recovery in this document are 
 
 CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.
 
-This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, does not select a persistence implementation, and does not enable Coordinator-backed dispatch. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
+This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, does not implement persistence, and does not enable Coordinator-backed dispatch. The persistence and concurrency ADR in `reliable_submit_persistence_and_concurrency.md` now selects local embedded SQLite as the future storage family while leaving the exact CGO-free driver, schema, migration, and runtime integration open. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
 
-This document now selects only the public opt-in and versioning posture for a future implementation: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, durable store, migration, Nomad behavior, or runtime behavior is implemented by this document.
+This document now selects the public opt-in/versioning posture and delegates the persistence/concurrency decision to `reliable_submit_persistence_and_concurrency.md`: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, durable store, migration, Nomad behavior, or runtime behavior is implemented by this document.
 
 The first source-bearing reliable-submit tranche is now present as the
 admission-local internal pure Go package
@@ -254,7 +254,7 @@ The narrow submit-correlation record must not become:
 - Coordinator desired state;
 - a Nomad mirror.
 
-This document does not select database, table, file, lock, migration, transaction API, or storage implementation shape.
+The persistence and concurrency ADR now selects local embedded SQLite as the storage family for the first implementation path, preserves the current `CGO_ENABLED=0` build posture, requires an eventual CGO-free SQLite driver, selects private same-package persistence hydration in `es/admission/internal/reliablesubmit`, and freezes revision/CAS plus provider-effect-intent ordering. It does not select the exact driver, driver version, table names, journal mode, busy timeout, state-path config key, migration implementation, TTL, or runtime integration.
 
 ## 8. Ordering And Concurrency Invariants
 
@@ -407,7 +407,7 @@ Implementation requires these local gates before runtime behavior changes:
 - pure internal reliable-submit model tests;
 - reliable request and producer sub-contract model tests;
 - private request-equivalence and plan-binding decision;
-- narrow persistence and concurrency decision;
+- narrow persistence and concurrency ADR decision;
 - ES-to-Nomad uncertain-outcome reconciliation decision;
 - retention and expiry decision;
 - security and privacy review;
@@ -427,8 +427,11 @@ The following seams remain open:
 - recovery field names;
 - replay-only versus query route;
 - exact outcome and error vocabulary;
-- storage implementation;
-- lock and concurrency implementation;
+- exact CGO-free SQLite driver and version;
+- exact SQLite table, migration, journal mode, busy timeout, backup, and corruption API shape;
+- exact reliable-submit state-path config key;
+- exact store implementation files;
+- exact lock timeout and concurrency implementation details within the selected SQLite family;
 - TTL, tombstone, and garbage collection;
 - canonicalization;
 - private binding mechanism;
