@@ -12,6 +12,7 @@ remote_alpha_deploy_es_binaries_remote_stage_root_default="/var/tmp/execution-su
 remote_alpha_deploy_es_binaries_remote_summary_path_default="/var/tmp/execution-substrate-remote-alpha/es-binary-deployment-summary.json"
 remote_alpha_deploy_es_binaries_backup_root_dir_default="/var/tmp/execution-substrate-remote-alpha"
 remote_alpha_deploy_es_binaries_default_output_dir="${REPO_ROOT}/.out/remote-alpha-m75q"
+remote_alpha_deploy_es_binaries_required_go_version="go1.26.5"
 
 REMOTE_ALPHA_DEPLOY_ES_BINARIES_KEEP_STAGING_ON_FAILURE="false"
 REMOTE_ALPHA_DEPLOY_ES_BINARIES_SHOW_HELP="false"
@@ -150,6 +151,17 @@ remote_alpha_deploy_es_binaries_require_command() {
   fi
 }
 
+remote_alpha_deploy_es_binaries_require_supported_go_toolchain() {
+  local observed_version
+
+  remote_alpha_deploy_es_binaries_require_command go || return 1
+  observed_version="$(env GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}' || true)"
+  if [[ "${observed_version}" != "${remote_alpha_deploy_es_binaries_required_go_version}" ]]; then
+    echo "unsupported Go toolchain: expected ${remote_alpha_deploy_es_binaries_required_go_version}, observed ${observed_version:-unavailable}" >&2
+    return 1
+  fi
+}
+
 remote_alpha_deploy_es_binaries_json_field() {
   local json_path=$1
   local dotted_path=$2
@@ -267,6 +279,7 @@ SERVICE_UNIT_PATH = sys.argv[9]
 BACKUP_ROOT_DIR = sys.argv[10]
 REPO_ROOT = pathlib.Path(sys.argv[11])
 CURRENT_SUPPORTED_SERVICE_IDENTITY = ("es", "es")
+SUPPORTED_GO_VERSION = "go1.26.5"
 
 
 def utc_now():
@@ -281,6 +294,21 @@ def make_status(classification, summary, **kwargs):
 
 def run_command(args, env=None, cwd=None):
     return subprocess.run(args, capture_output=True, text=True, env=env, cwd=cwd)
+
+
+def unsupported_go_toolchain_status():
+    proc = run_command(["env", "GOTOOLCHAIN=local", "go", "version"])
+    observed = ""
+    if proc.stdout:
+        parts = proc.stdout.strip().split()
+        if len(parts) >= 3:
+            observed = parts[2]
+    if proc.returncode != 0 or observed != SUPPORTED_GO_VERSION:
+        return make_status(
+            "blocker",
+            f"unsupported Go toolchain: expected {SUPPORTED_GO_VERSION}, observed {observed or 'unavailable'}",
+        )
+    return None
 
 
 def mode_string(mode_bits):
@@ -553,12 +581,16 @@ def compute_source_digest_manifest(repo_root):
 
 
 def build_local_payload(repo_root):
+    go_status = unsupported_go_toolchain_status()
+    if go_status is not None:
+        return None, go_status
+
     tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="es-binary-build-"))
     es_path = tmpdir / "es"
     runtime_path = tmpdir / "es-runtime-support"
     build_commands = [
-        ["env", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(es_path), "./cmd/es"],
-        ["env", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(runtime_path), "./cmd/es-runtime-support"],
+        ["env", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(es_path), "./cmd/es"],
+        ["env", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "build", "-o", os.fspath(runtime_path), "./cmd/es-runtime-support"],
     ]
     for command in build_commands:
         proc = run_command(command, cwd=os.fspath(repo_root))
@@ -1070,8 +1102,9 @@ remote_alpha_deploy_es_binaries_stage_make_local_payload_tree() {
   local payload_dir=$1
   mkdir -p "${payload_dir}"
 
-  env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es
-  env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support
+  remote_alpha_deploy_es_binaries_require_supported_go_toolchain
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es" ./cmd/es
+  env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "${payload_dir}/es-runtime-support" ./cmd/es-runtime-support
 
   python3 - "${payload_dir}/build-provenance.json" "${REPO_ROOT}" <<'PY'
 import hashlib
@@ -1122,8 +1155,8 @@ payload = {
     "git_status_short": git_status,
     "dirty_worktree": dirty,
     "build_commands": [
-        "env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es ./cmd/es",
-        "env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es-runtime-support ./cmd/es-runtime-support",
+        "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es ./cmd/es",
+        "env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es-runtime-support ./cmd/es-runtime-support",
     ],
     "source_file_digests": manifest,
 }
@@ -1786,7 +1819,7 @@ remote_alpha_deploy_es_binaries_stage_main() {
   remote_alpha_deploy_es_binaries_require_command python3 || return 1
   remote_alpha_deploy_es_binaries_require_command ssh || return 1
   remote_alpha_deploy_es_binaries_require_command scp || return 1
-  remote_alpha_deploy_es_binaries_require_command go || return 1
+  remote_alpha_deploy_es_binaries_require_supported_go_toolchain || return 1
 
   remote_alpha_deploy_es_binaries_stage_ensure_parent_dir "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_CHECK_OUTPUT_PATH}"
   remote_alpha_deploy_es_binaries_stage_ensure_parent_dir "${REMOTE_ALPHA_STAGE_ES_BINARY_DEPLOY_APPLY_SUMMARY_OUTPUT_PATH}"

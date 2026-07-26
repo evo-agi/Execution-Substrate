@@ -122,6 +122,10 @@ private same-package durable-record codec in
 `es/admission/internal/reliablesubmit`, revision/CAS semantics, and durable
 provider-effect intent before external I/O. It does not add a database,
 dependency, schema, migration, config, production source, or runtime behavior.
+The current Go build baseline is exact Go 1.26.5 as documented in
+`.docs/system_overview/go_toolchain_baseline.md`; supported build/proof scripts
+use `GOTOOLCHAIN=local` and do not add a database dependency or storage-family
+implementation.
 This planning tranche does not displace unrelated ES product priorities
 globally. It freezes only the public opt-in/versioning posture for a future
 reliable keyed-submit implementation: keep the current outer producer-contract

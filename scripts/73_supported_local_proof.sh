@@ -21,6 +21,7 @@ SUPPORTED_LOCAL_SPIRE_VERSION="${SUPPORTED_LOCAL_SPIRE_VERSION:-1.14.4}"
 SUPPORTED_LOCAL_SPIRE_ASSET="${SUPPORTED_LOCAL_SPIRE_ASSET:-spire-${SUPPORTED_LOCAL_SPIRE_VERSION}-linux-arm64-musl.tar.gz}"
 SUPPORTED_LOCAL_SPIRE_URL="${SUPPORTED_LOCAL_SPIRE_URL:-https://github.com/spiffe/spire/releases/download/v${SUPPORTED_LOCAL_SPIRE_VERSION}/${SUPPORTED_LOCAL_SPIRE_ASSET}}"
 SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL:-}"
+GO_REQUIRED_VERSION="go1.26.5"
 
 CONTROL_PLANE_STARTED="false"
 
@@ -66,6 +67,38 @@ require_command() {
   if ! command -v "${name}" >/dev/null 2>&1; then
     echo "${name} is required" >&2
     exit 1
+  fi
+}
+
+require_supported_go_toolchain() {
+  local observed_version
+
+  require_command go
+  observed_version="$(env GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}' || true)"
+  if [[ "${observed_version}" != "${GO_REQUIRED_VERSION}" ]]; then
+    echo "unsupported Go toolchain: expected ${GO_REQUIRED_VERSION}, observed ${observed_version:-unavailable}" >&2
+    exit 1
+  fi
+}
+
+supported_local_proof_requires_local_go() {
+  # local-Go-required: the proof wrapper cross-builds es-runtime-support before
+  # it writes host proof state. A prebuilt SPIRE tarball bypasses only the SPIRE
+  # download; it is not a no-local-Go proof path.
+  # prebuilt/no-local-Go: not applicable for this proof entry point.
+  return 0
+}
+
+preflight_supported_local_proof_go_if_required() {
+  if supported_local_proof_requires_local_go; then
+    require_supported_go_toolchain
+  fi
+}
+
+supported_local_proof_repair_test_sentinel() {
+  if [[ "${SUPPORTED_LOCAL_REPAIR_TEST_SENTINEL:-}" == "after-go-preflight" ]]; then
+    echo "supported-local proof exact Go preflight complete"
+    exit 0
   fi
 }
 
@@ -255,10 +288,11 @@ PY
 
 prepare_host_tooling() {
   mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin"
+  require_supported_go_toolchain
 
   (
     cd "${REPO_ROOT}"
-    env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
       -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support" \
       ./cmd/es-runtime-support
   )
@@ -611,7 +645,6 @@ EOF
 
 run() {
   require_command limactl
-  require_command go
   require_command python3
   require_command tar
   require_command curl
@@ -620,6 +653,10 @@ run() {
     echo "host proof dir already exists: ${SUPPORTED_LOCAL_HOST_PROOF_DIR}" >&2
     exit 1
   fi
+
+  # Exact Go preflight for local-Go-required proof paths must precede proof/process/workspace mutation.
+  preflight_supported_local_proof_go_if_required
+  supported_local_proof_repair_test_sentinel
 
   mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
   write_proof_metadata

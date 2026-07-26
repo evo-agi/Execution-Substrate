@@ -90,6 +90,12 @@ NOMAD_CONFIG_BACKUP_PATH="${NOMAD_CONFIG_DIR}/nomad.hcl.execution-substrate.bak"
 NOMAD_DATA_DIR="/opt/nomad/data"
 NOMAD_HTTP_ADDR="${NOMAD_HTTP_ADDR:-http://127.0.0.1:4646}"
 NOMAD_MANAGED_MARKER="# Managed by Execution Substrate scripts/70_linux_setup.sh for the single-node workload-zone baseline."
+GO_REQUIRED_VERSION="go1.26.5"
+GO_DOWNLOAD_BASE_URL="https://go.dev/dl"
+GO_PATH_PROFILE="/etc/profile.d/execution-substrate-go.sh"
+GO_SELECTED_ARCHIVE=""
+GO_SELECTED_SHA256=""
+GO_TOOLCHAIN_ARCHIVE_CLEANUP_PATH=""
 CURRENT_USER="$(id -un)"
 DOCKER_GROUP_CHANGED=0
 SUPPORTED_SUBSTRATE_READY=0
@@ -99,6 +105,134 @@ cleanup_tempfiles() {
   for path in "$@"; do
     rm -f "${path}"
   done
+}
+
+select_go_toolchain_archive() {
+  local machine
+
+  machine="$(uname -m)"
+  case "${machine}" in
+    x86_64|amd64)
+      GO_SELECTED_ARCHIVE="go1.26.5.linux-amd64.tar.gz"
+      GO_SELECTED_SHA256="5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"
+      ;;
+    aarch64|arm64)
+      GO_SELECTED_ARCHIVE="go1.26.5.linux-arm64.tar.gz"
+      GO_SELECTED_SHA256="fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49"
+      ;;
+    *)
+      echo "unsupported Linux architecture for Go ${GO_REQUIRED_VERSION}: ${machine}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+cleanup_go_toolchain_archive() {
+  if [[ -n "${GO_TOOLCHAIN_ARCHIVE_CLEANUP_PATH}" ]]; then
+    rm -f -- "${GO_TOOLCHAIN_ARCHIVE_CLEANUP_PATH}"
+  fi
+}
+
+clear_go_toolchain_archive_cleanup() {
+  trap - EXIT
+  trap - HUP
+  trap - INT
+  trap - TERM
+  GO_TOOLCHAIN_ARCHIVE_CLEANUP_PATH=""
+}
+
+go_toolchain_archive_cleanup_exit() {
+  local status="${1:-0}"
+
+  cleanup_go_toolchain_archive
+  clear_go_toolchain_archive_cleanup
+  exit "${status}"
+}
+
+go_toolchain_archive_cleanup_signal() {
+  local signal="${1}"
+
+  cleanup_go_toolchain_archive
+  clear_go_toolchain_archive_cleanup
+  kill -s "${signal}" "$$"
+  exit 128
+}
+
+require_go_toolchain_archive_cleanup_trap_ownership() {
+  local signal
+
+  for signal in EXIT HUP INT TERM; do
+    if [[ -n "$(trap -p "${signal}")" ]]; then
+      echo "pre-existing ${signal} trap prevents Go archive installation: standalone installer requires exclusive cleanup-trap ownership for the bounded Go archive installation step" >&2
+      return 1
+    fi
+  done
+}
+
+register_go_toolchain_archive_cleanup() {
+  local archive_path="${1}"
+
+  GO_TOOLCHAIN_ARCHIVE_CLEANUP_PATH="${archive_path}"
+  trap 'go_toolchain_archive_cleanup_exit "$?"' EXIT
+  trap 'go_toolchain_archive_cleanup_signal HUP' HUP
+  trap 'go_toolchain_archive_cleanup_signal INT' INT
+  trap 'go_toolchain_archive_cleanup_signal TERM' TERM
+}
+
+finish_go_toolchain_archive_cleanup() {
+  local status=$?
+
+  cleanup_go_toolchain_archive
+  clear_go_toolchain_archive_cleanup
+  return "${status}"
+}
+
+install_go_toolchain() {
+  local archive
+  local expected_sha256
+  local download_url
+  local archive_path
+  local observed_sha256
+  local observed_version
+
+  archive="${GO_SELECTED_ARCHIVE}"
+  expected_sha256="${GO_SELECTED_SHA256}"
+  if [[ -z "${archive}" || -z "${expected_sha256}" ]]; then
+    echo "Go ${GO_REQUIRED_VERSION} archive selection preflight did not run" >&2
+    exit 1
+  fi
+
+  require_go_toolchain_archive_cleanup_trap_ownership
+
+  download_url="${GO_DOWNLOAD_BASE_URL}/${archive}"
+  archive_path="$(mktemp)"
+  register_go_toolchain_archive_cleanup "${archive_path}"
+  echo "==> Installing official Go ${GO_REQUIRED_VERSION} from ${download_url}"
+  if ! curl --fail --location --silent --show-error -o "${archive_path}" "${download_url}"; then
+    echo "failed to download official Go archive ${archive}" >&2
+    exit 1
+  fi
+
+  observed_sha256="$(sha256sum "${archive_path}" | awk '{print $1}')"
+  if [[ "${observed_sha256}" != "${expected_sha256}" ]]; then
+    echo "Go archive digest mismatch for ${archive}: expected ${expected_sha256} observed ${observed_sha256}" >&2
+    exit 1
+  fi
+
+  sudo rm -rf /usr/local/go
+  sudo mkdir -p /usr/local
+  sudo tar -C /usr/local -xzf "${archive_path}"
+
+  printf '%s\n' 'export PATH="/usr/local/go/bin:${PATH}"' | sudo tee "${GO_PATH_PROFILE}" >/dev/null
+  sudo chmod 0644 "${GO_PATH_PROFILE}"
+  export PATH="/usr/local/go/bin:${PATH}"
+
+  observed_version="$(env GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}' || true)"
+  if [[ "${observed_version}" != "${GO_REQUIRED_VERSION}" ]]; then
+    echo "unsupported Go toolchain: expected ${GO_REQUIRED_VERSION}, observed ${observed_version:-unavailable}" >&2
+    exit 1
+  fi
+  finish_go_toolchain_archive_cleanup
 }
 
 ensure_user_in_docker_group() {
@@ -366,6 +500,10 @@ PY
   SUPPORTED_SUBSTRATE_READY=1
 }
 
+# Non-mutating Go archive selection must run before the first sudo invocation.
+select_go_toolchain_archive
+require_go_toolchain_archive_cleanup_trap_ownership
+
 echo "==> Validating sudo access"
 sudo -v
 
@@ -383,8 +521,9 @@ sudo apt-get install -y \
   python3 \
   software-properties-common \
   unzip \
-  docker.io \
-  golang-go
+  docker.io
+
+install_go_toolchain
 
 # Add the official HashiCorp apt repository so vault and nomad come from a
 # predictable source on Ubuntu/Debian systems.
@@ -467,7 +606,7 @@ printf 'ssh: '; ssh -V 2>&1 | head -n 1
 printf 'python3: '; python3 --version
 printf 'openssl: '; openssl version
 printf 'curl: '; curl --version | head -n 1
-printf 'go: '; go version
+printf 'go: '; env GOTOOLCHAIN=local go version
 printf 'vault: '; vault version | head -n 1
 printf 'nomad: '; nomad version | head -n 1
 printf 'docker: '; docker --version

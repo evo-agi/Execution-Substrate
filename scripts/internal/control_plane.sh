@@ -35,28 +35,38 @@ control_plane_image_build_mode() {
 }
 
 control_plane_target_arch() {
+  local machine
+  local goarch
+
   if [[ -n "${CONTROL_PLANE_TARGETARCH:-}" ]]; then
     printf '%s\n' "${CONTROL_PLANE_TARGETARCH}"
     return 0
   fi
 
-  if command -v go >/dev/null 2>&1; then
-    go env GOARCH
-    return 0
-  fi
-
-  case "$(uname -m)" in
+  machine="$(uname -m)"
+  case "${machine}" in
     x86_64|amd64)
       printf 'amd64\n'
+      return 0
       ;;
     aarch64|arm64)
       printf 'arm64\n'
-      ;;
-    *)
-      echo "unable to determine control-plane image target architecture for $(uname -m)" >&2
-      return 1
+      return 0
       ;;
   esac
+
+  if command -v go >/dev/null 2>&1; then
+    goarch="$(env GOTOOLCHAIN=local go env GOARCH 2>/dev/null || true)"
+    case "${goarch}" in
+      amd64|arm64)
+        printf '%s\n' "${goarch}"
+        return 0
+        ;;
+    esac
+  fi
+
+  echo "unable to determine control-plane image target architecture for ${machine}" >&2
+  return 1
 }
 
 control_plane_binary_path() {

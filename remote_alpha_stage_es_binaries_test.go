@@ -95,7 +95,13 @@ func setupFakeRemoteESBinaryDeploymentStageHarness(t *testing.T, checkOnlyReport
 		uploadLogPath: filepath.Join(tmpDir, "uploaded-paths.log"),
 	}
 
-	writeExecutable(t, localBin, "go", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, localBin, "go", `#!/bin/sh
+if [ "$1" = "version" ]; then
+  echo "go version go1.26.5 linux/amd64"
+  exit 0
+fi
+exit 0
+`)
 	writeExecutable(t, localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 target="$1"
@@ -488,7 +494,13 @@ func TestRemoteAlphaESBinaryDeploymentStageMissingUploadSourceIsStructured(t *te
 	scpLogPath := filepath.Join(tmpDir, "scp.log")
 	writeExecutable(t, fakeBin, "ssh", fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexit 0\n", sshLogPath))
 	writeExecutable(t, fakeBin, "scp", fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexit 0\n", scpLogPath))
-	writeExecutable(t, fakeBin, "go", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, fakeBin, "go", `#!/bin/sh
+if [ "$1" = "version" ]; then
+  echo "go version go1.26.5 linux/amd64"
+  exit 0
+fi
+exit 0
+`)
 
 	outputDir := filepath.Join(tmpDir, "output")
 	shellBody := fmt.Sprintf(`

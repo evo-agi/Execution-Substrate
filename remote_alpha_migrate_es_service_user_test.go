@@ -287,9 +287,6 @@ func setupFakeESServiceUserMigrationCommands(
 	allGroups := append([]string{groupName}, account.SupplementaryGroups...)
 	groupMembers := account.GroupEntryMembers
 	groupMembersCSV := strings.Join(groupMembers, ",")
-	if groupMembersCSV != "" {
-		groupMembersCSV = groupMembersCSV
-	}
 
 	writeExecutable(t, dir, "id", fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "-u" ] && [ $# -eq 1 ]; then

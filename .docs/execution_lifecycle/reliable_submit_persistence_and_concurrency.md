@@ -442,7 +442,7 @@ reliable-submit store path.
 Before adding a SQLite driver or concrete store source, the dependency-selection
 tranche must verify from primary sources:
 
-- Go 1.22 compatibility;
+- Go 1.26.5 compatibility;
 - CGO-free builds under `CGO_ENABLED=0`;
 - linux/amd64 and linux/arm64 support;
 - `database/sql` behavior or a documented replacement API decision;

@@ -1,7 +1,11 @@
 package executionsubstrate_test
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -146,6 +150,365 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 			t.Fatalf("%s must not contain %q", label, phrase)
 		}
 	}
+}
+
+func assertContainsInOrder(t *testing.T, label string, text string, phrases ...string) {
+	t.Helper()
+
+	offset := 0
+	for _, phrase := range phrases {
+		index := strings.Index(text[offset:], phrase)
+		if index < 0 {
+			t.Fatalf("%s missing ordered phrase %q after offset %d", label, phrase, offset)
+		}
+		offset += index + len(phrase)
+	}
+}
+
+func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
+	goMod := mustRead(t, "go.mod")
+	assertContainsAll(t, "go.mod Go 1.26.5 baseline", goMod,
+		"\ngo 1.26.5\n",
+		"github.com/go-jose/go-jose/v4 v4.0.4",
+		"github.com/spiffe/go-spiffe/v2 v2.4.0",
+		"golang.org/x/sys v0.30.0",
+		"google.golang.org/grpc v1.67.1",
+	)
+	if strings.Contains(goMod, "\ntoolchain ") {
+		t.Fatalf("go.mod must not commit an explicit toolchain directive")
+	}
+	lowerGoMod := strings.ToLower(goMod)
+	assertContainsNone(t, "go.mod database dependencies", lowerGoMod,
+		"sqlite",
+		"postgres",
+		"pgx",
+		"lib/pq",
+		"modernc.org/sqlite",
+		"mattn/go-sqlite3",
+	)
+
+	goSum := mustRead(t, "go.sum")
+	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(goSum))); got != "e775beae8486fbeea524ce290f28c8a2eb3713f44f88bf3d26147a53ea62f0da" {
+		t.Fatalf("go.sum SHA-256 changed: got %s", got)
+	}
+
+	baselineDoc := mustRead(t, ".docs/system_overview/go_toolchain_baseline.md")
+	currentStatus := compactDocSection(t, baselineDoc, "## 1. Current Status", "## 2. Module Policy")
+	modulePolicy := compactDocSection(t, baselineDoc, "## 2. Module Policy", "## 3. Toolchain-Selection Policy")
+	toolchainPolicy := compactDocSection(t, baselineDoc, "## 3. Toolchain-Selection Policy", "## 4. Supported Builds")
+	supportedBuilds := compactDocSection(t, baselineDoc, "## 4. Supported Builds", "## 5. Setup And Docker Treatment")
+	setupDocker := compactDocSection(t, baselineDoc, "## 5. Setup And Docker Treatment", "## 6. Offline Behavior")
+	offline := compactDocSection(t, baselineDoc, "## 6. Offline Behavior", "## 7. Compatibility And Runtime Limits")
+	runtimeLimits := compactDocSection(t, baselineDoc, "## 7. Compatibility And Runtime Limits", "## 8. Database Independence")
+	databaseIndependence := compactDocSection(t, baselineDoc, "## 8. Database Independence", "## 9. Rollback")
+	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Explicit Non-Claims")
+	nonClaims := compactDocSection(t, baselineDoc, "## 10. Explicit Non-Claims", "")
+	assertContainsAll(t, "Go baseline current status", currentStatus,
+		"Go 1.26.5 is the current Execution Substrate minimum Go version",
+		"supported scripted build/proof toolchain",
+		"selects no database dependency",
+	)
+	assertContainsAll(t, "Go baseline module policy", modulePolicy,
+		"go 1.26.5",
+		"no explicit `toolchain` directive",
+		"does not upgrade direct or transitive module dependencies",
+		"`go.sum` remains unchanged",
+	)
+	assertContainsAll(t, "Go baseline toolchain policy", toolchainPolicy,
+		"`GOTOOLCHAIN=local`",
+		"exactly `go1.26.5`",
+		"must not rely on hidden automatic toolchain download",
+		"older local Go toolchain fails closed",
+		"newer local Go toolchain is not silently treated as the exact supported proof/build toolchain",
+	)
+	assertContainsAll(t, "Go baseline supported builds", supportedBuilds,
+		"host development/build commands",
+		"CGO-free linux/amd64 builds",
+		"CGO-free linux/arm64 builds",
+		"every command package under `cmd/...`",
+		"`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`",
+	)
+	assertContainsAll(t, "Go baseline setup and Docker", setupDocker,
+		"exact official Go 1.26.5 archives",
+		"SHA-256 verification",
+		"fails closed for unsupported Linux architectures",
+		"`golang:1.26.5-alpine3.24`",
+		"`ENV GOTOOLCHAIN=local`",
+		"must not be hand-edited",
+	)
+	assertContainsAll(t, "Go baseline offline behavior", offline,
+		"Warm-cache `GOPROXY=off` builds are supported",
+		"cold cache requires explicit prior dependency and toolchain availability",
+		"introduces no vendoring claim",
+	)
+	assertContainsAll(t, "Go baseline runtime limits", runtimeLimits,
+		"Linux cross-build success is not Linux runtime proof",
+		"Process handling",
+		"signal handling",
+		"filesystem ownership",
+		"TLS/SPIFFE behavior",
+		"privilege-helper runtime behavior",
+	)
+	assertContainsAll(t, "Go baseline database independence", databaseIndependence,
+		"permits later maintained SQLite-driver and PostgreSQL-client evaluations",
+		"selects neither storage family nor dependency",
+	)
+	assertContainsAll(t, "Go baseline rollback", rollback,
+		"one bounded build-contract change",
+		"No database migration",
+		"runtime-state migration",
+	)
+	assertContainsAll(t, "Go baseline non-claims", nonClaims,
+		"no database",
+		"no runtime behavior change",
+		"no CI system introduced",
+		"no vendoring",
+		"no system-wide toolchain manager",
+		"no Linux runtime proof",
+		"no deployment performed",
+	)
+
+	linuxSetup := mustRead(t, "scripts/70_linux_setup.sh")
+	assertContainsAll(t, "Linux setup exact official Go install", linuxSetup,
+		"GO_REQUIRED_VERSION=\"go1.26.5\"",
+		"GO_DOWNLOAD_BASE_URL=\"https://go.dev/dl\"",
+		"select_go_toolchain_archive()",
+		"go1.26.5.linux-amd64.tar.gz",
+		"5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053",
+		"go1.26.5.linux-arm64.tar.gz",
+		"fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49",
+		"unsupported Linux architecture for Go ${GO_REQUIRED_VERSION}",
+		"require_go_toolchain_archive_cleanup_trap_ownership()",
+		"for signal in EXIT HUP INT TERM",
+		"trap -p \"${signal}\"",
+		"pre-existing ${signal} trap prevents Go archive installation",
+		"standalone installer requires exclusive cleanup-trap ownership for the bounded Go archive installation step",
+		"register_go_toolchain_archive_cleanup \"${archive_path}\"",
+		"trap 'go_toolchain_archive_cleanup_exit \"$?\"' EXIT",
+		"trap 'go_toolchain_archive_cleanup_signal HUP' HUP",
+		"kill -s \"${signal}\" \"$$\"",
+		"sudo rm -rf /usr/local/go",
+		"env GOTOOLCHAIN=local go version",
+	)
+	assertContainsInOrder(t, "Linux setup archive selection before sudo", linuxSetup,
+		"# Non-mutating Go archive selection must run before the first sudo invocation.",
+		"select_go_toolchain_archive",
+		"require_go_toolchain_archive_cleanup_trap_ownership",
+		"sudo -v",
+	)
+	assertContainsInOrder(t, "Linux setup trap ownership before mktemp", linuxSetup,
+		"if [[ -z \"${archive}\" || -z \"${expected_sha256}\" ]]",
+		"require_go_toolchain_archive_cleanup_trap_ownership",
+		"download_url=\"${GO_DOWNLOAD_BASE_URL}/${archive}\"",
+		"archive_path=\"$(mktemp)\"",
+		"register_go_toolchain_archive_cleanup \"${archive_path}\"",
+	)
+	assertContainsInOrder(t, "Linux setup cleanup trap after mktemp", linuxSetup,
+		"archive_path=\"$(mktemp)\"",
+		"register_go_toolchain_archive_cleanup \"${archive_path}\"",
+	)
+	assertContainsInOrder(t, "Linux setup digest before replacement", linuxSetup,
+		"observed_sha256=\"$(sha256sum",
+		"sudo rm -rf /usr/local/go",
+	)
+	assertContainsNone(t, "Linux setup distro Go package", linuxSetup, "golang-go")
+	assertContainsNone(t, "Linux setup pre-existing trap composition", linuxSetup,
+		"GO_TOOLCHAIN_PREVIOUS",
+		"restore_go_toolchain_archive_cleanup_traps",
+		"eval ",
+	)
+
+	supportedSetup := mustRead(t, "scripts/72_supported_local_setup.sh")
+	assertContainsAll(t, "supported-local setup Go policy", supportedSetup,
+		"GO_REQUIRED_VERSION=\"go1.26.5\"",
+		"env GOTOOLCHAIN=local go version",
+		"supported_local_setup_requires_local_go()",
+		"prebuilt/no-local-Go: not applicable for this setup entry point.",
+		"preflight_supported_local_setup_go_if_required",
+		"target_arch=\"$(env GOTOOLCHAIN=local go env GOARCH)\"",
+		"env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=\"${target_arch}\" go build",
+		"env GOTOOLCHAIN=local go run",
+	)
+	assertContainsInOrder(t, "supported-local setup preflight before mutation", supportedSetup,
+		"# Exact Go preflight for local-Go-required setup paths must precede proof/process/workspace mutation.",
+		"preflight_supported_local_setup_go_if_required",
+		"supported_local_setup_repair_test_sentinel",
+		"stop_background_process",
+	)
+
+	supportedProof := mustRead(t, "scripts/73_supported_local_proof.sh")
+	assertContainsAll(t, "supported-local proof Go policy", supportedProof,
+		"GO_REQUIRED_VERSION=\"go1.26.5\"",
+		"env GOTOOLCHAIN=local go version",
+		"supported_local_proof_requires_local_go()",
+		"prebuilt/no-local-Go: not applicable for this proof entry point.",
+		"preflight_supported_local_proof_go_if_required",
+		"env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build",
+	)
+	assertContainsInOrder(t, "supported-local proof preflight before mutation", supportedProof,
+		"# Exact Go preflight for local-Go-required proof paths must precede proof/process/workspace mutation.",
+		"preflight_supported_local_proof_go_if_required",
+		"supported_local_proof_repair_test_sentinel",
+		"mkdir -p \"${SUPPORTED_LOCAL_HOST_PROOF_DIR}\"",
+	)
+
+	operatorScriptTests := mustRead(t, "es/app/operator_scripts_integration_test.go")
+	assertContainsAll(t, "hermetic Go baseline executable tests", operatorScriptTests,
+		"TestLinuxSetupGoToolchainInstallerHermeticPreflightAndCleanup",
+		"fake command resolution prevents host fallthrough",
+		"pre-existing cleanup traps reject without installer-invoked prior handler",
+		"[]string{\"EXIT\", \"HUP\", \"INT\", \"TERM\"}",
+		"runLinuxSetupPreexistingTrapOwnershipSeam",
+		"rejected installer call must not run prior",
+		"caller-owned EXIT trap runs only when the bounded child shell exits deliberately",
+		"caller-owned %s",
+		"markerBeforeDeliberatePath",
+		"expected trap ownership seam to reject",
+		"linuxSetupFakeCommandNames = []string{\"sudo\", \"apt-get\", \"curl\", \"sha256sum\", \"mktemp\", \"rm\", \"tar\", \"install\", \"tee\", \"env\", \"go\", \"uname\", \"systemctl\"}",
+		"assertFakeCommandsResolve",
+		"fake commands accept only exact bounded grammars",
+		"fake commands reject malformed argv without mutation",
+		"fake mutators reject traversal symlink and wrong contained paths",
+		"fake tar rejects internal symlink effect paths without outside mutation",
+		"fake tar rejects invalid extraction root and non-regular leaf without success ledger",
+		"runFakeCommand",
+		"TestLinuxSetupFakeCommandHelper",
+		"LINUX_SETUP_FAKE_TEST_BINARY",
+		"linuxSetupFakeRequireExactPath",
+		"linuxSetupFakeCanonicalContainedPath",
+		"linuxSetupFakeValidateTarExtractionRoot",
+		"linuxSetupFakeValidateTarEffectPath",
+		"linuxSetupFakePreflightTarDescendants",
+		"linuxSetupFakeEnsureTarDirectory",
+		"linuxSetupFakeWriteTarGoBinary",
+		"linuxSetupFakeRejectExistingSymlinkInTarEffectChain",
+		"linuxSetupFakeForbiddenHostPath",
+		"assertEventExactCount",
+		"assertEventPrefixCount",
+		"assertFakeTarSuccessTree",
+		"reject:",
+		"direct invocation unsupported",
+		"curl extra flag",
+		"curl reordered flag",
+		"curl wrong output",
+		"curl wrong hostname",
+		"curl query string",
+		"env wrong gotoolchain",
+		"direct go rejected",
+		"uname combined flag",
+		"systemctl unsupported",
+		"symlink outside",
+		"extraction root symlink",
+		"extraction root regular file",
+		"go binary directory",
+		"go symlink",
+		"go bin symlink",
+		"go binary symlink",
+		"pre-existing symlink in tar effect path rejected",
+		"outside directory sentinel changed",
+		"outside file sentinel changed",
+		"assertNoFakeGoRegularMarker",
+		"wrong contained",
+		"relative path rejected",
+		"forbidden host path rejected",
+		"repository path rejected",
+		"path escapes fake root",
+		"ordinary no pre-existing trap success path installs and cleans archive",
+		"root-file-sentinel",
+		"leaf-directory-sentinel",
+		"TestSupportedLocalSetupExactGoPreflightBeforeMutation",
+		"TestSupportedLocalProofExactGoPreflightBeforeMutation",
+		"newLinuxSetupFakeHarness",
+		"newSupportedLocalFakeHarness",
+	)
+	assertContainsInOrder(t, "fake tar effect paths and effects complete before success ledger", operatorScriptTests,
+		"goRoot := filepath.Join(expectedRoot, \"go\")",
+		"goBinDir := filepath.Join(expectedRoot, \"go\", \"bin\")",
+		"goBinary := filepath.Join(goBinDir, \"go\")",
+		"linuxSetupFakeValidateTarExtractionRoot(expectedRoot)",
+		"for _, effectPath := range []string{goRoot, goBinDir, goBinary}",
+		"linuxSetupFakeValidateTarEffectPath(effectPath, effectPath, expectedRoot)",
+		"linuxSetupFakePreflightTarDescendants(goRoot, goBinDir, goBinary, expectedRoot)",
+		"linuxSetupFakeEnsureTarDirectory(goRoot, expectedRoot)",
+		"linuxSetupFakeEnsureTarDirectory(goBinDir, expectedRoot)",
+		"linuxSetupFakeWriteTarGoBinary(goBinary, expectedRoot)",
+		"linuxSetupFakeRecord(eventPrefix+archivePath",
+	)
+	assertContainsInOrder(t, "fake tar extraction root is lstat-validated as a real directory", operatorScriptTests,
+		"func linuxSetupFakeValidateTarExtractionRoot(expectedRoot string) error",
+		"os.Lstat(expectedRoot)",
+		"info.Mode()&os.ModeSymlink != 0",
+		"!info.IsDir()",
+		"linuxSetupFakeRequireExactPath(expectedRoot, expectedRoot)",
+		"linuxSetupFakeCanonicalContainedPath(expectedRoot)",
+	)
+	assertContainsInOrder(t, "fake tar relative dot root chain still lstats root", operatorScriptTests,
+		"if rel == \".\" {",
+		"os.Lstat(cleanRoot)",
+		"info.Mode()&os.ModeSymlink != 0",
+	)
+	assertContainsInOrder(t, "fake tar writes through bounded open after leaf validation", operatorScriptTests,
+		"func linuxSetupFakeWriteTarGoBinary(path string, extractionRoot string) error",
+		"linuxSetupFakeValidateTarEffectPath(path, path, extractionRoot)",
+		"os.Lstat(path)",
+		"info.Mode()&os.ModeSymlink != 0",
+		"if err := linuxSetupFakeValidateTarEffectPath(path, path, extractionRoot); err != nil {\n\t\treturn err\n\t}\n\tfile, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)",
+		"file.Write([]byte(\"fake go\\n\"))",
+		"linuxSetupFakeValidateTarEffectPath(path, path, extractionRoot)",
+	)
+
+	remoteAlphaBuild := mustRead(t, "scripts/internal/remote_alpha_deploy_es_binaries.sh")
+	assertContainsAll(t, "Remote Alpha Go build policy", remoteAlphaBuild,
+		"remote_alpha_deploy_es_binaries_required_go_version=\"go1.26.5\"",
+		"env GOTOOLCHAIN=local go version",
+		"\"env\", \"GOTOOLCHAIN=local\", \"CGO_ENABLED=0\", \"GOOS=linux\", \"GOARCH=amd64\", \"go\", \"build\"",
+		"env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o \"${payload_dir}/es\" ./cmd/es",
+		"env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o payload/es ./cmd/es",
+	)
+
+	controlPlane := mustRead(t, "scripts/internal/control_plane.sh")
+	assertContainsAll(t, "control-plane arch detection", controlPlane,
+		"machine=\"$(uname -m)\"",
+		"x86_64|amd64",
+		"aarch64|arm64",
+		"env GOTOOLCHAIN=local go env GOARCH",
+	)
+
+	generator := mustRead(t, "scripts/generate_control_plane_dockerfile.sh")
+	assertContainsAll(t, "control-plane Dockerfile generator Go policy", generator,
+		"FROM golang:1.26.5-alpine3.24 AS build",
+		"ENV GOTOOLCHAIN=local",
+		"CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build",
+	)
+
+	generatedPath := filepath.Join(t.TempDir(), "Dockerfile")
+	cmd := exec.Command("./scripts/generate_control_plane_dockerfile.sh", generatedPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generate Dockerfile: %v output=%s", err, string(output))
+	}
+	generatedDockerfile, err := os.ReadFile(generatedPath)
+	if err != nil {
+		t.Fatalf("read generated Dockerfile: %v", err)
+	}
+	trackedDockerfile, err := os.ReadFile(".out/Dockerfile")
+	if err != nil {
+		t.Fatalf("read tracked Dockerfile: %v", err)
+	}
+	if !bytes.Equal(generatedDockerfile, trackedDockerfile) {
+		t.Fatalf("tracked .out/Dockerfile does not match scripts/generate_control_plane_dockerfile.sh")
+	}
+	assertContainsAll(t, "tracked generated Dockerfile", string(trackedDockerfile),
+		"FROM golang:1.26.5-alpine3.24 AS build",
+		"ENV GOTOOLCHAIN=local",
+	)
+
+	dependencyGate := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md"), "## 14. Required Dependency-Selection Gate", "## 15. Exact Subsequent Concrete Source Tranche")
+	assertContainsAll(t, "reliable-submit dependency gate Go baseline", dependencyGate,
+		"Go 1.26.5 compatibility",
+		"CGO-free builds under `CGO_ENABLED=0`",
+	)
+	assertContainsNone(t, "reliable-submit dependency gate old Go baseline", dependencyGate, "Go 1.22 compatibility")
 }
 
 const (
@@ -1859,7 +2222,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"Multi-host shared database, high availability, replication, remote database service operation, and active/active ES writers are non-claims",
 	)
 	assertContainsAll(t, "reliable-submit persistence ADR dependency gate", dependencyGate,
-		"Go 1.22 compatibility",
+		"Go 1.26.5 compatibility",
 		"CGO-free builds under `CGO_ENABLED=0`",
 		"linux/amd64 and linux/arm64 support",
 		"`database/sql` behavior or a documented replacement API decision",

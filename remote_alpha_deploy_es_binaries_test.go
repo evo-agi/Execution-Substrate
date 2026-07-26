@@ -11,14 +11,14 @@ import (
 )
 
 type esBinaryDeploymentFixture struct {
-	RepoRoot            string
-	PayloadDir          string
-	LiveESBinaryPath    string
-	LiveRuntimePath     string
-	ConfigPath          string
-	HealthEnvPath       string
-	ServiceUnitPath     string
-	MutationLogPath     string
+	RepoRoot         string
+	PayloadDir       string
+	LiveESBinaryPath string
+	LiveRuntimePath  string
+	ConfigPath       string
+	HealthEnvPath    string
+	ServiceUnitPath  string
+	MutationLogPath  string
 }
 
 func runSourcedESBinaryDeploymentHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
@@ -218,7 +218,13 @@ exit 1
 printf '%%s\n' "$*" >> %q
 exit 0
 `, scpLogPath))
-	writeExecutable(t, fakeBin, "go", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, fakeBin, "go", `#!/bin/sh
+if [ "$1" = "version" ]; then
+  echo "go version go1.26.5 linux/amd64"
+  exit 0
+fi
+exit 0
+`)
 
 	outputDir := filepath.Join(tmpDir, "output")
 	shellBody := fmt.Sprintf(`

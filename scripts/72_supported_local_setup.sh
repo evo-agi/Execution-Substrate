@@ -39,6 +39,7 @@ CODEX_CREDENTIAL_SECRET_FIELD="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD:-
 CODEX_CREDENTIAL_VALUE="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE:-}"
 BUILD_CODEX_RUNTIME_PROFILE_IMAGE="${SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE:-1}"
 ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
+GO_REQUIRED_VERSION="go1.26.5"
 
 ARS_PORT=$((PORT_BASE + 2))
 EGS_PORT=$((PORT_BASE + 3))
@@ -108,6 +109,38 @@ require_command() {
   if ! command -v "${name}" >/dev/null 2>&1; then
     echo "${name} is required" >&2
     exit 1
+  fi
+}
+
+require_supported_go_toolchain() {
+  local observed_version
+
+  require_command go
+  observed_version="$(env GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}' || true)"
+  if [[ "${observed_version}" != "${GO_REQUIRED_VERSION}" ]]; then
+    echo "unsupported Go toolchain: expected ${GO_REQUIRED_VERSION}, observed ${observed_version:-unavailable}" >&2
+    exit 1
+  fi
+}
+
+supported_local_setup_requires_local_go() {
+  # local-Go-required: setup always runs local Go helpers and may compile
+  # es-runtime-support. Prebuilt runtime-support/SPIRE inputs bypass only their
+  # own build/download steps; they are not a no-local-Go setup path.
+  # prebuilt/no-local-Go: not applicable for this setup entry point.
+  return 0
+}
+
+preflight_supported_local_setup_go_if_required() {
+  if supported_local_setup_requires_local_go; then
+    require_supported_go_toolchain
+  fi
+}
+
+supported_local_setup_repair_test_sentinel() {
+  if [[ "${SUPPORTED_LOCAL_REPAIR_TEST_SENTINEL:-}" == "after-go-preflight" ]]; then
+    echo "supported-local setup exact Go preflight complete"
+    exit 0
   fi
 }
 
@@ -187,12 +220,15 @@ EOF
 
 build_runtime_support_binary() {
   local output_path="${PROOF_DIR}/bin/es-runtime-support"
+  local target_arch
 
   echo "==> building es-runtime-support to ${output_path}"
+  require_supported_go_toolchain
+  target_arch="$(env GOTOOLCHAIN=local go env GOARCH)"
   mkdir -p "$(dirname "${output_path}")"
   (
     cd "${REPO_ROOT}"
-    env CGO_ENABLED=0 GOOS=linux GOARCH="$(go env GOARCH)" go build -o "${output_path}" ./cmd/es-runtime-support
+    env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH="${target_arch}" go build -o "${output_path}" ./cmd/es-runtime-support
   )
   echo "==> installing es-runtime-support to ${RUNTIME_SUPPORT_INSTALL_PATH}"
   if install -m 0755 "${output_path}" "${RUNTIME_SUPPORT_INSTALL_PATH}" 2>/dev/null; then
@@ -258,12 +294,16 @@ install_prebuilt_file() {
 }
 
 spire_release_arch() {
-  case "$(go env GOARCH)" in
+  local arch
+
+  require_supported_go_toolchain
+  arch="$(env GOTOOLCHAIN=local go env GOARCH)"
+  case "${arch}" in
     amd64|arm64)
-      printf '%s\n' "$(go env GOARCH)"
+      printf '%s\n' "${arch}"
       ;;
     *)
-      echo "unsupported SPIRE release architecture: $(go env GOARCH)" >&2
+      echo "unsupported SPIRE release architecture: ${arch}" >&2
       exit 1
       ;;
   esac
@@ -667,7 +707,8 @@ func writeJWTKey(keys []jwk, outputPath string) error {
 }
 EOF
 
-  go run "${helper_source}" "${bundle_path}" "${output_path}"
+  require_supported_go_toolchain
+  env GOTOOLCHAIN=local go run "${helper_source}" "${bundle_path}" "${output_path}"
 }
 
 write_managed_secrets_file() {
@@ -1187,7 +1228,6 @@ EOF
 }
 
 setup() {
-  require_command go
   require_command openssl
   require_command python3
   require_command curl
@@ -1204,6 +1244,10 @@ setup() {
     echo "SUPPORTED_LOCAL_PROOF_DIR is unsafe: ${PROOF_DIR}" >&2
     exit 1
   fi
+
+  # Exact Go preflight for local-Go-required setup paths must precede proof/process/workspace mutation.
+  preflight_supported_local_setup_go_if_required
+  supported_local_setup_repair_test_sentinel
 
   local vault_public_host
   local vault_address

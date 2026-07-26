@@ -149,7 +149,9 @@ func TestStatusRetainsLostStageRootForDebugging(t *testing.T) {
 }
 
 func TestLifecycleStatusReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
-	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+	cases := lifecycleRuntimeUnavailableCases(t)
+	for i := range cases {
+		tt := &cases[i]
 		t.Run(tt.name, func(t *testing.T) {
 			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
 				_, err := tt.service.Status(context.Background(), "run-0123456789abcdef")
@@ -169,7 +171,9 @@ func TestLifecycleStatusReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
 }
 
 func TestLifecycleLogsReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
-	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+	cases := lifecycleRuntimeUnavailableCases(t)
+	for i := range cases {
+		tt := &cases[i]
 		t.Run(tt.name, func(t *testing.T) {
 			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
 				_, err := tt.service.Logs(context.Background(), "run-0123456789abcdef")
@@ -195,7 +199,9 @@ func TestLifecycleLogsReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
 }
 
 func TestLifecycleCancelReturnsRuntimeUnavailableWithoutNomad(t *testing.T) {
-	for _, tt := range lifecycleRuntimeUnavailableCases(t) {
+	cases := lifecycleRuntimeUnavailableCases(t)
+	for i := range cases {
+		tt := &cases[i]
 		t.Run(tt.name, func(t *testing.T) {
 			err := assertNoPanicRuntimeUnavailable(t, func() *Error {
 				_, err := tt.service.Cancel(context.Background(), "run-0123456789abcdef")
