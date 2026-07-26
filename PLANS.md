@@ -107,27 +107,39 @@ Active bounded contract tranche: submit idempotency, submit correlation, and
 recovery are now selected as the ES-owned documentation seam for the
 Correlation And Recovery inventory item. The detailed target contract lives in
 `.docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md`.
-The first source-bearing reliable-submit tranche now adds only the
+The first source-bearing reliable-submit tranche initially added the
 admission-local pure Go model and tests in
-`es/admission/internal/reliablesubmit`. The package is transport-neutral,
-persistence-neutral, unwired, and effect-free. It models opaque caller/key,
-effective-plan binding, phase, replay, disclosure, and Coordinator-progression
-rules without changing the current unkeyed submit request or response. Reliable
-submit is not implemented. The docs-contract ADR
+`es/admission/internal/reliablesubmit`. The current source-bearing persistence
+tranche extends that same private package with a backend-neutral claim-store
+port, durable semantic service, private durable-record codec, shared backend
+conformance tests, and a same-package SQLite implementation. The package remains
+transport-neutral, unwired from submit, and unavailable through public runtime
+surfaces. It models opaque caller/key, effective-plan binding, phase, replay,
+disclosure, durable uniqueness, revision/CAS, and provider-effect ordering
+without changing the current unkeyed submit request or response. Reliable submit
+is not implemented end to end. The docs-contract ADR
 `.docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md`
-now freezes the future persistence/concurrency direction: a narrow ES-owned
-submit-correlation store, local embedded SQLite as the storage family, the
-current `CGO_ENABLED=0` build posture, an eventual CGO-free SQLite driver, a
-private same-package durable-record codec in
-`es/admission/internal/reliablesubmit`, revision/CAS semantics, and durable
-provider-effect intent before external I/O. It does not add a database,
-dependency, schema, migration, config, production source, or runtime behavior.
+now freezes the persistence/concurrency direction: a narrow ES-owned
+submit-correlation store, local embedded SQLite as the first concrete backend,
+the current `CGO_ENABLED=0` build posture, `modernc.org/sqlite v1.54.0` with
+the exact `modernc.org/libc v1.74.1` coupling, a private same-package
+durable-record codec in `es/admission/internal/reliablesubmit`, revision/CAS
+semantics, and durable provider-effect intent before external I/O. It adds
+private store source, schema, migration, dependency, and tests only; it does not
+add global ES configuration, production runtime wiring, public DTOs, HTTP
+handler behavior, staging, Nomad, lifecycle, Coordinator, Bridge, CP, IM, Git,
+CI, validation, or publication behavior.
 The current Go build baseline is exact Go 1.26.5 as documented in
 `.docs/system_overview/go_toolchain_baseline.md`; supported build/proof scripts
 use `GOTOOLCHAIN=local` and do not add a database dependency or storage-family
 implementation.
 This planning tranche does not displace unrelated ES product priorities
-globally. It freezes only the public opt-in/versioning posture for a future
+globally. The private port exists only to permit a later PostgreSQL backend to
+run the same conformance suite if a separately accepted product requirement
+needs managed database operation. It does not promise live backend switching,
+dual write, automatic SQLite/PostgreSQL data portability, export/import format,
+existing-data migration, HA, replication, or multi-host storage. It freezes only
+the public opt-in/versioning posture for a future
 reliable keyed-submit implementation: keep the current outer producer-contract
 v1 identity and current governed-execution contract identity, add one narrow
 versioned reliable-submit producer sub-contract under the governed-execution
@@ -138,9 +150,9 @@ discriminator that current strict decoding rejects, require producer-declaration
 preflight plus in-band request discrimination as independent fail-closed gates,
 reject header-only opt-in, and forbid silent downgrade to current unkeyed
 submit. This tranche still does not select exact reliable JSON field names,
-exact reliable schema/version strings, exact SQLite driver or version, schema
-or migration shape, state-path config key, TTL, HTTP vocabulary, recovery
-route, Nomad reconciliation algorithm, or `run_id` generation strategy.
+exact reliable schema/version strings, state-path config key, TTL, HTTP
+vocabulary, recovery route, Nomad reconciliation algorithm, or `run_id`
+generation strategy.
 
 Reliable dispatch remains blocked until later implementation and audit. Both
 caller-to-ES response loss and ES-to-Nomad registration-response uncertainty

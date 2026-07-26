@@ -20,12 +20,14 @@ concurrency decision in `reliable_submit_persistence_and_concurrency.md`. Those
 records are target-only: they do not implement reliable keyed submit and do not
 change current unkeyed submit. They select the public opt-in/versioning posture,
 local embedded SQLite as the storage family, the current `CGO_ENABLED=0` build
-posture, an eventual CGO-free SQLite driver, private same-package persistence
-hydration in `es/admission/internal/reliablesubmit`, revision/CAS, and
-provider-effect intent before external I/O. They do not select final JSON field
-names, exact reliable schema/version strings, exact SQLite driver or version,
-table names, state-path config key, TTL, HTTP vocabulary, recovery route, Nomad
-reconciliation algorithm, or `run_id` generation strategy.
+posture, `modernc.org/sqlite v1.54.0` with exact `modernc.org/libc v1.74.1`
+coupling, private same-package persistence hydration in
+`es/admission/internal/reliablesubmit`, revision/CAS, and provider-effect intent
+before external I/O. The private persistence source remains unwired and does
+not implement reliable keyed submit end to end. They do not select final JSON
+field names, exact reliable schema/version strings, state-path config key, TTL,
+HTTP vocabulary, recovery route, Nomad reconciliation algorithm, or `run_id`
+generation strategy.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -404,18 +406,18 @@ uniqueness and compare-and-swap or equivalent transaction semantics.
 
 The persistence and concurrency ADR is
 `reliable_submit_persistence_and_concurrency.md`. It selects a narrow ES-owned
-submit-correlation store, local embedded SQLite as the storage family, the
-current `CGO_ENABLED=0` build posture, an eventual CGO-free SQLite driver,
-private same-package persistence hydration in
-`es/admission/internal/reliablesubmit`, revision/CAS semantics, durable
-provider-effect intent before external I/O, tombstone/no-reuse retention, and
-fail-closed corruption behavior. It remains docs/tests only and implements no
-database, dependency, schema, migration, config, production source, or runtime
-behavior.
+submit-correlation store, local embedded SQLite as the first storage backend,
+the current `CGO_ENABLED=0` build posture, `modernc.org/sqlite v1.54.0` with
+the exact `modernc.org/libc v1.74.1` coupling, private same-package persistence
+hydration in `es/admission/internal/reliablesubmit`, revision/CAS semantics,
+durable provider-effect intent before external I/O, tombstone/no-reuse
+retention, and fail-closed corruption behavior. The private source remains
+unwired and implements no config, production runtime wiring, public DTO, HTTP
+handler, producer declaration field, staging behavior, Nomad behavior, or
+runtime behavior.
 
 This document still does not select exact reliable JSON field names, exact
-reliable schema/version strings, exact SQLite driver or version, table names,
-journal mode, busy timeout, state-path config key, TTL, HTTP-code or error
+reliable schema/version strings, state-path config key, TTL, HTTP-code or error
 vocabulary, recovery route, supplemental header, deterministic identity, or
 Nomad query design.
 

@@ -33,6 +33,79 @@ func TestReliableSubmitPureModelStaticGuardrails(t *testing.T) {
 	assertExactReplayStoresSnapshot(t, file, source)
 }
 
+func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
+	backendNeutral := []string{
+		"clock.go",
+		"durable_record.go",
+		"durable_service.go",
+		"store.go",
+	}
+	sqliteSpecific := map[string]bool{
+		"sqlite_migrations.go": true,
+		"sqlite_store.go":      true,
+	}
+
+	for _, path := range backendNeutral {
+		file, source := mustParseReliableSubmitSource(t, path)
+		assertNoStructTags(t, file)
+		assertBackendNeutralPersistenceImports(t, path, file)
+		assertNoPublicStorageSurface(t, path, file)
+		assertNoForbiddenPersistenceSource(t, path, source)
+	}
+	for path := range sqliteSpecific {
+		file, source := mustParseReliableSubmitSource(t, path)
+		assertNoStructTags(t, file)
+		assertSQLiteSpecificImports(t, path, file)
+		assertNoPublicStorageSurface(t, path, file)
+		assertNoPostgreSQLSource(t, path, source)
+	}
+
+	storeSource := mustReadReliableSubmitSource(t, "store.go")
+	assertContainsUnexportedPort(t, storeSource)
+	assertContainsNoneInSource(t, "claimStore common port", storeSource,
+		"Backup",
+		"*sql.DB",
+		"*sql.Tx",
+		"pgx",
+		"SQLSTATE",
+		"DSN",
+		"Save(",
+		"Delete(",
+		"List(",
+	)
+
+	recordSource := mustReadReliableSubmitSource(t, "durable_record.go")
+	assertContainsNoneInSource(t, "durable record phase storage", recordSource,
+		"interface{}",
+		"any `",
+		"MarshalJSON",
+		"UnmarshalJSON",
+		"Value()",
+		"Scan(",
+	)
+	recordFile, _ := mustParseReliableSubmitSource(t, "durable_record.go")
+	assertDurableRecordDoesNotStoreClaimPhase(t, recordFile)
+	for _, required := range []string{
+		"type durablePhaseTag uint8",
+		"type durablePhaseSnapshot struct",
+		"func durablePhaseSnapshotFromPhase(phase ClaimPhase) (ClaimID, BoundPlan, durablePhaseSnapshot, error)",
+		"func (s durablePhaseSnapshot) hydrate(claim ClaimID, plan BoundPlan) (ClaimPhase, error)",
+		"NewPendingBeforeAssignment",
+		"AssignRun",
+		"NewAccepted",
+		"NewProvablyNotAcceptedAfterAssignment",
+	} {
+		if !strings.Contains(recordSource, required) {
+			t.Fatalf("durable record codec missing %q", required)
+		}
+	}
+
+	repoRoot := reliableSubmitRepoRoot()
+	assertNoSQLiteOutsideReliableSubmitPackage(t, repoRoot)
+	assertNoReliableSubmitRuntimeWiring(t, repoRoot)
+	assertNoReliableSubmitConfigFields(t, repoRoot)
+}
+
 func assertPureModelImports(t *testing.T, file *ast.File) {
 	t.Helper()
 
@@ -73,6 +146,297 @@ func assertPureModelImports(t *testing.T, file *ast.File) {
 			}
 		}
 	}
+}
+
+func mustParseReliableSubmitSource(t *testing.T, path string) (*ast.File, string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, data, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return file, string(data)
+}
+
+func mustReadReliableSubmitSource(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func assertBackendNeutralPersistenceImports(t *testing.T, path string, file *ast.File) {
+	t.Helper()
+	for _, imported := range file.Imports {
+		importPath := unquoteImportPath(t, imported)
+		for _, forbidden := range []string{
+			"database/sql",
+			"modernc.org/sqlite",
+			"net/http",
+			"os",
+			"io",
+			"io/fs",
+			"path",
+			"path/filepath",
+			"sync",
+			"encoding/json",
+			"encoding/xml",
+		} {
+			if importPath == forbidden {
+				t.Fatalf("%s must remain backend-neutral and must not import %q", path, importPath)
+			}
+		}
+		for _, forbiddenFragment := range []string{
+			"pgx",
+			"postgres",
+			"nomad",
+			"coordinator",
+			"bridge",
+			"yaml",
+			"gorm",
+		} {
+			if strings.Contains(strings.ToLower(importPath), forbiddenFragment) {
+				t.Fatalf("%s import %q violates backend-neutral guardrail %q", path, importPath, forbiddenFragment)
+			}
+		}
+	}
+}
+
+func assertSQLiteSpecificImports(t *testing.T, path string, file *ast.File) {
+	t.Helper()
+	for _, imported := range file.Imports {
+		importPath := unquoteImportPath(t, imported)
+		for _, forbiddenFragment := range []string{
+			"pgx",
+			"postgres",
+			"nomad",
+			"coordinator",
+			"bridge",
+			"yaml",
+			"gorm",
+		} {
+			if strings.Contains(strings.ToLower(importPath), forbiddenFragment) {
+				t.Fatalf("%s import %q violates SQLite implementation guardrail %q", path, importPath, forbiddenFragment)
+			}
+		}
+	}
+}
+
+func assertNoPublicStorageSurface(t *testing.T, path string, file *ast.File) {
+	t.Helper()
+	for _, decl := range file.Decls {
+		switch typed := decl.(type) {
+		case *ast.GenDecl:
+			for _, spec := range typed.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || !typeSpec.Name.IsExported() {
+					continue
+				}
+				name := typeSpec.Name.Name
+				if strings.Contains(name, "Store") ||
+					strings.Contains(name, "Repository") ||
+					strings.Contains(name, "Persistence") ||
+					strings.Contains(name, "Record") ||
+					strings.Contains(name, "Codec") {
+					t.Fatalf("%s exposes storage type %s", path, name)
+				}
+			}
+		case *ast.FuncDecl:
+			if typed.Name.IsExported() {
+				name := typed.Name.Name
+				if strings.Contains(name, "Store") ||
+					strings.Contains(name, "Repository") ||
+					strings.Contains(name, "Persistence") ||
+					strings.Contains(name, "Record") ||
+					strings.Contains(name, "Codec") {
+					t.Fatalf("%s exposes storage function %s", path, name)
+				}
+			}
+		}
+	}
+}
+
+func assertDurableRecordDoesNotStoreClaimPhase(t *testing.T, file *ast.File) {
+	t.Helper()
+	found := false
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "durableClaimRecord" {
+				continue
+			}
+			found = true
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				t.Fatalf("durableClaimRecord must remain a struct")
+			}
+			for _, field := range structType.Fields.List {
+				ident, ok := field.Type.(*ast.Ident)
+				if ok && ident.Name == "ClaimPhase" {
+					t.Fatalf("durableClaimRecord must not store ClaimPhase interface fields")
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("durableClaimRecord type not found")
+	}
+}
+
+func assertNoForbiddenPersistenceSource(t *testing.T, path string, source string) {
+	t.Helper()
+	assertContainsNoneInSource(t, path, source,
+		"net/http",
+		"Nomad",
+		"nomad",
+		"Coordinator",
+		"Bridge",
+		"pgx",
+		"postgres",
+		"SQLSTATE",
+		"dsn",
+		"DTO",
+		"json:",
+		"yaml:",
+		"gorm:",
+	)
+}
+
+func assertNoPostgreSQLSource(t *testing.T, path string, source string) {
+	t.Helper()
+	assertContainsNoneInSource(t, path, strings.ToLower(source),
+		"pgx",
+		"postgres",
+		"sqlstate",
+	)
+}
+
+func assertContainsUnexportedPort(t *testing.T, source string) {
+	t.Helper()
+	for _, required := range []string{
+		"type claimStore interface",
+		"establishClaim(context.Context, establishClaimCommand) (establishClaimStoreResult, error)",
+		"loadClaim(context.Context, loadClaimQuery) (durableClaimRecord, error)",
+		"compareAndSwapClaim(context.Context, compareAndSwapClaimCommand) (compareAndSwapClaimStoreResult, error)",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("claimStore port missing %q", required)
+		}
+	}
+}
+
+func assertContainsNoneInSource(t *testing.T, label string, source string, forbidden ...string) {
+	t.Helper()
+	for _, phrase := range forbidden {
+		if strings.Contains(source, phrase) {
+			t.Fatalf("%s must not contain %q", label, phrase)
+		}
+	}
+}
+
+func assertNoSQLiteOutsideReliableSubmitPackage(t *testing.T, repoRoot string) {
+	t.Helper()
+	if err := filepath.WalkDir(repoRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			t.Fatalf("walk %s: %v", path, err)
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".out":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		if filepath.Base(path) == "docs_contract_test.go" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		source := string(data)
+		if strings.Contains(source, "modernc.org/sqlite") || strings.Contains(source, `sql.Open("sqlite"`) {
+			rel, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				t.Fatalf("rel %s: %v", path, err)
+			}
+			if !strings.HasPrefix(filepath.ToSlash(rel), "es/admission/internal/reliablesubmit/") {
+				t.Fatalf("SQLite source outside reliable-submit package: %s", rel)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk reliable-submit guardrail scope: %v", err)
+	}
+}
+
+func assertNoReliableSubmitRuntimeWiring(t *testing.T, repoRoot string) {
+	t.Helper()
+	for _, rel := range []string{
+		"es/admission/submit.go",
+		"es/admission/service.go",
+		"es/admission/types.go",
+		"es/admission/producercontract.go",
+		"es/api/server.go",
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		source := string(data)
+		assertContainsNoneInSource(t, rel, source,
+			"internal/reliablesubmit",
+			"reliablesubmit",
+			"ReliableSubmit",
+			"reliable_submit",
+			"modernc.org/sqlite",
+		)
+	}
+}
+
+func assertNoReliableSubmitConfigFields(t *testing.T, repoRoot string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot, "es/config/config.go"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	source := string(data)
+	sectionStart := strings.Index(source, "type ExecutionConfig struct {")
+	sectionEnd := strings.Index(source, "type VerificationConfig struct {")
+	if sectionStart == -1 || sectionEnd <= sectionStart {
+		t.Fatalf("ExecutionConfig section not found")
+	}
+	assertContainsNoneInSource(t, "ExecutionConfig", source[sectionStart:sectionEnd],
+		"ReliableSubmit",
+		"SQLite",
+		"Database",
+		"StorePath",
+	)
+}
+
+func reliableSubmitRepoRoot() string {
+	return filepath.Clean(filepath.Join("..", "..", "..", ".."))
+}
+
+func unquoteImportPath(t *testing.T, imported *ast.ImportSpec) string {
+	t.Helper()
+	importPath, err := strconv.Unquote(imported.Path.Value)
+	if err != nil {
+		t.Fatalf("unquote import path: %v", err)
+	}
+	return importPath
 }
 
 func assertNoStructTags(t *testing.T, file *ast.File) {

@@ -6,19 +6,21 @@ TARGET-ONLY: submit idempotency, correlation, and recovery in this document are 
 
 CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.
 
-This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, does not implement persistence, and does not enable Coordinator-backed dispatch. The persistence and concurrency ADR in `reliable_submit_persistence_and_concurrency.md` now selects local embedded SQLite as the future storage family while leaving the exact CGO-free driver, schema, migration, and runtime integration open. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
+This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, and does not enable Coordinator-backed dispatch. The persistence and concurrency ADR in `reliable_submit_persistence_and_concurrency.md` now selects local embedded SQLite as the first storage backend, `modernc.org/sqlite v1.54.0` as the CGO-free driver, and private same-package durable-store source while leaving runtime integration open. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
 
-This document now selects the public opt-in/versioning posture and delegates the persistence/concurrency decision to `reliable_submit_persistence_and_concurrency.md`: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, durable store, migration, Nomad behavior, or runtime behavior is implemented by this document.
+This document now selects the public opt-in/versioning posture and delegates the persistence/concurrency decision to `reliable_submit_persistence_and_concurrency.md`: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, Nomad behavior, runtime configuration, or runtime behavior is implemented by this document or by the private store tranche.
 
-The first source-bearing reliable-submit tranche is now present as the
-admission-local internal pure Go package
-`es/admission/internal/reliablesubmit`. That package models local phase
-validity, opaque claim identity, opaque effective-plan binding, completeness
-witnesses, replay views, conflict, unauthorized, unavailable-correlation,
-same-caller run-reference disclosure policy, and Coordinator-progression
-eligibility. It is not wired to current submit. It implements no public DTO,
-producer declaration field, persistence, durable lock, staging behavior, Nomad
-behavior, recovery route, or runtime integration.
+The source-bearing reliable-submit package is now present as the admission-local
+internal Go package `es/admission/internal/reliablesubmit`. Its pure model in
+`model.go` models local phase validity, opaque claim identity, opaque
+effective-plan binding, completeness witnesses, replay views, conflict,
+unauthorized, unavailable-correlation, same-caller run-reference disclosure
+policy, and Coordinator-progression eligibility. The private persistence source
+in the same package adds a backend-neutral claim-store port, durable semantic
+service, durable-record codec, shared conformance suite, and SQLite
+implementation. It is not wired to current submit. It implements no public DTO,
+producer declaration field, staging behavior, Nomad behavior, recovery route,
+runtime configuration, or runtime integration.
 
 The pure model validates one supplied current snapshot at a time. It can reject
 invalid phase shapes, reject missing effective-plan binding before
@@ -26,13 +28,13 @@ effect-capable assignment, treat reassignment with the same opaque `RunRef` as
 idempotent, and fail closed on reassignment with a different `RunRef`. It
 cannot enforce one globally winning caller/key assignment across stale copied
 pre-assignment values, process restarts, or concurrent writers. That authority
-belongs to the later persistence/concurrency layer with uniqueness rules and
-compare-and-swap or equivalent transaction semantics.
+belongs to the private persistence/concurrency layer with uniqueness rules and
+compare-and-swap transaction semantics.
 
-Later transport, persistence, and reconciliation code must consume rather than
-bypass this package. If the next source-bearing reliable-submit tranche cannot
-consume it coherently, that tranche must stop and revise the model instead of
-layering a second unused abstraction on top.
+Later transport and reconciliation code must consume rather than bypass this
+package. If a later reliable-submit tranche cannot consume it coherently, that
+tranche must stop and revise the model instead of layering a second unused
+abstraction on top.
 
 ## 2. Current Implementation Reality
 
@@ -254,7 +256,14 @@ The narrow submit-correlation record must not become:
 - Coordinator desired state;
 - a Nomad mirror.
 
-The persistence and concurrency ADR now selects local embedded SQLite as the storage family for the first implementation path, preserves the current `CGO_ENABLED=0` build posture, requires an eventual CGO-free SQLite driver, selects private same-package persistence hydration in `es/admission/internal/reliablesubmit`, and freezes revision/CAS plus provider-effect-intent ordering. It does not select the exact driver, driver version, table names, journal mode, busy timeout, state-path config key, migration implementation, TTL, or runtime integration.
+The persistence and concurrency ADR now selects local embedded SQLite as the
+storage family for the first implementation path, preserves the current
+`CGO_ENABLED=0` build posture, selects `modernc.org/sqlite v1.54.0` with
+`modernc.org/libc v1.74.1`, selects private same-package persistence hydration
+in `es/admission/internal/reliablesubmit`, and freezes revision/CAS plus
+provider-effect-intent ordering. It does not select the state-path config key,
+TTL, public request or receipt vocabulary, Nomad reconciliation mechanism, or
+runtime integration.
 
 ## 8. Ordering And Concurrency Invariants
 
@@ -371,11 +380,13 @@ This target contract makes these explicit non-claims:
 - no request DTO implemented;
 - no handler or decoder implemented;
 - no route implementation;
-- no persistence;
-- no schema or migration;
+- no public or runtime persistence integration;
+- no global state-path configuration or service-startup database construction;
+- no public or runtime schema, migration, backup, restore, or storage migration
+  tooling exposed to operators;
 - no exact HTTP code selected;
 - no error string selected;
-- no persistent receipt-store implementation;
+- no public persistent receipt-store implementation;
 - no final reliable request field names;
 - no final reliable schema/version strings;
 - no final `run_id` generation strategy;
@@ -427,16 +438,11 @@ The following seams remain open:
 - recovery field names;
 - replay-only versus query route;
 - exact outcome and error vocabulary;
-- exact CGO-free SQLite driver and version;
-- exact SQLite table, migration, journal mode, busy timeout, backup, and corruption API shape;
 - exact reliable-submit state-path config key;
-- exact store implementation files;
-- exact lock timeout and concurrency implementation details within the selected SQLite family;
 - TTL, tombstone, and garbage collection;
 - canonicalization;
 - private binding mechanism;
 - plan snapshot versus immutable references;
-- exact persistence/concurrency and compare-and-swap shape;
 - Nomad reconciliation mechanism;
 - deterministic versus random assigned `run_id`;
 - bootstrap exception;

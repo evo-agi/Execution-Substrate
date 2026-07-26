@@ -2,14 +2,17 @@
 
 ## 1. Status And Purpose
 
-Status: accepted target architecture decision for the first ES-owned reliable-submit
-persistence and concurrency path.
+Status: accepted architecture decision and first private source implementation
+for the ES-owned reliable-submit persistence and concurrency path.
 
-This is a documentation and documentation-contract tranche only. It implements
-no database, no durable claim behavior, no schema or migration, no Go SQLite
-driver, no configuration source, no request or response DTO, no HTTP handler,
-no staging behavior, no Nomad behavior, and no runtime integration. Reliable
-submit remains unimplemented.
+This tranche adds private admission-local durable claim source and tests only:
+one backend-neutral claim-store port, one backend-neutral durable semantic
+service, one private durable-record codec, one SQLite implementation using
+`modernc.org/sqlite v1.54.0`, and one shared backend conformance suite. It
+implements no configuration source, no request or response DTO, no HTTP handler,
+no staging behavior, no Nomad behavior, no producer-contract field, no runtime
+startup wiring, and no public reliable-submit availability. Reliable submit
+remains unimplemented end to end.
 
 This ADR freezes the durable-state boundary and ordering rules that the later
 source implementation must consume from the committed pure model in
@@ -17,13 +20,18 @@ source implementation must consume from the committed pure model in
 
 ## 2. Current Repository And Deployment Reality
 
-The current reliable-submit implementation is the admission-local pure Go model
-in `es/admission/internal/reliablesubmit`. It is unwired, transport-neutral,
-persistence-neutral, effect-free, and unable to enforce one winning durable
-claim or cross-process compare-and-swap by itself.
+The current reliable-submit source is admission-local and private under
+`es/admission/internal/reliablesubmit`. The committed pure model in `model.go`
+remains unwired, transport-neutral, persistence-neutral, effect-free, and unable
+to enforce one winning durable claim or cross-process compare-and-swap by
+itself. The persistence source in this tranche consumes that model through
+private durable hydration and remains unwired from submit, HTTP, Nomad, and
+runtime startup.
 
-The current module has no application database dependency in `go.mod` or
-`go.sum`.
+The current module now carries the selected SQLite dependency for the private
+store source: `modernc.org/sqlite v1.54.0`, with the exact expected
+`modernc.org/libc v1.74.1` transitive coupling. No PostgreSQL dependency is
+introduced.
 
 The current Remote Alpha ES binary deployment path builds ES through
 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` for both the Python and shell payload
@@ -95,10 +103,26 @@ SQLite is local host storage only for this first path. Multi-host shared
 database, HA, replication, and external database service operation are explicit
 non-claims.
 
-The eventual Go SQLite driver must be CGO-free under the current build
-contract. A CGO-only SQLite driver is excluded while the supported ES build
-path preserves `CGO_ENABLED=0`. The exact driver, driver version, journal mode,
-busy timeout, backup API, corruption API, and migration helper remain open.
+The selected Go SQLite driver is `modernc.org/sqlite v1.54.0`. It must remain
+CGO-free under the current build contract, with `modernc.org/libc v1.74.1` as
+the expected coupled transitive module. A CGO-only SQLite driver is excluded
+while the supported ES build path preserves `CGO_ENABLED=0`.
+
+This tranche selects WAL, `synchronous=FULL`, `foreign_keys=ON`,
+`trusted_schema=OFF`, bounded `busy_timeout`, immediate write-lock acquisition,
+user-versioned forward-only embedded migrations, and fail-closed corruption and
+unsupported-version handling. Online backup/restore, managed backup, destructive
+restore, host replacement, and operator repair remain later operations
+contracts.
+
+The current SQLite implementation claims a zero-version database only through a
+narrow empty-bootstrap gate: before setting the ES application ID or creating any
+reliable-submit table, trigger, or index, it inspects persistent `sqlite_schema`
+and requires no pre-existing non-`sqlite_%` schema object. A non-empty database
+with `application_id = 0` and `user_version = 0` is rejected as unsupported and is
+not semantically claimed by this store. This gate does not claim to identify
+every possible historical byte-level provenance of an otherwise empty SQLite
+file.
 
 Rejected first-path alternatives:
 
@@ -120,9 +144,12 @@ Rejected first-path alternatives:
 
 ## 5. Package And Hydration Boundary
 
-The later concrete store and private durable-record codec belong in the existing
-admission-local package `es/admission/internal/reliablesubmit`, in separate
-files from `model.go`.
+The concrete store, backend-neutral port, durable semantic service, and private
+durable-record codec belong in the existing admission-local package
+`es/admission/internal/reliablesubmit`, in separate files from `model.go`.
+They are unexported implementation details, not a public storage API, generic
+repository framework, ORM abstraction, database platform, generic SQL layer, or
+lowest-common-denominator CRUD interface.
 
 The pure model core remains I/O-free and database-free. `model.go` must not
 import SQLite, `database/sql`, filesystem packages, time, locks, JSON codecs,
@@ -137,6 +164,13 @@ API is added to the public model surface for persistence.
 The store must hydrate through the committed pure model invariants. It must not
 define a second persistence phase enum or independent phase algebra that can
 contradict the model's claim phases, replay views, or non-disclosing decisions.
+
+The private port expresses reliable-submit durable semantics only:
+establish-or-load by `ClaimID`, load by `ClaimID`, and compare-and-swap by
+expected revision. It must not expose `*sql.DB`, `*sql.Tx`, pgx types, SQL
+strings, SQLite result codes, SQLSTATE, database paths, DSNs, raw opaque
+reference bytes outside the private codec, public DTOs, Coordinator identities,
+or Bridge identities. Backup is not part of the common port.
 
 ### Pure-Model Phase Versus Provider-Effect Facts
 
@@ -346,7 +380,10 @@ Ordering implications:
   invariants.
 - Contradictory effect-fact combinations fail closed and require invariant,
   corruption, or unavailable handling rather than silent normalization.
-- Exact schema and check constraints remain open.
+- The current SQLite schema adds check constraints and triggers for impossible
+  row combinations, immutability, and monotonic physical facts. The service and
+  pure model remain the transition authority and the SQL layer must not
+  reproduce the full semantic transition graph.
 
 ## 9. Operation Contract
 
@@ -458,16 +495,40 @@ tranche must verify from primary sources:
 This gate must not select a CGO-only driver while preserving the current
 `CGO_ENABLED=0` build contract.
 
-## 15. Exact Subsequent Concrete Source Tranche
+Current source-grounded dependency license and notice posture for the selected
+modules:
 
-The next concrete source tranche is:
+- `modernc.org/sqlite v1.54.0` carries a BSD-3-Clause-style module `LICENSE`
+  requiring retention of the copyright notice, license conditions, and
+  disclaimer in source redistributions, and reproduction of those notices in
+  binary-distribution documentation or accompanying materials.
+- The bundled SQLite engine provenance is distinct from the Go wrapper/module
+  license: the local `SQLITE-LICENSE` states that SQLite deliverable code and
+  documentation are public domain.
+- `modernc.org/libc v1.74.1` carries a BSD-3-Clause-style module `LICENSE` with
+  the same source and binary notice-retention posture, and its local
+  `LICENSE-3RD-PARTY.md` records additional third-party notices that must
+  accompany applicable source or binary redistribution.
+- `golang.org/x/sys v0.46.0` carries the Go Authors BSD-3-Clause-style `LICENSE`
+  notice posture plus the Go `PATENTS` additional patent grant terms.
+
+This is dependency-governance evidence for the private SQLite store tranche, not
+legal advice or final packaging clearance. A complete transitive notice inventory
+and assembled distribution notice remain a later release/packaging gate.
+
+## 15. First Concrete Source Tranche
+
+The first concrete source tranche is:
 
 - same-package private durable-record codec in
   `es/admission/internal/reliablesubmit`;
+- one private backend-neutral claim-store port;
+- one backend-neutral durable semantic service;
+- one shared backend conformance suite;
 - same-package SQLite store files, separate from `model.go`;
-- one selected CGO-free SQLite driver;
-- `go.mod` and `go.sum` updates for that driver only after the dependency gate;
-- one explicit ES-owned reliable-submit state-path configuration addition;
+- `modernc.org/sqlite v1.54.0` as the selected CGO-free SQLite driver;
+- `modernc.org/libc v1.74.1` as the exact expected transitive coupling;
+- `go.mod` and `go.sum` updates for that driver and its transitive modules;
 - one initial schema and migration path;
 - unique caller namespace plus safe submit-key claim constraint;
 - immutable run-assignment constraint;
@@ -478,21 +539,27 @@ The next concrete source tranche is:
 
 That tranche still does not wire current submit, HTTP, DTOs, producer contract,
 staging, Nomad, lifecycle, result handling, Coordinator, Bridge, CP, IM, Git,
-CI, or validation behavior. Runtime integration remains a later tranche.
+CI, validation, publication, global ES configuration, state-path startup wiring,
+or public reliable-submit availability. Runtime integration and the explicit
+ES-owned reliable-submit state-path configuration addition remain a later
+tranche.
 
 ## 16. Explicit Non-Claims And Open Decisions
 
 Explicit non-claims:
 
-- no database exists in this tranche;
-- no schema or migration exists in this tranche;
-- no SQLite driver is selected in this tranche;
-- no source implementation exists in this tranche;
-- no `go.mod` or `go.sum` change is made in this tranche;
-- no configuration source change is made in this tranche;
+- no end-to-end reliable submit is implemented in this tranche;
+- no global ES configuration source change is made in this tranche;
 - no current submit, HTTP, DTO, producer-contract, staging, Nomad, lifecycle,
   result, Coordinator, Bridge, CP, IM, Git, CI, validation, or publication
   behavior changes;
+- no backup API is added to the common port;
+- no online backup/restore, managed backup, destructive restore, host
+  replacement, or operator repair implementation is included;
+- no PostgreSQL dependency, source, schema, DSN, TLS, credential, advisory-lock,
+  HA, replication, or migration implementation is included;
+- no live backend switching, dual write, automatic SQLite/PostgreSQL portability,
+  export/import format, or existing-data migration guarantee is made;
 - no broad ES lifecycle store;
 - no provider metadata authority;
 - no unkeyed fallback for reliable submit;
@@ -502,14 +569,16 @@ Explicit non-claims:
 
 Open decisions:
 
-- exact CGO-free SQLite driver and version;
-- exact table names, column names, constraints, and migration tooling;
-- exact journal mode, busy timeout, backup and corruption APIs;
 - exact reliable-submit state-path config key;
-- exact file and sidecar modes;
 - exact TTL, tombstone, garbage-collection, archival, and repair policy;
 - exact key derivation and caller namespace refinement;
 - exact private binding canonicalization;
 - exact Nomad reconciliation query and evidence rules;
 - exact public request, receipt, recovery, and error vocabulary;
 - exact runtime submit integration tranche.
+
+A future PostgreSQL backend may implement the same private claim-store port and
+shared conformance suite only after a separately accepted requirement justifies
+managed database operation. That later backend must preserve active claims,
+tombstones, immutable `RunRef` values, receipts, revisions, effect facts,
+ambiguity, and no-reuse semantics through a separate contract and audit.

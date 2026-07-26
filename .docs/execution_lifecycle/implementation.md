@@ -14,10 +14,14 @@ target runtime contract is not implemented in the current code.
 The public opt-in/versioning posture selected there is also future work: the
 current server still decodes the current `PrepareRequest` body for submit, and
 the current producer declaration has no reliable-submit producer sub-contract.
-Current source now includes only the first pure, admission-local internal model
-tranche for that target under `es/admission/internal/reliablesubmit`; it is not
-wired to submit, prepare, handlers, producer declaration, staging, lifecycle,
-results, Nomad behavior, persistence, or recovery.
+Current source now includes the first pure, admission-local internal model plus
+the private durable-record codec, backend-neutral claim-store port, durable
+semantic service, shared conformance tests, and modernc SQLite store source for
+that target under `es/admission/internal/reliablesubmit`. The private store is
+constructed and exercised only in tests; it is not wired to submit, prepare,
+handlers, producer declaration, staging, lifecycle, results, Nomad behavior,
+runtime startup, runtime configuration, public persistence integration, or
+recovery routes.
 
 ## 2. How to read this document
 
@@ -269,28 +273,30 @@ Where ES stops and Nomad takes over:
 
 - The detailed target contract is
   `submit_idempotency_correlation_and_recovery.md`.
-- Current source includes the pure internal package
-  `es/admission/internal/reliablesubmit`. It models local phase, opaque
-  `RunRef`, disclosure, progression, replay, conflict, privacy, and
-  effective-plan completeness invariants only.
+- Current source includes the internal package
+  `es/admission/internal/reliablesubmit`. Its pure model in `model.go` models
+  local phase, opaque `RunRef`, disclosure, progression, replay, conflict,
+  privacy, and effective-plan completeness invariants. The same package now
+  contains private durable-record, backend-neutral port, durable-service, shared
+  conformance-test, and SQLite-store source.
 - That package is not wired to current `Submit` and is not lifecycle truth.
   It does not implement the producer sub-contract, reliable request DTO,
-  persistence, durable concurrency, staging, Nomad reconciliation, recovery
-  lookup, or public error vocabulary.
-- The pure package cannot enforce one winning assignment across stale or
-  concurrent snapshots. Later persistence and compare-and-swap or equivalent
-  transaction semantics own the authoritative caller/key claim and assigned
-  `run_id` transition. The next source-bearing reliable-submit tranche must
-  consume this package or explicitly stop and revise it; no second unused
-  abstraction tranche may be layered on top without a concrete consumer.
+  staging, Nomad reconciliation, recovery lookup, public error vocabulary,
+  runtime configuration, or runtime startup integration.
+- The pure model cannot enforce one winning assignment across stale or
+  concurrent snapshots. The private persistence and compare-and-swap layer owns
+  the authoritative caller/key claim and assigned `run_id` transition. Later
+  reliable-submit tranches must consume this package or explicitly stop and
+  revise it; no second unused abstraction tranche may be layered on top without
+  a concrete consumer.
 - The persistence and concurrency ADR
-  `reliable_submit_persistence_and_concurrency.md` is target-only
-  documentation. It selects local embedded SQLite as the future storage family,
-  preserves the current `CGO_ENABLED=0` build posture, requires an eventual
-  CGO-free SQLite driver, and selects private same-package persistence
-  hydration inside `es/admission/internal/reliablesubmit`. It does not add a
-  database, dependency, schema, migration, config field, production source, or
-  runtime behavior.
+  `reliable_submit_persistence_and_concurrency.md` selects local embedded SQLite
+  as the first storage backend, preserves the current `CGO_ENABLED=0` build
+  posture, selects `modernc.org/sqlite v1.54.0` with exact
+  `modernc.org/libc v1.74.1` coupling, and selects private same-package
+  persistence hydration inside `es/admission/internal/reliablesubmit`. It adds
+  no config field, public producer/request/response source, staging behavior,
+  Nomad behavior, or runtime behavior.
 - Current `Submit` has no submit idempotency key input, no submit correlation
   key, no exact replay path, no conflicting reuse path, no pending outcome
   path, no durable submit-correlation record, and no recovery lookup by

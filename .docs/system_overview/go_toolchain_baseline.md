@@ -8,8 +8,11 @@ repository behavior only with the implementation that raises `go.mod` to
 `go 1.26.5`, updates the supported scripts, and regenerates the tracked
 Dockerfile.
 
-This tranche selects no database dependency, no database driver, and no
-storage-family implementation.
+The reliable-submit persistence tranche selects one database dependency for
+private admission-local source only: `modernc.org/sqlite v1.54.0`, with the
+exact `modernc.org/libc v1.74.1` transitive coupling. No PostgreSQL dependency,
+runtime database service, global ES configuration, or submit wiring is selected
+by this toolchain baseline.
 
 ## 2. Module Policy
 
@@ -20,8 +23,8 @@ go 1.26.5
 ```
 
 The repository deliberately commits no explicit `toolchain` directive. The Go
-baseline change does not upgrade direct or transitive module dependencies, and
-`go.sum` remains unchanged.
+baseline remains exact Go 1.26.5. Reliable-submit SQLite dependency changes are
+owned by the reliable-submit persistence tranche, not by a Go-version upgrade.
 
 ## 3. Toolchain-Selection Policy
 
@@ -75,25 +78,30 @@ Linux cross-build success is not Linux runtime proof. Process handling, signal
 handling, filesystem ownership, TLS/SPIFFE behavior, and privilege-helper
 runtime behavior still require later Linux runtime evidence.
 
-## 8. Database Independence
+## 8. Database Dependency Scope
 
-The Go upgrade permits later maintained SQLite-driver and PostgreSQL-client
-evaluations against the exact Go 1.26.5 baseline and the existing CGO-free
-build requirements. It selects neither storage family nor dependency.
+The exact Go 1.26.5 baseline now supports the private reliable-submit SQLite
+source using `modernc.org/sqlite v1.54.0` under the existing CGO-free build
+requirements. The dependency is limited to
+`es/admission/internal/reliablesubmit`; it is not runtime wiring, a public
+storage API, a PostgreSQL client decision, or an external database operations
+claim.
 
 ## 9. Rollback
 
-Rollback reverts this as one bounded build-contract change: the `go.mod`
-baseline, script preflights and setup material, generated Dockerfile, tests,
-and documentation move back together. No database migration, runtime-state
-migration, schema migration, or storage repair is involved.
+Rollback of a Go baseline change still moves the `go.mod` baseline, script
+preflights and setup material, generated Dockerfile, tests, and documentation
+together. Rollback of the reliable-submit SQLite source is a separate
+source/dependency rollback and must not imply runtime-state migration, schema
+migration, or storage repair because the tranche remains unwired.
 
 ## 10. Explicit Non-Claims
 
-- no database;
 - no runtime behavior change;
 - no CI system introduced;
 - no vendoring;
 - no system-wide toolchain manager;
 - no Linux runtime proof;
+- no PostgreSQL dependency;
+- no external database service;
 - no deployment performed.
