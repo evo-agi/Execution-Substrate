@@ -367,7 +367,7 @@ func assertNoSQLiteOutsideReliableSubmitPackage(t *testing.T, repoRoot string) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		source := string(data)
-		if strings.Contains(source, "modernc.org/sqlite") || strings.Contains(source, `sql.Open("sqlite"`) {
+		if importsModernCSQLite(t, path, data) || strings.Contains(source, `sql.Open("sqlite"`) {
 			rel, err := filepath.Rel(repoRoot, path)
 			if err != nil {
 				t.Fatalf("rel %s: %v", path, err)
@@ -382,6 +382,20 @@ func assertNoSQLiteOutsideReliableSubmitPackage(t *testing.T, repoRoot string) {
 	}
 }
 
+func importsModernCSQLite(t *testing.T, path string, data []byte) bool {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, data, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse imports %s: %v", path, err)
+	}
+	for _, imported := range file.Imports {
+		if unquoteImportPath(t, imported) == "modernc.org/sqlite" {
+			return true
+		}
+	}
+	return false
+}
+
 func assertNoReliableSubmitRuntimeWiring(t *testing.T, repoRoot string) {
 	t.Helper()
 	for _, rel := range []string{
@@ -389,7 +403,13 @@ func assertNoReliableSubmitRuntimeWiring(t *testing.T, repoRoot string) {
 		"es/admission/service.go",
 		"es/admission/types.go",
 		"es/admission/producercontract.go",
+		"es/admission/executionlocator.go",
+		"es/admission/executionpackage.go",
+		"es/admission/lifecycle.go",
+		"es/admission/results.go",
 		"es/api/server.go",
+		"es/config/config.go",
+		"es/app/app.go",
 	} {
 		data, err := os.ReadFile(filepath.Join(repoRoot, rel))
 		if err != nil {

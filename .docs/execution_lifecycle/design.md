@@ -24,10 +24,16 @@ posture, `modernc.org/sqlite v1.54.0` with exact `modernc.org/libc v1.74.1`
 coupling, private same-package persistence hydration in
 `es/admission/internal/reliablesubmit`, revision/CAS, and provider-effect intent
 before external I/O. The private persistence source remains unwired and does
-not implement reliable keyed submit end to end. They do not select final JSON
-field names, exact reliable schema/version strings, state-path config key, TTL,
-HTTP vocabulary, recovery route, Nomad reconciliation algorithm, or `run_id`
-generation strategy.
+not implement reliable keyed submit end to end. The unavailable
+contract-adapter foundation selects private request-family identifiers,
+submit-key syntax, caller/key derivation, composite `ClaimID` construction
+through the committed pure-model constructor, and ES-neutral outcome semantics,
+but it is not called by current runtime code. These records still do not select
+source-grounded resolved effective-plan extraction, canonical effective-plan
+encoding, `PlanBinding` construction from admitted facts, complete
+effective-plan witness construction, durable replay-envelope persistence,
+state-path config key, TTL, HTTP status mapping, public error strings, recovery
+query route, Nomad reconciliation algorithm, or `run_id` generation strategy.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -356,6 +362,32 @@ structural discriminator unknown to the current `PrepareRequest` decoder, so a
 current server rejects it through strict body decoding rather than executing it
 as current unkeyed submit.
 
+The unavailable contract-adapter foundation now selects the private request
+family identifiers for that future path: request schema
+`execution-substrate.reliable-submit-request/v1`, reliable contract
+`execution-substrate.reliable-submit/v1`, top-level discriminator
+`reliable_submit`, nested `contract`, and nested `submit_key`. It also selects
+base64url-no-padding 32-byte submit-key syntax, domain-separated SHA-256
+caller/key safe-reference derivation from the exact authenticated SPIFFE URI,
+composite `ClaimID` construction through the committed pure-model constructor,
+and an ES-neutral outcome projection. These are not public runtime DTOs and
+current handlers do not call them. This tranche does not implement
+source-grounded resolved effective-plan extraction, canonical effective-plan
+encoding, effective-plan commitments, complete effective-plan witness
+construction, durable replay-envelope custody, or runtime orchestration.
+
+The later `resolved-execution-plan-extraction-foundation` tranche must derive
+one authoritative resolved execution plan from the actual current ES admission
+and runtime-resolution path: `prepareAdmission` results, artifact and manifest
+facts, policy/trust resolution, resource/default resolution, runtime-profile
+resolution, network fact, mount/environment semantics, current runtime command
+construction, and authority-handoff behavior. Current legacy `Submit` and future
+reliable `PlanBinding` must consume that same source-grounded plan. The later
+tranche must not synthesize `PrepareRequest` or `Manifest` proof from the
+proposed plan itself, create a parallel admission engine, silently tighten the
+current empty-environment-allowlist contract, or infer authority-handoff
+inapplicability contrary to current `Submit` behavior.
+
 Header-only reliable-submit opt-in is rejected because a current server may
 ignore an unknown header and run the current unkeyed request. The producer
 declaration is compatibility preflight only; it is not authorization, admission,
@@ -416,10 +448,11 @@ unwired and implements no config, production runtime wiring, public DTO, HTTP
 handler, producer declaration field, staging behavior, Nomad behavior, or
 runtime behavior.
 
-This document still does not select exact reliable JSON field names, exact
-reliable schema/version strings, state-path config key, TTL, HTTP-code or error
-vocabulary, recovery route, supplemental header, deterministic identity, or
-Nomad query design.
+This document still does not select the state-path config key, TTL, HTTP-code
+or public error vocabulary, recovery query route, supplemental header,
+deterministic `run_id`, durable replay-envelope persistence or safe custody of
+raw argv/environment material, public provably-not-accepted `RunRef`
+disclosure, or Nomad query design.
 
 ## 10. Runtime identity and lifecycle interaction
 

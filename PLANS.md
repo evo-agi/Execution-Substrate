@@ -149,10 +149,55 @@ distinct from `PrepareRequest`, require an in-band structural reliable-submit
 discriminator that current strict decoding rejects, require producer-declaration
 preflight plus in-band request discrimination as independent fail-closed gates,
 reject header-only opt-in, and forbid silent downgrade to current unkeyed
-submit. This tranche still does not select exact reliable JSON field names,
-exact reliable schema/version strings, state-path config key, TTL, HTTP
-vocabulary, recovery route, Nomad reconciliation algorithm, or `run_id`
-generation strategy.
+submit. The current unavailable contract-adapter foundation tranche selects the
+private reliable request-family vocabulary for later runtime use:
+`schema_version = "execution-substrate.reliable-submit-request/v1"`, mandatory
+top-level discriminator `reliable_submit`, nested
+`contract = "execution-substrate.reliable-submit/v1"`, and nested `submit_key`.
+It adds admission-local private validation for that reliable request shape,
+cryptographic submit-key syntax, caller/key safe-reference derivation,
+composite `ClaimID` construction through the committed pure-model constructor,
+and an ES-neutral submission-outcome projection. The raw submit key exists only
+transiently inside the private strict-decode and caller-bound derivation
+boundary; the returned validated representation retains sanitized request facts
+and safe private references only, not the raw key, decoded key bytes, or raw
+wire request. This is a bounded lifetime/projection guarantee, not a secure
+memory-erasure claim or a claim that arbitrary invalid Go formatting operations
+are overrideable. Full request objects remain unsuitable as log payloads. These
+helpers are not public DTOs and are not called by current runtime code. This
+tranche still does not select or implement source-grounded resolved effective-plan extraction,
+canonical effective-plan encoding, `PlanBinding` construction from admitted
+facts, complete effective-plan witness construction, durable replay-envelope
+custody, the state-path config key, TTL, HTTP status mapping, public error
+strings, recovery query route, Nomad reconciliation algorithm, public runtime
+response field layout, or `run_id` generation strategy.
+
+The next source-bearing seam for that removed scope is
+`resolved-execution-plan-extraction-foundation`. It is not authorized by the
+current scope-reset patch. That later tranche must derive one authoritative
+resolved execution plan from the actual current ES admission and
+runtime-resolution path, including `prepareAdmission` results, artifact and
+manifest facts, policy/trust resolution, resource/default resolution,
+runtime-profile resolution, network fact, mount/environment semantics, current
+runtime command construction, and authority-handoff behavior. Current legacy
+`Submit` and future reliable `PlanBinding` must consume the same
+source-grounded resolved plan. The later tranche must not synthesize
+`PrepareRequest` or `Manifest` proof from the proposed plan itself, create a
+parallel admission engine, silently tighten the current
+empty-environment-allowlist contract, or infer authority-handoff inapplicability
+contrary to current `Submit` behavior.
+
+A separate future repair tranche,
+`reliable-submit-durable-same-operation-replay-repair`, is also required before
+reliable-submit config/store lifecycle wiring, producer enablement, or public
+runtime enablement. The committed private durable service supports internal
+COMMIT-unknown reload within one operation, but the general mutation path does
+not yet recognize a previously committed `lastMutation` before expected-revision
+and operation-specific apply logic. Terminal accepted and
+provably-not-accepted redelivery are known failing examples. The repair must
+inspect all durable mutation operations, not only those two terminal examples.
+The private store remains runtime-unwired, so this gap does not affect current
+public execution behavior.
 
 Reliable dispatch remains blocked until later implementation and audit. Both
 caller-to-ES response loss and ES-to-Nomad registration-response uncertainty

@@ -6,9 +6,34 @@ TARGET-ONLY: submit idempotency, correlation, and recovery in this document are 
 
 CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.
 
-This record freezes the target ES-owned contract seam for future reliable keyed submit. It does not implement runtime behavior, does not select final request fields, does not select a response shape, and does not enable Coordinator-backed dispatch. The persistence and concurrency ADR in `reliable_submit_persistence_and_concurrency.md` now selects local embedded SQLite as the first storage backend, `modernc.org/sqlite v1.54.0` as the CGO-free driver, and private same-package durable-store source while leaving runtime integration open. Current `POST /v1/executions:submit` remains the current unkeyed submit contract.
+This record freezes the target ES-owned contract seam for future reliable keyed
+submit. It does not implement runtime behavior, does not select HTTP status
+mapping or public error strings, does not add public response DTOs, and does
+not enable Coordinator-backed dispatch. The persistence and concurrency ADR in
+`reliable_submit_persistence_and_concurrency.md` now selects local embedded
+SQLite as the first storage backend, `modernc.org/sqlite v1.54.0` as the
+CGO-free driver, and private same-package durable-store source while leaving
+runtime integration open. Current `POST /v1/executions:submit` remains the
+current unkeyed submit contract.
 
-This document now selects the public opt-in/versioning posture and delegates the persistence/concurrency decision to `reliable_submit_persistence_and_concurrency.md`: the existing submit route is retained, the future reliable request is a submit-specific request family distinct from `PrepareRequest`, producer-declaration preflight and an in-band structural request discriminator are both required, header-only opt-in is rejected, and silent downgrade to current unkeyed submit is forbidden. No current request field, response DTO field, producer field, handler behavior, query route, Nomad behavior, runtime configuration, or runtime behavior is implemented by this document or by the private store tranche.
+This document now selects the public opt-in/versioning posture and delegates the
+persistence/concurrency decision to
+`reliable_submit_persistence_and_concurrency.md`: the existing submit route is
+retained, the future reliable request is a submit-specific request family
+distinct from `PrepareRequest`, producer-declaration preflight and an in-band
+structural request discriminator are both required, header-only opt-in is
+rejected, and silent downgrade to current unkeyed submit is forbidden. The
+unavailable contract-adapter foundation also selects the private reliable
+request-family vocabulary, submit-key syntax, caller/key derivation, composite
+`ClaimID` construction through the committed pure-model constructor, and
+ES-neutral outcome semantics. It does not implement source-grounded resolved
+effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
+construction from admitted facts, complete effective-plan witness construction,
+durable replay-envelope custody, or runtime orchestration. No current public
+request field, public response DTO field, producer field, handler behavior,
+query route, Nomad behavior, runtime configuration, or runtime behavior is
+implemented by this document, the private store tranche, or the unavailable
+contract-adapter foundation.
 
 The source-bearing reliable-submit package is now present as the admission-local
 internal Go package `es/admission/internal/reliablesubmit`. Its pure model in
@@ -64,6 +89,26 @@ current handlers, the current producer declaration, the current execution
 locator, staging, lifecycle projection, results, and Nomad interaction do not
 import or use that package.
 
+Current source also contains admission-local private reliable-submit foundation
+helpers in package `admission`. They define the private reliable request-family
+shape and validation, caller/key safe-reference derivation, composite `ClaimID`
+construction through the committed pure-model constructor, and ES-neutral
+submission-outcome projection. They do not implement source-grounded resolved
+effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
+construction from admitted facts, complete effective-plan witness construction,
+durable replay-envelope custody, or runtime orchestration. Those helpers are not
+exported public DTOs, are not wired to handlers, and are not called by current
+submit.
+
+Current private durable source also has a known same-operation replay gap. It
+supports internal COMMIT-unknown reload within one operation, but the general
+mutation path does not yet recognize a previously committed `lastMutation` before
+expected-revision and operation-specific apply logic. Terminal accepted and
+provably-not-accepted redelivery are known failing examples, and the gap may
+affect other durable mutation redelivery cases until a complete mutation
+operation inventory is performed. The private store remains runtime-unwired, so
+no current public execution behavior is affected.
+
 ## 3. Dual Ambiguity Model
 
 ### A. Caller-To-ES Ambiguity
@@ -94,6 +139,44 @@ ES owns the reliable-submit protocol, the assigned ES `run_id`, the bounded subm
 
 ES need not understand Coordinator work-item or attempt semantics. A future Coordinator may map one opaque dispatch identity to the ES submit idempotency key, but that mapping is not ES public grammar.
 
+The public `submit_key` syntax is base64url without padding, exactly 43 ASCII
+characters, and decodes canonically to exactly 32 bytes. The client contract is
+that those 32 bytes are generated with a cryptographically secure random
+generator. The server validates encoding, canonical form, and length only; it
+does not prove entropy.
+
+The future authenticated request boundary supplies the exact canonical SPIFFE
+URI selected from the verified client certificate. This tranche does not wire
+certificate parsing. The canonical SPIFFE URI is the caller-namespace source;
+authorization path prefixes alone, issuer common names, raw certificate bytes,
+Coordinator IDs, CP IDs, Bridge/session/report IDs, trace IDs, and request IDs
+are not reliable-submit identity inputs.
+
+Admission-local safe references are derived with domain-separated SHA-256:
+
+- `caller_ref_bytes = SHA256("es/reliable-submit/caller-ref/v1\0" || canonical_spiffe_uri)`
+- `submit_key_ref_bytes = SHA256("es/reliable-submit/submit-key-ref/v1\0" || caller_ref_bytes || raw_submit_key_bytes)`
+
+The private adapter constructs `reliablesubmit.CallerRef` from
+`caller_ref_bytes`, `reliablesubmit.SubmitKeyRef` from
+`submit_key_ref_bytes`, and `reliablesubmit.ClaimID` by calling
+`reliablesubmit.NewClaimID(callerRef, submitKeyRef)`. It does not hash or
+invent a third claim-ID representation. Raw submit-key bytes are not logged,
+formatted, returned, or stored as public recovery authority.
+
+The raw-key-bearing wire surrogate is function-local to the private strict
+decode and caller-bound derivation boundary. The raw `submit_key` string may
+exist only during that decode/derive operation, and decoded key bytes are
+consumed only to derive `SubmitKeyRef` under the authenticated caller namespace.
+The validated private request representation must retain only sanitized request
+facts plus safe private `CallerRef`, `SubmitKeyRef`, and `ClaimID` values, not
+the raw `submit_key` string, decoded key bytes, or original raw-key-bearing wire
+request. Full request objects remain unsafe as log payloads. This tranche makes
+no secure-memory-erasure claim and does not claim arbitrary invalid Go
+formatting operations, including invalid `%w` on non-error values, are
+overrideable by domain formatting hooks. Submit-key validation errors remain
+fixed bounded errors.
+
 ## 5. Reliable Keyed-Submit Invariant
 
 Reliable keyed submit is explicitly opt-in.
@@ -101,6 +184,14 @@ Reliable keyed submit is explicitly opt-in.
 One authenticated-caller namespace and submit idempotency key identifies one reliable-submit claim. If that claim becomes capable of execution-producing staging or Nomad registration, ES assigns exactly one immutable `run_id` before the first execution-producing effect and later returns or recovers that same handle for the same claim.
 
 Exact retry cannot create another stage package, another execution package, or another Nomad job. Concurrent exact retries converge on the same submit correlation outcome.
+
+For durable same-operation replay, the target invariant is that an exact
+redelivery of an already committed operation replays the committed result without
+new mutation or external effect. Accepted replay returns the same accepted
+record and receipt. Provably-not-accepted replay returns the same terminal
+record. Current private source does not yet fully implement that general durable
+same-operation replay behavior; `reliable-submit-durable-same-operation-replay-repair`
+is required before runtime enablement.
 
 The same caller and key used with a non-equivalent request is conflicting reuse. Conflicting reuse must be detected before another execution-producing side effect.
 
@@ -230,6 +321,41 @@ Output identity can be explicitly inapplicable only through a future
 execution-kind rule, and authority handoff can be explicitly inapplicable;
 generic inapplicability for required categories fails closed.
 
+No effective-plan contract-adapter implementation is present in this tranche.
+The rejected self-validating plan binder has been removed. This patch does not
+select a canonical effective-plan encoding, effective-plan commitments,
+`PlanBinding` construction from admitted facts, a complete witness constructor
+in package `admission`, durable replay-envelope custody, or runtime
+orchestration.
+
+The later separately reconnoitered tranche is
+`resolved-execution-plan-extraction-foundation`. Its purpose is to derive one
+authoritative resolved execution plan from the actual current ES admission and
+runtime-resolution path: `prepareAdmission` results, artifact and manifest
+facts, policy/trust resolution, resource/default resolution, runtime-profile
+resolution, network fact, mount and environment semantics, current runtime
+command construction, and authority-handoff behavior. Current legacy `Submit`
+and future reliable `PlanBinding` must consume the same source-grounded resolved
+plan.
+
+That later tranche must not synthesize `PrepareRequest` or `Manifest` proof from
+the proposed plan itself, create a parallel admission engine, silently tighten
+the current empty-environment-allowlist contract, or infer authority-handoff
+inapplicability contrary to current `Submit` behavior. Any future canonical plan
+encoding must normalize semantic names before sorting and duplicate detection.
+
+Current environment validation remains unchanged: reserved runtime/control keys
+are forbidden; when a manifest declares allowed environment keys, invocation
+keys must stay within that set; when that list is empty, current source does not
+enforce explicit allowlist membership. If a future project decision makes an
+empty list mean no environment additions, that requires a separate owning
+admission-contract change and compatibility review.
+
+Current supported `Submit` constructs `authority_handoff`. Any future
+effective-plan representation must derive authority-handoff applicability from
+current source-owned runtime behavior. No authority-handoff inapplicability
+option is selected by this tranche.
+
 ## 7. Narrow Durable Correlation Semantics
 
 Reliable keyed submit requires ES-owned durable recovery evidence sufficient to survive ES restart.
@@ -293,7 +419,15 @@ This document does not define the final Nomad query or reconciliation algorithm 
 
 ## 10. Semantic Outcome Classes
 
-The target contract defines semantic submission outcome classes without selecting exact JSON names, HTTP status codes, route shapes, or error strings.
+The target contract defines semantic submission outcome classes without
+selecting exact public JSON field names, HTTP status codes, route shapes, or
+error strings. The unavailable contract-adapter foundation adds an
+admission-local, transport-neutral ES outcome projection for these classes. It
+encodes outcome kind, phase-specific same-caller `RunRef` disclosure,
+`ReceiptRef` presence, whether exact retry of the same request is safe, whether
+a new key is required, and whether an accepted submission reference is
+available. It does not encode HTTP status mapping, public error strings, CP or
+Coordinator progression, provider IDs, or raw private store state.
 
 - accepted: one execution was accepted; recover the stable `run_id` and bounded receipt.
 - exact replay: return the same known outcome without another execution-producing effect.
@@ -304,7 +438,17 @@ The target contract defines semantic submission outcome classes without selectin
 - expired or unavailable correlation: the prior correlation can no longer be recovered; this is not proof that no execution existed and does not silently permit reuse of the old semantic command.
 - unauthorized: deny without disclosing whether the correlation exists.
 
-Exact public vocabulary remains open.
+Accepted and accepted exact replay require an accepted submission reference and
+receipt reference. Pending before assignment and ambiguous before assignment
+forbid `RunRef` disclosure. Pending after assignment, ambiguous after
+assignment, and accepted outcomes require the same assigned `RunRef` for the
+same authorized caller.
+Provably not accepted after assignment retains the assigned `RunRef`
+internally, but same-caller public disclosure remains
+`open_for_later_transport_contract`; the private foundation records no receipt,
+no accepted-reference availability, and no public-transport decision for that
+outcome. Conflict and unauthorized outcomes disclose no existing claim run or
+receipt. Exact public vocabulary and HTTP/public outcome mapping remain open.
 
 ## 11. Replay, Authorization, And Admission
 
@@ -337,7 +481,22 @@ The existing producer declaration keeps its current outer identity:
 - `schema_version = "execution-substrate.producer-contract/v1"`;
 - `governed_execution.contract = "governed-execution-producer/v1"`.
 
-The future declaration adds one explicitly named and versioned reliable-submit producer sub-contract under the governed-execution declaration. That additive sub-contract is narrow: it semantically declares only the reliable-submit contract family/version supported, whether reliable submit is enabled for the installation, a bounded safe unavailable or disabled reason, and the minimum safe request-contract discriminator required by a reliable client. It is not a generic `capabilities` map, feature registry, plugin registry, or cross-service probing framework. Exact JSON field names and exact reliable-submit contract/version strings remain open.
+The future declaration adds one explicitly named and versioned reliable-submit
+producer sub-contract under the governed-execution declaration. The
+sub-contract name is `reliable_submit`. Its reliable contract identifier is
+`execution-substrate.reliable-submit/v1`, and its reliable request schema is
+`execution-substrate.reliable-submit-request/v1`. That additive sub-contract is
+narrow: it semantically declares only the reliable-submit contract
+family/version supported, whether reliable submit is enabled for the
+installation, a bounded safe unavailable or disabled reason, request and
+response schema identifiers, the minimum safe request-contract discriminator
+required by a reliable client, supported recovery modes, and non-authority
+labels. It is not a generic `capabilities` map, feature registry, plugin
+registry, or cross-service probing framework. The later declaration should use
+`contract`, `enabled`, `disabled_reason` when disabled, request and response
+schema identifiers, required discriminator, supported recovery modes, and
+non-authority labels. It must not freeze a redundant enabled/status/reason
+triple, and transient store health is not producer-contract truth.
 
 A future reliable client must use two independent fail-closed gates:
 
@@ -348,9 +507,37 @@ The producer declaration alone is not execution authorization, admission, run ex
 
 The target reliable request uses the existing `POST /v1/executions:submit` route. This tranche does not select a new route. A separate route remains a possible later fallback only if future concrete security or compatibility evidence invalidates the same-route design. Recovery-by-key or query-route shape remains open.
 
-The current unkeyed compatibility variant remains the current `PrepareRequest`-compatible request body. The reliable variant uses a future submit-specific request family or envelope and must not remain merely an optional semantic interpretation of `PrepareRequest`.
+The current unkeyed compatibility variant remains the current
+`PrepareRequest`-compatible request body. The reliable variant uses a
+submit-specific request family and must not remain merely an optional semantic
+interpretation of `PrepareRequest`.
 
-The reliable envelope must carry a required in-band structural reliable-submit discriminator or nested reliable-submit marker that is unknown to the current `PrepareRequest` decoder. Because current body decoding is strict, a current server rejects the future reliable body before calling current `Submit` behavior. A changed value in the existing `schema_version` field alone is not the selected discriminator.
+The reliable request schema identifier is
+`execution-substrate.reliable-submit-request/v1`. The mandatory top-level
+structural discriminator is `reliable_submit`. The nested reliable object
+requires `contract = "execution-substrate.reliable-submit/v1"` and
+`submit_key`. The private admission-local request shape contains
+`schema_version`, `reliable_submit`, `invocation`, optional `mode`, optional
+`timeout_seconds`, and optional `resources`; it reuses lower-level
+`ArtifactInvocation`, `ExecutionMode`, and `ExecutionResources` values without
+modifying `PrepareRequest`.
+
+The reliable-specific validation owns only the exact reliable request schema,
+required discriminator and contract, canonical submit-key syntax, reliable v1
+async-only rule, non-negative timeout, resources-present completeness, and
+rejection of malformed mixed reliable/legacy semantics. Omitted `mode` resolves
+to `async`; explicit `async` is allowed; `sync` is rejected for reliable v1.
+Omitted resources mean ES later resolves current defaults. If resources are
+present, both CPU and memory must be positive, and an empty resources object is
+invalid. Invocation must still satisfy current `PrepareRequest` and admission
+semantics when later runtime wiring calls the existing ES admission path. The
+foundation must not duplicate artifact, derivation, policy, runtime-profile,
+resource/admission, manifest, or trust validation.
+
+Because current body decoding is strict, a current server rejects a future
+reliable body carrying `reliable_submit` before calling current `Submit`
+behavior. A changed value in the existing `schema_version` field alone is not
+the selected discriminator.
 
 Header-only reliable-submit opt-in is rejected. A current server may ignore an unknown header and execute the current unkeyed body, violating fail-closed reliable semantics. A future header may be supplemental only when the body still carries the required structural reliable discriminator; this tranche selects no supplemental header.
 
@@ -377,9 +564,15 @@ This target contract makes these explicit non-claims:
 - no reliable submit runtime integration implemented;
 - no runtime behavior implemented;
 - no producer declaration field implemented;
-- no request DTO implemented;
+- no public request DTO implemented;
 - no handler or decoder implemented;
 - no route implementation;
+- no source-grounded resolved effective-plan extraction implemented;
+- no canonical effective-plan encoding implemented;
+- no `PlanBinding` construction from admitted facts implemented;
+- no complete effective-plan witness construction in package `admission`
+  implemented;
+- no durable replay-envelope custody implemented;
 - no public or runtime persistence integration;
 - no global state-path configuration or service-startup database construction;
 - no public or runtime schema, migration, backup, restore, or storage migration
@@ -387,8 +580,7 @@ This target contract makes these explicit non-claims:
 - no exact HTTP code selected;
 - no error string selected;
 - no public persistent receipt-store implementation;
-- no final reliable request field names;
-- no final reliable schema/version strings;
+- no public reliable response field names;
 - no final `run_id` generation strategy;
 - no deterministic `run_id` decision;
 - no recovery query selected;
@@ -416,8 +608,9 @@ Implementation requires these local gates before runtime behavior changes:
 
 - preserved public opt-in and versioning docs-contract coverage;
 - pure internal reliable-submit model tests;
-- reliable request and producer sub-contract model tests;
-- private request-equivalence and plan-binding decision;
+- reliable request foundation and producer sub-contract target tests;
+- `reliable-submit-durable-same-operation-replay-repair`;
+- `resolved-execution-plan-extraction-foundation`;
 - narrow persistence and concurrency ADR decision;
 - ES-to-Nomad uncertain-outcome reconciliation decision;
 - retention and expiry decision;
@@ -430,18 +623,16 @@ Implementation requires these local gates before runtime behavior changes:
 
 The following seams remain open:
 
-- exact reliable producer sub-contract JSON field names;
-- exact reliable producer sub-contract family/version strings;
-- exact reliable request envelope field names;
-- exact reliable request schema/version strings;
-- submit key field name;
+- exact public producer response schema identifier and final declaration
+  rollout behavior;
 - recovery field names;
 - replay-only versus query route;
-- exact outcome and error vocabulary;
+- exact public outcome and error vocabulary;
 - exact reliable-submit state-path config key;
 - TTL, tombstone, and garbage collection;
-- canonicalization;
-- private binding mechanism;
+- source-grounded resolved execution plan extraction;
+- canonical effective-plan encoding and `PlanBinding` construction from
+  admitted facts;
 - plan snapshot versus immutable references;
 - Nomad reconciliation mechanism;
 - deterministic versus random assigned `run_id`;

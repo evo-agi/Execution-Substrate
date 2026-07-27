@@ -18,6 +18,19 @@ This ADR freezes the durable-state boundary and ordering rules that the later
 source implementation must consume from the committed pure model in
 `es/admission/internal/reliablesubmit`.
 
+A later unavailable contract-adapter foundation, implemented in private
+admission-local package `admission` helpers, now selects the reliable request
+schema `execution-substrate.reliable-submit-request/v1`, reliable contract
+`execution-substrate.reliable-submit/v1`, discriminator `reliable_submit`,
+submit-key syntax, caller/key derivation, composite `ClaimID` construction
+through the committed pure-model constructor, and ES-neutral outcome projection.
+It does not implement source-grounded resolved effective-plan extraction,
+canonical effective-plan encoding, `PlanBinding` construction from admitted
+facts, complete effective-plan witness construction, durable replay-envelope
+custody, or runtime orchestration. Those helpers remain runtime-unwired and do
+not alter this ADR's durable schema, migrations, store port, or SQLite startup
+status.
+
 ## 2. Current Repository And Deployment Reality
 
 The current reliable-submit source is admission-local and private under
@@ -387,6 +400,14 @@ Ordering implications:
 
 ## 9. Operation Contract
 
+This table is the target durable-operation contract that reliable-submit runtime
+integration must satisfy before enablement. It is not a blanket claim that every
+same-operation replay path is fully implemented by the current private source.
+The target invariant remains that an exact redelivery of the same durable
+operation replays the already committed result: accepted replay returns the same
+accepted record and receipt, provably-not-accepted replay returns the same
+terminal record, and no new mutation or external effect occurs.
+
 | Operation | Precondition | Expected revision | Idempotent replay | Conflict result | Resulting pure-model phase | Durable effect facts established or changed | Transaction boundary | External-I/O rule |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Establish or load claim | Authenticated and authorized caller namespace, valid safe key representation, valid private binding input | None for first insert; current revision for mutation | Same caller/key/binding loads existing phase and effect facts | Same caller/key/different binding returns conflict with no run or receipt disclosure | Pending before assignment or existing hydrated pure-model phase | No provider-effect fact established | One SQLite transaction for insert-or-load and uniqueness check | No external I/O |
@@ -402,6 +423,29 @@ Ordering implications:
 | Exact replay or load | Authorized same caller/key lookup | None for read; current revision if it also refreshes safe metadata | Same binding returns exact replay over underlying phase and effect facts | Different binding conflicts; Unauthorized discloses nothing | Exact replay view over existing pure-model phase or non-disclosing decision | No new provider-effect fact unless an explicit safe metadata mutation is selected later | SQLite read transaction, or read/write only for explicit safe metadata mutation | No external I/O |
 | Tombstone or expire | Retention rule selected and claim eligible under policy | Current revision | Existing tombstone returns expired-unavailable/unavailable posture | Attempt to delete assignment truth or permit key reuse fails closed | Expired unavailable decision or retained tombstone-backed phase | Tombstone, expiry, or unavailable posture without lifecycle history | One SQLite transaction | No external I/O |
 | Corruption or unavailable | Store open/read/validation detects malformed durable state or unavailable database | Not applicable | Retry may load if later healthy | No conflict detail beyond safe unavailable/corrupt posture | Unavailable fail-closed decision; must not fall back to current unkeyed submit | No new provider-effect fact; no repair semantics unless later explicitly designed | No mutation unless later repair tool is explicitly designed | No external I/O and no provider effect |
+
+### Current Same-Operation Replay Implementation Gap
+
+The committed private durable service supports internal COMMIT-unknown reload
+within one operation through `reloadAfterUnknown`: if the store commit outcome is
+unknown, the service reloads the claim and can recognize the exact expected
+post-commit record.
+
+The general mutation path does not yet recognize a previously committed
+`lastMutation` before expected-revision and operation-specific apply logic.
+Terminal accepted and provably-not-accepted redelivery are known failing
+examples: a duplicate `acceptWithReceipt` or `recordProvablyNotAccepted` call can
+reload an already terminal phase and then enter operation-specific provider
+candidate validation instead of replaying the committed terminal result. This
+gap may affect other durable mutation redelivery cases and therefore requires a
+complete mutation-operation inventory, not a repair scoped only to those two
+terminal examples.
+
+The private store remains runtime-unwired, so this current source limitation
+does not affect current public execution behavior. It is nevertheless a hard
+prerequisite before reliable-submit config or store lifecycle wiring, producer
+enablement, or public runtime enablement. The dedicated future tranche is
+`reliable-submit-durable-same-operation-replay-repair`.
 
 ## 10. Crash-Window Matrix
 
@@ -436,10 +480,10 @@ timelines, logs, result contents, cancellation completion, or provider history.
 
 ## 12. Security, Permissions, And Corruption
 
-Raw submit keys, raw request bodies, raw effective-plan material, environment
-values, credentials, trust material, local paths, scheduler IDs, allocation
-IDs, EvalID, trace IDs, request IDs, and adapter session IDs must not be stored
-or logged as public recovery authority.
+Raw submit keys, raw request bodies, raw effective-plan material, raw argv
+values, environment values, credentials, trust material, local paths, scheduler
+IDs, allocation IDs, EvalID, trace IDs, request IDs, and adapter session IDs
+must not be stored or logged as public recovery authority.
 
 The future store path must be a separate ES-owned state path. It must not reuse
 `execution.staging_root_dir` or `execution.results_root_dir` as the database
@@ -571,10 +615,12 @@ Open decisions:
 
 - exact reliable-submit state-path config key;
 - exact TTL, tombstone, garbage-collection, archival, and repair policy;
-- exact key derivation and caller namespace refinement;
-- exact private binding canonicalization;
+- exact caller namespace source wiring at the authenticated request boundary;
+- exact durable replay-envelope persistence, including safe reconstruction or
+  custody of original argv and environment values and selection of any safe
+  immutable references;
 - exact Nomad reconciliation query and evidence rules;
-- exact public request, receipt, recovery, and error vocabulary;
+- exact public receipt, recovery, HTTP status, and error vocabulary;
 - exact runtime submit integration tranche.
 
 A future PostgreSQL backend may implement the same private claim-store port and

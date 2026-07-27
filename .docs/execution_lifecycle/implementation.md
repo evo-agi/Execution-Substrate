@@ -17,11 +17,36 @@ the current producer declaration has no reliable-submit producer sub-contract.
 Current source now includes the first pure, admission-local internal model plus
 the private durable-record codec, backend-neutral claim-store port, durable
 semantic service, shared conformance tests, and modernc SQLite store source for
-that target under `es/admission/internal/reliablesubmit`. The private store is
-constructed and exercised only in tests; it is not wired to submit, prepare,
+that target under `es/admission/internal/reliablesubmit`. Current source also
+includes private admission-local contract-adapter foundation helpers for the
+reliable request-family vocabulary, submit-key validation, caller/key
+safe-reference derivation, composite `ClaimID` construction through the
+committed pure-model constructor, and ES-neutral outcome projection. It does not
+retain the raw submit key after private strict decode and caller-bound
+derivation: the function-local wire surrogate may hold the raw key only during
+decode and derivation, while the validated request retains sanitized request
+facts plus safe private caller/key/claim references. It does not claim secure
+memory erasure, and it does not rely on domain types overriding invalid Go
+formatting operations. Full request objects are not safe log payloads. It does
+not include source-grounded resolved effective-plan extraction, canonical
+effective-plan encoding, `PlanBinding` construction from admitted facts,
+complete effective-plan witness construction, durable replay-envelope custody,
+or runtime orchestration. The private store and foundation helpers are
+constructed and exercised only in tests; they are not wired to submit, prepare,
 handlers, producer declaration, staging, lifecycle, results, Nomad behavior,
 runtime startup, runtime configuration, public persistence integration, or
 recovery routes.
+
+The current private durable service has a known same-operation replay gap. It
+supports internal COMMIT-unknown reload within one operation, but the general
+mutation path does not yet recognize a previously committed `lastMutation` before
+expected-revision and operation-specific apply logic. Terminal accepted and
+provably-not-accepted redelivery are known failing examples, and a complete
+mutation-operation inventory is required before repair. The dedicated future
+tranche is `reliable-submit-durable-same-operation-replay-repair`; it is a hard
+gate before reliable-submit config/store lifecycle wiring, producer enablement,
+or public runtime enablement. Because the private store is runtime-unwired, this
+gap does not affect current public execution behavior.
 
 ## 2. How to read this document
 
@@ -283,6 +308,32 @@ Where ES stops and Nomad takes over:
   It does not implement the producer sub-contract, reliable request DTO,
   staging, Nomad reconciliation, recovery lookup, public error vocabulary,
   runtime configuration, or runtime startup integration.
+- Current package `admission` now also contains private
+  `reliable_submit_*` foundation helpers. They select the reliable request
+  schema `execution-substrate.reliable-submit-request/v1`, reliable contract
+  `execution-substrate.reliable-submit/v1`, top-level discriminator
+  `reliable_submit`, submit-key syntax, SPIFFE caller/key safe-reference
+  derivation, composite `ClaimID` construction through the committed pure-model
+  constructor, and ES-neutral outcome projection. Their raw-key-bearing wire
+  surrogate is function-local to private strict decode; decoded key bytes are
+  consumed for caller-bound derivation and are not retained in the validated
+  request. The validated representation retains sanitized request facts plus
+  safe private references only. This is not a secure-memory-erasure guarantee
+  and not a claim that invalid Go `%w` formatting of non-error values can be
+  made override-safe with formatting hooks. They do not implement source-grounded resolved effective-plan extraction, canonical effective-plan
+  encoding, `PlanBinding` construction from admitted facts, complete
+  effective-plan witness construction, durable replay-envelope custody, or
+  runtime orchestration. They are not exported, not public DTOs, and not called
+  by current handlers or `Submit`.
+- The private durable service currently supports internal COMMIT-unknown reload
+  within one operation, but its general mutation path does not yet recognize a
+  previously committed `lastMutation` before expected-revision and
+  operation-specific apply logic. Terminal accepted and provably-not-accepted
+  redelivery are known failing examples; the future
+  `reliable-submit-durable-same-operation-replay-repair` tranche must inspect
+  all durable mutation operations, not only those two examples, before any
+  reliable-submit config/store lifecycle wiring, producer enablement, or public
+  runtime enablement.
 - The pure model cannot enforce one winning assignment across stale or
   concurrent snapshots. The private persistence and compare-and-swap layer owns
   the authoritative caller/key claim and assigned `run_id` transition. Later
@@ -304,8 +355,9 @@ Where ES stops and Nomad takes over:
 - Current `SubmitResult` has no replay or submit-correlation vocabulary. It is
   the current bounded unkeyed receipt after confirmed Nomad response.
 - Current `handleSubmit` still decodes the current `PrepareRequest` body and
-  delegates that request to `Submit`; no submit-specific reliable request
-  envelope, reliable discriminator, or reliable request DTO is implemented.
+  delegates that request to `Submit`; no handler discrimination, public
+  reliable request DTO, reliable runtime decoder, or reliable submit path is
+  implemented.
 - The current producer contract declaration still has the current outer
   `execution-substrate.producer-contract/v1` identity and current
   `governed-execution-producer/v1` governed-execution identity only. No

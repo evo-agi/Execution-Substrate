@@ -281,8 +281,21 @@ reliable-submit producer sub-contract under the governed-execution declaration.
 That addition is narrow and additive to the current declaration. It declares
 only the reliable-submit contract family/version supported, whether reliable
 submit is enabled for this installation, a bounded safe unavailable or disabled
-reason, and the minimum safe request-contract discriminator required by a
-reliable client.
+reason, request and response schema identifiers, the minimum safe
+request-contract discriminator required by a reliable client, supported
+recovery modes, and non-authority labels.
+
+The target reliable-submit producer sub-contract name is `reliable_submit`.
+The reliable contract identifier is
+`execution-substrate.reliable-submit/v1`. The reliable request schema
+identifier is `execution-substrate.reliable-submit-request/v1`. The mandatory
+request-body discriminator is the top-level `reliable_submit` object. The
+later producer declaration should follow the current narrow style with fields
+for `contract`, `enabled`, `disabled_reason` when disabled, request and
+response schema identifiers, required discriminator, supported recovery modes,
+and non-authority labels. It must not freeze a redundant
+enabled/status/reason triple, and transient store health must not become
+producer-contract truth.
 
 The reliable-submit producer sub-contract is not a generic `capabilities` map,
 feature registry, plugin registry, cross-service probing framework, health
@@ -295,9 +308,10 @@ reliable-submit sub-contract and enabled status, and then submit a structurally
 distinct reliable request body. The declaration alone is not sufficient opt-in;
 the request body discriminator remains an independent fail-closed gate.
 
-Exact JSON field names and exact reliable-submit contract/version strings
-remain open for the later producer-declaration model tranche. The current
-producer declaration has no implemented reliable-submit sub-contract.
+The exact public response schema string, public error vocabulary, recovery
+route shape, and runtime enablement behavior remain open for later tranches.
+The current producer declaration has no implemented reliable-submit
+sub-contract.
 
 ### Error contract
 
@@ -647,10 +661,13 @@ Coordinator desired state, or Nomad mirror.
 
 The target public opt-in/versioning selection uses the existing
 `POST /v1/executions:submit` route for both the current legacy variant and the
-future reliable variant. The reliable variant uses a future submit-specific
-request family or envelope distinct from `PrepareRequest`. It must carry a
-required in-band structural reliable-submit discriminator or nested marker that
-current strict `PrepareRequest` decoding rejects before current `Submit`
+future reliable variant. The reliable variant uses the submit-specific request
+schema `execution-substrate.reliable-submit-request/v1`, distinct from
+`PrepareRequest`. It carries the mandatory top-level structural discriminator
+`reliable_submit`, whose nested `contract` field must equal
+`execution-substrate.reliable-submit/v1` and whose nested `submit_key` field
+carries the caller-provided reliable submit key. Current strict
+`PrepareRequest` decoding rejects that discriminator before current `Submit`
 behavior can run. A changed value in the current `schema_version` field alone is
 not the selected discriminator.
 
@@ -668,11 +685,17 @@ reject before admission is treated as successful, before effect-capable `run_id`
 assignment, before execution-package staging, before Nomad registration, and
 before fallback to current unkeyed submit.
 
-The target contract leaves exact reliable producer field names, exact reliable
-request field names, exact reliable schema/version strings, recovery route,
-storage, lock, concurrency, TTL, tombstone, HTTP vocabulary, private binding
-mechanism, Nomad reconciliation mechanism, and `run_id` generation strategy
-open.
+The target contract leaves public response field names, recovery route,
+state-path configuration, TTL, tombstone handling, HTTP status mapping, public
+error strings, Nomad reconciliation mechanism, and `run_id` generation strategy
+open. The private admission-local foundation selects request-family names,
+submit-key syntax, caller/key derivation, composite `ClaimID` construction
+through the committed pure-model constructor, and ES-neutral submission-outcome
+semantics, but current handlers do not call that foundation. It does not select
+or implement source-grounded resolved effective-plan extraction, canonical
+effective-plan encoding, `PlanBinding` construction from admitted facts, complete
+effective-plan witness construction, durable replay-envelope custody, or runtime
+orchestration.
 
 ## 7. Status contract
 

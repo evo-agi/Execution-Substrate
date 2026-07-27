@@ -112,6 +112,28 @@ Those absences are current facts, not design commitments.
   Coordinator writer-session authority, make provider metadata a recovery
   source, promise PostgreSQL implementation, promise live backend switching, or
   promise automatic data migration.
+- ES owns the unavailable reliable-submit contract-adapter foundation in
+  private admission-local source. That foundation selects the reliable request
+  schema `execution-substrate.reliable-submit-request/v1`, reliable contract
+  `execution-substrate.reliable-submit/v1`, top-level discriminator
+  `reliable_submit`, nested `contract`, nested `submit_key`, caller/key
+  safe-reference derivation from the exact authenticated SPIFFE URI, composite
+  `ClaimID` construction through the committed pure-model constructor, and
+  ES-neutral outcome semantics. It does not implement source-grounded resolved
+  effective-plan extraction, canonical effective-plan encoding, effective-plan
+  commitments, complete effective-plan witness construction,
+  durable replay-envelope custody, or runtime orchestration. A later
+  `resolved-execution-plan-extraction-foundation` tranche must derive one
+  authoritative resolved execution plan from the actual current ES
+  admission/runtime-resolution path, and current legacy `Submit` and future
+  reliable `PlanBinding` must consume that same source-grounded plan. That later
+  tranche must not synthesize `PrepareRequest` or `Manifest` proof from the
+  proposed plan itself, create a parallel admission engine, silently tighten the
+  current empty-environment-allowlist contract, or infer authority-handoff
+  inapplicability contrary to current `Submit` behavior. The current foundation
+  is not a public DTO surface, producer declaration, config surface, store
+  lifecycle, Nomad reconciliation path, recovery route, shared grammar kernel,
+  or runtime capability claim.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
   ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
