@@ -1,24 +1,23 @@
-# Remote Alpha Operator Healthcheck TLS Noninteractive Status Design
+# Remote Alpha Operator Healthcheck TLS Noninteractive Status Contract
 
 ## 0. Purpose, Authority, And Status
 
-This document defines a proposed ES-owned noninteractive, read-only status route
-for Remote Alpha operator-healthcheck TLS material.
+This document defines the implemented ES-owned noninteractive, read-only
+operator-healthcheck TLS status route for Remote Alpha.
 
 Status:
 
-- `Bounded slice rule`: the existing P0u interactive
-  `operator-healthcheck-tls-status` route remains the current implemented route.
-- `Design/static-test prep only`: this document proposes a future
-  noninteractive route contract. It does not implement a route, renewal, SSH
-  changes, profile mutation, or scheduled execution.
-- `No fallback emitters`: ES machine-readable route JSON is promised only
-  after declared route prerequisites pass. Missing local runtime/validator
-  dependencies are caller/integration preflight failures, not ES route-output
-  obligations.
-- The proposed route is an extension of the ES-owned Remote Alpha
-  operator-helper/status surface. It is not a redefinition of CP, IM, MA, or
-  Bridge authority.
+- `Bounded slice rule`: P0v implements one read-only ES observation route:
+  `operator-healthcheck-tls-status-noninteractive`.
+- `Current invariant`: the existing P0u interactive
+  `operator-healthcheck-tls-status` route remains implemented and unchanged.
+- `Current invariant`: the P0v route is evidence/projection only. It is not
+  renewal, replacement, signer/custody resolution, profile mutation, scheduled
+  execution, CP run-control truth, IM readiness authority, MA authority, Bridge
+  authority, production readiness, operational acceptance, or ES runtime truth.
+- `Current invariant`: no fallback emitter is allowed. The local Python
+  runtime is the sole final route-schema emitter.
+- `Current invariant`: `scheduled_execution_allowed=false`.
 
 Authority for this document follows the repo-wide authority hierarchy:
 
@@ -31,370 +30,404 @@ Authority for this document follows the repo-wide authority hierarchy:
 If this document disagrees with current code and tests on implemented behavior,
 code and tests win for current behavior and this document must be realigned.
 
-## 1. Current Route Grounding
+## 1. Active Route
 
-The current Mac-side facade route is:
-
-```text
-scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty
-```
-
-The current host-local helper accepts:
-
-```text
-scripts/remote_alpha_operator_healthcheck_tls_renew.sh --status
-scripts/remote_alpha_operator_healthcheck_tls_renew.sh --check-only
-scripts/remote_alpha_operator_healthcheck_tls_renew.sh --execute-renew
-scripts/remote_alpha_operator_healthcheck_tls_renew.sh --summary-path <path>
-```
-
-Current implemented behavior:
-
-- The Mac-side status facade requires `--ssh-target` and `--interactive-tty`.
-- The facade performs local stdin/stdout TTY preflight before staging or SSH.
-- The facade stages only the fixed public/internal operator-healthcheck TLS
-  helper pair, invokes only `--status` for the status route, and uses
-  `ssh -tt`.
-- If the remote user is not root, the facade invokes `sudo` without `-n`, so a
-  visible remote sudo/password prompt may occur.
-- The current status path is non-mutating with respect to certificate renewal,
-  service restart, CP proof, IM refresh, support-bundle collection, Vault,
-  SPIRE, Nomad, workload-auth, runtime identity, and ES service/governance TLS
-  scope.
-- The current status helper writes a bounded non-secret remote summary at the
-  documented operator-healthcheck TLS summary path, does not copy it back to
-  Mac `.out`, and does not print full summary JSON.
-- The host-local helper can parse public certificate metadata, confirm
-  cert/key public-key match without printing private keys, verify the operator
-  certificate against configured ES client CA material when available, detect
-  `spiffe://execution.internal/operator/local`, detect the legacy
-  `spiffe://execution.internal/operator`, and optionally probe safe local HTTPS
-  endpoints without recording response bodies.
-- The current ES route contract does not support scheduled/background
-  noninteractive read-only execution.
-
-Current exit-code meaning:
-
-- Facade exit `2` means facade usage, preflight, or refusal. Examples include
-  missing `--ssh-target`, missing `--interactive-tty`, duplicate flags,
-  unknown flags, helper override flags, secret-like arguments, invalid SSH
-  target shape, missing local TTY, or missing fixed helper files. In these
-  cases the remote helper is not invoked.
-- Helper exit `2` means host-local helper bad arguments or forbidden arguments,
-  including secret-like CLI arguments, equals-form options, unknown flags,
-  helper scope mixing, or unsupported helper override input.
-- Helper exit `1` means helper execution reached a fail-closed condition or
-  status blocker. For status, examples include expired/not-yet-valid
-  certificate metadata, operator identity mismatch, cert/key public-key
-  mismatch, trust verification failure, missing material, unreadable material,
-  or probe failure. For renew, it includes the current
-  `unsupported_signing_topology` blocker.
-- Helper exit `0` means the helper completed and the current helper summary
-  has `result.ok=true`.
-
-Current renewal topology:
-
-- `operator-healthcheck-tls-renew` remains blocked by
-  `unsupported_signing_topology`.
-- `unsupported_signing_topology` means ES has no authoritative documented CA
-  custody/signing topology for the host-local operator healthcheck client
-  identity.
-- The helper must not assume a retained remote CA private key, must not accept
-  ad hoc signing material, and must fail closed before backup, install, service
-  restart, or post-renew probes.
-- `es-service-tls-renew` covers the ARS/AGS/ES artifact-registry mTLS scope.
-- `es-governance-tls-renew` covers the ES to EGS execution-governance
-  trust-model mTLS scope.
-- Neither service/governance route repairs operator-healthcheck client TLS by
-  inference. Operator-healthcheck TLS is a separate host-local operator client
-  identity scope.
-
-Current CP/IM consumption:
-
-- CP `diagnose-remote-profile` consumes profile certificate metadata and emits
-  contact-free diagnostics such as `cert_metadata_expired`; it is not live
-  remote contact, renewal, or ES route execution.
-- CP owns profile acceptance, diagnostics, workflow state, Temporal state,
-  review/finalization, and run-control semantics.
-- IM emits the Remote Alpha profile, profile/provenance artifacts, remote
-  doctor/readiness/support-bundle artifacts, and profile lineage refresh
-  evidence. IM artifacts remain readiness/provenance/diagnostics only.
-- Profile lineage is refreshed through IM/CP-owned documented profile and
-  proof-profile lineage paths. ES status evidence may indicate that a refresh is
-  needed, but it must not mutate profile lineage.
-- Bridge projections remain evidence/projection adapters only. Bridge output
-  is not CP, ES, IM, MA, runtime, or infrastructure authority.
-
-## 2. Purpose And Non-Goals
-
-Purpose:
-
-- Allow bounded read-only operator-healthcheck TLS status collection without
-  interactive TTY or password babysitting.
-- Give MA, IM, and CP a safe ES-owned status evidence shape they can consume
-  without defining ES route semantics.
-- Preserve fail-closed behavior when noninteractive auth, remote status, trust
-  metadata, identity metadata, helper output, or redaction cannot be proven.
-
-Non-goals:
-
-- No renewal.
-- No certificate, key, trust bundle, profile, env file, support-bundle,
-  retained-bundle, proof artifact, SQLite state, or remote-state mutation.
-- No profile mutation and no profile lineage mutation.
-- No CP authority, CP proof execution, CP run-control truth, Temporal action,
-  worker startup, or workflow startup.
-- No IM authority, IM refresh execution, support-bundle collection, or IM
-  reconciliation.
-- No MA authority, scheduler workaround, pseudo-TTY automation, password
-  storage, password replay, or hidden remote reconciler.
-- No Bridge authority or Bridge control path.
-- No production readiness, live proof, submit readiness, runtime-profile
-  readiness, retained-result readiness, governed execution proof, Vault
-  readiness, SPIRE readiness, Nomad readiness, or deployment claim.
-
-## 3. Authority Boundaries
-
-- ES owns the route contract, helper semantics, TLS status semantics, failure
-  classes, redaction requirements, and any future implementation.
-- CP owns remote-supported-host profile parsing, profile acceptance,
-  diagnostics, workflow/run-control, Temporal state, review, checkpointing, and
-  finalization.
-- IM owns profile/provenance/readiness/support-bundle emission and profile
-  lineage refresh artifacts.
-- MA may schedule, propose, summarize, or invoke only after ES defines the safe
-  noninteractive route and a later MA tranche updates MA route metadata, docs,
-  tests, and audit evidence.
-- Bridge remains an evidence/projection adapter only. It must not start,
-  control, or infer ES, CP, IM, or MA authority from this route.
-
-The proposed route output is evidence/projection only. No repo may treat it as
-CP run-control truth, ES runtime truth, IM authority, MA authority, Bridge
-authority, or infrastructure reconciliation truth.
-
-## 4. Route Shape
-
-Decision: introduce a new route id instead of adding a mode flag to the current
-interactive route.
-
-Proposed route id:
-
-```text
-operator-healthcheck-tls-status-noninteractive
-```
-
-Rationale:
-
-- The current `operator-healthcheck-tls-status` route has a documented,
-  tested, interactive topology: required `--interactive-tty`, local TTY
-  preflight, `ssh -tt`, visible sudo/password prompt behavior, remote staging,
-  remote summary persistence, and no Mac `.out` copy-back.
-- Adding a mode flag to the existing route would make it easy for MA, operators,
-  or tests to confuse two different safety postures under one route name.
-- A new route lets ES publish explicit route metadata:
-  `requires_interactive_tty=false`, `supports_noninteractive=true`, and, after
-  implementation and audit only, `scheduled_execution_allowed=true`.
-- The existing interactive route remains valid for foreground operator use.
-
-Proposed stable argv:
+Active stable argv:
 
 ```text
 scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json
 ```
 
-Allowed flags:
+Route metadata:
+
+- route id: `operator-healthcheck-tls-status-noninteractive`
+- route version: `v1`
+- owner repo: `execution-substrate`
+- current status: `implemented`
+- requires interactive TTY: `false`
+- supports noninteractive: `true`
+- scheduled execution allowed: `false`
+
+The current P0u route remains:
+
+```text
+scripts/remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty
+```
+
+The P0u route keeps its foreground operator topology: required
+`--interactive-tty`, local stdin/stdout TTY preflight, `ssh -tt`, visible sudo
+or password prompt behavior, fixed helper-pair staging, and remote summary
+retention. P0v does not change P0u behavior.
+
+## 2. Runtime Architecture
+
+The P0v implementation has exactly three layers:
+
+1. Bash facade:
+   - parses and refuses route arguments;
+   - performs contact-free local prerequisite checks;
+   - constructs no JSON;
+   - performs no SSH, SCP, sudo, staging, cleanup, or summary behavior for
+     P0v;
+   - execs the fixed checked-in local Python runtime.
+2. Local Python runtime:
+   - is the sole final emitter for
+     `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`;
+   - owns SSH argv construction and bounded subprocess handling;
+   - streams the fixed checked-in remote collector over SSH stdin;
+   - classifies transport failures versus validated remote protocol documents;
+   - validates the internal remote protocol;
+   - maps failures through a fixed local vocabulary;
+   - validates redaction and final schema before stdout emission.
+3. Remote Python collector:
+   - is streamed over SSH stdin and is never copied, installed, staged, or
+     retained on the remote host;
+   - writes no remote file, summary, log, or temporary file;
+   - emits one compact internal protocol JSON document plus one newline;
+   - accepts no caller command, path, helper, SSH option, privilege command,
+     output path, summary path, credential, certificate path, or arbitrary
+     positional input.
+
+There is no shell fallback JSON path. Missing local `python3`, local `ssh`, the
+local runtime, or the fixed collector is a facade/local preflight refusal with
+exit `2` and no route JSON.
+
+## 3. Bash Facade Contract
+
+Allowed P0v flags:
 
 - `--help`
 - `--ssh-target <target>`
 - `--format json`
-- optional future `--output <local-json-path>` only if a later implementation
-  constrains it to an approved local evidence root and still emits identical
-  bounded JSON to stdout
 
-Forbidden flags:
+Forbidden P0v inputs include:
 
 - `--interactive-tty`
 - `--execute-renew`
 - `--status`
 - `--check-only`
 - `--summary-path`
-- `--output` until separately documented
-- `--host-local`
-- `--dry-run`
-- `--apply`
-- `--scope`
-- reset, unseal, workload-auth, runtime-identity, service-user, config/TLS,
-  binary deployment, IM, support-bundle, CP proof, helper override, path
-  override, arbitrary command, equals-form, duplicate, positional, and
-  secret-like arguments
+- `--output`
+- helper, path, command, SSH, privilege, runtime, collector, schema, timeout,
+  or limit overrides
+- equals-form options
+- duplicate options
+- unknown flags
+- extra positionals
+- secret-like arguments
+- unrelated recovery modes
 
-Required local inputs:
+The Bash facade reuses the current sealed SSH-target shape semantics for a
+single SSH target: the target must not be an option, whitespace-bearing value,
+or shell command. Bash does not allocate or require a local TTY for P0v and
+does not run a TTY preflight.
 
-- A single SSH target string.
-- ES-owned route metadata that resolves the fixed remote read-only status
-  command. The user must not supply a helper path or shell command.
-- Local runtime/validator availability, or a dedicated checked-in
-  runtime/validator available to the route implementation.
-- Schema and redaction checks available before the route promises ES-owned
-  machine-readable output.
-- Local `ssh` capability only if the implementation is a remote-contact route.
-- A known-host entry that already exists when the implementation contacts a
-  remote host.
-- Noninteractive auth material that is already available when the
-  implementation contacts a remote host.
-- A route config stating whether noninteractive execution is implemented and
-  audited.
+The only P0v execution handoff from Bash is the absolute Python 3 executable
+resolved during contact-free preflight, invoked with isolated startup flags:
 
-Prerequisite and no-fallback contract:
+```text
+<absolute-python3> -I -S -B scripts/remote_alpha_operator_healthcheck_tls_status_noninteractive.py --ssh-target <validated-target> --format json
+```
 
-- No fallback emitters are allowed.
-- ES machine-readable route JSON is promised only after the declared
-  prerequisites above pass.
-- Missing local runtime/validator dependencies are caller/integration preflight
-  failures, not ES route-output obligations.
-- Caller/integration preflight may record separately owned local evidence and
-  stop before invoking the ES route.
-- A future ES implementation may assume declared prerequisites or use a
-  dedicated checked-in runtime/validator, but it must not split one schema
-  contract across a primary runtime plus shell fallback JSON assembly.
-- If prerequisites cannot be proven, the ES route must not pretend that it
-  produced `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.
+The Bash facade passes no collector path, SSH option, remote command, sudo
+command, output path, timeout, limit, or schema override.
 
-Allowed output formats:
+## 4. Local Runtime Contract
 
-- JSON only for the route contract after prerequisites pass.
-- Help text is allowed for `--help`.
-- No Markdown, human transcript, raw helper stdout, raw helper stderr, raw SSH
-  transcript, remote summary copy-back, or support bundle is part of the route
-  contract.
+The local runtime is:
 
-Exit-code vocabulary:
+```text
+scripts/remote_alpha_operator_healthcheck_tls_status_noninteractive.py
+```
 
-- `0`: bounded JSON emitted, `status_available=true`, and no status blocker.
-- `1`: bounded JSON emitted after route prerequisites passed, but status is
-  blocked, unavailable, redaction failed, remote contact failed, helper failed,
-  or a fail-closed condition was reached.
-- `2`: usage, local preflight, policy/refusal, forbidden argument, or invalid
-  route metadata. Remote contact must not occur for facade exit `2`, and
-  missing runtime/validator prerequisites do not require ES route JSON.
+It is an internal ES route runtime source file, not a supported executable
+command. Its tracked mode is `0644`. The only supported public P0v entrypoint
+is the Bash facade argv in Section 1.
 
-Consumers may retain the bounded JSON evidence document and numeric exit code.
-Consumers must not retain raw stdout/stderr transcripts. If stdout is the JSON
-channel, stdout is not a raw transcript; it is the bounded route output. Stderr
-is limited to short safe diagnostics and is not required for classification.
+It uses Python standard library only and requires Python 3.9 or newer. The Bash
+facade resolves the local interpreter once to an absolute executable path,
+checks that interpreter with `-I -S -B`, and execs the route with the same
+isolated Python startup flags. At startup the runtime refuses to proceed unless
+isolated mode is enabled, `site` loading is disabled, and bytecode writing is
+disabled. Python-specific ambient customization such as `PYTHONPATH`, user site
+packages, `sitecustomize`, `usercustomize`, `PYTHONINSPECT`, and
+`PYTHONSTARTUP` is outside the supported facade entrypoint. Direct interpreter
+invocation is unsupported and not part of the route contract. This is a fixed
+source/startup boundary, not cryptographic attestation of the local operator
+account or interpreter binary.
 
-Compatibility:
+The runtime strictly parses only:
 
-- The current `operator-healthcheck-tls-status` route remains unchanged.
-- The current `operator-healthcheck-tls-renew` route remains blocked with
-  `unsupported_signing_topology`.
-- Service/governance TLS routes remain separate and must not be conflated with
-  operator-healthcheck TLS.
+- `--ssh-target <target>`
+- `--format json`
 
-## 5. Noninteractive Constraints
+Parser and validation failures emit only fixed safe diagnostics. They do not
+echo raw hostile values, raw SSH targets, absolute local paths, transcripts, or
+remote stderr.
 
-The proposed route must:
+The runtime derives the collector from its own fixed checked-in location:
 
-- Not require local stdin or stdout to be a TTY.
-- Not allocate a pseudo-TTY.
-- Not invoke SSH in a mode that prompts for passwords.
-- Use no-prompt SSH semantics, such as BatchMode and zero password prompts, if
-  SSH is used.
-- Not call sudo in a way that prompts interactively.
-- Use `sudo -n` only when root-only read access is required, or avoid sudo
-  entirely when the installed helper/capability model can prove read access.
-- Fail closed if required auth material is not already noninteractive-ready.
-- Fail closed if SSH, sudo, helper execution, or status collection would need a
-  prompt.
-- Not stage helper files to a remote scratch directory.
-- Not write the current remote summary file as the only evidence channel.
-- Not mutate remote files, services, certs, keys, profiles, trust bundles, env
-  files, state stores, support bundles, retained bundles, or proof artifacts.
-- Not run renewal, install, backup, rollback, restart, `curl` probes that record
-  bodies, IM refresh, support-bundle collection, CP proof, ES submit, Nomad,
-  Docker, Vault, SPIRE mutation, reset, unseal, workload-auth bootstrap, or
-  runtime identity generation.
-- Not expose remote paths, endpoint secrets, cert bodies, PEM, env values,
-  SPIFFE/Vault material, raw logs, raw helper transcripts, raw SSH transcripts,
-  raw payloads, connector IDs, workspace IDs, org IDs, or unsafe local paths.
+```text
+scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py
+```
 
-Implementation implication:
+There is no collector-path argument and no environment override.
 
-- A future implementation needs either a preinstalled ES-owned read-only helper
-  or another ES-owned fixed remote command that can emit bounded JSON without
-  remote staging and without remote summary mutation. Reusing the current
-  staged `ssh -tt` facade is not sufficient.
-- A future implementation must use declared prerequisites or a dedicated
-  checked-in runtime/validator for schema and redaction. It must not add a
-  shell fallback JSON branch for cases where that runtime/validator is missing.
+The runtime reads its own source and the collector source and computes SHA-256
+digests. In P0v v1, `provenance.source_revision` is always `null`: the runtime
+does not search for `git`, does not spawn a Git subprocess, and does not read
+branch, dirty state, repository path, Git stderr, or caller Git environment.
+The source hashes are bounded provenance/correlation evidence, not remote
+attestation.
 
-## 6. Auth Posture Classification
+The runtime computes a SHA-256 label for the validated SSH target and never
+emits the raw target.
 
-Failure classes are stable strings in bounded JSON evidence only after route
-prerequisites pass. Missing local runtime/validator prerequisites are
-caller/integration preflight blockers and are not represented by ES fallback
-JSON. Failure classes do not authorize retries, mutation, renewal, profile
-acceptance, or run-control.
+## 5. SSH And Remote Command
 
-Local preflight classes:
+The local runtime constructs one exact SSH argv list with no shell:
 
-- `facade_usage_failed`: invalid local argv, duplicate flag, forbidden flag,
-  helper override, secret-like argument, invalid SSH target, or invalid route
-  metadata. Exit `2`, no remote contact.
-- `noninteractive_auth_required`: after schema/redaction prerequisites are
-  available, local route metadata or configured command shows the route would
-  need a TTY, password prompt, prompt-capable sudo, or unsupported auth
-  topology. Exit `1` or `2` depending on whether this is config refusal or
-  usage.
-- `remote_auth_not_ready`: contact-free local evidence says required
-  noninteractive auth material is absent, stale, disabled, or unsupported. No
-  remote contact, after schema/redaction prerequisites are available.
-- `redaction_unavailable`: after the route runtime is available, the route
-  cannot prove bounded output/redaction for collected status evidence. Missing
-  redaction/runtime dependencies before route execution are preflight blockers,
-  not fallback JSON.
+```text
+/usr/bin/ssh
+-F
+/dev/null
+-T
+-o
+BatchMode=yes
+-o
+NumberOfPasswordPrompts=0
+-o
+KbdInteractiveAuthentication=no
+-o
+PasswordAuthentication=no
+-o
+StrictHostKeyChecking=yes
+-o
+ConnectTimeout=10
+-o
+ConnectionAttempts=1
+-o
+ProxyCommand=none
+-o
+ProxyJump=none
+-o
+PermitLocalCommand=no
+-o
+ClearAllForwardings=yes
+-o
+ForwardAgent=no
+-o
+RequestTTY=no
+-o
+ControlMaster=no
+-o
+ControlPath=none
+-o
+ControlPersist=no
+-o
+CanonicalizeHostname=no
+<validated target>
+exec /usr/bin/python3 -I -S -B - --protocol execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.remote.v1 --collector-sha256 <collector-sha256>
+```
 
-Remote-read-only contact classes:
+The target is the only caller-derived value in the SSH argv and remains the
+separate SSH target argument. The fixed remote command contains only the
+internal protocol version and the locally derived collector SHA-256.
 
-- `ssh_batch_mode_failed`: the no-prompt SSH invocation failed before helper
-  execution. The route must not parse or retain raw SSH stderr to infer secrets.
-- `remote_status_unavailable`: the fixed remote status command could not run or
-  did not produce safe status output, without a more specific class.
-- `noninteractive_auth_required`: SSH or sudo reported a safe no-prompt refusal
-  and no helper output was available.
-- `helper_usage_failed`: the helper ran and returned usage/forbidden-argument
-  exit `2`.
-- `unknown_helper_failure`: the helper ran and failed without a safe class.
+The runtime uses no caller-supplied SSH executable, SSH options, `shell=True`,
+shell fallback, `scp`, remote temporary file, remote helper path, summary path,
+output path, or retry loop. The route disables per-user SSH config with
+`-F /dev/null` and does not admit `ProxyCommand`, `ProxyJump`, `LocalCommand`,
+forwarding, control-master, or TTY behavior. Host authentication still depends
+on the operator's allowed key/agent and known-host material. The route does not
+attest to the local OS or operator account.
 
-Certificate/status classes:
+## 6. Subprocess Bounds
 
-- `cert_metadata_expired`: safe certificate metadata proves `not_after` is in
-  the past.
-- `cert_metadata_not_yet_valid`: safe certificate metadata proves `not_before`
-  is in the future.
-- `trust_chain_unavailable`: configured trust chain or verification metadata is
-  missing, unreadable, or unverifiable.
-- `identity_mismatch`: the operator client identity does not match
-  `spiffe://execution.internal/operator/local`, or legacy-only identity is
-  present.
-- `key_pair_mismatch`: public cert/key digests do not match.
-- `remote_status_unavailable`: safe local probes or helper status could not
-  produce a bounded status reading.
+The local runtime enforces hard bounds:
 
-Reserved/future classes:
+- maximum checked-in collector source: `131072` bytes
+- maximum SSH stdout: `65536` bytes
+- maximum SSH stderr: `8192` bytes
+- maximum final route JSON: `65536` bytes
+- SSH wall-clock timeout: `20` seconds
+- graceful termination interval: `2` seconds
 
-- `unsupported_signing_topology`: reserved for renewal and any future helper
-  output that reports missing CA custody/signing topology. The noninteractive
-  status route may surface this only as contextual renewal state, not as status
-  renewal permission.
-- `unexpected_output_shape`: helper output is not valid bounded JSON or does
-  not match the schema.
-- `forbidden_output_material`: output contains or may contain forbidden
-  secret/raw material.
+The runtime captures stdout and stderr with bounded reads while the subprocess
+runs. It does not use unbounded `subprocess.run(..., capture_output=True)` for
+route execution.
 
-## 7. Status Evidence Schema
+On timeout or output overflow, the runtime terminates the SSH process group,
+waits for the grace interval, kills if still running, reaps the process,
+discards raw captured material, emits one bounded final failure document, and
+does not retry.
 
-Schema version:
+Unexpected local selector, pipe, spawn, or process-management failures are
+converted to `local_runtime_failed` before the canonical final builder when
+possible. The resulting document records whether the SSH child was actually
+started through `live_contact_attempted`. No raw exception, selector detail,
+stdout, stderr, target, path, or traceback is emitted, and no retry occurs.
+
+## 7. Internal Remote Protocol
+
+The remote collector emits internal protocol version:
+
+```text
+execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.remote.v1
+```
+
+The collector accepts only:
+
+- `--protocol execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.remote.v1`
+- `--collector-sha256 <expected collector sha256>`
+
+The collector emits exactly one compact JSON object plus one newline to stdout
+and emits no normal stderr output.
+
+The internal protocol is not the final route schema. Required internal fields
+are allowlisted and include only:
+
+- `protocol_version`
+- `collector_sha256`
+- `helper_exit_code`
+- `status_available`
+- `result`
+- `auth_posture`
+- `certificate`
+- `key_pair`
+- `identity`
+- `trust_chain`
+- `file_posture`
+- `redaction`
+
+The local runtime validates:
+
+- exact protocol version;
+- exact collector SHA-256 echo;
+- exact field allowlist;
+- duplicate-key rejection;
+- unknown-field rejection;
+- JSON constants such as NaN and Infinity rejection;
+- type and cardinality checks;
+- fixed failure-class vocabulary;
+- closed enum vocabularies for every result/status/auth/certificate/key-pair/
+  identity/subject/issuer/trust/file-posture label;
+- strict SHA-256 values, strict timestamps, numeric fields as numbers, and
+  booleans as booleans;
+- absence of raw paths, transcripts, PEM, env values, endpoint values, tokens,
+  logs, command strings, raw OpenSSL output, raw exceptions, and free-form
+  error fields.
+
+The runtime distinguishes a valid remote protocol document from a transport
+failure by the protocol marker and collector digest, not by numeric exit code
+alone. When a valid protocol document exists, the SSH process exit code must
+agree with `helper_exit_code`; disagreement fails closed as
+`unexpected_output_shape`.
+
+## 8. Remote Collector Behavior
+
+The remote collector is:
+
+```text
+scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py
+```
+
+It uses only Python standard library and fixed current Remote Alpha paths:
+
+- `/etc/execution-substrate/tls/operator-client-cert.pem`
+- `/etc/execution-substrate/tls/operator-client-key.pem`
+- `/etc/execution-substrate/es-tls/server-client-ca.pem`
+
+The paths are implementation facts only and are never emitted.
+
+The collector performs only fixed read-only status collection:
+
+- certificate file SHA-256;
+- public certificate fingerprint;
+- public key fingerprint;
+- `notBefore` and `notAfter`;
+- expired and not-yet-valid classification;
+- safe subject classification;
+- safe issuer classification and digest;
+- expected `operator/local` URI classification;
+- legacy operator URI presence;
+- certificate/key public-key match;
+- trust verification classification;
+- safe file ownership and mode classifications;
+- noninteractive privilege posture.
+
+The collector never emits PEM, key bytes, certificate bodies, raw subject or
+issuer text, raw OpenSSL output, raw exception text, raw stderr, raw paths,
+environment values, endpoints, logs, or command strings. It performs no network
+operation, performs no service operation, performs no certificate mutation,
+performs no `/health` probe, and performs no `/v1/executions:contract` probe in
+P0v v1.
+
+Subject classification is derived from deterministic RFC2253-style OpenSSL
+name output and exact parsed `CN=client.operator` component membership only.
+SAN identity classification extracts exact URI SAN entries and compares the
+complete URI against `spiffe://execution.internal/operator/local` and the
+legacy `spiffe://execution.internal/operator` value; prefixes, suffixes, and
+substrings are not matches. Malformed identity output maps only to fixed
+classification labels and fixed failure classes.
+
+Every fixed child command runs with an explicit minimal environment including
+`LC_ALL=C`, `LANG=C`, `TZ=UTC`, fixed minimal `PATH`, fixed non-sensitive
+`HOME`, and neutral OpenSSL config. The collector does not preserve caller
+locale, Python, OpenSSL, random-file, SSL_CERT, or arbitrary environment
+values. Fixed child commands that do not intentionally consume input receive
+stdin from `/dev/null`.
+
+The remote collector enforces these hard local bounds while running on the
+remote host:
+
+- maximum fixed TLS file bytes read for hashing: `1048576`
+- maximum child stdout: `65536` bytes
+- maximum child stderr: `8192` bytes
+- maximum intentional child stdin: `65536` bytes
+- child wall-clock timeout: `10` seconds
+- child termination grace: `1` second
+- file and pipe chunk size: `16384` bytes
+
+Fixed TLS files are hashed in bounded chunks. Child stdout and stderr are
+drained concurrently while the child runs; timeout or overflow terminates the
+child process group where available, waits for the grace interval, kills if
+still running, reaps, closes descriptors/selectors, discards raw output, and
+returns only a typed result.
+
+## 9. Remote Privilege Posture
+
+The streamed collector runs as the SSH target user, or as root only when the
+SSH target already is root. It must never run through:
+
+- `sudo -n python3 -`
+- `sudo python3`
+- `sudo -n bash`
+- `sudo bash`
+- `sudo sh`
+- an elevated general interpreter
+- an elevated general shell
+
+No sudoers configuration is added or modified.
+
+Direct reads and direct fixed OpenSSL operations are preferred when permitted.
+If a fixed root-only read is required, the collector may attempt `sudo -n`
+only for a closed in-source set of immutable, non-mutating argv tuples over the
+three fixed ES-owned files. The set may contain only the minimum exact
+operations needed for fixed certificate metadata/public-key extraction, fixed
+private-key public-key extraction, fixed certificate verification against the
+fixed ES server client CA, fixed file SHA-256, and fixed stat metadata.
+
+The bounded elevated command set uses absolute executables, fixed absolute data
+paths, no caller values, no shell, no glob, no command substitution, no
+`cat`-style arbitrary-read interface, no write operation, and no
+install/chmod/chown/cp/mv/rm/tee operation. If noninteractive fixed privilege
+is unavailable, the collector emits a valid internal protocol result with
+`failure_class=noninteractive_auth_required` and no raw sudo output.
+
+## 10. Final Route Schema
+
+Final schema identity:
 
 ```text
 execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1
@@ -405,6 +438,8 @@ Required top-level fields:
 - `schema_version`
 - `route`
 - `generated_at`
+- `target`
+- `provenance`
 - `live_contact_attempted`
 - `status_available`
 - `result`
@@ -412,6 +447,7 @@ Required top-level fields:
 - `exit_codes`
 - `auth_posture`
 - `certificate`
+- `key_pair`
 - `identity`
 - `trust_chain`
 - `redaction`
@@ -419,258 +455,161 @@ Required top-level fields:
 - `owning_repo_contract_labels`
 - `profile_lineage_hints`
 
-Bounded JSON shape:
+`target` contains only a fixed target kind label and the SHA-256 of the
+validated SSH target. It does not contain the raw target.
 
-```json
-{
-  "schema_version": "execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1",
-  "route": {
-    "id": "operator-healthcheck-tls-status-noninteractive",
-    "version": "v1",
-    "owner_repo": "execution-substrate",
-    "requires_interactive_tty": false,
-    "supports_noninteractive": true,
-    "scheduled_execution_allowed": true,
-    "current_status": "proposed"
-  },
-  "generated_at": "RFC3339-UTC",
-  "live_contact_attempted": false,
-  "status_available": false,
-  "result": {
-    "status": "pass|fail|not_available",
-    "ok": false,
-    "summary": "safe bounded summary"
-  },
-  "failure_class": "remote_auth_not_ready",
-  "exit_codes": {
-    "facade_exit_code": 1,
-    "transport_exit_code": null,
-    "helper_exit_code": null
-  },
-  "auth_posture": {
-    "ssh_batch_mode": "not_attempted|used|failed",
-    "tty_required": false,
-    "pseudo_tty_created": false,
-    "sudo_prompt_allowed": false,
-    "password_prompt_observed": false,
-    "noninteractive_ready": false
-  },
-  "certificate": {
-    "status": "pass|fail|not_available",
-    "not_before": null,
-    "not_after": null,
-    "expired": null,
-    "not_yet_valid": null,
-    "public_fingerprint_sha256": null,
-    "file_sha256": null,
-    "subject_label": null,
-    "issuer_label": null,
-    "safe_identity_label": null
-  },
-  "identity": {
-    "expected_uri_label": "operator/local",
-    "matches_expected": null,
-    "legacy_operator_uri_present": null,
-    "failure_class": null
-  },
-  "trust_chain": {
-    "status": "pass|fail|not_available",
-    "issuer_digest_sha256": null,
-    "chain_label": null,
-    "raw_certificate_body_included": false
-  },
-  "redaction": {
-    "private_key_pem_bodies_included": false,
-    "certificate_pem_bodies_included": false,
-    "raw_stdout_retained": false,
-    "raw_stderr_retained": false,
-    "raw_logs_retained": false,
-    "env_values_included": false,
-    "remote_paths_included": false,
-    "endpoint_secrets_included": false
-  },
-  "non_authority_labels": [
-    "evidence_projection_only",
-    "not_cp_run_control",
-    "not_im_readiness_authority",
-    "not_es_runtime_truth",
-    "not_maintenance_agent_authority",
-    "not_bridge_authority",
-    "not_production_readiness",
-    "not_live_proof"
-  ],
-  "owning_repo_contract_labels": {
-    "route_contract_owner": "execution-substrate",
-    "profile_diagnostic_owner": "control-plane",
-    "profile_provenance_owner": "infrastructure-manager",
-    "scheduler_summary_owner": "maintenance-agent"
-  },
-  "profile_lineage_hints": {
-    "profile_refresh_may_be_needed": false,
-    "cp_diagnose_remote_profile_rerun_may_be_needed": false,
-    "mutates_profile": false,
-    "lineage_authority": "none"
-  }
-}
-```
+`provenance` contains only:
 
-Schema rules:
+- local route runtime SHA-256;
+- remote collector SHA-256;
+- internal protocol version;
+- `null` source revision in P0v v1.
 
-- `route.current_status` remains `proposed` until implementation and audit.
-- `scheduled_execution_allowed=true` is part of the proposed target contract,
-  not current executable metadata.
-- `live_contact_attempted=false` is valid for no-contact route classifications
-  only after the route can emit bounded JSON. Missing local runtime/validator
-  prerequisites remain caller/integration preflight blockers outside this ES
-  schema.
-- `helper_exit_code` is set only if the remote helper ran.
-- `transport_exit_code` is numeric-only and optional.
-- Certificate metadata is public metadata only. Raw certificate bodies and PEM
-  bodies are forbidden.
-- Identity labels are safe labels. They must not include raw certificate bodies
-  or unsafe remote path material.
-- Profile lineage hints are hints only. They do not mutate profile lineage and
-  do not become CP or IM authority.
+`key_pair` contains bounded public-key-match evidence only.
 
-## 8. CP, IM, And MA Integration Contract
+All summaries and failure messages come from a fixed local vocabulary. No
+remote-provided arbitrary string may become a final summary or failure message.
+No remote-provided arbitrary string may become a final blocker label,
+explanation, metadata value, or final route label. The runtime
+converts recognized local, transport, protocol, remote-status, and TLS outcomes
+into one typed local outcome, builds the route document with one canonical
+builder from validated internal protocol values and local fixed mappings,
+validates the complete final object with an explicit schema validator,
+serializes deterministically, enforces the final byte limit, performs a
+complete forbidden-material scan, and emits exactly one JSON object plus one
+newline. Target privacy is structural: the raw target is never assigned to the
+document; the final document contains only the fixed target kind and the
+SHA-256 of the validated target. The forbidden-material scan rejects paths,
+transcripts, PEM/key/certificate material, secret-like shapes, and unsafe
+material classes; it does not reject a document merely because a valid target
+alias is a substring of fixed route vocabulary.
 
-CP:
+## 11. Failure Mapping
 
-- `diagnose-remote-profile` may consume this route output only as diagnostic
-  evidence after CP documents that consumption.
-- CP profile acceptance still comes from CP profile parsing and diagnostics,
-  not from this route output alone.
-- CP must not treat this route output as workflow truth, Temporal truth,
-  run-control truth, ES producer compatibility truth, or proof success.
-- CP rerun planning remains a separate step after IM/profile material is
-  refreshed through an owning-repo path.
+The final route maps failures through this fixed vocabulary:
 
-IM:
+- `ssh_batch_mode_failed`
+- `remote_status_unavailable`
+- `unexpected_output_shape`
+- `forbidden_output_material`
+- `noninteractive_auth_required`
+- `cert_metadata_expired`
+- `cert_metadata_not_yet_valid`
+- `trust_chain_unavailable`
+- `trust_chain_failed`
+- `identity_mismatch`
+- `key_pair_mismatch`
+- `remote_status_failed`
+- `local_runtime_failed`
 
-- IM may consume this route output for readiness/profile/provenance reporting
-  only after IM documents that consumption.
-- IM may use status evidence to decide that profile/provenance refresh is
-  needed, but it must not let this route mutate profile material directly.
-- IM remains readiness/provenance/diagnostics only and must not infer ES renewal
-  eligibility or mutation semantics.
+Mappings:
 
-MA:
+- SSH authentication, known-host, connection failure, timeout, or no-prompt
+  transport failure without valid internal protocol:
+  `ssh_batch_mode_failed`.
+- Remote interpreter or collector unavailable without valid internal protocol:
+  `remote_status_unavailable`.
+- Oversized, truncated, malformed, mixed, unknown-field, duplicate-key, wrong
+  protocol, wrong collector hash, or exit-code-disagreement output:
+  `unexpected_output_shape`.
+- Forbidden material detected in remote protocol or final JSON:
+  `forbidden_output_material`.
+- Fixed no-prompt privilege refusal reported by a valid collector:
+  `noninteractive_auth_required`.
+- Expired certificate: `cert_metadata_expired`.
+- Not-yet-valid certificate: `cert_metadata_not_yet_valid`.
+- Certificate/key public-key mismatch: `key_pair_mismatch`.
+- Expected operator/local identity mismatch or legacy-only identity:
+  `identity_mismatch`.
+- Trust unavailable or failed: `trust_chain_unavailable` or
+  `trust_chain_failed`.
+- Unexpected local selector, pipe, spawn, or process-management failure:
+  `local_runtime_failed`.
 
-- MA may schedule or run this route only after ES implements and audits it, and
-  after MA updates route metadata to
-  `supports_noninteractive=true` and `scheduled_execution_allowed=true`.
-- Until then, MA must keep current `operator-healthcheck-tls-status` foreground
-  interactive only and scheduled/background disallowed.
-- MA must not implement pseudo-TTY automation, password storage/replay, raw
-  transcript parsing, renewal, profile mutation, IM refresh, support-bundle
-  collection, CP proof, or hidden reconciliation.
+Failure classes do not authorize retries, mutation, renewal, profile
+acceptance, scheduling, or run-control.
 
-Bridge:
+## 12. Exit Semantics
 
-- Bridge may record ChatGPT/Codex coordination evidence or project already-safe
-  evidence only. It must not start, control, or infer route execution, renewal,
-  CP acceptance, IM readiness, or ES runtime authority.
-- Bridge-owned preflight evidence for missing ES prerequisites must use a
-  Bridge-owned schema, not this ES route schema. Bridge, MA, CP, and IM must
-  not wrap missing ES prerequisites into ES status truth.
+Exit `0`:
 
-## 9. Stop Conditions
+- final bounded route JSON emitted;
+- valid internal protocol received;
+- `status_available=true`;
+- no status blocker;
+- `result.ok=true`.
 
-The proposed route must fail closed when:
+Exit `1`:
 
-- Local argv is invalid.
-- A TTY is required.
-- A pseudo-TTY would be needed.
-- The local runtime/validator prerequisite is missing.
-- Schema or redaction checks are unavailable before route output is promised.
-- SSH would prompt for a password.
-- Sudo would prompt for a password.
-- Noninteractive auth material cannot be proven ready.
-- Required cert/key/trust material is missing or unreadable.
-- Status collection would require remote state mutation.
-- The command would stage helper files or write remote summary/proof/support
-  artifacts.
-- The command would expose forbidden token, env, endpoint, path, PEM, cert body,
-  SPIFFE/Vault material, raw log, raw transcript, connector/workspace/org ID,
-  or raw payload material.
-- The helper detects `unsupported_signing_topology`.
-- Helper output has an unexpected shape.
-- Redaction cannot be guaranteed.
-- A service/governance TLS route would be needed to explain
-  operator-healthcheck TLS status.
-- A fallback JSON emitter would be needed to preserve schema-shaped output.
-- A consumer attempts to treat the output as CP, IM, MA, Bridge, ES runtime, or
-  infrastructure authority.
+- for recognized operational failures: local runtime and schema/redaction
+  prerequisites passed, final bounded route JSON emitted, and a transport,
+  remote-runtime, no-prompt privilege, status, identity, trust, key-pair,
+  malformed-output, oversized-output, forbidden-material,
+  `local_runtime_failed`, or other fixed fail-closed condition occurred;
+- for final-emitter invariant failure: no route JSON is emitted, one fixed safe
+  stderr diagnostic is emitted, and no exception, traceback, target, path,
+  remote value, captured output, or internal detail is emitted.
 
-## 10. Validation Plan
+Exit `2`:
 
-This design tranche permits safe local validation only.
+- facade/runtime usage or contact-free local prerequisite refusal;
+- no remote contact;
+- final route JSON is not required;
+- only safe fixed diagnostics are emitted.
 
-Future implementation tests must include:
+Once the local runtime begins remote contact, recognized outcomes produce exit
+`0` or `1`, not `2`. The route does not claim that every Python defect can
+safely produce route JSON; final-schema, final-redaction, and final-size
+invariant failures fail closed without a fallback route document.
 
-- Unit tests for argv construction.
-- Tests that the noninteractive route uses no TTY and no pseudo-TTY.
-- Tests that SSH, if used, includes BatchMode/no-prompt semantics.
-- Tests that sudo, if used, uses no-prompt semantics and fails closed when
-  prompt-capable sudo would be required.
-- Tests proving the route does not stage helper files to the remote host.
-- Tests proving the route does not write or require a remote summary file.
-- Tests proving no fallback JSON emitter exists when the local runtime,
-  validator, schema checker, or redaction checker is unavailable.
-- Tests proving missing local runtime/validator dependencies are
-  caller/integration preflight blockers, not ES route-output obligations.
-- Tests for failure-class mapping:
-  `facade_usage_failed`, `remote_auth_not_ready`,
-  `noninteractive_auth_required`, `ssh_batch_mode_failed`,
-  `remote_status_unavailable`, `cert_metadata_expired`,
-  `trust_chain_unavailable`, `identity_mismatch`, `helper_usage_failed`,
-  `unsupported_signing_topology`, `unexpected_output_shape`,
-  `forbidden_output_material`, and `unknown_helper_failure`.
-- Tests for the redacted JSON schema.
-- Tests that no raw stdout/stderr, helper transcript, SSH transcript, PEM body,
-  raw cert body, env value, raw log, or unsafe path is emitted or retained.
-- Tests preserving current interactive route compatibility.
-- Tests that `operator-healthcheck-tls-renew` remains blocked.
-- Tests that `es-service-tls-renew` and `es-governance-tls-renew` are not
-  conflated with operator-healthcheck TLS.
-- Tests that CP/IM/MA/Bridge authority boundaries remain documented.
+## 13. Consumer And Authority Boundaries
 
-No live remote tests, SSH to the real host, service startup, Temporal startup,
-fake model server startup, worker startup, validation driver run, golden
-capture, ES submit, Nomad/Docker jobs, certificate mutation, profile mutation,
-support-bundle collection, retained-bundle mutation, or proof generation belong
-to this design tranche.
+Current consumer non-claims:
 
-## 11. Migration And Compatibility Plan
+- CP consumes nothing in this tranche.
+- IM consumes nothing in this tranche.
+- MA consumes, invokes, and schedules nothing in this tranche.
+- Bridge invokes and synthesizes nothing in this tranche.
+- Coordinator consumes nothing in this tranche.
 
-- Preserve the existing interactive `operator-healthcheck-tls-status` route for
-  foreground operator use.
-- Preserve the existing blocked `operator-healthcheck-tls-renew` route and
-  `unsupported_signing_topology` classification.
-- Introduce `operator-healthcheck-tls-status-noninteractive` only in a later ES
-  implementation tranche after this design is audited.
-- Keep MA scheduled/background eligibility unchanged until ES implementation,
-  ES audit, MA metadata update, MA docs/tests, and MA audit all land.
-- Keep CP `diagnose-remote-profile` as contact-free profile diagnostics until a
-  CP tranche explicitly consumes this status output as diagnostic evidence.
-- Keep IM profile/provenance refresh separate until IM documents how refreshed
-  safe certificate metadata and lineage are emitted.
-- Do not rerun CP/Temporal/live proof until CP profile diagnostics can pass over
-  refreshed profile material through the owning-repo path.
+The output is evidence/projection only. It is not CP run-control truth, not ES
+runtime truth, not IM readiness authority, not MA authority, not Bridge
+authority, not Coordinator authority, not infrastructure reconciliation truth,
+not production readiness, not operational acceptance, not signer/custody
+resolution, not profile lineage mutation, and not renewal authorization.
 
-Recommended next tranches:
+Renewal remains blocked with `unsupported_signing_topology`. Service TLS,
+governance TLS, operator-healthcheck TLS status, and operator-healthcheck TLS
+renewal remain separate scopes.
 
-- Land docs-only no-fallback Bridge/ES design alignment.
-- Implement a Bridge-owned local preflight evidence tool, if still needed, as a
-  separate audited tranche that does not invoke this ES route.
-- Settle the ES prerequisite/runtime strategy, including whether a dedicated
-  checked-in runtime/validator is required.
-- Implement the ES noninteractive status route only after that prerequisite
-  strategy is settled.
-- Audit the ES route implementation and redaction.
-- Update MA to consume ES route metadata.
-- Plan CP `diagnose-remote-profile` rerun over refreshed profile material.
-- Design IM profile lineage refresh for renewed public certificate metadata.
-- Design operator-approved renewal only after ES documents signing topology and
-  CA custody.
-- Document a manual certificate replacement path if renewal remains blocked.
+## 14. Validation And Later Gates
+
+P0v implementation validation in this tranche is local/static/fake only:
+
+- Bash syntax checks;
+- Python syntax checks without bytecode retention;
+- static source guards;
+- fake SSH/process tests;
+- protocol validation tests;
+- remote collector tests with fake runners and temporary fixtures;
+- docs-contract tests;
+- P0u compatibility tests;
+- full Go test and vet runs.
+
+No live SSH, sudo, remote host contact, certificate operation, service
+operation, Docker, Nomad, Vault, SPIRE, Temporal, CP, IM, MA, Bridge,
+Coordinator, tunnel, live proof, or network-dependent validation belongs to
+this tranche.
+
+Remaining separately gated work:
+
+- independent audit;
+- audit repair and re-audit if needed;
+- exact-byte commit/push;
+- MA route metadata and scheduling;
+- IM consumption and profile lineage;
+- CP diagnostic consumption;
+- Bridge or Coordinator consumption;
+- signing/custody resolution;
+- renewal/replacement;
+- live remote smoke, if later separately authorized.

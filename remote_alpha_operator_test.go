@@ -4411,6 +4411,281 @@ func assertOperatorHealthcheckTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESSer
 	}
 }
 
+type fakeRemoteAlphaOperatorP0vFacadeHarness struct {
+	localBin  string
+	pythonLog string
+	sshLog    string
+	scpLog    string
+}
+
+func setupFakeRemoteAlphaOperatorP0vFacadeHarness(t *testing.T) *fakeRemoteAlphaOperatorP0vFacadeHarness {
+	t.Helper()
+	tmpDir := t.TempDir()
+	h := &fakeRemoteAlphaOperatorP0vFacadeHarness{
+		localBin:  filepath.Join(tmpDir, "bin"),
+		pythonLog: filepath.Join(tmpDir, "python.log"),
+		sshLog:    filepath.Join(tmpDir, "ssh.log"),
+		scpLog:    filepath.Join(tmpDir, "scp.log"),
+	}
+	if err := os.MkdirAll(h.localBin, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", h.localBin, err)
+	}
+	writeExecutable(t, h.localBin, "python3", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -ge 5 && "$1" == "-I" && "$2" == "-S" && "$3" == "-B" && "$4" == "-c" ]]; then
+  exit 0
+fi
+printf 'argc=%%s\n' "$#" >> %q
+for arg in "$@"; do
+  printf 'arg=%%s\n' "${arg}" >> %q
+done
+printf '{"fake_p0v_runtime":true}\n'
+`, h.pythonLog, h.pythonLog))
+	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf 'ssh-called %%s\n' "$*" >> %q
+exit 91
+`, h.sshLog))
+	writeExecutable(t, h.localBin, "scp", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf 'scp-called %%s\n' "$*" >> %q
+exit 92
+`, h.scpLog))
+	return h
+}
+
+func (h *fakeRemoteAlphaOperatorP0vFacadeHarness) env() []string {
+	return append(os.Environ(), "PATH="+h.localBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRemoteAlphaOperatorP0vHelpInventoryAndRecoveryTextExposeImplementedRoute(t *testing.T) {
+	help := requireRemoteAlphaOperatorSuccess(t, "--help")
+	assertContainsAll(t, "P0v operator help", help,
+		"P0v adds recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json",
+		"implemented read-only no-prompt status observation route",
+		"fixed local Python runtime",
+		"streamed fixed remote collector",
+		"operator-healthcheck-tls-status-noninteractive --ssh-target <user@host> --format json",
+	)
+
+	inventory := requireRemoteAlphaOperatorSuccess(t, "inventory")
+	assertContainsAll(t, "P0v operator inventory", inventory,
+		"implemented through P0q plus P0r plus P0s plus P0t plus P0u plus P0v",
+		"operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json",
+		"Bash performs contact-free preflight only",
+		"streams a fixed collector over SSH stdin",
+		"no Bash JSON",
+		"no scp",
+		"no remote helper staging",
+		"no remote summary",
+		"not scheduled execution",
+	)
+
+	recoveryHelp := requireRemoteAlphaOperatorSuccess(t, "recovery-session", "operator-healthcheck-tls-status-noninteractive", "--help")
+	assertContainsAll(t, "P0v route help", recoveryHelp,
+		"Remote Alpha recovery-session mode: operator-healthcheck-tls-status-noninteractive",
+		"P0v scope",
+		"Bash parses/refuses route args",
+		"constructs no JSON",
+		"performs no SSH/SCP/sudo/staging/cleanup/summary behavior",
+		"execs the fixed local Python runtime",
+		"--format json",
+		"no local TTY requirement",
+		"no pseudo-TTY",
+		"no Bash SSH invocation",
+		"no renewal",
+		"no scheduling",
+	)
+}
+
+func TestRemoteAlphaOperatorP0vFacadeExecsOnlyFixedPythonRuntime(t *testing.T) {
+	h := setupFakeRemoteAlphaOperatorP0vFacadeHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "operator-healthcheck-tls-status-noninteractive",
+		"--ssh-target", "ds@m75q-test",
+		"--format", "json",
+	)
+	if err != nil {
+		t.Fatalf("P0v facade with fake python failed: %v\noutput=%s\npython=%s\nssh=%s\nscp=%s",
+			err, output, readIfExists(h.pythonLog), readIfExists(h.sshLog), readIfExists(h.scpLog))
+	}
+	assertContainsAll(t, "P0v fake runtime output", output, `"fake_p0v_runtime":true`)
+	pythonLog := mustRead(t, h.pythonLog)
+	assertContainsAll(t, "P0v fake python argv", pythonLog,
+		"argc=8",
+		"arg=-I",
+		"arg=-S",
+		"arg=-B",
+		"arg="+filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_operator_healthcheck_tls_status_noninteractive.py"),
+		"arg=--ssh-target",
+		"arg=ds@m75q-test",
+		"arg=--format",
+		"arg=json",
+	)
+	if _, err := os.Stat(h.sshLog); !os.IsNotExist(err) {
+		t.Fatalf("P0v Bash facade must not invoke ssh directly: %s", readIfExists(h.sshLog))
+	}
+	if _, err := os.Stat(h.scpLog); !os.IsNotExist(err) {
+		t.Fatalf("P0v Bash facade must not invoke scp directly: %s", readIfExists(h.scpLog))
+	}
+}
+
+func TestRemoteAlphaOperatorP0vFacadeRejectsUnsafeArgsBeforeRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		required  []string
+		forbidden []string
+	}{
+		{
+			name:     "missing ssh target",
+			args:     []string{"--format", "json"},
+			required: []string{"requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:     "missing format",
+			args:     []string{"--ssh-target", "host"},
+			required: []string{"requires --format json", "No recovery-session live helper or IM execution occurred."},
+		},
+		{
+			name:      "duplicate target",
+			args:      []string{"--ssh-target", "host", "--ssh-target", "other", "--format", "json"},
+			required:  []string{"duplicate option for operator-healthcheck-tls-status-noninteractive: --ssh-target"},
+			forbidden: []string{"other"},
+		},
+		{
+			name:     "duplicate format",
+			args:     []string{"--ssh-target", "host", "--format", "json", "--format", "json"},
+			required: []string{"duplicate option for operator-healthcheck-tls-status-noninteractive: --format"},
+		},
+		{
+			name:      "equals form",
+			args:      []string{"--ssh-target=host", "--format", "json"},
+			required:  []string{"does not accept equals-form options"},
+			forbidden: []string{"--ssh-target=host"},
+		},
+		{
+			name:      "unknown flag",
+			args:      []string{"--ssh-target", "host", "--format", "json", "--unknown"},
+			required:  []string{"unknown option for operator-healthcheck-tls-status-noninteractive"},
+			forbidden: []string{"--unknown"},
+		},
+		{
+			name:      "positional",
+			args:      []string{"--ssh-target", "host", "--format", "json", "extra"},
+			required:  []string{"unexpected positional argument for operator-healthcheck-tls-status-noninteractive"},
+			forbidden: []string{"extra"},
+		},
+		{
+			name:      "target injection",
+			args:      []string{"--ssh-target", "-oProxyCommand=sh", "--format", "json"},
+			required:  []string{"--ssh-target must be a single SSH target, not an option or shell command"},
+			forbidden: []string{"ProxyCommand"},
+		},
+		{
+			name:     "interactive tty forbidden",
+			args:     []string{"--ssh-target", "host", "--format", "json", "--interactive-tty"},
+			required: []string{"forbids interactive, renewal, status-helper, summary, and output override flags"},
+		},
+		{
+			name:     "renew forbidden",
+			args:     []string{"--ssh-target", "host", "--format", "json", "--execute-renew"},
+			required: []string{"forbids interactive, renewal, status-helper, summary, and output override flags"},
+		},
+		{
+			name:      "summary forbidden",
+			args:      []string{"--ssh-target", "host", "--format", "json", "--summary-path", "/tmp/x"},
+			required:  []string{"forbids interactive, renewal, status-helper, summary, and output override flags"},
+			forbidden: []string{"/tmp/x"},
+		},
+		{
+			name:      "helper override forbidden",
+			args:      []string{"--ssh-target", "host", "--format", "json", "--collector-path", "x"},
+			required:  []string{"forbids helper, path, command, SSH, privilege, runtime, collector, schema, timeout, and limit overrides"},
+			forbidden: []string{" x"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setupFakeRemoteAlphaOperatorP0vFacadeHarness(t)
+			output, err := runRemoteAlphaOperatorWithEnv(h.env(), append([]string{"recovery-session", "operator-healthcheck-tls-status-noninteractive"}, tc.args...)...)
+			if err == nil {
+				t.Fatalf("P0v facade refusal unexpectedly succeeded: %s", output)
+			}
+			assertContainsAll(t, "P0v facade refusal", output, tc.required...)
+			assertContainsNone(t, "P0v facade refusal", output,
+				append([]string{
+					"fake_p0v_runtime",
+					"Running Mac-side operator healthcheck TLS",
+				}, tc.forbidden...)...,
+			)
+			if _, err := os.Stat(h.pythonLog); !os.IsNotExist(err) {
+				t.Fatalf("P0v facade should reject before runtime: %s", readIfExists(h.pythonLog))
+			}
+			if _, err := os.Stat(h.sshLog); !os.IsNotExist(err) {
+				t.Fatalf("P0v facade should not call ssh on refusal: %s", readIfExists(h.sshLog))
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorP0vFacadeRejectsSecretLikeArgsWithoutEcho(t *testing.T) {
+	for _, token := range []string{
+		"--private-key",
+		"hvs.abcdefghijklmnopqrstuvwxyz",
+		"hvb.abcdefghijklmnopqrstuvwxyz",
+		"s.abcdefghijklmnopqrstuvwxyz",
+		"sk-abcdefghijklmnopqrstuvwxyz",
+		"token=abcdefghijklmnopqrstuvwxyz",
+	} {
+		t.Run(token, func(t *testing.T) {
+			output := requireRemoteAlphaOperatorFailure(t,
+				"recovery-session", "operator-healthcheck-tls-status-noninteractive",
+				"--ssh-target", "host",
+				"--format", "json",
+				token, "super-secret-value",
+			)
+			assertContainsAll(t, "P0v secret refusal", output,
+				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
+			)
+			assertContainsNone(t, "P0v secret refusal", output,
+				"super-secret-value",
+				"abcdefghijklmnopqrstuvwxyz",
+				"fake_p0v_runtime",
+				"Running Mac-side operator healthcheck TLS",
+			)
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorP0vFacadeAllowsOrdinarySHostShape(t *testing.T) {
+	h := setupFakeRemoteAlphaOperatorP0vFacadeHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "operator-healthcheck-tls-status-noninteractive",
+		"--ssh-target", "s.example-host",
+		"--format", "json",
+	)
+	if err != nil {
+		t.Fatalf("P0v facade should allow ordinary s. host shape: %v\n%s", err, output)
+	}
+	assertContainsAll(t, "P0v ordinary s host", output, `"fake_p0v_runtime":true`)
+}
+
+func TestRemoteAlphaOperatorP0vFacadeDoesNotRequireLocalTTY(t *testing.T) {
+	h := setupFakeRemoteAlphaOperatorP0vFacadeHarness(t)
+	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
+		"recovery-session", "operator-healthcheck-tls-status-noninteractive",
+		"--ssh-target", "ds@m75q-test",
+		"--format", "json",
+	)
+	if err != nil {
+		t.Fatalf("P0v facade should not require a PTY: %v\n%s", err, output)
+	}
+	assertContainsNone(t, "P0v no TTY output", output,
+		"requires visible local terminal",
+		"no staging or SSH occurred",
+	)
+}
+
 type fakeRemoteAlphaWorkloadAuthBootstrapHarness struct {
 	localBin    string
 	remoteBin   string

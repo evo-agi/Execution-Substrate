@@ -20,9 +20,10 @@ Status:
   authorization artifact creation.
 - `Current invariant`: `operator-healthcheck-tls-renew` remains blocked with
   `unsupported_signing_topology`.
-- `Bounded slice rule`: the existing interactive
-  `operator-healthcheck-tls-status` route remains the only implemented
-  operator-healthcheck TLS status route.
+- `Bounded slice rule`: at the time this decision record was first recorded,
+  the existing interactive `operator-healthcheck-tls-status` route was the only
+  implemented operator-healthcheck TLS status route. A later P0v tranche now
+  implements only read-only noninteractive status evidence.
 - `Reopened redesign seam`: signer authority, signer custody, key custody,
   key reuse, key rotation, and CSR/cert material flow remain unresolved for the
   host-local operator-healthcheck client identity until ES documents
@@ -309,9 +310,15 @@ ES docs:
 - `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`
   records the future replacement sequence and keeps it separate from signer
   authority.
-- `.docs/remote_alpha_operator_healthcheck_noninteractive_status.md` records
-  P0v as a no-fallback, design/static-only status-route proposal, not renewal
-  or signer authority.
+- `.docs/remote_alpha_operator_healthcheck_noninteractive_status.md` now
+  records P0v as an implemented no-fallback read-only status route, not
+  renewal or signer authority. At the time of this decision record, P0v was a
+  design/static-only proposal.
+- Historical status alignment: P0v was design/static only at the time of this
+  decision record. A later P0v tranche implements read-only status only with no
+  fallback emitter, no remote summary, no renewal, no signer/custody
+  resolution, no scheduled execution, and no route from status to renewal
+  permission.
 - `.docs/system_overview/remote_supported_host_alpha.md` records the Remote
   Alpha route matrix and keeps `operator-healthcheck-tls-renew` blocked.
 
@@ -344,7 +351,12 @@ Docs-contract tests should preserve that:
 - `operator-healthcheck-tls-renew` remains blocked by
   `unsupported_signing_topology`;
 - route eligibility is not widened;
-- P0v remains design/static only and no fallback emitter is introduced;
+- P0v was design/static-only at the time of this decision record. A later P0v
+  tranche now implements read-only status only with no fallback emitter, no
+  remote summary, no renewal, no signer/custody resolution, no scheduled
+  execution, and no route from status to renewal permission;
+- P0v was design/static-only at the time of this record, and the later
+  implementation remains read-only with no fallback emitter;
 - external evidence requirements are documented;
 - no raw PEM/key/cert material is present;
 - CP, IM, Maintenance Agent, Bridge, and biometric leases cannot provide ES

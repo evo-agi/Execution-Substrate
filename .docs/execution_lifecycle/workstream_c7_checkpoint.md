@@ -145,10 +145,18 @@ operator-healthcheck TLS replacement remains blocked. `operator-healthcheck-tls-
 remains blocked by `unsupported_signing_topology`. Service and governance TLS
 signers are not selected by inference.
 
-P0v noninteractive status remains design/static only. It does not implement a
-noninteractive status route, authorize MA scheduled execution, enable renewal,
-select a signer, create replacement authority, or make
+At this C7 checkpoint, P0v noninteractive status was design/static only. It did
+not implement a noninteractive status route, authorize MA scheduled execution,
+enable renewal, select a signer, create replacement authority, or make
 `unsupported_signing_topology` safe.
+
+Later status alignment: a subsequent P0v tranche implements only the read-only
+`operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format
+json` observation route. That later route uses a dedicated local runtime and a
+streamed fixed collector, has no fallback emitter, writes no remote summary,
+does not authorize MA/IM/CP/Bridge/Coordinator consumption or scheduled
+execution, and creates no route from status evidence to renewal permission.
+Renewal and replacement remain blocked; signer/custody remains unresolved.
 
 No CP diagnose rerun, IM refresh, ES route execution, renewal, replacement, or
 live proof occurred as part of the TLS closeout. The TLS branch should not

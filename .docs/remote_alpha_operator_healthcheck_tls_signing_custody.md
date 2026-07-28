@@ -15,9 +15,10 @@ Status:
   mutation, or profile mutation.
 - `Current invariant`: `operator-healthcheck-tls-renew` remains blocked with
   `unsupported_signing_topology`.
-- `Bounded slice rule`: the existing interactive
-  `operator-healthcheck-tls-status` route remains the only implemented
-  operator-healthcheck TLS status route.
+- `Bounded slice rule`: at the time this signing/custody design was first
+  recorded, the existing interactive `operator-healthcheck-tls-status` route
+  was the only implemented operator-healthcheck TLS status route. A later P0v
+  tranche now implements only read-only noninteractive status evidence.
 - `Reopened redesign seam`: signing authority and private-key custody for this
   host-local operator client identity remain unresolved until ES documents and
   tests the exact owner path.
@@ -350,8 +351,11 @@ Static docs-contract tests should preserve that:
 - raw PEM, private-key, and raw certificate bodies are absent from the design
   docs;
 - route eligibility is not widened;
-- P0v noninteractive status remains unimplemented and no fallback emitter is
-  introduced;
+- At the time of this signing/custody design, P0v noninteractive status was
+  unimplemented. A later P0v tranche implements read-only status only with a
+  dedicated local runtime, a streamed fixed collector, no fallback emitter, no
+  remote summary, no scheduled execution, and no route from status to renewal
+  permission;
 - CP, IM, Maintenance Agent, and Bridge authority boundaries remain preserved;
 - biometric leases remain exact-plan-digest approval only and not authority.
 

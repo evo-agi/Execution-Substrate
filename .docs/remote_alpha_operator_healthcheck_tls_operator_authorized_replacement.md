@@ -27,9 +27,10 @@ Status:
   or remote contact.
 - `Current invariant`: `operator-healthcheck-tls-renew` remains blocked with
   `unsupported_signing_topology`.
-- `Bounded slice rule`: the existing interactive
-  `operator-healthcheck-tls-status` route is the only implemented
-  operator-healthcheck TLS status route.
+- `Bounded slice rule`: at the time this replacement design was first recorded,
+  the existing interactive `operator-healthcheck-tls-status` route was the only
+  implemented operator-healthcheck TLS status route. A later P0v tranche now
+  implements only read-only noninteractive status evidence.
 - `Reopened redesign seam`: signing authority and private-key custody for this
   host-local operator client identity remain unresolved until ES documents and
   tests the exact owner path.
@@ -196,7 +197,7 @@ Each phase is design-only here. No phase is executed by this document.
 | Public cert/profile replacement by owning path | ES for TLS material, IM for profile emission inputs | Replace only through documented ES-owned TLS/material semantics after all gates pass. | Bridge/MA/CP mutation, hidden SSH/provisioning, fallback emitters, undocumented signing. | Replacement summary, backup/rollback labels, redaction status. | Custody/signing ambiguity, rollback missing, redaction cannot be guaranteed. | Not Remote Alpha proof, not CP acceptance. |
 | IM profile/provenance refresh | IM | Regenerate or refresh Remote Alpha profile/provenance artifacts from owner-approved public material. | Define ES signing, mutate ES TLS material, claim CP diagnose pass. | Refreshed profile digest, provenance labels, lineage status. | Profile lineage owner unclear, stale or incompatible source digest. | Not ES TLS authority, not CP run-control. |
 | CP diagnose rerun | CP | Rerun contact-free profile diagnostics over refreshed profile material. | CP behavior change, ES route execution, live proof, Temporal start. | `control-plane.remote-profile-diagnostic.v1`, blocker/warning labels. | Expected CP input unclear, diagnostics still blocked. | Not live ES status, not governed proof. |
-| Optional ES/IM read-only status evidence | ES and IM | Collect only owner-approved read-only status/provenance evidence when route prerequisites allow. | Noninteractive route implementation by implication, fallback emitters, support-bundle mutation as authority. | Safe status JSON or profile/readiness refs. | Prerequisites missing, redaction unavailable, route not implemented. | Evidence/projection only. |
+| Optional ES/IM read-only status evidence | ES and IM | Collect only owner-approved read-only status/provenance evidence when route prerequisites allow, including the later implemented P0v read-only status route where available. | Treat P0v as replacement authorization, post-replacement acceptance by itself, signer/custody resolution, scheduled execution, fallback emitters, support-bundle mutation as authority, or consumer authority widening. | Safe status JSON or profile/readiness refs. | Prerequisites missing, redaction unavailable, P0v missing/failed/blocked, owner contract unknown, or evidence unavailable. | Evidence/projection only. |
 | Remote Alpha proof resumption gate | CP with ES/IM prerequisites | Decide whether a separate Milestone 3/live proof path may resume after diagnostics pass. | Claim proof from replacement, start workers, run ES submit, run golden capture in this tranche. | Gate decision label and required proof plan refs. | CP diagnose not passing, IM lineage stale, ES status blocked. | No live proof claim until the proof path runs. |
 
 ## 8. Post-Checks
@@ -233,15 +234,32 @@ not prove that shared scope.
 
 ## 10. Relationship To P0v Noninteractive Status
 
-This replacement design is separate from P0v. P0v remains design/static-test
-prep only for a future read-only noninteractive status route. This document
-does not implement that route, add fallback emitters, widen route eligibility,
-change MA scheduled metadata, or convert caller preflight blockers into ES
-status truth.
+This replacement design is separate from P0v. At the time this replacement
+design was recorded, P0v was design/static-test prep only for a future
+read-only noninteractive status route. A later P0v tranche now implements only
+the read-only
+`operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format
+json` observation route.
 
-Missing local runtime/validator/schema/redaction prerequisites remain
-integration or caller preflight blockers. ES route implementation remains
-deferred until the runtime/validator and no-fallback strategy is settled.
+That later status route does not implement renewal or replacement, resolve
+signer/custody, add fallback emitters, widen route eligibility, change MA
+scheduled metadata, convert caller preflight blockers into ES status truth, or
+create a route from status evidence to renewal permission. Renewal and
+replacement remain blocked; signer/custody remains unresolved; no MA/IM/CP,
+Bridge, or Coordinator authority changes.
+
+Missing local runtime/schema/redaction prerequisites remain integration or
+caller preflight blockers. The implemented P0v route uses a dedicated local
+runtime and a streamed fixed collector with no fallback emitter, no staging,
+and no remote summary.
+
+P0v evidence may be used only as optional read-only evidence in a later
+owner-approved replacement flow. P0v is not replacement authorization, is not
+post-replacement acceptance by itself, never resolves signing or custody, does
+not change `scheduled_execution_allowed=false`, and does not create MA, IM, CP,
+Bridge, or Coordinator authority. Missing, failed, or blocked P0v evidence
+remains a blocker or unknown according to the owner contract rather than a
+reason to infer success.
 
 ## 11. Relationship To Maintenance Agent Biometric Leases
 

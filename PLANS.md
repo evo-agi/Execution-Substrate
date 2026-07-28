@@ -1483,64 +1483,77 @@ Control Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or
 runtime identity authority, not production readiness, and not Remote Alpha
 production, deployment, provisioning, or reconciliation architecture.
 
-The P0v design/static-test prep slice may define, but must not implement, a
-future ES-owned noninteractive read-only operator-healthcheck TLS status route:
+The P0v noninteractive TLS status implementation slice implements the
+ES-owned noninteractive read-only operator-healthcheck TLS status route:
 `scripts/remote_alpha_operator.sh recovery-session
 operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format
 json`. The design lives at
 `.docs/remote_alpha_operator_healthcheck_noninteractive_status.md`.
 P0v is a route-contract design extension over the P0u operator-healthcheck TLS
 status surface, not renewal, not a signing-topology decision, not a profile
-mutation path, and not a Maintenance Agent scheduling change. It must not run
-live SSH, scp, BatchMode probes, sudo, remote helpers, live remote OpenSSL,
-Vault, reset/unseal, workload-auth bootstrap/check, runtime identity summary,
-Infrastructure Manager refresh, support-bundle collection, CP proof,
-SPIRE/Nomad mutation, service deployment, ES submit, Docker/Nomad jobs,
-certificate mutation, profile mutation, env/state mutation, proof generation,
-or network-dependent integration tests.
+mutation path, and not a Maintenance Agent scheduling change. The
+implementation is validated only through local/static/fake tests in this
+tranche; no live SSH, sudo, remote OpenSSL, Vault, reset/unseal, workload-auth
+bootstrap/check, runtime identity summary, Infrastructure Manager refresh,
+support-bundle collection, CP proof, SPIRE/Nomad mutation, service deployment,
+ES submit, Docker/Nomad jobs, certificate mutation, profile mutation,
+env/state mutation, proof generation, or network-dependent integration test is
+part of this slice.
 
 P0v chooses a new route id instead of adding a mode flag to the current
 interactive `operator-healthcheck-tls-status` route. The existing route remains
 the foreground operator route with required `--interactive-tty`, local
 stdin/stdout TTY preflight, `ssh -tt`, visible sudo/password prompt behavior,
-fixed helper-pair staging, and remote summary retention. The proposed future
-noninteractive route must require no local stdin/stdout TTY, allocate no
-pseudo-TTY, use no-prompt SSH semantics if SSH is used, use no prompt-capable
-sudo, fail closed when noninteractive auth is not ready, avoid password
-storage/replay, avoid remote helper staging, avoid remote summary mutation, and
-emit only bounded JSON evidence.
+fixed helper-pair staging, and remote summary retention. The implemented
+noninteractive route requires no local stdin/stdout TTY, allocates no
+pseudo-TTY, uses no-prompt SSH semantics, uses no prompt-capable sudo, fails
+closed when noninteractive auth is not ready, avoids password storage/replay,
+avoids remote helper staging, avoids remote summary mutation, and emits only
+bounded JSON evidence.
 
 No fallback emitters are allowed for P0v. ES machine-readable route JSON is
 promised only after declared route prerequisites pass. Missing local
 runtime/validator dependencies are caller/integration preflight failures, not
-ES route-output obligations. A later ES route implementation may assume
-declared prerequisites or use a dedicated checked-in runtime/validator, but it
-must not split one schema contract across a primary runtime plus shell fallback
-JSON assembly. Until those prerequisites and the implementation audit land,
-the script still has no active dispatch arm for
-`operator-healthcheck-tls-status-noninteractive`; the existing P0u interactive
-route remains the only implemented operator-healthcheck status route.
+ES route-output obligations. The Bash facade parses/refuses route arguments,
+performs contact-free prerequisite checks, constructs no JSON, performs no SSH
+itself for P0v, and execs one dedicated checked-in local Python runtime. That
+internal runtime source is not a supported executable command; the Bash facade
+is the supported public entrypoint and invokes it through a resolved absolute
+Python 3 executable with `-I -S -B`. That local runtime owns SSH construction,
+bounded subprocess handling,
+transport-versus-remote-protocol classification, final route-schema emission,
+final schema validation, and redaction. The fixed checked-in remote Python
+collector is streamed over SSH stdin, is not copied or retained on the remote
+host, writes no remote file or summary, and emits only an internal protocol
+document. Recognized local, transport, protocol, remote-status, and TLS
+outcomes use one typed outcome path, one canonical builder, one explicit final
+validator, and one emitter. Final-emitter invariant failures emit fixed stderr
+and no route JSON because no fallback document is permitted. P0v v1 emits
+`provenance.source_revision=null` and does not execute Git at runtime. There is
+no shell fallback JSON assembly.
 
-P0v's proposed status schema is
+P0v's implemented status schema is
 `execution-substrate.remote-alpha.operator-healthcheck-tls-status-noninteractive.v1`.
-It may carry route id/version, generated time, live-contact-attempted status,
-status availability, bounded failure class, numeric transport/helper exit
-codes when safe, public certificate metadata, safe identity labels, safe trust
-chain labels/digests, redaction flags, non-authority labels, owning-repo
-contract labels, and profile-lineage hints only. It must not carry raw stdout,
-raw stderr, helper or SSH transcripts, full certificate PEM bodies, private-key
-PEM bodies, env values, endpoint secrets, remote paths, raw logs,
+It carries route id/version/current status, generated time,
+live-contact-attempted status, status availability, bounded failure class,
+numeric transport/helper exit codes when safe, public certificate metadata,
+safe identity labels, safe trust chain labels/digests, bounded public
+key-pair-match evidence, redaction flags, non-authority labels,
+owning-repo contract labels, and profile-lineage hints only. It must not carry
+raw stdout, raw stderr, helper or SSH transcripts, full certificate PEM bodies,
+private-key PEM bodies, env values, endpoint secrets, remote paths, raw logs,
 TLS/SPIFFE/Vault material, connector/workspace/org IDs, raw payloads, support
 bundle contents, retained bundle contents, or unsafe local paths.
 
-P0v status evidence remains evidence/projection only. CP may later consume it
-as diagnostic evidence only after a CP docs/tests tranche; IM may later consume
-it for readiness/profile/provenance only after an IM docs/tests tranche; MA may
-run it only after ES implements and audits the route and a later MA tranche
-updates route metadata to `supports_noninteractive=true` and
-`scheduled_execution_allowed=true`. Until those later changes land, current MA
-scheduled/background execution remains disallowed for
-`operator-healthcheck-tls-status`, and `operator-healthcheck-tls-renew` remains
+P0v status evidence remains evidence/projection only. CP consumes nothing in
+this tranche and may later consume it as diagnostic evidence only after a CP
+docs/tests tranche; IM consumes nothing in this tranche and may later consume
+it for readiness/profile/provenance only after an IM docs/tests tranche; MA
+consumes, invokes, and schedules nothing in this tranche. Route metadata now
+records `supports_noninteractive=true`, `requires_interactive_tty=false`, and
+`current_status=implemented`, while `scheduled_execution_allowed=false`
+remains the current ES status until a later separately audited ES/MA route
+eligibility decision changes it. `operator-healthcheck-tls-renew` remains
 blocked/status-only with `unsupported_signing_topology`.
 
 Bridge/MA/CP/IM consumers must not wrap missing ES prerequisites into ES status

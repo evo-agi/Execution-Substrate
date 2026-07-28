@@ -14,9 +14,10 @@ Status:
   trust-bundle mutation, profile mutation, or authorization artifact creation.
 - `Current invariant`: `operator-healthcheck-tls-renew` remains blocked with
   `unsupported_signing_topology`.
-- `Bounded slice rule`: the existing interactive
-  `operator-healthcheck-tls-status` route remains the only implemented
-  operator-healthcheck TLS status route.
+- `Bounded slice rule`: at the time this resolution criteria record was first
+  recorded, the existing interactive `operator-healthcheck-tls-status` route
+  was the only implemented operator-healthcheck TLS status route. A later P0v
+  tranche now implements only read-only noninteractive status evidence.
 - `Reopened redesign seam`: signer authority, signer custody, key custody,
   key reuse, key rotation, and CSR/cert material flow remain unresolved for the
   host-local operator-healthcheck client identity until ES documents
@@ -54,8 +55,9 @@ It does not:
 - authorize certificate replacement;
 - enable renewal;
 - make `unsupported_signing_topology` safe;
-- implement a noninteractive status route;
-- update route metadata;
+- authorize or consume the later read-only noninteractive status route;
+- schedule the later read-only noninteractive status route;
+- update MA route metadata;
 - authorize MA scheduling or auto-renew;
 - run CP diagnose;
 - refresh IM profile lineage;
@@ -259,10 +261,13 @@ operator-approved renewal, ES docs/tests and route metadata must prove:
 - service/governance TLS separation;
 - `unsupported_signing_topology` is no longer active for the selected path.
 
-Before any noninteractive status route can be consumed by MA:
+Before the implemented read-only noninteractive status route can be consumed by
+MA:
 
-- ES must implement and audit the route in a later tranche;
-- ES route metadata must declare `supports_noninteractive=true`;
+- ES must complete independent audit of the route in a later tranche;
+- ES route metadata already declares `supports_noninteractive=true`,
+  `requires_interactive_tty=false`, `current_status=implemented`, and
+  `scheduled_execution_allowed=false`;
 - ES schema and redaction validation must be available before JSON output is
   promised;
 - the route must not stage helpers, prompt for auth, mutate remote summaries,
@@ -286,8 +291,9 @@ Current state remains:
 
 - `operator-healthcheck-tls-renew`: blocked/status-only with
   `unsupported_signing_topology`;
-- `operator-healthcheck-tls-status-noninteractive`: proposed only, not
-  implemented, not MA-consumable;
+- `operator-healthcheck-tls-status-noninteractive`: implemented read-only
+  status only, not renewal, not signer/custody resolution, not scheduled, not
+  MA-consumable until later MA-owned metadata/docs/tests and audit;
 - auto-renew: not eligible and not discussable as executable design.
 
 ## 9. Relationship To Biometric Leases
