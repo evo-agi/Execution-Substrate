@@ -48,6 +48,15 @@ gate before reliable-submit config/store lifecycle wiring, producer enablement,
 or public runtime enablement. Because the private store is runtime-unwired, this
 gap does not affect current public execution behavior.
 
+The durable replay repair ADR is now target-selected but not source-implemented.
+The current durable record and SQLite v1 schema persist only `lastMutation`;
+they do not persist closed operation kind, operation-input binding digest, or
+mutation history. The selected repair requires a backend-neutral
+latest-operation descriptor, SQLite v2 logical migration, service replay
+detection before stale-revision and inactive-state refusal, CAS-loser
+reload/replay classification, and stricter COMMIT-unknown full-record equality
+that includes the descriptor.
+
 ## 2. How to read this document
 
 - **Observed current implementation path**: A code path or sequencing rule implemented in the current Go repo.
@@ -329,11 +338,16 @@ Where ES stops and Nomad takes over:
   within one operation, but its general mutation path does not yet recognize a
   previously committed `lastMutation` before expected-revision and
   operation-specific apply logic. Terminal accepted and provably-not-accepted
-  redelivery are known failing examples; the future
-  `reliable-submit-durable-same-operation-replay-repair` tranche must inspect
-  all durable mutation operations, not only those two examples, before any
-  reliable-submit config/store lifecycle wiring, producer enablement, or public
-  runtime enablement.
+  redelivery are known failing examples. The selected target repair is
+  latest-operation-only and requires a persisted descriptor made of mutation
+  reference, closed private operation kind, and versioned safe input-binding
+  digest. A same mutation reference with different kind or binding is mutation
+  conflict; an older operation after later progression is stale or superseded,
+  not exact replay. The future
+  `reliable-submit-durable-same-operation-replay-repair` source tranche must
+  inspect all durable mutation operations, not only those two examples, before
+  any reliable-submit config/store lifecycle wiring, producer enablement, or
+  public runtime enablement.
 - The pure model cannot enforce one winning assignment across stale or
   concurrent snapshots. The private persistence and compare-and-swap layer owns
   the authoritative caller/key claim and assigned `run_id` transition. Later
@@ -345,9 +359,11 @@ Where ES stops and Nomad takes over:
   as the first storage backend, preserves the current `CGO_ENABLED=0` build
   posture, selects `modernc.org/sqlite v1.54.0` with exact
   `modernc.org/libc v1.74.1` coupling, and selects private same-package
-  persistence hydration inside `es/admission/internal/reliablesubmit`. It adds
-  no config field, public producer/request/response source, staging behavior,
-  Nomad behavior, or runtime behavior.
+  persistence hydration inside `es/admission/internal/reliablesubmit`. It now
+  also freezes the target SQLite v2 latest-operation descriptor and
+  legacy/unbound migration posture, while current source still remains schema
+  v1. It adds no config field, public producer/request/response source, staging
+  behavior, Nomad behavior, or runtime behavior.
 - Current `Submit` has no submit idempotency key input, no submit correlation
   key, no exact replay path, no conflicting reuse path, no pending outcome
   path, no durable submit-correlation record, and no recovery lookup by

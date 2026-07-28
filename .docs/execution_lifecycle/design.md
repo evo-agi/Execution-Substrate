@@ -448,6 +448,20 @@ unwired and implements no config, production runtime wiring, public DTO, HTTP
 handler, producer declaration field, staging behavior, Nomad behavior, or
 runtime behavior.
 
+That ADR now also freezes the target durable latest-operation replay repair
+contract. Exact durable replay is selected only for the current latest committed
+mutation descriptor: latest mutation reference, closed private operation kind,
+and versioned safe operation-input binding digest. Mutation-reference-only
+replay is rejected. A same mutation reference with different operation kind or
+input binding is a mutation conflict. An older operation arriving after a later
+committed mutation is stale or superseded, not exact replay, and no historical
+mutation-result log is selected. The target requires a SQLite v2 logical schema
+migration for the descriptor; current source still has only schema v1,
+`lastMutation`, no operation kind, no input-binding digest, and no mutation
+history. This is a source-repair prerequisite before reliable-submit
+configuration, store lifecycle wiring, producer enablement, or public runtime
+enablement.
+
 This document still does not select the state-path config key, TTL, HTTP-code
 or public error vocabulary, recovery query route, supplemental header,
 deterministic `run_id`, durable replay-envelope persistence or safe custody of

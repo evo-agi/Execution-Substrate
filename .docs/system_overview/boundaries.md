@@ -106,12 +106,15 @@ Those absences are current facts, not design commitments.
   current `CGO_ENABLED=0` build posture, `modernc.org/sqlite v1.54.0` with exact
   `modernc.org/libc v1.74.1` coupling, private same-package hydration in
   `es/admission/internal/reliablesubmit`, revision/CAS, durable provider-effect
-  intent, tombstone/no-reuse retention, and fail-closed corruption behavior. It
-  adds private store source only; it does not add global config or runtime
-  wiring, reuse staging or retained results as the database path, import
-  Coordinator writer-session authority, make provider metadata a recovery
-  source, promise PostgreSQL implementation, promise live backend switching, or
-  promise automatic data migration.
+  intent, tombstone/no-reuse retention, fail-closed corruption behavior, and
+  the target latest-operation replay descriptor requiring a later SQLite v2
+  logical migration. The current source repair is not implemented: schema v1
+  persists only `lastMutation`, not operation kind, input-binding digest, or
+  mutation history. The ADR adds private store source only; it does not add
+  global config or runtime wiring, reuse staging or retained results as the
+  database path, import Coordinator writer-session authority, make provider
+  metadata a recovery source, promise PostgreSQL implementation, promise live
+  backend switching, or promise automatic data migration.
 - ES owns the unavailable reliable-submit contract-adapter foundation in
   private admission-local source. That foundation selects the reliable request
   schema `execution-substrate.reliable-submit-request/v1`, reliable contract
@@ -398,12 +401,15 @@ runtime-profile handling, and compatibility edges lives in
   submit-correlation store family, the current `CGO_ENABLED=0` build posture,
   `modernc.org/sqlite v1.54.0` with exact `modernc.org/libc v1.74.1` coupling,
   private same-package hydration, revision/CAS, durable provider-effect intent,
-  tombstone/no-reuse retention, and fail-closed corruption behavior. It adds
-  private store source only; it does not add global config or runtime wiring,
-  reuse staging or retained results as the database path, import Coordinator
-  writer-session authority, make provider metadata a recovery source, promise
-  PostgreSQL implementation, promise live backend switching, or promise
-  automatic data migration.
+  tombstone/no-reuse retention, fail-closed corruption behavior, and the target
+  latest-operation replay descriptor requiring a later SQLite v2 logical
+  migration. Current schema v1 still persists only `lastMutation`, not operation
+  kind, input-binding digest, or mutation history. It adds private store source
+  only; it does not add global config or runtime wiring, reuse staging or
+  retained results as the database path, import Coordinator writer-session
+  authority, make provider metadata a recovery source, promise PostgreSQL
+  implementation, promise live backend switching, or promise automatic data
+  migration.
 - `POST /v1/executions:prepare` remains bounded preflight and creates no run
   object or scheduler handoff.
 - `POST /v1/executions:submit` remains the MVP execution handoff surface:

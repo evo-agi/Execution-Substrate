@@ -18,6 +18,12 @@ This ADR freezes the durable-state boundary and ordering rules that the later
 source implementation must consume from the committed pure model in
 `es/admission/internal/reliablesubmit`.
 
+The documentation/docs-contract tranche for
+`reliable-submit-durable-same-operation-replay-repair` now freezes the target
+latest-operation replay contract in section 9A. That target requires a later
+record/codec and SQLite v2 logical schema migration. It is not implemented by
+the current private source.
+
 A later unavailable contract-adapter foundation, implemented in private
 admission-local package `admission` helpers, now selects the reliable request
 schema `execution-substrate.reliable-submit-request/v1`, reliable contract
@@ -45,6 +51,11 @@ The current module now carries the selected SQLite dependency for the private
 store source: `modernc.org/sqlite v1.54.0`, with the exact expected
 `modernc.org/libc v1.74.1` transitive coupling. No PostgreSQL dependency is
 introduced.
+
+The current durable record and SQLite schema version 1 store the latest
+`lastMutation` reference only. They do not store closed operation kind,
+operation-input binding digest, or mutation history. The latest-operation replay
+descriptor selected in section 9A is target design for a later source tranche.
 
 The current Remote Alpha ES binary deployment path builds ES through
 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` for both the Python and shell payload
@@ -223,6 +234,8 @@ Authoritative stored facts:
 - immutable `RunRef` after assignment;
 - bounded `ReceiptRef` after acceptance;
 - monotonic revision;
+- latest-operation descriptor for v2 rows: latest mutation reference, closed
+  operation kind, and versioned safe operation-input binding digest;
 - created, updated, expiry, tombstone, and corruption-unavailable posture;
 - provider-effect intent and ambiguity facts needed to prevent duplicate
   provider effects after crash or restart.
@@ -232,6 +245,7 @@ Private security material:
 - submit-key digest, HMAC, or equivalent safe representation;
 - private effective-plan binding;
 - private receipt binding;
+- private operation-input binding digest for the latest committed mutation;
 - redacted mutation provenance and integrity checks.
 
 External references:
@@ -243,7 +257,7 @@ External references:
 
 Derived projections:
 
-- exact replay view;
+- exact latest-operation replay view;
 - conflict, unauthorized, expired-unavailable, and unavailable decisions;
 - same-authorized-caller run disclosure eligibility;
 - accepted-reference eligibility;
@@ -262,9 +276,12 @@ Forbidden lifecycle duplication:
 
 ## 7. Revision And CAS Semantics
 
-Each claim row has one monotonic revision. Every mutation carries an expected
-revision or proves exact same-operation replay under the same caller/key and
-private binding.
+Each claim row has one monotonic revision. Every new mutation carries an
+expected predecessor revision. Exact replay is latest-operation-only and must
+prove the same caller/key, private binding, mutation reference, closed operation
+kind, and versioned operation-input binding before stale-revision rejection.
+Different mutation references remain subject to revision, phase, and transition
+rules.
 
 The caller namespace plus safe submit-key representation is unique. Concurrent
 first deliveries converge on one durable claim. Same caller/key with the same
@@ -283,10 +300,11 @@ be used only as optimization or local serialization. They do not replace SQLite
 uniqueness, transactional mutation, revision checks, or durable replay.
 
 If a transaction COMMIT outcome is uncertain, the caller must retry by loading
-the durable claim and comparing caller/key, binding, operation identity where
-available, phase, revision, run, and receipt. Uncertainty is not permission to
-create a second claim, assign a second run, or repeat an external provider
-effect.
+the durable claim and comparing caller/key, binding, the full
+latest-operation descriptor when present, phase, revision, run, receipt, and
+effect facts through full expected-record equality. Uncertainty is not
+permission to create a second claim, assign a second run, or repeat an external
+provider effect.
 
 ## 8. Provider-Effect Intent And Ordering
 
@@ -410,13 +428,13 @@ terminal record, and no new mutation or external effect occurs.
 
 | Operation | Precondition | Expected revision | Idempotent replay | Conflict result | Resulting pure-model phase | Durable effect facts established or changed | Transaction boundary | External-I/O rule |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Establish or load claim | Authenticated and authorized caller namespace, valid safe key representation, valid private binding input | None for first insert; current revision for mutation | Same caller/key/binding loads existing phase and effect facts | Same caller/key/different binding returns conflict with no run or receipt disclosure | Pending before assignment or existing hydrated pure-model phase | No provider-effect fact established | One SQLite transaction for insert-or-load and uniqueness check | No external I/O |
+| Establish or load claim | Authenticated and authorized caller namespace, valid safe key representation, valid private binding input | None for first insert; current revision for mutation | Same caller/key/binding loads existing phase and effect facts | Same caller/key/different binding returns conflict with no run or receipt disclosure | Pending before assignment, ambiguous before assignment where permitted by the current durable request/model source, or existing hydrated pure-model phase | No provider-effect fact established | One SQLite transaction for insert-or-load and uniqueness check | No external I/O |
 | Compare binding | Existing claim loaded under caller namespace | Current observed revision | Same binding preserves existing phase and effect facts | Different binding conflicts before effect | Existing hydrated pure-model phase or conflict decision | No provider-effect fact established | Same read/write transaction when part of mutation; read transaction for replay | No external I/O |
 | Assign run | Existing pre-assignment phase and valid `RunRef` | Current revision | Already assigned same `RunRef` is same-operation replay | Different `RunRef`, stale revision, or invalid phase fails closed | Existing assigned/effect-capable model phase | Immutable `RunRef` assignment only; no provider-effect intent | One SQLite transaction with CAS and immutable run constraint | No external I/O |
 | Record provider-effect intent | Existing assigned/effect-capable claim, no prior provider-effect intent, and valid `RunRef` | Current revision | Existing same intent reloads existing assigned phase plus intent fact | Stale revision or incompatible phase fails closed | Remains the existing assigned/effect-capable model phase unless another committed model transition is independently justified | Provider-effect intent committed; no staging, provider dispatch, provider response, or provider acceptance is proved | One SQLite transaction before external I/O | External provider/staging I/O begins only after commit |
 | Begin or complete staging/materialization | Existing assigned claim with provider-effect intent committed | Current revision if durable local-effect evidence changes | Existing same staging evidence reloads existing phase plus evidence | Stale revision, wrong run, or incompatible evidence fails closed | Existing assigned pure-model phase is unchanged unless another model transition is independently justified | Bounded local-effect evidence or references only; no provider dispatch is proved | One SQLite transaction for durable evidence when selected; external staging I/O remains outside SQLite transaction | Staging repair or reuse must retain the same claim and `RunRef` |
 | Record provider-dispatch attempt | Existing assigned claim with committed provider-effect intent | Current revision | Existing same dispatch-attempt fact reloads existing phase plus fact | Stale revision, wrong run, or incompatible phase fails closed | Existing assigned pure-model phase is unchanged unless later evidence justifies another committed model transition | Provider-dispatch-attempt fact committed; no provider acceptance is proved | One SQLite transaction before provider I/O | Provider request may be sent only after commit; no external I/O inside transaction |
-| Record provider call outcome or uncertainty | Same active durable claim with matching `ClaimID`, private effective-plan binding, and `RunRef`; committed provider-effect intent; committed provider-dispatch-attempt fact; ES-owned provider response, transport failure, response loss, or call-uncertainty evidence | Current revision | Exact same-operation outcome or uncertainty observation reloads existing phase and evidence | Missing dispatch-attempt fact, stale revision, wrong claim, wrong binding, wrong run, incompatible evidence, provider absence alone, or attempt to weaken accepted/provably-not-accepted fails closed | Only an existing or newly justified committed model transition among `PendingAfterAssignment`, `AmbiguousAfterAssignment`, `Accepted`, or `ProvablyNotAcceptedAfterAssignment` | Provider-call outcome or uncertainty evidence recorded; no lifecycle timeline or provider history store; no new `ClaimID` or `RunRef` | One SQLite transaction | No external I/O inside transaction; provider-call outcome or uncertainty evidence cannot be recorded in a no-marker state |
+| Record provider call observation or uncertainty | Same active durable claim with matching `ClaimID`, private effective-plan binding, and `RunRef`; committed provider-effect intent; committed provider-dispatch-attempt fact; ES-owned provider pending, ambiguous, transport-failure, response-loss, or call-uncertainty evidence | Current revision | Exact same-operation observation or uncertainty reloads existing phase and evidence | Missing dispatch-attempt fact, stale revision, wrong claim, wrong binding, wrong run, incompatible evidence, provider absence alone, or attempt to record terminal accepted/provably-not-accepted through this observation path fails closed | Only an existing or newly justified committed model transition among `PendingAfterAssignment` or `AmbiguousAfterAssignment`; accepted and provably-not-accepted evidence use the dedicated terminal operations below | Provider-call observation or uncertainty evidence recorded; no lifecycle timeline or provider history store; no new `ClaimID` or `RunRef` | One SQLite transaction | No external I/O inside transaction; provider-call observation or uncertainty evidence cannot be recorded in a no-marker state |
 | Record reconciliation evidence | Same active durable claim and `RunRef` plus expected revision/CAS; ES-owned reconciliation evidence over either Validated No-Dispatch Evidence or a committed provider-dispatch-attempt fact | Current revision | Exact same reconciliation observation reloads existing phase and evidence | Wrong claim, wrong run, stale revision, contradictory marker ordering, provider-response labeling in a no-marker state, or incompatible evidence fails closed as invariant, corruption, or unavailable posture | Existing pure-model phase, or an existing committed transition justified by explicit reconciliation evidence only | With validly absent dispatch-attempt fact: validated no-dispatch evidence, local staging/materialization recovery facts, or fail-closed inconsistency evidence only; no provider response or call uncertainty. With dispatch-attempt fact: accepted, positive provably-not-accepted, still-pending, or ambiguous evidence | One SQLite transaction | No external I/O inside transaction; reconciliation is separate from recording a provider-call response and introduces no second phase algebra |
 | Accept with receipt | Positive accepted evidence for same assigned `RunRef` and valid bounded `ReceiptRef` | Current revision | Same accepted receipt reloads accepted/recovered-accepted | Different receipt, stale revision, or wrong run fails closed | Accepted | Accepted evidence and bounded `ReceiptRef` for the same `RunRef` | One SQLite transaction | No external I/O |
 | Record provably not accepted | Positive ES-owned evidence that no provider effect was accepted for this assigned run | Current revision | Same not-accepted record reloads same phase | Absence-only evidence, accepted phase, stale revision, or wrong run fails closed | Provably not accepted after assignment | Positive not-accepted evidence for the same `RunRef` | One SQLite transaction | No external I/O |
@@ -447,6 +465,279 @@ prerequisite before reliable-submit config or store lifecycle wiring, producer
 enablement, or public runtime enablement. The dedicated future tranche is
 `reliable-submit-durable-same-operation-replay-repair`.
 
+## 9A. Durable Latest-Operation Replay Repair ADR
+
+Status: target selected by documentation and docs-contract only. No durable
+service, durable record, SQLite schema, migration, store, runtime, public API,
+producer, configuration, staging, Nomad, or lifecycle source repair is
+implemented by this ADR tranche.
+
+The current private source facts remain:
+
+- the durable service supports internal COMMIT-unknown reload and full expected
+  post-commit record comparison inside one mutation call;
+- the general mutation path does not yet recognize a previously committed
+  `lastMutation` before stale-revision rejection and operation-specific apply
+  logic;
+- exact terminal and nonterminal redelivery is not generally implemented;
+- the SQLite schema version is still v1;
+- the durable record and SQLite row persist only the latest `lastMutation`
+  reference and do not retain operation kind, operation-input binding, or
+  mutation history.
+
+### Replay Scope
+
+Exact replay is guaranteed only for the current latest committed durable
+mutation on the claim. No historical mutation-result log is introduced by this
+repair. An older operation arriving after a later committed mutation is not
+represented as exact replay and must be classified with the existing private
+stale or superseded posture. The current later record must not be represented
+as the earlier operation's replay result. Historical replay, if later required,
+needs a separate ADR, record model, backend conformance expansion, and schema.
+
+### Latest-Operation Descriptor
+
+The repair selects one atomic persisted latest-operation descriptor. The
+descriptor describes the durable mutation that produced the current record
+revision and contains exactly these logical facts:
+
+- latest mutation reference;
+- closed private operation kind;
+- versioned safe operation-input binding digest.
+
+The three descriptor facts update atomically with every successful v2 mutation.
+A matching mutation reference with a different operation kind or different input
+binding is a mutation conflict, not stale revision and not exact replay.
+Mutation reference alone is not sufficient proof of same semantic command.
+
+Establish or load remains special. Caller/key uniqueness and private plan
+binding own claim establishment: same caller/key and same binding loads the
+existing claim, while same caller/key and different binding conflicts. Establish
+redelivery does not rewrite the current latest-operation descriptor merely to
+bless a new delivery identity. If the initial row stores an establish
+descriptor, that descriptor is only the initial latest-operation descriptor; it
+does not replace caller/key plus plan-binding claim idempotency.
+
+### Closed Operation-Kind Vocabulary V1
+
+The first version private operation-kind vocabulary is closed over the mutating
+durable service commands:
+
+- `assign_run`;
+- `record_provider_effect_intent`;
+- `record_staging_evidence`;
+- `record_provider_dispatch_attempt`;
+- `record_provider_call_observation`;
+- `record_reconciliation_evidence`;
+- `accept_with_receipt`;
+- `record_provably_not_accepted`;
+- `tombstone_or_expire`.
+
+Establish/load is not part of ordinary mutation replay. A stored establish
+descriptor, if present on the initial v2 row, remains subordinate to
+caller/key plus plan-binding claim establishment.
+
+### Operation-Input Binding
+
+The operation-input binding is a versioned, domain-separated private digest:
+
+`SHA256("es/reliable-submit/durable-operation-input/v1\0" || deterministic operation-specific safe encoding)`
+
+The deterministic operation-specific safe encoding must be length-delimited or
+otherwise unambiguous. It must include the expected predecessor revision,
+operation-specific enum or kind facts, and every operation-specific safe opaque
+reference or immutable value that changes command meaning. Semantic values must
+be normalized before sorting or duplicate detection, every meaningful input must
+affect the binding, and no raw-input projection or public accessor is allowed.
+Future binding changes require a new version and schema migration.
+
+For incoming mutation commands, the operation-input binding contains the
+expected predecessor revision, the closed operation kind, and every current
+request-carried safe receipt or evidence input that changes command meaning.
+Claim identity and private plan binding are validated from the loaded claim. An
+existing durable-state fact is not made into a request-carried input merely
+because it participates in transition validation.
+
+For terminal `accept_with_receipt` and `record_provably_not_accepted`, no
+terminal operation row treats `RunRef` as a request-carried operation input. The
+immutable `RunRef` is validated from the hydrated existing assigned phase and
+durable record. Terminal apply cannot proceed without the valid assigned-run
+context required by the committed pure model. COMMIT-unknown full
+expected-record equality still includes the durable `RunRef` and the complete
+latest-operation descriptor. This ADR selects no terminal request-shape
+expansion.
+
+The binding includes, where applicable:
+
+- `RunRef`;
+- provider-effect-intent reference;
+- staging-evidence or materialization reference;
+- provider-dispatch-attempt reference;
+- provider-observation semantic kind and safe reference;
+- reconciliation semantic kind and safe reference;
+- `ReceiptRef`;
+- terminal not-accepted evidence reference;
+- retention reason and requested expiry or tombstone inputs.
+
+The binding excludes:
+
+- mutation reference itself;
+- service-generated timestamps;
+- raw requests;
+- submit keys;
+- caller URIs;
+- environment values;
+- credentials;
+- filesystem paths;
+- unrestricted provider IDs;
+- trace, request, session, and report IDs;
+- logs and result bodies.
+
+The digest is private durable evidence. It must not be derived from provider
+reports, traces, logs, scheduler IDs, request IDs, session IDs, public recovery
+responses, or external observations that are not themselves the selected safe
+operation input.
+
+### Detection Ordering
+
+The durable service repair must use this ordering:
+
+1. Authorization and caller derivation occur before the durable service.
+2. Load the current record.
+3. Validate schema and codec, then hydrate the pure phase.
+4. Validate claim identity and private plan binding.
+5. Derive and validate the incoming operation descriptor.
+6. Compare mutation reference before stale-revision rejection:
+   same mutation plus same operation kind and input binding is exact
+   latest-operation replay; same mutation plus different operation kind or input
+   binding is mutation conflict.
+7. For a different mutation, apply retention and inactive-state classification.
+8. Validate expected revision.
+9. Validate phase and effect preconditions.
+10. Apply the semantic transition.
+11. CAS.
+12. On CAS loss, reload and repeat replay, conflict, stale, or superseded
+    classification before returning stale.
+13. COMMIT.
+14. On COMMIT uncertainty, reload and retain the existing stricter full
+    expected-record equality comparison, including the latest-operation
+    descriptor.
+
+Exact replay comparison must occur before inactive-state refusal so an exact
+duplicate of the current latest tombstone operation can return the committed
+inactive outcome. Corrupt, unsupported, or unhydratable state fails closed
+before replay and must not mutate.
+
+### Operation-Specific Replay Matrix
+
+| Operation kind | Binding inputs | Valid source phases | Committed result | Exact latest-operation replay | Same mutation with different input | Different mutation with stale predecessor | Disclosure allowed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Establish or load | Caller/key claim identity and private plan binding are establishment identity; an optional establish descriptor may include initial predecessor and initial phase inputs | No prior row for first insert; existing valid row for load | New claim at initial phase, or existing claim loaded | Same caller/key/binding loads existing claim without descriptor rewrite | Same caller/key/different binding conflicts | Not an ordinary mutation replay case | No existing run or receipt for conflicts; existing claim disclosure follows phase rules |
+| `assign_run` | Expected predecessor revision and `RunRef` | Pre-assignment pending or ambiguous claim eligible for assignment | Assigned/effect-capable record with immutable `RunRef` | Same assigned record and same `RunRef` | Mutation conflict | Stale or superseded; no replay | Same authorized caller may receive the assigned `RunRef` under phase rules |
+| `record_provider_effect_intent` | Expected predecessor revision and provider-effect-intent reference | Assigned/effect-capable claim with no prior intent | Existing assigned phase plus committed intent fact | Same record and same intent fact | Mutation conflict | Stale or superseded | No receipt; run disclosure follows assigned phase rules |
+| `record_staging_evidence` | Expected predecessor revision and staging or materialization evidence reference | Assigned claim with committed provider-effect intent | Existing phase plus staging/materialization fact | Same record and same staging fact | Mutation conflict | Stale or superseded | No raw paths or staging material; only safe private evidence fact |
+| `record_provider_dispatch_attempt` | Expected predecessor revision and dispatch-attempt reference | Assigned claim with committed provider-effect intent | Existing phase plus dispatch-attempt fact | Same record and same dispatch fact | Mutation conflict | Stale or superseded | No provider acceptance; run disclosure follows phase rules |
+| `record_provider_call_observation` | Expected predecessor revision, `RunRef`, provider-observation semantic kind, and safe observation reference | Same active claim with matching run, committed intent, and committed dispatch-attempt fact | Pending or ambiguous phase justified by observation or call-uncertainty evidence | Same semantic observation and same `RunRef` | Mutation conflict | Stale or superseded | Safe observation fact only; no unrestricted provider ID, trace, request, report, log, or body disclosure |
+| `record_reconciliation_evidence` | Expected predecessor revision, `RunRef`, reconciliation semantic kind, and safe reconciliation reference | Same active claim with matching run and committed intent, over Validated No-Dispatch Evidence or committed dispatch-attempt fact | Existing phase or explicitly justified transition from reconciliation evidence | Same reconciliation fact and same `RunRef` | Mutation conflict | Stale or superseded | Safe reconciliation fact only; no provider or report workaround |
+| `accept_with_receipt` | Expected predecessor revision, accepted evidence reference where represented, and `ReceiptRef` | Provider outcome candidate with assigned-run context validated from hydrated durable state | Accepted record with bounded receipt | Same accepted record and same `ReceiptRef` | Mutation conflict | Stale or superseded | Same authorized caller may receive accepted record and receipt reference |
+| `record_provably_not_accepted` | Expected predecessor revision and terminal not-accepted evidence reference | Provider outcome candidate with assigned-run context validated from hydrated durable state | Terminal provably-not-accepted record | Same terminal record | Mutation conflict | Stale or superseded | No accepted receipt; any run disclosure remains private or future public-shape gated |
+| `tombstone_or_expire` | Expected predecessor revision, retention action, unavailable reason, and requested expiry or tombstone inputs | Claim eligible under the selected retention policy | Inactive expired or tombstoned record | Same inactive record | Mutation conflict | Stale or superseded | Bounded inactive outcome only; no resurrection and no lifecycle detail |
+| Corrupt, unsupported, unavailable | Not applicable | Store open, decode, migration, or hydration failure | Fail-closed unavailable, unsupported, or corrupt classification | Never replay | Never mutates | Never mutates | Fixed bounded private error posture only |
+
+Same payload with a new mutation reference is not exact replay. It proceeds
+through ordinary revision and phase validation. Operation-specific no-op
+behavior must not update `lastMutation` merely to give a new identity to an
+already completed effect, and must not bypass mutation identity, revision, or
+phase checks.
+
+Terminal exact replay preserves the prior disclosure boundary: accepted exact
+replay returns the same accepted record and `ReceiptRef`,
+provably-not-accepted exact replay returns the same terminal record, same
+mutation with different receipt or evidence binding conflicts, and no public run
+or receipt disclosure policy is widened.
+
+### Concurrency And COMMIT Uncertainty
+
+Concurrent exact duplicates may both load the same predecessor revision. One CAS
+wins. The loser reloads and compares the current latest-operation descriptor:
+same mutation, same operation kind, and same input binding returns exact replay;
+same mutation with different binding returns mutation conflict; a different
+mutation returns stale, superseded, or conflicting progression according to the
+current revision and phase. No second durable semantic mutation or external
+effect occurs.
+
+COMMIT-unknown recovery remains stricter than ordinary latest-operation replay.
+The existing reload-after-unknown posture compares the complete expected
+post-mutation record. The v2 source repair must include the latest-operation
+descriptor in that full-record equality comparison and must not use descriptor
+match alone to declare an uncertain commit successful.
+
+### SQLite V2 Logical Schema And Legacy Rows
+
+A SQLite schema migration is required. The logical v2 additions are the latest
+operation kind and latest operation input-binding digest, paired with the
+existing latest mutation reference. Exact SQL column names are not frozen by
+this ADR; the logical fields, constraints, migration posture, and acceptance
+evidence are frozen.
+
+The v2 schema must enforce:
+
+- closed supported operation kinds;
+- fixed-length input digest;
+- operation kind and digest either both present or both absent for a migrated
+  legacy row;
+- every newly created v2 row has a complete descriptor;
+- every successful v2 mutation updates mutation reference, operation kind, and
+  fixed-length input digest together with revision `old+1`;
+- no descriptor-only update;
+- no revision update without the descriptor triple;
+- no delete or retention resurrection;
+- migration continuity and future-version rejection remain fail closed.
+
+Existing v1 rows cannot be assigned invented operation semantics. The selected
+legacy/unbound migration posture is:
+
+- preserve the existing v1 row;
+- retain the legacy mutation reference without treating it as a complete
+  descriptor;
+- mark operation kind and input digest unavailable/unbound;
+- do not infer operation kind or input binding from phase, durable effect facts,
+  provider evidence, reports, logs, traces, request IDs, provider IDs, retained
+  result material, or external observations;
+- do not claim exact same-operation replay for that unbound latest mutation;
+- a same-mutation replay attempt against an unbound legacy descriptor fails
+  closed with a private replay-unavailable or unsupported classification;
+- a later valid distinct mutation may proceed through normal revision and phase
+  rules and writes the first complete v2 descriptor;
+- no background rewrite, state deletion, or fabricated replay result is
+  authorized;
+- unsupported future schema versions fail closed.
+
+### Record, Codec, Store, And Source-Tranche Consequences
+
+The later source repair must update the durable record and codec to represent
+both the optional legacy/unbound descriptor and the complete v2 descriptor. The
+durable service must derive and compare operation descriptors. SQLite row scan,
+write, CAS, physical constraints, and migrations must persist them. Shared
+backend conformance must cover the same semantics.
+
+The private `claimStore` port remains establish/load/CAS. No PostgreSQL-specific
+type, SQLSTATE, DSN, advisory-lock, TLS, credential, schema, or operational
+behavior enters the private port. A future PostgreSQL backend may implement the
+same private service contract and conformance suite without leaking backend
+details into service semantics.
+
+Implementation ordering is frozen:
+
+1. this documentation and docs-contract ADR tranche;
+2. independent audit and exact-byte commit of this documentation tranche;
+3. record, codec, schema, service, store, and conformance implementation
+   tranche;
+4. independent transaction and security audit of the source repair;
+5. no reliable-submit state-path configuration or store lifecycle, producer
+   enablement, public DTO, handler, staging, Nomad, or runtime behavior until
+   the source repair is accepted.
+
 ## 10. Crash-Window Matrix
 
 | Crash window | Durable facts | Could provider dispatch have occurred? | Duplicate delivery or first-effect behavior | Required reconciliation | Forbidden inference |
@@ -461,7 +752,7 @@ enablement, or public runtime enablement. The dedicated future tranche is
 | Provider call may have occurred before conclusive response | Run, intent, and dispatch-attempt fact survive; pending or ambiguous must be retained or recoverable | Yes | Retry must not auto-register again | ES-owned reconciliation is required | Generic provider absence is not proof of no acceptance, and call outcome or uncertainty evidence requires the marker |
 | Provider response uncertain or ambiguous result persisted | Pending or ambiguous after assignment survives with same run and dispatch-attempt fact plus call outcome or uncertainty evidence | Yes, unless reconciliation later proves otherwise | Retry returns or observes pending/ambiguity until stronger evidence exists; no automatic provider resubmission | ES-owned reconciliation is required | Ambiguity is not rejection, generic provider absence is not proof, and call outcome or uncertainty evidence requires the marker |
 | After accepted receipt persistence before caller response | Accepted run and receipt survive | Yes, accepted | Exact retry returns accepted or recovered accepted | None | Lost caller response is not a new execution |
-| During COMMIT uncertainty | Retried caller must reload and compare durable state | Depends on the operation; external effects must not be repeated from uncertainty | Existing committed row wins if present; otherwise fail closed per operation | Reload and compare caller/key, binding, operation identity where available, phase, revision, run, receipt, and effect facts | Uncertain commit is not permission to repeat external effects |
+| During COMMIT uncertainty | Retried caller must reload and compare durable state | Depends on the operation; external effects must not be repeated from uncertainty | Existing committed row wins if present; otherwise fail closed per operation | Reload and compare caller/key, binding, latest-operation descriptor when present, phase, revision, run, receipt, and effect facts through full expected-record equality | Uncertain commit is not permission to repeat external effects |
 | After expiry or tombstone | No-reuse fact or unavailable posture survives as required by retention policy | Unknown from absence alone | Retry returns expired/unavailable or a bounded tombstone-backed outcome | Retention/repair policy only when later selected | Expiry or deletion is not proof that no execution existed |
 
 ## 11. Retention And Tombstones
@@ -588,6 +879,17 @@ or public reliable-submit availability. Runtime integration and the explicit
 ES-owned reliable-submit state-path configuration addition remain a later
 tranche.
 
+The next reliable-submit source repair tranche must implement the section 9A
+latest-operation replay contract before any runtime enablement. It must update
+the private durable record and codec, SQLite migration and physical constraints,
+SQLite row scan/write/CAS, durable service descriptor derivation and comparison,
+and shared backend conformance tests. It must preserve the private
+establish/load/CAS `claimStore` port shape unless a separate ADR selects
+historical mutation retention or another backend-neutral semantic requirement.
+It must not edit public API/DTO source, producer declaration source, global
+configuration, app startup, current submit/staging/Nomad source, Coordinator,
+Bridge, CP, IM, or dependencies.
+
 ## 16. Explicit Non-Claims And Open Decisions
 
 Explicit non-claims:
@@ -610,6 +912,11 @@ Explicit non-claims:
 - no exported raw persistence accessors;
 - no second phase algebra;
 - no multi-host or HA claim.
+- no latest-operation descriptor is persisted by current source;
+- no SQLite v2 replay-descriptor schema or migration is implemented by current
+  source;
+- no durable same-operation replay source repair is implemented by this
+  documentation/docs-contract ADR tranche.
 
 Open decisions:
 

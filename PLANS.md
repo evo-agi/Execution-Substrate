@@ -196,7 +196,20 @@ not yet recognize a previously committed `lastMutation` before expected-revision
 and operation-specific apply logic. Terminal accepted and
 provably-not-accepted redelivery are known failing examples. The repair must
 inspect all durable mutation operations, not only those two terminal examples.
-The private store remains runtime-unwired, so this gap does not affect current
+The docs/docs-contract ADR now selects a backend-neutral latest-operation-only
+repair contract: exact replay requires the current latest mutation reference,
+closed private operation kind, and versioned safe operation-input binding;
+same-mutation/different-kind-or-binding reuse is mutation conflict; old
+operations after later progression are stale or superseded; historical mutation
+retention is out of scope; COMMIT-unknown recovery keeps stricter full-record
+comparison. That decision requires a later SQLite v2 logical schema migration
+for the latest-operation descriptor and preserves legacy/unbound rows without
+inventing operation semantics. The current source repair is not implemented:
+schema v1 persists only `lastMutation`, not operation kind, input-binding
+digest, or mutation history. The required order is this documentation
+ADR tranche, independent audit and exact-byte commit, then the record/codec,
+schema, durable-service, store, and conformance implementation tranche. The
+private store remains runtime-unwired, so this gap does not affect current
 public execution behavior.
 
 Reliable dispatch remains blocked until later implementation and audit. Both

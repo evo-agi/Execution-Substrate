@@ -12,9 +12,10 @@ mapping or public error strings, does not add public response DTOs, and does
 not enable Coordinator-backed dispatch. The persistence and concurrency ADR in
 `reliable_submit_persistence_and_concurrency.md` now selects local embedded
 SQLite as the first storage backend, `modernc.org/sqlite v1.54.0` as the
-CGO-free driver, and private same-package durable-store source while leaving
-runtime integration open. Current `POST /v1/executions:submit` remains the
-current unkeyed submit contract.
+CGO-free driver, private same-package durable-store source, and the target
+durable latest-operation replay repair contract while leaving runtime
+integration open. Current `POST /v1/executions:submit` remains the current
+unkeyed submit contract.
 
 This document now selects the public opt-in/versioning posture and delegates the
 persistence/concurrency decision to
@@ -106,8 +107,12 @@ mutation path does not yet recognize a previously committed `lastMutation` befor
 expected-revision and operation-specific apply logic. Terminal accepted and
 provably-not-accepted redelivery are known failing examples, and the gap may
 affect other durable mutation redelivery cases until a complete mutation
-operation inventory is performed. The private store remains runtime-unwired, so
-no current public execution behavior is affected.
+operation inventory is performed. The current store persists only the latest
+`lastMutation` reference and does not retain operation kind, operation-input
+binding, or mutation history. The selected durable replay ADR requires a SQLite
+v2 logical descriptor before source repair; that schema does not exist in
+current source. The private store remains runtime-unwired, so no current public
+execution behavior is affected.
 
 ## 3. Dual Ambiguity Model
 
@@ -192,6 +197,26 @@ record and receipt. Provably-not-accepted replay returns the same terminal
 record. Current private source does not yet fully implement that general durable
 same-operation replay behavior; `reliable-submit-durable-same-operation-replay-repair`
 is required before runtime enablement.
+
+The selected durable replay repair is latest-operation-only. Exact replay is
+guaranteed only when the incoming command matches the current latest committed
+durable mutation descriptor: mutation reference, closed private operation kind,
+and versioned safe operation-input binding. An older operation arriving after a
+later committed mutation is stale or superseded, not exact replay, and the
+current later record is not represented as the older operation's replay result.
+No historical mutation-result log is selected; historical replay requires a
+separate ADR and schema.
+
+The operation-input binding includes expected predecessor revision and every
+operation-specific safe opaque reference or immutable value that changes command
+meaning. It excludes mutation reference itself, raw requests, submit keys,
+caller URIs, environment values, credentials, filesystem paths, unrestricted
+provider IDs, trace/request/session/report IDs, logs, and result bodies. Reuse
+of one mutation reference with a different operation kind or input binding is a
+mutation conflict. Same payload with a new mutation reference is not exact
+replay and must proceed through ordinary revision, phase, and transition
+validation without updating mutation identity merely to bless an already
+completed effect.
 
 The same caller and key used with a non-equivalent request is conflicting reuse. Conflicting reuse must be detected before another execution-producing side effect.
 
@@ -387,9 +412,11 @@ storage family for the first implementation path, preserves the current
 `CGO_ENABLED=0` build posture, selects `modernc.org/sqlite v1.54.0` with
 `modernc.org/libc v1.74.1`, selects private same-package persistence hydration
 in `es/admission/internal/reliablesubmit`, and freezes revision/CAS plus
-provider-effect-intent ordering. It does not select the state-path config key,
-TTL, public request or receipt vocabulary, Nomad reconciliation mechanism, or
-runtime integration.
+provider-effect-intent ordering. It also selects the target latest-operation
+replay contract and requires a SQLite v2 logical descriptor that pairs the
+latest mutation reference with closed operation kind and versioned input-binding
+digest. It does not select the state-path config key, TTL, public request or
+receipt vocabulary, Nomad reconciliation mechanism, or runtime integration.
 
 ## 8. Ordering And Concurrency Invariants
 
@@ -573,6 +600,9 @@ This target contract makes these explicit non-claims:
 - no complete effective-plan witness construction in package `admission`
   implemented;
 - no durable replay-envelope custody implemented;
+- no latest-operation descriptor persisted;
+- no SQLite v2 replay-descriptor schema or migration implemented;
+- no durable same-operation replay source repair implemented;
 - no public or runtime persistence integration;
 - no global state-path configuration or service-startup database construction;
 - no public or runtime schema, migration, backup, restore, or storage migration
@@ -610,6 +640,8 @@ Implementation requires these local gates before runtime behavior changes:
 - pure internal reliable-submit model tests;
 - reliable request foundation and producer sub-contract target tests;
 - `reliable-submit-durable-same-operation-replay-repair`;
+- independent audit and exact-byte commit of the documentation/docs-contract
+  ADR tranche that selects latest-operation replay;
 - `resolved-execution-plan-extraction-foundation`;
 - narrow persistence and concurrency ADR decision;
 - ES-to-Nomad uncertain-outcome reconciliation decision;
