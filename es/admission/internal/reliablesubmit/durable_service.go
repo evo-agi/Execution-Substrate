@@ -148,14 +148,28 @@ func (s *durableClaimService) establishOrLoadClaim(ctx context.Context, req esta
 	if err != nil {
 		return durableClaimOutcome{}, err
 	}
+	initialTag := req.initialPhase
+	if initialTag == 0 {
+		initialTag = durablePhasePendingBeforeAssignment
+	}
+	operation, err := deriveDurableOperationDescriptor(
+		req.mutation,
+		durableOperationEstablishClaim,
+		0,
+		operationPartUint16(durableOperationPartInitialPhase, uint16(initialTag)),
+		operationPartOptionalClaimTime(durableOperationPartExpiresAt, req.expiresAt),
+	)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
 	record, err := newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        phase,
-		revision:     initialClaimRevision,
-		createdAt:    now,
-		updatedAt:    now,
-		expiresAt:    req.expiresAt,
-		retention:    activeDurableRetention(),
-		lastMutation: req.mutation,
+		phase:           phase,
+		revision:        initialClaimRevision,
+		createdAt:       now,
+		updatedAt:       now,
+		expiresAt:       req.expiresAt,
+		retention:       activeDurableRetention(),
+		latestOperation: operation,
 	})
 	if err != nil {
 		return durableClaimOutcome{}, err
@@ -170,7 +184,7 @@ func (s *durableClaimService) establishOrLoadClaim(ctx context.Context, req esta
 	if result.created {
 		return outcomeForRecord(durableClaimOutcomeEstablished, result.record)
 	}
-	return s.classifyLoadedRecord(result.record, req.plan.Binding())
+	return s.classifyLoadedRecord(result.record, req.claim, req.plan.Binding())
 }
 
 func (s *durableClaimService) exactReplayOrLoad(ctx context.Context, req exactReplayRequest) (durableClaimOutcome, error) {
@@ -178,7 +192,7 @@ func (s *durableClaimService) exactReplayOrLoad(ctx context.Context, req exactRe
 	if err != nil {
 		return durableClaimOutcome{}, err
 	}
-	return s.classifyLoadedRecord(record, req.binding)
+	return s.classifyLoadedRecord(record, req.claim, req.binding)
 }
 
 func (s *durableClaimService) assignRun(ctx context.Context, req assignRunRequest) (durableClaimOutcome, error) {
@@ -187,8 +201,12 @@ func (s *durableClaimService) assignRun(ctx context.Context, req assignRunReques
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeAssigned,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationAssignRun,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{operationPartRunRef(req.run)}
+		},
+		successKind: durableClaimOutcomeAssigned,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if record.phase.run.Valid() {
 				if record.phase.run.Equal(req.run) {
 					return record, nil
@@ -207,7 +225,7 @@ func (s *durableClaimService) assignRun(ctx context.Context, req assignRunReques
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(assigned, req.mutation, nowUTC, someClaimTime(nowUTC), record.effects, record.retention)
+			return record.withPhaseAndOperation(assigned, operation, nowUTC, someClaimTime(nowUTC), record.effects, record.retention)
 		},
 	})
 }
@@ -218,8 +236,12 @@ func (s *durableClaimService) recordProviderEffectIntent(ctx context.Context, re
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeEffectIntentRecorded,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordProviderEffectIntent,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{operationPartFactRef(req.intent)}
+		},
+		successKind: durableClaimOutcomeEffectIntentRecorded,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.phase.run.Valid() {
 				return durableClaimRecord{}, ErrInvalidPhase
 			}
@@ -235,7 +257,7 @@ func (s *durableClaimService) recordProviderEffectIntent(ctx context.Context, re
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -246,8 +268,12 @@ func (s *durableClaimService) recordStagingEvidence(ctx context.Context, req rec
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeStagingEvidenceRecorded,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordStagingEvidence,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{operationPartFactRef(req.staging)}
+		},
+		successKind: durableClaimOutcomeStagingEvidenceRecorded,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.effects.intent.present() {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
@@ -263,7 +289,7 @@ func (s *durableClaimService) recordStagingEvidence(ctx context.Context, req rec
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -274,8 +300,12 @@ func (s *durableClaimService) recordProviderDispatchAttempt(ctx context.Context,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeDispatchAttemptRecorded,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordProviderDispatchAttempt,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{operationPartFactRef(req.dispatch)}
+		},
+		successKind: durableClaimOutcomeDispatchAttemptRecorded,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.effects.intent.present() {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
@@ -291,7 +321,7 @@ func (s *durableClaimService) recordProviderDispatchAttempt(ctx context.Context,
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -302,8 +332,16 @@ func (s *durableClaimService) recordProviderCallObservation(ctx context.Context,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeProviderObservationRecorded,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordProviderCallObservation,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{
+				operationPartRunRef(req.run),
+				operationPartUint16(durableOperationPartObservationKind, uint16(req.kind)),
+				operationPartFactRef(req.observation),
+			}
+		},
+		successKind: durableClaimOutcomeProviderObservationRecorded,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if err := validateRecordRunRef(record, req.run); err != nil {
 				return durableClaimRecord{}, err
 			}
@@ -331,7 +369,7 @@ func (s *durableClaimService) recordProviderCallObservation(ctx context.Context,
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -342,8 +380,16 @@ func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, 
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeReconciliationRecorded,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordReconciliationEvidence,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{
+				operationPartRunRef(req.run),
+				operationPartUint16(durableOperationPartReconciliationKind, uint16(req.kind)),
+				operationPartFactRef(req.reconciliation),
+			}
+		},
+		successKind: durableClaimOutcomeReconciliationRecorded,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if err := validateRecordRunRef(record, req.run); err != nil {
 				return durableClaimRecord{}, err
 			}
@@ -368,7 +414,7 @@ func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, 
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -379,8 +425,15 @@ func (s *durableClaimService) acceptWithReceipt(ctx context.Context, req acceptW
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeAccepted,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationAcceptWithReceipt,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{
+				operationPartReceiptRef(req.receipt),
+				operationPartFactRef(req.accepted),
+			}
+		},
+		successKind: durableClaimOutcomeAccepted,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.effects.dispatch.present() {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
@@ -401,7 +454,7 @@ func (s *durableClaimService) acceptWithReceipt(ctx context.Context, req acceptW
 				kind: durableProviderObservationAccepted,
 				fact: newDurableEffectRefTime(req.accepted, nowUTC),
 			}
-			return record.withPhaseAndMutation(accepted, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(accepted, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -412,8 +465,12 @@ func (s *durableClaimService) recordProvablyNotAccepted(ctx context.Context, req
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      durableClaimOutcomeProvablyNotAccepted,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationRecordProvablyNotAccepted,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{operationPartFactRef(req.notAccepted)}
+		},
+		successKind: durableClaimOutcomeProvablyNotAccepted,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.effects.dispatch.present() {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
@@ -434,7 +491,7 @@ func (s *durableClaimService) recordProvablyNotAccepted(ctx context.Context, req
 				kind: durableProviderObservationNotAccepted,
 				fact: newDurableEffectRefTime(req.notAccepted, nowUTC),
 			}
-			return record.withPhaseAndMutation(notAccepted, req.mutation, nowUTC, record.assignedAt, effects, record.retention)
+			return record.withPhaseAndOperation(notAccepted, operation, nowUTC, record.assignedAt, effects, record.retention)
 		},
 	})
 }
@@ -446,8 +503,15 @@ func (s *durableClaimService) tombstoneOrExpire(ctx context.Context, req tombsto
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
-		successKind:      successKind,
-		apply: func(record durableClaimRecord, nowUTC time.Time) (durableClaimRecord, error) {
+		operationKind:    durableOperationTombstoneOrExpire,
+		operationInput: func() []durableOperationInputPart {
+			return []durableOperationInputPart{
+				operationPartUint16(durableOperationPartRetentionState, uint16(req.state)),
+				operationPartString(durableOperationPartRetentionReason, req.reason),
+			}
+		},
+		successKind: successKind,
+		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if req.state != durableRetentionExpired && req.state != durableRetentionTombstoned {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
@@ -460,7 +524,7 @@ func (s *durableClaimService) tombstoneOrExpire(ctx context.Context, req tombsto
 			if err != nil {
 				return durableClaimRecord{}, err
 			}
-			return record.withPhaseAndMutation(phase, req.mutation, nowUTC, record.assignedAt, record.effects, retention)
+			return record.withPhaseAndOperation(phase, operation, nowUTC, record.assignedAt, record.effects, retention)
 		},
 	})
 }
@@ -470,8 +534,10 @@ type mutationRequest struct {
 	binding          PlanBinding
 	expectedRevision claimRevision
 	mutation         durableMutationRef
+	operationKind    durableOperationKind
+	operationInput   func() []durableOperationInputPart
 	successKind      durableClaimOutcomeKind
-	apply            func(durableClaimRecord, time.Time) (durableClaimRecord, error)
+	apply            func(durableClaimRecord, time.Time, durableLatestOperationDescriptor) (durableClaimRecord, error)
 }
 
 func (s *durableClaimService) mutate(ctx context.Context, req mutationRequest) (durableClaimOutcome, error) {
@@ -480,17 +546,36 @@ func (s *durableClaimService) mutate(ctx context.Context, req mutationRequest) (
 	if err != nil {
 		return durableClaimOutcome{}, err
 	}
-	classified, err := s.classifyLoadedRecord(record, req.binding)
+	_, classified, handled, err := s.validateLoadedRecordBinding(record, req.claim, req.binding)
 	if err != nil {
 		return durableClaimOutcome{}, err
 	}
-	if classified.kind != durableClaimOutcomeExactReplay {
+	if handled {
+		return classified, nil
+	}
+	if req.operationInput == nil {
+		return durableClaimOutcome{}, errInvalidDurableOperationInputBinding
+	}
+	operation, err := deriveDurableOperationDescriptor(
+		req.mutation,
+		req.operationKind,
+		req.expectedRevision,
+		req.operationInput()...,
+	)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	classified, handled, err = s.classifyValidatedRecordForMutation(record, operation, req.successKind)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	if handled {
 		return classified, nil
 	}
 	if record.revision != req.expectedRevision {
 		return outcomeForRecord(durableClaimOutcomeStale, record)
 	}
-	next, err := req.apply(record, now)
+	next, err := req.apply(record, now, operation)
 	if err != nil {
 		return durableClaimOutcome{}, err
 	}
@@ -512,45 +597,51 @@ func (s *durableClaimService) mutate(ctx context.Context, req mutationRequest) (
 		return outcomeForRecord(req.successKind, result.record)
 	}
 	if result.found {
+		classified, handled, classifyErr := s.classifyLoadedRecordForMutation(result.record, req.claim, req.binding, operation, req.successKind)
+		if classifyErr != nil {
+			return durableClaimOutcome{}, classifyErr
+		}
+		if handled {
+			return classified, nil
+		}
 		return outcomeForRecord(durableClaimOutcomeStale, result.record)
 	}
 	return durableClaimOutcome{}, errClaimStoreNotFound
 }
 
-func (s *durableClaimService) classifyLoadedRecord(record durableClaimRecord, binding PlanBinding) (durableClaimOutcome, error) {
-	if err := record.validate(); err != nil {
-		return durableClaimOutcome{}, err
+func (s *durableClaimService) classifyLoadedRecordForMutation(record durableClaimRecord, claim ClaimID, binding PlanBinding, incoming durableLatestOperationDescriptor, successKind durableClaimOutcomeKind) (durableClaimOutcome, bool, error) {
+	if _, classified, handled, err := s.validateLoadedRecordBinding(record, claim, binding); err != nil || handled {
+		return classified, handled, err
 	}
-	phase, err := record.hydratePhase()
-	if err != nil {
-		return durableClaimOutcome{}, err
-	}
-	if err := ValidatePlanBinding(phase, binding); err != nil {
-		if errors.Is(err, ErrPlanBindingConflict) {
-			conflict, conflictErr := NewConflict()
-			if conflictErr != nil {
-				return durableClaimOutcome{}, conflictErr
-			}
-			return durableClaimOutcome{
-				kind:                       durableClaimOutcomeConflict,
-				observationKind:            conflict.Kind(),
-				runRefDisclosure:           conflict.SameCallerRunRefDisclosure(),
-				acceptedReferenceAvailable: conflict.AcceptedSubmissionReferenceAvailable(),
-			}, nil
-		}
-		return durableClaimOutcome{}, err
+	return s.classifyValidatedRecordForMutation(record, incoming, successKind)
+}
+
+func (s *durableClaimService) classifyValidatedRecordForMutation(record durableClaimRecord, incoming durableLatestOperationDescriptor, successKind durableClaimOutcomeKind) (durableClaimOutcome, bool, error) {
+	switch compareDurableLatestOperation(record.latestOperation, incoming) {
+	case durableOperationReplayExact:
+		replayed, err := outcomeForRecord(successKind, record)
+		return replayed, true, err
+	case durableOperationReplayConflict:
+		conflict, err := mutationConflictOutcome()
+		return conflict, true, err
+	case durableOperationReplayUnavailable:
+		return durableClaimOutcome{kind: durableClaimOutcomeUnavailable}, true, nil
+	default:
 	}
 	if !record.activeAt(s.now()) {
-		expired, expiredErr := NewExpiredUnavailable()
-		if expiredErr != nil {
-			return durableClaimOutcome{}, expiredErr
-		}
-		return durableClaimOutcome{
-			kind:                       durableClaimOutcomeExpiredUnavailable,
-			observationKind:            expired.Kind(),
-			runRefDisclosure:           expired.SameCallerRunRefDisclosure(),
-			acceptedReferenceAvailable: expired.AcceptedSubmissionReferenceAvailable(),
-		}, nil
+		expired, err := expiredUnavailableOutcome()
+		return expired, true, err
+	}
+	return durableClaimOutcome{}, false, nil
+}
+
+func (s *durableClaimService) classifyLoadedRecord(record durableClaimRecord, claim ClaimID, binding PlanBinding) (durableClaimOutcome, error) {
+	phase, classified, handled, err := s.validateLoadedRecordBinding(record, claim, binding)
+	if err != nil || handled {
+		return classified, err
+	}
+	if !record.activeAt(s.now()) {
+		return expiredUnavailableOutcome()
 	}
 	replay, err := NewExactReplay(phase)
 	if err != nil {
@@ -564,6 +655,53 @@ func (s *durableClaimService) classifyLoadedRecord(record durableClaimRecord, bi
 		underlyingReplayKind:       replay.UnderlyingKind(),
 		runRefDisclosure:           replay.SameCallerRunRefDisclosure(),
 		acceptedReferenceAvailable: replay.AcceptedSubmissionReferenceAvailable(),
+	}, nil
+}
+
+func (s *durableClaimService) validateLoadedRecordBinding(record durableClaimRecord, claim ClaimID, binding PlanBinding) (ClaimPhase, durableClaimOutcome, bool, error) {
+	if err := record.validate(); err != nil {
+		return nil, durableClaimOutcome{}, false, err
+	}
+	phase, err := record.hydratePhase()
+	if err != nil {
+		return nil, durableClaimOutcome{}, false, err
+	}
+	if !record.claim.Equal(claim) {
+		return nil, durableClaimOutcome{}, false, errClaimStoreCorrupt
+	}
+	if err := ValidatePlanBinding(phase, binding); err != nil {
+		if errors.Is(err, ErrPlanBindingConflict) {
+			conflict, conflictErr := mutationConflictOutcome()
+			return nil, conflict, true, conflictErr
+		}
+		return nil, durableClaimOutcome{}, false, err
+	}
+	return phase, durableClaimOutcome{}, false, nil
+}
+
+func mutationConflictOutcome() (durableClaimOutcome, error) {
+	conflict, err := NewConflict()
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	return durableClaimOutcome{
+		kind:                       durableClaimOutcomeConflict,
+		observationKind:            conflict.Kind(),
+		runRefDisclosure:           conflict.SameCallerRunRefDisclosure(),
+		acceptedReferenceAvailable: conflict.AcceptedSubmissionReferenceAvailable(),
+	}, nil
+}
+
+func expiredUnavailableOutcome() (durableClaimOutcome, error) {
+	expired, err := NewExpiredUnavailable()
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	return durableClaimOutcome{
+		kind:                       durableClaimOutcomeExpiredUnavailable,
+		observationKind:            expired.Kind(),
+		runRefDisclosure:           expired.SameCallerRunRefDisclosure(),
+		acceptedReferenceAvailable: expired.AcceptedSubmissionReferenceAvailable(),
 	}, nil
 }
 
@@ -591,11 +729,12 @@ func (s *durableClaimService) reloadAfterUnknown(ctx context.Context, claim Clai
 		return durableClaimOutcome{}, err
 	}
 	if reloaded.lastMutation.equal(expected.lastMutation) &&
+		reloaded.latestOperation.equal(expected.latestOperation) &&
 		reloaded.revision == expected.revision &&
 		reloaded.equal(expected) {
 		return outcomeForRecord(successKind, reloaded)
 	}
-	classified, classifyErr := s.classifyLoadedRecord(reloaded, binding)
+	classified, classifyErr := s.classifyLoadedRecord(reloaded, claim, binding)
 	if classifyErr != nil {
 		return durableClaimOutcome{}, classifyErr
 	}
@@ -722,19 +861,19 @@ func initialClaimPhase(claim ClaimID, plan BoundPlan, tag durablePhaseTag) (Clai
 	}
 }
 
-func (r durableClaimRecord) withPhaseAndMutation(phase ClaimPhase, mutation durableMutationRef, updatedAt time.Time, assignedAt optionalClaimTime, effects durableEffectFacts, retention durableRetentionFact) (durableClaimRecord, error) {
-	if !mutation.valid() {
-		return durableClaimRecord{}, errInvalidMutationRef
+func (r durableClaimRecord) withPhaseAndOperation(phase ClaimPhase, operation durableLatestOperationDescriptor, updatedAt time.Time, assignedAt optionalClaimTime, effects durableEffectFacts, retention durableRetentionFact) (durableClaimRecord, error) {
+	if !operation.complete() {
+		return durableClaimRecord{}, errInvalidDurableLatestOperation
 	}
 	return newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        phase,
-		revision:     r.revision + 1,
-		createdAt:    r.createdAt,
-		updatedAt:    updatedAt,
-		assignedAt:   assignedAt,
-		expiresAt:    r.expiresAt,
-		effects:      effects,
-		retention:    retention,
-		lastMutation: mutation,
+		phase:           phase,
+		revision:        r.revision + 1,
+		createdAt:       r.createdAt,
+		updatedAt:       updatedAt,
+		assignedAt:      assignedAt,
+		expiresAt:       r.expiresAt,
+		effects:         effects,
+		retention:       retention,
+		latestOperation: operation,
 	})
 }

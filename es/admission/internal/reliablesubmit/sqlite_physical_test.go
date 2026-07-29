@@ -122,6 +122,9 @@ func TestSQLiteClaimStoreMalformedAndInvalidCodecFailClosed(t *testing.T) {
 			t.Fatalf("sqliteRecordArgs: %v", err)
 		}
 		args[len(args)-1] = int64(durableClaimCodecVersion + 1)
+		if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+			t.Fatalf("drop insert guard for corruption seed: %v", err)
+		}
 		if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
 			t.Fatalf("ignore constraints: %v", err)
 		}

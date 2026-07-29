@@ -187,30 +187,20 @@ parallel admission engine, silently tighten the current
 empty-environment-allowlist contract, or infer authority-handoff inapplicability
 contrary to current `Submit` behavior.
 
-A separate future repair tranche,
-`reliable-submit-durable-same-operation-replay-repair`, is also required before
+The `reliable-submit-durable-same-operation-replay-repair` source tranche is
+implemented inside the private durable source and remains required before
 reliable-submit config/store lifecycle wiring, producer enablement, or public
-runtime enablement. The committed private durable service supports internal
-COMMIT-unknown reload within one operation, but the general mutation path does
-not yet recognize a previously committed `lastMutation` before expected-revision
-and operation-specific apply logic. Terminal accepted and
-provably-not-accepted redelivery are known failing examples. The repair must
-inspect all durable mutation operations, not only those two terminal examples.
-The docs/docs-contract ADR now selects a backend-neutral latest-operation-only
-repair contract: exact replay requires the current latest mutation reference,
-closed private operation kind, and versioned safe operation-input binding;
-same-mutation/different-kind-or-binding reuse is mutation conflict; old
-operations after later progression are stale or superseded; historical mutation
-retention is out of scope; COMMIT-unknown recovery keeps stricter full-record
-comparison. That decision requires a later SQLite v2 logical schema migration
-for the latest-operation descriptor and preserves legacy/unbound rows without
-inventing operation semantics. The current source repair is not implemented:
-schema v1 persists only `lastMutation`, not operation kind, input-binding
-digest, or mutation history. The required order is this documentation
-ADR tranche, independent audit and exact-byte commit, then the record/codec,
-schema, durable-service, store, and conformance implementation tranche. The
-private store remains runtime-unwired, so this gap does not affect current
-public execution behavior.
+runtime enablement. The committed private durable service now derives a
+latest-operation descriptor, recognizes the current latest committed mutation
+before stale-revision and inactive-state refusal, returns exact replay for same
+mutation plus same operation kind/input binding, returns mutation conflict for
+same-mutation/different-kind-or-binding reuse, reloads CAS losers through the
+same classification, and keeps COMMIT-unknown recovery on stricter full-record
+equality including the descriptor. SQLite schema v2 persists the descriptor for
+codec-2 rows and preserves migrated v1 rows as legacy/unbound without inventing
+operation semantics. Historical mutation retention remains out of scope, and
+the private store remains runtime-unwired, so this repair does not affect
+current public execution behavior.
 
 Reliable dispatch remains blocked until later implementation and audit. Both
 caller-to-ES response loss and ES-to-Nomad registration-response uncertainty

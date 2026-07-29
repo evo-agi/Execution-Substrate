@@ -101,18 +101,15 @@ durable replay-envelope custody, or runtime orchestration. Those helpers are not
 exported public DTOs, are not wired to handlers, and are not called by current
 submit.
 
-Current private durable source also has a known same-operation replay gap. It
-supports internal COMMIT-unknown reload within one operation, but the general
-mutation path does not yet recognize a previously committed `lastMutation` before
-expected-revision and operation-specific apply logic. Terminal accepted and
-provably-not-accepted redelivery are known failing examples, and the gap may
-affect other durable mutation redelivery cases until a complete mutation
-operation inventory is performed. The current store persists only the latest
-`lastMutation` reference and does not retain operation kind, operation-input
-binding, or mutation history. The selected durable replay ADR requires a SQLite
-v2 logical descriptor before source repair; that schema does not exist in
-current source. The private store remains runtime-unwired, so no current public
-execution behavior is affected.
+Current private durable source implements latest-operation same-operation
+replay. The general mutation path derives and compares a complete private
+latest-operation descriptor before stale-revision and inactive-state refusal.
+Same mutation plus same operation kind and input binding replays the committed
+result without another CAS. Same mutation plus different descriptor conflicts.
+Migrated legacy/unbound rows preserve only the retained mutation reference and
+fail closed for same-mutation replay rather than inventing operation semantics.
+The store persists no mutation history. The private store remains
+runtime-unwired, so no current public execution behavior is affected.
 
 ## 3. Dual Ambiguity Model
 
@@ -190,13 +187,13 @@ One authenticated-caller namespace and submit idempotency key identifies one rel
 
 Exact retry cannot create another stage package, another execution package, or another Nomad job. Concurrent exact retries converge on the same submit correlation outcome.
 
-For durable same-operation replay, the target invariant is that an exact
-redelivery of an already committed operation replays the committed result without
-new mutation or external effect. Accepted replay returns the same accepted
-record and receipt. Provably-not-accepted replay returns the same terminal
-record. Current private source does not yet fully implement that general durable
-same-operation replay behavior; `reliable-submit-durable-same-operation-replay-repair`
-is required before runtime enablement.
+For durable same-operation replay, the current private invariant is that an
+exact redelivery of the latest already committed operation replays the committed
+result without new mutation or external effect. Accepted replay returns the same
+accepted record and receipt. Provably-not-accepted replay returns the same
+terminal record. This private source repair is complete for latest-operation
+replay and remains runtime-unwired; public reliable-submit runtime enablement is
+still a later gate.
 
 The selected durable replay repair is latest-operation-only. Exact replay is
 guaranteed only when the incoming command matches the current latest committed
@@ -600,9 +597,9 @@ This target contract makes these explicit non-claims:
 - no complete effective-plan witness construction in package `admission`
   implemented;
 - no durable replay-envelope custody implemented;
-- no latest-operation descriptor persisted;
-- no SQLite v2 replay-descriptor schema or migration implemented;
-- no durable same-operation replay source repair implemented;
+- no mutation-history store or history-wide replay;
+- no public reliable-submit runtime wiring;
+- no public replay DTO or recovery route;
 - no public or runtime persistence integration;
 - no global state-path configuration or service-startup database construction;
 - no public or runtime schema, migration, backup, restore, or storage migration

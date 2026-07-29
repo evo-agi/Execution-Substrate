@@ -18,11 +18,14 @@ This ADR freezes the durable-state boundary and ordering rules that the later
 source implementation must consume from the committed pure model in
 `es/admission/internal/reliablesubmit`.
 
-The documentation/docs-contract tranche for
-`reliable-submit-durable-same-operation-replay-repair` now freezes the target
-latest-operation replay contract in section 9A. That target requires a later
-record/codec and SQLite v2 logical schema migration. It is not implemented by
-the current private source.
+The source tranche for `reliable-submit-durable-same-operation-replay-repair`
+now implements the section 9A latest-operation replay contract inside the
+private durable source. The private record/codec stores a complete v2
+latest-operation descriptor for new and later-mutated rows, the SQLite schema is
+version 2, valid v1 rows migrate as legacy/unbound codec-1 rows, and the durable
+service performs exact latest-operation replay, mutation-conflict detection,
+CAS-loser reload/replay classification, and COMMIT-unknown full-record equality
+including the descriptor.
 
 A later unavailable contract-adapter foundation, implemented in private
 admission-local package `admission` helpers, now selects the reliable request
@@ -52,10 +55,11 @@ store source: `modernc.org/sqlite v1.54.0`, with the exact expected
 `modernc.org/libc v1.74.1` transitive coupling. No PostgreSQL dependency is
 introduced.
 
-The current durable record and SQLite schema version 1 store the latest
-`lastMutation` reference only. They do not store closed operation kind,
-operation-input binding digest, or mutation history. The latest-operation replay
-descriptor selected in section 9A is target design for a later source tranche.
+The current durable record and SQLite schema version 2 store the latest
+`lastMutation` reference with a closed private operation kind and versioned
+operation-input binding digest for complete codec-2 rows. Migrated codec-1 rows
+retain only the legacy `lastMutation` reference and mark operation kind and
+input digest unavailable/unbound. No mutation history is stored.
 
 The current Remote Alpha ES binary deployment path builds ES through
 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` for both the Python and shell payload
@@ -418,13 +422,13 @@ Ordering implications:
 
 ## 9. Operation Contract
 
-This table is the target durable-operation contract that reliable-submit runtime
-integration must satisfy before enablement. It is not a blanket claim that every
-same-operation replay path is fully implemented by the current private source.
-The target invariant remains that an exact redelivery of the same durable
-operation replays the already committed result: accepted replay returns the same
-accepted record and receipt, provably-not-accepted replay returns the same
-terminal record, and no new mutation or external effect occurs.
+This table is the private durable-operation contract implemented by the current
+durable source and still required before runtime enablement. An exact redelivery
+of the current latest durable operation replays the already committed result:
+accepted replay returns the same accepted record and receipt,
+provably-not-accepted replay returns the same terminal record, and no new
+mutation or external effect occurs. Older operations after later progression are
+stale or superseded, not historical replay.
 
 | Operation | Precondition | Expected revision | Idempotent replay | Conflict result | Resulting pure-model phase | Durable effect facts established or changed | Transaction boundary | External-I/O rule |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -442,48 +446,46 @@ terminal record, and no new mutation or external effect occurs.
 | Tombstone or expire | Retention rule selected and claim eligible under policy | Current revision | Existing tombstone returns expired-unavailable/unavailable posture | Attempt to delete assignment truth or permit key reuse fails closed | Expired unavailable decision or retained tombstone-backed phase | Tombstone, expiry, or unavailable posture without lifecycle history | One SQLite transaction | No external I/O |
 | Corruption or unavailable | Store open/read/validation detects malformed durable state or unavailable database | Not applicable | Retry may load if later healthy | No conflict detail beyond safe unavailable/corrupt posture | Unavailable fail-closed decision; must not fall back to current unkeyed submit | No new provider-effect fact; no repair semantics unless later explicitly designed | No mutation unless later repair tool is explicitly designed | No external I/O and no provider effect |
 
-### Current Same-Operation Replay Implementation Gap
+### Current Same-Operation Replay Implementation Status
 
-The committed private durable service supports internal COMMIT-unknown reload
-within one operation through `reloadAfterUnknown`: if the store commit outcome is
-unknown, the service reloads the claim and can recognize the exact expected
-post-commit record.
+The committed private durable service now recognizes a previously committed
+latest-operation descriptor before stale-revision and inactive-state refusal.
+Same mutation plus same closed operation kind and input binding returns the
+operation's committed result without another CAS. Same mutation plus different
+kind or input binding returns mutation conflict without widening run or receipt
+disclosure. Same mutation against a migrated legacy/unbound descriptor fails
+closed as unavailable rather than inventing operation semantics.
 
-The general mutation path does not yet recognize a previously committed
-`lastMutation` before expected-revision and operation-specific apply logic.
-Terminal accepted and provably-not-accepted redelivery are known failing
-examples: a duplicate `acceptWithReceipt` or `recordProvablyNotAccepted` call can
-reload an already terminal phase and then enter operation-specific provider
-candidate validation instead of replaying the committed terminal result. This
-gap may affect other durable mutation redelivery cases and therefore requires a
-complete mutation-operation inventory, not a repair scoped only to those two
-terminal examples.
-
-The private store remains runtime-unwired, so this current source limitation
-does not affect current public execution behavior. It is nevertheless a hard
-prerequisite before reliable-submit config or store lifecycle wiring, producer
-enablement, or public runtime enablement. The dedicated future tranche is
-`reliable-submit-durable-same-operation-replay-repair`.
+The private store remains runtime-unwired, so this source repair does not affect
+current public execution behavior. It is nevertheless a completed prerequisite
+for later reliable-submit config or store lifecycle wiring, producer enablement,
+and public runtime enablement.
 
 ## 9A. Durable Latest-Operation Replay Repair ADR
 
-Status: target selected by documentation and docs-contract only. No durable
-service, durable record, SQLite schema, migration, store, runtime, public API,
-producer, configuration, staging, Nomad, or lifecycle source repair is
-implemented by this ADR tranche.
+Status: private source implemented and runtime-unwired. The durable service,
+durable record, SQLite schema v2 migration, SQLite row scan/write/CAS, store
+tests, and shared conformance tests implement this ADR inside
+`es/admission/internal/reliablesubmit`. No runtime, public API, producer,
+configuration, staging, Nomad, or lifecycle source is wired by this source
+tranche.
 
 The current private source facts remain:
 
 - the durable service supports internal COMMIT-unknown reload and full expected
   post-commit record comparison inside one mutation call;
-- the general mutation path does not yet recognize a previously committed
-  `lastMutation` before stale-revision rejection and operation-specific apply
-  logic;
-- exact terminal and nonterminal redelivery is not generally implemented;
-- the SQLite schema version is still v1;
-- the durable record and SQLite row persist only the latest `lastMutation`
-  reference and do not retain operation kind, operation-input binding, or
-  mutation history.
+- the general mutation path derives a complete latest-operation descriptor,
+  compares it before stale-revision rejection and inactive-state refusal, and
+  classifies exact replay, mutation conflict, or legacy/unbound replay
+  unavailable;
+- exact latest-operation redelivery is implemented for terminal and nonterminal
+  durable mutations;
+- the SQLite schema version is v2;
+- the durable record and SQLite row persist the latest `lastMutation`, closed
+  private operation kind, and operation-input binding digest for codec-2 rows;
+- migrated codec-1 rows retain only `lastMutation`, carry no invented operation
+  semantics, and fail closed for same-mutation replay;
+- no mutation history is retained.
 
 ### Replay Scope
 
@@ -520,9 +522,10 @@ does not replace caller/key plus plan-binding claim idempotency.
 
 ### Closed Operation-Kind Vocabulary V1
 
-The first version private operation-kind vocabulary is closed over the mutating
-durable service commands:
+The first version private operation-kind vocabulary is closed over the
+new-row establishment descriptor and mutating durable service commands:
 
+- `establish_claim`;
 - `assign_run`;
 - `record_provider_effect_intent`;
 - `record_staging_evidence`;
@@ -533,9 +536,9 @@ durable service commands:
 - `record_provably_not_accepted`;
 - `tombstone_or_expire`.
 
-Establish/load is not part of ordinary mutation replay. A stored establish
-descriptor, if present on the initial v2 row, remains subordinate to
-caller/key plus plan-binding claim establishment.
+Establish/load is not part of ordinary mutation replay. The stored establish
+descriptor on an initial v2 row remains subordinate to caller/key plus
+plan-binding claim establishment.
 
 ### Operation-Input Binding
 
@@ -668,8 +671,8 @@ effect occurs.
 
 COMMIT-unknown recovery remains stricter than ordinary latest-operation replay.
 The existing reload-after-unknown posture compares the complete expected
-post-mutation record. The v2 source repair must include the latest-operation
-descriptor in that full-record equality comparison and must not use descriptor
+post-mutation record. The current v2 source includes the latest-operation
+descriptor in that full-record equality comparison and does not use descriptor
 match alone to declare an uncertain commit successful.
 
 ### SQLite V2 Logical Schema And Legacy Rows
@@ -715,11 +718,11 @@ legacy/unbound migration posture is:
 
 ### Record, Codec, Store, And Source-Tranche Consequences
 
-The later source repair must update the durable record and codec to represent
-both the optional legacy/unbound descriptor and the complete v2 descriptor. The
-durable service must derive and compare operation descriptors. SQLite row scan,
-write, CAS, physical constraints, and migrations must persist them. Shared
-backend conformance must cover the same semantics.
+The current source repair updates the durable record and codec to represent both
+the legacy/unbound codec-1 descriptor and the complete codec-2 descriptor. The
+durable service derives and compares operation descriptors. SQLite row scan,
+write, CAS, physical constraints, and migrations persist them. Shared backend
+conformance covers the same semantics.
 
 The private `claimStore` port remains establish/load/CAS. No PostgreSQL-specific
 type, SQLSTATE, DSN, advisory-lock, TLS, credential, schema, or operational
@@ -864,13 +867,14 @@ The first concrete source tranche is:
 - `modernc.org/sqlite v1.54.0` as the selected CGO-free SQLite driver;
 - `modernc.org/libc v1.74.1` as the exact expected transitive coupling;
 - `go.mod` and `go.sum` updates for that driver and its transitive modules;
-- one initial schema and migration path;
+- schema v2 with v1-to-v2 migration preserving existing rows as legacy/unbound;
 - unique caller namespace plus safe submit-key claim constraint;
 - immutable run-assignment constraint;
 - revision CAS for every mutation;
 - provider-effect-intent persistence before external I/O;
 - hydration through the committed pure model;
-- crash, concurrency, corruption, permission, migration, and replay tests.
+- crash, concurrency, corruption, permission, migration, and replay tests;
+- current latest-operation replay descriptor source and docs-contract alignment.
 
 That tranche still does not wire current submit, HTTP, DTOs, producer contract,
 staging, Nomad, lifecycle, result handling, Coordinator, Bridge, CP, IM, Git,
@@ -879,16 +883,12 @@ or public reliable-submit availability. Runtime integration and the explicit
 ES-owned reliable-submit state-path configuration addition remain a later
 tranche.
 
-The next reliable-submit source repair tranche must implement the section 9A
-latest-operation replay contract before any runtime enablement. It must update
-the private durable record and codec, SQLite migration and physical constraints,
-SQLite row scan/write/CAS, durable service descriptor derivation and comparison,
-and shared backend conformance tests. It must preserve the private
-establish/load/CAS `claimStore` port shape unless a separate ADR selects
-historical mutation retention or another backend-neutral semantic requirement.
-It must not edit public API/DTO source, producer declaration source, global
-configuration, app startup, current submit/staging/Nomad source, Coordinator,
-Bridge, CP, IM, or dependencies.
+The completed latest-operation source repair preserves the private
+establish/load/CAS `claimStore` port shape. Later reliable-submit gates remain
+resolved execution-plan extraction, state/store lifecycle and configuration,
+Nomad reconciliation, and public runtime enablement. Those later gates must not
+reinterpret the source repair as mutation-history support, public replay DTOs,
+PostgreSQL implementation, or end-to-end reliable-submit availability.
 
 ## 16. Explicit Non-Claims And Open Decisions
 
@@ -911,12 +911,10 @@ Explicit non-claims:
 - no unkeyed fallback for reliable submit;
 - no exported raw persistence accessors;
 - no second phase algebra;
-- no multi-host or HA claim.
-- no latest-operation descriptor is persisted by current source;
-- no SQLite v2 replay-descriptor schema or migration is implemented by current
-  source;
-- no durable same-operation replay source repair is implemented by this
-  documentation/docs-contract ADR tranche.
+- no multi-host or HA claim;
+- no history-wide replay or mutation-history store;
+- no public replay DTO or public reliable-submit endpoint;
+- no PostgreSQL backend implementation.
 
 Open decisions:
 

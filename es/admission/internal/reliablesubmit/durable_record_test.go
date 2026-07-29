@@ -182,18 +182,33 @@ func mustPrivateAssigned(t *testing.T, f durableFixture) EffectCapableAssigned {
 func mustPrivateRecord(t *testing.T, phase ClaimPhase, f durableFixture) durableClaimRecord {
 	t.Helper()
 	record, err := newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        phase,
-		revision:     initialClaimRevision,
-		createdAt:    f.now,
-		updatedAt:    f.now,
-		assignedAt:   assignedAtForPhase(phase, f.now),
-		retention:    activeDurableRetention(),
-		lastMutation: f.mutation,
+		phase:           phase,
+		revision:        initialClaimRevision,
+		createdAt:       f.now,
+		updatedAt:       f.now,
+		assignedAt:      assignedAtForPhase(phase, f.now),
+		retention:       activeDurableRetention(),
+		latestOperation: mustDurableOperationDescriptor(t, f.mutation),
 	})
 	if err != nil {
 		t.Fatalf("newDurableClaimRecord: %v", err)
 	}
 	return record
+}
+
+func mustDurableOperationDescriptor(t *testing.T, mutation durableMutationRef) durableLatestOperationDescriptor {
+	t.Helper()
+	operation, err := deriveDurableOperationDescriptor(
+		mutation,
+		durableOperationEstablishClaim,
+		0,
+		operationPartUint16(durableOperationPartInitialPhase, uint16(durablePhasePendingBeforeAssignment)),
+		operationPartOptionalClaimTime(durableOperationPartExpiresAt, noClaimTime()),
+	)
+	if err != nil {
+		t.Fatalf("deriveDurableOperationDescriptor: %v", err)
+	}
+	return operation
 }
 
 func assignedAtForPhase(phase ClaimPhase, at time.Time) optionalClaimTime {
@@ -321,12 +336,12 @@ func TestDurableClaimRecordCopiesRefsAndStoresUTCTime(t *testing.T) {
 		t.Fatalf("NewPendingBeforeAssignment: %v", err)
 	}
 	record, err := newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        phase,
-		revision:     initialClaimRevision,
-		createdAt:    time.Now(),
-		updatedAt:    time.Now().Add(time.Second),
-		retention:    activeDurableRetention(),
-		lastMutation: mutation,
+		phase:           phase,
+		revision:        initialClaimRevision,
+		createdAt:       time.Now(),
+		updatedAt:       time.Now().Add(time.Second),
+		retention:       activeDurableRetention(),
+		latestOperation: mustDurableOperationDescriptor(t, mutation),
 	})
 	if err != nil {
 		t.Fatalf("newDurableClaimRecord: %v", err)
@@ -350,6 +365,54 @@ func TestDurableClaimRecordCopiesRefsAndStoresUTCTime(t *testing.T) {
 	}
 }
 
+func TestDurableClaimRecordCodecRequiresLatestOperationDescriptor(t *testing.T) {
+	f := newDurableFixture(t)
+	record := mustPrivateRecord(t, mustPrivatePendingBefore(t, f), f)
+	if record.codecVersion != durableClaimCodecVersion || !record.latestOperation.complete() {
+		t.Fatalf("new record did not use complete codec v2 descriptor: %+v", record)
+	}
+
+	legacy := record.clone()
+	legacy.codecVersion = durableClaimCodecVersionLegacy
+	var err error
+	legacy.latestOperation, err = newLegacyDurableLatestOperationDescriptor(legacy.lastMutation)
+	if err != nil {
+		t.Fatalf("legacy descriptor: %v", err)
+	}
+	if err := legacy.validate(); err != nil {
+		t.Fatalf("legacy unbound record rejected: %v", err)
+	}
+
+	codec2Missing := record.clone()
+	codec2Missing.latestOperation = durableLatestOperationDescriptor{mutation: codec2Missing.lastMutation}
+	if err := codec2Missing.validate(); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("codec v2 missing descriptor error = %v", err)
+	}
+	codec1Partial := legacy.clone()
+	codec1Partial.latestOperation.kind = durableOperationAssignRun
+	if err := codec1Partial.validate(); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("codec v1 partial descriptor error = %v", err)
+	}
+	mismatch := record.clone()
+	mismatch.latestOperation.mutation = f.nextMut
+	if err := mismatch.validate(); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("descriptor mutation mismatch error = %v", err)
+	}
+
+	otherDescriptor, err := deriveDurableOperationDescriptor(record.lastMutation, durableOperationAssignRun, initialClaimRevision, operationPartRunRef(f.run))
+	if err != nil {
+		t.Fatalf("derive alternate descriptor: %v", err)
+	}
+	other := record.clone()
+	other.latestOperation = otherDescriptor
+	if err := other.validate(); err != nil {
+		t.Fatalf("alternate complete descriptor rejected: %v", err)
+	}
+	if record.equal(other) {
+		t.Fatalf("record equality ignored latest-operation descriptor")
+	}
+}
+
 func TestDurableRecordRejectsContradictoryEffectFacts(t *testing.T) {
 	f := newDurableFixture(t)
 	assigned := mustPrivateAssigned(t, f)
@@ -357,14 +420,14 @@ func TestDurableRecordRejectsContradictoryEffectFacts(t *testing.T) {
 		staging: newDurableEffectRefTime(f.staging, f.now),
 	}
 	_, err := newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        assigned,
-		revision:     initialClaimRevision,
-		createdAt:    f.now,
-		updatedAt:    f.now,
-		assignedAt:   someClaimTime(f.now),
-		effects:      effects,
-		retention:    activeDurableRetention(),
-		lastMutation: f.mutation,
+		phase:           assigned,
+		revision:        initialClaimRevision,
+		createdAt:       f.now,
+		updatedAt:       f.now,
+		assignedAt:      someClaimTime(f.now),
+		effects:         effects,
+		retention:       activeDurableRetention(),
+		latestOperation: mustDurableOperationDescriptor(t, f.mutation),
 	})
 	if !errors.Is(err, errInvalidDurableRecord) {
 		t.Fatalf("expected invalid durable record, got %v", err)
@@ -473,14 +536,14 @@ func TestDurableRecordRejectsProviderAndReconciliationContradictions(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := newDurableClaimRecord(newDurableClaimRecordInput{
-				phase:        tc.phase,
-				revision:     initialClaimRevision,
-				createdAt:    f.now,
-				updatedAt:    f.now,
-				assignedAt:   assignedAtForPhase(tc.phase, f.now),
-				effects:      tc.effects,
-				retention:    activeDurableRetention(),
-				lastMutation: f.mutation,
+				phase:           tc.phase,
+				revision:        initialClaimRevision,
+				createdAt:       f.now,
+				updatedAt:       f.now,
+				assignedAt:      assignedAtForPhase(tc.phase, f.now),
+				effects:         tc.effects,
+				retention:       activeDurableRetention(),
+				latestOperation: mustDurableOperationDescriptor(t, f.mutation),
 			})
 			if tc.wantErr && !errors.Is(err, errInvalidDurableRecord) {
 				t.Fatalf("expected invalid durable record, got %v", err)

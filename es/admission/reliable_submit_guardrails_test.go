@@ -1,8 +1,6 @@
 package admission
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -183,6 +181,7 @@ func TestReliableSubmitFoundationDoesNotModifyPrivateModelOrStoreBoundary(t *tes
 	repoRoot := admissionRepoRoot(t)
 	for _, rel := range []string{
 		"es/admission/internal/reliablesubmit/model.go",
+		"es/admission/internal/reliablesubmit/durable_operation.go",
 		"es/admission/internal/reliablesubmit/durable_record.go",
 		"es/admission/internal/reliablesubmit/store.go",
 		"es/admission/internal/reliablesubmit/durable_service.go",
@@ -228,16 +227,22 @@ func assertReliableSubmitFoundationImports(t *testing.T, rel string, file *ast.F
 	}
 }
 
-func TestReliableSubmitRepairPreservesDurableServiceSource(t *testing.T) {
+func TestReliableSubmitSourceRepairPreservesRuntimeBoundary(t *testing.T) {
 	repoRoot := admissionRepoRoot(t)
-	data, err := os.ReadFile(filepath.Join(repoRoot, "es/admission/internal/reliablesubmit/durable_service.go"))
-	if err != nil {
-		t.Fatalf("read durable service source: %v", err)
-	}
-	sum := sha256.Sum256(data)
-	if got, want := hex.EncodeToString(sum[:]), "98d8a570b1cfc05c42a6ef5789e06a436cfb1bea8a0030cde86d0df7e2c27e0c"; got != want {
-		t.Fatalf("durable service source changed during request privacy repair")
-	}
+	durableService := mustReadAdmissionRepoSource(t, repoRoot, "es/admission/internal/reliablesubmit/durable_service.go")
+	assertAdmissionFoundationContainsAll(t, "private durable replay service source", durableService,
+		"deriveDurableOperationDescriptor",
+		"compareDurableLatestOperation",
+		"reloadAfterUnknown",
+	)
+	assertAdmissionFoundationOmitsAll(t, "private durable replay service source", durableService,
+		"reliableSubmitRequest",
+		"execution-substrate.reliable-submit-request/v1",
+		"SubmitResult",
+		"ProducerContractDeclaration",
+		"Config",
+	)
+	TestReliableSubmitFoundationHasNoRuntimeWiring(t)
 }
 
 func assertReliableSubmitFoundationHasNoExportedSurface(t *testing.T, rel string, file *ast.File) {

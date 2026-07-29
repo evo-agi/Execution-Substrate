@@ -1,11 +1,13 @@
 package reliablesubmit
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -119,17 +121,17 @@ func TestSQLiteClaimStoreTargetedCallerKeyConflictLoadsExistingClaim(t *testing.
 	assertSQLiteClaimRowCount(t, store.db, 1)
 }
 
-func TestSQLiteClaimStoreEmptyDBMigratesToV1AndReopenIsIdempotent(t *testing.T) {
+func TestSQLiteClaimStoreEmptyDBMigratesToCurrentSchemaAndReopenIsIdempotent(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 	store := mustOpenSQLiteClaimStore(t, path)
 	assertSQLitePragmaInt(t, store.db, "application_id", sqliteClaimStoreApplicationID)
 	assertSQLitePragmaInt(t, store.db, "user_version", sqliteClaimStoreSchemaVersion)
 	var migrationCount int
-	if err := store.db.QueryRow(`SELECT count(*) FROM reliable_submit_migrations WHERE version = 1`).Scan(&migrationCount); err != nil {
+	if err := store.db.QueryRow(`SELECT count(*) FROM reliable_submit_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("query migrations: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Fatalf("migration count = %d, want 1", migrationCount)
+	if migrationCount != sqliteClaimStoreSchemaVersion {
+		t.Fatalf("migration count = %d, want %d", migrationCount, sqliteClaimStoreSchemaVersion)
 	}
 	if err := store.close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -138,6 +140,136 @@ func TestSQLiteClaimStoreEmptyDBMigratesToV1AndReopenIsIdempotent(t *testing.T) 
 	reopened := mustOpenSQLiteClaimStore(t, path)
 	defer reopened.close()
 	assertSQLitePragmaInt(t, reopened.db, "user_version", sqliteClaimStoreSchemaVersion)
+}
+
+func TestSQLiteClaimStoreMigratesValidV1RowsToLegacyUnboundV2(t *testing.T) {
+	path := sqliteTestPath(t, "state", "reliable-submit-v1.sqlite3")
+	f := newDurableFixture(t)
+	db := mustRawSQLiteDB(t, path)
+	if _, err := db.Exec(`PRAGMA application_id = 1163088467`); err != nil {
+		t.Fatalf("set application id: %v", err)
+	}
+	if _, err := db.Exec(sqliteClaimStoreMigrations[0].sql); err != nil {
+		t.Fatalf("apply v1 migration: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO reliable_submit_migrations(version, name, applied_at_unix_ns, source_sha256) VALUES (?, ?, ?, ?)`,
+		sqliteClaimStoreMigrations[0].version,
+		sqliteClaimStoreMigrations[0].name,
+		f.now.UnixNano(),
+		sqliteMigrationSHA256(sqliteClaimStoreMigrations[0].sql),
+	); err != nil {
+		t.Fatalf("insert v1 migration metadata: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	result, err := db.Exec(`
+INSERT INTO reliable_submit_claims (
+  caller_ref,
+  submit_key_ref,
+  plan_binding,
+  witness_resolved_mask,
+  witness_inapplicable_mask,
+  phase_tag,
+  revision,
+  created_at_unix_ns,
+  updated_at_unix_ns,
+  retention_state,
+  unavailable_reason,
+  last_mutation_ref,
+  codec_version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		opaqueRefBytes(f.claim.caller.ref),
+		opaqueRefBytes(f.claim.submitKey.ref),
+		opaqueRefBytes(f.binding.ref),
+		int64(16383),
+		int64(0),
+		int64(durablePhasePendingBeforeAssignment),
+		int64(initialClaimRevision),
+		f.now.UnixNano(),
+		f.now.UnixNano(),
+		int64(durableRetentionActive),
+		"",
+		mutationRefBytes(f.mutation),
+		int64(durableClaimCodecVersionLegacy),
+	)
+	if err != nil {
+		t.Fatalf("insert v1 claim: %v", err)
+	}
+	v1RowID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("v1 rowid: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v1 db: %v", err)
+	}
+
+	store := mustOpenSQLiteClaimStore(t, path)
+	defer store.close()
+	assertSQLitePragmaInt(t, store.db, "user_version", sqliteClaimStoreSchemaVersion)
+	var migrationCount int
+	if err := store.db.QueryRow(`SELECT count(*) FROM reliable_submit_migrations`).Scan(&migrationCount); err != nil {
+		t.Fatalf("query migration count: %v", err)
+	}
+	if migrationCount != 2 {
+		t.Fatalf("migration count = %d, want 2", migrationCount)
+	}
+	loaded, err := store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	if err != nil {
+		t.Fatalf("load migrated claim: %v", err)
+	}
+	if loaded.codecVersion != durableClaimCodecVersionLegacy || !loaded.latestOperation.legacyUnbound() {
+		t.Fatalf("migrated row was not codec1 legacy/unbound: %+v", loaded)
+	}
+	var rowID int64
+	if err := store.db.QueryRow(`SELECT claim_rowid FROM reliable_submit_claims WHERE caller_ref = ? AND submit_key_ref = ?`,
+		opaqueRefBytes(f.claim.caller.ref), opaqueRefBytes(f.claim.submitKey.ref),
+	).Scan(&rowID); err != nil {
+		t.Fatalf("query migrated rowid: %v", err)
+	}
+	if rowID != v1RowID {
+		t.Fatalf("rowid = %d, want %d", rowID, v1RowID)
+	}
+	service := mustDurableService(t, store, fixedClaimClock{now: f.now})
+	unavailable, err := service.assignRun(context.Background(), assignRunRequest{
+		claim:            f.claim,
+		binding:          f.binding,
+		expectedRevision: loaded.revision,
+		run:              f.run,
+		mutation:         f.mutation,
+	})
+	if err != nil {
+		t.Fatalf("legacy same-mutation replay: %v", err)
+	}
+	if unavailable.kind != durableClaimOutcomeUnavailable {
+		t.Fatalf("legacy same-mutation outcome = %+v", unavailable)
+	}
+	assigned, err := service.assignRun(context.Background(), assignRunRequest{
+		claim:            f.claim,
+		binding:          f.binding,
+		expectedRevision: loaded.revision,
+		run:              f.run,
+		mutation:         f.nextMut,
+	})
+	if err != nil {
+		t.Fatalf("legacy upgrade assignment: %v", err)
+	}
+	if assigned.record.codecVersion != durableClaimCodecVersion || !assigned.record.latestOperation.complete() {
+		t.Fatalf("distinct mutation did not upgrade legacy row: %+v", assigned.record)
+	}
+	if err := store.close(); err != nil {
+		t.Fatalf("close after migration: %v", err)
+	}
+	reopened := mustOpenSQLiteClaimStore(t, path)
+	defer reopened.close()
+	reloaded, err := reopened.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	if err != nil {
+		t.Fatalf("load after reopen: %v", err)
+	}
+	if !reloaded.equal(assigned.record) {
+		t.Fatalf("reopened migrated row mismatch")
+	}
 }
 
 func TestSQLiteClaimStoreRejectsForeignZeroVersionDatabaseWithoutClaiming(t *testing.T) {
@@ -280,6 +412,38 @@ func TestSQLiteClaimStoreTargetedConflictDoesNotSuppressInvalidCandidateConstrai
 			},
 		},
 		{
+			name: "new codec1 row",
+			mutate: func(args []any) {
+				args[sqliteClaimArgLatestOperationKind] = nil
+				args[sqliteClaimArgLatestOperationDigest] = nil
+				args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionLegacy)
+			},
+		},
+		{
+			name: "missing operation kind",
+			mutate: func(args []any) {
+				args[sqliteClaimArgLatestOperationKind] = nil
+			},
+		},
+		{
+			name: "missing operation digest",
+			mutate: func(args []any) {
+				args[sqliteClaimArgLatestOperationDigest] = nil
+			},
+		},
+		{
+			name: "wrong operation digest length",
+			mutate: func(args []any) {
+				args[sqliteClaimArgLatestOperationDigest] = []byte("short")
+			},
+		},
+		{
+			name: "unsupported operation kind",
+			mutate: func(args []any) {
+				args[sqliteClaimArgLatestOperationKind] = int64(durableOperationTombstoneOrExpire + 1)
+			},
+		},
+		{
 			name: "revision",
 			mutate: func(args []any) {
 				args[sqliteClaimArgRevision] = int64(0)
@@ -340,6 +504,9 @@ func TestSQLiteClaimStoreZeroRowConflictFailsClosedWhenExistingRowIsInvalid(t *t
 		t.Fatalf("sqliteRecordArgs: %v", err)
 	}
 	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersion + 1)
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+		t.Fatalf("drop insert guard for corruption seed: %v", err)
+	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
 		t.Fatalf("enable constraint bypass: %v", err)
 	}
@@ -361,6 +528,106 @@ func TestSQLiteClaimStoreZeroRowConflictFailsClosedWhenExistingRowIsInvalid(t *t
 	assertSQLiteClaimRowCount(t, store.db, 1)
 }
 
+func TestSQLiteNullableBlobScannerAndDescriptorHydration(t *testing.T) {
+	mutation := mustPrivateMutationRef(t, []byte("private-sqlite-nullable-blob-mutation"))
+	kind := sql.NullInt64{Int64: int64(durableOperationAssignRun), Valid: true}
+
+	var nullBlob sqliteNullableBlob
+	if err := nullBlob.Scan(nil); err != nil {
+		t.Fatalf("scan NULL: %v", err)
+	}
+	if nullBlob.valid || nullBlob.bytes != nil {
+		t.Fatalf("NULL blob scanned as present")
+	}
+	if _, err := sqliteLatestOperationDescriptor(durableClaimCodecVersionLegacy, mutation, sql.NullInt64{}, nullBlob); err != nil {
+		t.Fatalf("codec1 NULL descriptor: %v", err)
+	}
+	if _, err := sqliteLatestOperationDescriptor(durableClaimCodecVersion, mutation, kind, nullBlob); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("codec2 NULL digest error = %v", err)
+	}
+
+	var emptyBlob sqliteNullableBlob
+	if err := emptyBlob.Scan([]byte{}); err != nil {
+		t.Fatalf("scan empty blob: %v", err)
+	}
+	if !emptyBlob.valid || len(emptyBlob.bytes) != 0 {
+		t.Fatalf("empty blob scanned incorrectly: valid=%v len=%d", emptyBlob.valid, len(emptyBlob.bytes))
+	}
+	if _, err := sqliteLatestOperationDescriptor(durableClaimCodecVersionLegacy, mutation, sql.NullInt64{}, emptyBlob); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("codec1 empty digest error = %v", err)
+	}
+	if _, err := sqliteLatestOperationDescriptor(durableClaimCodecVersion, mutation, kind, emptyBlob); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("codec2 empty digest error = %v", err)
+	}
+
+	for _, size := range []int{31, 32, 33} {
+		t.Run(strconv.Itoa(size)+" bytes", func(t *testing.T) {
+			input := bytes.Repeat([]byte{byte(size)}, size)
+			var blob sqliteNullableBlob
+			if err := blob.Scan(input); err != nil {
+				t.Fatalf("scan %d-byte blob: %v", size, err)
+			}
+			if !blob.valid || len(blob.bytes) != size {
+				t.Fatalf("%d-byte blob scanned incorrectly: valid=%v len=%d", size, blob.valid, len(blob.bytes))
+			}
+			if size > 0 {
+				input[0] ^= 0xff
+				if blob.bytes[0] == input[0] {
+					t.Fatalf("%d-byte blob aliased caller input", size)
+				}
+			}
+			_, err := sqliteLatestOperationDescriptor(durableClaimCodecVersion, mutation, kind, blob)
+			if size == durableOperationInputBindingLength {
+				if err != nil {
+					t.Fatalf("codec2 32-byte digest: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, errInvalidDurableRecord) {
+				t.Fatalf("codec2 %d-byte digest error = %v", size, err)
+			}
+		})
+	}
+
+	var unsupported sqliteNullableBlob
+	if err := unsupported.Scan("not-a-blob"); !errors.Is(err, errInvalidDurableRecord) {
+		t.Fatalf("unsupported scan type error = %v", err)
+	}
+}
+
+func TestSQLiteClaimStoreHydrationRejectsCodec1NonNullEmptyDigest(t *testing.T) {
+	path := sqliteTestPath(t, "state", "codec1-empty-digest.sqlite3")
+	store := mustOpenSQLiteClaimStore(t, path)
+	defer store.close()
+	f := newDurableFixture(t)
+	original := mustPrivateRecord(t, mustPrivatePendingBefore(t, f), f)
+	args, err := sqliteRecordArgs(original)
+	if err != nil {
+		t.Fatalf("sqliteRecordArgs: %v", err)
+	}
+	args[sqliteClaimArgLatestOperationKind] = nil
+	args[sqliteClaimArgLatestOperationDigest] = []byte{}
+	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionLegacy)
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+		t.Fatalf("drop insert guard for malformed hydration seed: %v", err)
+	}
+	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
+		t.Fatalf("enable constraint bypass: %v", err)
+	}
+	if _, err := store.db.Exec(sqliteInsertClaimSQL, args...); err != nil {
+		t.Fatalf("seed codec1 empty digest row: %v", err)
+	}
+	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=OFF`); err != nil {
+		t.Fatalf("disable constraint bypass: %v", err)
+	}
+
+	_, err = store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	if !errors.Is(err, errClaimStoreCorrupt) {
+		t.Fatalf("codec1 empty digest hydration error = %v", err)
+	}
+	assertSQLiteStoreErrorSanitized(t, "codec1 empty digest hydration", err)
+}
+
 func TestSQLiteClaimStoreDirectSQLConstraintsAndTriggers(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 	store := mustOpenSQLiteClaimStore(t, path)
@@ -374,6 +641,22 @@ func TestSQLiteClaimStoreDirectSQLConstraintsAndTriggers(t *testing.T) {
 	}
 	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET revision = revision + 2`); err == nil || !strings.Contains(err.Error(), "revision must increment") {
 		t.Fatalf("revision trigger error = %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET latest_operation_kind = latest_operation_kind`); err == nil || !strings.Contains(err.Error(), "revision must increment") {
+		t.Fatalf("descriptor-only trigger error = %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET revision = revision + 1`); err == nil || !strings.Contains(err.Error(), "mutation reference must change") {
+		t.Fatalf("same-mutation revision trigger error = %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET revision = revision + 1, last_mutation_ref = ?, latest_operation_kind = NULL`,
+		[]byte("private-sql-mutation-without-descriptor"),
+	); err == nil || !strings.Contains(err.Error(), "latest operation kind is required") {
+		t.Fatalf("revision without descriptor trigger error = %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET revision = revision + 1, last_mutation_ref = ?, codec_version = 1`,
+		[]byte("private-sql-codec-regression"),
+	); err == nil || !strings.Contains(err.Error(), "codec version can only advance") {
+		t.Fatalf("codec regression trigger error = %v", err)
 	}
 	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET run_ref = ? WHERE caller_ref = ? AND submit_key_ref = ?`,
 		[]byte("bad-run"),
@@ -454,7 +737,9 @@ const (
 	sqliteClaimArgProviderObservationRef  = 19
 	sqliteClaimArgProviderObservationAt   = 20
 	sqliteClaimArgRetentionState          = 25
-	sqliteClaimArgCodecVersion            = 29
+	sqliteClaimArgLatestOperationKind     = 29
+	sqliteClaimArgLatestOperationDigest   = 30
+	sqliteClaimArgCodecVersion            = 31
 )
 
 func setSQLiteClaimArgsIdentity(args []any, suffix string) {
@@ -477,14 +762,14 @@ func assertSQLiteInsertRejected(t *testing.T, db *sql.DB, record durableClaimRec
 func mustSQLiteRecordForEffects(t *testing.T, f durableFixture, phase ClaimPhase, effects durableEffectFacts) durableClaimRecord {
 	t.Helper()
 	record, err := newDurableClaimRecord(newDurableClaimRecordInput{
-		phase:        phase,
-		revision:     initialClaimRevision,
-		createdAt:    f.now,
-		updatedAt:    f.now,
-		assignedAt:   assignedAtForPhase(phase, f.now),
-		effects:      effects,
-		retention:    activeDurableRetention(),
-		lastMutation: f.mutation,
+		phase:           phase,
+		revision:        initialClaimRevision,
+		createdAt:       f.now,
+		updatedAt:       f.now,
+		assignedAt:      assignedAtForPhase(phase, f.now),
+		effects:         effects,
+		retention:       activeDurableRetention(),
+		latestOperation: mustDurableOperationDescriptor(t, f.mutation),
 	})
 	if err != nil {
 		t.Fatalf("new durable record for sqlite effects: %v", err)

@@ -240,6 +240,71 @@ func runClaimStoreConformance(t *testing.T, factory claimStoreConformanceFactory
 		}
 	})
 
+	t.Run(factory.name+"/latest-operation-replay-conflict-and-cas-loser", func(t *testing.T) {
+		handle := factory.open(t)
+		defer handle.close(t)
+		f := newDurableFixture(t)
+		service := mustDurableService(t, handle.store, fixedClaimClock{now: f.now})
+		created := mustServiceEstablish(t, service, f)
+		assigned, err := service.assignRun(context.Background(), assignRunRequest{
+			claim:            f.claim,
+			binding:          f.binding,
+			expectedRevision: created.record.revision,
+			run:              f.run,
+			mutation:         f.nextMut,
+		})
+		if err != nil {
+			t.Fatalf("assignRun: %v", err)
+		}
+		replayed, err := service.assignRun(context.Background(), assignRunRequest{
+			claim:            f.claim,
+			binding:          f.binding,
+			expectedRevision: created.record.revision,
+			run:              f.run,
+			mutation:         f.nextMut,
+		})
+		if err != nil {
+			t.Fatalf("assign replay: %v", err)
+		}
+		if replayed.kind != durableClaimOutcomeAssigned || !replayed.record.equal(assigned.record) {
+			t.Fatalf("assign replay outcome = %+v", replayed)
+		}
+		conflict, err := service.assignRun(context.Background(), assignRunRequest{
+			claim:            f.claim,
+			binding:          f.binding,
+			expectedRevision: created.record.revision,
+			run:              f.otherRun,
+			mutation:         f.nextMut,
+		})
+		if err != nil {
+			t.Fatalf("same mutation conflict: %v", err)
+		}
+		if conflict.kind != durableClaimOutcomeConflict || conflict.hasRecord {
+			t.Fatalf("same mutation conflict outcome = %+v", conflict)
+		}
+
+		other := newDurableFixture(t)
+		other.caller = mustPrivateCallerRef(t, []byte("private-caller-reference-cas-loser"))
+		other.claim = mustPrivateClaimID(t, other.caller, other.submitKey)
+		other.plan = mustPrivateBoundPlan(t, other.binding, other.witness)
+		casLoser := &conformanceCASLoserStore{claimStore: handle.store}
+		casService := mustDurableService(t, casLoser, fixedClaimClock{now: other.now})
+		casCreated := mustServiceEstablish(t, casService, other)
+		casAssigned, err := casService.assignRun(context.Background(), assignRunRequest{
+			claim:            other.claim,
+			binding:          other.binding,
+			expectedRevision: casCreated.record.revision,
+			run:              other.run,
+			mutation:         other.nextMut,
+		})
+		if err != nil {
+			t.Fatalf("CAS-loser assign: %v", err)
+		}
+		if casAssigned.kind != durableClaimOutcomeAssigned || !casLoser.injected {
+			t.Fatalf("CAS-loser replay outcome=%+v injected=%v", casAssigned, casLoser.injected)
+		}
+	})
+
 	t.Run(factory.name+"/accepted-tombstone-and-no-reuse", func(t *testing.T) {
 		handle := factory.open(t)
 		defer handle.close(t)
@@ -370,6 +435,23 @@ func (s *commitUnknownAfterAppliedCASStore) compareAndSwapClaim(ctx context.Cont
 	if result.applied && !s.injected {
 		s.injected = true
 		return compareAndSwapClaimStoreResult{}, errClaimStoreCommitUnknown
+	}
+	return result, nil
+}
+
+type conformanceCASLoserStore struct {
+	claimStore
+	injected bool
+}
+
+func (s *conformanceCASLoserStore) compareAndSwapClaim(ctx context.Context, cmd compareAndSwapClaimCommand) (compareAndSwapClaimStoreResult, error) {
+	result, err := s.claimStore.compareAndSwapClaim(ctx, cmd)
+	if err != nil {
+		return result, err
+	}
+	if result.applied && !s.injected {
+		s.injected = true
+		return compareAndSwapClaimStoreResult{record: result.record, found: true}, nil
 	}
 	return result, nil
 }

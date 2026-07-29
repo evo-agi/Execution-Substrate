@@ -36,6 +36,7 @@ func TestReliableSubmitPureModelStaticGuardrails(t *testing.T) {
 func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 	backendNeutral := []string{
 		"clock.go",
+		"durable_operation.go",
 		"durable_record.go",
 		"durable_service.go",
 		"store.go",

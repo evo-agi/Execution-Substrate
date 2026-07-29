@@ -250,6 +250,14 @@ func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error
 	if applicationID != sqliteClaimStoreApplicationID {
 		return errClaimStoreUnsupported
 	}
+	if userVersion < sqliteClaimStoreSchemaVersion {
+		if err := verifySQLiteMigrationsUpTo(ctx, conn, userVersion); err != nil {
+			return err
+		}
+		if err := s.applyMigrationsAfter(ctx, conn, clock, userVersion); err != nil {
+			return err
+		}
+	}
 	return verifySQLiteMigrations(ctx, conn)
 }
 
@@ -276,6 +284,44 @@ func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.
 		); err != nil {
 			return mapSQLiteError(err)
 		}
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", sqliteClaimStoreSchemaVersion)); err != nil {
+		return mapSQLiteError(err)
+	}
+	if err := commit(ctx, conn); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.Conn, clock claimClock, currentVersion int) error {
+	if currentVersion < 0 || currentVersion >= sqliteClaimStoreSchemaVersion {
+		return errClaimStoreUnsupported
+	}
+	if clock == nil {
+		clock = systemClaimClock{}
+	}
+	now := normalizeClaimTime(clock.Now())
+	if err := beginImmediate(ctx, conn); err != nil {
+		return err
+	}
+	committed := false
+	defer rollbackIfOpen(ctx, conn, &committed)
+	for _, migration := range sqliteClaimStoreMigrations[currentVersion:] {
+		if migration.version != currentVersion+1 {
+			return errClaimStoreUnsupported
+		}
+		if _, err := conn.ExecContext(ctx, migration.sql); err != nil {
+			return mapSQLiteError(err)
+		}
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO reliable_submit_migrations(version, name, applied_at_unix_ns, source_sha256) VALUES (?, ?, ?, ?)`,
+			migration.version, migration.name, now.UnixNano(), sqliteMigrationSHA256(migration.sql),
+		); err != nil {
+			return mapSQLiteError(err)
+		}
+		currentVersion = migration.version
 	}
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", sqliteClaimStoreSchemaVersion)); err != nil {
 		return mapSQLiteError(err)
@@ -434,6 +480,13 @@ func sqliteQuickCheck(ctx context.Context, conn *sql.Conn) error {
 }
 
 func verifySQLiteMigrations(ctx context.Context, conn *sql.Conn) error {
+	return verifySQLiteMigrationsUpTo(ctx, conn, sqliteClaimStoreSchemaVersion)
+}
+
+func verifySQLiteMigrationsUpTo(ctx context.Context, conn *sql.Conn, expectedVersion int) error {
+	if expectedVersion <= 0 || expectedVersion > sqliteClaimStoreSchemaVersion {
+		return errClaimStoreUnsupported
+	}
 	rows, err := conn.QueryContext(ctx, `SELECT version, name, source_sha256 FROM reliable_submit_migrations ORDER BY version`)
 	if err != nil {
 		return mapSQLiteError(err)
@@ -447,7 +500,7 @@ func verifySQLiteMigrations(ctx context.Context, conn *sql.Conn) error {
 		if err := rows.Scan(&version, &name, &source); err != nil {
 			return mapSQLiteError(err)
 		}
-		if version != seen+1 || version > len(sqliteClaimStoreMigrations) {
+		if version != seen+1 || version > expectedVersion || version > len(sqliteClaimStoreMigrations) {
 			return errClaimStoreUnsupported
 		}
 		expected := sqliteClaimStoreMigrations[version-1]
@@ -459,7 +512,7 @@ func verifySQLiteMigrations(ctx context.Context, conn *sql.Conn) error {
 	if err := rows.Err(); err != nil {
 		return mapSQLiteError(err)
 	}
-	if seen != sqliteClaimStoreSchemaVersion {
+	if seen != expectedVersion {
 		return errClaimStoreUnsupported
 	}
 	return nil
@@ -586,11 +639,13 @@ retention_state,
 unavailable_at_unix_ns,
 unavailable_reason,
 last_mutation_ref,
+latest_operation_kind,
+latest_operation_input_digest,
 codec_version`
 
 const sqliteInsertClaimSQL = `
 INSERT INTO reliable_submit_claims (` + sqliteClaimColumns + `)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(caller_ref, submit_key_ref) DO NOTHING`
 
 const sqliteUpdateClaimSQL = `
@@ -624,6 +679,8 @@ SET caller_ref = ?,
     unavailable_at_unix_ns = ?,
     unavailable_reason = ?,
     last_mutation_ref = ?,
+    latest_operation_kind = ?,
+    latest_operation_input_digest = ?,
     codec_version = ?
 WHERE caller_ref = ? AND submit_key_ref = ? AND revision = ? AND retention_state = ?`
 
@@ -678,8 +735,13 @@ func scanSQLiteClaim(row sqliteScanner) (durableClaimRecord, error) {
 		&data.unavailableAtUnixNS,
 		&data.unavailableReason,
 		&data.lastMutationRef,
+		&data.latestOperationKind,
+		&data.latestOperationInputDigest,
 		&data.codecVersion,
 	); err != nil {
+		if errors.Is(err, errInvalidDurableRecord) {
+			return durableClaimRecord{}, errClaimStoreCorrupt
+		}
 		return durableClaimRecord{}, mapSQLiteError(err)
 	}
 	record, err := data.record()
@@ -719,7 +781,31 @@ type sqliteClaimRow struct {
 	unavailableAtUnixNS         sql.NullInt64
 	unavailableReason           string
 	lastMutationRef             []byte
+	latestOperationKind         sql.NullInt64
+	latestOperationInputDigest  sqliteNullableBlob
 	codecVersion                int64
+}
+
+type sqliteNullableBlob struct {
+	valid bool
+	bytes []byte
+}
+
+func (b *sqliteNullableBlob) Scan(value any) error {
+	if value == nil {
+		b.valid = false
+		b.bytes = nil
+		return nil
+	}
+	raw, ok := value.([]byte)
+	if !ok {
+		b.valid = false
+		b.bytes = nil
+		return errInvalidDurableRecord
+	}
+	b.valid = true
+	b.bytes = append(b.bytes[:0], raw...)
+	return nil
 }
 
 func (r sqliteClaimRow) record() (durableClaimRecord, error) {
@@ -759,17 +845,22 @@ func (r sqliteClaimRow) record() (durableClaimRecord, error) {
 	if err != nil {
 		return durableClaimRecord{}, err
 	}
+	latestOperation, err := sqliteLatestOperationDescriptor(uint16(r.codecVersion), mutation, r.latestOperationKind, r.latestOperationInputDigest)
+	if err != nil {
+		return durableClaimRecord{}, err
+	}
 	record := durableClaimRecord{
-		codecVersion: uint16(r.codecVersion),
-		claim:        claim,
-		plan:         plan,
-		phase:        phase,
-		revision:     claimRevision(r.revision),
-		effects:      effects,
-		createdAt:    time.Unix(0, r.createdAtUnixNS).UTC(),
-		updatedAt:    time.Unix(0, r.updatedAtUnixNS).UTC(),
-		assignedAt:   nullUnixNanoToClaimTime(r.assignedAtUnixNS),
-		expiresAt:    nullUnixNanoToClaimTime(r.expiresAtUnixNS),
+		codecVersion:    uint16(r.codecVersion),
+		claim:           claim,
+		plan:            plan,
+		phase:           phase,
+		revision:        claimRevision(r.revision),
+		effects:         effects,
+		createdAt:       time.Unix(0, r.createdAtUnixNS).UTC(),
+		updatedAt:       time.Unix(0, r.updatedAtUnixNS).UTC(),
+		assignedAt:      nullUnixNanoToClaimTime(r.assignedAtUnixNS),
+		expiresAt:       nullUnixNanoToClaimTime(r.expiresAtUnixNS),
+		latestOperation: latestOperation,
 		retention: durableRetentionFact{
 			state:         durableRetentionState(r.retentionState),
 			unavailableAt: nullUnixNanoToClaimTime(r.unavailableAtUnixNS),
@@ -781,6 +872,27 @@ func (r sqliteClaimRow) record() (durableClaimRecord, error) {
 		return durableClaimRecord{}, err
 	}
 	return record, nil
+}
+
+func sqliteLatestOperationDescriptor(codecVersion uint16, mutation durableMutationRef, kind sql.NullInt64, digest sqliteNullableBlob) (durableLatestOperationDescriptor, error) {
+	switch codecVersion {
+	case durableClaimCodecVersionLegacy:
+		if kind.Valid || digest.valid {
+			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
+		}
+		return newLegacyDurableLatestOperationDescriptor(mutation)
+	case durableClaimCodecVersion:
+		if !kind.Valid || !digest.valid {
+			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
+		}
+		binding, err := newDurableOperationInputBinding(digest.bytes)
+		if err != nil {
+			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
+		}
+		return newCompleteDurableLatestOperationDescriptor(mutation, durableOperationKind(kind.Int64), binding)
+	default:
+		return durableLatestOperationDescriptor{}, errInvalidDurableRecord
+	}
 }
 
 func (r sqliteClaimRow) phaseSnapshot() (durablePhaseSnapshot, error) {
@@ -900,9 +1012,25 @@ func sqliteRecordArgs(record durableClaimRecord) ([]any, error) {
 		optionalTimeSQL(record.retention.unavailableAt),
 		record.retention.reason,
 		mutationRefBytes(record.lastMutation),
+		operationKindSQL(record.latestOperation),
+		operationInputBindingSQL(record.latestOperation),
 		int64(record.codecVersion),
 	}
 	return args, nil
+}
+
+func operationKindSQL(operation durableLatestOperationDescriptor) any {
+	if !operation.kind.valid() {
+		return nil
+	}
+	return int64(operation.kind)
+}
+
+func operationInputBindingSQL(operation durableLatestOperationDescriptor) any {
+	if !operation.binding.valid {
+		return nil
+	}
+	return operation.binding.bytes()
 }
 
 func optionalOpaqueSQL(ref opaqueRef) any {

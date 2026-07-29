@@ -107,11 +107,12 @@ Those absences are current facts, not design commitments.
   `modernc.org/libc v1.74.1` coupling, private same-package hydration in
   `es/admission/internal/reliablesubmit`, revision/CAS, durable provider-effect
   intent, tombstone/no-reuse retention, fail-closed corruption behavior, and
-  the target latest-operation replay descriptor requiring a later SQLite v2
-  logical migration. The current source repair is not implemented: schema v1
-  persists only `lastMutation`, not operation kind, input-binding digest, or
-  mutation history. The ADR adds private store source only; it does not add
-  global config or runtime wiring, reuse staging or retained results as the
+  the current latest-operation replay descriptor implemented by SQLite schema
+  v2. Complete codec-2 rows persist `lastMutation`, closed private operation
+  kind, and input-binding digest; migrated codec-1 rows preserve only legacy
+  `lastMutation` as unbound state without invented operation semantics. The ADR
+  adds private store source only; it does not add global config or runtime
+  wiring, reuse staging or retained results as the
   database path, import Coordinator writer-session authority, make provider
   metadata a recovery source, promise PostgreSQL implementation, promise live
   backend switching, or promise automatic data migration.
@@ -401,11 +402,12 @@ runtime-profile handling, and compatibility edges lives in
   submit-correlation store family, the current `CGO_ENABLED=0` build posture,
   `modernc.org/sqlite v1.54.0` with exact `modernc.org/libc v1.74.1` coupling,
   private same-package hydration, revision/CAS, durable provider-effect intent,
-  tombstone/no-reuse retention, fail-closed corruption behavior, and the target
-  latest-operation replay descriptor requiring a later SQLite v2 logical
-  migration. Current schema v1 still persists only `lastMutation`, not operation
-  kind, input-binding digest, or mutation history. It adds private store source
-  only; it does not add global config or runtime wiring, reuse staging or
+  tombstone/no-reuse retention, fail-closed corruption behavior, and the current
+  latest-operation replay descriptor implemented by SQLite schema v2. Complete
+  codec-2 rows persist `lastMutation`, closed private operation kind, and
+  input-binding digest; migrated codec-1 rows preserve only legacy
+  `lastMutation` as unbound state without invented operation semantics. It adds
+  private store source only; it does not add global config or runtime wiring, reuse staging or
   retained results as the database path, import Coordinator writer-session
   authority, make provider metadata a recovery source, promise PostgreSQL
   implementation, promise live backend switching, or promise automatic data

@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const durableClaimCodecVersion uint16 = 1
+const (
+	durableClaimCodecVersionLegacy uint16 = 1
+	durableClaimCodecVersion       uint16 = 2
+)
 
 var (
 	errInvalidDurableRecord  = errors.New("reliable submit durable record: invalid")
@@ -471,30 +474,31 @@ func (r durableRetentionFact) equal(other durableRetentionFact) bool {
 }
 
 type durableClaimRecord struct {
-	codecVersion uint16
-	claim        ClaimID
-	plan         BoundPlan
-	phase        durablePhaseSnapshot
-	revision     claimRevision
-	effects      durableEffectFacts
-	createdAt    time.Time
-	updatedAt    time.Time
-	assignedAt   optionalClaimTime
-	expiresAt    optionalClaimTime
-	retention    durableRetentionFact
-	lastMutation durableMutationRef
+	codecVersion    uint16
+	claim           ClaimID
+	plan            BoundPlan
+	phase           durablePhaseSnapshot
+	revision        claimRevision
+	effects         durableEffectFacts
+	createdAt       time.Time
+	updatedAt       time.Time
+	assignedAt      optionalClaimTime
+	expiresAt       optionalClaimTime
+	retention       durableRetentionFact
+	lastMutation    durableMutationRef
+	latestOperation durableLatestOperationDescriptor
 }
 
 type newDurableClaimRecordInput struct {
-	phase        ClaimPhase
-	revision     claimRevision
-	createdAt    time.Time
-	updatedAt    time.Time
-	assignedAt   optionalClaimTime
-	expiresAt    optionalClaimTime
-	effects      durableEffectFacts
-	retention    durableRetentionFact
-	lastMutation durableMutationRef
+	phase           ClaimPhase
+	revision        claimRevision
+	createdAt       time.Time
+	updatedAt       time.Time
+	assignedAt      optionalClaimTime
+	expiresAt       optionalClaimTime
+	effects         durableEffectFacts
+	retention       durableRetentionFact
+	latestOperation durableLatestOperationDescriptor
 }
 
 func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord, error) {
@@ -503,18 +507,19 @@ func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord
 		return durableClaimRecord{}, err
 	}
 	record := durableClaimRecord{
-		codecVersion: durableClaimCodecVersion,
-		claim:        claim,
-		plan:         plan,
-		phase:        snapshot,
-		revision:     input.revision,
-		effects:      input.effects.clone(),
-		createdAt:    normalizeClaimTime(input.createdAt),
-		updatedAt:    normalizeClaimTime(input.updatedAt),
-		assignedAt:   input.assignedAt,
-		expiresAt:    input.expiresAt,
-		retention:    input.retention,
-		lastMutation: input.lastMutation.clone(),
+		codecVersion:    durableClaimCodecVersion,
+		claim:           claim,
+		plan:            plan,
+		phase:           snapshot,
+		revision:        input.revision,
+		effects:         input.effects.clone(),
+		createdAt:       normalizeClaimTime(input.createdAt),
+		updatedAt:       normalizeClaimTime(input.updatedAt),
+		assignedAt:      input.assignedAt,
+		expiresAt:       input.expiresAt,
+		retention:       input.retention,
+		lastMutation:    input.latestOperation.mutation.clone(),
+		latestOperation: input.latestOperation.clone(),
 	}
 	if record.retention.state == 0 {
 		record.retention = activeDurableRetention()
@@ -526,7 +531,7 @@ func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord
 }
 
 func (r durableClaimRecord) validate() error {
-	if r.codecVersion != durableClaimCodecVersion ||
+	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy) ||
 		!r.claim.Valid() ||
 		!r.plan.Valid() ||
 		!r.phase.valid() ||
@@ -535,7 +540,8 @@ func (r durableClaimRecord) validate() error {
 		r.updatedAt.IsZero() ||
 		r.updatedAt.Before(r.createdAt) ||
 		!r.retention.valid() ||
-		!r.lastMutation.valid() {
+		!r.lastMutation.valid() ||
+		!r.latestOperation.validForCodec(r.codecVersion, r.lastMutation) {
 		return errInvalidDurableRecord
 	}
 	if _, err := r.phase.hydrate(r.claim, r.plan); err != nil {
@@ -564,18 +570,19 @@ func (r durableClaimRecord) hydratePhase() (ClaimPhase, error) {
 
 func (r durableClaimRecord) clone() durableClaimRecord {
 	return durableClaimRecord{
-		codecVersion: r.codecVersion,
-		claim:        r.claim.clone(),
-		plan:         r.plan.clone(),
-		phase:        r.phase.clone(),
-		revision:     r.revision,
-		effects:      r.effects.clone(),
-		createdAt:    normalizeClaimTime(r.createdAt),
-		updatedAt:    normalizeClaimTime(r.updatedAt),
-		assignedAt:   r.assignedAt,
-		expiresAt:    r.expiresAt,
-		retention:    r.retention,
-		lastMutation: r.lastMutation.clone(),
+		codecVersion:    r.codecVersion,
+		claim:           r.claim.clone(),
+		plan:            r.plan.clone(),
+		phase:           r.phase.clone(),
+		revision:        r.revision,
+		effects:         r.effects.clone(),
+		createdAt:       normalizeClaimTime(r.createdAt),
+		updatedAt:       normalizeClaimTime(r.updatedAt),
+		assignedAt:      r.assignedAt,
+		expiresAt:       r.expiresAt,
+		retention:       r.retention,
+		lastMutation:    r.lastMutation.clone(),
+		latestOperation: r.latestOperation.clone(),
 	}
 }
 
@@ -602,7 +609,8 @@ func (r durableClaimRecord) equal(other durableClaimRecord) bool {
 		r.assignedAt.equal(other.assignedAt) &&
 		r.expiresAt.equal(other.expiresAt) &&
 		r.retention.equal(other.retention) &&
-		r.lastMutation.equal(other.lastMutation)
+		r.lastMutation.equal(other.lastMutation) &&
+		r.latestOperation.equal(other.latestOperation)
 }
 
 func witnessEqual(left EffectivePlanWitness, right EffectivePlanWitness) bool {

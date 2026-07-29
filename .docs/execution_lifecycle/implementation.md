@@ -37,25 +37,22 @@ handlers, producer declaration, staging, lifecycle, results, Nomad behavior,
 runtime startup, runtime configuration, public persistence integration, or
 recovery routes.
 
-The current private durable service has a known same-operation replay gap. It
-supports internal COMMIT-unknown reload within one operation, but the general
-mutation path does not yet recognize a previously committed `lastMutation` before
-expected-revision and operation-specific apply logic. Terminal accepted and
-provably-not-accepted redelivery are known failing examples, and a complete
-mutation-operation inventory is required before repair. The dedicated future
-tranche is `reliable-submit-durable-same-operation-replay-repair`; it is a hard
-gate before reliable-submit config/store lifecycle wiring, producer enablement,
-or public runtime enablement. Because the private store is runtime-unwired, this
-gap does not affect current public execution behavior.
+The private durable source now implements
+`reliable-submit-durable-same-operation-replay-repair`. The durable service
+derives a complete latest-operation descriptor for new codec-2 rows and every
+real v2 mutation, recognizes same-mutation/same-kind/same-input replay before
+stale-revision and inactive-state refusal, returns mutation conflict for
+same-mutation/different descriptor reuse, reloads CAS losers through replay,
+conflict, inactive, and stale classification, and keeps COMMIT-unknown recovery
+on full expected-record equality including the descriptor. The SQLite schema is
+v2; valid v1 rows migrate as codec-1 legacy/unbound rows that preserve the
+retained mutation reference and fail closed for same-mutation replay instead of
+inventing operation semantics. No mutation history is stored.
 
-The durable replay repair ADR is now target-selected but not source-implemented.
-The current durable record and SQLite v1 schema persist only `lastMutation`;
-they do not persist closed operation kind, operation-input binding digest, or
-mutation history. The selected repair requires a backend-neutral
-latest-operation descriptor, SQLite v2 logical migration, service replay
-detection before stale-revision and inactive-state refusal, CAS-loser
-reload/replay classification, and stricter COMMIT-unknown full-record equality
-that includes the descriptor.
+The private store remains runtime-unwired. This source repair adds no config
+field, public producer/request/response source, staging behavior, Nomad
+behavior, current submit behavior, HTTP handler behavior, runtime startup, or
+public reliable-submit availability.
 
 ## 2. How to read this document
 
@@ -334,20 +331,16 @@ Where ES stops and Nomad takes over:
   effective-plan witness construction, durable replay-envelope custody, or
   runtime orchestration. They are not exported, not public DTOs, and not called
   by current handlers or `Submit`.
-- The private durable service currently supports internal COMMIT-unknown reload
-  within one operation, but its general mutation path does not yet recognize a
-  previously committed `lastMutation` before expected-revision and
-  operation-specific apply logic. Terminal accepted and provably-not-accepted
-  redelivery are known failing examples. The selected target repair is
-  latest-operation-only and requires a persisted descriptor made of mutation
-  reference, closed private operation kind, and versioned safe input-binding
-  digest. A same mutation reference with different kind or binding is mutation
+- The private durable service implements the
+  `reliable-submit-durable-same-operation-replay-repair` latest-operation-only
+  source repair. It persists a descriptor made of mutation reference, closed
+  private operation kind, and versioned safe input-binding digest for codec-2
+  rows. A same mutation reference with different kind or binding is mutation
   conflict; an older operation after later progression is stale or superseded,
-  not exact replay. The future
-  `reliable-submit-durable-same-operation-replay-repair` source tranche must
-  inspect all durable mutation operations, not only those two examples, before
-  any reliable-submit config/store lifecycle wiring, producer enablement, or
-  public runtime enablement.
+  not exact replay. Migrated codec-1 rows remain legacy/unbound and fail closed
+  for same-mutation replay. This remains a private runtime-unwired source
+  repair, not reliable-submit config/store lifecycle wiring, producer
+  enablement, or public runtime enablement.
 - The pure model cannot enforce one winning assignment across stale or
   concurrent snapshots. The private persistence and compare-and-swap layer owns
   the authoritative caller/key claim and assigned `run_id` transition. Later
@@ -360,10 +353,13 @@ Where ES stops and Nomad takes over:
   posture, selects `modernc.org/sqlite v1.54.0` with exact
   `modernc.org/libc v1.74.1` coupling, and selects private same-package
   persistence hydration inside `es/admission/internal/reliablesubmit`. It now
-  also freezes the target SQLite v2 latest-operation descriptor and
-  legacy/unbound migration posture, while current source still remains schema
-  v1. It adds no config field, public producer/request/response source, staging
-  behavior, Nomad behavior, or runtime behavior.
+  also implements the private SQLite schema v2 latest-operation descriptor and
+  legacy/unbound migration posture in source. The historical v1 migration
+  source and metadata remain retained and verified, valid v1 databases migrate
+  forward to v2, and migrated rows remain codec-1 legacy/unbound until a later
+  valid distinct mutation upgrades the row. It adds no config field, public
+  producer/request/response source, staging behavior, Nomad behavior, runtime
+  behavior, or public reliable-submit availability.
 - Current `Submit` has no submit idempotency key input, no submit correlation
   key, no exact replay path, no conflicting reuse path, no pending outcome
   path, no durable submit-correlation record, and no recovery lookup by
