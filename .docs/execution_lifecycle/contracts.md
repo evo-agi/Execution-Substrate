@@ -688,14 +688,21 @@ before fallback to current unkeyed submit.
 The target contract leaves public response field names, recovery route,
 state-path configuration, TTL, tombstone handling, HTTP status mapping, public
 error strings, Nomad reconciliation mechanism, and `run_id` generation strategy
-open. The private admission-local foundation selects request-family names,
-submit-key syntax, caller/key derivation, composite `ClaimID` construction
-through the committed pure-model constructor, and ES-neutral submission-outcome
-semantics, but current handlers do not call that foundation. It does not select
-or implement source-grounded resolved effective-plan extraction, canonical
-effective-plan encoding, `PlanBinding` construction from admitted facts, complete
-effective-plan witness construction, durable replay-envelope custody, or runtime
-orchestration.
+open. The private admission-local reliable request foundation selects
+request-family names, submit-key syntax, caller/key derivation, composite
+`ClaimID` construction through the committed pure-model constructor, and
+ES-neutral submission-outcome semantics, but current handlers do not call that
+foundation.
+
+Current legacy `Submit` now constructs and consumes one private, source-grounded
+`resolvedExecutionPlan` from the current admission and submit-resolution path.
+That current private plan does not enable reliable submit. The reliable
+request/identity/outcome helpers remain runtime-unwired, no reliable handler
+currently consumes the resolved plan, canonical effective-plan encoding is not
+implemented, `PlanBinding` construction from the resolved plan is not
+implemented, complete `EffectivePlanWitness` construction is not implemented,
+durable replay-envelope custody is not implemented, and reliable runtime
+orchestration is not implemented.
 
 ## 7. Status contract
 

@@ -12,21 +12,22 @@ import (
 )
 
 const (
-	executionPayloadStageDirName   = "payload"
-	executionRunStageDirName       = "run"
-	executionResultStageDirName    = "result"
-	executionMountsStageDirName    = "mounts"
-	executionPayloadArchiveName    = "artifact.tar.gz"
-	executionRuntimePayloadRoot    = "/execution/staged"
-	executionRuntimeRunRoot        = "/execution/run"
-	executionRuntimePlatformDir    = executionRuntimeRunRoot + "/platform"
-	executionRuntimeWorkDir        = executionRuntimeRunRoot + "/work"
-	executionRuntimeResultDir      = executionRuntimeRunRoot + "/result"
-	executionRuntimeEntrypointPath = executionRuntimeWorkDir + "/entrypoint"
-	executionRuntimeSupportName    = "es-runtime-support"
-	executionRuntimeSupportPath    = executionRuntimePlatformDir + "/" + executionRuntimeSupportName
-	executionWorkloadVaultCAName   = "workload-vault-ca.pem"
-	executionWorkloadTLSBundleName = "workload-ca-bundle.pem"
+	executionPayloadStageDirName        = "payload"
+	executionRunStageDirName            = "run"
+	executionResultStageDirName         = "result"
+	executionMountsStageDirName         = "mounts"
+	executionPayloadArchiveName         = "artifact.tar.gz"
+	executionRuntimePayloadRoot         = "/execution/staged"
+	executionRuntimeRunRoot             = "/execution/run"
+	executionRuntimePlatformDir         = executionRuntimeRunRoot + "/platform"
+	executionRuntimeWorkDir             = executionRuntimeRunRoot + "/work"
+	executionRuntimeResultDir           = executionRuntimeRunRoot + "/result"
+	executionRuntimeEntrypointPath      = executionRuntimeWorkDir + "/entrypoint"
+	executionRuntimeSupportName         = "es-runtime-support"
+	executionRuntimeSupportPath         = executionRuntimePlatformDir + "/" + executionRuntimeSupportName
+	executionRuntimeSupervisorOperation = "supervisor"
+	executionWorkloadVaultCAName        = "workload-vault-ca.pem"
+	executionWorkloadTLSBundleName      = "workload-ca-bundle.pem"
 )
 
 var systemCABundleCandidatePaths = []string{
@@ -124,9 +125,9 @@ func (l executionPackageLayout) mountContentsDir(index int) string {
 	return filepath.Join(l.mountStageDir(index), "contents")
 }
 
-func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, timeoutSeconds int) []string {
+func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, timeoutSeconds int, supervisorOperation string) []string {
 	args := []string{
-		"supervisor",
+		supervisorOperation,
 		"--payload-archive", filepath.ToSlash(pathJoin(l.runtimePayloadRoot, executionPayloadArchiveName)),
 		"--work-dir", l.runtimeWorkDir,
 		"--result-dir", l.runtimeResultDir,

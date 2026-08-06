@@ -3,10 +3,14 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,11 +42,11 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
 			_, _ = w.Write(policyPayload)
 		default:
-			t.Fatalf("prepare reached unexpected ARS path %q", r.URL.Path)
+			t.Fatal("ARS request path classification mismatch")
 		}
 	}))
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
+		t.Fatal("prepare must not call nomad")
 	}))
 
 	result, err := service.Prepare(context.Background(), request)
@@ -50,22 +54,36 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 		t.Fatalf("prepare: %+v", err)
 	}
 	if !result.Success {
-		t.Fatalf("expected successful bounded prepare result, got %+v", result)
+		t.Fatal("expected successful bounded prepare result")
 	}
-	assertJSONFieldsExact(t, result, "success")
+	prepareResultFields := collectDirectJSONFieldNames(t, PrepareResult{})
+	if len(prepareResultFields) != 1 {
+		t.Fatalf("JSON field count mismatch: got %d want 1", len(prepareResultFields))
+	}
+	if _, ok := prepareResultFields["success"]; !ok {
+		t.Fatal("expected bounded prepare-result JSON field")
+	}
 
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
-	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
-	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
-	assertExactCallCount(t, arsCalls, "/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json", 1)
-	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes", 1)
+	if got := arsCalls["/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
+	if got := arsCalls["/v1/blobs/"+fixture.discovery.Evidence.Digest+":json"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
+	if got := arsCalls["/v1/blobs/"+testWorkloadZoneVaultConfigDigest+":json"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
+	if got := arsCalls["/v1/blobs/"+fixture.discovery.Payload.Digest+":bytes"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
 	if len(arsCalls) != 4 {
-		t.Fatalf("expected prepare to use discovery, evidence, runtime-config, and bounded policy payload reads, got %v", arsCalls)
+		t.Fatalf("ARS request count mismatch: got %d want 4", len(arsCalls))
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, result)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"run_id"`,
 		`"status"`,
 		`"lifecycle_projection"`,
@@ -84,7 +102,7 @@ func TestWorkstreamCPrepareStaysBoundedAndAvoidsDescriptorGrammar(t *testing.T) 
 		`"artifact_digest"`,
 		`"descriptor"`,
 		`"manifest"`,
-	)
+	})
 }
 
 func TestWorkstreamCAdmissionConsumesDiscoveryEvidencePackageIdentityAndRuntimeClaims(t *testing.T) {
@@ -107,21 +125,23 @@ func TestWorkstreamCAdmissionConsumesDiscoveryEvidencePackageIdentityAndRuntimeC
 		t.Fatalf("expected discovery, signed evidence, package identity, and runtime claims to prepare, got %+v", err)
 	}
 	if artifact.payloadDigest != evidence.Claims.Package.Identity.PayloadDigest {
-		t.Fatalf("expected payload digest from claims.package.identity, got %q", artifact.payloadDigest)
+		t.Fatal("expected payload digest from claims.package.identity")
 	}
 	if artifact.manifest.ArtifactDigest != evidence.Claims.Package.Identity.ArtifactDigest ||
 		artifact.manifest.ArtifactType != evidence.Claims.Package.Identity.ArtifactType ||
 		artifact.manifest.IntentDigest != evidence.Claims.Package.Identity.IntentDigest {
-		t.Fatalf("expected manifest projection from claims.package.identity, got %+v", artifact.manifest)
+		t.Fatal("expected manifest projection from claims.package.identity")
 	}
-	if !reflect.DeepEqual(artifact.manifest.RuntimeInterface.EnvironmentVariables, []string{"C1_ALLOWED_ENV"}) {
-		t.Fatalf("expected runtime env allowlist from signed execution claims, got %+v", artifact.manifest.RuntimeInterface.EnvironmentVariables)
+	runtimeEnv := artifact.manifest.RuntimeInterface.EnvironmentVariables
+	if len(runtimeEnv) != 1 || runtimeEnv[0] != "C1_ALLOWED_ENV" {
+		t.Fatal("expected runtime env allowlist from signed execution claims")
 	}
-	if !reflect.DeepEqual(artifact.manifest.RuntimeInterface.RequiredCapabilities, []string{"c1-special-runtime"}) {
-		t.Fatalf("expected required capabilities from signed execution claims, got %+v", artifact.manifest.RuntimeInterface.RequiredCapabilities)
+	requiredCapabilities := artifact.manifest.RuntimeInterface.RequiredCapabilities
+	if len(requiredCapabilities) != 1 || requiredCapabilities[0] != "c1-special-runtime" {
+		t.Fatal("expected required capabilities from signed execution claims")
 	}
 	if artifact.targetPlatform != "docker" || artifact.networkAccess {
-		t.Fatalf("expected narrow workload/access claims from signed evidence, got target_platform=%q network_access=%t", artifact.targetPlatform, artifact.networkAccess)
+		t.Fatal("expected narrow workload/access claims from signed evidence")
 	}
 
 	tampered := evidence
@@ -192,11 +212,11 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
 			_, _ = w.Write(policyPayload)
 		default:
-			t.Fatalf("prepare reached unexpected ARS path %q", r.URL.Path)
+			t.Fatal("ARS request path classification mismatch")
 		}
 	}))
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("prepare must not call nomad, got %s %q", r.Method, r.URL.Path)
+		t.Fatal("prepare must not call nomad")
 	}))
 
 	_, err := service.Prepare(context.Background(), request)
@@ -204,7 +224,7 @@ func TestWorkstreamCPrepareRejectsUnsupportedRuntimeProfileWithoutRunState(t *te
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
 	if len(arsCalls) != 4 {
-		t.Fatalf("expected runtime-profile failure to remain admission-bounded, got ARS calls %v", arsCalls)
+		t.Fatalf("ARS request count mismatch: got %d want 4", len(arsCalls))
 	}
 }
 
@@ -217,10 +237,10 @@ func TestWorkstreamCSubmitRejectsSyncModeBeforeAdmission(t *testing.T) {
 	arsCalled := false
 	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		arsCalled = true
-		t.Fatalf("sync submit must not read ARS before rejection, got %s %q", r.Method, r.URL.Path)
+		t.Fatal("sync submit must not read ARS before rejection")
 	}))
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("sync submit must not call nomad, got %s %q", r.Method, r.URL.Path)
+		t.Fatal("sync submit must not call nomad")
 	}))
 
 	_, err := service.Submit(context.Background(), request)
@@ -248,21 +268,25 @@ func TestWorkstreamCSubmitDoesNotBypassAdmissionBeforePayloadOrNomad(t *testing.
 		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
 			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
 		default:
-			t.Fatalf("submit reached unexpected ARS path before admission failed: %q", r.URL.Path)
+			t.Fatal("ARS request path classification mismatch")
 		}
 	}))
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("submit must not call nomad when admission fails, got %s %q", r.Method, r.URL.Path)
+		t.Fatal("submit must not call nomad when admission fails")
 	}))
 
 	_, err := service.Submit(context.Background(), request)
 	assertAdmissionError(t, err, http.StatusBadRequest, codeInvalidRequest)
 	assertDirectoryEmpty(t, stagingRoot)
 	assertDirectoryEmpty(t, resultsRoot)
-	assertExactCallCount(t, arsCalls, "/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery", 1)
-	assertExactCallCount(t, arsCalls, "/v1/blobs/"+fixture.discovery.Evidence.Digest+":json", 1)
+	if got := arsCalls["/v1/artifacts/"+fixture.discovery.Artifact.ArtifactDigest+"/discovery"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
+	if got := arsCalls["/v1/blobs/"+fixture.discovery.Evidence.Digest+":json"]; got != 1 {
+		t.Fatalf("ARS request count mismatch: got %d want 1", got)
+	}
 	if len(arsCalls) != 2 {
-		t.Fatalf("expected submit admission failure to stop before runtime-config or payload reads, got %v", arsCalls)
+		t.Fatalf("ARS request count mismatch: got %d want 2", len(arsCalls))
 	}
 }
 
@@ -288,7 +312,7 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
 			_, _ = w.Write(policyPayload)
 		default:
-			t.Fatalf("submit reached unexpected ARS path %q", r.URL.Path)
+			t.Fatal("ARS request path classification mismatch")
 		}
 	}))
 
@@ -297,7 +321,7 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nomadCalls++
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs" {
-			t.Fatalf("unexpected nomad request %s %q", r.Method, r.URL.Path)
+			t.Fatal("unexpected nomad request")
 		}
 		body, readErr := io.ReadAll(r.Body)
 		if readErr == nil {
@@ -311,10 +335,10 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		t.Fatalf("submit: %+v", err)
 	}
 	if !result.Success || !result.Submitted || strings.TrimSpace(result.RunID) == "" {
-		t.Fatalf("expected bounded submit receipt, got %+v", result)
+		t.Fatal("bounded submit receipt mismatch")
 	}
 	if result.Status != executionLifecycleStatusSubmitted {
-		t.Fatalf("expected submitted receipt status, got %+v", result)
+		t.Fatal("bounded submit receipt status mismatch")
 	}
 	if result.AuthorityHandoff == nil {
 		t.Fatalf("expected authority_handoff in submit receipt")
@@ -323,9 +347,9 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		t.Fatalf("expected exactly one nomad submission call, got %d", nomadCalls)
 	}
 	if !strings.Contains(submittedNomadJob, `"ID":"exec-`) || !strings.Contains(submittedNomadJob, `"Driver":"docker"`) {
-		t.Fatalf("expected submit to hand one Docker job through ES/Nomad, got %s", submittedNomadJob)
+		t.Fatal("expected submit to hand one Docker job through ES/Nomad")
 	}
-	assertTextOmitsAll(t, submittedNomadJob,
+	assertTextOmitsAllFixed(t, submittedNomadJob, []string{
 		`"review"`,
 		`"checkpoint"`,
 		`"finalization"`,
@@ -339,14 +363,22 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		`"workflow"`,
 		`"workflow_id"`,
 		`"cp_workflow_id"`,
-	)
+	})
 	if len(arsCalls) != 4 {
-		t.Fatalf("expected submit to use discovery, evidence, runtime-config, and payload reads only, got %v", arsCalls)
+		t.Fatalf("ARS request count mismatch: got %d want 4", len(arsCalls))
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, result)
-	assertJSONFieldsExact(t, result, "success", "submitted", "run_id", "status", "authority_handoff")
-	assertTextOmitsAll(t, payload,
+	submitResultFields := collectDirectJSONFieldNames(t, SubmitResult{})
+	if len(submitResultFields) != 5 {
+		t.Fatalf("JSON field count mismatch: got %d want 5", len(submitResultFields))
+	}
+	for _, field := range []string{"success", "submitted", "run_id", "status", "authority_handoff"} {
+		if _, ok := submitResultFields[field]; !ok {
+			t.Fatal("expected bounded submit-result JSON field")
+		}
+	}
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"attempt"`,
 		`"task_attempt"`,
 		`"review"`,
@@ -382,8 +414,142 @@ func TestWorkstreamCSubmitReceiptRemainsBoundedAndHidesSchedulerIdentifiers(t *t
 		`"allowed"`,
 		`"policy_approval"`,
 		`"runtime_auth_plan"`,
-		"exec-"+result.RunID,
-	)
+	})
+	if strings.Contains(payload, "exec-"+result.RunID) {
+		t.Fatal("bounded submit receipt scheduler identity mismatch")
+	}
+}
+
+func TestWorkstreamCSubmitResolvedPlanPreservesLegacyJobAndCallSemantics(t *testing.T) {
+	fixture := newPreparedArtifactFixture(t)
+	service, _, _ := newWorkstreamCTestService(t, fixture)
+	request := fixture.prepareRequest()
+	request.Mode = ExecutionModeAsync
+	request.TimeoutSeconds = 31
+	request.Resources = &ExecutionResources{CPU: 42, MemoryMB: 1536}
+	request.Invocation.Argv = []string{"--flag", "value"}
+	request.Invocation.Env = map[string]string{"APP_MODE": "submit-plan"}
+	policyPayload := buildAdmissionPolicyStaticScriptArchive(t, map[string][]byte{
+		staticScriptEntrypointName: []byte(benignPolicyFixtureText()),
+	})
+
+	var arsOrder []string
+	service.arsClient = newArtifactRegistryTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arsOrder = append(arsOrder, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery":
+			writeJSONResponse(t, w, http.StatusOK, fixture.discovery)
+		case "/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json":
+			writeJSONResponse(t, w, http.StatusOK, fixture.evidence)
+		case "/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json":
+			_, _ = w.Write([]byte(validWorkloadZoneVaultConfigBlob))
+		case "/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes":
+			_, _ = w.Write(policyPayload)
+		default:
+			t.Fatal("ARS request path classification mismatch")
+		}
+	}))
+
+	nomadCalls := 0
+	var submitted map[string]any
+	service.nomadClient = newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nomadCalls++
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs" {
+			t.Fatal("unexpected nomad request")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
+			t.Fatalf("decode submitted nomad job: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"EvalID":"eval-123"}`))
+	}))
+
+	result, err := service.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit: %+v", err)
+	}
+	if !result.Success || !result.Submitted || result.Status != executionLifecycleStatusSubmitted || strings.TrimSpace(result.RunID) == "" {
+		t.Fatal("bounded submitted result mismatch")
+	}
+	if result.AuthorityHandoff == nil ||
+		result.AuthorityHandoff.RuntimeProfile.Name != runtimeProfileDefaultStaticScript ||
+		result.AuthorityHandoff.WorkloadVault.Address != "https://vault.internal:8200" ||
+		result.AuthorityHandoff.RuntimeConfigRefs.WorkloadZoneVaultConfig.Digest != testWorkloadZoneVaultConfigDigest {
+		t.Fatal("legacy authority_handoff semantics mismatch")
+	}
+	if nomadCalls != 1 {
+		t.Fatalf("expected one Nomad submission, got %d", nomadCalls)
+	}
+	expectedARSOrder := []string{
+		"/v1/artifacts/" + fixture.discovery.Artifact.ArtifactDigest + "/discovery",
+		"/v1/blobs/" + fixture.discovery.Evidence.Digest + ":json",
+		"/v1/blobs/" + testWorkloadZoneVaultConfigDigest + ":json",
+		"/v1/blobs/" + fixture.discovery.Payload.Digest + ":bytes",
+	}
+	if len(arsOrder) != len(expectedARSOrder) {
+		t.Fatalf("ARS request count mismatch: got %d want %d", len(arsOrder), len(expectedARSOrder))
+	}
+	for index := range expectedARSOrder {
+		if arsOrder[index] != expectedARSOrder[index] {
+			t.Fatalf("ARS request order mismatch at index %d", index)
+		}
+	}
+
+	job := submitted["Job"].(map[string]any)
+	if job["ID"] != "exec-"+result.RunID || job["Name"] != "exec-"+result.RunID {
+		t.Fatal("existing run-to-Nomad job identity mapping mismatch")
+	}
+	meta := job["Meta"].(map[string]any)
+	if meta["run_id"] != result.RunID ||
+		meta[executionAuthorityMetadataRuntimeProfileKey] != runtimeProfileDefaultStaticScript ||
+		meta[executionAuthorityMetadataWorkloadZoneVaultConfigKey] != testWorkloadZoneVaultConfigDigest {
+		t.Fatal("existing job metadata mismatch")
+	}
+	taskGroups := job["TaskGroups"].([]any)
+	group := taskGroups[0].(map[string]any)
+	tasks := group["Tasks"].([]any)
+	task := tasks[0].(map[string]any)
+	config := task["Config"].(map[string]any)
+	if config["image"] != "alpine:3.20" || config["command"] != executionRuntimeSupportPath || config["network_mode"] != "bridge" {
+		t.Fatal("selected image/command/network semantics mismatch")
+	}
+	expectedArgs := []any{
+		"supervisor",
+		"--payload-archive", "/execution/staged/artifact.tar.gz",
+		"--work-dir", "/execution/run/work",
+		"--result-dir", "/execution/run/result",
+		"--entrypoint", "/execution/run/work/entrypoint",
+		"--timeout-seconds", "31",
+		"--",
+		"--flag", "value",
+	}
+	gotArgs, ok := config["args"].([]any)
+	if !ok || len(gotArgs) != len(expectedArgs) {
+		t.Fatalf("existing supervisor args count mismatch: got %d want %d", len(gotArgs), len(expectedArgs))
+	}
+	for index := range expectedArgs {
+		if gotArgs[index] != expectedArgs[index] {
+			t.Fatalf("existing supervisor args mismatch at index %d", index)
+		}
+	}
+	env := task["Env"].(map[string]any)
+	if env["APP_MODE"] != "submit-plan" ||
+		env["EXEC_RUN_ID"] != result.RunID ||
+		env["EXEC_ARTIFACT_DIGEST"] != fixture.discovery.Artifact.ArtifactDigest ||
+		env["EXEC_WORK_DIR"] != executionRuntimeWorkDir ||
+		env["VAULT_ADDR"] != "https://vault.internal:8200" ||
+		env[runtimeIdentityEndpointEnvKey] == "" {
+		t.Fatal("existing runtime environment semantics mismatch")
+	}
+	resources := task["Resources"].(map[string]any)
+	if resources["CPU"] != float64(42) || resources["MemoryMB"] != float64(1536) {
+		t.Fatal("explicit resources from resolved plan mismatch")
+	}
+	taskMeta := task["Meta"].(map[string]any)
+	if taskMeta["artifact_digest"] != fixture.discovery.Artifact.ArtifactDigest ||
+		taskMeta["derivation_spec_digest"] != fixture.evidence.Claims.Admission.Authorization.Derivation.DerivationSpecDigest ||
+		taskMeta["output_id"] != fixture.evidence.Claims.Admission.Authorization.Derivation.OutputID {
+		t.Fatal("existing task metadata semantics mismatch")
+	}
 }
 
 func TestWorkstreamC2PublicSubmitAndLifecycleDTOsExcludeCPRunControlGrammar(t *testing.T) {
@@ -594,10 +760,10 @@ func TestWorkstreamC4AuthorityHandoffCarriesOnlyNonSecretRuntimeIdentityVaultMet
 	)
 
 	if handoff.IdentityHandoff.EndpointEnv != runtimeIdentityEndpointEnvKey {
-		t.Fatalf("expected workload-visible identity endpoint env, got %+v", handoff.IdentityHandoff)
+		t.Fatal("workload-visible identity endpoint metadata mismatch")
 	}
 	if strings.Contains(handoff.IdentityHandoff.EndpointURI, "spire") || strings.Contains(handoff.IdentityHandoff.EndpointURI, "/internal/") {
-		t.Fatalf("authority_handoff endpoint URI must not expose raw SPIRE internals, got %q", handoff.IdentityHandoff.EndpointURI)
+		t.Fatal("authority_handoff endpoint URI exposed raw SPIRE internals")
 	}
 	if handoff.WorkloadVault.AuthMode != string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT) ||
 		handoff.WorkloadVault.Address != "https://vault.internal:8200" ||
@@ -605,17 +771,17 @@ func TestWorkstreamC4AuthorityHandoffCarriesOnlyNonSecretRuntimeIdentityVaultMet
 		handoff.WorkloadVault.AuthRole != "service_execution" ||
 		handoff.WorkloadVault.JWTAudience != "vault" ||
 		handoff.RuntimeConfigRefs.WorkloadZoneVaultConfig.Digest != testWorkloadZoneVaultConfigDigest {
-		t.Fatalf("expected workload-zone Vault handoff metadata only, got %+v", handoff)
+		t.Fatal("workload-zone Vault handoff metadata mismatch")
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
-	assertTextOmitsAll(t, payload, workstreamC4ForbiddenCredentialJSONKeys()...)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, workstreamC4ForbiddenCredentialJSONKeys())
+	assertTextOmitsAllFixed(t, payload, []string{
 		"/run/spire/sockets/agent.sock",
 		"/run/spire/server/private/api.sock",
 		"/run/es-runtime-identity/run-0123456789abcdef/internal/spire-agent.sock",
 		`"raw_spire_socket_path":`,
-	)
+	})
 }
 
 func TestWorkstreamC4AuthorityHandoffRecoveryIgnoresCredentialLikeSubmittedEnv(t *testing.T) {
@@ -650,12 +816,12 @@ func TestWorkstreamC4AuthorityHandoffRecoveryIgnoresCredentialLikeSubmittedEnv(t
 		t.Fatal("expected authority handoff recovery from submitted non-secret runtime metadata")
 	}
 	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
-	assertTextOmitsAll(t, payload, workstreamC4ForbiddenCredentialJSONKeys()...)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, workstreamC4ForbiddenCredentialJSONKeys())
+	assertTextOmitsAllFixed(t, payload, []string{
 		"blocked-test-value",
 		"/run/spire/sockets/agent.sock",
 		`"spire_workload_api_socket":`,
-	)
+	})
 }
 
 func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *testing.T) {
@@ -672,7 +838,7 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 			case r.Method == http.MethodDelete && r.URL.Path == "/v1/job/exec-run-0123456789abcdef":
 				_, _ = w.Write([]byte(`{"EvalID":"eval-1"}`))
 			default:
-				t.Fatalf("unexpected nomad request %s %q", r.Method, r.URL.Path)
+				t.Fatal("unexpected nomad request")
 			}
 		})),
 	}
@@ -684,12 +850,29 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 	if statusResult.AuthorityHandoff == nil {
 		t.Fatalf("expected bounded authority_handoff recovery on status")
 	}
-	assertOpaqueLifecycleProjectionRevision(t, statusResult.LifecycleProjection.Revision)
+	if statusResult.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(statusResult.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(statusResult.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
 	if statusResult.OutcomeEvidence.LifecycleProjection == nil || statusResult.OutcomeEvidence.LifecycleProjection.Revision != statusResult.LifecycleProjection.Revision {
-		t.Fatalf("expected status outcome evidence to repeat the opaque lifecycle projection, got %+v", statusResult.OutcomeEvidence)
+		t.Fatal("expected status outcome evidence to repeat the opaque lifecycle projection")
 	}
 	statusPayload := mustMarshalWorkstreamCTestJSON(t, statusResult)
-	assertTextOmitsAll(t, statusPayload,
+	assertTextOmitsAllFixed(t, statusPayload, []string{
 		`"job_id"`,
 		`"allocation_id"`,
 		`"task_id"`,
@@ -701,17 +884,17 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 		`"runtime_auth_plan"`,
 		"exec-run-0123456789abcdef",
 		"alloc-new",
-	)
+	})
 
 	cancelResult, err := service.Cancel(context.Background(), "run-0123456789abcdef")
 	if err != nil {
 		t.Fatalf("cancel: %+v", err)
 	}
 	if cancelResult.OutcomeEvidence.ProviderTerminalObserved == nil || *cancelResult.OutcomeEvidence.ProviderTerminalObserved {
-		t.Fatalf("expected bounded cancel receipt without terminal truth claim, got %+v", cancelResult)
+		t.Fatal("expected bounded cancel receipt without terminal truth claim")
 	}
 	cancelPayload := mustMarshalWorkstreamCTestJSON(t, cancelResult)
-	assertTextOmitsAll(t, cancelPayload,
+	assertTextOmitsAllFixed(t, cancelPayload, []string{
 		`"job_id"`,
 		`"allocation_id"`,
 		`"task_id"`,
@@ -723,7 +906,7 @@ func TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers(t *
 		`"runtime_auth_plan"`,
 		"exec-run-0123456789abcdef",
 		"alloc-new",
-	)
+	})
 }
 
 func TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnly(t *testing.T) {
@@ -738,7 +921,7 @@ func TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnl
 			case r.Method == http.MethodGet && r.URL.Path == "/v1/allocation/alloc-c2-latest":
 				_, _ = w.Write([]byte(`{"ID":"alloc-c2-latest","ClientStatus":"running","ModifyIndex":2718,"TaskStates":{"task":{"State":"running"}}}`))
 			default:
-				t.Fatalf("unexpected nomad request %s %q", r.Method, r.URL.Path)
+				t.Fatal("unexpected nomad request")
 			}
 		})),
 	}
@@ -748,34 +931,51 @@ func TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnl
 		t.Fatalf("status: %+v", err)
 	}
 	if result.LifecycleProjection.Source != lifecycleProjectionSourceNomad {
-		t.Fatalf("expected lifecycle projection source=nomad, got %+v", result.LifecycleProjection)
+		t.Fatal("expected lifecycle projection source=nomad")
 	}
-	assertOpaqueLifecycleProjectionRevision(t, result.LifecycleProjection.Revision)
-	for _, forbiddenRevision := range []string{
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+	for index, forbiddenRevision := range []string{
 		"42",
 		"314",
 		"2718",
 	} {
 		if result.LifecycleProjection.Revision == forbiddenRevision {
-			t.Fatalf("lifecycle projection revision must not be raw Nomad observation value %q", forbiddenRevision)
+			t.Fatalf("lifecycle projection raw observation equality invariant failed at index %d", index)
 		}
 	}
-	for _, forbiddenRevisionFragment := range []string{
+	for index, forbiddenRevisionFragment := range []string{
 		"exec-run-0123456789abcdef",
 		"alloc-c2-latest",
 		result.RunID,
 		result.RunID + "/result.tar.gz",
 	} {
 		if result.LifecycleProjection.Revision == forbiddenRevisionFragment || strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
-			t.Fatalf("lifecycle projection revision must not be scheduler, store, or retained-result identity %q; got %q", forbiddenRevisionFragment, result.LifecycleProjection.Revision)
+			t.Fatalf("lifecycle projection revision forbidden fragment at index %d", index)
 		}
 	}
 	if result.OutcomeEvidence.LifecycleProjection == nil || *result.OutcomeEvidence.LifecycleProjection != result.LifecycleProjection {
-		t.Fatalf("expected outcome evidence to repeat opaque projection token, got %+v", result.OutcomeEvidence)
+		t.Fatal("expected outcome evidence to repeat opaque projection token")
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, result)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"nomad_job_id"`,
 		`"job_id"`,
 		`"allocation_id"`,
@@ -791,7 +991,296 @@ func TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnl
 		`"retained_result_bundle"`,
 		"exec-run-0123456789abcdef",
 		"alloc-c2-latest",
-	)
+	})
+}
+
+func TestWorkstreamCLifecycleRevisionOpacityDiagnosticsRemainBounded(t *testing.T) {
+	source := mustReadAdmissionRepoSource(t, admissionRepoRoot(t), "es/admission/workstream_c_guardrails_test.go")
+	legacyHelperCall := "assertOpaqueLifecycleProjection" + "Revision("
+	unsafeHexDiagnostic := "expected opaque hex lifecycle projection revision, got " + "%q"
+	unsafeOmitDiagnostic := "expected lifecycle projection revision to omit " + "%q, got %q"
+	assertTextOmitsAllFixed(t, source, []string{
+		legacyHelperCall,
+		unsafeHexDiagnostic,
+		unsafeOmitDiagnostic,
+	})
+
+	findings := lifecycleRevisionOpacityInlineBlockFindings(source, lifecycleRevisionOpacityTargetTests())
+	if len(findings) != 0 {
+		t.Fatalf("lifecycle revision opacity source invariant mismatch: %s", strings.Join(findings, ", "))
+	}
+}
+
+func TestWorkstreamCLifecycleRevisionOpacitySourceGuardFixtures(t *testing.T) {
+	const target = "TestLifecycleRevisionFixture"
+	targets := []string{target}
+	valid := `
+package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`
+	if findings := lifecycleRevisionOpacityInlineBlockFindings(valid, targets); len(findings) != 0 {
+		t.Fatalf("valid lifecycle opacity fixture rejected: %s", strings.Join(findings, ", "))
+	}
+
+	duplicateTargetSource := strings.TrimSuffix(valid, "\n") + `
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{"nomad-index", "exec-run", "alloc-", "task", ":", "/"} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`
+	if findings := lifecycleRevisionOpacityInlineBlockFindings(duplicateTargetSource, targets); !containsWorkstreamCFinding(findings, target+":duplicate-target:2") {
+		t.Fatalf("duplicate target lifecycle opacity fixture mismatch: %s", strings.Join(findings, ", "))
+	}
+
+	for _, tc := range []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "missing length and hex check",
+			source: `
+package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{"nomad-index", "exec-run", "alloc-", "task", ":", "/"} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`,
+		},
+		{
+			name: "missing forbidden fragment",
+			source: `
+package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{"nomad-index", "exec-run", "alloc-", "task", ":"} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`,
+		},
+		{
+			name: "prints revision",
+			source: `
+package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatalf("revision mismatch: %s", result.LifecycleProjection.Revision)
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{"nomad-index", "exec-run", "alloc-", "task", ":", "/"} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`,
+		},
+		{
+			name: "prints lifecycle result",
+			source: `
+package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestLifecycleRevisionFixture(t *testing.T) {
+	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		tt := t
+		tt.Log(result)
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{"nomad-index", "exec-run", "alloc-", "task", ":", "/"} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+}
+`,
+		},
+		{
+			name: "target missing",
+			source: `
+package admission
+`,
+		},
+	} {
+		if findings := lifecycleRevisionOpacityInlineBlockFindings(tc.source, targets); len(findings) == 0 {
+			t.Fatalf("%s lifecycle opacity fixture was not rejected", tc.name)
+		}
+	}
+}
+
+func TestWorkstreamCLifecycleRevisionOpacitySourceGuardIgnoresMethodOnlyTarget(t *testing.T) {
+	targets := lifecycleRevisionOpacityTargetTests()
+	methodOnlyTarget := targets[0]
+
+	declarations := []string{
+		"type lifecycleRevisionValueFixtureReceiver struct{}\n",
+		lifecycleRevisionOpacityValidMethodFixtureSource("lifecycleRevisionValueFixtureReceiver", methodOnlyTarget),
+	}
+	for _, target := range targets[1:] {
+		declarations = append(declarations, lifecycleRevisionOpacityValidFunctionFixtureSource(target))
+	}
+
+	findings := lifecycleRevisionOpacityInlineBlockFindings(lifecycleRevisionOpacityFixtureSource(declarations), targets)
+	if len(findings) != 1 || !containsWorkstreamCFinding(findings, methodOnlyTarget+":missing-target") {
+		t.Fatalf("method-only lifecycle opacity target fixture mismatch: %s", strings.Join(findings, ", "))
+	}
+}
+
+func TestWorkstreamCLifecycleRevisionOpacitySourceGuardIgnoresSameNameMethodWithPackageFunction(t *testing.T) {
+	targets := lifecycleRevisionOpacityTargetTests()
+	functionTarget := targets[1]
+
+	declarations := []string{"type lifecycleRevisionPointerFixtureReceiver struct{}\n"}
+	for _, target := range targets {
+		declarations = append(declarations, lifecycleRevisionOpacityValidFunctionFixtureSource(target))
+	}
+	declarations = append(declarations, lifecycleRevisionOpacityValidMethodFixtureSource("*lifecycleRevisionPointerFixtureReceiver", functionTarget))
+
+	if findings := lifecycleRevisionOpacityInlineBlockFindings(lifecycleRevisionOpacityFixtureSource(declarations), targets); len(findings) != 0 {
+		t.Fatalf("package function plus same-name method lifecycle opacity fixture mismatch: %s", strings.Join(findings, ", "))
+	}
+}
+
+func lifecycleRevisionOpacityFixtureSource(declarations []string) string {
+	return `package admission
+
+import (
+	"strings"
+	"testing"
+)
+
+` + strings.Join(declarations, "\n")
+}
+
+func lifecycleRevisionOpacityValidFunctionFixtureSource(name string) string {
+	return `
+func ` + name + `(t *testing.T) {
+` + lifecycleRevisionOpacityValidFixtureBodySource() + `}
+`
+}
+
+func lifecycleRevisionOpacityValidMethodFixtureSource(receiver string, name string) string {
+	return `
+func (` + receiver + `) ` + name + `(t *testing.T) {
+` + lifecycleRevisionOpacityValidFixtureBodySource() + `}
+`
+}
+
+func lifecycleRevisionOpacityValidFixtureBodySource() string {
+	return `	result := struct {
+		LifecycleProjection struct{ Revision string }
+	}{}
+	if result.LifecycleProjection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(result.LifecycleProjection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(result.LifecycleProjection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+`
 }
 
 func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(t *testing.T) {
@@ -815,7 +1304,7 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		handoff.Evidence.RuntimeProfile != executionAuthorityEvidenceRuntimeProfile ||
 		handoff.Evidence.IdentityHandoff != executionAuthorityEvidenceIdentityHandoff ||
 		handoff.Evidence.WorkloadVault != executionAuthorityEvidenceWorkloadVault {
-		t.Fatalf("expected bounded handoff evidence labels, got %+v", handoff.Evidence)
+		t.Fatal("expected bounded handoff evidence labels")
 	}
 
 	projection := LifecycleProjection{Source: lifecycleProjectionSourceNomad, Revision: "opaque-c1-read-token"}
@@ -832,7 +1321,7 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		},
 	})
 
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"vault_token"`,
 		`"codex_token"`,
 		`"jwt_svid_token"`,
@@ -864,7 +1353,7 @@ func TestWorkstreamCAuthorityHandoffAndOutcomeEvidenceRemainBoundedNonAuthority(
 		`"private_key_pem"`,
 		`"pem_body"`,
 		`"raw_spire_socket"`,
-	)
+	})
 }
 
 func TestWorkstreamC3DefaultAuthorityHandoffExcludesLiveCredentialAndRetainedResultAuthority(t *testing.T) {
@@ -886,7 +1375,7 @@ func TestWorkstreamC3DefaultAuthorityHandoffExcludesLiveCredentialAndRetainedRes
 	)
 
 	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"token"`,
 		`"lease"`,
 		`"approval"`,
@@ -904,7 +1393,7 @@ func TestWorkstreamC3DefaultAuthorityHandoffExcludesLiveCredentialAndRetainedRes
 		`"retained_result_authority"`,
 		`"retained_result_id"`,
 		`"retained_result_path"`,
-	)
+	})
 }
 
 func TestWorkstreamC3ControlPlaneNormalShellAuthorityHandoffOnlyCarriesCredentialLocationCompatibility(t *testing.T) {
@@ -936,11 +1425,11 @@ func TestWorkstreamC3ControlPlaneNormalShellAuthorityHandoffOnlyCarriesCredentia
 		handoff.CodexCredentialLocation.CredentialSource != codexCredentialSourceWorkloadVault ||
 		handoff.CodexCredentialLocation.VaultSecretPath != "proof-secrets/data/codex-runtime-profile" ||
 		handoff.CodexCredentialLocation.VaultSecretField != "api_key" {
-		t.Fatalf("expected current non-secret credential-location compatibility metadata, got %+v", handoff.CodexCredentialLocation)
+		t.Fatal("current non-secret credential-location compatibility metadata mismatch")
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, handoff)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"token"`,
 		`"lease"`,
 		`"approval"`,
@@ -958,7 +1447,7 @@ func TestWorkstreamC3ControlPlaneNormalShellAuthorityHandoffOnlyCarriesCredentia
 		`"finalization"`,
 		`"retained_result_authority"`,
 		`"retained_result_id"`,
-	)
+	})
 }
 
 func TestWorkstreamC3OutcomeEvidenceLabelsRemainBoundedCompatibilityVocabulary(t *testing.T) {
@@ -1014,11 +1503,25 @@ func TestWorkstreamC3OutcomeEvidenceLabelsRemainBoundedCompatibilityVocabulary(t
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !reflect.DeepEqual(tt.evidence, tt.want) {
-				t.Fatalf("outcome evidence label compatibility changed: got %+v want %+v", tt.evidence, tt.want)
+			if tt.evidence.Source != tt.want.Source ||
+				tt.evidence.Observation != tt.want.Observation ||
+				tt.evidence.AccessClass != tt.want.AccessClass {
+				t.Fatal("outcome evidence label compatibility changed")
+			}
+			if (tt.evidence.LifecycleProjection == nil) != (tt.want.LifecycleProjection == nil) {
+				t.Fatal("outcome evidence lifecycle projection presence changed")
+			}
+			if tt.evidence.LifecycleProjection != nil && *tt.evidence.LifecycleProjection != *tt.want.LifecycleProjection {
+				t.Fatal("outcome evidence lifecycle projection changed")
+			}
+			if (tt.evidence.ProviderTerminalObserved == nil) != (tt.want.ProviderTerminalObserved == nil) {
+				t.Fatal("outcome evidence terminal observation presence changed")
+			}
+			if tt.evidence.ProviderTerminalObserved != nil && *tt.evidence.ProviderTerminalObserved != *tt.want.ProviderTerminalObserved {
+				t.Fatal("outcome evidence terminal observation changed")
 			}
 			payload := mustMarshalWorkstreamCTestJSON(t, tt.evidence)
-			assertTextOmitsAll(t, payload,
+			assertTextOmitsAllFixed(t, payload, []string{
 				`"scheduler_id"`,
 				`"workflow"`,
 				`"checkpoint"`,
@@ -1027,7 +1530,7 @@ func TestWorkstreamC3OutcomeEvidenceLabelsRemainBoundedCompatibilityVocabulary(t
 				`"credential"`,
 				`"token"`,
 				`"retained_result_authority"`,
-			)
+			})
 		})
 	}
 }
@@ -1121,12 +1624,29 @@ func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *te
 	}
 
 	projection := lifecycleProjectionFromNomad(42, 314)
-	assertOpaqueLifecycleProjectionRevision(t, projection.Revision)
+	if projection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(projection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(projection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
 	if strings.Contains(projection.Revision, "42") ||
 		strings.Contains(projection.Revision, "314") ||
 		strings.Contains(projection.Revision, "exec-run-") ||
 		strings.Contains(projection.Revision, "alloc-") {
-		t.Fatalf("C5 lifecycle projection revision must stay opaque, got %q", projection.Revision)
+		t.Fatal("C5 lifecycle projection revision must stay opaque")
 	}
 
 	evidenceBySurface := map[string]ExecutionOutcomeEvidence{
@@ -1139,27 +1659,27 @@ func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *te
 		evidenceBySurface["status"].Observation != outcomeObservationNomadTaskStateProjection ||
 		evidenceBySurface["status"].LifecycleProjection == nil ||
 		*evidenceBySurface["status"].LifecycleProjection != projection {
-		t.Fatalf("unexpected C5 status outcome evidence %+v", evidenceBySurface["status"])
+		t.Fatal("unexpected C5 status outcome evidence")
 	}
 	if evidenceBySurface["logs"].Source != outcomeEvidenceSourceNomad ||
 		evidenceBySurface["logs"].Observation != outcomeObservationNomadTaskStdout ||
 		evidenceBySurface["logs"].AccessClass != outcomeAccessClassPlaintextStdout {
-		t.Fatalf("unexpected C5 logs outcome evidence %+v", evidenceBySurface["logs"])
+		t.Fatal("unexpected C5 logs outcome evidence")
 	}
 	if evidenceBySurface["result"].Source != outcomeEvidenceSourceRetainedResultStore ||
 		evidenceBySurface["result"].Observation != outcomeObservationRetainedResultBundle ||
 		evidenceBySurface["result"].AccessClass != outcomeAccessClassOpaqueResultBundle {
-		t.Fatalf("unexpected C5 retained result outcome evidence %+v", evidenceBySurface["result"])
+		t.Fatal("unexpected C5 retained result outcome evidence")
 	}
 	if evidenceBySurface["cancel"].Source != outcomeEvidenceSourceNomad ||
 		evidenceBySurface["cancel"].Observation != outcomeObservationNomadStopAccepted ||
 		evidenceBySurface["cancel"].ProviderTerminalObserved == nil ||
 		*evidenceBySurface["cancel"].ProviderTerminalObserved {
-		t.Fatalf("unexpected C5 cancel outcome evidence %+v", evidenceBySurface["cancel"])
+		t.Fatal("unexpected C5 cancel outcome evidence")
 	}
 
 	payload := mustMarshalWorkstreamCTestJSON(t, evidenceBySurface)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, []string{
 		`"review":`,
 		`"checkpoint":`,
 		`"finalization":`,
@@ -1187,7 +1707,7 @@ func TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority(t *te
 		`"secret_payload":`,
 		`"lease_id":`,
 		`"lease_duration":`,
-	)
+	})
 }
 
 func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *testing.T) {
@@ -1208,10 +1728,27 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 
 	projection := lifecycleProjectionFromNomad(101, 202, 303)
 	if projection.Source != lifecycleProjectionSourceNomad {
-		t.Fatalf("expected current documented projection source nomad, got %+v", projection)
+		t.Fatal("expected current documented projection source nomad")
 	}
-	assertOpaqueLifecycleProjectionRevision(t, projection.Revision)
-	for _, forbidden := range []string{
+	if projection.Revision == "" {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	if !opaqueLifecycleProjectionRevisionPattern.MatchString(projection.Revision) {
+		t.Fatal("lifecycle projection revision opacity invariant failed")
+	}
+	for index, forbiddenRevisionFragment := range []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	} {
+		if strings.Contains(projection.Revision, forbiddenRevisionFragment) {
+			t.Fatalf("lifecycle projection revision opacity invariant failed at index %d", index)
+		}
+	}
+	for index, forbidden := range []string{
 		"101",
 		"202",
 		"303",
@@ -1223,7 +1760,7 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 		"result.tar.gz",
 	} {
 		if strings.Contains(projection.Revision, forbidden) {
-			t.Fatalf("lifecycle projection revision must stay opaque and non-authoritative; found %q in %q", forbidden, projection.Revision)
+			t.Fatalf("lifecycle projection revision forbidden authority fragment at index %d", index)
 		}
 	}
 
@@ -1231,7 +1768,7 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 	if statusEvidence.Source != outcomeEvidenceSourceNomad ||
 		statusEvidence.LifecycleProjection == nil ||
 		*statusEvidence.LifecycleProjection != projection {
-		t.Fatalf("status outcome evidence must repeat the same opaque Nomad projection token, got %+v", statusEvidence)
+		t.Fatal("status outcome evidence must repeat the same opaque Nomad projection token")
 	}
 	if logsOutcomeEvidence(false).Source != outcomeEvidenceSourceNomad ||
 		cancelOutcomeEvidence().Source != outcomeEvidenceSourceNomad ||
@@ -1264,8 +1801,8 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 		},
 		Meta: map[string]LifecycleProjection{"same_run_read_model": projection},
 	})
-	assertTextOmitsAll(t, payload, workstreamCLifecycleProjectionAuthorityForbiddenJSONTerms()...)
-	assertTextOmitsAll(t, payload,
+	assertTextOmitsAllFixed(t, payload, workstreamCLifecycleProjectionAuthorityForbiddenJSONTerms())
+	assertTextOmitsAllFixed(t, payload, []string{
 		"exec-run-0123456789abcdef",
 		"alloc-authority",
 		"cp-workflow-version",
@@ -1273,7 +1810,7 @@ func TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly(t *
 		"support payload",
 		"proof payload",
 		"raw log payload",
-	)
+	})
 }
 
 func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *testing.T) {
@@ -1303,7 +1840,7 @@ func TestWorkstreamC2ControlPlaneNormalShellCompatibilitySurfaceUnchanged(t *tes
 		profile.image != "execution-substrate/control-plane-normal-shell:test" ||
 		profile.env[codexCLIPathEnvKey] != "/usr/local/bin/codex" ||
 		profile.env[codexCredentialSourceEnvKey] != codexCredentialSourceWorkloadVault {
-		t.Fatalf("expected existing profile image and non-secret metadata compatibility, got %+v", profile)
+		t.Fatal("existing profile image and non-secret metadata compatibility mismatch")
 	}
 }
 
@@ -1346,18 +1883,10 @@ func assertAdmissionError(t *testing.T, err *Error, status int, code string) {
 	t.Helper()
 
 	if err == nil {
-		t.Fatalf("expected error status=%d code=%s", status, code)
+		t.Fatalf("expected admission error with status %d", status)
 	}
 	if err.Status != status || err.Code != code {
-		t.Fatalf("expected error status=%d code=%s, got %+v", status, code, err)
-	}
-}
-
-func assertExactCallCount(t *testing.T, counts map[string]int, path string, want int) {
-	t.Helper()
-
-	if got := counts[path]; got != want {
-		t.Fatalf("expected %s to be called %d time(s), got %d in %v", path, want, got, counts)
+		t.Fatalf("admission error classification mismatch: got status %d want %d", err.Status, status)
 	}
 }
 
@@ -1366,14 +1895,10 @@ func assertDirectoryEmpty(t *testing.T, dir string) {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("read directory %s: %v", dir, err)
+		t.Fatal("read guarded directory failed")
 	}
 	if len(entries) != 0 {
-		names := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			names = append(names, entry.Name())
-		}
-		t.Fatalf("expected %s to remain empty, found %v", dir, names)
+		t.Fatalf("guarded directory entry count mismatch: got %d want 0", len(entries))
 	}
 }
 
@@ -1387,35 +1912,500 @@ func mustMarshalWorkstreamCTestJSON(t *testing.T, payload any) string {
 	return string(data)
 }
 
-func assertJSONFieldsExact(t *testing.T, payload any, want ...string) {
+func collectDirectJSONFieldNames(t *testing.T, value any) map[string]struct{} {
 	t.Helper()
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
+	typ := reflect.TypeOf(value)
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		t.Fatalf("decode marshaled payload: %v", err)
+	if typ.Kind() != reflect.Struct {
+		t.Fatal("expected struct value for direct JSON field collection")
 	}
-	if len(fields) != len(want) {
-		t.Fatalf("expected JSON fields %v, got %s", want, string(data))
+
+	names := map[string]struct{}{}
+	for index := 0; index < typ.NumField(); index++ {
+		tag := typ.Field(index).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" && name != "-" {
+			names[name] = struct{}{}
+		}
 	}
-	for _, field := range want {
-		if _, ok := fields[field]; !ok {
-			t.Fatalf("expected JSON field %q in %s", field, string(data))
+	return names
+}
+
+func assertTextOmitsAllFixed(t *testing.T, text string, forbidden []string) {
+	t.Helper()
+
+	for index, item := range forbidden {
+		if strings.Contains(text, item) {
+			t.Fatalf("forbidden text fragment present at index %d", index)
 		}
 	}
 }
 
-func assertTextOmitsAll(t *testing.T, text string, forbidden ...string) {
-	t.Helper()
+func lifecycleRevisionOpacityTargetTests() []string {
+	return []string{
+		"TestWorkstreamCLifecycleProjectionAndCancelReceiptsHideNomadIdentifiers",
+		"TestWorkstreamC2LifecycleProjectionRevisionIsOpaqueNomadReadCoordinationOnly",
+		"TestWorkstreamC5LifecycleCompatibilityDTOsAndEvidenceStayNonAuthority",
+		"TestWorkstreamCLifecycleProjectionAuthorityLabelsStayNomadReadModelOnly",
+	}
+}
 
-	for _, item := range forbidden {
-		if strings.Contains(text, item) {
-			t.Fatalf("expected text to omit %q, got %s", item, text)
+func lifecycleRevisionOpacityInlineBlockFindings(source string, targets []string) []string {
+	if opaqueLifecycleProjectionRevisionPattern.String() != `^[0-9a-f]{64}$` {
+		return []string{"lifecycle-revision-pattern-contract"}
+	}
+
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "workstream-c-lifecycle-opacity-source.go", source, parser.ParseComments)
+	if err != nil {
+		return []string{"parse-source"}
+	}
+
+	targetNames := map[string]bool{}
+	for _, target := range targets {
+		targetNames[target] = true
+	}
+	functions := map[string][]*ast.FuncDecl{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Body == nil {
+			continue
+		}
+		if targetNames[fn.Name.Name] {
+			functions[fn.Name.Name] = append(functions[fn.Name.Name], fn)
 		}
 	}
+
+	var findings []string
+	for _, target := range targets {
+		matches := functions[target]
+		switch len(matches) {
+		case 0:
+			findings = append(findings, target+":missing-target")
+			continue
+		case 1:
+			findings = append(findings, lifecycleRevisionOpacityFunctionFindings(source, fileSet, target, matches[0])...)
+		default:
+			findings = append(findings, target+":duplicate-target:"+strconv.Itoa(len(matches)))
+		}
+	}
+	return findings
+}
+
+func containsWorkstreamCFinding(findings []string, want string) bool {
+	for _, finding := range findings {
+		if finding == want {
+			return true
+		}
+	}
+	return false
+}
+
+func lifecycleRevisionOpacityFunctionFindings(source string, fileSet *token.FileSet, name string, fn *ast.FuncDecl) []string {
+	var findings []string
+	if strings.Contains(sourceForWorkstreamNode(source, fileSet, fn.Body), "assertOpaqueLifecycleProjection"+"Revision(") {
+		findings = append(findings, name+":legacy-helper-call")
+	}
+
+	revisionExprs := lifecycleRevisionMatchStringExprs(source, fileSet, fn)
+	if len(revisionExprs) == 0 {
+		findings = append(findings, name+":missing-hex-length-check")
+	}
+	if !lifecycleRevisionHasNonemptyCheck(source, fileSet, fn, revisionExprs) {
+		findings = append(findings, name+":missing-nonempty-check")
+	}
+
+	rejected := lifecycleRevisionForbiddenFragmentsRejected(source, fileSet, fn, revisionExprs)
+	for _, fragment := range lifecycleRevisionForbiddenFragments() {
+		if !rejected[fragment] {
+			findings = append(findings, name+":missing-forbidden-fragment")
+			break
+		}
+	}
+
+	findings = append(findings, lifecycleRevisionDiagnosticFindings(source, fileSet, name, fn, revisionExprs)...)
+	return findings
+}
+
+func lifecycleRevisionForbiddenFragments() []string {
+	return []string{
+		"nomad-index",
+		"exec-run",
+		"alloc-",
+		"task",
+		":",
+		"/",
+	}
+}
+
+func lifecycleRevisionMatchStringExprs(source string, fileSet *token.FileSet, fn *ast.FuncDecl) map[string]struct{} {
+	expressions := map[string]struct{}{}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "MatchString" {
+			return true
+		}
+		if normalizedWorkstreamExpr(source, fileSet, selector.X) != "opaqueLifecycleProjectionRevisionPattern" {
+			return true
+		}
+		expressions[normalizedWorkstreamExpr(source, fileSet, call.Args[0])] = struct{}{}
+		return true
+	})
+	return expressions
+}
+
+func lifecycleRevisionHasNonemptyCheck(source string, fileSet *token.FileSet, fn *ast.FuncDecl, revisionExprs map[string]struct{}) bool {
+	found := false
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		condition, ok := node.(*ast.BinaryExpr)
+		if !ok || condition.Op != token.EQL {
+			return true
+		}
+		if lifecycleRevisionExprMatches(source, fileSet, condition.X, revisionExprs) && isEmptyStringLiteral(condition.Y) {
+			found = true
+			return false
+		}
+		if lifecycleRevisionExprMatches(source, fileSet, condition.Y, revisionExprs) && isEmptyStringLiteral(condition.X) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func lifecycleRevisionForbiddenFragmentsRejected(source string, fileSet *token.FileSet, fn *ast.FuncDecl, revisionExprs map[string]struct{}) map[string]bool {
+	rejected := map[string]bool{}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok {
+			if fragment, ok := lifecycleDirectForbiddenFragmentCheck(source, fileSet, call, revisionExprs); ok {
+				rejected[fragment] = true
+			}
+			return true
+		}
+
+		ranged, ok := node.(*ast.RangeStmt)
+		if !ok {
+			return true
+		}
+		fragments := lifecycleStringLiteralSet(ranged.X)
+		if len(fragments) == 0 {
+			return true
+		}
+		rangeNames := map[string]bool{}
+		for _, expr := range []ast.Expr{ranged.Key, ranged.Value} {
+			ident, ok := expr.(*ast.Ident)
+			if ok && ident.Name != "_" {
+				rangeNames[ident.Name] = true
+			}
+		}
+		if len(rangeNames) == 0 {
+			return true
+		}
+		if lifecycleRangeBodyContainsRevisionFragmentCheck(source, fileSet, ranged.Body, revisionExprs, rangeNames) {
+			for fragment := range fragments {
+				rejected[fragment] = true
+			}
+		}
+		return true
+	})
+	return rejected
+}
+
+func lifecycleDirectForbiddenFragmentCheck(source string, fileSet *token.FileSet, call *ast.CallExpr, revisionExprs map[string]struct{}) (string, bool) {
+	if !isStringsContainsCall(source, fileSet, call) || len(call.Args) != 2 {
+		return "", false
+	}
+	if !lifecycleRevisionExprMatches(source, fileSet, call.Args[0], revisionExprs) {
+		return "", false
+	}
+	fragment, ok := stringLiteralValueFromExpr(call.Args[1])
+	if !ok {
+		return "", false
+	}
+	for _, required := range lifecycleRevisionForbiddenFragments() {
+		if fragment == required {
+			return fragment, true
+		}
+	}
+	return "", false
+}
+
+func lifecycleRangeBodyContainsRevisionFragmentCheck(source string, fileSet *token.FileSet, body *ast.BlockStmt, revisionExprs map[string]struct{}, rangeNames map[string]bool) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !isStringsContainsCall(source, fileSet, call) || len(call.Args) != 2 {
+			return true
+		}
+		if !lifecycleRevisionExprMatches(source, fileSet, call.Args[0], revisionExprs) {
+			return true
+		}
+		ident, ok := call.Args[1].(*ast.Ident)
+		if ok && rangeNames[ident.Name] {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func lifecycleRevisionDiagnosticFindings(source string, fileSet *token.FileSet, name string, fn *ast.FuncDecl, revisionExprs map[string]struct{}) []string {
+	testingHandles := lifecycleTestingHandleNames(fn)
+	var findings []string
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		branch, ok := node.(*ast.IfStmt)
+		if !ok || !lifecycleConditionMentionsRevision(source, fileSet, branch.Cond, revisionExprs) {
+			return true
+		}
+		ast.Inspect(branch.Body, func(child ast.Node) bool {
+			call, ok := child.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			method, ok := lifecycleTestingOutputMethod(call, testingHandles)
+			if !ok {
+				return true
+			}
+			if !lifecycleTestingDiagnosticIsBounded(method, call) {
+				findings = append(findings, name+":unbounded-lifecycle-diagnostic")
+			}
+			return true
+		})
+		return true
+	})
+	return findings
+}
+
+func lifecycleConditionMentionsRevision(source string, fileSet *token.FileSet, condition ast.Expr, revisionExprs map[string]struct{}) bool {
+	conditionSource := sourceForWorkstreamNode(source, fileSet, condition)
+	conditionKey := normalizeWorkstreamSource(conditionSource)
+	for revisionExpr := range revisionExprs {
+		if strings.Contains(conditionKey, revisionExpr) {
+			return true
+		}
+	}
+	return strings.Contains(conditionSource, "LifecycleProjection") && strings.Contains(conditionSource, "Revision")
+}
+
+func lifecycleTestingDiagnosticIsBounded(method string, call *ast.CallExpr) bool {
+	if lifecycleTestingFormattedOutputMethod(method) {
+		if len(call.Args) == 0 || !lifecycleStaticDiagnosticArg(call.Args[0]) {
+			return false
+		}
+		for _, arg := range call.Args[1:] {
+			if !lifecycleSafeDiagnosticIndexArg(arg) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, arg := range call.Args {
+		if !lifecycleStaticDiagnosticArg(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+func lifecycleTestingOutputMethod(call *ast.CallExpr, testingHandles map[string]bool) (string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok || !testingHandles[receiver.Name] {
+		return "", false
+	}
+	if lifecycleTestingFormattedOutputMethod(selector.Sel.Name) || lifecycleTestingUnformattedOutputMethod(selector.Sel.Name) {
+		return selector.Sel.Name, true
+	}
+	return "", false
+}
+
+func lifecycleTestingFormattedOutputMethod(name string) bool {
+	switch name {
+	case "Fatalf", "Errorf", "Logf", "Skipf":
+		return true
+	default:
+		return false
+	}
+}
+
+func lifecycleTestingUnformattedOutputMethod(name string) bool {
+	switch name {
+	case "Fatal", "Error", "Log", "Skip":
+		return true
+	default:
+		return false
+	}
+}
+
+func lifecycleTestingHandleNames(fn *ast.FuncDecl) map[string]bool {
+	handles := map[string]bool{}
+	if fn.Type.Params != nil {
+		for _, param := range fn.Type.Params.List {
+			if !lifecycleIsTestingHandleType(param.Type) {
+				continue
+			}
+			for _, name := range param.Names {
+				handles[name.Name] = true
+			}
+		}
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.AssignStmt:
+				for index, lhs := range typed.Lhs {
+					if index >= len(typed.Rhs) {
+						continue
+					}
+					left, ok := lhs.(*ast.Ident)
+					if !ok || left.Name == "_" || handles[left.Name] {
+						continue
+					}
+					right, ok := typed.Rhs[index].(*ast.Ident)
+					if ok && handles[right.Name] {
+						handles[left.Name] = true
+						changed = true
+					}
+				}
+			case *ast.ValueSpec:
+				for index, name := range typed.Names {
+					if name.Name == "_" || handles[name.Name] || index >= len(typed.Values) {
+						continue
+					}
+					value, ok := typed.Values[index].(*ast.Ident)
+					if ok && handles[value.Name] {
+						handles[name.Name] = true
+						changed = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return handles
+}
+
+func lifecycleIsTestingHandleType(expr ast.Expr) bool {
+	switch typed := expr.(type) {
+	case *ast.StarExpr:
+		selector, ok := typed.X.(*ast.SelectorExpr)
+		return ok && selectedWorkstreamPackageName(selector.X) == "testing" && selector.Sel.Name == "T"
+	case *ast.SelectorExpr:
+		return selectedWorkstreamPackageName(typed.X) == "testing" && typed.Sel.Name == "TB"
+	default:
+		return false
+	}
+}
+
+func lifecycleStaticDiagnosticArg(expr ast.Expr) bool {
+	if _, ok := stringLiteralValueFromExpr(expr); ok {
+		return true
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return strings.HasSuffix(ident.Name, "Classification") || strings.HasSuffix(ident.Name, "Diagnostic")
+}
+
+func lifecycleSafeDiagnosticIndexArg(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "index"
+}
+
+func lifecycleRevisionExprMatches(source string, fileSet *token.FileSet, expr ast.Expr, revisionExprs map[string]struct{}) bool {
+	_, ok := revisionExprs[normalizedWorkstreamExpr(source, fileSet, expr)]
+	return ok
+}
+
+func isStringsContainsCall(source string, fileSet *token.FileSet, call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Contains" {
+		return false
+	}
+	return normalizedWorkstreamExpr(source, fileSet, selector.X) == "strings"
+}
+
+func lifecycleStringLiteralSet(expr ast.Expr) map[string]bool {
+	literals := map[string]bool{}
+	composite, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return literals
+	}
+	for _, element := range composite.Elts {
+		value, ok := stringLiteralValueFromExpr(element)
+		if ok {
+			literals[value] = true
+		}
+	}
+	return literals
+}
+
+func isEmptyStringLiteral(expr ast.Expr) bool {
+	value, ok := stringLiteralValueFromExpr(expr)
+	return ok && value == ""
+}
+
+func stringLiteralValueFromExpr(expr ast.Expr) (string, bool) {
+	literal, ok := expr.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func normalizedWorkstreamExpr(source string, fileSet *token.FileSet, expr ast.Expr) string {
+	return normalizeWorkstreamSource(sourceForWorkstreamNode(source, fileSet, expr))
+}
+
+func normalizeWorkstreamSource(text string) string {
+	return strings.Join(strings.Fields(text), "")
+}
+
+func selectedWorkstreamPackageName(expr ast.Expr) string {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func sourceForWorkstreamNode(source string, fileSet *token.FileSet, node ast.Node) string {
+	start := fileSet.Position(node.Pos()).Offset
+	end := fileSet.Position(node.End()).Offset
+	if start < 0 || end < start || end > len(source) {
+		return ""
+	}
+	return source[start:end]
 }
 
 func workstreamC4ForbiddenCredentialFieldNames() []string {

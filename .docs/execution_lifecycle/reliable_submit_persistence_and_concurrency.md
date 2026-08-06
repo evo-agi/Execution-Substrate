@@ -33,10 +33,16 @@ schema `execution-substrate.reliable-submit-request/v1`, reliable contract
 `execution-substrate.reliable-submit/v1`, discriminator `reliable_submit`,
 submit-key syntax, caller/key derivation, composite `ClaimID` construction
 through the committed pure-model constructor, and ES-neutral outcome projection.
-It does not implement source-grounded resolved effective-plan extraction,
-canonical effective-plan encoding, `PlanBinding` construction from admitted
-facts, complete effective-plan witness construction, durable replay-envelope
-custody, or runtime orchestration. Those helpers remain runtime-unwired and do
+Current ES source also has one private source-grounded `resolvedExecutionPlan`:
+current legacy `Submit` constructs and consumes that plan, derived from the
+existing admission and submit-resolution path. That extraction is private and
+in-process, and it does not enable reliable submit. Reliable-submit runtime
+consumption of the plan remains absent, and private deterministic canonical
+encoding, `PlanBinding` construction from the plan, complete
+`EffectivePlanWitness` construction, replay-envelope custody and restart
+reconstruction, job-spec digesting, Nomad reconciliation, store lifecycle and
+configuration, public reliable request/response enablement, and reliable runtime
+orchestration remain future work. Those helpers remain runtime-unwired and do
 not alter this ADR's durable schema, migrations, store port, or SQLite startup
 status.
 
@@ -885,10 +891,14 @@ tranche.
 
 The completed latest-operation source repair preserves the private
 establish/load/CAS `claimStore` port shape. Later reliable-submit gates remain
-resolved execution-plan extraction, state/store lifecycle and configuration,
-Nomad reconciliation, and public runtime enablement. Those later gates must not
-reinterpret the source repair as mutation-history support, public replay DTOs,
-PostgreSQL implementation, or end-to-end reliable-submit availability.
+reliable-submit consumption of the private resolved plan, private deterministic
+canonical encoding, `PlanBinding` construction from the plan, complete
+`EffectivePlanWitness` construction, replay-envelope custody and restart
+reconstruction, state/store lifecycle and configuration, job-spec digesting,
+Nomad reconciliation, public reliable request/response enablement, and reliable
+runtime orchestration. Those later gates must not reinterpret the source repair
+as mutation-history support, public replay DTOs, PostgreSQL implementation, or
+end-to-end reliable-submit availability.
 
 ## 16. Explicit Non-Claims And Open Decisions
 

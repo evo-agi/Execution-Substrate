@@ -163,6 +163,7 @@ type preparedArtifact struct {
 
 type preparedAdmission struct {
 	result                      PrepareResult
+	normalizedRequest           PrepareRequest
 	artifact                    preparedArtifact
 	workloadVaultPlan           esconfig.ResolvedWorkloadVaultAuthPlan
 	trustModel                  egsmodel.RuntimeTrustPolicy
@@ -378,6 +379,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 		result: PrepareResult{
 			Success: true,
 		},
+		normalizedRequest:           clonePrepareRequest(req),
 		artifact:                    artifact,
 		workloadVaultPlan:           plan,
 		trustModel:                  *trustModel,

@@ -27,14 +27,18 @@ rejected, and silent downgrade to current unkeyed submit is forbidden. The
 unavailable contract-adapter foundation also selects the private reliable
 request-family vocabulary, submit-key syntax, caller/key derivation, composite
 `ClaimID` construction through the committed pure-model constructor, and
-ES-neutral outcome semantics. It does not implement source-grounded resolved
-effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
-construction from admitted facts, complete effective-plan witness construction,
-durable replay-envelope custody, or runtime orchestration. No current public
+ES-neutral outcome semantics. Current legacy `Submit` now consumes a private
+source-grounded `resolvedExecutionPlan`, but no canonical effective-plan
+encoding, `PlanBinding` construction from admitted facts, complete
+effective-plan witness construction, durable replay-envelope custody, or
+runtime orchestration is implemented. No current public request field, public
+response DTO field, producer field, handler behavior, query route, Nomad
+behavior, runtime configuration, or runtime behavior is implemented by this
+document, the private store tranche, or the unavailable contract-adapter
+foundation. The resolved-plan extraction tranche likewise adds no public
 request field, public response DTO field, producer field, handler behavior,
-query route, Nomad behavior, runtime configuration, or runtime behavior is
-implemented by this document, the private store tranche, or the unavailable
-contract-adapter foundation.
+query route, Nomad behavior, runtime configuration, reliable handler, or
+runtime behavior.
 
 The source-bearing reliable-submit package is now present as the admission-local
 internal Go package `es/admission/internal/reliablesubmit`. Its pure model in
@@ -94,10 +98,13 @@ Current source also contains admission-local private reliable-submit foundation
 helpers in package `admission`. They define the private reliable request-family
 shape and validation, caller/key safe-reference derivation, composite `ClaimID`
 construction through the committed pure-model constructor, and ES-neutral
-submission-outcome projection. They do not implement source-grounded resolved
-effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
-construction from admitted facts, complete effective-plan witness construction,
-durable replay-envelope custody, or runtime orchestration. Those helpers are not
+submission-outcome projection. Current source additionally contains a private
+`resolvedExecutionPlan` in package `admission`; current legacy `Submit` consumes
+that plan after current admission and submit-only resolution and before
+payload/run/staging/Nomad effects. The reliable-submit foundation helpers still
+do not implement canonical effective-plan encoding, `PlanBinding` construction
+from admitted facts, complete effective-plan witness construction, durable
+replay-envelope custody, or runtime orchestration. Those helpers are not
 exported public DTOs, are not wired to handlers, and are not called by current
 submit.
 
@@ -343,25 +350,31 @@ Output identity can be explicitly inapplicable only through a future
 execution-kind rule, and authority handoff can be explicitly inapplicable;
 generic inapplicability for required categories fails closed.
 
-No effective-plan contract-adapter implementation is present in this tranche.
-The rejected self-validating plan binder has been removed. This patch does not
-select a canonical effective-plan encoding, effective-plan commitments,
-`PlanBinding` construction from admitted facts, a complete witness constructor
-in package `admission`, durable replay-envelope custody, or runtime
-orchestration.
+The first source-grounded resolved-plan tranche,
+`resolved-execution-plan-extraction-foundation`, is now present in package
+`admission`. It introduces one private ES-owned `resolvedExecutionPlan` and
+makes current legacy `Submit` consume that plan as its execution-semantics
+source. The plan is derived from the actual current ES admission and
+submit-resolution path: `prepareAdmission` results, artifact and manifest facts,
+policy/trust resolution already completed by admission, submit-only
+artifact/capability/target checks, resource/default resolution,
+runtime-profile resolution, network fact, mount and environment semantics,
+semantic runtime command/argv facts, and authority-handoff materialization
+inputs. The plan-freeze point is the successful return of the private
+constructor, after current admission and submit-only resolution but before
+payload materialization, run ID generation, staging, mount artifact reads or
+extraction, trust-material staging, runtime-identity endpoint generation, Nomad
+job construction, or Nomad submission.
 
-The later separately reconnoitered tranche is
-`resolved-execution-plan-extraction-foundation`. Its purpose is to derive one
-authoritative resolved execution plan from the actual current ES admission and
-runtime-resolution path: `prepareAdmission` results, artifact and manifest
-facts, policy/trust resolution, resource/default resolution, runtime-profile
-resolution, network fact, mount and environment semantics, current runtime
-command construction, and authority-handoff behavior. Current legacy `Submit`
-and future reliable `PlanBinding` must consume the same source-grounded resolved
-plan.
+This tranche still does not select a canonical effective-plan encoding,
+effective-plan commitments, `PlanBinding` construction from admitted facts, a
+complete witness constructor in package `admission`, durable replay-envelope
+custody, job-spec digesting, reliable-submit handler/config/producer/store
+lifecycle wiring, or runtime orchestration. Future reliable `PlanBinding` must
+consume the same source-grounded resolved plan in a separate tranche.
 
-That later tranche must not synthesize `PrepareRequest` or `Manifest` proof from
-the proposed plan itself, create a parallel admission engine, silently tighten
+The resolved-plan tranche does not synthesize `PrepareRequest` or `Manifest`
+proof from the plan itself, create a parallel admission engine, silently tighten
 the current empty-environment-allowlist contract, or infer authority-handoff
 inapplicability contrary to current `Submit` behavior. Any future canonical plan
 encoding must normalize semantic names before sorting and duplicate detection.
@@ -373,10 +386,11 @@ enforce explicit allowlist membership. If a future project decision makes an
 empty list mean no environment additions, that requires a separate owning
 admission-contract change and compatibility review.
 
-Current supported `Submit` constructs `authority_handoff`. Any future
-effective-plan representation must derive authority-handoff applicability from
-current source-owned runtime behavior. No authority-handoff inapplicability
-option is selected by this tranche.
+Current supported `Submit` constructs `authority_handoff`, and the private
+resolved plan currently represents authority-handoff applicability as true.
+Future canonical binding/witness work must derive authority-handoff
+applicability from this source-owned runtime behavior. No authority-handoff
+inapplicability option is selected by this tranche.
 
 ## 7. Narrow Durable Correlation Semantics
 
@@ -591,7 +605,7 @@ This target contract makes these explicit non-claims:
 - no public request DTO implemented;
 - no handler or decoder implemented;
 - no route implementation;
-- no source-grounded resolved effective-plan extraction implemented;
+- no canonical reliable-submit effective-plan adapter implemented;
 - no canonical effective-plan encoding implemented;
 - no `PlanBinding` construction from admitted facts implemented;
 - no complete effective-plan witness construction in package `admission`
@@ -650,6 +664,9 @@ Implementation requires these local gates before runtime behavior changes:
 
 ## 17. Open Seams
 
+Private source-grounded resolved execution-plan extraction is implemented for
+current legacy `Submit`; it is no longer an open seam in this bounded slice.
+
 The following seams remain open:
 
 - exact public producer response schema identifier and final declaration
@@ -659,11 +676,13 @@ The following seams remain open:
 - exact public outcome and error vocabulary;
 - exact reliable-submit state-path config key;
 - TTL, tombstone, and garbage collection;
-- source-grounded resolved execution plan extraction;
-- canonical effective-plan encoding and `PlanBinding` construction from
+- private canonical resolved-plan encoding and `PlanBinding` construction from
   admitted facts;
+- complete `EffectivePlanWitness` construction;
+- replay-envelope custody and reconstruction;
+- reliable runtime consumption;
 - plan snapshot versus immutable references;
-- Nomad reconciliation mechanism;
+- job-spec digesting and Nomad reconciliation mechanism where applicable;
 - deterministic versus random assigned `run_id`;
 - bootstrap exception;
 - caller namespace refinement beyond authenticated identity;

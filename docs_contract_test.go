@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -95,6 +99,107 @@ func compactDocSection(t *testing.T, doc string, start string, end string) strin
 	return compactText(docSection(t, doc, start, end))
 }
 
+func uniqueDocSection(t *testing.T, document string, startHeading string, endHeading string) string {
+	t.Helper()
+	section, err := uniqueDocSectionText(document, startHeading, endHeading)
+	if err != nil {
+		t.Fatalf("unique document section %q to %q: %v", startHeading, endHeading, err)
+	}
+	return section
+}
+
+func compactUniqueDocSection(t *testing.T, document string, startHeading string, endHeading string) string {
+	t.Helper()
+	return compactText(uniqueDocSection(t, document, startHeading, endHeading))
+}
+
+func uniqueFinalDocSection(t *testing.T, document string, finalHeading string) string {
+	t.Helper()
+	section, err := uniqueFinalDocSectionText(document, finalHeading)
+	if err != nil {
+		t.Fatalf("unique final document section %q: %v", finalHeading, err)
+	}
+	return section
+}
+
+func compactUniqueFinalDocSection(t *testing.T, document string, finalHeading string) string {
+	t.Helper()
+	return compactText(uniqueFinalDocSection(t, document, finalHeading))
+}
+
+func uniqueDocSectionText(document string, startHeading string, endHeading string) (string, error) {
+	if startHeading == "" || endHeading == "" {
+		return "", fmt.Errorf("start and end headings must be nonempty")
+	}
+	if strings.Count(document, startHeading) != 1 {
+		return "", fmt.Errorf("start heading count mismatch")
+	}
+	if strings.Count(document, endHeading) != 1 {
+		return "", fmt.Errorf("end heading count mismatch")
+	}
+	startIndex := strings.Index(document, startHeading)
+	endIndex := strings.Index(document, endHeading)
+	if endIndex <= startIndex {
+		return "", fmt.Errorf("end heading must occur after start heading")
+	}
+	bodyStart := startIndex + len(startHeading)
+	if strings.TrimSpace(document[bodyStart:endIndex]) == "" {
+		return "", fmt.Errorf("bounded section is empty")
+	}
+	return document[startIndex:endIndex], nil
+}
+
+func uniqueFinalDocSectionText(document string, finalHeading string) (string, error) {
+	if finalHeading == "" {
+		return "", fmt.Errorf("final heading must be nonempty")
+	}
+
+	matches := 0
+	bodyStart := -1
+	offset := 0
+	inFence := false
+	for _, rawLine := range strings.SplitAfter(document, "\n") {
+		line := strings.TrimSuffix(rawLine, "\n")
+		line = strings.TrimSuffix(line, "\r")
+
+		if isMarkdownFenceBoundary(line) {
+			inFence = !inFence
+			offset += len(rawLine)
+			continue
+		}
+		if inFence {
+			offset += len(rawLine)
+			continue
+		}
+
+		switch {
+		case line == finalHeading:
+			matches++
+			bodyStart = offset + len(rawLine)
+		case matches > 0 && isLevelOneOrTwoMarkdownHeading(line):
+			return "", fmt.Errorf("final heading is followed by a level-one or level-two heading")
+		}
+		offset += len(rawLine)
+	}
+
+	if matches != 1 {
+		return "", fmt.Errorf("final heading count mismatch")
+	}
+	if strings.TrimSpace(document[bodyStart:]) == "" {
+		return "", fmt.Errorf("final section is empty")
+	}
+	return document[bodyStart:], nil
+}
+
+func isMarkdownFenceBoundary(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+func isLevelOneOrTwoMarkdownHeading(line string) bool {
+	return strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")
+}
+
 func markedDocSection(t *testing.T, label string, doc string, start string, end string) string {
 	t.Helper()
 
@@ -150,6 +255,354 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 			t.Fatalf("%s must not contain %q", label, phrase)
 		}
 	}
+}
+
+func staleResolvedPlanExtractionClaims() []string {
+	return []string{
+		"source-grounded resolved execution plan extraction;",
+		"source-grounded resolved execution-plan extraction;",
+		"source-grounded resolved execution plan extraction remains open",
+		"source-grounded resolved execution-plan extraction remains open",
+		"source-grounded resolved execution plan extraction remains an open seam",
+		"source-grounded resolved execution-plan extraction remains an open seam",
+		"source-grounded resolved execution plan extraction remains a later gate",
+		"source-grounded resolved execution-plan extraction remains a later gate",
+		"source-grounded extraction remains a later gate",
+		"source-grounded resolved execution plan extraction is not implemented",
+		"source-grounded resolved execution-plan extraction is not implemented",
+		"does not implement source-grounded resolved execution plan extraction",
+		"does not implement source-grounded resolved execution-plan extraction",
+		"does not implement source-grounded resolved effective-plan extraction",
+		"do not implement source-grounded resolved execution plan extraction",
+		"do not implement source-grounded resolved execution-plan extraction",
+		"do not implement source-grounded resolved effective-plan extraction",
+	}
+}
+
+func containsStaleResolvedPlanExtractionClaim(text string) bool {
+	section := compactText(text)
+	for _, stale := range staleResolvedPlanExtractionClaims() {
+		if strings.Contains(section, stale) {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNoStaleResolvedPlanExtractionClaim(t *testing.T, label string, text string) {
+	t.Helper()
+
+	if containsStaleResolvedPlanExtractionClaim(text) {
+		t.Fatalf("%s contains a stale resolved-plan extraction open/absent claim", label)
+	}
+}
+
+func TestResolvedPlanExtractionStaleClaimGuardClassifiesScopedStatements(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		text      string
+		wantStale bool
+	}{
+		{
+			name:      "non-hyphenated absent",
+			text:      "source-grounded resolved execution plan extraction is not implemented",
+			wantStale: true,
+		},
+		{
+			name:      "hyphenated absent",
+			text:      "source-grounded resolved execution-plan extraction is not implemented",
+			wantStale: true,
+		},
+		{
+			name:      "non-hyphenated later gate",
+			text:      "source-grounded resolved execution plan extraction remains a later gate",
+			wantStale: true,
+		},
+		{
+			name:      "hyphenated later gate",
+			text:      "source-grounded resolved execution-plan extraction remains a later gate",
+			wantStale: true,
+		},
+		{
+			name:      "non-hyphenated remains open",
+			text:      "source-grounded resolved execution plan extraction remains open",
+			wantStale: true,
+		},
+		{
+			name:      "hyphenated remains open",
+			text:      "source-grounded resolved execution-plan extraction remains open",
+			wantStale: true,
+		},
+		{
+			name:      "non-hyphenated open seam",
+			text:      "source-grounded resolved execution plan extraction remains an open seam",
+			wantStale: true,
+		},
+		{
+			name:      "hyphenated open seam",
+			text:      "source-grounded resolved execution-plan extraction remains an open seam",
+			wantStale: true,
+		},
+		{
+			name:      "source-grounded extraction later gate",
+			text:      "source-grounded extraction remains a later gate",
+			wantStale: true,
+		},
+		{
+			name:      "implemented current",
+			text:      "Private source-grounded resolved execution-plan extraction is implemented for current legacy `Submit`.",
+			wantStale: false,
+		},
+		{
+			name:      "future canonical binding",
+			text:      "Private canonical resolved-plan encoding and `PlanBinding` construction from admitted facts remain open.",
+			wantStale: false,
+		},
+		{
+			name:      "future effective plan witness",
+			text:      "Complete `EffectivePlanWitness` construction remains open.",
+			wantStale: false,
+		},
+		{
+			name:      "future replay envelope custody",
+			text:      "Replay-envelope custody and reconstruction remain open.",
+			wantStale: false,
+		},
+		{
+			name:      "future deterministic canonical encoding",
+			text:      "Deterministic canonical encoding remains future work.",
+			wantStale: false,
+		},
+		{
+			name:      "future reliable plan consumption",
+			text:      "Reliable-submit consumption of the resolved plan remains future.",
+			wantStale: false,
+		},
+		{
+			name:      "future reliable runtime",
+			text:      "Reliable runtime orchestration remains future.",
+			wantStale: false,
+		},
+		{
+			name:      "future complete effective plan witness",
+			text:      "Complete EffectivePlanWitness construction remains future.",
+			wantStale: false,
+		},
+		{
+			name:      "future replay envelope",
+			text:      "Replay-envelope custody and reconstruction remain future.",
+			wantStale: false,
+		},
+		{
+			name:      "future PlanBinding",
+			text:      "PlanBinding construction remains future.",
+			wantStale: false,
+		},
+	} {
+		if got := containsStaleResolvedPlanExtractionClaim(tc.text); got != tc.wantStale {
+			t.Fatalf("%s stale-claim classification mismatch", tc.name)
+		}
+	}
+}
+
+func TestUniqueDocSectionFailsClosedForStaleClaimSections(t *testing.T) {
+	valid := "intro\n## Start\nbody\n## End\noutro\n"
+	if section, err := uniqueDocSectionText(valid, "## Start", "## End"); err != nil || !strings.Contains(section, "body") {
+		t.Fatalf("valid unique section mismatch")
+	}
+
+	for _, tc := range []struct {
+		name     string
+		document string
+	}{
+		{
+			name:     "duplicate start heading",
+			document: "## Start\nbody\n## Start\nagain\n## End\n",
+		},
+		{
+			name:     "duplicate end heading",
+			document: "## Start\nbody\n## End\nagain\n## End\n",
+		},
+		{
+			name:     "missing start",
+			document: "body\n## End\n",
+		},
+		{
+			name:     "missing end",
+			document: "## Start\nbody\n",
+		},
+		{
+			name:     "end before start",
+			document: "## End\nbody\n## Start\n",
+		},
+		{
+			name:     "empty bounded section",
+			document: "## Start\n\n## End\n",
+		},
+	} {
+		if _, err := uniqueDocSectionText(tc.document, "## Start", "## End"); err == nil {
+			t.Fatalf("%s did not fail closed", tc.name)
+		}
+	}
+}
+
+func TestUniqueFinalDocSectionFailsClosedForOpenSeams(t *testing.T) {
+	const finalHeading = "## 17. Open Seams"
+
+	valid := "intro\n" + finalHeading + "\nopen seam body\n"
+	if section, err := uniqueFinalDocSectionText(valid, finalHeading); err != nil || compactText(section) != "open seam body" {
+		t.Fatalf("valid unique final section mismatch")
+	}
+
+	withNestedHeading := "intro\n" + finalHeading + "\nopen seam body\n### Deferred detail\nmore body\n"
+	if section, err := uniqueFinalDocSectionText(withNestedHeading, finalHeading); err != nil || !strings.Contains(section, "### Deferred detail") {
+		t.Fatalf("level-three heading inside final section mismatch")
+	}
+
+	withFencedHeadingText := "intro\n```\n" + finalHeading + "\n## 18. Not Structure\n# Not Structure\n```\n" + finalHeading + "\nopen seam body\n"
+	if section, err := uniqueFinalDocSectionText(withFencedHeadingText, finalHeading); err != nil || !strings.Contains(section, "open seam body") {
+		t.Fatalf("fenced heading-like text mismatch")
+	}
+
+	withFencedHeadingTextInFinalBody := "intro\n" + finalHeading + "\nopen seam body\n```text\n# heading-like text\n## heading-like text\n```\nafter fence\n"
+	if section, err := uniqueFinalDocSectionText(withFencedHeadingTextInFinalBody, finalHeading); err != nil ||
+		!strings.Contains(section, "# heading-like text") ||
+		!strings.Contains(section, "## heading-like text") ||
+		!strings.Contains(section, "after fence") {
+		t.Fatalf("fenced heading-like final body mismatch")
+	}
+
+	for _, tc := range []struct {
+		name     string
+		document string
+	}{
+		{
+			name:     "missing start heading",
+			document: "intro\nbody\n",
+		},
+		{
+			name:     "duplicate start heading",
+			document: finalHeading + "\nbody\n" + finalHeading + "\nagain\n",
+		},
+		{
+			name:     "empty final-section body",
+			document: finalHeading + "\n\n",
+		},
+		{
+			name:     "later level-two heading",
+			document: finalHeading + "\nbody\n## 18. Later\nmore\n",
+		},
+		{
+			name:     "later level-one heading",
+			document: finalHeading + "\nbody\n# Later\nmore\n",
+		},
+	} {
+		if _, err := uniqueFinalDocSectionText(tc.document, finalHeading); err == nil {
+			t.Fatalf("%s did not fail closed", tc.name)
+		}
+	}
+}
+
+func TestLiveOpenSeamsExtractionsUseFinalSectionHelper(t *testing.T) {
+	source := mustRead(t, "docs_contract_test.go")
+	findings := liveOpenSeamsExtractionFindings(source)
+	if len(findings) != 0 {
+		t.Fatalf("live open-seams extraction helper mismatch: %s", strings.Join(findings, ", "))
+	}
+}
+
+func liveOpenSeamsExtractionFindings(source string) []string {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "docs_contract_test.go", source, parser.ParseComments)
+	if err != nil {
+		return []string{"parse-source"}
+	}
+
+	finalHelperCalls := 0
+	var findings []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			callee := docsContractCallName(call)
+			if docsContractFinalOpenSeamsHelper(callee) && callHasOpenSeamsLiteral(call) {
+				finalHelperCalls++
+			}
+			startIndex, ok := docsContractNonFinalSectionStartArg(callee)
+			if !ok || len(call.Args) <= startIndex {
+				return true
+			}
+			value, ok := docsContractStringLiteral(call.Args[startIndex])
+			if ok && value == "## 17. Open Seams" {
+				position := fileSet.Position(call.Pos())
+				findings = append(findings, fmt.Sprintf("%s:%d:%s", fn.Name.Name, position.Line, callee))
+			}
+			return true
+		})
+	}
+	if finalHelperCalls == 0 {
+		findings = append(findings, "missing-live-final-helper")
+	}
+	return findings
+}
+
+func docsContractCallName(call *ast.CallExpr) string {
+	switch callee := call.Fun.(type) {
+	case *ast.Ident:
+		return callee.Name
+	case *ast.SelectorExpr:
+		return callee.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func docsContractFinalOpenSeamsHelper(name string) bool {
+	switch name {
+	case "uniqueFinalDocSection", "compactUniqueFinalDocSection", "uniqueFinalDocSectionText":
+		return true
+	default:
+		return false
+	}
+}
+
+func docsContractNonFinalSectionStartArg(name string) (int, bool) {
+	switch name {
+	case "docSection", "compactDocSection", "uniqueDocSection", "compactUniqueDocSection":
+		return 2, true
+	case "uniqueDocSectionText":
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func callHasOpenSeamsLiteral(call *ast.CallExpr) bool {
+	for _, arg := range call.Args {
+		value, ok := docsContractStringLiteral(arg)
+		if ok && value == "## 17. Open Seams" {
+			return true
+		}
+	}
+	return false
+}
+
+func docsContractStringLiteral(expr ast.Expr) (string, bool) {
+	literal, ok := expr.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 func assertContainsInOrder(t *testing.T, label string, text string, phrases ...string) {
@@ -858,7 +1311,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 	safeProjection := compactDocSection(t, targetRaw, "## 14. Safe Projection And Privacy", "## 15. Explicit Non-Claims")
 	nonClaims := compactDocSection(t, targetRaw, "## 15. Explicit Non-Claims", "## 16. Required-Before-Implementation Gates")
 	gates := compactDocSection(t, targetRaw, "## 16. Required-Before-Implementation Gates", "## 17. Open Seams")
-	openSeams := compactDocSection(t, targetRaw, "## 17. Open Seams", "")
+	openSeams := compactUniqueFinalDocSection(t, targetRaw, "## 17. Open Seams")
 
 	assertContainsAll(t, "submit recovery target document status", statusPurpose,
 		"TARGET-ONLY: submit idempotency, correlation, and recovery in this document are target contract direction only.",
@@ -1659,7 +2112,7 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 	compatibility := compactDocSection(t, targetRaw, "## 13. Compatibility And Opt-In Treatment", "## 14. Safe Projection And Privacy")
 	nonClaims := compactDocSection(t, targetRaw, "## 15. Explicit Non-Claims", "## 16. Required-Before-Implementation Gates")
 	gates := compactDocSection(t, targetRaw, "## 16. Required-Before-Implementation Gates", "## 17. Open Seams")
-	openSeams := compactDocSection(t, targetRaw, "## 17. Open Seams", "")
+	openSeams := compactUniqueFinalDocSection(t, targetRaw, "## 17. Open Seams")
 
 	contractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	producerTarget := compactDocSection(t, contractsRaw, "### Target reliable-submit producer sub-contract selection", "### Error contract")
@@ -1927,12 +2380,15 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 
 func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing.T) {
 	targetRaw := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	contractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
 	statusPurpose := compactDocSection(t, targetRaw, "## 1. Status And Purpose", "## 2. Current Implementation Reality")
 	currentReality := compactDocSection(t, targetRaw, "## 2. Current Implementation Reality", "## 3. Dual Ambiguity Model")
 	authorityIdentity := compactDocSection(t, targetRaw, "## 4. Authority And Identity Ownership", "## 5. Reliable Keyed-Submit Invariant")
 	effectivePlan := compactDocSection(t, targetRaw, "## Effective Execution Plan And Field Requiredness", "## 7. Narrow Durable Correlation Semantics")
 	compatibility := compactDocSection(t, targetRaw, "## 13. Compatibility And Opt-In Treatment", "## 14. Safe Projection And Privacy")
 	outcomes := compactDocSection(t, targetRaw, "## 10. Semantic Outcome Classes", "## 11. Replay, Authorization, And Admission")
+	openSeams := compactUniqueFinalDocSection(t, targetRaw, "## 17. Open Seams")
+	contractsSubmitTarget := compactDocSection(t, contractsRaw, "### Target reliable keyed-submit contract", "## 7. Status contract")
 
 	assertContainsAll(t, "reliable-submit foundation status", statusPurpose,
 		"unavailable contract-adapter foundation",
@@ -1941,12 +2397,13 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"caller/key derivation",
 		"composite `ClaimID` construction through the committed pure-model constructor",
 		"ES-neutral outcome semantics",
-		"does not implement source-grounded resolved effective-plan extraction",
+		"Current legacy `Submit` now consumes a private source-grounded `resolvedExecutionPlan`",
 		"canonical effective-plan encoding",
 		"`PlanBinding` construction from admitted facts",
 		"complete effective-plan witness construction",
 		"durable replay-envelope custody",
 		"No current public request field, public response DTO field, producer field, handler behavior, query route, Nomad behavior, runtime configuration, or runtime behavior",
+		"The resolved-plan extraction tranche likewise adds no public request field",
 	)
 	assertContainsAll(t, "reliable-submit foundation current reality", currentReality,
 		"admission-local private reliable-submit foundation helpers in package `admission`",
@@ -1954,7 +2411,8 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"caller/key safe-reference derivation",
 		"composite `ClaimID` construction through the committed pure-model constructor",
 		"ES-neutral submission-outcome projection",
-		"do not implement source-grounded resolved effective-plan extraction",
+		"Current source additionally contains a private `resolvedExecutionPlan` in package `admission`",
+		"current legacy `Submit` consumes that plan after current admission and submit-only resolution and before payload/run/staging/Nomad effects",
 		"canonical effective-plan encoding",
 		"`PlanBinding` construction from admitted facts",
 		"complete effective-plan witness construction",
@@ -2005,27 +2463,33 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"empty resources object is invalid",
 		"foundation must not duplicate artifact, derivation, policy, runtime-profile, resource/admission, manifest, or trust validation",
 	)
-	assertContainsAll(t, "reliable-submit future effective-plan seam docs", effectivePlan,
-		"No effective-plan contract-adapter implementation is present in this tranche",
-		"The rejected self-validating plan binder has been removed",
+	assertContainsAll(t, "reliable-submit resolved-plan seam docs", effectivePlan,
+		"The first source-grounded resolved-plan tranche",
+		"`resolved-execution-plan-extraction-foundation`, is now present in package `admission`",
+		"one private ES-owned `resolvedExecutionPlan`",
+		"makes current legacy `Submit` consume that plan as its execution-semantics source",
+		"plan-freeze point is the successful return of the private constructor",
+		"before payload materialization, run ID generation, staging, mount artifact reads or extraction, trust-material staging, runtime-identity endpoint generation, Nomad job construction, or Nomad submission",
 		"does not select a canonical effective-plan encoding",
 		"effective-plan commitments",
 		"`PlanBinding` construction from admitted facts",
 		"complete witness constructor in package `admission`",
 		"durable replay-envelope custody",
+		"reliable-submit handler/config/producer/store lifecycle wiring",
 		"`resolved-execution-plan-extraction-foundation`",
-		"derive one authoritative resolved execution plan from the actual current ES admission and runtime-resolution path",
+		"derived from the actual current ES admission and submit-resolution path",
 		"`prepareAdmission` results",
 		"artifact and manifest facts",
 		"policy/trust resolution",
+		"submit-only artifact/capability/target checks",
 		"resource/default resolution",
 		"runtime-profile resolution",
 		"network fact",
 		"mount and environment semantics",
-		"current runtime command construction",
-		"authority-handoff behavior",
-		"Current legacy `Submit` and future reliable `PlanBinding` must consume the same source-grounded resolved plan",
-		"must not synthesize `PrepareRequest` or `Manifest` proof from the proposed plan itself",
+		"semantic runtime command/argv facts",
+		"authority-handoff materialization inputs",
+		"Future reliable `PlanBinding` must consume the same source-grounded resolved plan in a separate tranche",
+		"does not synthesize `PrepareRequest` or `Manifest` proof from the plan itself",
 		"create a parallel admission engine",
 		"silently tighten the current empty-environment-allowlist contract",
 		"infer authority-handoff inapplicability contrary to current `Submit` behavior",
@@ -2033,7 +2497,34 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"when a manifest declares allowed environment keys, invocation keys must stay within that set",
 		"when that list is empty, current source does not enforce explicit allowlist membership",
 		"Current supported `Submit` constructs `authority_handoff`",
+		"the private resolved plan currently represents authority-handoff applicability as true",
 	)
+	assertContainsAll(t, "reliable-submit contracts resolved-plan current truth", contractsSubmitTarget,
+		"Current legacy `Submit` now constructs and consumes one private, source-grounded `resolvedExecutionPlan`",
+		"from the current admission and submit-resolution path",
+		"That current private plan does not enable reliable submit",
+		"The reliable request/identity/outcome helpers remain runtime-unwired",
+		"no reliable handler currently consumes the resolved plan",
+		"canonical effective-plan encoding is not implemented",
+		"`PlanBinding` construction from the resolved plan is not implemented",
+		"complete `EffectivePlanWitness` construction is not implemented",
+		"durable replay-envelope custody is not implemented",
+		"reliable runtime orchestration is not implemented",
+	)
+	assertContainsNone(t, "reliable-submit contracts resolved-plan stale non-claim", contractsSubmitTarget,
+		"does not select or implement source-grounded resolved effective-plan extraction",
+		"do not implement source-grounded resolved effective-plan extraction",
+	)
+	assertContainsAll(t, "reliable-submit open seams resolved-plan current truth", openSeams,
+		"Private source-grounded resolved execution-plan extraction is implemented for current legacy `Submit`",
+		"private canonical resolved-plan encoding",
+		"`PlanBinding` construction from admitted facts",
+		"complete `EffectivePlanWitness` construction",
+		"replay-envelope custody and reconstruction",
+		"reliable runtime consumption",
+		"job-spec digesting and Nomad reconciliation mechanism where applicable",
+	)
+	assertNoStaleResolvedPlanExtractionClaim(t, "reliable-submit open seams stale extraction claim", openSeams)
 	assertContainsAll(t, "reliable-submit neutral outcome docs", outcomes,
 		"transport-neutral ES outcome projection",
 		"phase-specific same-caller `RunRef` disclosure",
@@ -2137,7 +2628,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	adrPath := ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md"
 	adrRaw := mustRead(t, adrPath)
 
-	statusPurpose := compactDocSection(t, adrRaw, "## 1. Status And Purpose", "## 2. Current Repository And Deployment Reality")
+	statusPurpose := compactUniqueDocSection(t, adrRaw, "## 1. Status And Purpose", "## 2. Current Repository And Deployment Reality")
 	currentReality := compactDocSection(t, adrRaw, "## 2. Current Repository And Deployment Reality", "## 3. Authority Boundary")
 	authorityBoundary := compactDocSection(t, adrRaw, "## 3. Authority Boundary", "## 4. Storage-Family Decision")
 	storageFamily := compactDocSection(t, adrRaw, "## 4. Storage-Family Decision", "## 5. Package And Hydration Boundary")
@@ -2154,7 +2645,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	security := compactDocSection(t, adrRaw, "## 12. Security, Permissions, And Corruption", "## 13. Initial Deployment Topology")
 	deployment := compactDocSection(t, adrRaw, "## 13. Initial Deployment Topology", "## 14. Required Dependency-Selection Gate")
 	dependencyGate := compactDocSection(t, adrRaw, "## 14. Required Dependency-Selection Gate", "## 15. First Concrete Source Tranche")
-	nextTranche := compactDocSection(t, adrRaw, "## 15. First Concrete Source Tranche", "## 16. Explicit Non-Claims And Open Decisions")
+	nextTranche := compactUniqueDocSection(t, adrRaw, "## 15. First Concrete Source Tranche", "## 16. Explicit Non-Claims And Open Decisions")
 	nonClaimsOpen := compactDocSection(t, adrRaw, "## 16. Explicit Non-Claims And Open Decisions", "")
 
 	assertContainsAll(t, "reliable-submit persistence ADR status", statusPurpose,
@@ -2179,7 +2670,18 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"implements the section 9A latest-operation replay contract inside the",
 		"SQLite schema is version 2",
 		"valid v1 rows migrate as legacy/unbound codec-1 rows",
+		"Current ES source also has one private source-grounded `resolvedExecutionPlan`",
+		"current legacy `Submit` constructs and consumes that plan",
+		"derived from the existing admission and submit-resolution path",
+		"private and in-process",
+		"does not enable reliable submit",
+		"Reliable-submit runtime consumption of the plan remains absent",
+		"private deterministic canonical encoding",
+		"`PlanBinding` construction from the plan",
+		"complete `EffectivePlanWitness` construction",
+		"replay-envelope custody and restart reconstruction",
 	)
+	assertNoStaleResolvedPlanExtractionClaim(t, "reliable-submit persistence ADR status stale extraction claim", statusPurpose)
 	assertContainsAll(t, "reliable-submit persistence ADR current reality", currentReality,
 		"admission-local and private",
 		"unwired",
@@ -2729,12 +3231,19 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"completed latest-operation source repair preserves the private",
 		"establish/load/CAS `claimStore` port shape",
 		"Later reliable-submit gates remain",
-		"resolved execution-plan extraction",
+		"reliable-submit consumption of the private resolved plan",
+		"private deterministic canonical encoding",
+		"`PlanBinding` construction from the plan",
+		"complete `EffectivePlanWitness` construction",
+		"replay-envelope custody and restart reconstruction",
 		"state/store lifecycle and configuration",
+		"job-spec digesting",
 		"Nomad reconciliation",
-		"public runtime enablement",
+		"public reliable request/response enablement",
+		"reliable runtime orchestration",
 		"not reinterpret the source repair as mutation-history support",
 	)
+	assertNoStaleResolvedPlanExtractionClaim(t, "reliable-submit persistence ADR next tranche stale extraction claim", nextTranche)
 	assertContainsAll(t, "reliable-submit persistence ADR non-claims and open decisions", nonClaimsOpen,
 		"no end-to-end reliable submit is implemented in this tranche",
 		"no global ES configuration source change is made in this tranche",

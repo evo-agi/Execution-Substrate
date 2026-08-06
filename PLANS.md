@@ -165,27 +165,33 @@ wire request. This is a bounded lifetime/projection guarantee, not a secure
 memory-erasure claim or a claim that arbitrary invalid Go formatting operations
 are overrideable. Full request objects remain unsuitable as log payloads. These
 helpers are not public DTOs and are not called by current runtime code. This
-tranche still does not select or implement source-grounded resolved effective-plan extraction,
-canonical effective-plan encoding, `PlanBinding` construction from admitted
-facts, complete effective-plan witness construction, durable replay-envelope
-custody, the state-path config key, TTL, HTTP status mapping, public error
-strings, recovery query route, Nomad reconciliation algorithm, public runtime
-response field layout, or `run_id` generation strategy.
+tranche still does not select or implement canonical effective-plan encoding,
+`PlanBinding` construction from admitted facts, complete effective-plan witness
+construction, durable replay-envelope custody, the state-path config key, TTL,
+HTTP status mapping, public error strings, recovery query route, Nomad
+reconciliation algorithm, public runtime response field layout, or `run_id`
+generation strategy.
 
-The next source-bearing seam for that removed scope is
-`resolved-execution-plan-extraction-foundation`. It is not authorized by the
-current scope-reset patch. That later tranche must derive one authoritative
-resolved execution plan from the actual current ES admission and
-runtime-resolution path, including `prepareAdmission` results, artifact and
-manifest facts, policy/trust resolution, resource/default resolution,
-runtime-profile resolution, network fact, mount/environment semantics, current
-runtime command construction, and authority-handoff behavior. Current legacy
-`Submit` and future reliable `PlanBinding` must consume the same
-source-grounded resolved plan. The later tranche must not synthesize
-`PrepareRequest` or `Manifest` proof from the proposed plan itself, create a
-parallel admission engine, silently tighten the current
+The `resolved-execution-plan-extraction-foundation` source tranche is now
+implemented as a private ES-owned resolved execution plan in package
+`admission`. Current legacy `Submit` constructs that plan from the actual
+current admission and submit-resolution path after `prepareAdmission`,
+submit-only artifact/capability/target checks, and runtime-profile resolution,
+and before payload materialization, run ID generation, staging, trust-material
+staging, runtime-identity endpoint generation, Nomad job construction, or Nomad
+submission. The plan carries plan-stable facts only: normalized request schema
+facts from the existing validation path, effective async mode, timeout
+semantics, resolved resources, selected runtime profile/image/profile env,
+artifact identity, derivation identity, output identity, semantic command/argv,
+caller/profile environment additions, ordered normalized mount declarations,
+network posture, and applicable authority-handoff materialization inputs.
+Legacy `Submit` consumes that plan as its execution-semantics source while
+retaining current public behavior and current runtime materializers. The
+tranche does not synthesize `PrepareRequest` or `Manifest` proof from the plan,
+create a parallel admission engine, tighten the current
 empty-environment-allowlist contract, or infer authority-handoff inapplicability
-contrary to current `Submit` behavior.
+contrary to current `Submit` behavior. Future reliable `PlanBinding` must
+consume this same source-grounded plan in a separate tranche.
 
 The `reliable-submit-durable-same-operation-replay-repair` source tranche is
 implemented inside the private durable source and remains required before

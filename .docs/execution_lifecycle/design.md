@@ -29,11 +29,11 @@ contract-adapter foundation selects private request-family identifiers,
 submit-key syntax, caller/key derivation, composite `ClaimID` construction
 through the committed pure-model constructor, and ES-neutral outcome semantics,
 but it is not called by current runtime code. These records still do not select
-source-grounded resolved effective-plan extraction, canonical effective-plan
-encoding, `PlanBinding` construction from admitted facts, complete
-effective-plan witness construction, durable replay-envelope persistence,
-state-path config key, TTL, HTTP status mapping, public error strings, recovery
-query route, Nomad reconciliation algorithm, or `run_id` generation strategy.
+canonical effective-plan encoding, `PlanBinding` construction from admitted
+facts, complete effective-plan witness construction, durable replay-envelope
+persistence, state-path config key, TTL, HTTP status mapping, public error
+strings, recovery query route, Nomad reconciliation algorithm, or `run_id`
+generation strategy.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -371,22 +371,24 @@ base64url-no-padding 32-byte submit-key syntax, domain-separated SHA-256
 caller/key safe-reference derivation from the exact authenticated SPIFFE URI,
 composite `ClaimID` construction through the committed pure-model constructor,
 and an ES-neutral outcome projection. These are not public runtime DTOs and
-current handlers do not call them. This tranche does not implement
-source-grounded resolved effective-plan extraction, canonical effective-plan
-encoding, effective-plan commitments, complete effective-plan witness
-construction, durable replay-envelope custody, or runtime orchestration.
+current handlers do not call them. This tranche does not implement canonical
+effective-plan encoding, effective-plan commitments, complete effective-plan
+witness construction, durable replay-envelope custody, or runtime orchestration.
 
-The later `resolved-execution-plan-extraction-foundation` tranche must derive
-one authoritative resolved execution plan from the actual current ES admission
-and runtime-resolution path: `prepareAdmission` results, artifact and manifest
-facts, policy/trust resolution, resource/default resolution, runtime-profile
-resolution, network fact, mount/environment semantics, current runtime command
-construction, and authority-handoff behavior. Current legacy `Submit` and future
-reliable `PlanBinding` must consume that same source-grounded plan. The later
-tranche must not synthesize `PrepareRequest` or `Manifest` proof from the
-proposed plan itself, create a parallel admission engine, silently tighten the
-current empty-environment-allowlist contract, or infer authority-handoff
-inapplicability contrary to current `Submit` behavior.
+Current source now includes the first
+`resolved-execution-plan-extraction-foundation` tranche: one private ES-owned
+resolved execution plan derived from the actual current ES admission and
+submit-resolution path. Current legacy `Submit` constructs the plan only after
+runtime availability, async-mode default/refusal, `prepareAdmission`,
+submit-only artifact/capability/target checks, and runtime-profile resolution.
+The successful constructor return is the plan-freeze point, and it occurs before
+payload materialization, run ID generation, staging, mount artifact reads,
+trust-material staging, runtime-identity endpoint generation, Nomad job
+construction, or Nomad submission. The plan is a package-private source of
+execution semantics for legacy `Submit`; it is not a public DTO, not a canonical
+binding, not durable replay custody, and not reliable-submit runtime wiring.
+Future reliable `PlanBinding` must consume this same source-grounded plan in a
+separate tranche.
 
 Header-only reliable-submit opt-in is rejected because a current server may
 ignore an unknown header and run the current unkeyed request. The producer

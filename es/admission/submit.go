@@ -60,35 +60,14 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		return SubmitResult{}, err
 	}
 
-	if prepared.artifact.manifest.ArtifactType != "static-script" {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeUnsupportedArtifactType,
-			Message: "only static-script artifacts are supported in this execution slice",
-		}
-	}
-	if len(prepared.artifact.manifest.RuntimeInterface.RequiredCapabilities) > 0 {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeUnsupportedCapabilities,
-			Message: "required_capabilities are not supported in this execution slice",
-		}
-	}
-	if targetPlatform := strings.TrimSpace(prepared.artifact.targetPlatform); targetPlatform != "" && targetPlatform != "docker" {
-		return SubmitResult{}, &Error{
-			Status:  http.StatusBadRequest,
-			Code:    codeUnsupportedArtifactType,
-			Message: "only docker target_platform is supported in this execution slice",
-		}
-	}
-	runtimeProfile, profileErr := resolveExecutionRuntimeProfile(s.cfg.Execution, req, prepared.artifact)
-	if profileErr != nil {
-		return SubmitResult{}, profileErr
+	plan, planErr := s.resolveCurrentSubmitExecutionPlan(prepared)
+	if planErr != nil {
+		return SubmitResult{}, planErr
 	}
 
 	payloadBytes := prepared.policyPayloadBytes
 	if !prepared.policyPayloadBytesAvailable {
-		payload, err := s.fetchPayloadBytes(ctx, prepared.artifact.payloadDigest)
+		payload, err := s.fetchPayloadBytes(ctx, plan.artifact.payloadDigest)
 		if err != nil {
 			return SubmitResult{}, err
 		}
@@ -139,7 +118,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	// success is observed. The reserved runtime-identity workspace is provisioned
 	// as tmpfs and is no longer host-backed by the submit path.
 
-	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, req.Invocation.Mounts, platformStateOwner)
+	stage.mounts, err = s.stageRuntimeMounts(ctx, prepared.trustModel, stage.layout, plan.runtimeMounts(), platformStateOwner)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -152,7 +131,7 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 	}
 
 	var trustErr error
-	stage.trustMaterial, trustErr = stage.layout.stageWorkloadVaultTrustMaterial(prepared.workloadVaultPlan, platformStateOwner)
+	stage.trustMaterial, trustErr = stage.layout.stageWorkloadVaultTrustMaterial(plan.authority.workloadVaultPlan, platformStateOwner)
 	if trustErr != nil {
 		return SubmitResult{}, &Error{
 			Status:  http.StatusInternalServerError,
@@ -161,26 +140,22 @@ func (s *Service) Submit(ctx context.Context, req PrepareRequest) (SubmitResult,
 		}
 	}
 
-	env := buildRuntimeEnvironment(stage.layout, req.Invocation.ArtifactDigest, prepared.workloadVaultPlan, runtimeProfile, stage.trustMaterial, req.Invocation.Env, &platformStateOwner)
+	runtimeProfile := plan.executionRuntimeProfile()
+	env := buildRuntimeEnvironment(stage.layout, plan.artifact.artifactDigest, plan.authority.workloadVaultPlan, runtimeProfile, stage.trustMaterial, plan.environment.callerEnv, &platformStateOwner)
 	authorityHandoff := buildExecutionAuthorityHandoff(
 		runtimeProfile,
 		stage.layout.runtimeIdentity,
-		prepared.workloadVaultPlan,
-		s.workloadZoneVaultConfigRef.Digest,
+		plan.authority.workloadVaultPlan,
+		plan.authority.workloadZoneVaultConfigDigest,
 		stage.trustMaterial,
 	)
-	taskCPU, taskMemoryMB := resolveTaskResources(req.Resources)
 	jobSpec := buildNomadJobSpec(
 		s.cfg,
 		locator.JobID(),
 		locator.RunID,
 		stage,
-		req,
-		prepared.artifact.networkAccess,
-		taskCPU,
-		taskMemoryMB,
+		plan,
 		env,
-		runtimeProfile,
 	)
 
 	_, submitErr := s.nomadClient.submitJob(ctx, jobSpec)
@@ -246,6 +221,38 @@ func resolveTaskResources(resources *ExecutionResources) (cpu int, memoryMB int)
 	return resources.CPU, resources.MemoryMB
 }
 
+func unsupportedSubmitArtifactTypeError() *Error {
+	return &Error{
+		Status:  http.StatusBadRequest,
+		Code:    codeUnsupportedArtifactType,
+		Message: "only static-script artifacts are supported in this execution slice",
+	}
+}
+
+func unsupportedSubmitCapabilitiesError() *Error {
+	return &Error{
+		Status:  http.StatusBadRequest,
+		Code:    codeUnsupportedCapabilities,
+		Message: "required_capabilities are not supported in this execution slice",
+	}
+}
+
+func unsupportedSubmitTargetPlatformError() *Error {
+	return &Error{
+		Status:  http.StatusBadRequest,
+		Code:    codeUnsupportedArtifactType,
+		Message: "only docker target_platform is supported in this execution slice",
+	}
+}
+
+func invalidRequestError(message string) *Error {
+	return &Error{
+		Status:  http.StatusBadRequest,
+		Code:    codeInvalidRequest,
+		Message: message,
+	}
+}
+
 func buildRuntimeEnvironment(layout executionPackageLayout, artifactDigest string, workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan, runtimeProfile executionRuntimeProfile, trustMaterial stagedWorkloadTrustMaterial, invocationEnv map[string]string, platformStateOwner *executionPlatformStateOwner) map[string]string {
 	env := make(map[string]string, len(invocationEnv)+len(runtimeProfile.env)+16)
 	for key, value := range invocationEnv {
@@ -284,28 +291,25 @@ func buildNomadJobSpec(
 	jobID string,
 	runID string,
 	stage stagedExecutionInputs,
-	req PrepareRequest,
-	networkAccess bool,
-	taskCPU int,
-	taskMemoryMB int,
+	plan resolvedExecutionPlan,
 	env map[string]string,
-	runtimeProfile executionRuntimeProfile,
 ) map[string]any {
 	layout := stage.layout
-	supervisorArgs := layout.runtimeSupervisorArgs(req.Invocation.Argv, req.TimeoutSeconds)
-	jobMeta := executionAuthorityMetadata(runtimeProfile, cfg.RuntimeConfig.WorkloadZoneVaultConfigRef.Digest)
+	runtimeProfile := plan.executionRuntimeProfile()
+	supervisorArgs := layout.runtimeSupervisorArgs(plan.command.workloadArgv, plan.command.timeoutSeconds, plan.command.supervisorOperationIdentity)
+	jobMeta := executionAuthorityMetadata(runtimeProfile, plan.authority.workloadZoneVaultConfigDigest)
 	jobMeta["run_id"] = runID
 
 	taskConfig := map[string]any{
-		"image":        selectedRuntimeImage(cfg.Execution, runtimeProfile),
-		"command":      executionRuntimeSupportPath,
+		"image":        plan.profile.selectedImage,
+		"command":      plan.command.runtimeSupportCommandIdentity,
 		"args":         supervisorArgs,
 		"privileged":   false,
 		"security_opt": []string{"no-new-privileges"},
 	}
 
 	taskConfig["mounts"] = layout.runtimeMountSpecs(cfg, stage.mounts)
-	if networkAccess {
+	if plan.network.networkAccess() {
 		taskConfig["network_mode"] = "bridge"
 	} else {
 		taskConfig["network_mode"] = "none"
@@ -343,14 +347,14 @@ func buildNomadJobSpec(
 							"Config": taskConfig,
 							"Env":    env,
 							"Resources": map[string]any{
-								"CPU":      taskCPU,
-								"MemoryMB": taskMemoryMB,
+								"CPU":      plan.resources.cpu,
+								"MemoryMB": plan.resources.memoryMB,
 							},
 							"Meta": map[string]any{
 								"run_id":                 runID,
-								"artifact_digest":        req.Invocation.ArtifactDigest,
-								"derivation_spec_digest": req.Invocation.DerivationSpecDigest,
-								"output_id":              req.Invocation.OutputID,
+								"artifact_digest":        plan.artifact.artifactDigest,
+								"derivation_spec_digest": plan.derivation.derivationSpecDigest,
+								"output_id":              plan.output.outputID,
 							},
 						},
 					},

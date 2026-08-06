@@ -28,12 +28,12 @@ decode and derivation, while the validated request retains sanitized request
 facts plus safe private caller/key/claim references. It does not claim secure
 memory erasure, and it does not rely on domain types overriding invalid Go
 formatting operations. Full request objects are not safe log payloads. It does
-not include source-grounded resolved effective-plan extraction, canonical
-effective-plan encoding, `PlanBinding` construction from admitted facts,
-complete effective-plan witness construction, durable replay-envelope custody,
-or runtime orchestration. The private store and foundation helpers are
-constructed and exercised only in tests; they are not wired to submit, prepare,
-handlers, producer declaration, staging, lifecycle, results, Nomad behavior,
+not include canonical effective-plan encoding, `PlanBinding` construction from
+admitted facts, complete effective-plan witness construction, durable
+replay-envelope custody, or runtime orchestration. The private store and
+foundation helpers are constructed and exercised only in tests; they are not
+wired to submit, prepare, handlers, producer declaration, staging, lifecycle,
+results, Nomad behavior,
 runtime startup, runtime configuration, public persistence integration, or
 recovery routes.
 
@@ -249,21 +249,45 @@ What `Prepare` reads:
 3. Reject non-async mode.
 4. Reuse the shared admission helper that also powers `Prepare`, including ES
    Admission Policy Layer v0.
-5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
-6. Resolve the optional bounded runtime profile selection from invocation annotations.
-7. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
-8. Generate the current internal execution locator:
+5. Construct the private ES-owned `resolvedExecutionPlan` by enforcing
+   submit-time constraints such as `static-script`, supported target platform,
+   and no required runtime capabilities from the prepared artifact data,
+   resolving the optional bounded runtime profile selection from invocation
+   annotations, resolving resource defaults, normalizing mount declarations,
+   and freezing the current source-grounded execution semantics.
+6. Fetch payload bytes using the plan's payload digest when admission policy did
+   not already fetch the payload bytes needed by current policy evaluation.
+7. Generate the current internal execution locator:
   - public `run_id`
   - internal `nomad_job_id = exec-<run_id>`
-9. Create the current internal execution-package layout for the new run.
-10. Stage the payload locally through that run-scoped layout.
-11. Stage runtime mounts through the same layout when mounts are requested.
-12. Validate staged mount targets against reserved runtime paths.
-13. Build runtime environment variables from the localized runtime layout plus any selected profile metadata.
-14. Assemble the bounded non-secret `authority_handoff` fact from the same runtime profile, identity endpoint, workload-vault plan, runtime-config reference, and profile credential-location metadata ES is about to submit.
-15. Build the Nomad job spec with `buildNomadJobSpec`, using the selected profile image when the bounded CP normal-shell profile is selected and carrying only internal handoff metadata needed for later status recovery.
-16. Submit the job through `nomadClient.submitJob`.
-17. Return the bounded `SubmitResult`.
+8. Create the current internal execution-package layout for the new run.
+9. Stage the payload locally through that run-scoped layout.
+10. Stage runtime mounts through the same layout from the plan's ordered
+    resolved mount declarations when mounts are requested.
+11. Validate staged mount targets against reserved runtime paths.
+12. Build runtime environment variables from the resolved plan plus localized
+    runtime layout, staged trust material, runtime identity endpoint, and
+    platform-owner materialization facts.
+13. Assemble the bounded non-secret `authority_handoff` fact from the plan's
+    selected runtime profile, workload-vault plan, runtime-config reference, and
+    profile credential-location metadata plus the generated runtime identity
+    endpoint and staged trust-material facts ES is about to submit.
+14. Build the Nomad job spec with `buildNomadJobSpec`, using the selected
+    profile image, resources, network posture, semantic command/argv, and
+    artifact/derivation/output metadata from the resolved plan while carrying
+    only internal handoff metadata needed for later status recovery.
+15. Submit the job through `nomadClient.submitJob`.
+16. Return the bounded `SubmitResult`.
+
+The resolved plan constructor is the current plan-freeze point. It runs after
+the existing validation/defaulting/admission path and current submit-only
+resolution, and before payload materialization, run ID generation, host/platform
+owner resolution, staging, mount artifact reads or extraction, trust-material
+staging, runtime identity endpoint generation, Nomad job construction, or Nomad
+submission. After that point `Submit` consumes the plan for execution semantics
+instead of reading resources, timeout, argv, environment additions, mounts,
+artifact identity, derivation identity, output identity, runtime-profile
+annotation, network posture, mode, or schema facts from the original request.
 
 Where IDs are created:
 
@@ -289,6 +313,11 @@ Where ES stops and Nomad takes over:
 - Failed submits remove the staging root immediately through deferred cleanup.
 - Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
 - Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
+- The private resolved execution plan is an in-process package-private
+  representation only. It is not JSON/text formatted, not durable, not a public
+  DTO, not a database record, not a Nomad payload, not a canonical
+  effective-plan encoding, not a `PlanBinding`, and not an
+  `EffectivePlanWitness`.
 - Submit-time staging, mount staging, trust-material staging, retained-result expectations, and internal `EXEC_PLATFORM_STATE_OWNER_*` injection now require `execution.staging_root_dir` and `execution.results_root_dir` to resolve to the same target owner UID:GID before ES will submit the run.
 - Submit-time runtime mount assembly uses the configured SPIRE socket source directory as a string input to the helper-private mount model; it does not require the long-lived ES process itself to open the raw host SPIRE socket.
 - If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
@@ -326,11 +355,13 @@ Where ES stops and Nomad takes over:
   request. The validated representation retains sanitized request facts plus
   safe private references only. This is not a secure-memory-erasure guarantee
   and not a claim that invalid Go `%w` formatting of non-error values can be
-  made override-safe with formatting hooks. They do not implement source-grounded resolved effective-plan extraction, canonical effective-plan
-  encoding, `PlanBinding` construction from admitted facts, complete
-  effective-plan witness construction, durable replay-envelope custody, or
-  runtime orchestration. They are not exported, not public DTOs, and not called
-  by current handlers or `Submit`.
+  made override-safe with formatting hooks. Current package `admission` also now
+  contains the private `resolvedExecutionPlan` source tranche consumed by legacy
+  `Submit`. The reliable-submit foundation helpers still do not implement
+  canonical effective-plan encoding, `PlanBinding` construction from admitted
+  facts, complete effective-plan witness construction, durable replay-envelope
+  custody, or runtime orchestration. They are not exported, not public DTOs, and
+  not called by current handlers or `Submit`.
 - The private durable service implements the
   `reliable-submit-durable-same-operation-replay-repair` latest-operation-only
   source repair. It persists a descriptor made of mutation reference, closed
@@ -572,14 +603,14 @@ Cleanup behavior visible in code:
   - one task group
   - one task named `task`
   - Docker driver
-- The wrapper shell command:
-  - creates `/execution/run/work`
-  - creates `/execution/run/result`
-  - creates the runtime-identity workspace path
-  - untars the staged artifact into the work directory
-  - `chmod +x` on `entrypoint`
-  - optionally wraps execution in `timeout`
-  - execs `/execution/run/work/entrypoint`
+- The runtime supervisor command:
+  - receives the staged artifact archive path, work directory, result directory,
+    entrypoint path, and timeout seconds as arguments
+  - extracts the staged artifact into the work directory
+  - prepares and executes `/execution/run/work/entrypoint`
+  - treats timeout seconds `0` as the current no-timer value
+  - terminates the workload/helper with exit `124` when a positive timeout is
+    exceeded
 
 Current job-spec assumptions:
 

@@ -66,16 +66,17 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	if layout.runtimeEntrypoint != executionRuntimeEntrypointPath {
 		t.Fatalf("expected runtime entrypoint %q, got %q", executionRuntimeEntrypointPath, layout.runtimeEntrypoint)
 	}
-	supervisorArgs := layout.runtimeSupervisorArgs([]string{"--flag"}, 17)
-	if len(supervisorArgs) < 9 {
-		t.Fatalf("expected bounded supervisor args, got %#v", supervisorArgs)
-	}
-	if supervisorArgs[0] != "supervisor" {
-		t.Fatalf("expected supervisor subcommand, got %#v", supervisorArgs)
-	}
-	if supervisorArgs[len(supervisorArgs)-1] != "--flag" {
-		t.Fatalf("expected workload args to trail supervisor args, got %#v", supervisorArgs)
-	}
+	supervisorArgs := layout.runtimeSupervisorArgs([]string{"--flag"}, 17, executionRuntimeSupervisorOperation)
+	assertRuntimeSupervisorArgs(t, supervisorArgs, []string{
+		"supervisor",
+		"--payload-archive", "/execution/staged/artifact.tar.gz",
+		"--work-dir", "/execution/run/work",
+		"--result-dir", "/execution/run/result",
+		"--entrypoint", "/execution/run/work/entrypoint",
+		"--timeout-seconds", "17",
+		"--",
+		"--flag",
+	})
 
 	mounts := layout.runtimeMountSpecs(cfg, []stagedRuntimeMount{
 		{
@@ -95,6 +96,44 @@ func TestExecutionPackageLayoutLocalizesStageAndRuntimePaths(t *testing.T) {
 	}
 	if spireMount["target"] != path.Join(layout.runtimeIdentity.internalDir(), runtimeIdentitySPIRESourceDir) {
 		t.Fatalf("expected helper-private SPIRE source dir target under internal dir, got %#v", spireMount["target"])
+	}
+}
+
+func TestRuntimeSupervisorArgsUsesSuppliedOperation(t *testing.T) {
+	layout := executionPackageLayout{
+		runtimePayloadRoot: executionRuntimePayloadRoot,
+		runtimeWorkDir:     executionRuntimeWorkDir,
+		runtimeResultDir:   executionRuntimeResultDir,
+		runtimeEntrypoint:  executionRuntimeEntrypointPath,
+	}
+
+	supervisorArgs := layout.runtimeSupervisorArgs([]string{"--flag", "value"}, 17, "test-supervisor-operation")
+	assertRuntimeSupervisorArgs(t, supervisorArgs, []string{
+		"test-supervisor-operation",
+		"--payload-archive", "/execution/staged/artifact.tar.gz",
+		"--work-dir", "/execution/run/work",
+		"--result-dir", "/execution/run/result",
+		"--entrypoint", "/execution/run/work/entrypoint",
+		"--timeout-seconds", "17",
+		"--",
+		"--flag",
+		"value",
+	})
+	if supervisorArgs[0] == executionRuntimeSupervisorOperation {
+		t.Fatal("supervisor operation was not supplied by the caller")
+	}
+}
+
+func assertRuntimeSupervisorArgs(t *testing.T, got []string, want []string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("supervisor arg count mismatch: got %d want %d", len(got), len(want))
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("supervisor arg mismatch at index %d", index)
+		}
 	}
 }
 

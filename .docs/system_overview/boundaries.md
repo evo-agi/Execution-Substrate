@@ -123,21 +123,21 @@ Those absences are current facts, not design commitments.
   `reliable_submit`, nested `contract`, nested `submit_key`, caller/key
   safe-reference derivation from the exact authenticated SPIFFE URI, composite
   `ClaimID` construction through the committed pure-model constructor, and
-  ES-neutral outcome semantics. It does not implement source-grounded resolved
-  effective-plan extraction, canonical effective-plan encoding, effective-plan
-  commitments, complete effective-plan witness construction,
-  durable replay-envelope custody, or runtime orchestration. A later
-  `resolved-execution-plan-extraction-foundation` tranche must derive one
-  authoritative resolved execution plan from the actual current ES
-  admission/runtime-resolution path, and current legacy `Submit` and future
-  reliable `PlanBinding` must consume that same source-grounded plan. That later
-  tranche must not synthesize `PrepareRequest` or `Manifest` proof from the
-  proposed plan itself, create a parallel admission engine, silently tighten the
-  current empty-environment-allowlist contract, or infer authority-handoff
+  ES-neutral outcome semantics. It does not implement canonical effective-plan
+  encoding, effective-plan commitments, complete effective-plan witness
+  construction, durable replay-envelope custody, or runtime orchestration. The
+  `resolved-execution-plan-extraction-foundation` tranche now derives one
+  private authoritative resolved execution plan from the actual current ES
+  admission/submit-resolution path, and current legacy `Submit` consumes that
+  source-grounded plan before payload/run/staging/Nomad effects. Future reliable
+  `PlanBinding` must consume the same plan in a separate tranche. The resolved
+  plan does not synthesize `PrepareRequest` or `Manifest` proof from the plan
+  itself, create a parallel admission engine, silently tighten the current
+  empty-environment-allowlist contract, or infer authority-handoff
   inapplicability contrary to current `Submit` behavior. The current foundation
   is not a public DTO surface, producer declaration, config surface, store
   lifecycle, Nomad reconciliation path, recovery route, shared grammar kernel,
-  or runtime capability claim.
+  reliable handler, or runtime capability claim.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
   ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
