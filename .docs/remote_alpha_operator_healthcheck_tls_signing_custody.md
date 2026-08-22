@@ -37,6 +37,13 @@ record lives in
 compares candidate signer/custody options and records that no option is
 selected today.
 
+The no-signer/no-replacement conclusion here continues to govern reusable P0u
+`operator-healthcheck-tls-renew`. The separate single-use external-family
+incident in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
+does not unblock or widen P0u and provides no reusable signer or route;
+`unsupported_signing_topology` remains the reusable-route result.
+
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` design records, and then
 current code/tests for factual implemented behavior. Related IM, CP,
@@ -49,7 +56,7 @@ Current answer: unresolved. No ES-owned or host-local authority is currently
 documented as allowed to sign replacement operator-healthcheck client
 certificates for this scope.
 
-Therefore no replacement may proceed today. The current renew route must
+Therefore no reusable P0u replacement may proceed today. The current renew route must
 continue to fail closed with `unsupported_signing_topology` before backup,
 install, service restart, post-renew probes, CP diagnose rerun, IM refresh, or
 live proof.

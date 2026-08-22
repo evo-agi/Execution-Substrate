@@ -5,7 +5,7 @@
 This decision record compares signer-authority and private-key custody models
 for future Remote Alpha operator-healthcheck client TLS replacement.
 
-Decision status: blocked.
+Decision status for reusable P0u: blocked.
 
 Decision question:
 
@@ -39,6 +39,13 @@ the material-custody boundaries and stop conditions, and from
 `.docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md`,
 which records the future replacement sequence.
 
+The no-signer/no-replacement conclusion here continues to govern reusable P0u
+`operator-healthcheck-tls-renew`. The separate single-use external-family
+incident in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
+does not unblock or widen P0u and provides no reusable signer or route;
+`unsupported_signing_topology` remains the reusable-route result.
+
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` design records, and then
 current code/tests for factual implemented behavior. Related IM, CP,
@@ -47,9 +54,9 @@ only; they do not create ES signing authority.
 
 ## 1. Decision Outcome
 
-No option is selected.
+No option is selected for reusable P0u.
 
-Replacement remains blocked. `operator-healthcheck-tls-renew` remains blocked
+Reusable P0u replacement remains blocked. `operator-healthcheck-tls-renew` remains blocked
 by `unsupported_signing_topology`. Service and governance TLS signers cannot be
 reused by inference. CP, IM, Maintenance Agent, Bridge, biometric leases,
 profile diagnostics, profile lineage, preflight evidence, support bundles,

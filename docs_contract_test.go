@@ -3,11 +3,13 @@ package executionsubstrate_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -4328,16 +4330,16 @@ func TestWorkstreamC7CheckpointDocsContract(t *testing.T) {
 		"C6 is ES Admission Policy Layer v0.",
 	)
 	assertContainsAll(t, "Remote Alpha TLS blocked decision remains blocked", tlsDecision,
-		"Decision status: blocked.",
-		"No option is selected.",
+		"Decision status for reusable P0u: blocked.",
+		"No option is selected for reusable P0u.",
 		"`operator-healthcheck-tls-renew` remains blocked by `unsupported_signing_topology`.",
 		"P0v was design/static only at the time of this decision record.",
 		"A later P0v tranche implements read-only status only with no fallback emitter",
 	)
 	assertContainsAll(t, "Remote Alpha TLS resolution remains blocked", tlsResolution,
-		"Current resolution verdict: blocked.",
+		"Current reusable P0u resolution verdict: blocked.",
 		"No current ES source satisfies the signer authority and custody evidence gate",
-		"no replacement, renewal, profile-lineage refresh, CP diagnose rerun, MA execution, Bridge projection, or live proof may proceed by inference",
+		"no reusable replacement, renewal, profile-lineage refresh, CP diagnose rerun, MA execution, Bridge projection, or live proof may proceed by inference",
 	)
 	assertContainsAll(t, "Remote Alpha TLS route matrix still blocked", remoteAlpha,
 		"P0v implements the ES-owned noninteractive read-only operator-healthcheck TLS",
@@ -9686,7 +9688,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDesign(t *testing.T)
 		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
 		"`Reopened redesign seam`: signing authority and private-key custody",
 		"Current answer: unresolved. No ES-owned or host-local authority is currently documented as allowed to sign replacement operator-healthcheck client certificates for this scope.",
-		"Therefore no replacement may proceed today.",
+		"Therefore no reusable P0u replacement may proceed today.",
 		"continue to fail closed with `unsupported_signing_topology`",
 		"explicit statement that CP, IM, Maintenance Agent, and Bridge are not signing authorities",
 		"The future design must not assume a retained runtime CA private-key topology",
@@ -9828,7 +9830,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
 		"authorize or consume the later read-only noninteractive status route",
 		"`Reopened redesign seam`: signer authority, signer custody, key custody, key reuse, key rotation, and CSR/cert material flow remain unresolved",
-		"Current resolution verdict: blocked.",
+		"Current reusable P0u resolution verdict: blocked.",
 		"No current ES source satisfies the signer authority and custody evidence gate below",
 		"No current ES source satisfies this list.",
 		"resolution remains blocked and the renewal failure class remains `unsupported_signing_topology`",
@@ -9858,7 +9860,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSSigningCustodyResolutionCriteria(t *te
 		"Never-private artifacts",
 		"Unresolved stop condition.",
 		"Current invariant.",
-		"replacement remains blocked",
+		"reusable P0u replacement remains blocked",
 	)
 
 	assertContainsAll(t, "operator healthcheck resolution flow criteria", flowCriteria,
@@ -10047,7 +10049,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *te
 
 	assertContainsAll(t, "operator healthcheck signing custody decision record", decision,
 		"Remote Alpha Operator-Healthcheck TLS Signer/Custody Decision Record",
-		"Decision status: blocked.",
+		"Decision status for reusable P0u: blocked.",
 		"What signer authority and private-key custody model may be used for operator-healthcheck client TLS replacement?",
 		"`Design/static-test prep only`: this record does not execute replacement",
 		"`operator-healthcheck-tls-renew` remains blocked with `unsupported_signing_topology`",
@@ -10055,8 +10057,8 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *te
 		"A later P0v tranche now implements read-only status only",
 		"no route from status to renewal permission",
 		"`Reopened redesign seam`: signer authority, signer custody, key custody, key reuse, key rotation, and CSR/cert material flow remain unresolved",
-		"No option is selected.",
-		"Replacement remains blocked.",
+		"No option is selected for reusable P0u.",
+		"Reusable P0u replacement remains blocked.",
 		"Service and governance TLS signers cannot be reused by inference.",
 		"CP, IM, Maintenance Agent, Bridge, biometric leases, profile diagnostics, profile lineage, preflight evidence, support bundles, retained bundles, proof artifacts, and reports cannot create ES signer authority or key custody.",
 		"Future work must source-ground signer authority, signer custody, CA/trust ownership, key custody, key action classification, CSR/cert flow, backup/rollback, redaction, and post-check ownership",
@@ -10156,6 +10158,529 @@ func TestRemoteAlphaOperatorHealthcheckTLSDocsSigningCustodyDecisionRecord(t *te
 	)
 }
 
+const remoteAlphaTLSIncidentContractPath = ".docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md"
+const remoteAlphaTLSIncidentRecordKind = "execution-substrate.remote-alpha.external-tls-single-use-incident-contract.v1"
+const remoteAlphaTLSMaxRecordBytes, remoteAlphaTLSMaxDepth = 64 << 10, 8
+const remoteAlphaTLSMaxObjectMembers, remoteAlphaTLSMaxArrayItems = 64, 64
+const remoteAlphaTLSMaxMemberBytes, remoteAlphaTLSMaxStringBytes = 256, 4096
+
+// This sorted vocabulary is fixed by the incident contract, not by candidate JSON or struct-field matching.
+var remoteAlphaTLSCanonicalMemberNames = strings.Fields(`
+acceptance active_authorization_docs_and_tests_removed_or_converted_on_terminal_closure ags_application_authorization_claim_requires_source_defined_check
+ags_es_allowlists_must_already_accept_required_identities ags_es_share_server_leaf ags_nonmutating_application_authorization_operation_available authorization
+authorization_configuration_mutation_allowed authorization_from_common_name_allowed automatic_renewal bootstrap_issuer_comparison_values_must_be_inventoried
+ca_basic_constraints_critical ca_key_end_condition_required ca_key_usage ca_keys_encrypted_at_rest ca_keys_human_custodied_on_mac ca_path_length ca_roles
+ca_validity_is_leaf_coverage_plus_bounded_grace certificate_signature changed_candidate_requires_new_es_decision
+changed_candidate_requires_new_independent_audit classification client_leaf_eku client_uri_count_per_leaf closure_states complete_candidate_validation_required
+complete_host_disk_set_before_restart complete_private_backup_required consume_on_first_effect control_plane_uri cross_role_key_reuse_allowed
+cross_role_trust_allowed cryptography custody cutover default_disposition digital_signature_required es_authorizes_profile_mutation exact_san_required
+exact_sunset_required_before_first_effect executions first_effect_irreversibly_consumes_authority fresh_keypairs hosts identities
+im_contract_commit_and_tree_bound_before_first_es_effect_when_handoff_required im_projection_is_acceptance im_recovery_authority implementation_status incidents
+initial_state installation_may_use_only_second_gate_manifest key_algorithm key_reuse_allowed leaf_basic_constraints_critical leaf_keys_generated_at_point_of_use
+leaf_maximum_days leaf_must_not_exceed_sunset leaf_roles legacy_operator_uri_allowed live_inventory_required ma_execution_authority minimum_tls non_goals
+nonterminal_closure_state ongoing_remote_alpha_support only_csr_and_public_material_cross_machine operator_compatibility_cn operator_compatibility_dns
+operator_uri os_update_or_reboot owner post_generation_candidate_manifest_required pre_effect_binding pre_effect_candidate_manifest_allowed preflight
+private_key_cross_machine production_pki profile_handoff profile_handoff_failure_revokes_es_acceptance profile_handoff_failure_state
+profile_handoff_failure_triggers_automatic_host_tls_rollback profile_replacement_is_es_consuming_effect profile_replacement_occurs_only_after_es_acceptance
+public_protocol record_kind reported_expiry_is_not_repository_truth required_checks restart_order retirement_action_minimum_scope retirement_action_required
+retirement_evidence_required retirement_owner_required return_to_authorized_not_consumed_allowed reusable_recovery_route rollback_outcome
+rollback_outcome_claims_health scheduler scope second_human_gate_required_before_installation second_packet_allowed separate_committed_im_contract_required
+server_leaf_eku sunset terminal_closeout_requires_handoff_or_explicit_retirement terminal_closure_states terminal_state_authorizes_another_packet
+tls_binding_mutation_before_inventory_allowed topology unchanged_rollback_packet_allowed_within_consumed_incident unchanged_rollback_packet_is_new_authority
+`)
+
+func remoteAlphaTLSScanJSON(decoder *json.Decoder, opening json.Delim, depth int) error {
+	if depth > remoteAlphaTLSMaxDepth {
+		return fmt.Errorf("json_limit_exceeded path=$")
+	}
+	object, limit := opening == '{', remoteAlphaTLSMaxArrayItems
+	var seen map[string]struct{}
+	if object {
+		limit, seen = remoteAlphaTLSMaxObjectMembers, make(map[string]struct{})
+	}
+	count := 0
+	for decoder.More() {
+		count++
+		if count > limit {
+			return fmt.Errorf("json_limit_exceeded path=$")
+		}
+		if object {
+			token, _ := decoder.Token()
+			key, ok := token.(string)
+			if !ok {
+				return fmt.Errorf("malformed_json path=$")
+			}
+			if len(key) > remoteAlphaTLSMaxMemberBytes {
+				return fmt.Errorf("json_limit_exceeded path=$")
+			}
+			if !slices.Contains(remoteAlphaTLSCanonicalMemberNames, key) {
+				return fmt.Errorf("unknown_json_key path=$")
+			}
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("duplicate_json_key path=$")
+			}
+			seen[key] = struct{}{}
+		}
+		token, _ := decoder.Token()
+		switch value := token.(type) {
+		case string:
+			if len(value) > remoteAlphaTLSMaxStringBytes {
+				return fmt.Errorf("json_limit_exceeded path=$")
+			}
+		case nil, bool, json.Number:
+		case json.Delim:
+			if err := remoteAlphaTLSScanJSON(decoder, value, depth+1); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("malformed_json path=$")
+		}
+	}
+	decoder.Token() // Consume the matching delimiter from the already-valid RawMessage.
+	return nil
+}
+
+func remoteAlphaTLSJSONPreflight(raw []byte) error {
+	if len(raw) > remoteAlphaTLSMaxRecordBytes {
+		return fmt.Errorf("json_limit_exceeded path=$")
+	}
+	source := json.NewDecoder(bytes.NewReader(raw))
+	var rootJSON json.RawMessage
+	if err := source.Decode(&rootJSON); err != nil {
+		return fmt.Errorf("malformed_json path=$")
+	}
+	if len(bytes.TrimSpace(raw[source.InputOffset():])) != 0 {
+		return fmt.Errorf("trailing_json_content path=$")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(rootJSON))
+	decoder.UseNumber()
+	// rootJSON was decoded successfully, so token reads cannot fail.
+	token, _ := decoder.Token()
+	root, ok := token.(json.Delim)
+	if !ok || root != '{' {
+		return fmt.Errorf("json_type_mismatch path=$")
+	}
+	return remoteAlphaTLSScanJSON(decoder, root, 1)
+}
+
+type remoteAlphaTLSBool bool
+
+func (v *remoteAlphaTLSBool) is(want bool) bool { return v != nil && bool(*v) == want }
+
+type remoteAlphaTLSIncident struct {
+	Record_kind, Classification, Implementation_status string
+	Public_protocol                                    *remoteAlphaTLSBool
+	Scope                                              remoteAlphaTLSScope
+	Authorization                                      remoteAlphaTLSAuthorization
+	Topology                                           remoteAlphaTLSTopology
+	Identities                                         remoteAlphaTLSIdentities
+	Cryptography                                       remoteAlphaTLSCryptography
+	Custody                                            remoteAlphaTLSCustody
+	Preflight                                          remoteAlphaTLSPreflight
+	Cutover                                            remoteAlphaTLSCutover
+	Acceptance                                         remoteAlphaTLSAcceptance
+	Profile_handoff                                    remoteAlphaTLSProfileHandoff
+	Sunset                                             remoteAlphaTLSSunset
+	Non_goals                                          remoteAlphaTLSNonGoals
+}
+type remoteAlphaTLSScope struct{ Hosts, Incidents, Executions json.Number }
+type remoteAlphaTLSAuthorization struct {
+	Initial_state, Nonterminal_closure_state                                                                                                                                                    string
+	Pre_effect_binding, Consume_on_first_effect, Closure_states, Terminal_closure_states                                                                                                        []string
+	Pre_effect_candidate_manifest_allowed, First_effect_irreversibly_consumes_authority, Post_generation_candidate_manifest_required, Second_human_gate_required_before_installation            *remoteAlphaTLSBool
+	Installation_may_use_only_second_gate_manifest, Changed_candidate_requires_new_es_decision, Changed_candidate_requires_new_independent_audit, Second_packet_allowed                         *remoteAlphaTLSBool
+	Return_to_authorized_not_consumed_allowed, Unchanged_rollback_packet_allowed_within_consumed_incident, Unchanged_rollback_packet_is_new_authority, Terminal_state_authorizes_another_packet *remoteAlphaTLSBool
+}
+type remoteAlphaTLSTopology struct {
+	Ca_roles, Leaf_roles                                                       []string
+	Fresh_keypairs                                                             json.Number
+	Key_reuse_allowed, Cross_role_key_reuse_allowed, Private_key_cross_machine *remoteAlphaTLSBool
+}
+type remoteAlphaTLSIdentities struct {
+	Control_plane_uri, Operator_uri, Operator_compatibility_cn, Operator_compatibility_dns        string
+	Client_uri_count_per_leaf                                                                     json.Number
+	Authorization_from_common_name_allowed, Legacy_operator_uri_allowed, Ags_es_share_server_leaf *remoteAlphaTLSBool
+}
+type remoteAlphaTLSCryptography struct {
+	Key_algorithm, Certificate_signature, Minimum_tls                                                                                                                                                                      string
+	Leaf_maximum_days, Ca_path_length                                                                                                                                                                                      json.Number
+	Ca_key_usage, Server_leaf_eku, Client_leaf_eku                                                                                                                                                                         []string
+	Leaf_must_not_exceed_sunset, Ca_validity_is_leaf_coverage_plus_bounded_grace, Ca_basic_constraints_critical, Leaf_basic_constraints_critical, Digital_signature_required, Exact_san_required, Cross_role_trust_allowed *remoteAlphaTLSBool
+}
+type remoteAlphaTLSCustody struct {
+	Ca_keys_human_custodied_on_mac, Ca_keys_encrypted_at_rest, Leaf_keys_generated_at_point_of_use, Only_csr_and_public_material_cross_machine, Ca_key_end_condition_required *remoteAlphaTLSBool
+}
+type remoteAlphaTLSPreflight struct {
+	Live_inventory_required, Reported_expiry_is_not_repository_truth, Ags_es_allowlists_must_already_accept_required_identities, Bootstrap_issuer_comparison_values_must_be_inventoried, Authorization_configuration_mutation_allowed, Tls_binding_mutation_before_inventory_allowed *remoteAlphaTLSBool
+}
+type remoteAlphaTLSCutover struct {
+	Complete_candidate_validation_required, Complete_private_backup_required, Complete_host_disk_set_before_restart, Rollback_outcome_claims_health *remoteAlphaTLSBool
+	Restart_order                                                                                                                                   []string
+	Rollback_outcome                                                                                                                                string
+}
+type remoteAlphaTLSAcceptance struct {
+	Owner                                                                                                                                                         string
+	Required_checks                                                                                                                                               []string
+	Im_projection_is_acceptance, Ags_nonmutating_application_authorization_operation_available, Ags_application_authorization_claim_requires_source_defined_check *remoteAlphaTLSBool
+}
+type remoteAlphaTLSProfileHandoff struct {
+	Owner, Profile_handoff_failure_state                                                                                                                                                                         string
+	Es_authorizes_profile_mutation, Separate_committed_im_contract_required, Im_contract_commit_and_tree_bound_before_first_es_effect_when_handoff_required                                                      *remoteAlphaTLSBool
+	Profile_replacement_is_es_consuming_effect, Profile_replacement_occurs_only_after_es_acceptance, Profile_handoff_failure_revokes_es_acceptance, Profile_handoff_failure_triggers_automatic_host_tls_rollback *remoteAlphaTLSBool
+	Terminal_closeout_requires_handoff_or_explicit_retirement                                                                                                                                                    *remoteAlphaTLSBool
+}
+type remoteAlphaTLSSunset struct {
+	Default_disposition                                                                                                                                                                                          string
+	Retirement_action_minimum_scope                                                                                                                                                                              []string
+	Exact_sunset_required_before_first_effect, Retirement_owner_required, Retirement_action_required, Retirement_evidence_required, Active_authorization_docs_and_tests_removed_or_converted_on_terminal_closure *remoteAlphaTLSBool
+}
+type remoteAlphaTLSNonGoals struct {
+	Reusable_recovery_route, Automatic_renewal, Scheduler, Production_pki, Ongoing_remote_alpha_support, Im_recovery_authority, Ma_execution_authority, Os_update_or_reboot *remoteAlphaTLSBool
+}
+
+func (v remoteAlphaTLSAuthorization) valid() bool {
+	return v.Initial_state == "AUTHORIZED_NOT_CONSUMED" && v.Nonterminal_closure_state == "CONSUMED_OPEN_INCIDENT" &&
+		remoteAlphaTLSSet(v.Pre_effect_binding, "incident_id", "physical_host", "es_contract_commit", "es_contract_tree", "private_plan_sha256", "incident_packet_sha256", "rollback_packet_sha256") &&
+		remoteAlphaTLSSet(v.Consume_on_first_effect, "key_generation", "csr_generation", "certificate_signing", "private_backup_creation", "active_tls_installation", "service_restart") &&
+		remoteAlphaTLSSet(v.Closure_states, "ABANDONED_UNUSED", "CONSUMED_OPEN_INCIDENT", "CONSUMED_AND_CLOSED") &&
+		remoteAlphaTLSSet(v.Terminal_closure_states, "ABANDONED_UNUSED", "CONSUMED_AND_CLOSED") &&
+		v.Pre_effect_candidate_manifest_allowed.is(false) && v.First_effect_irreversibly_consumes_authority.is(true) &&
+		v.Post_generation_candidate_manifest_required.is(true) && v.Second_human_gate_required_before_installation.is(true) &&
+		v.Installation_may_use_only_second_gate_manifest.is(true) && v.Changed_candidate_requires_new_es_decision.is(true) &&
+		v.Changed_candidate_requires_new_independent_audit.is(true) && v.Second_packet_allowed.is(false) &&
+		v.Return_to_authorized_not_consumed_allowed.is(false) && v.Unchanged_rollback_packet_allowed_within_consumed_incident.is(true) &&
+		v.Unchanged_rollback_packet_is_new_authority.is(false) && v.Terminal_state_authorizes_another_packet.is(false)
+}
+func remoteAlphaTLSSet(got []string, want ...string) bool {
+	got = slices.Clone(got)
+	slices.Sort(got)
+	slices.Sort(want)
+	return slices.Equal(got, want)
+}
+func decodeRemoteAlphaTLSIncidentJSON(raw []byte) (*remoteAlphaTLSIncident, error) {
+	if err := remoteAlphaTLSJSONPreflight(raw); err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	var record remoteAlphaTLSIncident
+	if err := decoder.Decode(&record); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			return nil, fmt.Errorf("unknown_json_key path=$")
+		}
+		return nil, fmt.Errorf("json_type_mismatch path=$")
+	}
+	if err := validateRemoteAlphaTLSIncidentRecord(&record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+func validateRemoteAlphaTLSIncidentRecord(r *remoteAlphaTLSIncident) error {
+	if r.Record_kind != remoteAlphaTLSIncidentRecordKind || r.Classification != "bounded_proof_support_incident" || r.Implementation_status != "documentation_only" || !r.Public_protocol.is(false) {
+		return fmt.Errorf("unexpected_json_value path=$")
+	}
+	for _, number := range []struct {
+		ok   bool
+		path string
+	}{
+		{r.Scope.Hosts.String() == "1", "$.scope.hosts"},
+		{r.Scope.Incidents.String() == "1", "$.scope.incidents"},
+		{r.Scope.Executions.String() == "1", "$.scope.executions"},
+		{r.Topology.Fresh_keypairs.String() == "6", "$.topology.fresh_keypairs"},
+		{r.Identities.Client_uri_count_per_leaf.String() == "1", "$.identities.client_uri_count_per_leaf"},
+		{r.Cryptography.Leaf_maximum_days.String() == "365", "$.cryptography.leaf_maximum_days"},
+		{r.Cryptography.Ca_path_length.String() == "0", "$.cryptography.ca_path_length"},
+	} {
+		if !number.ok {
+			return fmt.Errorf("unexpected_json_value path=%s", number.path)
+		}
+	}
+	c := r.Cryptography
+	p := r.Profile_handoff
+	s := r.Sunset
+	n := r.Non_goals
+	fixed := []struct {
+		path  string
+		valid bool
+	}{
+		{"$.authorization", r.Authorization.valid()},
+		{"$.topology", remoteAlphaTLSSet(r.Topology.Ca_roles, "external_server_auth", "external_client_auth") && remoteAlphaTLSSet(r.Topology.Leaf_roles, "ags_server", "es_server", "control_plane_client", "operator_client") && r.Topology.Key_reuse_allowed.is(false) && r.Topology.Cross_role_key_reuse_allowed.is(false) && r.Topology.Private_key_cross_machine.is(false)},
+		{"$.identities", r.Identities.Control_plane_uri == "spiffe://execution.internal/service/control-plane" && r.Identities.Operator_uri == "spiffe://execution.internal/operator/local" && r.Identities.Operator_compatibility_cn == "client.operator" && r.Identities.Operator_compatibility_dns == "client.operator" && r.Identities.Authorization_from_common_name_allowed.is(false) && r.Identities.Legacy_operator_uri_allowed.is(false) && r.Identities.Ags_es_share_server_leaf.is(false)},
+		{"$.cryptography", c.Key_algorithm == "RSA-3072" && c.Certificate_signature == "SHA-256" && c.Minimum_tls == "1.2" && remoteAlphaTLSSet(c.Ca_key_usage, "keyCertSign", "cRLSign") && remoteAlphaTLSSet(c.Server_leaf_eku, "serverAuth") && remoteAlphaTLSSet(c.Client_leaf_eku, "clientAuth") && c.Leaf_must_not_exceed_sunset.is(true) && c.Ca_validity_is_leaf_coverage_plus_bounded_grace.is(true) && c.Ca_basic_constraints_critical.is(true) && c.Leaf_basic_constraints_critical.is(true) && c.Digital_signature_required.is(true) && c.Exact_san_required.is(true) && c.Cross_role_trust_allowed.is(false)},
+		{"$.custody", r.Custody.Ca_keys_human_custodied_on_mac.is(true) && r.Custody.Ca_keys_encrypted_at_rest.is(true) && r.Custody.Leaf_keys_generated_at_point_of_use.is(true) && r.Custody.Only_csr_and_public_material_cross_machine.is(true) && r.Custody.Ca_key_end_condition_required.is(true)},
+		{"$.preflight", r.Preflight.Live_inventory_required.is(true) && r.Preflight.Reported_expiry_is_not_repository_truth.is(true) && r.Preflight.Ags_es_allowlists_must_already_accept_required_identities.is(true) && r.Preflight.Bootstrap_issuer_comparison_values_must_be_inventoried.is(true) && r.Preflight.Authorization_configuration_mutation_allowed.is(false) && r.Preflight.Tls_binding_mutation_before_inventory_allowed.is(false)},
+		{"$.cutover", r.Cutover.Complete_candidate_validation_required.is(true) && r.Cutover.Complete_private_backup_required.is(true) && r.Cutover.Complete_host_disk_set_before_restart.is(true) && slices.Equal(r.Cutover.Restart_order, []string{"ags.service", "es.service"}) && r.Cutover.Rollback_outcome == "restored_prior_incident_state" && r.Cutover.Rollback_outcome_claims_health.is(false)},
+		{"$.acceptance", r.Acceptance.Owner == "execution_substrate" && r.Acceptance.Im_projection_is_acceptance.is(false) && remoteAlphaTLSSet(r.Acceptance.Required_checks, "installed_set_integrity", "configured_allowlist_match", "direct_operator_mtls", "direct_control_plane_ags_mtls", "direct_control_plane_es_mtls", "es_contract_endpoint", "fresh_substrate_observations") && r.Acceptance.Ags_nonmutating_application_authorization_operation_available.is(false) && r.Acceptance.Ags_application_authorization_claim_requires_source_defined_check.is(true)},
+		{"$.profile_handoff", p.Owner == "infrastructure_manager" && p.Es_authorizes_profile_mutation.is(false) && p.Separate_committed_im_contract_required.is(true) && p.Im_contract_commit_and_tree_bound_before_first_es_effect_when_handoff_required.is(true) && p.Profile_replacement_is_es_consuming_effect.is(false) && p.Profile_replacement_occurs_only_after_es_acceptance.is(true) && p.Profile_handoff_failure_state == "CONSUMED_OPEN_INCIDENT" && p.Profile_handoff_failure_revokes_es_acceptance.is(false) && p.Profile_handoff_failure_triggers_automatic_host_tls_rollback.is(false) && p.Terminal_closeout_requires_handoff_or_explicit_retirement.is(true)},
+		{"$.sunset", s.Default_disposition == "RETIRE_BEFORE_LEAF_EXPIRY" && s.Exact_sunset_required_before_first_effect.is(true) && s.Retirement_owner_required.is(true) && s.Retirement_action_required.is(true) && s.Retirement_evidence_required.is(true) && remoteAlphaTLSSet(s.Retirement_action_minimum_scope, "disable_or_retire_external_access_path", "deactivate_runnable_mac_profile", "complete_ca_key_disposition", "record_host_topology_disposition") && s.Active_authorization_docs_and_tests_removed_or_converted_on_terminal_closure.is(true)},
+		{"$.non_goals", n.Reusable_recovery_route.is(true) && n.Automatic_renewal.is(true) && n.Scheduler.is(true) && n.Production_pki.is(true) && n.Ongoing_remote_alpha_support.is(true) && n.Im_recovery_authority.is(true) && n.Ma_execution_authority.is(true) && n.Os_update_or_reboot.is(true)},
+	}
+	for _, check := range fixed {
+		if !check.valid {
+			return fmt.Errorf("unexpected_json_value path=%s", check.path)
+		}
+	}
+	return nil
+}
+func validateRemoteAlphaTLSIncidentJSON(raw []byte) error {
+	_, err := decodeRemoteAlphaTLSIncidentJSON(raw)
+	return err
+}
+
+func requireRemoteAlphaTLS(t *testing.T, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Fatalf(format, args...)
+	}
+}
+
+func remoteAlphaTLSIncidentJSON(t *testing.T) ([]byte, string) {
+	t.Helper()
+	raw := mustRead(t, remoteAlphaTLSIncidentContractPath)
+	const heading, fence = "## Normative incident record", "\x60\x60\x60"
+	requireRemoteAlphaTLS(t, strings.Count(raw, heading) == 1, "expected exactly one normative incident record heading")
+	section := markedDocSection(t, "normative incident record", raw, heading, "## One-Time State Transitions")
+	requireRemoteAlphaTLS(t, strings.Count(section, fence+"json\n") == 1 && strings.Count(section, fence) == 2, "normative incident record must contain exactly one fenced JSON object")
+	jsonTail := section[strings.Index(section, fence+"json\n")+len(fence+"json\n"):]
+	jsonEnd := strings.Index(jsonTail, "\n"+fence)
+	requireRemoteAlphaTLS(t, jsonEnd >= 0, "normative incident record closing fence not found")
+	return []byte(jsonTail[:jsonEnd]), raw
+}
+func remoteAlphaTLSIncidentRecord(t *testing.T) (*remoteAlphaTLSIncident, string) {
+	t.Helper()
+	jsonRecord, raw := remoteAlphaTLSIncidentJSON(t)
+	record, err := decodeRemoteAlphaTLSIncidentJSON(jsonRecord)
+	requireRemoteAlphaTLS(t, err == nil, "validate normative incident record: %v", err)
+	return record, raw
+}
+func remoteAlphaTLSIncidentReplaceOnce(t *testing.T, raw []byte, old, replacement string) []byte {
+	t.Helper()
+	count := bytes.Count(raw, []byte(old))
+	requireRemoteAlphaTLS(t, count == 1, "mutation anchor count = %d, want 1", count)
+	return bytes.Replace(raw, []byte(old), []byte(replacement), 1)
+}
+func remoteAlphaTLSIncidentDiagnostic(t *testing.T, raw []byte, classification, path string) string {
+	t.Helper()
+	err := validateRemoteAlphaTLSIncidentJSON(raw)
+	requireRemoteAlphaTLS(t, err != nil, "expected %s at %s", classification, path)
+	diagnostic := err.Error()
+	requireRemoteAlphaTLS(t, len(diagnostic) <= 160 && !strings.ContainsAny(diagnostic, "\r\n"), "validation diagnostic is not bounded to one line")
+	requireRemoteAlphaTLS(t, diagnostic == classification+" path="+path, "validation diagnostic classification or path mismatch")
+	return diagnostic
+}
+
+type remoteAlphaTLSMutation struct{ name, old, replacement, classification, path string }
+
+func remoteAlphaTLSRunMutations(t *testing.T, raw []byte, cases []remoteAlphaTLSMutation) {
+	t.Helper()
+	err := validateRemoteAlphaTLSIncidentJSON(raw)
+	requireRemoteAlphaTLS(t, err == nil, "canonical incident record: %v", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mutated := remoteAlphaTLSIncidentReplaceOnce(t, raw, c.old, c.replacement)
+			diagnostic := remoteAlphaTLSIncidentDiagnostic(t, mutated, c.classification, c.path)
+			requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, mutated, c.classification, c.path) == diagnostic, "validation diagnostic is nondeterministic")
+		})
+	}
+}
+
+func remoteAlphaTLSCaseAlias(name string) string {
+	alias := []byte(name)
+	for index, value := range alias {
+		if value >= 'a' && value <= 'z' {
+			alias[index] = value - ('a' - 'A')
+			return string(alias)
+		}
+	}
+	return ""
+}
+
+func TestRemoteAlphaExternalTLSIncidentCanonicalMemberNamesAreExact(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	requireRemoteAlphaTLS(t, len(remoteAlphaTLSCanonicalMemberNames) == 112, "canonical member vocabulary size changed")
+	requireRemoteAlphaTLS(t, remoteAlphaTLSJSONPreflight(raw) == nil, "canonical record contains a decoded member outside the vocabulary")
+	for index, name := range remoteAlphaTLSCanonicalMemberNames {
+		requireRemoteAlphaTLS(t, bytes.Contains(raw, []byte(`"`+name+`":`)), "canonical vocabulary member %q is absent from the record", name)
+		for _, other := range remoteAlphaTLSCanonicalMemberNames[index+1:] {
+			requireRemoteAlphaTLS(t, !strings.EqualFold(name, other), "canonical member names %q and %q have a case-fold collision", name, other)
+		}
+		alias := remoteAlphaTLSCaseAlias(name)
+		requireRemoteAlphaTLS(t, alias != "" && alias != name && strings.EqualFold(alias, name), "canonical member %q has no deterministic case alias", name)
+		mutated := bytes.Replace(raw, []byte(`"`+name+`":`), []byte(`"`+alias+`":`), 1)
+		diagnostic := remoteAlphaTLSIncidentDiagnostic(t, mutated, "unknown_json_key", "$")
+		requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, mutated, "unknown_json_key", "$") == diagnostic, "case-alias diagnostic is nondeterministic")
+	}
+}
+
+func TestRemoteAlphaExternalTLSIncidentStrictJSONRejectsDuplicateMembers(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	top, auth, profile := "  \"record_kind\": \""+remoteAlphaTLSIncidentRecordKind+"\",", "    \"initial_state\": \"AUTHORIZED_NOT_CONSUMED\",", "    \"owner\": \"infrastructure_manager\","
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"top same", top, top + "\n" + top, "duplicate_json_key", "$"}, {"top conflict", top, top + "\n  \"record_kind\": \"conflict\",", "duplicate_json_key", "$"},
+		{"nested same", auth, auth + "\n" + auth, "duplicate_json_key", "$"}, {"nested conflict", auth, auth + "\n    \"initial_state\": \"conflict\",", "duplicate_json_key", "$"},
+		{"handoff same", profile, profile + "\n" + profile, "duplicate_json_key", "$"}, {"handoff conflict", profile, profile + "\n    \"owner\": \"conflict\",", "duplicate_json_key", "$"},
+		{"Unicode-equivalent", profile, profile + "\n    \"\\u006fwner\": \"execution_substrate\",", "duplicate_json_key", "$"},
+	})
+}
+
+func TestRemoteAlphaExternalTLSIncidentStrictJSONRejectsCaseFoldAliases(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	top, hosts := "  \"record_kind\": \""+remoteAlphaTLSIncidentRecordKind+"\",", "    \"hosts\": 1,"
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"top alias only", top, "  \"RECORD_KIND\": \"" + remoteAlphaTLSIncidentRecordKind + "\",", "unknown_json_key", "$"},
+		{"top same alias", top, top + "\n  \"RECORD_KIND\": \"" + remoteAlphaTLSIncidentRecordKind + "\",", "unknown_json_key", "$"},
+		{"top conflicting alias", top, top + "\n  \"RECORD_KIND\": \"conflict\",", "unknown_json_key", "$"},
+		{"nested alias only", hosts, "    \"HOSTS\": 1,", "unknown_json_key", "$"},
+		{"nested same alias", hosts, hosts + "\n    \"HOSTS\": 1,", "unknown_json_key", "$"},
+		{"invalid canonical then alias", hosts, "    \"hosts\": 999,\n    \"HOSTS\": 1,", "unknown_json_key", "$"},
+		{"alias then invalid canonical", hosts, "    \"HOSTS\": 1,\n    \"hosts\": 999,", "unknown_json_key", "$"},
+		{"Unicode case alias", hosts, "    \"\\u0048OSTS\": 1,", "unknown_json_key", "$"},
+	})
+}
+
+func TestRemoteAlphaExternalTLSIncidentStrictJSONRejectsUnknownNestedMembers(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	for _, object := range []string{"scope", "authorization", "topology", "identities", "cryptography", "custody", "preflight", "cutover", "acceptance", "profile_handoff", "sunset", "non_goals"} {
+		mutated := remoteAlphaTLSIncidentReplaceOnce(t, raw, "  \""+object+"\": {\n", "  \""+object+"\": {\n    \"unexpected_member\": false,\n")
+		remoteAlphaTLSIncidentDiagnostic(t, mutated, "unknown_json_key", "$")
+	}
+}
+
+func TestRemoteAlphaExternalTLSIncidentStrictJSONRejectsMissingNestedMembers(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"scope", "    \"hosts\": 1,\n", "", "unexpected_json_value", "$.scope.hosts"}, {"authorization", "    \"initial_state\": \"AUTHORIZED_NOT_CONSUMED\",\n", "", "unexpected_json_value", "$.authorization"},
+		{"topology", "    \"fresh_keypairs\": 6,\n", "", "unexpected_json_value", "$.topology.fresh_keypairs"}, {"identities", "    \"control_plane_uri\": \"spiffe://execution.internal/service/control-plane\",\n", "", "unexpected_json_value", "$.identities"},
+		{"cryptography", "    \"key_algorithm\": \"RSA-3072\",\n", "", "unexpected_json_value", "$.cryptography"}, {"custody", "    \"ca_keys_human_custodied_on_mac\": true,\n", "", "unexpected_json_value", "$.custody"},
+		{"preflight", "    \"live_inventory_required\": true,\n", "", "unexpected_json_value", "$.preflight"}, {"cutover", "    \"complete_candidate_validation_required\": true,\n", "", "unexpected_json_value", "$.cutover"},
+		{"acceptance", "    \"owner\": \"execution_substrate\",\n", "", "unexpected_json_value", "$.acceptance"}, {"handoff", "    \"owner\": \"infrastructure_manager\",\n", "", "unexpected_json_value", "$.profile_handoff"},
+		{"sunset", "    \"default_disposition\": \"RETIRE_BEFORE_LEAF_EXPIRY\",\n", "", "unexpected_json_value", "$.sunset"}, {"non-goals", "    \"reusable_recovery_route\": true,\n", "", "unexpected_json_value", "$.non_goals"},
+	})
+}
+
+func TestRemoteAlphaExternalTLSIncidentStrictJSONRejectsTypeMalformedAndTrailingDefects(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	scope := "  \"scope\": {\n    \"hosts\": 1,\n    \"incidents\": 1,\n    \"executions\": 1\n  }"
+	binding := "    \"pre_effect_binding\": [\n      \"incident_id\",\n      \"physical_host\",\n      \"es_contract_commit\",\n      \"es_contract_tree\",\n      \"private_plan_sha256\",\n      \"incident_packet_sha256\",\n      \"rollback_packet_sha256\"\n    ]"
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"object/list", scope, "  \"scope\": []", "json_type_mismatch", "$"}, {"list/object", binding, "    \"pre_effect_binding\": {}", "json_type_mismatch", "$"},
+		{"scalar/list", "    \"hosts\": 1,", "    \"hosts\": [],", "json_type_mismatch", "$"}, {"list element", "      \"incident_id\",", "      false,", "json_type_mismatch", "$"},
+		{"boolean/string", "    \"es_authorizes_profile_mutation\": false,", "    \"es_authorizes_profile_mutation\": \"false\",", "json_type_mismatch", "$"},
+		{"null", "    \"hosts\": 1,", "    \"hosts\": null,", "unexpected_json_value", "$.scope.hosts"},
+		{"bad escape", "  \"record_kind\": \"" + remoteAlphaTLSIncidentRecordKind + "\",", "  \"record_kind\": \"bad\\q\",", "malformed_json", "$"},
+		{"bad number", "    \"hosts\": 1,", "    \"hosts\": 01,", "malformed_json", "$"},
+	})
+	remoteAlphaTLSIncidentDiagnostic(t, raw[:len(raw)-1], "malformed_json", "$")
+	remoteAlphaTLSIncidentDiagnostic(t, append(slices.Clone(raw), []byte("\n{}")...), "trailing_json_content", "$")
+	remoteAlphaTLSIncidentDiagnostic(t, []byte("[]"), "json_type_mismatch", "$")
+}
+
+func TestRemoteAlphaExternalTLSIncidentExactNumericAndDiagnosticBounds(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"near hosts", "\"hosts\": 1", "\"hosts\": 1.0000000000000000000000000000000001", "unexpected_json_value", "$.scope.hosts"},
+		{"near incidents", "\"incidents\": 1", "\"incidents\": 1.0000000000000000000000000000000001", "unexpected_json_value", "$.scope.incidents"},
+		{"near executions", "\"executions\": 1", "\"executions\": 1.0000000000000000000000000000000001", "unexpected_json_value", "$.scope.executions"},
+		{"near keypairs", "\"fresh_keypairs\": 6", "\"fresh_keypairs\": 6.0000000000000000000000000000000001", "unexpected_json_value", "$.topology.fresh_keypairs"},
+		{"near URI count", "\"client_uri_count_per_leaf\": 1", "\"client_uri_count_per_leaf\": 1.0000000000000000000000000000000001", "unexpected_json_value", "$.identities.client_uri_count_per_leaf"},
+		{"near leaf days", "\"leaf_maximum_days\": 365", "\"leaf_maximum_days\": 365.0000000000000000000000000000000001", "unexpected_json_value", "$.cryptography.leaf_maximum_days"},
+		{"near path length", "\"ca_path_length\": 0", "\"ca_path_length\": 0.0000000000000000000000000000000001", "unexpected_json_value", "$.cryptography.ca_path_length"},
+		{"decimal", "\"hosts\": 1", "\"hosts\": 1.0", "unexpected_json_value", "$.scope.hosts"}, {"exponent", "\"hosts\": 1", "\"hosts\": 1e0", "unexpected_json_value", "$.scope.hosts"},
+		{"negative", "\"hosts\": 1", "\"hosts\": -1", "unexpected_json_value", "$.scope.hosts"}, {"oversized", "\"hosts\": 1", "\"hosts\": 999999999999999999999999999999999999", "unexpected_json_value", "$.scope.hosts"},
+	})
+	sentinel := "SYNTHETIC_REJECTED_VALUE_SENTINEL_4D761B6C"
+	sentinelRaw := remoteAlphaTLSIncidentReplaceOnce(t, raw, remoteAlphaTLSIncidentRecordKind, sentinel)
+	diagnostic := remoteAlphaTLSIncidentDiagnostic(t, sentinelRaw, "unexpected_json_value", "$")
+	requireRemoteAlphaTLS(t, !strings.Contains(diagnostic, sentinel), "diagnostic exposed candidate sentinel")
+	for range 20 {
+		requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, sentinelRaw, "unexpected_json_value", "$") == diagnostic, "diagnostic is nondeterministic")
+	}
+	arrayRaw := remoteAlphaTLSIncidentReplaceOnce(t, raw, "    \"pre_effect_binding\": [\n", "    \"pre_effect_binding\": [\n"+strings.Repeat("      \"LIST_SENTINEL\",\n", 200))
+	diagnostic = remoteAlphaTLSIncidentDiagnostic(t, arrayRaw, "json_limit_exceeded", "$")
+	requireRemoteAlphaTLS(t, !strings.Contains(diagnostic, "LIST_SENTINEL"), "diagnostic exposed candidate list")
+	oversized := append(slices.Clone(raw), bytes.Repeat([]byte(" "), remoteAlphaTLSMaxRecordBytes-len(raw)+1)...)
+	remoteAlphaTLSIncidentDiagnostic(t, oversized, "json_limit_exceeded", "$")
+	nested := remoteAlphaTLSIncidentReplaceOnce(t, raw, "\"record_kind\": \""+remoteAlphaTLSIncidentRecordKind+"\"", "\"record_kind\": [[[[[[[[[\"x\"]]]]]]]]]")
+	remoteAlphaTLSIncidentDiagnostic(t, nested, "json_limit_exceeded", "$")
+	var members strings.Builder
+	memberCount := 0
+	for _, name := range remoteAlphaTLSCanonicalMemberNames {
+		if name == "hosts" || name == "incidents" || name == "executions" {
+			continue
+		}
+		fmt.Fprintf(&members, "    %q: false,\n", name)
+		memberCount++
+		if memberCount > remoteAlphaTLSMaxObjectMembers {
+			break
+		}
+	}
+	remoteAlphaTLSIncidentDiagnostic(t, remoteAlphaTLSIncidentReplaceOnce(t, raw, "  \"scope\": {\n", "  \"scope\": {\n"+members.String()), "json_limit_exceeded", "$")
+	longName := strings.Repeat("n", remoteAlphaTLSMaxMemberBytes+1)
+	remoteAlphaTLSIncidentDiagnostic(t, remoteAlphaTLSIncidentReplaceOnce(t, raw, "  \"scope\": {\n", "  \"scope\": {\n    \""+longName+"\": false,\n"), "json_limit_exceeded", "$")
+	longString := strings.Repeat("s", remoteAlphaTLSMaxStringBytes+1)
+	remoteAlphaTLSIncidentDiagnostic(t, remoteAlphaTLSIncidentReplaceOnce(t, raw, remoteAlphaTLSIncidentRecordKind, longString), "json_limit_exceeded", "$")
+}
+
+func TestRemoteAlphaExternalTLSIncidentProfileHandoffAuthority(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	remoteAlphaTLSRunMutations(t, raw, []remoteAlphaTLSMutation{
+		{"replacement consuming", "      \"active_tls_installation\",\n      \"service_restart\"", "      \"active_tls_installation\",\n      \"service_restart\",\n      \"mac_profile_replacement\"", "unexpected_json_value", "$.authorization"},
+		{"owner", "    \"owner\": \"infrastructure_manager\",", "    \"owner\": \"execution_substrate\",", "unexpected_json_value", "$.profile_handoff"},
+		{"ES mutation", "    \"es_authorizes_profile_mutation\": false,", "    \"es_authorizes_profile_mutation\": true,", "unexpected_json_value", "$.profile_handoff"},
+		{"separate contract", "    \"separate_committed_im_contract_required\": true,", "    \"separate_committed_im_contract_required\": false,", "unexpected_json_value", "$.profile_handoff"},
+		{"IM binding", "    \"im_contract_commit_and_tree_bound_before_first_es_effect_when_handoff_required\": true,", "    \"im_contract_commit_and_tree_bound_before_first_es_effect_when_handoff_required\": false,", "unexpected_json_value", "$.profile_handoff"},
+		{"post-acceptance", "    \"profile_replacement_occurs_only_after_es_acceptance\": true,", "    \"profile_replacement_occurs_only_after_es_acceptance\": false,", "unexpected_json_value", "$.profile_handoff"},
+		{"ES consumption", "    \"profile_replacement_is_es_consuming_effect\": false,", "    \"profile_replacement_is_es_consuming_effect\": true,", "unexpected_json_value", "$.profile_handoff"},
+		{"failure state", "    \"profile_handoff_failure_state\": \"CONSUMED_OPEN_INCIDENT\",", "    \"profile_handoff_failure_state\": \"CONSUMED_AND_CLOSED\",", "unexpected_json_value", "$.profile_handoff"},
+		{"revokes acceptance", "    \"profile_handoff_failure_revokes_es_acceptance\": false,", "    \"profile_handoff_failure_revokes_es_acceptance\": true,", "unexpected_json_value", "$.profile_handoff"},
+		{"automatic rollback", "    \"profile_handoff_failure_triggers_automatic_host_tls_rollback\": false,", "    \"profile_handoff_failure_triggers_automatic_host_tls_rollback\": true,", "unexpected_json_value", "$.profile_handoff"},
+		{"terminal closure", "    \"terminal_closeout_requires_handoff_or_explicit_retirement\": true", "    \"terminal_closeout_requires_handoff_or_explicit_retirement\": false", "unexpected_json_value", "$.profile_handoff"},
+	})
+}
+
+func TestRemoteAlphaExternalTLSOneTimeIncidentContract(t *testing.T) {
+	_, raw := remoteAlphaTLSIncidentRecord(t)
+	assertContainsAll(t, "incident authority", compactText(raw), "If explanatory prose is ambiguous, this record governs.", "Unknown or duplicated normative members are invalid.", "Report-derived operational evidence", "no non-mutating application operation", "does not claim the prior state is healthy, current, expired, or usable", "ES does not authorize IM profile mutation", "exact committed and independently audited IM contract commit and tree before any ES effect", "Only after ES acceptance may IM replace or emit the runnable profile", "does not revoke ES acceptance or automatically roll back the accepted host TLS set", "successful separately authorized IM handoff or explicit retirement and closure without a runnable CP profile")
+	assertContainsNone(t, "incident overlay independence", raw, "operator-facade cutoff", "retired evidence-adapter", "retired writable-state", "retired service-user", "reliable-submit tranche", "Because the prior certificates are expired")
+}
+
+func TestRemoteAlphaExternalTLSOneTimeIncidentClosureAndSunset(t *testing.T) {
+	const canonical = ".docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md"
+	for _, path := range []string{".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md", ".docs/remote_alpha_operator_healthcheck_tls_signing_custody.md", ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_resolution.md", ".docs/remote_alpha_operator_healthcheck_tls_signing_custody_decision.md"} {
+		doc := mustRead(t, path)
+		requireRemoteAlphaTLS(t, strings.Count(doc, canonical) == 1, "%s must reference the canonical incident contract exactly once", path)
+		assertContainsAll(t, "P0u alignment "+path, compactText(doc), "no-signer/no-replacement conclusion here continues to govern reusable P0u", "does not unblock or widen P0u", "provides no reusable signer or route", "unsupported_signing_topology")
+		assertContainsNone(t, "P0u removed alignment "+path, doc, "Single-use scope clarification:", "ES has separately authorized one single-use complete external-family incident", "incident unblocks P0u", "provides a reusable signer or route")
+	}
+	replacement := compactText(mustRead(t, ".docs/remote_alpha_operator_healthcheck_tls_operator_authorized_replacement.md"))
+	assertContainsAll(t, "IM handoff ownership", replacement, "does not authorize IM profile mutation", "exact committed and independently audited IM contract commit and tree before the first ES incident effect", "Profile replacement follows ES acceptance", "runs only under that separate IM contract", "Handoff failure leaves the ES incident \x60CONSUMED_OPEN_INCIDENT\x60", "neither revokes ES acceptance nor automatically rolls back the accepted host TLS set")
+	plans := markedDocSection(t, "PLANS incident", mustRead(t, "PLANS.md"), "The Remote Alpha external TLS single-use incident is a \x60Bounded slice rule\x60", "The Remote Alpha maintenance-monitor contract alignment slice")
+	overview := markedDocSection(t, "overview incident", mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "### External TLS Single-Use Incident Authorization", "### P0v Operator Healthcheck TLS Noninteractive Status Implementation")
+	assertContainsAll(t, "compact incident cross-references", compactText(plans+"\n"+overview), "Report-derived", "read-only inventory", "adds no executable route", "P0u renewal remains blocked", "remove or convert")
+	assertContainsNone(t, "cross-reference overlay independence", plans+overview, "operator-facade cutoff", "retired evidence-adapter", "retired writable-state", "retired service-user", "blocked by expired material")
+	operatorSource := mustRead(t, remoteAlphaOperatorScriptPath())
+	renewUsage := docSection(t, operatorSource, "recovery_session_operator_healthcheck_tls_usage() {", "\nrecovery_session() {")
+	assertContainsAll(t, "existing P0u source boundary", renewUsage, "operator-healthcheck-tls-renew", "unsupported_signing_topology")
+	for lineNumber, line := range strings.Split(operatorSource, "\n") {
+		lower := strings.ToLower(line)
+		namesRoute := strings.Contains(lower, "external") && strings.Contains(lower, "tls") && (strings.Contains(lower, "incident") || strings.Contains(lower, "single-use"))
+		requireRemoteAlphaTLS(t, !namesRoute, "operator source names a single-use external TLS route at line %d", lineNumber+1)
+	}
+	for _, root := range []string{"ags", "ars", "cgs", "cmd", "egs", "es", "internal", "scripts"} {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() || strings.HasSuffix(path, "_test.go") || (!strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".sh")) {
+				return walkErr
+			}
+			source := mustRead(t, path)
+			requireRemoteAlphaTLS(t, !strings.Contains(source, remoteAlphaTLSIncidentRecordKind) && !strings.Contains(source, canonical), "production source %s must not consume the documentation-only incident contract", path)
+			return nil
+		})
+		requireRemoteAlphaTLS(t, err == nil, "walk production source %s: %v", root, err)
+	}
+	record, _ := remoteAlphaTLSIncidentRecord(t)
+	requireRemoteAlphaTLS(t, record.Sunset.Active_authorization_docs_and_tests_removed_or_converted_on_terminal_closure.is(true), "terminal closure must remove or convert active incident docs and tests")
+}
 func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")

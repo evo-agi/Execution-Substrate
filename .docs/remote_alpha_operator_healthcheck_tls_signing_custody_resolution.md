@@ -34,14 +34,21 @@ signer/custody decision record lives in
 because options comparison and selection status must not be confused with
 resolution criteria.
 
+The no-signer/no-replacement conclusion here continues to govern reusable P0u
+`operator-healthcheck-tls-renew`. The separate single-use external-family
+incident in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
+does not unblock or widen P0u and provides no reusable signer or route;
+`unsupported_signing_topology` remains the reusable-route result.
+
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` records, and then current
 code/tests for factual implemented behavior. IM, CP, Maintenance Agent, and
 Bridge documents are references for non-ES owner boundaries only; they do not
 create ES signing authority.
 
-Current resolution verdict: blocked. No current ES source satisfies the signer
-authority and custody evidence gate below, so no replacement, renewal,
+Current reusable P0u resolution verdict: blocked. No current ES source satisfies
+the signer authority and custody evidence gate below, so no reusable replacement, renewal,
 profile-lineage refresh, CP diagnose rerun, MA execution, Bridge projection, or
 live proof may proceed by inference.
 
@@ -125,7 +132,7 @@ custody facts below.
 
 If current key custody owner, key reuse, key rotation, CSR author, or key-pair
 match ownership cannot be documented without exposing private key material,
-replacement remains blocked.
+reusable P0u replacement remains blocked.
 
 ## 4. CSR, Cert-Only, Key-Reuse, And Key-Rotation Criteria
 

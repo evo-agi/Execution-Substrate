@@ -3567,6 +3567,22 @@ Plane authority, not Vault/SPIRE/Nomad authority, not workload-auth or runtime
 identity authority, not production readiness, and not Remote Alpha production,
 deployment, provisioning, or reconciliation architecture.
 
+### External TLS Single-Use Incident Authorization
+
+`Bounded slice rule`: ES records one documentation-only incident authority in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`.
+Report-derived certificate-validity failures are an incident input, not live
+repository truth; read-only inventory must establish the prior state before
+effect. The authority covers one proof/support host, incident, execution, and
+fresh role-separated external family. It is separate from internal service and
+governance TLS, adds no operator route, and leaves reusable P0u renewal blocked
+with `unsupported_signing_topology`.
+
+Remote Alpha remains bounded proof/support infrastructure. ES acceptance
+precedes any separately governed IM projection, and neither IM nor MA gains
+recovery authority. Terminal closure must remove or convert this active
+authorization and its tests and remove the four P0u cross-references.
+
 ### P0v Operator Healthcheck TLS Noninteractive Status Implementation
 
 `Bounded slice rule`: P0v implements the ES-owned read-only operator

@@ -38,6 +38,20 @@ Status:
   deployment, broad repair automation, a hidden reconciler, or proof that
   Remote Alpha is live-ready.
 
+The no-signer/no-replacement conclusion here continues to govern reusable P0u
+`operator-healthcheck-tls-renew`. The separate single-use external-family
+incident in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`
+does not unblock or widen P0u and provides no reusable signer or route;
+`unsupported_signing_topology` remains the reusable-route result. That ES
+incident does not authorize IM profile mutation. When its objective requires a
+runnable-profile handoff, the private plan must bind the exact committed and
+independently audited IM contract commit and tree before the first ES incident
+effect. Profile replacement follows ES acceptance and runs only under that
+separate IM contract. Handoff failure leaves the ES incident
+`CONSUMED_OPEN_INCIDENT`; it neither revokes ES acceptance nor automatically
+rolls back the accepted host TLS set.
+
 Authority follows the repository hierarchy in `AGENTS.md`: `PLANS.md`,
 `.docs/system_overview/*`, route-specific `.docs/` design records, and then
 current code/tests for factual implemented behavior.
@@ -244,8 +258,8 @@ json` observation route.
 That later status route does not implement renewal or replacement, resolve
 signer/custody, add fallback emitters, widen route eligibility, change MA
 scheduled metadata, convert caller preflight blockers into ES status truth, or
-create a route from status evidence to renewal permission. Renewal and
-replacement remain blocked; signer/custody remains unresolved; no MA/IM/CP,
+create a route from status evidence to renewal permission. Reusable P0u renewal
+and replacement remain blocked; signer/custody remains unresolved; no MA/IM/CP,
 Bridge, or Coordinator authority changes.
 
 Missing local runtime/schema/redaction prerequisites remain integration or

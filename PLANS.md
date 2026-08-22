@@ -1568,6 +1568,19 @@ evidence, redaction, and post-check semantics remain ES unresolved stop
 conditions for the `spiffe://execution.internal/operator/local` operator
 identity.
 
+The Remote Alpha external TLS single-use incident is a `Bounded slice rule`
+recorded in
+`.docs/system_overview/remote_alpha_external_tls_one_time_incident_contract.md`.
+Report-derived evidence indicates certificate-validity failures; a future
+read-only inventory must establish the installed prior state. This is docs-only
+authority for one proof/support host, incident, and execution. It adds no
+executable route or ongoing support, and reusable P0u renewal remains blocked
+with `unsupported_signing_topology`. Its default is
+`RETIRE_BEFORE_LEAF_EXPIRY`. Inventory, private packet and rollback derivation,
+independent audit, foreground execution, any later IM handoff, and terminal
+closure remain separate; closure must remove or convert the active entry,
+authorization document, incident tests, and P0u cross-references.
+
 The Remote Alpha maintenance-monitor contract alignment slice is docs/static
 contract work only. It may codify a future Mac-side maintenance project as a
 scheduler, notifier, local-evidence summarizer, and allowlisted ES-command
