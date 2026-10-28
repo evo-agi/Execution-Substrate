@@ -10267,6 +10267,24 @@ type remoteAlphaTLSBool bool
 
 func (v *remoteAlphaTLSBool) is(want bool) bool { return v != nil && bool(*v) == want }
 
+// Preserve the source token kind for the seven numeric documentation members.
+// A null remains an absent value so the existing field-specific diagnostic wins.
+type remoteAlphaTLSNumber string
+
+func (v *remoteAlphaTLSNumber) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(raw, []byte("null")) {
+		*v = ""
+		return nil
+	}
+	if len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9')) || !json.Valid(raw) {
+		return fmt.Errorf("expected JSON number token")
+	}
+	*v = remoteAlphaTLSNumber(raw)
+	return nil
+}
+
+func (v remoteAlphaTLSNumber) String() string { return string(v) }
+
 type remoteAlphaTLSIncident struct {
 	Record_kind, Classification, Implementation_status string
 	Public_protocol                                    *remoteAlphaTLSBool
@@ -10283,7 +10301,7 @@ type remoteAlphaTLSIncident struct {
 	Sunset                                             remoteAlphaTLSSunset
 	Non_goals                                          remoteAlphaTLSNonGoals
 }
-type remoteAlphaTLSScope struct{ Hosts, Incidents, Executions json.Number }
+type remoteAlphaTLSScope struct{ Hosts, Incidents, Executions remoteAlphaTLSNumber }
 type remoteAlphaTLSAuthorization struct {
 	Initial_state, Nonterminal_closure_state                                                                                                                                                    string
 	Pre_effect_binding, Consume_on_first_effect, Closure_states, Terminal_closure_states                                                                                                        []string
@@ -10293,17 +10311,17 @@ type remoteAlphaTLSAuthorization struct {
 }
 type remoteAlphaTLSTopology struct {
 	Ca_roles, Leaf_roles                                                       []string
-	Fresh_keypairs                                                             json.Number
+	Fresh_keypairs                                                             remoteAlphaTLSNumber
 	Key_reuse_allowed, Cross_role_key_reuse_allowed, Private_key_cross_machine *remoteAlphaTLSBool
 }
 type remoteAlphaTLSIdentities struct {
 	Control_plane_uri, Operator_uri, Operator_compatibility_cn, Operator_compatibility_dns        string
-	Client_uri_count_per_leaf                                                                     json.Number
+	Client_uri_count_per_leaf                                                                     remoteAlphaTLSNumber
 	Authorization_from_common_name_allowed, Legacy_operator_uri_allowed, Ags_es_share_server_leaf *remoteAlphaTLSBool
 }
 type remoteAlphaTLSCryptography struct {
 	Key_algorithm, Certificate_signature, Minimum_tls                                                                                                                                                                      string
-	Leaf_maximum_days, Ca_path_length                                                                                                                                                                                      json.Number
+	Leaf_maximum_days, Ca_path_length                                                                                                                                                                                      remoteAlphaTLSNumber
 	Ca_key_usage, Server_leaf_eku, Client_leaf_eku                                                                                                                                                                         []string
 	Leaf_must_not_exceed_sunset, Ca_validity_is_leaf_coverage_plus_bounded_grace, Ca_basic_constraints_critical, Leaf_basic_constraints_critical, Digital_signature_required, Exact_san_required, Cross_role_trust_allowed *remoteAlphaTLSBool
 }
@@ -10620,6 +10638,97 @@ func TestRemoteAlphaExternalTLSIncidentExactNumericAndDiagnosticBounds(t *testin
 	remoteAlphaTLSIncidentDiagnostic(t, remoteAlphaTLSIncidentReplaceOnce(t, raw, "  \"scope\": {\n", "  \"scope\": {\n    \""+longName+"\": false,\n"), "json_limit_exceeded", "$")
 	longString := strings.Repeat("s", remoteAlphaTLSMaxStringBytes+1)
 	remoteAlphaTLSIncidentDiagnostic(t, remoteAlphaTLSIncidentReplaceOnce(t, raw, remoteAlphaTLSIncidentRecordKind, longString), "json_limit_exceeded", "$")
+}
+
+func TestRemoteAlphaExternalTLSIncidentNumericTokenKinds(t *testing.T) {
+	raw, _ := remoteAlphaTLSIncidentJSON(t)
+	requireRemoteAlphaTLS(t, validateRemoteAlphaTLSIncidentJSON(raw) == nil, "canonical numeric record must be accepted")
+	requireRemoteAlphaTLS(t, fmt.Sprintf("%x", sha256.Sum256(raw)) == "0ca3c1d42d0886b93f9e3740f59723738a1f80c1cec704c0e9dc16c11260dcdd", "canonical fixture identity changed")
+	requireRemoteAlphaTLS(t, bytes.Contains(raw, []byte(`"minimum_tls": "1.2"`)), "legitimate string-valued minimum_tls changed")
+
+	fields := []struct {
+		path, key, number, quotedSHA256 string
+		last                            bool
+	}{
+		{"$.scope.hosts", "hosts", "1", "1fdb0c57ceb8571b53052c9f95d65ee12200213c8a42361541eb0e2547c11d55", false},
+		{"$.scope.incidents", "incidents", "1", "6d83205c6c7c261a67745f9562cdf2eaa381ca66688dc326e9d610beaca71a55", false},
+		{"$.scope.executions", "executions", "1", "981bacd7480c23a3a162136f35a3bac7366a6803b29f8be88fb5c0f404ace013", true},
+		{"$.topology.fresh_keypairs", "fresh_keypairs", "6", "87af5f83ac0354021efead68c1cf5cc73d7c6792e0cfe93254b8ac4a65be9253", false},
+		{"$.identities.client_uri_count_per_leaf", "client_uri_count_per_leaf", "1", "5c961209ea078b3b557befdab12fd0eb129ce18341087fed6c8176ed73efc55d", false},
+		{"$.cryptography.leaf_maximum_days", "leaf_maximum_days", "365", "a8b8220d24031cef96513c0a2349e89b79f0b73af712def0abe28c7749b98934", false},
+		{"$.cryptography.ca_path_length", "ca_path_length", "0", "0f02062cb166007aeac3907bd9cb91591447f606a0bc13bdbc17d393f90f09f5", false},
+	}
+	mutate := func(t *testing.T, old, replacement string) []byte {
+		t.Helper()
+		oldBytes, newBytes := []byte(old), []byte(replacement)
+		requireRemoteAlphaTLS(t, bytes.Count(raw, oldBytes) == 1, "numeric mutation anchor %q must occur once", old)
+		index := bytes.Index(raw, oldBytes)
+		candidate := remoteAlphaTLSIncidentReplaceOnce(t, raw, old, replacement)
+		requireRemoteAlphaTLS(t, bytes.Equal(candidate[:index], raw[:index]) && bytes.Equal(candidate[index+len(newBytes):], raw[index+len(oldBytes):]), "numeric mutation changed unrelated bytes")
+		requireRemoteAlphaTLS(t, json.Valid(candidate), "numeric-kind specimen is malformed JSON")
+		return candidate
+	}
+	for _, field := range fields {
+		t.Run(field.key, func(t *testing.T) {
+			old := fmt.Sprintf("%q: %s", field.key, field.number)
+			quoted := fmt.Sprintf("%q: %q", field.key, field.number)
+			t.Run("quoted", func(t *testing.T) {
+				candidate := mutate(t, old, quoted)
+				requireRemoteAlphaTLS(t, fmt.Sprintf("%x", sha256.Sum256(candidate)) == field.quotedSHA256, "supplied quoted specimen identity mismatch")
+				first := remoteAlphaTLSIncidentDiagnostic(t, candidate, "json_type_mismatch", "$")
+				requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, candidate, "json_type_mismatch", "$") == first, "quoted diagnostic changed")
+			})
+			t.Run("restored_matching_number", func(t *testing.T) {
+				quotedCandidate := mutate(t, old, quoted)
+				restored := bytes.Replace(quotedCandidate, []byte(quoted), []byte(old), 1)
+				requireRemoteAlphaTLS(t, bytes.Equal(restored, raw), "matching numeric token did not restore canonical bytes")
+				requireRemoteAlphaTLS(t, validateRemoteAlphaTLSIncidentJSON(restored) == nil, "matching numeric token must be accepted")
+			})
+			for _, variant := range []struct {
+				name, value, class, path string
+			}{
+				{"boolean", "true", "json_type_mismatch", "$"},
+				{"null", "null", "unexpected_json_value", field.path},
+				{"object", "{}", "json_type_mismatch", "$"},
+				{"array", "[]", "json_type_mismatch", "$"},
+			} {
+				t.Run(variant.name, func(t *testing.T) {
+					candidate := mutate(t, old, fmt.Sprintf("%q: %s", field.key, variant.value))
+					first := remoteAlphaTLSIncidentDiagnostic(t, candidate, variant.class, variant.path)
+					requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, candidate, variant.class, variant.path) == first, "numeric-kind diagnostic changed")
+				})
+			}
+			t.Run("omitted", func(t *testing.T) {
+				member := fmt.Sprintf("    %q: %s,\n", field.key, field.number)
+				if field.last {
+					member = fmt.Sprintf(",\n    %q: %s", field.key, field.number)
+				}
+				candidate := mutate(t, member, "")
+				first := remoteAlphaTLSIncidentDiagnostic(t, candidate, "unexpected_json_value", field.path)
+				requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, candidate, "unexpected_json_value", field.path) == first, "omission diagnostic changed")
+			})
+		})
+	}
+	t.Run("escaped_digit_string", func(t *testing.T) {
+		candidate := mutate(t, `"hosts": 1`, `"hosts": "\u0031"`)
+		requireRemoteAlphaTLS(t, fmt.Sprintf("%x", sha256.Sum256(candidate)) == "f1c1f361a7221b26576f97be70a9bd703085f05bf9446490749ea03deff1b750", "supplied escaped-digit specimen identity mismatch")
+		first := remoteAlphaTLSIncidentDiagnostic(t, candidate, "json_type_mismatch", "$")
+		requireRemoteAlphaTLS(t, remoteAlphaTLSIncidentDiagnostic(t, candidate, "json_type_mismatch", "$") == first, "escaped-digit diagnostic changed")
+	})
+}
+
+func TestRemoteAlphaExternalTLSIncidentNumericTokenKindContract(t *testing.T) {
+	jsonRecord, doc := remoteAlphaTLSIncidentJSON(t)
+	requireRemoteAlphaTLS(t, fmt.Sprintf("%x", sha256.Sum256(jsonRecord)) == "0ca3c1d42d0886b93f9e3740f59723738a1f80c1cec704c0e9dc16c11260dcdd", "normative JSON changed")
+	section := markedDocSection(t, "numeric token-kind rule", doc, "## Normative incident record", "## One-Time State Transitions")
+	assertContainsAll(t, "numeric token-kind contract", compactText(section),
+		"The seven numeric members require JSON number tokens with exactly these integer spellings:",
+		"`$.scope.hosts=1`", "`$.scope.incidents=1`", "`$.scope.executions=1`",
+		"`$.topology.fresh_keypairs=6`", "`$.identities.client_uri_count_per_leaf=1`",
+		"`$.cryptography.leaf_maximum_days=365`", "`$.cryptography.ca_path_length=0`",
+		"Quoted equivalents, escape-encoded digit strings, booleans, nulls, objects, arrays, absent members, and decimal or exponent alternatives are invalid at those positions.",
+		"This rule does not change string-valued fields such as `minimum_tls`.",
+	)
 }
 
 func TestRemoteAlphaExternalTLSIncidentProfileHandoffAuthority(t *testing.T) {

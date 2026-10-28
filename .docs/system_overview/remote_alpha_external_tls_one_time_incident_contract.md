@@ -20,6 +20,15 @@ It is not a public API, runtime schema, IM or CP protocol, or executable
 authority. If explanatory prose is ambiguous, this record governs. Unknown or
 duplicated normative members are invalid.
 
+The seven numeric members require JSON number tokens with exactly these integer
+spellings: `$.scope.hosts=1`, `$.scope.incidents=1`, `$.scope.executions=1`,
+`$.topology.fresh_keypairs=6`, `$.identities.client_uri_count_per_leaf=1`,
+`$.cryptography.leaf_maximum_days=365`, and `$.cryptography.ca_path_length=0`.
+Quoted equivalents, escape-encoded digit strings, booleans, nulls, objects,
+arrays, absent members, and decimal or exponent alternatives are invalid at
+those positions. This rule does not change string-valued fields such as
+`minimum_tls`.
+
 ```json
 {
   "record_kind": "execution-substrate.remote-alpha.external-tls-single-use-incident-contract.v1",
