@@ -486,6 +486,28 @@ runtime-profile handling, and compatibility edges lives in
 - Nomad is the execution backend ES submits to and reads from
 - The supported-local CP consumer runbook documents how CP consumes the accepted ES surface; it does not define ES core contracts.
 
+**R6J-R9.28/Stage-A target boundary (non-enabling)**
+
+The accepted outside-observer artifact is a proposed contract, not current ES
+runtime behavior. Stage A contains only private structural parsing, local
+hash-domain checks, documentation, and tests under
+`.docs/execution_lifecycle/outside_observer_protocol.md`. Its successful parse
+means well-formed **untrusted** data; it does not authenticate a peer, verify
+`RunEntryV4` or a permit/receipt, consume authority, or permit launch.
+
+Current ES still owns admission, Nomad submission and lifecycle projection;
+the current supervisor/helper still owns the bounded workload JWT endpoint.
+The proposed observer/receiver endpoint is distinct and is not installed by
+this slice. In the target model the receiver would own journal evidence custody
+and a derived `SOURCE_STATE.json` cache, neither of which becomes an ES or
+Nomad execution-lifecycle store. The artifact excludes ES admission, app,
+runtimehelper, observer, and receiver from permit-consumption authority. Its
+assumed `RunEntryV4` issuer/key suite/atomic ledger remains an unestablished
+integration dependency, not an assignment to ES, CP, Coordinator, Bridge, IM,
+MA, or an approval loop. Authority-dependent implementation requires the
+explicit decision and gate in `PLANS.md`; current SPIFFE allowlist behavior and
+the `control-plane-normal-shell/v1` temporary compatibility edge continue.
+
 **Boundary pressure points**
 
 - ES currently composes multiple upstream services into one admission path, making it the main cross-boundary choreography point.

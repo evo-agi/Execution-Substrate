@@ -103,6 +103,27 @@ contents, ownership, repository placement, and sequencing are reopened target
 seams, not a fixed package decomposition, global blocker, or mandatory next
 implementation sequence.
 
+### R6J-R9.28/Stage-A — inert outside-observer structural contract
+
+The independently accepted R9.28 owner is bounded artifact-design evidence,
+not repository adoption or runtime qualification. This namespaced Stage A slice
+may add only the ES-private `es/internal/outsideobserverprotocol` untrusted
+canonical/data parsers, local hash-domain checks, governing docs, and contract
+tests described in `.docs/execution_lifecycle/outside_observer_protocol.md`.
+It adds no active import, public route, configuration, job, process, endpoint,
+issuer, ledger, receipt consumption, or production evidence intake.
+
+The owner's assumed existing signed `RunEntryV4` issuer, verification suite,
+trust root, and atomic OutsideObservationPermit ledger are not established as
+current ES contracts. Authority issuance/delegation and worker/runtime handoff
+remain reopened seams. Before the first executable permit client, signature or
+receipt verification, or authority-bearing state machine, those contracts and
+the documented permit/receipt identifier-grammar mismatch require an explicit
+owning design decision and review. Pure future image-relation work may reason
+only about untrusted bytes. This pointer changes no ES Workstream C priority,
+current admission/Nomad lifecycle authority, caller SPIFFE allowlist, workload
+JWT endpoint, or `control-plane-normal-shell/v1` compatibility edge.
+
 Active bounded contract tranche: submit idempotency, submit correlation, and
 recovery are now selected as the ES-owned documentation seam for the
 Correlation And Recovery inventory item. The detailed target contract lives in
