@@ -13,6 +13,32 @@ Status classification:
 - The current `execution_substrate.runtime_profile` annotation, `control-plane-normal-shell/v1`, producer contract version, outcome evidence, lifecycle projection, retained-result behavior, and authority handoff remain unchanged.
 - The combined readiness report is pre-live fixture reporting, not ES service health, submit readiness, retained-result proof, lifecycle truth, runtime authority, or run authority.
 
+## Remote Alpha Access Contract v1 Boundary
+
+`Reopened redesign seam`: the governing ES access-profile and access-status
+target is `.docs/system_overview/remote_alpha_access_contract.md`. Tranche A
+freezes the schema envelope and state/safety semantics of
+`es.remote-alpha.access-profile/v1` and
+`es.remote-alpha.access-status/v1` in docs and a contract test only. The exact
+OpenSSH grammar, Include closure, system-config interaction, filesystem
+acceptance policy, and agent/Keychain/certificate interpretation are reopened
+Tranche B implementation-contract decisions, not Tranche A claims of profile
+conformance. No validator, access-status emitter, fixed identity-only route,
+monitor identity, scheduled remote check, host setup, or TLS repair is
+implemented by this addition. Its producer-owned v1
+`scheduled_execution_allowed=false` rule remains separate from the existing
+monitor-eligible evidence classification below.
+
+`Temporary compatibility edge`: the current operator-owned
+`host_to_remote_linux_m75q` alias and existing `--ssh-target` operator
+routes are retained without alteration. The committed P0t
+`es-governance-tls-status` and `es-governance-tls-renew` routes remain
+bounded interactive staged-helper ES/EGS TLS proof/support paths. P0v remains
+an implemented TLS-specific noninteractive status route with scheduling
+disabled. Neither is an access-status route or a general Remote Alpha
+deployment/management interface. Access evidence does not establish ES
+runtime, IM readiness, sudo readiness, TLS correctness, or governed execution.
+
 ## Milestone 1 Boundary Reading
 
 Remote Supported-Host Alpha is the current host/operator reading of

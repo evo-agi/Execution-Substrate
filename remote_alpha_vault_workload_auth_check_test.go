@@ -309,10 +309,10 @@ EOF
 
 func runSourcedHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
 	t.Helper()
-	helperPath := filepath.Join("/Users/ds/Repositories/Execution Substrate", "scripts", "internal", "remote_alpha_vault_workload_auth_check.sh")
+	helperPath := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_vault_workload_auth_check.sh")
 	script := fmt.Sprintf("set -euo pipefail\nsource %q\n%s\n", helperPath, shellBody)
 	cmd := exec.Command("/bin/bash", "-c", script)
-	cmd.Dir = "/Users/ds/Repositories/Execution Substrate"
+	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = env
 	return cmd.CombinedOutput()
 }
