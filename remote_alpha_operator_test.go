@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -66,6 +67,74 @@ sys.exit(status)
 `
 	commandArgs := append([]string{"-c", python, "/bin/bash", scriptPath}, args...)
 	cmd := exec.Command("python3", commandArgs...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(env, "ES_REPO_ROOT="+executionSubstrateRepoRoot)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func runRemoteAlphaOperatorWithPromptPTY(t *testing.T, env []string, args ...string) (string, error) {
+	t.Helper()
+	python := `
+import os
+import pty
+import secrets
+import select
+import signal
+import subprocess
+import sys
+import termios
+import time
+
+master, slave = pty.openpty()
+settings = termios.tcgetattr(slave)
+settings[3] &= ~termios.ECHO
+termios.tcsetattr(slave, termios.TCSANOW, settings)
+sentinel = secrets.token_hex(16).encode("ascii")
+proc = subprocess.Popen(sys.argv[1:], cwd=os.environ["ES_REPO_ROOT"],
+                        stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+os.close(slave)
+output = bytearray()
+sent = False
+deadline = time.monotonic() + 12
+try:
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("bounded prompt fixture timed out")
+        ready, _, _ = select.select([master], [], [], 0.2)
+        if ready:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > 131072:
+                raise RuntimeError("bounded prompt fixture output exceeded limit")
+            if not sent and b"FAKE_SUDO_PASSWORD_PROMPT: " in output:
+                response = b"\x04" if os.environ.get("FAKE_STATUS_PROMPT_MODE") == "eof" else sentinel + b"\n"
+                os.write(master, response)
+                sent = True
+        elif proc.poll() is not None:
+            break
+    status = proc.wait(timeout=1)
+finally:
+    if proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    os.close(master)
+if sentinel in output:
+    raise RuntimeError("fixture response appeared in terminal output")
+for name in ("FAKE_STATUS_SSH_ARGV", "FAKE_STATUS_SSH_LOG", "FAKE_STATUS_SCP_LOG"):
+    path = os.environ[name]
+    if os.path.exists(path) and sentinel in open(path, "rb").read():
+        raise RuntimeError("fixture response appeared in transport evidence")
+sys.stdout.buffer.write(output)
+sys.exit(status)
+`
+	commandArgs := append([]string{"-I", "-B", "-c", python, "/bin/bash", remoteAlphaOperatorScriptPath()}, args...)
+	cmd := exec.Command("/usr/bin/python3", commandArgs...)
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(env, "ES_REPO_ROOT="+executionSubstrateRepoRoot)
 	output, err := cmd.CombinedOutput()
@@ -3534,6 +3603,7 @@ func (h *fakeRemoteAlphaESServiceTLSHarness) env() []string {
 type fakeRemoteAlphaESTLSStatusHarness struct {
 	localBin  string
 	sshLog    string
+	sshArgv   string
 	scpLog    string
 	stageRoot string
 }
@@ -3544,6 +3614,7 @@ func setupFakeRemoteAlphaESTLSStatusHarness(t *testing.T) *fakeRemoteAlphaESTLSS
 	h := &fakeRemoteAlphaESTLSStatusHarness{
 		localBin:  filepath.Join(root, "bin"),
 		sshLog:    filepath.Join(root, "ssh.log"),
+		sshArgv:   filepath.Join(root, "ssh-argv.bin"),
 		scpLog:    filepath.Join(root, "scp.log"),
 		stageRoot: filepath.Join(root, "stages"),
 	}
@@ -3555,26 +3626,39 @@ func setupFakeRemoteAlphaESTLSStatusHarness(t *testing.T) *fakeRemoteAlphaESTLSS
 	}
 	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-printf 'ARGS:%%s\n' "$*" >> %q
-cat >> %q
-stage_dir=""
-for arg in "$@"; do
-  if [[ "$arg" == /tmp/.es-tls-status-* ]]; then stage_dir="$arg"; fi
-done
-[[ -n "$stage_dir" ]]
-stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
-if [[ "$*" == -tt\ * ]]; then
+if [[ "${1:-}" == -tt ]]; then
+  [[ "$#" -eq 3 && "${2:-}" == ds@m75q-test && -t 0 ]] || exit 64
+  printf '%%s\0' "$@" > "$FAKE_STATUS_SSH_ARGV"
+  remote_command=$3
+  [[ "$remote_command" =~ /tmp/\.es-tls-status-[0-9a-f]{32} ]] || exit 64
+  stage_dir=${BASH_REMATCH[0]}
+  stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
   printf 'COLLECT_WRAPPER\n' >> %q
   [[ "${FAKE_STATUS_WRAPPER_FAIL:-0}" != 1 ]] || exit 1
+  if [[ "${FAKE_STATUS_PROMPT_MODE:-none}" != none ]]; then
+    [[ "${FAKE_STATUS_PROMPT_MODE}" != before_prompt ]] || exit 1
+    printf 'FAKE_SUDO_PASSWORD_PROMPT: ' >&2
+    if ! IFS= read -r reply; then exit 1; fi
+    [[ "$reply" =~ ^[0-9a-f]{32}$ ]] || exit 1
+    unset reply
+    [[ "${FAKE_STATUS_PROMPT_MODE}" != refuse ]] || exit 1
+    printf 'PROMPT_READ\n' >> %q
+  fi
   /bin/rm -- "$stage/remote_alpha_es_tls_status.py"
   /bin/rmdir -- "$stage"
+  [[ "${FAKE_STATUS_PROMPT_MODE:-none}" != remote_nonzero ]] || exit 12
 else
+  printf 'ARGS:%%s\n' "$*" >> %q
+  cat >> %q
+  stage_dir=${@: -1}
+  [[ "$stage_dir" == /tmp/.es-tls-status-* ]] || exit 64
+  stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
   printf 'STAGE_CREATE\n' >> %q
   [[ "${FAKE_STATUS_STAGE_CREATE_FAIL:-0}" != 1 ]] || exit 1
   /bin/mkdir -m 0700 -- "$stage"
   printf '%%s\n' "${FAKE_STATUS_STAGE_OUTPUT:-123:456}"
 fi
-`, h.sshLog, h.sshLog, h.sshLog, h.sshLog))
+`, h.sshLog, h.sshLog, h.sshLog, h.sshLog, h.sshLog))
 	writeExecutable(t, h.localBin, "scp", fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%%s\n' "$*" >> %q
@@ -3588,7 +3672,71 @@ stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
 }
 
 func (h *fakeRemoteAlphaESTLSStatusHarness) env() []string {
-	return envWithPath(h.localBin, "FAKE_STATUS_STAGE_ROOT="+h.stageRoot)
+	return envWithPath(h.localBin,
+		"FAKE_STATUS_STAGE_ROOT="+h.stageRoot,
+		"FAKE_STATUS_SSH_ARGV="+h.sshArgv,
+		"FAKE_STATUS_SSH_LOG="+h.sshLog,
+		"FAKE_STATUS_SCP_LOG="+h.scpLog)
+}
+
+func statusSSHCommandTokens(t *testing.T, h *fakeRemoteAlphaESTLSStatusHarness) []string {
+	t.Helper()
+	raw, err := os.ReadFile(h.sshArgv)
+	if err != nil {
+		t.Fatalf("read captured SSH argv: %v", err)
+	}
+	argv := strings.Split(string(raw), "\x00")
+	if len(argv) != 4 || argv[0] != "-tt" || argv[1] != "ds@m75q-test" || argv[3] != "" {
+		t.Fatal("status SSH argv has unexpected shape")
+	}
+	parser := exec.Command("/usr/bin/python3", "-I", "-B", "-c",
+		"import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))")
+	parser.Stdin = strings.NewReader(argv[2])
+	decoded, err := parser.Output()
+	if err != nil {
+		t.Fatalf("parse fixed remote command: %v", err)
+	}
+	var tokens []string
+	if err := json.Unmarshal(decoded, &tokens); err != nil {
+		t.Fatalf("decode fixed remote command tokens: %v", err)
+	}
+	if len(tokens) != 8 || tokens[0] != "/bin/bash" || tokens[1] != "-c" || tokens[3] != "--" {
+		t.Fatal("fixed remote command does not invoke Bash with exact operands")
+	}
+	if len(argv[2]) > 32768 {
+		t.Fatal("fixed remote command exceeded the documented byte bound")
+	}
+	return tokens
+}
+
+func assertStatusFixedRemoteCommand(t *testing.T, h *fakeRemoteAlphaESTLSStatusHarness, scope string) {
+	t.Helper()
+	tokens := statusSSHCommandTokens(t, h)
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	const opening = "IFS= read -r -d '' wrapper <<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true\n"
+	const closing = "\nREMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER\n"
+	start := strings.Index(source, opening)
+	if start < 0 {
+		t.Fatal("fixed remote wrapper source missing")
+	}
+	start += len(opening)
+	end := strings.Index(source[start:], closing)
+	if end < 0 || tokens[2] != source[start:start+end+1] {
+		t.Fatal("remote command program differs from the fixed source-controlled wrapper")
+	}
+	if !regexp.MustCompile(`^/tmp/\.es-tls-status-[0-9a-f]{32}$`).MatchString(tokens[4]) ||
+		tokens[5] != "123:456" || tokens[6] != scope {
+		t.Fatal("remote command stage, custody identity, or scope boundaries changed")
+	}
+	collector, err := os.ReadFile(filepath.Join(executionSubstrateRepoRoot,
+		"scripts", "internal", "remote_alpha_es_tls_status.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(collector)
+	if tokens[7] != hex.EncodeToString(digest[:]) {
+		t.Fatal("remote command collector digest differs from fixed local source")
+	}
 }
 
 func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusStagesOnlyCollector(t *testing.T) {
@@ -3604,10 +3752,9 @@ func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusStagesOnlyCollector
 	}
 	assertContainsAll(t, "P0s collector staging", scp, "scripts/internal/remote_alpha_es_tls_status.py")
 	assertContainsNone(t, "P0s collector staging", scp, "remote_alpha_es_service_tls_renew.sh")
+	assertStatusFixedRemoteCommand(t, h, "artifact-registry")
 	ssh := mustRead(t, h.sshLog)
-	assertContainsAll(t, "P0s fixed remote command", ssh, "-tt", "sudo", "/usr/bin/python3", "-I", "-B", "artifact-registry", `-c "${bootstrap}"`, `remote_alpha_es_tls_status.py "${collector_digest}" "${scope}"`)
-	assertContainsNone(t, "P0s root pathname load", ssh, `-B "${collector}" --scope`)
-	assertContainsNone(t, "P0s fixed remote command", ssh, "--execute-renew", "remote_alpha_es_service_tls_renew.sh")
+	assertContainsAll(t, "P0s transport", ssh, "STAGE_CREATE", "COLLECT_WRAPPER")
 }
 
 func TestRemoteAlphaOperatorRecoverySessionESTLSStatusFixedRootBootstrapArgv(t *testing.T) {
@@ -3638,10 +3785,150 @@ func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSStatusStagesOnlyCollec
 	}
 	assertContainsAll(t, "P0t collector staging", scp, "scripts/internal/remote_alpha_es_tls_status.py")
 	assertContainsNone(t, "P0t collector staging", scp, "remote_alpha_es_service_tls_renew.sh")
+	assertStatusFixedRemoteCommand(t, h, "execution-governance")
 	ssh := mustRead(t, h.sshLog)
-	assertContainsAll(t, "P0t fixed remote command", ssh, "-tt", "sudo", "/usr/bin/python3", "-I", "-B", "execution-governance", `-c "${bootstrap}"`, `remote_alpha_es_tls_status.py "${collector_digest}" "${scope}"`)
-	assertContainsNone(t, "P0t root pathname load", ssh, `-B "${collector}" --scope`)
-	assertContainsNone(t, "P0t fixed remote command", ssh, "--execute-renew", "remote_alpha_es_service_tls_renew.sh")
+	assertContainsAll(t, "P0t transport", ssh, "STAGE_CREATE", "COLLECT_WRAPPER")
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractiveStdinSourceGuard(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	start := strings.Index(source, "remote_alpha_es_tls_status_shell_quote() {")
+	end := strings.Index(source, "\nrecovery_session_es_service_tls() {")
+	if start < 0 || end < start {
+		t.Fatal("P0s/P0t status transport source boundaries missing")
+	}
+	section := source[start:end]
+	if regexp.MustCompile(`\|\s*ssh\s+-tt\b`).MatchString(section) ||
+		strings.Contains(section, `ssh -tt "${target}" /bin/bash -s`) ||
+		strings.Contains(section, "sudo -n") ||
+		strings.Contains(section, "/dev/tty") {
+		t.Fatal("P0s/P0t status transport still consumes wrapper bytes from SSH stdin")
+	}
+	for _, fixed := range []string{
+		`ssh -tt "${ssh_target}" "${remote_command}"`,
+		`remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}"`,
+		`[[ ${#remote_command} -le 32768 ]]`,
+	} {
+		if !strings.Contains(section, fixed) {
+			t.Fatal("P0s/P0t fixed command construction or preflight is missing")
+		}
+	}
+	preflight := strings.Index(section, `remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615"`)
+	contact := strings.Index(section, `stage_identity="$(ssh "${ssh_target}"`)
+	if preflight < 0 || contact < 0 || preflight > contact {
+		t.Fatal("remote command size preflight does not precede host contact")
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusRejectsHostileTransportInputs(t *testing.T) {
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		for _, target := range []string{"-oProxyCommand=sh", "host;id", "host'quote", "user@@host", "host/path", "host$(id)"} {
+			t.Run(route+"/"+target, func(t *testing.T) {
+				h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+				output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+					"--ssh-target", target, "--interactive-tty")
+				if err == nil || !strings.Contains(output, "single SSH target") {
+					t.Fatal("hostile target was not rejected before contact")
+				}
+				for _, path := range []string{h.sshLog, h.scpLog, h.sshArgv} {
+					if _, err := os.Lstat(path); !os.IsNotExist(err) {
+						t.Fatal("hostile target contacted fake transport")
+					}
+				}
+			})
+		}
+	}
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	start := strings.Index(source, "remote_alpha_es_tls_status_shell_quote() {")
+	end := strings.Index(source, "\nrecovery_session_es_tls_status() {")
+	if start < 0 || end < start {
+		t.Fatal("fixed command builder source boundaries missing")
+	}
+	build := "set -euo pipefail\n" + source[start:end] + "\nremote_alpha_es_tls_status_remote_wrapper \"$@\""
+	validStage := "/tmp/.es-tls-status-" + strings.Repeat("a", 32)
+	validDigest := strings.Repeat("b", 64)
+	for _, operands := range [][]string{
+		{validStage + "';id", "123:456", "artifact-registry", validDigest},
+		{validStage, "123:456;id", "artifact-registry", validDigest},
+		{validStage, "123:456", "artifact-registry;id", validDigest},
+		{validStage, "123:456", "artifact-registry", validDigest + "'"},
+		{validStage, "18446744073709551616:1", "artifact-registry", validDigest},
+	} {
+		cmd := exec.Command("/bin/bash", append([]string{"-c", build, "status-builder"}, operands...)...)
+		output, err := cmd.CombinedOutput()
+		if err == nil || len(output) != 0 {
+			t.Fatal("hostile fixed-command operand was accepted or echoed")
+		}
+	}
+	const sizeGuard = `[[ ${#remote_command} -le 32768 ]]`
+	if !strings.Contains(build, sizeGuard) {
+		t.Fatal("fixed command size guard missing")
+	}
+	forcedOverlarge := strings.Replace(build, sizeGuard, `[[ ${#remote_command} -le 1 ]]`, 1)
+	cmd := exec.Command("/bin/bash", "-c", forcedOverlarge, "status-builder",
+		validStage, "123:456", "artifact-registry", validDigest)
+	output, err := cmd.CombinedOutput()
+	if err == nil || len(output) != 0 {
+		t.Fatal("overlarge fixed command was accepted or echoed")
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractivePromptAndFailureResidue(t *testing.T) {
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		for _, tc := range []struct {
+			mode         string
+			wantSuccess  bool
+			wantPrompt   bool
+			wantResponse bool
+			wantResidue  bool
+		}{
+			{"success", true, true, true, false},
+			{"before_prompt", false, false, false, true},
+			{"refuse", false, true, false, true},
+			{"eof", false, true, false, true},
+			{"remote_nonzero", false, true, true, false},
+		} {
+			t.Run(route+"/"+tc.mode, func(t *testing.T) {
+				h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+				env := append(h.env(), "FAKE_STATUS_PROMPT_MODE="+tc.mode)
+				output, err := runRemoteAlphaOperatorWithPromptPTY(t, env, "recovery-session", route,
+					"--ssh-target", "ds@m75q-test", "--interactive-tty")
+				if (err == nil) != tc.wantSuccess {
+					t.Fatalf("interactive route result differs for %s: %v", tc.mode, err)
+				}
+				if strings.Contains(output, "FAKE_SUDO_PASSWORD_PROMPT: ") != tc.wantPrompt {
+					t.Fatal("fake sudo prompt visibility differs")
+				}
+				log := mustRead(t, h.sshLog)
+				if strings.Contains(log, "PROMPT_READ") != tc.wantResponse {
+					t.Fatal("fake sudo prompt response result differs")
+				}
+				entries, err := os.ReadDir(h.stageRoot)
+				if err != nil || (len(entries) == 1) != tc.wantResidue {
+					t.Fatal("stage residue disposition differs after interactive result")
+				}
+				if tc.wantResidue {
+					leaves, err := os.ReadDir(filepath.Join(h.stageRoot, entries[0].Name()))
+					if err != nil || len(leaves) != 1 || leaves[0].Name() != "remote_alpha_es_tls_status.py" {
+						t.Fatal("failed interactive handoff did not retain only diagnostic collector residue")
+					}
+				}
+			})
+		}
+	}
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+		output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+			"--ssh-target", "ds@m75q-test", "--interactive-tty")
+		if err == nil || !strings.Contains(output, "requires a visible local terminal") {
+			t.Fatal("status route did not require a real local terminal")
+		}
+		for _, path := range []string{h.sshLog, h.scpLog, h.sshArgv} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatal("non-terminal route contacted fake transport")
+			}
+		}
+	}
 }
 
 func TestRemoteAlphaOperatorRecoverySessionESServiceTLSRenewHeldBeforeContact(t *testing.T) {
@@ -6415,7 +6702,7 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 	)
 
 	liveCommand := regexp.MustCompile(`(^|[;&|()]|\bthen\b|\bdo\b)\s*(sudo|ssh|scp|vault|nomad|docker|spire|systemctl)(\s|$|[;&|()<>])`)
-	statusTransport := `printf '%s\n' "${wrapper}" | ssh -tt "${target}" /bin/bash -s -- "${stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}"`
+	statusTransport := `ssh -tt "${ssh_target}" "${remote_command}"`
 	statusStage := `if ! stage_identity="$(ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_STAGE' | /usr/bin/python3 -I -B -c '`
 	statusBootstrap := `sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \`
 	allowedStatusLine := func(line string) bool {

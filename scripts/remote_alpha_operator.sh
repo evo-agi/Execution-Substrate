@@ -2541,9 +2541,23 @@ recovery_session_es_tls_usage() {
     "No summary copy-back, transcript, support bundle, or raw TLS/config output is produced."
 }
 
+remote_alpha_es_tls_status_shell_quote() {
+  local value=$1
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "${value}"
+}
+
 remote_alpha_es_tls_status_remote_wrapper() {
-  local target=$1 stage_dir=$2 stage_identity=$3 scope=$4 collector_digest=$5
-  local wrapper
+  local stage_dir=$1 stage_identity=$2 scope=$3 collector_digest=$4
+  local LC_ALL=C stage_dev stage_ino wrapper remote_command
+  [[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]] || return 2
+  [[ "${stage_identity}" =~ ^[1-9][0-9]{0,19}:[1-9][0-9]{0,19}$ ]] || return 2
+  stage_dev=${stage_identity%%:*}
+  stage_ino=${stage_identity#*:}
+  [[ ${#stage_dev} -lt 20 || "${stage_dev}" < 18446744073709551615 || "${stage_dev}" == 18446744073709551615 ]] || return 2
+  [[ ${#stage_ino} -lt 20 || "${stage_ino}" < 18446744073709551615 || "${stage_ino}" == 18446744073709551615 ]] || return 2
+  case "${scope}" in artifact-registry|execution-governance) ;; *) return 2 ;; esac
+  [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]] || return 2
   IFS= read -r -d '' wrapper <<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true
 set -euo pipefail
 stage_dir=$1
@@ -2737,7 +2751,9 @@ stage_ino=${stage_identity#*:}
 sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \
   remote_alpha_es_tls_status.py "${collector_digest}" "${scope}" "${stage_dev}" "${stage_ino}"
 REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER
-  printf '%s\n' "${wrapper}" | ssh -tt "${target}" /bin/bash -s -- "${stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}"
+  remote_command="/bin/bash -c $(remote_alpha_es_tls_status_shell_quote "${wrapper}") -- $(remote_alpha_es_tls_status_shell_quote "${stage_dir}") $(remote_alpha_es_tls_status_shell_quote "${stage_identity}") $(remote_alpha_es_tls_status_shell_quote "${scope}") $(remote_alpha_es_tls_status_shell_quote "${collector_digest}")"
+  [[ ${#remote_command} -le 32768 ]] || return 2
+  printf '%s' "${remote_command}"
 }
 
 recovery_session_es_tls_status() {
@@ -2787,17 +2803,15 @@ recovery_session_es_tls_status() {
   done
   [[ "${ssh_target_seen}" == true ]] || recovery_die "${route} requires --ssh-target <target>"
   [[ "${interactive_tty_seen}" == true ]] || recovery_die "${route} requires --interactive-tty"
-  case "${ssh_target}" in
-    -*|*[[:space:]]*|*';'*|*'`'*|*'$('*|*'|'*|*'&'*|*'<'*|*'>'*)
-      recovery_die "${route} --ssh-target must be a single SSH target"
-      ;;
-  esac
+  if [[ ! "${ssh_target}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ || ${#ssh_target} -gt 255 ]]; then
+    recovery_die "${route} --ssh-target must be a single SSH target"
+  fi
   [[ -t 0 && -t 1 ]] || recovery_die "${route} requires a visible local terminal; no host contact occurred"
   command -v ssh >/dev/null 2>&1 || recovery_die "ssh is required for ${route}"
   command -v scp >/dev/null 2>&1 || recovery_die "scp is required for ${route}"
   [[ -r "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" ]] || recovery_die "status collector is not readable"
 
-  local run_id remote_stage_dir remote_collector stage_identity collector_digest
+  local run_id remote_stage_dir remote_collector stage_identity collector_digest remote_command preflight_command
   [[ -f "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" && ! -L "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" ]] || recovery_die "status collector source is not a regular file"
   collector_digest="$(/usr/bin/shasum -a 256 "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" | /usr/bin/cut -d ' ' -f 1)" || recovery_die "status collector digest derivation failed"
   [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]] || recovery_die "status collector digest derivation failed"
@@ -2805,6 +2819,8 @@ recovery_session_es_tls_status() {
   [[ "${run_id}" =~ ^[0-9a-f]{32}$ ]] || recovery_die "status stage identifier generation failed"
   remote_stage_dir="/tmp/.es-tls-status-${run_id}"
   remote_collector="${remote_stage_dir}/remote_alpha_es_tls_status.py"
+  preflight_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command preflight failed; no host contact occurred"
+  unset preflight_command
   printf '%s\n' "${route}: staging one dedicated status collector; scope=${scope}; protected summary remains remote."
   if ! stage_identity="$(ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_STAGE' | /usr/bin/python3 -I -B -c '
 import re, sys
@@ -2879,9 +2895,8 @@ REMOTE_ALPHA_ES_TLS_STATUS_STAGE
   if ! scp "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" "${ssh_target}:${remote_collector}"; then
     recovery_die "${route} upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
   fi
-  if ! remote_alpha_es_tls_status_remote_wrapper "${ssh_target}" "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}"; then
-    recovery_die "${route} collector or remote setup failed; stage retained as diagnostic residue unless root completed verified removal; no fresh status generation accepted"
-  fi
+  remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
+  ssh -tt "${ssh_target}" "${remote_command}" || recovery_die "${route} collector or remote setup failed; stage retained as diagnostic residue unless root completed verified removal; no fresh status generation accepted"
   printf '%s\n' "${route}: collector published a completed observation; validate the fresh protected record for result.status."
 }
 

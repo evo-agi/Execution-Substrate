@@ -1190,6 +1190,17 @@ machine evidence and does not copy a summary to Mac `.out`. Both
 renewal wrapper refuses locally without sourcing the committed internal
 renewal helper. That internal file remains historical and undispatched.
 
+The fixed remote wrapper is delivered as a bounded, single-quoted SSH remote
+command derived only from source-controlled bytes and exact validated operands,
+independently of SSH stdin. SSH stdin remains the operator's real local
+terminal throughout the forced remote TTY invocation, including a
+password-required sudo prompt. The route does not depend on cached sudo
+credentials or NOPASSWD, and no sudo password is captured, relayed outside the
+terminal, or retained. Target validation and worst-case command-size preflight
+fail before host contact; the returned custody identity is validated before
+the interactive invocation. No caller-supplied command fragment enters the
+remote command.
+
 The facade uses one fixed remote Python stage-creation helper. It opens the
 fixed `/tmp` parent, refuses an existing generated name, creates only that
 name with mode `0700`, immediately opens it with

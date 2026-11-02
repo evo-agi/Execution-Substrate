@@ -2991,6 +2991,17 @@ copied to `.out`. Both `es-service-tls-renew` and
 `--execute-renew` on status refuses before contact. The direct public renewal
 wrapper fails locally and does not source the old internal helper. The old
 internal helper remains committed, historical, and undispatched.
+The fixed remote wrapper is delivered as a bounded, single-quoted SSH remote
+command derived only from source-controlled bytes and validated stage
+directory, custody identity, scope, and digest operands; it is independent of
+SSH stdin. SSH stdin stays attached to the real local operator terminal for
+the entire `ssh -tt` invocation, so its remote TTY can service a
+password-required sudo prompt. Success requires neither cached sudo
+credentials nor NOPASSWD. The sudo password is never captured, relayed outside
+that terminal, or retained. Invalid targets or an overlarge command fail
+before contact, and the returned custody identity is validated before the
+interactive invocation; no arbitrary remote command or caller shell fragment
+is accepted.
 The facade sets the one staged collector to `0600` through a no-follow
 descriptor check before sudo; the bootstrap independently verifies stage
 custody and removes it before collector observation.

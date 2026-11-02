@@ -8755,6 +8755,10 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"## 6. Service and privilege boundaries", "## 7. Future work and restoration boundary")
 
 	for label, section := range map[string]string{"PLANS status slice": plans, "Remote Alpha status slice": status} {
+		assertContainsAll(t, label+" interactive stdin contract", section,
+			"source-controlled bytes", "independent", "SSH stdin", "real local",
+			"remote TTY", "password-required sudo", "cached sudo", "NOPASSWD",
+			"captured", "relayed outside", "retained", "before", "contact")
 		assertContainsAll(t, label+" stage identity and cleanup exception contract", section,
 			"strict unsigned decimal", "custody-acquisition identity", "device", "inode",
 			"O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC", "UID/GID",
@@ -8834,6 +8838,10 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"Tranche A contract", "P0v", "custody-acquisition identity",
 		"device/inode", "upload", "diagnostic residue",
 		"no fresh generation", "post-publication stage cleanup")
+	assertContainsAll(t, "access contract interactive stdin contract", accessScope,
+		"source-controlled wrapper", "independently of SSH stdin", "real local",
+		"remote TTY", "password-required sudo", "cached credentials", "NOPASSWD",
+		"captured", "relayed outside", "retained", "before contact")
 	assertContainsAll(t, "access contract bounded strict JSON depth", accessScope,
 		"MAX_JSON_CONTAINER_DEPTH = 64", "depth 1", "Depth 64", "depth 65",
 		"config_malformed", "related_config_malformed", "invalid/unaccepted",

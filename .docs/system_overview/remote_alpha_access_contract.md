@@ -41,7 +41,14 @@ one fixed `/usr/bin/python3 -I -B -c` root bootstrap,
 and select their respective fixed scopes: `artifact-registry` and
 `execution-governance`. The root bootstrap self-cleans the staged file
 and directory before status observation and may publish one protected status
-summary. The TTY is
+summary. The fixed source-controlled wrapper travels in a bounded, quoted
+remote command independently of SSH stdin. SSH stdin remains the real local
+operator terminal through the remote TTY invocation, including any
+password-required sudo prompt. Success does not depend on cached credentials
+or NOPASSWD; no sudo password is captured, relayed outside the terminal, or
+retained. Invalid targets and overlarge commands refuse before contact; the
+returned custody identity is validated before the interactive invocation, and
+no arbitrary remote command is accepted. The TTY is
 an operator acknowledgment, not machine evidence; no summary is copied to
 Mac `.out`. Stage, cleanup, and protected publication are filesystem effects,
 so these status routes are not write-free access checks. P0t is not a
