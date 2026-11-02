@@ -31,19 +31,156 @@ provenance, and diagnostics; Maintenance Agent (MA) does not define ES route
 meaning or own credentials. Access evidence is a bounded projection and
 cannot become ES runtime, IM readiness, or governed-execution authority.
 
-`Bounded slice rule`: committed P0t
-`recovery-session es-governance-tls-status` and
-`recovery-session es-governance-tls-renew` use the fixed ES service TLS
-helper pair and the fixed `execution-governance` scope. They require
-`--ssh-target` and `--interactive-tty`, stage the pair, use a remote
-`ssh -tt` session, and may request remote sudo. P0t status avoids
-certificate/service mutation but staging, cleanup, and an optional remote
-summary are filesystem effects. P0t is not a write-free access check.
+`Temporary compatibility edge`: the current P0s/P0t
+`recovery-session es-service-tls-status` and
+`recovery-session es-governance-tls-status` facade forms retain fixed
+`--ssh-target` and visible `--interactive-tty`. They stage exactly the one
+dedicated `scripts/internal/remote_alpha_es_tls_status.py` collector in a
+single remote invocation directory, use `ssh -tt` and visible remote sudo with
+one fixed `/usr/bin/python3 -I -B -c` root bootstrap,
+and select their respective fixed scopes: `artifact-registry` and
+`execution-governance`. The root bootstrap self-cleans the staged file
+and directory before status observation and may publish one protected status
+summary. The TTY is
+an operator acknowledgment, not machine evidence; no summary is copied to
+Mac `.out`. Stage, cleanup, and protected publication are filesystem effects,
+so these status routes are not write-free access checks. P0t is not a
+write-free access check.
+One fixed remote Python helper opens the fixed `/tmp` parent, refuses an
+existing generated name, creates it with mode `0700`, immediately opens it
+with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, verifies directory type, current
+caller UID/GID, mode, link rules, empty entry set, and parent-entry/descriptor
+identity, closes all descriptors, and emits only two strict unsigned decimal
+device/inode fields. This is the **custody-acquisition identity**; POSIX does
+not offer atomic `mkdir`-and-open identity. The supported operator route trusts
+the nonroot `ds` account for this helper. Concurrent malicious same-UID
+substitution before acquisition is outside this operator-route trust boundary.
+After acquisition, root requires the measured identity and exact digest;
+correct payload bytes cannot authorize a different directory identity or
+scope.
+
+After stage creation, the nonroot facade performs no destructive stage
+cleanup. Failed upload, sudo launch/authentication, transport, setup, or
+bootstrap rejection returns nonzero and retains a diagnostic stage. The stage
+contains only the fixed public collector payload and bounded metadata, never
+credentials, host keys, certificate, private key, config, summary, or raw
+child output. The route emits only a bounded non-sensitive cleanup disposition.
+The fixed root bootstrap is the sole deletion authority; it proves measured
+identity, caller UID/GID, directory metadata and entry set, exact leaf,
+payload identity, and digest before deletion. A substituted or otherwise
+unproved stage remains residue. Successful root removal has no facade cleanup.
+There is no automatic residue sweeper, wildcard cleanup, or historical-stage
+migration. Residue is not accepted evidence, route success, host readiness,
+renewal authority, or permission for later deletion. Retaining an unproved
+object is the bounded compatibility rule. These rules grant no renewal,
+restoration, access-profile, IM, CP, monitor, or scheduler authority.
+The facade and bootstrap inspect the exact staged collector leaf without
+following it before any blocking open. A FIFO or other nonregular substitute
+is promptly refused and retained as diagnostic residue. A prechecked regular
+leaf is opened with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK` and immediately matched
+by `fstat` to the observed type, owner, mode, link count, device, and inode.
+Failed or unproved cleanup is incomplete and leaves the prior status generation
+unchanged. This status-stage rule does not widen the Tranche A access-profile
+contract.
+The facade derives the expected SHA-256 from its exact fixed local collector
+source, without a caller digest option. The bootstrap accepts only the
+generated stage directory, fixed basename, derived 64-hex digest, fixed
+scope, and strict unsigned decimal custody-acquisition device/inode derived internally.
+Root inspects the fixed parent's stage entry no-follow, opens the directory
+with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, and proves its exact custody-acquisition
+identity, caller UID/GID, mode, links, and entry set before and after open
+and immediately before removal. Correct digest-bound collector bytes in a
+same-path replacement do not authorize execution or deletion. Root inspects
+and opens the staged regular leaf no-follow and
+nonblocking, binds descriptor identity, reads a bounded complete payload,
+checks its digest, transfers stage custody, rechecks before unlink, proves the
+directory empty, and removes it before compiling and executing the exact bytes
+in memory. Root does not execute an operator-writable pathname. The collector
+requires a source-visible internal bootstrap marker and synthetic source label;
+direct pathname invocation refuses before status reads or publication. No
+post-publication stage cleanup occurs. Substitution, FIFO, symlink, digest
+mismatch, or failed exact cleanup produces no fresh generation.
+Required and present optional P0s/P0t configs use strict JSON. Literal
+`NaN`, `Infinity`, `-Infinity`, duplicate keys, invalid UTF-8, trailing data,
+non-object roots, and every parsed non-finite numeric value, including
+`1e10000`, `-1e10000`, and nested overflow in ignored fields, are malformed.
+Present malformed optional input remains typed failure or incomplete, never
+absent/pass.
+All collector strict-JSON payloads use `MAX_JSON_CONTAINER_DEPTH = 64`.
+The top-level object or array has container depth 1; each nested object or
+array adds 1, and scalars add none. Depth 64 is accepted only if the existing
+schema and byte-size rules also pass; depth 65 and decoder recursion
+exhaustion are controlled structural rejections. For required config this is
+completed `config_malformed` with the existing dependent blocker relationship;
+for a present optional related config it is completed
+`related_config_malformed`, never absent/pass. An over-depth accepted-reader
+summary is unaccepted evidence through its controlled failure API, without a
+traceback or raw Python exception text. The exact protected summary schema
+remains an independent reader acceptance rule.
+The pre-run canonical target has explicit private `ABSENT`, `VALID(generation)`,
+and `INVALID_OR_UNACCEPTED` states. Only a safely absent verified final leaf is
+`ABSENT`; a present target that cannot yield the snapshot is invalid/unaccepted.
+A present protected leaf is `VALID` only when strict JSON yields the
+selected scope's expected `schema_version`, `collector_contract`,
+`finalized=true`, `scope`, and `route`, plus a string `generation` of exactly
+32 lowercase hexadecimal characters. This bounded identity snapshot does not
+require accepted-reader freshness or a current pass: a stale or completed-fail
+record with valid snapshot identity may be replaced with a different
+generation. Every present-target strict-JSON rejection, snapshot identity
+failure, or mixed defect in any field order is `INVALID_OR_UNACCEPTED`.
+After the fixed process preflight and status lock, that state makes the attempt
+incomplete before status collection, material read, OpenSSL spawn, or
+publication setup; no new generation replaces the existing canonical bytes or
+metadata identity. Unsafe type, identity, or read failures also remain incomplete.
+No raw exception text or new public evidence code is emitted.
+The status-only collector uses the same type-first nonblocking rule for its
+fixed config, certificate, and key leaves. Its P0s/P0t CA-role input is one
+selected PEM `CERTIFICATE`, not a bundle: zero or multiple anchors and extra
+PEM material yield completed `trust_anchor_count_mismatch`, null certificate
+metadata, and dependent `certificate_unavailable` verification. The fixed
+OpenSSL invocation receives exactly that selected anchor through `-trusted`.
+Nonreaping `waitid` with `WNOWAIT` keeps the child leader PID reserved while
+TERM/KILL disposition addresses its process group, including after a known
+terminal status. If group signaling fails, fixed pidfd/proc capability permits
+only identity-revalidated same-group member signals; direct-child-only cleanup
+cannot return. If all signaling remains unproved, the collector retains its
+leader and lifecycle ownership in an unresolved-cleanup hold. Every ordinary
+`Exception` from scanning, pidfd acquisition, identity revalidation,
+signaling, polling, waiting, or cleanup-state reporting remains in that hold
+with bounded backoff and the status lock retained until group absence and
+exactly one direct-child reap are proved. One-shot faults recover on later
+iterations; no outer retry may return unproved. Only a non-signaling
+identity-based proc absence scan follows reap.
+After bootstrap stage removal and status-lock acquisition, before status
+config, certificate, key, trust-anchor, or prior-summary reads and before any
+OpenSSL spawn, exactly one process-capability probe uses one fixed internal fork
+child to prove `waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)` is nonreaping, exact
+subsequent reap, and required pidfd/proc member operations; the probe child
+closes inherited descriptors, including the status lock, before its fixed
+release and is reaped on every path. One successful invocation-local
+capability state is reused by every fixed OpenSSL command; no command forks
+another probe. Failed or indeterminate preflight reads no status input, spawns
+no OpenSSL child, publishes no generation, and leaves no probe descriptor or
+process. Unavailable target capability is incomplete before spawn, and
+any incomplete status attempt preserves the previous generation. Canonical
+summary publication checks, generation snapshots, and protected reader reads
+share a type-first `O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK` regular-leaf
+primitive with immediate and post-read identity checks; FIFO and substitutions
+cannot block or pass. These are bounded status evidence rules,
+not access-profile, renewal, restoration, monitor, scheduler, IM, or CP
+authority.
+
+`Bounded slice rule`: both `recovery-session es-service-tls-renew` and
+`recovery-session es-governance-tls-renew` are held and refuse before stage,
+SSH, SCP, sudo, or host contact. `--execute-renew` on either status route also
+refuses before contact. The old shared status/renewal helper is historical
+and undispatched; status grants no renewal or restoration authority.
 Committed P0v `operator-healthcheck-tls-status-noninteractive` is a
 TLS-specific bounded status route; its `ssh -F /dev/null` construction does
 not use the operator's confirmed alias configuration. Its
 `scheduled_execution_allowed=false` constraint remains intact. Neither
-P0t nor P0v supplies this access contract or is generalized by it.
+P0s/P0t nor P0v supplies this access-profile Tranche A contract or is
+generalized by it.
 
 `Temporary compatibility edge`: the operator-owned
 `host_to_remote_linux_m75q` alias and existing `--ssh-target` operator
@@ -310,8 +447,9 @@ compatibility edge: an IM-owning tranche must consume or migrate to the ES
 evidence, preserve IM's current ownership, and correct source/freshness
 provenance before retiring any direct SSH path. Tranche A edits neither repo.
 
-Public-key SSH does not solve sudo authentication. Current P0t status/renew
-routes retain operator-interactive sudo when needed. Future noninteractive
+Public-key SSH does not solve sudo authentication. The current P0s/P0t status
+routes retain visible operator-interactive sudo; both renewal routes are held
+before contact. Future noninteractive
 privileged status would require a separately reviewed exact NOPASSWD rule
 for fixed root-owned code or a root-owned systemd operation producing a
 sanitized status projection. Neither is authorized by access-status v1.

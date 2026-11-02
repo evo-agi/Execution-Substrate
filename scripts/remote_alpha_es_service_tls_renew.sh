@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/internal/remote_alpha_es_service_tls_renew.sh
-source "${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"
-
-remote_alpha_es_service_tls_renew_main "$@"
+printf '%s\n' 'P0s/P0t renewal is held pending a separately designed contract; no host contact or TLS change occurred.' >&2
+exit 2

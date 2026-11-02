@@ -6957,17 +6957,6 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"stages only `scripts/remote_alpha_runtime_identity_helper_summary.sh`",
 		"keeps the canonical summary on the remote host at `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`",
 		"keeps workload-auth bootstrap/check, reset/unseal, IM refresh, support bundles, CP proof, runtime identity generation, runtime-profile readiness, submit readiness, and retained-result readiness separate",
-		"P0s implements exactly one bounded Remote Alpha internal ES service TLS status/renew helper pair and two Mac-side recovery-session routes",
-		"`recovery-session es-service-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"P0s stages only `scripts/remote_alpha_es_service_tls_renew.sh` and `scripts/internal/remote_alpha_es_service_tls_renew.sh`",
-		"keeps the canonical summary on the remote host at `/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`",
-		"keeps IM refresh, support-bundle collection, CP proof, Vault/SPIRE/Nomad changes, workload-auth, reset/unseal, and runtime identity work separate",
-		"P0t extends that same fixed ES service TLS helper pair with exactly one additional bounded scope",
-		"`recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"fixed helper scope `--scope execution-governance`",
-		"keeps the canonical summary on the remote host at `/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`",
 		"P0u adds exactly one bounded Remote Alpha host-local operator healthcheck client TLS status/renew helper pair",
 		"`recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty`",
 		"`recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
@@ -6988,8 +6977,6 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"accepts only its own allowlisted safe/local flags plus the explicit host-local and Mac-side interactive TTY `vault-unseal-existing`",
 		"P0n Mac-side interactive TTY `vault-workload-auth-check` submode",
 		"P0r Mac-side interactive TTY `runtime-identity-summary` evidence submode",
-		"P0s Mac-side interactive TTY `es-service-tls-status` and `es-service-tls-renew` submodes",
-		"P0t Mac-side interactive TTY `es-governance-tls-status` and `es-governance-tls-renew` submodes",
 		"P0u Mac-side interactive TTY `operator-healthcheck-tls-status` and `operator-healthcheck-tls-renew` submodes",
 		"safe modes do not use SSH or remote staging",
 		"dispatch generic helpers",
@@ -7022,14 +7009,8 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"The `vault-workload-auth-bootstrap [--help|--plan|--inventory]` submode is the P0o safe local/print-only planning surface",
 		"The `vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty` route is the P0q Mac-side secret-sensitive bootstrap route",
 		"The `runtime-identity-summary --ssh-target <target> --interactive-tty` route is the P0r Mac-side runtime identity evidence route.",
-		"The `es-service-tls-status --ssh-target <target> --interactive-tty` route is the P0s Mac-side internal TLS evidence route.",
-		"The `es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew` route is the P0s Mac-side internal TLS recovery route.",
-		"The `es-governance-tls-status --ssh-target <target> --interactive-tty` route is the P0t Mac-side ES -> EGS execution-governance TLS evidence route.",
-		"The `es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew` route is the P0t Mac-side ES -> EGS execution-governance TLS recovery route.",
 		"The `operator-healthcheck-tls-status --ssh-target <target> --interactive-tty` route is the P0u Mac-side host-local operator healthcheck client TLS evidence route.",
 		"The `operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew` route is the P0u Mac-side host-local operator healthcheck client TLS recovery route.",
-		"stages exactly the ES service TLS public/internal helper pair",
-		"It may renew the bounded internal CA/certs, back up current material first, restart only `ars.service`, `ags.service`, and `es.service`, and run post-renew ARS mTLS probes using the AGS and ES artifact-registry client identities.",
 		"not generic TLS deployment",
 		"`--prepare-summary-path`",
 		"OS/filesystem",
@@ -7050,18 +7031,12 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"`recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`",
 		"`recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty`",
 		"`recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty`",
-		"`recovery-session es-service-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"`recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
 		"`recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty`",
 		"`recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
 		"Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`, and Vault service-user check.",
 		"The host-local runtime identity helper remains available as a direct helper, but P0r adds the Mac-side operator topology for that evidence route.",
-		"The host-local ES service TLS helper remains available as a direct helper, but P0s adds the Mac-side operator topology for the bounded ARS/AGS/ES artifact-registry status/renew route and P0t adds the Mac-side operator topology for the bounded ES -> EGS execution-governance status/renew route.",
 		"The host-local operator healthcheck TLS helper remains available as a direct helper, but P0u adds the Mac-side operator topology for that bounded host-local client identity status/renew route.",
 		"P0m does not add a host-local execute-reset route through the operator facade",
-		"Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning route, the P0m explicit execute-reset operator route, the P0n workload-auth evidence route, the P0o safe bootstrap planning surface, and the P0q workload-auth bootstrap execution route, the P0r runtime identity summary evidence route, the P0s ES service TLS status/renew route, and the P0t ES governance TLS status/renew route, and the P0u operator healthcheck TLS status/renew route",
 		"post-unseal/service-user/IM/support-bundle/CP-proof bundling",
 		"docs/static-test prep",
 		"help/inventory/print-command skeleton",
@@ -7081,7 +7056,6 @@ func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
 		"secret-sensitive workload-auth bootstrap execution contract prep as docs/static-test only",
 		"secret-sensitive workload-auth bootstrap implementation with static and fake validation only",
 		"Mac-side runtime identity summary evidence route over only the fixed public runtime identity helper summary script",
-		"Mac-side ES service TLS status/renew route over only the fixed public/internal TLS renewal helper pair",
 		"prefer one explicit interactive sudo validation followed by `sudo -n` where supported",
 		"noninteractive default for staged wrappers that support it",
 		"config/TLS staged wrapper is currently a sudo-model gap unless fixed",
@@ -8594,7 +8568,7 @@ func TestRemoteAlphaOperatorP0qDocsVaultWorkloadAuthBootstrapExecutionRoute(t *t
 func TestRemoteAlphaOperatorP0rDocsRuntimeIdentitySummaryRoute(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0r Mac-Side Runtime Identity Summary Recovery Session", "### P0s Mac-Side ES Service TLS Status/Renew Recovery Session")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0r Mac-Side Runtime Identity Summary Recovery Session", "### P0s/P0t Dedicated ES TLS Status-Only Collector")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `runtime-identity-summary` in P0r are:", "P0r must reject:")
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
 	sourceSection := docSection(t, source, "recovery_session_runtime_identity_summary_require_command() {", "\nrecovery_session_evidence_check() {")
@@ -8723,298 +8697,233 @@ func TestRemoteAlphaOperatorP0rDocsRuntimeIdentitySummaryRoute(t *testing.T) {
 	)
 }
 
-func TestRemoteAlphaOperatorP0sDocsESServiceTLSRenewRoute(t *testing.T) {
+func TestRemoteAlphaESServiceTLSStatusOnlyContract(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
-	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0s Mac-Side ES Service TLS Status/Renew Recovery Session", "### P0d Interactive Validation Evidence")
-	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for P0s are:", "P0s must reject:")
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
-	source := mustRead(t, remoteAlphaOperatorScriptPath())
-	sourceSection := docSection(t, source, "recovery_session_es_service_tls_usage() {", "\nrecovery_session() {")
+	facade := mustRead(t, remoteAlphaOperatorScriptPath())
+	collector := mustRead(t, "scripts/internal/remote_alpha_es_tls_status.py")
+	wrapper := mustRead(t, "scripts/remote_alpha_es_service_tls_renew.sh")
 
-	assertContainsAll(t, "Remote Alpha operator P0s PLANS boundary", plans,
-		"The P0s implementation/self-audit/merge-readiness slice may add exactly one bounded Remote Alpha internal ES service TLS helper pair and exactly two Mac-side recovery-session routes for ARS/AGS/ES artifact-registry mTLS status and renewal",
-		"`scripts/remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <target> --interactive-tty`",
-		"`scripts/remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"`scripts/remote_alpha_es_service_tls_renew.sh`",
-		"`scripts/internal/remote_alpha_es_service_tls_renew.sh`",
-		"must not run live SSH, sudo, live remote OpenSSL, Vault, reset/unseal, workload-auth bootstrap/check, runtime identity summary, Infrastructure Manager refresh, support-bundle collection, CP proof, SPIRE/Nomad mutation",
-		"not generic TLS deployment, provisioning, reconciliation, production readiness, IM authority, CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle, workload-auth bootstrap/check, or runtime identity evidence",
-		"`/etc/execution-substrate/ars-tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/ars-tls/ars-server-cert.pem`",
-		"`/etc/execution-substrate/ars-tls/ars-server-key.pem`",
-		"`/etc/execution-substrate/tls/ags-client-cert.pem`",
-		"`/etc/execution-substrate/tls/ags-client-key.pem`",
-		"`/etc/execution-substrate/tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`",
-		"must inspect the current config topology before status or renewal",
-		"covered renewal path, the helper must stop with a non-secret topology blocker",
-		"status mode is non-mutating",
-		"verify AGS and ES client certificates against the ARS trusted runtime/client CA",
-		"verify the ARS server certificate against the AGS and ES root CAs",
-		"`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`",
-		"restart only the bounded affected service set `ars.service`, `ags.service`, and `es.service`",
-		"Mac-side IM health refresh remains a separate later action",
-		"private key PEM bodies, full certificate PEM bodies",
-		"Allowed P0s route flags are only `--help`, `--ssh-target <target>`, `--interactive-tty`, and `--execute-renew` for the renew route only",
-		"P0s validation remains fake/static only",
+	for label, value := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+		assertContainsAll(t, label+" status-only boundary", value,
+			"`Reopened redesign seam`", "dedicated", "status-only", "renewal", "held",
+			"es-service-tls-status", "es-governance-tls-status",
+			"artifact-registry", "execution-governance",
+			"execution-substrate.remote-alpha.es-tls-status-collector/v1",
+			"execution-substrate.remote-alpha.es-service-tls-status-summary.v1",
+			"execution-substrate.remote-alpha.es-governance-tls-status-summary.v1",
+			"finalized=true", "generation", "five minutes", "thirty seconds",
+			"os.replace", "os._exit(0)", "visible", "crash",
+			"P0q", "P0u", "P0v",
+		)
+	}
+	assertContainsAll(t, "artifact custody", artifact,
+		"execution-substrate.remote-alpha.es-tls-status-evidence/v1",
+		"es-service-tls-status-summary.json", "es-governance-tls-status-summary.json",
+		"Incomplete attempts",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0s docs boundary", operatorSection,
-		"`Bounded slice rule`: P0s implements exactly one bounded Remote Alpha internal ES service TLS helper pair and exactly two Mac-side recovery-session routes",
-		"`scripts/remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <target> --interactive-tty`",
-		"`scripts/remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"static and fake SSH/SCP validation only",
-		"It does not run live SSH, sudo, live OpenSSL against the remote host, Vault, reset, unseal, workload-auth bootstrap/check, runtime identity summary, Infrastructure Manager refresh, support-bundle collection, CP proof, SPIRE or Nomad mutation",
-		"The route is separate from IM, CP, Vault, SPIRE, Nomad, workload-auth, reset, unseal, runtime identity, and general deployment.",
-		"Covered topology and fixed paths:",
-		"`/etc/execution-substrate/ars-tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/ars-tls/ars-server-cert.pem`",
-		"`/etc/execution-substrate/ars-tls/ars-server-key.pem`",
-		"`/etc/execution-substrate/tls/ags-client-cert.pem`",
-		"`/etc/execution-substrate/tls/ags-client-key.pem`",
-		"`/etc/execution-substrate/tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`",
-		"`/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`",
-		"Topology stop line:",
-		"the helper must stop with a non-secret topology blocker",
-		"P0s intentionally does not cover AGS external server certs, ES external server certs, EGS TLS/CAs, Vault, SPIRE, Nomad",
-		"Status behavior:",
-		"`es-service-tls-status` is non-mutating.",
-		"public certificate fields only: subject, issuer, SAN, EKU, notBefore, notAfter",
-		"confirms ARS/AGS/ES cert/key public-key matches without printing private keys",
-		"verifies AGS and ES client certificates against the ARS trusted runtime/client CA",
-		"verifies the ARS server certificate against the AGS and ES root CAs",
-		"Renew behavior:",
-		"`es-service-tls-renew` requires explicit `--execute-renew`.",
-		"Both status and renew require visible `--interactive-tty` and `--ssh-target <target>`.",
-		"The Mac-side facade stages only `scripts/remote_alpha_es_service_tls_renew.sh` and `scripts/internal/remote_alpha_es_service_tls_renew.sh`.",
-		"The remote command invokes only `--status` or `--execute-renew` through `ssh -tt`; it passes no helper override flags.",
-		"Renewal creates a backup directory with non-secret metadata before replacing files.",
-		"Ownership/mode policy is fixed: ARS material `root:ars 0640`, AGS material `root:ags 0640`, and ES material `root:es 0640`.",
-		"It restarts only `ars.service`, `ags.service`, and `es.service`.",
-		"Post-renew verification re-runs the certificate verification checks and probes ARS `/health` over mTLS using the configured AGS and ES artifact-registry client identities.",
-		"Summary/evidence behavior:",
-		"`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`",
-		"`execution-substrate.remote-alpha.es-service-tls-renew-summary.v1`",
-		"evidence/projection only, never authority and not an IM input",
-		"must not print full summary JSON and must not copy the summary back to Mac `.out`",
-		"Allowed flags for P0s are:",
-		"P0s must reject:",
-		"TLS/config path overrides",
-		"secret-like arguments, including private keys, root tokens, unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API keys, passwords, proof secrets, and secret payloads",
-		"P0s tests:",
-		"fake SSH/SCP tests prove exactly the fixed public/internal TLS renewal helper pair is staged",
-		"fake renew tests prove private key PEM bodies are not printed or persisted to summaries",
-		"Stop conditions for P0s:",
-		"not generic TLS deployment, not Infrastructure Manager reconciliation, not Control Plane authority, not Vault/SPIRE/Nomad authority, not production readiness",
+	assertContainsAll(t, "status facade", facade,
+		"REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR",
+		"es-service-tls-status", "es-governance-tls-status",
+		"es-service-tls-renew", "es-governance-tls-renew",
+		"--execute-renew", "--interactive-tty",
 	)
-	assertContainsNone(t, "Remote Alpha operator P0s docs overclaims", operatorSection,
-		"production readiness is proved",
-		"IM reconciliation succeeds",
-		"CP proof is run",
-		"Vault tokens are brokered",
+	assertContainsNone(t, "status collector renewal authority", collector,
+		"remote_alpha_es_service_tls_renew", "--execute-renew", "private-backups",
+		"systemctl", "curl", "install ", "backup_created = True",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0s allowed flags", allowedFlags,
-		"`--help`",
-		"`--ssh-target <target>`",
-		"`--interactive-tty`",
-		"`--execute-renew` only for `es-service-tls-renew`",
-	)
-	assertContainsNone(t, "Remote Alpha operator P0s allowed flags", allowedFlags,
-		"`--host-local`",
-		"`--dry-run`",
-		"`--status`",
-		"`--apply`",
-		"private keys",
-		"Vault tokens",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0s artifact hygiene", artifact,
-		"`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`",
-		"`execution-substrate.remote-alpha.es-service-tls-renew-summary.v1`",
-		"non-secret helper summary only",
-		"public fingerprints",
-		"cert/key public-key match status",
-		"must not be copied back to Mac `.out` by the operator facade",
-		"must not become an IM input or CP proof artifact",
-		"must not contain private key PEM bodies, full certificate PEM bodies, private-key backup digests, Vault tokens, root tokens, unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof secrets, terminal transcripts, support-bundle content, or raw secret-bearing command output",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0s source", sourceSection,
-		"REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER",
-		"REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER",
-		"REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY",
-		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
-		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
-		`ssh -tt "${ssh_target}" "${remote_shell_command}"`,
-		`"${helper_path}" %q`,
-		`sudo "${helper_path}" %q`,
-		"--status|--execute-renew",
-		"recovery-session es-service-tls-renew requires --execute-renew",
-		"recovery-session es-service-tls-status forbids --execute-renew",
-	)
-	assertContainsNone(t, "Remote Alpha operator P0s source forbidden helper bundle", sourceSection,
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_vault_workload_auth_bootstrap.sh",
-		"remote_alpha_runtime_identity_helper_summary.sh",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		`"${helper_path}" --dry-run`,
-		`"${helper_path}" --check-only`,
-		"tee ",
-	)
+	assertContainsAll(t, "public renewal wrapper hold", wrapper,
+		"renewal is held", "exit 2")
+	assertContainsNone(t, "public renewal wrapper dispatch", wrapper,
+		"source ", "remote_alpha_es_service_tls_renew_main")
 }
 
-func TestRemoteAlphaOperatorP0tDocsESGovernanceTLSRenewRoute(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	plans := compactDocSection(t, plansRaw,
+		"`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper",
+		"The P0u implementation/self-audit/merge-readiness slice")
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0t Mac-Side ES Governance TLS Status/Renew Recovery Session", "### P0d Interactive Validation Evidence")
-	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for P0t are:", "P0t must reject:")
+	status := compactDocSection(t, remoteRaw,
+		"### P0s/P0t Dedicated ES TLS Status-Only Collector",
+		"### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session")
+	accessRaw := mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md")
+	accessScope := compactDocSection(t, accessRaw,
+		"## 1. Authority, scope, and status", "## 2. Versioned profile and ownership")
+	accessPrivilege := compactDocSection(t, accessRaw,
+		"## 6. Service and privilege boundaries", "## 7. Future work and restoration boundary")
+
+	for label, section := range map[string]string{"PLANS status slice": plans, "Remote Alpha status slice": status} {
+		assertContainsAll(t, label+" stage identity and cleanup exception contract", section,
+			"strict unsigned decimal", "custody-acquisition identity", "device", "inode",
+			"O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC", "UID/GID",
+			"same-path replacement", "digest", "sudo launch",
+			"no destructive stage cleanup", "diagnostic residue",
+			"status lock", "bounded backoff", "ordinary `Exception`",
+			"exactly one direct-child reap", "identity-based",
+			"waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)",
+			"before any OpenSSL spawn", "probe child")
+		assertContainsAll(t, label+" audit repair", section,
+			"related_config_malformed", "absent", "incomplete",
+			"checked_at > not_after", "checked_at < not_before",
+			"no `exists` field", "same", "semantic",
+			"first `fstat`", "OpenSSL", "grammar drift",
+			"cleanup", "os.replace", "os._exit(0)")
+		assertContainsNone(t, label+" completed status vocabulary", section,
+			"config_unreadable", "certificate_unreadable", "key_unreadable")
+		assertContainsAll(t, label+" fixture-proven verify failures", section,
+			"four P0s", "three repetitions",
+			"CN = Remote Alpha Internal Runtime Root CA\\nerror 10 at 1 depth lookup:certificate has expired\\n",
+			"error 10 at 0 depth lookup:certificate has expired\\n",
+			"error 9 at 0 depth lookup:certificate is not yet valid\\n",
+			"[A-Za-z0-9.-]+", "incomplete")
+		assertContainsAll(t, label+" input and lifecycle repair", section,
+			"strict JSON", "NaN", "Infinity", "-Infinity", "1e10000", "-1e10000", "duplicate keys",
+			"absolute lexical canonical POSIX material path", "repeated separators",
+			"no-follow", "absent final leaf", "unsafe", "incomplete",
+			"immutable", "/dev/stdin", "/dev/fd/<n>", "-trusted",
+			"-verify_hostname", "selected anchor", "LC_ALL=C",
+			"hostname mismatch", "whole tuple", "host-preflight",
+			"identity-safe same-group member", "wait/poll", "custody-acquisition",
+			"never signals a process group after reaping",
+			"diagnostic residue", "generation")
+		assertContainsAll(t, label+" bounded strict JSON depth", section,
+			"MAX_JSON_CONTAINER_DEPTH = 64", "depth 1", "Depth 64", "depth 65",
+			"config_malformed", "related_config_malformed", "invalid/unaccepted",
+			"incomplete", "no new generation", "unaccepted evidence",
+			"controlled", "schema", "byte-size")
+		assertContainsAll(t, label+" stage, summary, and group repair", section,
+			"bootstrap", "-I -B -c", "SHA-256", "bytes in memory",
+			"bootstrap marker", "direct pathname invocation",
+			"O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK",
+			"regular-to-FIFO", "pidfd", "unresolved-cleanup hold")
+	}
+	assertContainsAll(t, "Remote Alpha status semantic contract", status,
+		"all five 64-character SHA-256 fields", "not_before <= not_after",
+		"equality at either boundary is valid", "nested record", "blockers",
+		"collector uses this same validator before publication",
+		"P0s related EGS", "P0t related ARS",
+		"status=pass, code=absent", "config_missing", "related_config_malformed",
+		"None may infer a pass from an empty-object fallback",
+		"unsafe", "no new generation")
+	assertContainsNone(t, "Remote Alpha completed status vocabulary excludes unsafe reads", status,
+		"config_unreadable", "certificate_unreadable", "key_unreadable")
+	assertContainsAll(t, "Remote Alpha status whole-response grammar", status,
+		"whole-response", "unable to load certificate", "unable to load key",
+		"TRUSTED CERTIFICATE", "ANY PRIVATE KEY",
+		"error 20 at 0 depth lookup:unable to get local issuer certificate",
+		"[A-Za-z0-9.-]+", "/dev/stdin", "Raw child output never enters evidence",
+		"Certificate:\\n Data:\\n", "Signature Algorithm: <token>",
+		"nine-space-indented lowercase hexadecimal", "intervening certificate text is not independently validated")
+	assertContainsAll(t, "Remote Alpha status cleanup ownership", status,
+		"immediately after a successful `Popen`", "selector construction and registration",
+		"terminates and reaps", "Once exclusive temporary creation succeeds",
+		"unlinks only after revalidating", "prior canonical generation is unchanged")
+	assertContainsAll(t, "Remote Alpha strict reader JSON", status,
+		"strict JSON decoding", "duplicate keys", "non-finite", "stable descriptor metadata")
+
+	assertContainsAll(t, "access contract current P0s/P0t status relationship", accessScope,
+		"`Temporary compatibility edge`", "es-service-tls-status",
+		"es-governance-tls-status", "scripts/internal/remote_alpha_es_tls_status.py",
+		"artifact-registry", "execution-governance", "ssh -tt",
+		"visible remote sudo", "self-cleans", "protected status summary",
+		"`Bounded slice rule`", "es-service-tls-renew", "es-governance-tls-renew",
+		"refuse before stage, SSH, SCP, sudo, or host contact",
+		"old shared status/renewal helper is historical and undispatched",
+		"Tranche A contract", "P0v", "custody-acquisition identity",
+		"device/inode", "upload", "diagnostic residue",
+		"no fresh generation", "post-publication stage cleanup")
+	assertContainsAll(t, "access contract bounded strict JSON depth", accessScope,
+		"MAX_JSON_CONTAINER_DEPTH = 64", "depth 1", "Depth 64", "depth 65",
+		"config_malformed", "related_config_malformed", "invalid/unaccepted",
+		"incomplete", "no new generation", "unaccepted evidence",
+		"controlled", "schema", "byte-size")
+	assertContainsAll(t, "access contract stage and cleanup exception repair", accessScope,
+		"strict unsigned decimal", "custody-acquisition", "caller UID/GID",
+		"O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC", "same-path replacement",
+		"digest", "sudo launch", "no destructive stage", "diagnostic",
+		"ordinary `Exception`", "bounded backoff", "status lock",
+		"exactly one direct-child reap", "identity-based proc absence scan",
+		"waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)", "probe child")
+	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": status, "access": accessScope} {
+		assertContainsAll(t, label+" invocation custody and preflight", section,
+			"same-UID", "one fixed", "empty entry set", "measured identity",
+			"automatic", "one", "capability", "before", "OpenSSL",
+			"no generation", "no", "probe")
+		assertContainsAll(t, label+" prior canonical snapshot states", section,
+			"ABSENT", "VALID(generation)", "INVALID_OR_UNACCEPTED",
+			"schema_version", "collector_contract", "finalized=true",
+			"scope", "route", "32 lowercase hexadecimal characters",
+			"strict-JSON", "mixed", "stale", "completed-fail",
+			"OpenSSL spawn", "publication setup", "metadata identity")
+		assertContainsNone(t, label+" obsolete exact creation and caller deletion", section,
+			"exact creation identity", "creation device/inode",
+			"fixed nonroot path", "cleanup armed")
+	}
+	collector := mustRead(t, "scripts/internal/remote_alpha_es_tls_status.py")
+	assertContainsAll(t, "collector prior snapshot private-state gate", collector,
+		"_PriorSummaryState", "ABSENT", "VALID", "INVALID_OR_UNACCEPTED",
+		"prior_summary_unaccepted")
+	assertContainsNone(t, "access contract stale P0t helper relationship", accessScope,
+		"use the fixed ES service TLS helper pair", "stage the pair",
+		"Committed P0t", "P0t status/renew routes retain")
+	assertContainsAll(t, "access contract current sudo and renewal boundary", accessPrivilege,
+		"P0s/P0t status", "visible operator-interactive sudo",
+		"both renewal routes are held before contact",
+		"Neither is authorized by access-status v1")
+	assertContainsNone(t, "access contract stale sudo boundary", accessPrivilege,
+		"Current P0t status/renew routes")
+}
+
+func TestRemoteAlphaESServiceTLSStatusFIFOProcessAndAnchorRepairContract(t *testing.T) {
+	plans := compactDocSection(t, mustRead(t, "PLANS.md"),
+		"`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper",
+		"The P0u implementation/self-audit/merge-readiness slice")
+	remote := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"),
+		"### P0s/P0t Dedicated ES TLS Status-Only Collector",
+		"### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session")
+	access := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"),
+		"## 1. Authority, scope, and status", "## 2. Versioned profile and ownership")
+	for label, section := range map[string]string{"PLANS": plans, "Remote Alpha": remote} {
+		assertContainsAll(t, label+" nonblocking leaf and group contract", section,
+			"FIFO", "before any blocking", "O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK",
+			"device", "inode", "type", "owner", "mode", "link count",
+			"previous", "generation", "waitid", "WNOWAIT",
+			"TERM", "KILL", "descendant", "reserved", "incomplete")
+		assertContainsAll(t, label+" single selected trust anchor", section,
+			"one selected", "PEM `CERTIFICATE`", "ASCII whitespace",
+			"trust_anchor_count_mismatch", "certificate_unavailable",
+			"-trusted", "bundle", "reader")
+	}
+	assertContainsAll(t, "access contract stage refusal", access,
+		"FIFO", "nonregular", "before any blocking", "O_NONBLOCK",
+		"fstat", "diagnostic residue", "generation", "Tranche A",
+		"no renewal, restoration, access-profile, IM, CP, monitor, or scheduler",
+		"trust_anchor_count_mismatch", "certificate_unavailable", "-trusted",
+		"waitid", "WNOWAIT", "reserved", "TERM/KILL", "non-signaling")
+	assertContainsAll(t, "access contract in-memory and reader repair", access,
+		"root bootstrap", "exact bytes", "bootstrap marker", "direct pathname invocation",
+		"O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK", "pidfd/proc",
+		"unresolved-cleanup hold")
+}
+
+func TestRemoteAlphaProtectedEvidencePathsV1Contract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
-	source := mustRead(t, remoteAlphaOperatorScriptPath())
-	sourceSection := docSection(t, source, "recovery_session_es_governance_tls_usage() {", "\nrecovery_session() {")
-
-	assertContainsAll(t, "Remote Alpha operator P0t PLANS boundary", plans,
-		"The P0t implementation/self-audit/merge-readiness slice may extend the existing bounded Remote Alpha internal ES service TLS helper pair with exactly one additional fixed scope and exactly two Mac-side recovery-session routes for the ES -> EGS execution-governance trust-model mTLS path",
-		"`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty`",
-		"`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"`scripts/remote_alpha_es_service_tls_renew.sh`",
-		"`scripts/internal/remote_alpha_es_service_tls_renew.sh`",
-		"fixed `--scope execution-governance` helper invocation",
-		"must not run live SSH, sudo, live remote OpenSSL, Vault, reset/unseal, workload-auth bootstrap/check, runtime identity summary, Infrastructure Manager refresh, support-bundle collection, CP proof, SPIRE/Nomad mutation",
-		"not generic TLS deployment, provisioning, reconciliation, production readiness, IM authority, CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle, workload-auth bootstrap/check, runtime identity evidence, or a redesign of EGS trust-model semantics",
-		"`/etc/execution-substrate/egs-tls/egs-server-cert.pem`",
-		"`/etc/execution-substrate/egs-tls/egs-server-key.pem`",
-		"`/etc/execution-substrate/egs-tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-client-key.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`",
-		"AGS config has no execution-governance dependency",
-		"The current EGS trusted client CA is the same runtime CA file",
-		"Any AGS client-to-EGS material is out of scope for P0t",
-		"status mode is non-mutating",
-		"verify the ES client certificate against the EGS trusted runtime/client CA",
-		"verify the EGS server certificate against the ES execution-governance root CA",
-		"`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`",
-		"restart only the bounded affected service set `egs.service` and `es.service`",
-		"probe EGS `/v1/trust-model` over mTLS",
-		"private key PEM bodies, full certificate PEM bodies",
-		"Allowed P0t route flags are only `--help`, `--ssh-target <target>`, `--interactive-tty`, and `--execute-renew` for the renew route only",
-		"P0t validation remains fake/static only",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0t docs boundary", operatorSection,
-		"`Bounded slice rule`: P0t extends the existing bounded Remote Alpha internal ES service TLS helper pair with exactly one additional fixed scope",
-		"`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty`",
-		"`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"static and fake SSH/SCP validation only",
-		"It does not run live SSH, sudo, live OpenSSL against the remote host, Vault, reset, unseal, workload-auth bootstrap/check, runtime identity summary, Infrastructure Manager refresh, support-bundle collection, CP proof, SPIRE or Nomad mutation",
-		"The route is separate from IM, CP, Vault, SPIRE, Nomad, workload-auth, reset, unseal, runtime identity, EGS trust-model redesign, and general deployment.",
-		"Covered topology and fixed paths:",
-		"`/etc/execution-substrate/egs-tls/egs-server-cert.pem`",
-		"`/etc/execution-substrate/egs-tls/egs-server-key.pem`",
-		"`/etc/execution-substrate/egs-tls/runtime-ca.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-client-key.pem`",
-		"`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`",
-		"Topology stop line:",
-		"AGS has no current client-to-EGS dependency in the repo config model",
-		"Any AGS client-to-EGS material observed in config is out of scope for P0t",
-		"the helper must stop with a non-secret topology blocker",
-		"Status behavior:",
-		"`es-governance-tls-status` is non-mutating.",
-		"public certificate fields only: subject, issuer, SAN, EKU, notBefore, notAfter",
-		"confirms EGS server cert/key and ES execution-governance client cert/key public-key matches without printing private keys",
-		"verifies the ES execution-governance client certificate against the EGS trusted runtime/client CA",
-		"verifies the EGS server certificate against the ES execution-governance root CA",
-		"Renew behavior:",
-		"`es-governance-tls-renew` requires explicit `--execute-renew`.",
-		"Both status and renew require visible `--interactive-tty` and `--ssh-target <target>`.",
-		"The Mac-side facade stages only `scripts/remote_alpha_es_service_tls_renew.sh` and `scripts/internal/remote_alpha_es_service_tls_renew.sh`.",
-		"The remote command invokes only `--scope execution-governance --status` or `--scope execution-governance --execute-renew` through `ssh -tt`; it passes no helper override flags.",
-		"Renewal creates a backup directory with non-secret metadata before replacing files.",
-		"Ownership/mode policy is fixed: EGS material `root:egs 0640` and ES execution-governance material `root:es 0640`.",
-		"It restarts only `egs.service` and `es.service`.",
-		"Post-renew verification re-runs the certificate verification checks and probes EGS `/v1/trust-model` over mTLS using the configured ES execution-governance client identity.",
-		"Summary/evidence behavior:",
-		"`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`",
-		"`execution-substrate.remote-alpha.es-governance-tls-renew-summary.v1`",
-		"evidence/projection only, never authority and not an IM input",
-		"must not print full summary JSON and must not copy the summary back to Mac `.out`",
-		"Allowed flags for P0t are:",
-		"P0t must reject:",
-		"TLS/config path overrides",
-		"secret-like arguments, including private keys, root tokens, unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API keys, passwords, proof secrets, and secret payloads",
-		"P0t tests:",
-		"fake SSH/SCP tests prove exactly the fixed public/internal TLS renewal helper pair is staged",
-		"fake post-renew verification exercises the ES -> EGS trust-model TLS path",
-		"Stop conditions for P0t:",
-		"not generic TLS deployment, not Infrastructure Manager reconciliation, not Control Plane authority, not Vault/SPIRE/Nomad authority, not EGS trust-model redesign, not production readiness",
-	)
-	assertContainsNone(t, "Remote Alpha operator P0t docs overclaims", operatorSection,
-		"production readiness is proved",
-		"IM reconciliation succeeds",
-		"CP proof is run",
-		"Vault tokens are brokered",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0t allowed flags", allowedFlags,
-		"`--help`",
-		"`--ssh-target <target>`",
-		"`--interactive-tty`",
-		"`--execute-renew` only for `es-governance-tls-renew`",
-	)
-	assertContainsNone(t, "Remote Alpha operator P0t allowed flags", allowedFlags,
-		"`--host-local`",
-		"`--dry-run`",
-		"`--status`",
-		"`--scope`",
-		"`--apply`",
-		"private keys",
-		"Vault tokens",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0t artifact hygiene", artifact,
-		"`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`",
-		"`execution-substrate.remote-alpha.es-governance-tls-renew-summary.v1`",
-		"non-secret helper summary only",
-		"public fingerprints",
-		"cert/key public-key match status",
-		"must not be copied back to Mac `.out` by the operator facade",
-		"must not become an IM input or CP proof artifact",
-		"must not contain private key PEM bodies, full certificate PEM bodies, private-key backup digests, Vault tokens, root tokens, unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof secrets, terminal transcripts, support-bundle content, or raw secret-bearing command output",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0t source", sourceSection,
-		"REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER",
-		"REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER",
-		"REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY",
-		"REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT",
-		`recovery_session_es_service_tls_stage_remote`,
-		`ssh -tt "${ssh_target}" "${remote_shell_command}"`,
-		`"${helper_path}" --scope execution-governance %q`,
-		`sudo "${helper_path}" --scope execution-governance %q`,
-		"--status|--execute-renew",
-		"recovery-session es-governance-tls-renew requires --execute-renew",
-		"recovery-session es-governance-tls-status forbids --execute-renew",
-	)
-	assertContainsNone(t, "Remote Alpha operator P0t source forbidden helper bundle", sourceSection,
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_vault_workload_auth_bootstrap.sh",
-		"remote_alpha_runtime_identity_helper_summary.sh",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		`"${helper_path}" --dry-run`,
-		`"${helper_path}" --check-only`,
-		"tee ",
-	)
+	for label, value := range map[string]string{"PLANS": plans, "Remote Alpha": remote, "artifact hygiene": artifact} {
+		assertContainsAll(t, label+" protected status acceptance", value,
+			"/var/lib/execution-substrate-remote-alpha/v1/status",
+			"es-service-tls-status-summary.json", "es-governance-tls-status-summary.json",
+			".es-service-tls-status.lock", ".es-governance-tls-status.lock",
+			"root:root", "0755", "0644", "0600", "single-link",
+			"finalized", "generation", "legacy", "no", "private-backups")
+	}
+	assertContainsAll(t, "remote final publication", remote,
+		"stage cleanup", "child", "before", "replacement",
+		"without required", "reader", "scope", "route",
+		"result", "non-effect", "different", "five")
 }
 
 func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T) {
@@ -10813,10 +10722,10 @@ func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 		"hidden remote reconciler",
 		"broad provisioning automation",
 		"Remote Alpha remains bounded proof/support posture only",
-		"`es-service-tls-status` | eligible",
-		"`es-service-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates",
-		"`es-governance-tls-status` | eligible",
-		"`es-governance-tls-renew` | status summary may be monitored | eligible through the documented ES helper only | candidate after audit gates",
+		"`es-service-tls-status` | future candidate; no current monitor",
+		"`es-service-tls-renew` | held",
+		"`es-governance-tls-status` | future candidate; no current monitor",
+		"`es-governance-tls-renew` | held",
 		"`operator-healthcheck-tls-status` | eligible",
 		"`operator-healthcheck-tls-renew` | blocked/status-only | not eligible | blocked",
 		"`spiffe://execution.internal/operator/local`",

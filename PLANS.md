@@ -1166,219 +1166,382 @@ workload-auth bootstrap/check, runtime identity generation, generic helper
 dispatch, or `scripts/internal/*`; and preservation of the existing
 reset/workload-auth/readiness route boundaries.
 
-The P0s implementation/self-audit/merge-readiness slice may add exactly one
-bounded Remote Alpha internal ES service TLS helper pair and exactly two
-Mac-side recovery-session routes for ARS/AGS/ES artifact-registry mTLS status
-and renewal:
-`scripts/remote_alpha_operator.sh recovery-session es-service-tls-status
---ssh-target <target> --interactive-tty` and
-`scripts/remote_alpha_operator.sh recovery-session es-service-tls-renew
---ssh-target <target> --interactive-tty --execute-renew`. P0s may add the
-public helper `scripts/remote_alpha_es_service_tls_renew.sh` and the internal
-helper `scripts/internal/remote_alpha_es_service_tls_renew.sh`, plus static and
-fake tests for that bounded route. P0s must not run live SSH, sudo, live remote
-OpenSSL, Vault, reset/unseal, workload-auth bootstrap/check, runtime identity
-summary, Infrastructure Manager refresh, support-bundle collection, CP proof,
-SPIRE/Nomad mutation, or network-dependent integration tests.
+`Reopened redesign seam`: the P0s/P0t shared status-and-renewal helper is
+re-derived as one dedicated status-only collector. This is a bounded Remote
+Alpha evidence and repair-support refinement. The committed status/renewal
+mode switch and the blocked protected-evidence supervisor are historical
+implementation shapes, not architecture. Renewal is held; this tranche does
+not implement it, production PKI, host provisioning, automatic renewal,
+remote reconciliation, MA scheduling, IM or CP authority, governed-execution
+proof, or service restoration. The P0q legacy writer, the separate P0u hold,
+and P0v noninteractive route retain their own contracts.
 
-P0s is an ES-owned Remote Alpha proof/support helper only. It is not generic TLS
-deployment, provisioning, reconciliation, production readiness, IM authority,
-CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle, workload-auth
-bootstrap/check, or runtime identity evidence. The route is bounded to the
-internal ARS loopback artifact-registry mTLS path consumed by AGS and ES. The
-fixed covered paths are:
-`/etc/execution-substrate/ars-tls/runtime-ca.pem`,
-`/etc/execution-substrate/ars-tls/ars-server-cert.pem`,
-`/etc/execution-substrate/ars-tls/ars-server-key.pem`,
-`/etc/execution-substrate/tls/ags-client-cert.pem`,
-`/etc/execution-substrate/tls/ags-client-key.pem`,
-`/etc/execution-substrate/tls/runtime-ca.pem`,
-`/etc/execution-substrate/es-tls/artifact-registry-client-cert.pem`,
-`/etc/execution-substrate/es-tls/artifact-registry-client-key.pem`, and
-`/etc/execution-substrate/es-tls/artifact-registry-root-ca.pem`.
+`Temporary compatibility edge`: the Mac facade retains exactly
+`es-service-tls-status` and `es-governance-tls-status` with `--ssh-target`
+and visible `--interactive-tty`. They stage only
+`scripts/internal/remote_alpha_es_tls_status.py` in one invocation directory
+directly under `/tmp`, invoke one fixed source-controlled bootstrap with
+`/usr/bin/python3 -I -B -c` through visible sudo, and select respectively the fixed `artifact-registry` or
+`execution-governance` scope. The facade does not treat the TTY stream as
+machine evidence and does not copy a summary to Mac `.out`. Both
+`es-service-tls-renew` and `es-governance-tls-renew`, including
+`--execute-renew`, refuse before staging, SSH, SCP, sudo, or host contact.
+`--execute-renew` on a status route also refuses before contact. The public
+renewal wrapper refuses locally without sourcing the committed internal
+renewal helper. That internal file remains historical and undispatched.
 
-P0s must inspect the current config topology before status or renewal. It may
-proceed only when ARS, AGS, and ES config prove that ARS listens behind the
-bounded loopback artifact-registry dependency and those fixed paths are the
-paths in use for the ARS server/client-CA and AGS/ES artifact-registry client
-identity/root-CA materials. It must inspect related service-facing TLS paths
-for AGS, ES, EGS, and ARS-facing CAs. If AGS external server certs, ES external
-server certs, EGS TLS/CAs, Vault, SPIRE, Nomad, or any broader topology share a
-covered renewal path, the helper must stop with a non-secret topology blocker
-instead of guessing or broadening the renewal. P0s intentionally does not cover
-AGS external server certs, ES external server certs, EGS TLS/CAs, Vault, SPIRE,
-Nomad, workload-zone Vault config, runtime identity material, or general
-service deployment.
+The facade uses one fixed remote Python stage-creation helper. It opens the
+fixed `/tmp` parent, refuses an existing generated name, creates only that
+name with mode `0700`, immediately opens it with
+`O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, and verifies directory type, current
+caller UID/GID, mode, link rules, empty entry set, and matching parent-entry
+and descriptor identity. It closes all descriptors and emits only two strict
+unsigned decimal device/inode fields. Those fields are the
+**custody-acquisition identity**, not a claim that POSIX atomically binds
+`mkdir` to `open`. The supported operator route trusts its nonroot `ds`
+account for this fixed helper; a concurrent malicious same-UID process before
+custody acquisition is outside this operator-route trust boundary. After
+acquisition, pathname ownership alone cannot authorize observation or
+deletion: root still requires the measured identity and exact digest. A same-path replacement is refused after custody acquisition. Correct
+payload bytes cannot authorize a different directory identity or scope.
 
-P0s status mode is non-mutating. It must report public certificate metadata
-only: subject, issuer, SAN, EKU, notBefore, notAfter, expired/not-yet-valid
-status, file SHA-256, public fingerprint, and public-key fingerprint. It must
-confirm ARS/AGS/ES cert/key public-key matches without printing private keys;
-verify AGS and ES client certificates against the ARS trusted runtime/client
-CA; verify the ARS server certificate against the AGS and ES root CAs; and
-write only an optional non-secret remote evidence/projection summary at
-`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`.
+After stage creation, the nonroot facade performs no destructive stage
+cleanup. On SCP failure, sudo launch or authentication failure, transport
+failure, bootstrap rejection, or any failure before root proves custody, it
+returns nonzero, retains the stage as diagnostic residue, and emits only a
+bounded non-sensitive cleanup disposition. The stage contains only the fixed
+public collector payload and bounded metadata, never credential, host key,
+certificate, private key, config, summary, or raw child output. The fixed
+root bootstrap alone may delete a stage, after proving measured identity,
+caller UID/GID, directory metadata and entry set, exact leaf, payload
+identity, and digest. A substituted or unproved path remains residue.
+Successful root removal is followed by no facade cleanup. No automatic
+residue sweeper, wildcard cleanup, or historical-stage migration is added.
+Residue is not accepted evidence, route success, host readiness, renewal
+authority, or permission for later deletion. This bounded compatibility
+rule deliberately retains an unproved object rather than deleting it.
+Every facade setup and bootstrap stage check inspects the final staged
+entry without following it before any blocking open. FIFO, socket, symlink,
+directory, device, or other nonregular substitute is refused promptly and
+retained as diagnostic residue. Only an observed regular entry may be opened
+with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`; immediate `fstat` must match its
+pre-open device, inode, type, owner, mode, and link count. An unproved or
+failed cleanup is incomplete and preserves the previous generation.
+The facade derives an expected SHA-256 internally from its exact fixed local
+collector source; no caller supplies a digest. Its root bootstrap accepts only
+the generated stage directory, fixed collector basename, derived 64-hex digest,
+one fixed scope, and the two internally derived custody-acquisition device/inode operands.
+It verifies stage and sudo caller, inspects the leaf without
+following it, opens it with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, binds the descriptor
+to the pre-open entry, reads a bounded complete payload, and verifies its digest
+and stable identity. It transfers the exact stage to root custody, rechecks
+identity before unlink, proves the directory empty, and removes it before
+compiling and executing only the already-read bytes in memory. Root Python
+never loads an operator-writable pathname. The collector receives a
+source-visible internal bootstrap marker, latched-signal handoff, and synthetic source label; direct
+pathname invocation refuses before status reads or publication. Substitution,
+digest mismatch, and cleanup failure publish no fresh generation. There is no
+post-publication stage cleanup.
 
-P0s renewal mode requires explicit `--execute-renew` and visible
-`--interactive-tty`. The Mac-side facade must stage only the fixed public and
-internal TLS renewal helper pair, invoke only `--execute-renew` over `ssh -tt`,
-and pass no helper override flags. The helper may use OS sudo only through the
-visible remote terminal when needed. It must create a backup directory with
-non-secret metadata before replacing files, generate fresh short-lived Remote
-Alpha internal CA/cert material with future notAfter dates, install with the
-fixed ownership/mode policy `root:ars 0640` for ARS materials, `root:ags 0640`
-for AGS materials, and `root:es 0640` for ES materials, and restart only the
-bounded affected service set `ars.service`, `ags.service`, and `es.service`.
-Post-renew verification must re-run the client/server certificate verification
-checks and probe ARS `/health` over mTLS using the configured AGS and ES client
-identities. Mac-side IM health refresh remains a separate later action.
+`Bounded slice rule`: the root-run Python collector has only two immutable,
+source-controlled scope tables and no renewal mode, path override, arbitrary
+command, shell, backup, generation, install, restart, or post-renewal probe.
+P0s observes the fixed ARS server, AGS client, and ES artifact-registry client
+certificate/key/CA roles; checks ARS/AGS/ES fixed config bindings and the
+loopback ARS dependency on port 8442; matches three cert/key pairs; and
+verifies AGS/ES clients against ARS runtime CA and ARS server against the two
+client trust copies. P0t observes fixed EGS server and ES governance client
+certificate/key/CA roles; checks EGS/ES bindings, loopback EGS dependency on
+port 8443, fixed server name `server.execution-governance.internal`, and AGS
+execution-governance exclusion; matches two pairs and verifies the ES client
+against EGS runtime CA and EGS server against the ES root copy. A topology,
+certificate, key, or chain mismatch may be completed `fail` evidence. A
+collector lifecycle failure is incomplete and publishes no generation.
 
-P0s summaries are evidence/projection only. They may include schema, mode,
-paths, byte counts, certificate file SHA-256, public fingerprints, validity
-windows, verification statuses, backup metadata, restart statuses, mTLS probe
-statuses, and explicit non-claims. They must not include private key PEM
-bodies, full certificate PEM bodies, Vault tokens, root tokens, unseal keys,
-client tokens, JWT-SVIDs, API keys, passwords, proof secrets, private-key
-digests for backup material, raw secret-bearing command output, terminal
-transcripts, support-bundle content, or Mac `.out` copy-back.
+`Bounded slice rule` audit repair: a related configuration used for a fixed
+disjointness or exclusion check has a proved state. A safely absent optional
+EGS config for P0s or ARS config for P0t gives its dedicated related-config
+check `status=pass, code=absent`; affected disjointness checks may pass only
+after that absence is proved. A safely read, valid config is checked for
+overlap. A present malformed config yields completed typed
+`related_config_malformed` on its related-config and affected
+disjointness/exclusion checks, never an empty-object pass. A missing required
+config yields `config_missing` on its required-config check and on related
+disjointness/exclusion checks that depend on it. An unsafe, over-limit,
+changing, or unexpectedly unreadable config is incomplete and emits no
+completed unreadable code. These checks do not widen either scope or
+repair authority.
 
-Allowed P0s route flags are only `--help`, `--ssh-target <target>`,
-`--interactive-tty`, and `--execute-renew` for the renew route only. P0s must
-reject `--host-local`, `--dry-run`, `--check-only`, `--status`, `--apply`,
-`--execute-reset`, `--unseal-only`, `--post-unseal-check`,
-`--execute-bootstrap`, `--prepare-summary-path`,
-`--prepare-config-readability`, `--prepare-spire-bundle-read`,
-`--interactive-sudo`, `--governed-smoke-command`, helper override flags,
-TLS/config path overrides, output/summary overrides, arbitrary commands,
-unknown flags, duplicate flags, extra positional arguments, equals-form
-options, and all secret-like arguments.
+Every required or present optional config uses strict JSON: duplicate keys,
+non-finite constants (`NaN`, `Infinity`, `-Infinity`) and every parsed
+non-finite numeric value (including `1e10000`, `-1e10000`, and nested
+overflow in ignored fields), invalid UTF-8,
+trailing data, and non-object top levels are malformed. Every strict-JSON
+payload has `MAX_JSON_CONTAINER_DEPTH = 64`: a top-level
+object or array is container depth 1, each nested object or array adds 1, and
+scalars add none. Depth 64 is accepted subject to the existing schema and
+byte-size limits; depth 65 is rejected as malformed for required and present
+optional configurations. Required configurations retain `config_malformed`
+and its dependent blocker relationship; present optional configurations retain
+`related_config_malformed`, never absent/pass. An over-depth protected reader
+summary is unaccepted evidence through the controlled reader failure API,
+with no traceback or raw exception text. Decoder recursion exhaustion has the
+same controlled structural rejection. The exact summary schema still governs
+accepted-reader evidence independently of this depth ceiling.
 
-P0s validation remains fake/static only. Tests must cover status mode detecting
-expired certificates and safe fields, status mode detecting valid
-certificates, renew refusing without `--execute-renew`, renew refusing without
-`--interactive-tty` and `--ssh-target`, secret-like argument rejection, fake
-SSH/SCP staging of exactly the fixed TLS renewal public/internal helper pair,
-private key PEM bodies not printed or persisted to summaries, ownership/mode
-policy, backups before replacement, exact restart set, post-renew verification
-of AGS/ES client certs against ARS CA and ARS server cert against AGS/ES root
-CAs, and docs tests preserving non-authority and non-production claims.
+`Bounded slice rule` prior-summary refinement: the pre-run canonical target
+has three explicit private states: `ABSENT` only when the verified final leaf
+is safely absent, `VALID(generation)` when a present protected leaf yields a
+bounded generation snapshot, and `INVALID_OR_UNACCEPTED` when a present leaf
+cannot yield that snapshot and is invalid/unaccepted. A present target is never
+treated as absence.
+Every strict-JSON or snapshot-shape rejection in a present target, including
+depth, non-finite numbers, constants, duplicate keys, invalid UTF-8, trailing
+data, non-object roots, decoder exhaustion, and mixed defects in either field
+order, is
+`INVALID_OR_UNACCEPTED` regardless of which defect is detected first.
+The minimal pre-run snapshot requires the expected `schema_version`,
+`collector_contract`, `finalized=true`, `scope`, and `route` for the selected
+scope, plus a string `generation` of exactly 32 lowercase hexadecimal
+characters. This is an identity snapshot, not full accepted-reader semantic
+or freshness validation: a stale or completed-fail prior record with valid
+snapshot identity may be replaced, but the new generation must differ.
+After the one invocation-boundary process preflight and status-lock acquisition,
+`INVALID_OR_UNACCEPTED` makes the current attempt incomplete before any status
+collection, material read, OpenSSL spawn, or publication setup. No new
+generation replaces the prior canonical bytes or metadata identity. Unsafe
+type, identity, or read failure remains incomplete under the protected-leaf
+rule. No raw exception text or new public evidence code is emitted.
+Every configured
+certificate, key, or CA path that participates in topology must be an
+absolute lexical canonical POSIX material path. `/` is not material; NUL,
+empty, `.`, or `..` components, repeated separators, and trailing separators
+are rejected. A value must equal its own lexical normalization. A
+noncanonical present config receives its governed malformed typed result;
+expected-path and disjointness checks compare only accepted canonical
+values, never raw aliases or host `realpath`.
 
-The P0t implementation/self-audit/merge-readiness slice may extend the
-existing bounded Remote Alpha internal ES service TLS helper pair with exactly
-one additional fixed scope and exactly two Mac-side recovery-session routes for
-the ES -> EGS execution-governance trust-model mTLS path:
-`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-status
---ssh-target <target> --interactive-tty` and
-`scripts/remote_alpha_operator.sh recovery-session es-governance-tls-renew
---ssh-target <target> --interactive-tty --execute-renew`. P0t reuses only the
-existing public helper `scripts/remote_alpha_es_service_tls_renew.sh` and the
-existing internal helper `scripts/internal/remote_alpha_es_service_tls_renew.sh`
-with a fixed `--scope execution-governance` helper invocation. It must not add
-a new generic helper dispatcher, helper path override, or deployment
-reconciliation surface. P0t validation remains fake/static only and must not
-run live SSH, sudo, live remote OpenSSL, Vault, reset/unseal, workload-auth
-bootstrap/check, runtime identity summary, Infrastructure Manager refresh,
-support-bundle collection, CP proof, SPIRE/Nomad mutation, or
-network-dependent integration tests.
+The protected status contract is
+`execution-substrate.remote-alpha.es-tls-status-evidence/v1`. Pre-existing
+`/var/lib/execution-substrate-remote-alpha`, its `v1` child, and `v1/status`
+must each be real root:root `0755` directories with no symlink, unsafe access,
+or unresolved ACL/equivalent state. The collector never creates a missing
+protected directory; host preparation is separate. It publishes only:
 
-P0t is an ES-owned Remote Alpha proof/support helper extension only. It is not
-generic TLS deployment, provisioning, reconciliation, production readiness, IM
-authority, CP authority, Vault lifecycle, SPIRE lifecycle, Nomad lifecycle,
-workload-auth bootstrap/check, runtime identity evidence, or a redesign of EGS
-trust-model semantics. The route is bounded to the internal EGS loopback
-execution-governance mTLS path consumed by ES when ES fetches the current EGS
-`GET /v1/trust-model` compatibility surface. The fixed covered paths are:
-`/etc/execution-substrate/egs-tls/egs-server-cert.pem`,
-`/etc/execution-substrate/egs-tls/egs-server-key.pem`,
-`/etc/execution-substrate/egs-tls/runtime-ca.pem`,
-`/etc/execution-substrate/es-tls/execution-governance-client-cert.pem`,
-`/etc/execution-substrate/es-tls/execution-governance-client-key.pem`, and
-`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`.
+- `/var/lib/execution-substrate-remote-alpha/v1/status/es-service-tls-status-summary.json`
+  with `execution-substrate.remote-alpha.es-service-tls-status-summary.v1`;
+- `/var/lib/execution-substrate-remote-alpha/v1/status/es-governance-tls-status-summary.json`
+  with `execution-substrate.remote-alpha.es-governance-tls-status-summary.v1`.
 
-P0t must inspect the current config topology before status or renewal. It may
-proceed only when EGS config proves the server cert/key and client CA are the
-fixed EGS-readable TLS paths above, ES config proves
-`dependencies.execution_governance.base_url` is the bounded loopback EGS route
-on port `8443`, ES config proves the fixed ES execution-governance client
-identity/root-CA paths above plus `server_name` of
-`server.execution-governance.internal`, and AGS config has no
-execution-governance dependency. The current EGS trusted client CA is the same
-runtime CA file at `/etc/execution-substrate/egs-tls/runtime-ca.pem`; the ES
-execution-governance root CA is the ES-readable copy of that trust root at
-`/etc/execution-substrate/es-tls/execution-governance-root-ca.pem`. Any AGS
-client-to-EGS material is out of scope for P0t. If config shows AGS
-client-to-EGS material, shared paths with ARS/AGS/ES external TLS, Vault,
-SPIRE, Nomad, workload-zone Vault config, runtime identity material, or any
-broader topology sharing a covered renewal path, the helper must stop with a
-non-secret topology blocker instead of guessing or broadening the renewal.
+Existing targets must be root:root `0644`, regular, single-link, no-follow,
+without unsafe access or unresolved extended access. Records are at most one
+MiB. Separate persistent same-scope status locks in the verified status
+directory are `.es-service-tls-status.lock` and
+`.es-governance-tls-status.lock`, root:root `0600`, regular, single-link,
+opened with `O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC` and acquired by
+`flock(LOCK_EX|LOCK_NB)`. Same-scope contention is incomplete; different
+scopes may proceed. Status never creates or uses `private-backups`.
 
-P0t status mode is non-mutating. It must report public certificate metadata
-only: subject, issuer, SAN, EKU, notBefore, notAfter, expired/not-yet-valid
-status, file SHA-256, public fingerprint, and public-key fingerprint. It must
-confirm ES execution-governance client cert/key and EGS server cert/key
-public-key matches without printing private keys; verify the ES client
-certificate against the EGS trusted runtime/client CA; verify the EGS server
-certificate against the ES execution-governance root CA; and write only an
-optional non-secret remote evidence/projection summary at
-`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`.
+The collector contract identifier is
+`execution-substrate.remote-alpha.es-tls-status-collector/v1`. Every
+completed record has the exact scope schema, route, a random 128-bit
+lowercase-hex generation, UTC `checked_at`, `finalized=true`, fixed role and
+topology check arrays, typed blocker codes, consistent `result.status` and
+`result.ok`, explicit false renewal/backup/generation/install/restart/probe
+non-effect flags, and redaction flags. No raw config, OpenSSL output, private
+key, private-key digest, environment value, arbitrary path, command string,
+backup, or rollback metadata enters the record. Fixed public certificate
+paths may appear only as part of the source-controlled scope contract.
 
-P0t renewal mode requires explicit `--execute-renew` and visible
-`--interactive-tty`. The Mac-side facade must stage only the fixed public and
-internal TLS renewal helper pair, invoke only `--scope execution-governance`
-plus `--execute-renew` over `ssh -tt`, and pass no helper override flags. The
-helper may use OS sudo only through the visible remote terminal when needed. It
-must create a backup directory with non-secret metadata before replacing files,
-generate fresh short-lived Remote Alpha internal EGS runtime CA/cert material
-with future notAfter dates, install with the fixed ownership/mode policy
-`root:egs 0640` for EGS TLS material and `root:es 0640` for ES
-execution-governance client/root material, and restart only the bounded
-affected service set `egs.service` and `es.service`. Post-renew verification
-must re-run the client/server certificate verification checks and probe EGS
-`/v1/trust-model` over mTLS using the configured ES execution-governance
-client identity. If safe in fake/static validation, the helper should also
-record that `es.service` is active after restart. Mac-side IM health refresh
-remains a separate later action.
+Before status work, the root bootstrap verifies its exact one-file staged
+invocation directory, owner/mode/type/link/descriptor identity and fixed `ds`
+nonroot sudo caller,
+transfers the verified directory to root custody, then unlinks that file
+and removes that directory through verified handles.
+Unprovable cleanup or a latched catchable signal aborts before any protected
+status operation. It creates no later `/tmp` scratch. Fixed OpenSSL children
+run one at a time with absolute argv, no shell, bounded concurrent pipe reads,
+timeout, TERM-then-KILL, complete reap, typed parsing, no lock inheritance,
+and no raw output in evidence. Each successfully spawned child enters a
+cleanup owner immediately: selector construction/registration, nonblocking
+setup, collection, parsing, timeout, signaling, wait/poll, and ordinary
+exceptions all terminate and reap it before incomplete return. Signaling
+errors require identity-safe same-group member disposition, never a
+direct-child-only fallback; no live fixed child or process group may be left
+by a returned attempt. After bootstrap stage removal and status-lock acquisition, before required
+or optional status config, certificate, key, trust-anchor, or protected prior
+summary reads and before any OpenSSL spawn, exactly one invocation-boundary
+process-capability probe uses one fixed internal fork child to prove nonreaping
+`waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)`, subsequent exact reap, and
+pidfd/proc member operations by behavior. The probe child closes inherited
+descriptors, including the status lock, before waiting for its fixed release;
+it is reaped on every
+path; unavailable or indeterminate capability is incomplete before spawn.
+A successful probe grants invocation-local capability state reused by every
+fixed OpenSSL command. Each child command refuses without that state and never
+forks another probe. A failed probe reads no status input, spawns no OpenSSL
+child, publishes no generation, and leaves no probe descriptor or process.
+On group signal failure it enumerates only members of the reserved
+leader PGID, acquires pidfds, revalidates identity and membership, signals
+members through pidfds, and repeats bounded scans until nonleader members are
+proved gone. An individual member error does not skip other identity-proved
+members in that scan. If group and member signaling remain unproved, it holds the leader
+unreaped with lifecycle ownership and status lock retained and publishes no
+generation. Every ordinary `Exception` from membership scanning, pidfd
+acquisition, identity revalidation, signaling, polling, waiting, or
+cleanup-state reporting is contained in the unresolved-cleanup hold. A
+one-shot runtime fault is retried; a persistent fault retains the invocation
+and status lock with bounded backoff. No outer retry may return or publish
+until group absence and exactly one direct-child reap are proved. No
+unrelated process is signaled. Group TERM and KILL
+occur while the child remains unreaped and its PID reserved; cleanup never
+signals a process group after reaping, when that PID could already have been
+reused. Terminal detection uses nonreaping `waitid` with `WNOWAIT`, including
+through the target's C runtime when Python does not expose it; the syscall and
+group-disposition behavior must be proved, not inferred from an OS label.
+The collector retains the leader's reserved PID through bounded TERM/KILL
+disposition, even if its return code is known. After direct-child reap, only
+a non-signaling identity-based proc group scan may run; no numeric process-group
+signal occurs then. A zombie-only group may remain visible before reap; the
+post-reap non-signaling absence check holds fail-closed until absence is proved
+before a returned attempt. Post-exit wait/poll
+or other lifecycle failure still disposes of descendants with the leader
+reserved. An unavailable or indeterminate capability is incomplete and
+publishes no new generation. It never switches to a weaker command or
+process-cleanup mode. For each
+fixed command, only
+explicitly admitted C-locale whole responses (exit status, stdout, stderr)
+can produce completed success or typed material failure. Extra or mixed
+lines, unknown nonzero output, signal exit, output overflow, or runtime
+OpenSSL grammar drift are incomplete.
 
-P0t summaries are evidence/projection only. They may include schema, scope,
-mode, paths, byte counts, certificate file SHA-256, public fingerprints,
-validity windows, verification statuses, backup metadata, service restart
-statuses, mTLS trust-model probe statuses, ES service active status, and
-explicit non-claims. They must not include private key PEM bodies, full
-certificate PEM bodies, Vault tokens, root tokens, unseal keys, client tokens,
-JWT-SVIDs, API keys, passwords, proof secrets, private-key backup digests, raw
-secret-bearing command output, terminal transcripts, support-bundle content, or
-Mac `.out` copy-back.
+Fixed config, certificate, and key inputs use verified no-follow ancestor and
+leaf descriptors. The final entry is inspected without following it before
+any blocking read open. FIFO, socket, symlink, directory, device, and every
+other nonregular type are rejected without blocking. Only a prechecked regular
+entry is opened with `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, then immediately
+`fstat`-matched on device, inode, type, owner, mode, link count, and governed
+metadata before bounded reading. A swap to another regular file or unsupported
+type fails closed. Only an absent final leaf beneath proved safe ancestry is
+a completed missing result; unsafe ancestry, type, permission denial, metadata
+failure, and race are incomplete. A bounded read
+captures immutable bytes from the verified descriptor. Each OpenSSL metadata,
+SAN/EKU, key, and verify operation consumes a fresh anonymous pipe carrying
+those exact bytes, never the original mutable pathname. Transient key bytes
+exist only to feed the fixed OpenSSL child; they and any key digest are never
+published or retained after that check. The fixed public path is an evidence
+label, while `/dev/stdin` is the leaf/key invocation operand and the selected
+CA is a single inherited `/dev/fd/<n>` operand. Pipe setup or target descriptor
+support failure is incomplete and creates no retained scratch.
+Every P0s/P0t CA-role input is exactly one selected PEM `CERTIFICATE` block
+with only bounded ASCII whitespace around it. Zero or multiple certificates,
+another PEM block, or non-whitespace outside the block yields completed
+`trust_anchor_count_mismatch` with null certificate metadata and
+`certificate_unavailable` for dependent verification. The fixed `-trusted`
+descriptor receives those same observed single-anchor bytes; a later anchor
+in the file cannot rescue a wrong first anchor. This v1 status schema does
+not call the selected input a bundle. Bundle support requires a separately
+versioned trust-set and reader decision.
 
-Allowed P0t route flags are only `--help`, `--ssh-target <target>`,
-`--interactive-tty`, and `--execute-renew` for the renew route only. P0t must
-reject `--host-local`, `--dry-run`, `--check-only`, `--status`, `--scope`,
-`--apply`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`,
-`--execute-bootstrap`, `--prepare-summary-path`,
-`--prepare-config-readability`, `--prepare-spire-bundle-read`,
-`--interactive-sudo`, `--governed-smoke-command`, helper override flags,
-TLS/config path overrides, output/summary overrides, arbitrary commands,
-unknown flags, duplicate flags, extra positional arguments, equals-form
-options, and all secret-like arguments.
+The exact client command is `/usr/bin/openssl verify -trusted <selected-ca-fd>
+-purpose sslclient /dev/stdin`; the exact server command adds
+`-purpose sslserver -verify_hostname <fixed-server-name> /dev/stdin` after
+`-trusted <selected-ca-fd>`. Both use `shell=False`, one fixed minimal child
+environment with `LC_ALL=C` and no inherited OpenSSL/trust/config overrides,
+and no `-CAfile`, `-CApath`, `-CAstore`, or `-untrusted`. `-trusted` selects
+only the scope's anchor; ambient default trust cannot rescue a wrong selected
+anchor. Unsupported `-verify_hostname`, `/dev/fd`, or other exact-command
+capability is incomplete. Positive target support belongs to later host
+preflight, not this local repair.
 
-P0t validation remains fake/static only. Tests must cover status mode detecting
-expired EGS/ES execution-governance certificates, status mode detecting valid
-EGS/ES execution-governance certificates, renew refusing without
-`--execute-renew`, renew refusing without `--interactive-tty` and
-`--ssh-target`, secret-like argument rejection, fake SSH/SCP tests proving
-exactly the fixed public/internal TLS renewal helper pair is staged, fake renew
-tests proving private key PEM bodies are not printed or persisted to summaries,
-fake renew tests proving owner/group/mode policy, fake renew tests proving
-backups are made before replacement, fake renew tests proving services to
-restart are exactly `egs.service` and `es.service`, fake post-renew
-verification exercising the ES -> EGS trust-model TLS path, docs tests
-preserving non-authority/non-production/non-IM/non-CP claims, and preservation
-of existing P0s ARS/AGS/ES artifact-registry TLS tests.
+The admitted `verify` response is an anchored whole tuple. Success is exit
+zero, empty stderr, and exactly `/dev/stdin: OK\n` on stdout. A bounded
+LibreSSL-shaped failure has exit 2 and empty stderr. For each of the four P0s
+expiry fixtures, stdout is exactly three
+repetitions of `CN = Remote Alpha Internal Runtime Root CA\nerror 10 at 1 depth lookup:certificate has expired\n`, then
+`CN = <DNS token>\nerror 10 at 0 depth lookup:certificate has expired\n`,
+then `/dev/stdin: verification failed: 10 (certificate has expired)\n`.
+For the not-yet-valid server fixture, stdout is exactly
+`CN = <DNS token>\nerror 9 at 0 depth lookup:certificate is not yet valid\n/dev/stdin: verification failed: 9 (certificate is not yet valid)\n`.
+The bounded wrong-anchor failure has the same LibreSSL-shaped three-line
+stdout grammar with code 20 and `unable to get local issuer certificate`.
+An OpenSSL-3-shaped failure has exit 2, empty stdout, and stderr exactly
+`CN=<DNS token>\nerror <code> at 0 depth lookup: <reason>\nerror /dev/stdin: verification failed\n`,
+where only `(20, unable to get local issuer certificate)` and
+`(62, hostname mismatch)` are admitted. Hostname mismatch is a completed
+`chain_failed` only under that exact tuple. `<DNS token>` is
+`[A-Za-z0-9.-]+`; no warning, extra line, unknown exit, or unadmitted
+response can produce a completed result. These narrow tuples are not a
+general certificate-error parser; target grammar remains a host-preflight
+fact.
 
-P0t remains bounded ES Remote Alpha proof/support workflow glue only. It is
-not generic TLS deployment, not Infrastructure Manager reconciliation, not
-Control Plane authority, not Vault/SPIRE/Nomad authority, not EGS trust-model
-redesign, not production readiness, and not Remote Alpha production,
-deployment, provisioning, or reconciliation architecture.
+`Current invariant` evidence boundary: completed `pass` and typed completed
+`fail` are both valid observations; interrupted, timed-out, overflowed,
+uncertain, or internally failed collection publishes nothing new. The
+collector finishes stage cleanup, children, encoding, size checks, temporary
+write/fsync, mode/identity and existing-target checks before publication. It
+latches HUP/INT/QUIT/TERM without asynchronous raise or I/O, blocks those
+signals before final replacement, and refuses a latched or pending signal.
+Every operation after successful exclusive temporary creation, including the
+first `fstat`, is owned by pre-replacement cleanup. On failure the collector
+closes the descriptor and unlinks only a revalidated invocation-owned
+temporary; if ownership cannot be proved it leaves bounded protected
+diagnostic residue. The previous canonical generation remains unchanged.
+Successful `os.replace` through the verified status-directory handle is the
+last evidence operation and is followed immediately by `os._exit(0)`. There
+is no required cleanup, callback, directory fsync, verification, or machine
+output after replacement. This gives atomic visible evidence, not crash
+durability; after reboot or uncertain persistence a new observation is needed.
+Collector exit zero means a completed record was published, not that TLS
+passed. Route acknowledgment is separate from the record.
+
+A reader accepts a record only after descriptor-first ancestry and canonical
+file validation (root:root `0644`, regular, single-link, no symlink, bounded
+size, no unresolved ACL), exact schema and collector id, `finalized=true`,
+strict JSON decoding that rejects duplicate keys, non-finite constants,
+and parsed non-finite numeric values,
+matching route/scope, a 32-character lowercase-hex generation different from
+the pre-run snapshot, UTC `checked_at` at most five minutes old and at most
+thirty seconds in the future, exact fields/roles/cardinalities/enums,
+consistent result and non-effect flags, and no unknown fields. A completed
+`fail` is accepted failure evidence; an unchanged generation cannot satisfy a
+new attempt. Route exit plus file presence is insufficient. No monitor or
+scheduler gains authority here.
+Publication existing-target checks, pre-run generation snapshots, and accepted
+reader reads use one shared canonical-summary primitive. After verified
+no-follow parent ancestry it inspects the final entry without following it,
+rejects nonregular or unsafe metadata before a read-open, and opens only an
+observed regular leaf with `O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`.
+Immediate `fstat` must match inspected identity and governed metadata. The
+bounded descriptor read must be complete and stable, with post-read descriptor
+and pathname identity checks. FIFO and regular-to-FIFO, symlink, or
+different-regular swaps refuse without blocking. Only a safely absent leaf
+uses the governed absent behavior; incomplete checks publish no generation.
+
+`Bounded slice rule` reader refinement: collector self-validation and a later
+reader use the same exact semantic table. The actual certificate schema has
+no `exists` field. A securely parsed certificate has valid UTC
+`not_before`/`not_after` with `not_before <= not_after`, all five SHA-256
+metadata fields, and role-appropriate SAN/EKU flags; a missing or malformed
+certificate has null date, digest, and role-flag metadata. Unsafe or
+unprovable certificate/key reads are incomplete and emit no completed
+unreadable code.
+One UTC `checked_at` is captured for the entire observation. `expired` is
+exactly `checked_at > not_after`; `not_yet_valid` is exactly
+`checked_at < not_before`; equality at either boundary is valid. Each
+certificate status/code must agree with those predicates and its role flags.
+Fixed role/path/label and key-pair/verification relationships, per-check code
+vocabularies, nested field sets, and the exact blocker set must agree with
+aggregate pass/fail and `ok`. Contradiction or unknown nested data is
+incomplete before publication or reader acceptance.
+
+Legacy `/var/tmp/execution-substrate-remote-alpha/*tls*summary*.json`, old
+`*-renew-summary.json`, blocked-candidate protected summaries, and old backup
+directories are historical only: no read as current status, migration, copy,
+overwrite, symlink, fallback, renewal, or rollback authority. The blocked
+candidate is design evidence and is not the implementation base. Validation
+is local static/fake only; no live SSH, sudo, host certificate/key/config read,
+service operation, Docker, Nomad, IM, CP, or host preparation is allowed.
 
 The P0u implementation/self-audit/merge-readiness slice may add exactly one
 bounded Remote Alpha host-local operator healthcheck client TLS helper pair and
@@ -1597,10 +1760,11 @@ profile or operator alias conforms to that still-open static subset.
 
 `Temporary compatibility edge`: the operator-owned
 `host_to_remote_linux_m75q` alias and the existing operator routes' explicit
-`--ssh-target` arguments remain unchanged. The current committed P0t
-`es-governance-tls-status`/`es-governance-tls-renew` routes stay bounded
-interactive proof/support routes with their fixed helper pair; P0v remains a
-separate TLS-specific noninteractive status route. Neither is the new access
+`--ssh-target` arguments remain unchanged. The P0s
+`es-service-tls-status` and P0t `es-governance-tls-status` names are
+interactive status-only compatibility edges using the one dedicated
+collector; both renewal counterparts are held before contact. P0v remains a
+separate TLS-specific noninteractive status route. None is the new access
 check or an authority for its SSH profile semantics.
 
 Tranche A fixes the target separation between operator and monitor profiles,
@@ -1670,10 +1834,9 @@ Remote Alpha maintenance route eligibility is fixed for this planning slice:
 `es-service-tls-status`, `es-governance-tls-status`,
 `operator-healthcheck-tls-status`, binary deployment check, workload-auth
 check, and runtime identity summary are read-only monitor-eligible;
-`es-service-tls-renew` and `es-governance-tls-renew` are operator-approved now
-and future automatic-renewal candidates only after route-specific docs, tests,
-audit, idempotence, backup-before-replace, post-verify, fail-closed behavior,
-and no secrets in monitor-controlled surfaces are all present;
+`es-service-tls-renew` and `es-governance-tls-renew` are held and have no
+monitor or scheduled eligibility until a separate route-specific design, tests,
+audit, authorization, and repair contract exist;
 `operator-healthcheck-tls-renew` remains blocked/status-only until a signing
 topology and operator/local identity renewal authority are documented; binary
 deployment apply and workload-auth bootstrap are not monitor auto-renewal
