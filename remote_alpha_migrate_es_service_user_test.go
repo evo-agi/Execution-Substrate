@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -34,16 +35,217 @@ type esServiceUserMigrationFixture struct {
 	TLSDir                   string
 	StagingRoot              string
 	ResultsRoot              string
+	BackupRoot               esServiceUserTestBackupRoot
 }
 
-func runSourcedESServiceUserMigrationHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
+type esServiceUserTestBackupRoot struct {
+	fixtureRoot string
+	path        string
+}
+
+func newESServiceUserTestBackupRoot(t *testing.T, fixtureRoot string) esServiceUserTestBackupRoot {
 	t.Helper()
+	backup := esServiceUserTestBackupRoot{fixtureRoot: fixtureRoot, path: filepath.Join(fixtureRoot, "backups")}
+	if err := os.Chmod(fixtureRoot, 0o700); err != nil {
+		t.Fatalf("make test temporary root private: %v", err)
+	}
+	if err := os.Mkdir(backup.path, 0o700); err != nil {
+		t.Fatalf("create fixture backup root: %v", err)
+	}
+	requireESServiceUserTestBackupRoot(t, backup)
+	return backup
+}
+
+func requireESServiceUserTestBackupRoot(t *testing.T, backup esServiceUserTestBackupRoot) {
+	t.Helper()
+	if !filepath.IsAbs(backup.fixtureRoot) || !filepath.IsAbs(backup.path) {
+		t.Fatal("fixture backup paths must be absolute")
+	}
+	rel, err := filepath.Rel(backup.fixtureRoot, backup.path)
+	if err != nil || rel != "backups" {
+		t.Fatal("fixture backup root must be a direct child of the test temporary root")
+	}
+	for _, path := range []string{backup.fixtureRoot, backup.path} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("stat fixture backup boundary: %v", err)
+		}
+		metadata, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || metadata.Uid != uint32(os.Geteuid()) || info.Mode().Perm() != 0o700 {
+			t.Fatal("fixture backup boundary must be a nonsymlink current-user-owned mode-0700 directory")
+		}
+	}
+}
+
+func esServiceUserTestChildEnv(t *testing.T, backup esServiceUserTestBackupRoot, env []string) []string {
+	t.Helper()
+	requireESServiceUserTestBackupRoot(t, backup)
+	mutationLogPath := filepath.Join(backup.fixtureRoot, "mutations.log")
+	child := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatal("malformed fixture helper environment entry")
+		}
+		if key == "REMOTE_ALPHA_TEST_BACKUP_ROOT" {
+			continue
+		}
+		if key == "REMOTE_ALPHA_TEST_MUTATION_LOG_PATH" {
+			continue
+		}
+		child = append(child, entry)
+	}
+	child = append(child,
+		"REMOTE_ALPHA_TEST_BACKUP_ROOT="+backup.path,
+		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
+	)
+	for key, want := range map[string]string{
+		"REMOTE_ALPHA_TEST_BACKUP_ROOT":       backup.path,
+		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH": mutationLogPath,
+	} {
+		count := 0
+		for _, entry := range child {
+			name, value, _ := strings.Cut(entry, "=")
+			if name == key {
+				count++
+				if value != want {
+					t.Fatalf("fixture helper environment has a wrong %s value", key)
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("fixture helper environment must contain exactly one %s", key)
+		}
+	}
+	return child
+}
+
+func requireNoESServiceUserTestMutationLog(t *testing.T, backup esServiceUserTestBackupRoot) {
+	t.Helper()
+	path := filepath.Join(backup.fixtureRoot, "mutations.log")
+	if _, err := os.Lstat(path); err == nil {
+		t.Fatal("fixture mutation command log must remain absent")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("cannot verify fixture mutation command log absence: %v", err)
+	}
+}
+
+func requireESServiceUserTestBackupEntries(t *testing.T, backup esServiceUserTestBackupRoot, want int, entryMode os.FileMode) string {
+	t.Helper()
+	requireESServiceUserTestBackupRoot(t, backup)
+	if want != 0 && want != 1 {
+		t.Fatal("fixture backup count must be zero or one")
+	}
+	entries, err := os.ReadDir(backup.path)
+	if err != nil {
+		t.Fatalf("read fixture backup root: %v", err)
+	}
+	if len(entries) != want {
+		t.Fatalf("fixture backup root contains %d entries, want %d", len(entries), want)
+	}
+	if want == 0 {
+		return ""
+	}
+	path := filepath.Join(backup.path, entries[0].Name())
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat fixture backup: %v", err)
+	}
+	metadata, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || metadata.Uid != uint32(os.Geteuid()) || info.Mode().Perm() != entryMode {
+		t.Fatalf("fixture backup entry must be a current-user-owned nonsymlink mode-%04o directory", entryMode)
+	}
+	return path
+}
+
+func requireESServiceUserTestReportedBackup(t *testing.T, backup esServiceUserTestBackupRoot, reported string, entryMode os.FileMode) string {
+	t.Helper()
+	actual := requireESServiceUserTestBackupEntries(t, backup, 1, entryMode)
+	if reported != actual || strings.HasPrefix(reported, "/var/tmp/execution-substrate-remote-alpha") {
+		t.Fatal("reported backup path escaped the fixture-owned backup root")
+	}
+	return actual
+}
+
+func requireESServiceUserTestBackupArtifact(t *testing.T, backupDir, reported, relative string, mode os.FileMode, directory bool) {
+	t.Helper()
+	if relative == "" || filepath.IsAbs(relative) || strings.HasPrefix(relative, "..") || reported != filepath.Join(backupDir, relative) {
+		t.Fatal("reported backup artifact path escaped its fixture backup directory")
+	}
+	path := backupDir
+	parts := strings.Split(relative, string(os.PathSeparator))
+	for index, part := range parts {
+		path = filepath.Join(path, part)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("stat fixture backup artifact: %v", err)
+		}
+		metadata, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || info.Mode()&os.ModeSymlink != 0 || metadata.Uid != uint32(os.Geteuid()) {
+			t.Fatal("fixture backup artifact must be current-user-owned and nonsymlink")
+		}
+		if index == len(parts)-1 {
+			if info.IsDir() != directory || (!directory && !info.Mode().IsRegular()) || info.Mode().Perm() != mode {
+				t.Fatalf("fixture backup artifact has unexpected type or mode; want %04o", mode)
+			}
+		} else if !info.IsDir() {
+			t.Fatal("fixture backup artifact parent must be a directory")
+		}
+	}
+}
+
+func requireESServiceUserTestBackupField(t *testing.T, backup map[string]any, field string) string {
+	t.Helper()
+	value, ok := backup[field].(string)
+	if !ok || value == "" {
+		t.Fatalf("fixture backup report is missing %s", field)
+	}
+	return value
+}
+
+func requireESServiceUserMigrationBackupReport(t *testing.T, fixture esServiceUserMigrationFixture, summary map[string]any) {
+	t.Helper()
+	backup := nestedMap(t, summary, "backup")
+	backupDir := requireESServiceUserTestReportedBackup(t, fixture.BackupRoot, requireESServiceUserTestBackupField(t, backup, "path"), 0o700)
+	requireESServiceUserTestBackupArtifact(t, backupDir, requireESServiceUserTestBackupField(t, backup, "snapshot_path"), "pre-apply-snapshot.json", 0o644, false)
+	requireESServiceUserTestBackupArtifact(t, backupDir, requireESServiceUserTestBackupField(t, backup, "config_backup_path"), "es.json", 0o600, false)
+	requireESServiceUserTestBackupArtifact(t, backupDir, requireESServiceUserTestBackupField(t, backup, "service_unit_backup_dir"), "systemd", 0o755, true)
+	requireESServiceUserTestBackupArtifact(t, backupDir, requireESServiceUserTestBackupField(t, backup, "dropin_backup_dir"), "dropins", 0o755, true)
+	requireESServiceUserTestBackupArtifact(t, backupDir, filepath.Join(backupDir, "systemd", "es.service"), filepath.Join("systemd", "es.service"), 0o644, false)
+}
+
+func requireESServiceUserFixtureLiveRoots(t *testing.T, fixture esServiceUserMigrationFixture, uid, gid int, mode uint32) {
+	t.Helper()
+	for _, path := range []string{fixture.StagingRoot, fixture.ResultsRoot} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("stat fixture live root %s: %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("fixture live root %s is not a directory: %s", path, info.Mode())
+		}
+		statInfo, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatalf("fixture live root %s has no UID/GID stat metadata", path)
+		}
+		actualMode := uint32(statInfo.Mode) & 0o7777
+		if statInfo.Uid != uint32(uid) || statInfo.Gid != uint32(gid) || actualMode != mode {
+			t.Fatalf("fixture live root %s: got UID:GID %d:%d mode %04o; want %d:%d mode %04o", path, statInfo.Uid, statInfo.Gid, actualMode, uid, gid, mode)
+		}
+	}
+}
+
+func runSourcedESServiceUserMigrationHelper(t *testing.T, backup esServiceUserTestBackupRoot, wantBackups int, env []string, shellBody string) ([]byte, error) {
+	t.Helper()
+	requireESServiceUserTestBackupEntries(t, backup, 0, 0)
 	helperPath := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_migrate_es_service_user.sh")
 	script := fmt.Sprintf("set -euo pipefail\nsource %q\n%s\n", helperPath, shellBody)
 	cmd := exec.Command("/bin/bash", "-c", script)
 	cmd.Dir = executionSubstrateRepoRoot
-	cmd.Env = env
-	return cmd.CombinedOutput()
+	cmd.Env = esServiceUserTestChildEnv(t, backup, env)
+	output, err := cmd.CombinedOutput()
+	requireESServiceUserTestBackupEntries(t, backup, wantBackups, 0o700)
+	return output, err
 }
 
 func esServiceUserMigrationExpectedSliceShell(f esServiceUserMigrationFixture) string {
@@ -71,6 +273,7 @@ func setupESServiceUserMigrationFixture(t *testing.T, tmpDir string) esServiceUs
 		TLSDir:                   filepath.Join(tmpDir, "tls"),
 		StagingRoot:              filepath.Join(tmpDir, "state", "staging"),
 		ResultsRoot:              filepath.Join(tmpDir, "state", "results"),
+		BackupRoot:               newESServiceUserTestBackupRoot(t, tmpDir),
 	}
 	spireDir, err := os.MkdirTemp("/tmp", "es-spire-")
 	if err != nil {
@@ -94,6 +297,17 @@ func setupESServiceUserMigrationFixture(t *testing.T, tmpDir string) esServiceUs
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+
+	fakeESUID, fakeESGID := os.Getuid(), os.Getgid()
+	for _, root := range []string{fixture.StagingRoot, fixture.ResultsRoot} {
+		if err := os.Chown(root, fakeESUID, fakeESGID); err != nil {
+			t.Fatalf("set fixture live root %s owner to fake es identity %d:%d: %v", root, fakeESUID, fakeESGID, err)
+		}
+		if err := os.Chmod(root, 0o755); err != nil {
+			t.Fatalf("set fixture live root %s mode 0755: %v", root, err)
+		}
+	}
+	requireESServiceUserFixtureLiveRoots(t, fixture, fakeESUID, fakeESGID, 0o755)
 
 	if err := os.WriteFile(fixture.ESBinaryPath, []byte("binary\n"), 0o755); err != nil {
 		t.Fatalf("write ES binary: %v", err)
@@ -543,7 +757,7 @@ func TestRemoteAlphaESServiceUserMigrationCheckOnlyIsDefaultAndNonMutating(t *te
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin, "REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin, "REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath), shellBody)
 	if err != nil {
 		t.Fatalf("helper failed: %v\noutput=%s", err, string(output))
 	}
@@ -589,7 +803,7 @@ func TestRemoteAlphaESServiceUserMigrationMissingAccountBlocksApplyReadiness(t *
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for missing es account, got success\noutput=%s", output)
 	}
@@ -624,7 +838,7 @@ func TestRemoteAlphaESServiceUserMigrationBroadAccountBlocksApplyReadiness(t *te
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for broad es account, got success\noutput=%s", output)
 	}
@@ -662,7 +876,7 @@ func TestRemoteAlphaESServiceUserMigrationConfigTLSUnreadableBlocks(t *testing.T
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for unreadable TLS path, got success\noutput=%s", output)
 	}
@@ -708,7 +922,7 @@ func TestRemoteAlphaESServiceUserMigrationTargetStartupValidationBlocksOnUnreada
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for target startup validation, got success\noutput=%s", output)
 	}
@@ -748,7 +962,7 @@ func TestRemoteAlphaESServiceUserMigrationHelperPrivateSPIRERuntimeInputBlocksWh
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for missing helper-private SPIRE runtime input, got success\noutput=%s", output)
 	}
@@ -793,7 +1007,7 @@ func TestRemoteAlphaESServiceUserMigrationWritableStateNotManageableBlocks(t *te
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for unmanageable writable-state roots, got success\noutput=%s", output)
 	}
@@ -826,7 +1040,7 @@ func TestRemoteAlphaESServiceUserMigrationActiveRunsPresentBlocks(t *testing.T) 
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for active-or-unknown runs, got success\noutput=%s", output)
 	}
@@ -857,7 +1071,7 @@ func TestRemoteAlphaESServiceUserMigrationFutureCheckerBlockersBlock(t *testing.
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for future checker blockers, got success\noutput=%s", output)
 	}
@@ -905,7 +1119,7 @@ exit 1
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker exit for staging/results owner-model mismatch, got success\noutput=%s", output)
 	}
@@ -940,7 +1154,7 @@ func TestRemoteAlphaESServiceUserMigrationPlanKeepsCompatibilityEdges(t *testing
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + `
 remote_alpha_migrate_es_service_user_main --check-only
 `
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("helper failed: %v\noutput=%s", err, string(output))
 	}
@@ -999,7 +1213,7 @@ func TestRemoteAlphaESServiceUserMigrationApplyCreatesBackupAndOnlyWritesDropIn(
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_migrate_es_service_user_main --apply --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+backupSentinelPath,
 		"REMOTE_ALPHA_TEST_BACKUP_PATH_FILE="+backupPathFile,
@@ -1030,6 +1244,7 @@ remote_alpha_migrate_es_service_user_main --apply --summary-path %q
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESServiceUserMigrationBackupReport(t, fixture, summary)
 	if nestedMap(t, summary, "result")["ok"] != true {
 		t.Fatalf("expected successful apply summary, got %+v", nestedMap(t, summary, "result"))
 	}
@@ -1080,7 +1295,7 @@ func TestRemoteAlphaESServiceUserMigrationApplyRequiresPostApplyUserAndGroup(t *
 	shellBody := esServiceUserMigrationExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_migrate_es_service_user_main --apply --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESServiceUserMigrationHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESServiceUserMigrationHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+backupSentinelPath,
 		"REMOTE_ALPHA_TEST_SYSTEMCTL_IGNORE_DROPIN=true",
@@ -1090,6 +1305,7 @@ remote_alpha_migrate_es_service_user_main --apply --summary-path %q
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESServiceUserMigrationBackupReport(t, fixture, summary)
 	result := nestedMap(t, summary, "result")
 	if result["status"] != "post_apply_validation_failed" {
 		t.Fatalf("expected post_apply_validation_failed, got %+v", result)

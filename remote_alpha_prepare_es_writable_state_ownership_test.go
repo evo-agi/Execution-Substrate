@@ -1,14 +1,20 @@
 package executionsubstrate_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 )
 
@@ -17,15 +23,217 @@ const remoteAlphaESWritableStateOwnershipStageDefaultStagingRoot = "/var/tmp/exe
 const remoteAlphaESWritableStateOwnershipStageCheckOnlyArtifactName = "es-writable-state-ownership-check-only.json"
 const remoteAlphaESWritableStateOwnershipStageApplySummaryArtifactName = "es-writable-state-ownership-apply-summary.json"
 const remoteAlphaESWritableStateOwnershipStageHelperStagingRecordName = "es-writable-state-ownership-helper-staging-record.json"
+const esWritableStateOwnershipLoopbackNoProxy = "127.0.0.1,localhost,::1"
 
-func runSourcedESWritableStateOwnershipHelper(t *testing.T, env []string, shellBody string) ([]byte, error) {
+func containedESWritableStateOwnershipHelperEnv(env []string) []string {
+	contained := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && strings.HasSuffix(strings.ToLower(key), "_proxy") {
+			continue
+		}
+		contained = append(contained, entry)
+	}
+	return append(contained,
+		"NO_PROXY="+esWritableStateOwnershipLoopbackNoProxy,
+		"no_proxy="+esWritableStateOwnershipLoopbackNoProxy,
+	)
+}
+
+func requireContainedESWritableStateOwnershipHelperEnv(t *testing.T, source, contained []string, hostileProxyURL string) {
 	t.Helper()
+	sourceValues := make(map[string]string, len(source))
+	for _, entry := range source {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("malformed source environment entry %q", entry)
+		}
+		sourceValues[key] = value
+	}
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "Ftp_Proxy"} {
+		if sourceValues[key] != hostileProxyURL {
+			t.Fatalf("source environment did not inherit hostile proxy %s", key)
+		}
+	}
+	containedValues := make(map[string]string, len(contained))
+	for _, entry := range contained {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("malformed contained environment entry %q", entry)
+		}
+		if strings.HasSuffix(strings.ToLower(key), "_proxy") && key != "NO_PROXY" && key != "no_proxy" {
+			t.Fatalf("proxy endpoint %s reached helper environment", key)
+		}
+		containedValues[key] = value
+	}
+	for key, value := range sourceValues {
+		if !strings.HasSuffix(strings.ToLower(key), "_proxy") && containedValues[key] != value {
+			t.Fatalf("helper environment changed non-proxy value %s", key)
+		}
+	}
+	for _, key := range []string{"NO_PROXY", "no_proxy"} {
+		if containedValues[key] != esWritableStateOwnershipLoopbackNoProxy {
+			t.Fatalf("helper environment %s=%q, want exact loopback bypass", key, containedValues[key])
+		}
+	}
+}
+
+type esWritableStateFixtureHTTPRequest struct {
+	method string
+	path   string
+}
+
+func newESWritableStateProxyTrap(t *testing.T) (*httptest.Server, *atomic.Int32, <-chan esWritableStateFixtureHTTPRequest) {
+	t.Helper()
+	requests := new(atomic.Int32)
+	details := make(chan esWritableStateFixtureHTTPRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		select {
+		case details <- esWritableStateFixtureHTTPRequest{method: r.Method, path: r.URL.Path}:
+		default:
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("proxy trap\n"))
+	}))
+	t.Cleanup(server.Close)
+	return server, requests, details
+}
+
+func requireNoESWritableStateProxyTrapRequests(t *testing.T, requests *atomic.Int32, details <-chan esWritableStateFixtureHTTPRequest) {
+	t.Helper()
+	if count := requests.Load(); count != 0 {
+		select {
+		case request := <-details:
+			t.Fatalf("fixture proxy trap received %d requests; first was %s %s", count, request.method, request.path)
+		default:
+			t.Fatalf("fixture proxy trap received %d requests", count)
+		}
+	}
+}
+
+func runSourcedESWritableStateOwnershipHelper(t *testing.T, backup esServiceUserTestBackupRoot, wantBackups int, env []string, shellBody string) ([]byte, error) {
+	t.Helper()
+	requireESServiceUserTestBackupEntries(t, backup, 0, 0)
 	helperPath := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_prepare_es_writable_state_ownership.sh")
 	script := fmt.Sprintf("set -euo pipefail\nsource %q\n%s\n", helperPath, shellBody)
 	cmd := exec.Command("/bin/bash", "-c", script)
 	cmd.Dir = executionSubstrateRepoRoot
-	cmd.Env = env
-	return cmd.CombinedOutput()
+	cmd.Env = containedESWritableStateOwnershipHelperEnv(esServiceUserTestChildEnv(t, backup, env))
+	output, err := cmd.CombinedOutput()
+	requireESServiceUserTestBackupEntries(t, backup, wantBackups, 0o755)
+	return output, err
+}
+
+type esWritableStateFixtureSnapshotEntry struct {
+	kind      string
+	uid       uint32
+	gid       uint32
+	mode      uint32
+	size      int64
+	sha256    string
+	inode     uint64
+	mtimeNano int64
+}
+
+func snapshotESWritableStateFixture(t *testing.T, fixture esServiceUserMigrationFixture) map[string]esWritableStateFixtureSnapshotEntry {
+	t.Helper()
+	requireESServiceUserTestBackupRoot(t, fixture.BackupRoot)
+	observed := make(map[string]esWritableStateFixtureSnapshotEntry)
+	for _, label := range []string{"state", "config", "systemd", "tls", "bin", "backups"} {
+		root := filepath.Join(fixture.BackupRoot.fixtureRoot, label)
+		err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			metadata, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("fixture snapshot encountered unsupported metadata or symlink at %s", path)
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				return fmt.Errorf("fixture snapshot path escaped its test root")
+			}
+			key := label
+			if rel != "." {
+				key += "/" + filepath.ToSlash(rel)
+			}
+			item := esWritableStateFixtureSnapshotEntry{
+				uid:       metadata.Uid,
+				gid:       metadata.Gid,
+				mode:      uint32(metadata.Mode) & 0o7777,
+				inode:     metadata.Ino,
+				mtimeNano: info.ModTime().UnixNano(),
+			}
+			if info.IsDir() {
+				item.kind = "directory"
+			} else if info.Mode().IsRegular() {
+				item.kind = "regular"
+				item.size = info.Size()
+				fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+				if err != nil {
+					return err
+				}
+				file := os.NewFile(uintptr(fd), path)
+				hash := sha256.New()
+				_, copyErr := io.Copy(hash, file)
+				closeErr := file.Close()
+				if copyErr != nil {
+					return copyErr
+				}
+				if closeErr != nil {
+					return closeErr
+				}
+				item.sha256 = fmt.Sprintf("%x", hash.Sum(nil))
+			} else {
+				return fmt.Errorf("fixture snapshot encountered unsupported file type at %s", path)
+			}
+			observed[key] = item
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("snapshot fixture %s: %v", label, err)
+		}
+	}
+	return observed
+}
+
+func requireESWritableStateFixtureSnapshotUnchanged(t *testing.T, before, after map[string]esWritableStateFixtureSnapshotEntry) {
+	t.Helper()
+	keys := make(map[string]struct{}, len(before)+len(after))
+	for key := range before {
+		keys[key] = struct{}{}
+	}
+	for key := range after {
+		keys[key] = struct{}{}
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	for _, key := range ordered {
+		prior, existed := before[key]
+		current, exists := after[key]
+		if !existed || !exists || prior != current {
+			t.Fatalf("fixture state changed at %s: before=%+v after=%+v", key, prior, current)
+		}
+	}
+}
+
+func requireESWritableStateOwnershipBackupReport(t *testing.T, fixture esServiceUserMigrationFixture, summary map[string]any) {
+	t.Helper()
+	backup := nestedMap(t, summary, "backup")
+	backupDir := requireESServiceUserTestReportedBackup(t, fixture.BackupRoot, requireESServiceUserTestBackupField(t, backup, "path"), 0o755)
+	requireESServiceUserTestBackupArtifact(t, backupDir, requireESServiceUserTestBackupField(t, backup, "snapshot_manifest_path"), "pre-apply-snapshot.json", 0o644, false)
+	entries, err := os.ReadDir(backupDir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "pre-apply-snapshot.json" {
+		t.Fatalf("fixture ownership backup must contain only its snapshot manifest: %v, %v", entries, err)
+	}
 }
 
 func esWritableStateOwnershipExpectedSliceShell(f esServiceUserMigrationFixture) string {
@@ -502,7 +710,7 @@ func TestRemoteAlphaESWritableStateOwnershipCheckOnlyIsDefaultAndNonMutating(t *
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("helper failed: %v\noutput=%s", err, string(output))
 	}
@@ -577,7 +785,7 @@ func TestRemoteAlphaESWritableStateOwnershipBlocksWhenServiceAccountMissing(t *t
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker when es:es account is missing\noutput=%s", string(output))
 	}
@@ -611,18 +819,63 @@ func TestRemoteAlphaESWritableStateOwnershipBlocksWhenRootsContainEntries(t *tes
 	if err := os.Mkdir(filepath.Join(fixture.ResultsRoot, "run-0001"), 0o700); err != nil {
 		t.Fatalf("mkdir retained results child: %v", err)
 	}
+	var nomadRequests atomic.Int32
+	nomadDetails := make(chan esWritableStateFixtureHTTPRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nomadRequests.Add(1)
+		select {
+		case nomadDetails <- esWritableStateFixtureHTTPRequest{method: r.Method, path: r.URL.Path}:
+		default:
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("nomad unavailable\n"))
+	}))
+	t.Cleanup(server.Close)
+	proxyTrap, proxyRequests, proxyDetails := newESWritableStateProxyTrap(t)
+	updateESServiceUserFixtureNomadConfig(t, fixture, server.URL, "dc1", 5)
+	if got := nestedMap(t, readJSONFile(t, fixture.ConfigPath), "nomad")["base_url"]; got != server.URL {
+		t.Fatalf("expected fixture-owned Nomad URL %q, got %v", server.URL, got)
+	}
 
+	mutationLogPath := filepath.Join(tmpDir, "mutations.log")
 	setupFakeESServiceUserMigrationCommands(t, fakeBin, fakeESServiceUserAccount{
 		Present:   true,
 		UID:       os.Getuid(),
 		GID:       os.Getgid(),
 		GroupName: "es",
-	}, fixture, filepath.Join(tmpDir, "mutations.log"))
+	}, fixture, mutationLogPath)
 
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	if mutationLogPath != filepath.Join(fixture.BackupRoot.fixtureRoot, "mutations.log") {
+		t.Fatal("fixture mutation log must be beneath this test's temporary root")
+	}
+	sourceEnv := envWithPath(fakeBin,
+		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
+		"HTTP_PROXY="+proxyTrap.URL,
+		"http_proxy="+proxyTrap.URL,
+		"HTTPS_PROXY="+proxyTrap.URL,
+		"https_proxy="+proxyTrap.URL,
+		"ALL_PROXY="+proxyTrap.URL,
+		"all_proxy="+proxyTrap.URL,
+		"NO_PROXY=",
+		"no_proxy=",
+	)
+	esServiceUserTestChildEnv(t, fixture.BackupRoot, sourceEnv)
+	beforeState := snapshotESWritableStateFixture(t, fixture)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, sourceEnv, shellBody)
+	requireESWritableStateFixtureSnapshotUnchanged(t, beforeState, snapshotESWritableStateFixture(t, fixture))
+	requireNoESWritableStateProxyTrapRequests(t, proxyRequests, proxyDetails)
+	if count := nomadRequests.Load(); count > 1 {
+		t.Fatalf("expected at most one fixture Nomad request, got %d", count)
+	} else if count == 1 {
+		request := <-nomadDetails
+		if request.method != http.MethodGet || request.path != "/v1/job/exec-run-0001" {
+			t.Fatalf("unexpected fixture Nomad request %s %s", request.method, request.path)
+		}
+	}
+	t.Logf("fixture Nomad requests=%d, proxy trap requests=%d", nomadRequests.Load(), proxyRequests.Load())
 	if err == nil {
 		t.Fatalf("expected blocker for non-empty roots\noutput=%s", string(output))
 	}
@@ -639,6 +892,7 @@ remote_alpha_prepare_es_writable_state_ownership_main
 	if staging["classification"] != "blocker" {
 		t.Fatalf("expected staging blocker, got %+v", staging)
 	}
+	requireNoESServiceUserTestMutationLog(t, fixture.BackupRoot)
 }
 
 func TestRemoteAlphaESWritableStateOwnershipBlocksWhenChangingOnlyRootsIsInsufficient(t *testing.T) {
@@ -666,7 +920,7 @@ func TestRemoteAlphaESWritableStateOwnershipBlocksWhenChangingOnlyRootsIsInsuffi
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker when parent traversal remains blocked\noutput=%s", string(output))
 	}
@@ -716,7 +970,7 @@ func TestRemoteAlphaESWritableStateOwnershipParentTraversalFixIsAdvertisedAndNon
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("expected parent traversal check-only planning warning, got %v\noutput=%s", err, string(output))
 	}
@@ -781,7 +1035,7 @@ func TestRemoteAlphaESWritableStateOwnershipParentTraversalFlagRequiresApply(t *
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main --fix-parent-chain
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected flag validation failure without --apply\noutput=%s", string(output))
 	}
@@ -809,6 +1063,9 @@ func TestRemoteAlphaESWritableStateOwnershipParentTraversalApplyChangesOnlyParen
 			t.Fatalf("chmod %s: %v", path, err)
 		}
 	}
+	fakeESUID, fakeESGID := os.Getuid(), os.Getgid()
+	// Parent-only repair requires both live roots to be ready before the helper runs.
+	requireESServiceUserFixtureLiveRoots(t, fixture, fakeESUID, fakeESGID, 0o750)
 
 	stagingQuarantine := filepath.Join(stateBase, "staging.pre-es-writable-state-ownership-20260427T012922Z")
 	resultsQuarantine := filepath.Join(stateBase, "results.pre-es-writable-state-ownership-20260427T012922Z")
@@ -828,8 +1085,8 @@ func TestRemoteAlphaESWritableStateOwnershipParentTraversalApplyChangesOnlyParen
 	mutationLogPath := filepath.Join(tmpDir, "mutations.log")
 	setupFakeESServiceUserMigrationCommands(t, fakeBin, fakeESServiceUserAccount{
 		Present:   true,
-		UID:       os.Getuid(),
-		GID:       os.Getgid(),
+		UID:       fakeESUID,
+		GID:       fakeESGID,
 		GroupName: "es",
 	}, fixture, mutationLogPath)
 
@@ -837,12 +1094,13 @@ func TestRemoteAlphaESWritableStateOwnershipParentTraversalApplyChangesOnlyParen
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --fix-parent-chain --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("parent traversal apply failed: %v\noutput=%s\nsummary=%s", err, string(output), readIfExists(summaryPath))
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "pass" {
 		t.Fatalf("expected pass summary, got %+v", summary)
 	}
@@ -952,12 +1210,13 @@ func TestRemoteAlphaESWritableStateOwnershipApplyChangesOnlyStableRootsAndWrites
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("apply helper failed: %v\noutput=%s\nsummary=%s", err, string(output), readIfExists(summaryPath))
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "pass" {
 		t.Fatalf("expected pass classification, got %+v", summary)
 	}
@@ -1042,7 +1301,7 @@ func TestRemoteAlphaESWritableStateOwnershipNonEmptyRootsStillBlockButAdvertiseR
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected default blocker for non-empty roots even when drained evidence exists\noutput=%s", string(output))
 	}
@@ -1092,7 +1351,7 @@ func TestRemoteAlphaESWritableStateOwnershipRotateFlagRequiresApply(t *testing.T
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main --rotate-nonempty-roots
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected flag validation failure without --apply\noutput=%s", string(output))
 	}
@@ -1125,7 +1384,7 @@ func TestRemoteAlphaESWritableStateOwnershipApplyWithoutRotateFlagStillBlocksOnN
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected apply blocker without explicit rotate flag\noutput=%s", string(output))
 	}
@@ -1146,8 +1405,6 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --summary-path %q
 }
 
 func TestRemoteAlphaESWritableStateOwnershipRotationBlocksWhenActiveRunsCannotBeRuledOut(t *testing.T) {
-	t.Parallel()
-
 	tmpDir := t.TempDir()
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
@@ -1160,6 +1417,29 @@ func TestRemoteAlphaESWritableStateOwnershipRotationBlocksWhenActiveRunsCannotBe
 	}
 	if err := os.Mkdir(filepath.Join(fixture.ResultsRoot, "run-0001"), 0o700); err != nil {
 		t.Fatalf("mkdir results run: %v", err)
+	}
+	var nomadRequests atomic.Int32
+	nomadDetails := make(chan esWritableStateFixtureHTTPRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nomadRequests.Add(1)
+		select {
+		case nomadDetails <- esWritableStateFixtureHTTPRequest{method: r.Method, path: r.URL.Path}:
+		default:
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("nomad unavailable\n"))
+	}))
+	t.Cleanup(server.Close)
+	proxyTrap, proxyRequests, proxyDetails := newESWritableStateProxyTrap(t)
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "Ftp_Proxy"} {
+		t.Setenv(key, proxyTrap.URL)
+	}
+	for _, key := range []string{"NO_PROXY", "no_proxy", "nO_PrOxY"} {
+		t.Setenv(key, "")
+	}
+	updateESServiceUserFixtureNomadConfig(t, fixture, server.URL, "dc1", 5)
+	if got := nestedMap(t, readJSONFile(t, fixture.ConfigPath), "nomad")["base_url"]; got != server.URL {
+		t.Fatalf("expected fixture-owned Nomad URL %q, got %v", server.URL, got)
 	}
 
 	summaryPath := filepath.Join(tmpDir, "apply-summary.json")
@@ -1174,7 +1454,16 @@ func TestRemoteAlphaESWritableStateOwnershipRotationBlocksWhenActiveRunsCannotBe
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-roots --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	if mutationLogPath != filepath.Join(fixture.BackupRoot.fixtureRoot, "mutations.log") {
+		t.Fatal("fixture mutation log must be beneath this test's temporary root")
+	}
+	sourceEnv := envWithPath(fakeBin, "REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath)
+	childEnv := esServiceUserTestChildEnv(t, fixture.BackupRoot, sourceEnv)
+	requireContainedESWritableStateOwnershipHelperEnv(t, childEnv, containedESWritableStateOwnershipHelperEnv(childEnv), proxyTrap.URL)
+	beforeState := snapshotESWritableStateFixture(t, fixture)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, sourceEnv, shellBody)
+	requireESWritableStateFixtureSnapshotUnchanged(t, beforeState, snapshotESWritableStateFixture(t, fixture))
+	requireNoESWritableStateProxyTrapRequests(t, proxyRequests, proxyDetails)
 	if err == nil {
 		t.Fatalf("expected rotation blocker when active-run state is unknown\noutput=%s", string(output))
 	}
@@ -1186,9 +1475,19 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-
 	if nestedMap(t, nestedMap(t, summary, "validation"), "active_run_or_drain")["classification"] != "blocker" {
 		t.Fatalf("expected active_run_or_drain blocker, got %+v", nestedMap(t, nestedMap(t, summary, "validation"), "active_run_or_drain"))
 	}
-	if _, err := os.Stat(mutationLogPath); !os.IsNotExist(err) {
-		t.Fatalf("rotation should not stop/start the service when active-run gating blocks apply")
+	if count := nomadRequests.Load(); count != 1 {
+		t.Fatalf("expected exactly one fixture-owned Nomad request, got %d", count)
 	}
+	request := <-nomadDetails
+	if request.method != http.MethodGet || request.path != "/v1/job/exec-run-0001" {
+		t.Fatalf("unexpected fixture Nomad request %s %s", request.method, request.path)
+	}
+	t.Logf("fixture Nomad requests=%d, proxy trap requests=%d", nomadRequests.Load(), proxyRequests.Load())
+	observedRun := findObservedWritableStateRun(t, summary, "run-0001")
+	if observedRun["classification"] != "unknown" || observedRun["scheduler_state"] != "unknown" || observedRun["job_status_code"] != float64(http.StatusServiceUnavailable) {
+		t.Fatalf("expected HTTP 503 to leave active-run state unknown, got %+v", observedRun)
+	}
+	requireNoESServiceUserTestMutationLog(t, fixture.BackupRoot)
 }
 
 func TestRemoteAlphaESWritableStateOwnershipNomadActiveRunBlocksRotation(t *testing.T) {
@@ -1228,7 +1527,7 @@ func TestRemoteAlphaESWritableStateOwnershipNomadActiveRunBlocksRotation(t *test
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker when Nomad still reports an active run\noutput=%s", string(output))
 	}
@@ -1284,7 +1583,7 @@ func TestRemoteAlphaESWritableStateOwnershipNomadUnknownStateBlocksRotation(t *t
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker when Nomad allocation state is invalid\noutput=%s", string(output))
 	}
@@ -1327,7 +1626,7 @@ func TestRemoteAlphaESWritableStateOwnershipNomadUnavailableBlocksRotation(t *te
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker when Nomad is unavailable\noutput=%s", string(output))
 	}
@@ -1370,7 +1669,7 @@ func TestRemoteAlphaESWritableStateOwnershipAbsentNomadJobBecomesStaleOrphanCand
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker because non-empty roots still block default apply\noutput=%s", string(output))
 	}
@@ -1439,7 +1738,7 @@ func TestRemoteAlphaESWritableStateOwnershipTerminalNomadRunIsNotActive(t *testi
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker because non-empty roots still block default apply\noutput=%s", string(output))
 	}
@@ -1488,7 +1787,7 @@ func TestRemoteAlphaESWritableStateOwnershipStaleOrphanRotationRequiresExplicitA
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-roots --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected apply blocker without stale/orphan acceptance flag\noutput=%s", string(output))
 	}
@@ -1546,7 +1845,7 @@ func TestRemoteAlphaESWritableStateOwnershipStaleOrphanRotationApplyPassesWithEx
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-roots --accept-stale-orphaned-runs --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+backupSentinelPath,
 	), shellBody)
@@ -1555,6 +1854,7 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "pass" {
 		t.Fatalf("expected pass summary, got %+v", summary)
 	}
@@ -1599,7 +1899,7 @@ func TestRemoteAlphaESWritableStateOwnershipRotationApplyMovesOldRootsAndRestart
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-roots --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+backupSentinelPath,
 		"REMOTE_ALPHA_TEST_BACKUP_PATH_FILE="+backupPathFile,
@@ -1609,6 +1909,7 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "pass" {
 		t.Fatalf("expected pass summary, got %+v", summary)
 	}
@@ -1757,7 +2058,7 @@ func TestRemoteAlphaESWritableStateOwnershipFreshNonemptyRootsAdvertiseArtifactR
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err != nil {
 		t.Fatalf("expected warning-only reconciliation plan, got %v\noutput=%s", err, string(output))
 	}
@@ -1813,7 +2114,7 @@ func TestRemoteAlphaESWritableStateOwnershipReconcileFlagRequiresApply(t *testin
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main --reconcile-artifacts
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected reconcile flag validation failure without --apply\noutput=%s", string(output))
 	}
@@ -1869,7 +2170,7 @@ func TestRemoteAlphaESWritableStateOwnershipActiveRunBlocksArtifactReconciliatio
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + `
 remote_alpha_prepare_es_writable_state_ownership_main
 `
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected blocker while an active run prevents reconciliation\noutput=%s", string(output))
 	}
@@ -1941,7 +2242,7 @@ func TestRemoteAlphaESWritableStateOwnershipReconcileApplyRepairsAndQuarantinesW
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --reconcile-artifacts --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 	), shellBody)
 	if err != nil {
@@ -1949,6 +2250,7 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --reconcile-artifa
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "pass" {
 		t.Fatalf("expected pass summary, got %+v", summary)
 	}
@@ -2036,7 +2338,7 @@ func TestRemoteAlphaESWritableStateOwnershipRotationApplyRequiresPostApplyHealth
 	shellBody := esWritableStateOwnershipExpectedSliceShell(fixture) + fmt.Sprintf(`
 remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-roots --summary-path %q
 `, summaryPath)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin,
+	output, err := runSourcedESWritableStateOwnershipHelper(t, fixture.BackupRoot, 1, envWithPath(fakeBin,
 		"REMOTE_ALPHA_TEST_MUTATION_LOG_PATH="+mutationLogPath,
 		"REMOTE_ALPHA_TEST_BACKUP_SENTINEL_PATH="+backupSentinelPath,
 		"REMOTE_ALPHA_TEST_CURL_FAIL_HEALTH=true",
@@ -2046,6 +2348,7 @@ remote_alpha_prepare_es_writable_state_ownership_main --apply --rotate-nonempty-
 	}
 
 	summary := readJSONFile(t, summaryPath)
+	requireESWritableStateOwnershipBackupReport(t, fixture, summary)
 	if summary["overall_classification"] != "blocker" {
 		t.Fatalf("expected blocker summary, got %+v", summary)
 	}
@@ -2325,6 +2628,7 @@ func TestRemoteAlphaStageESWritableStateOwnershipMissingUploadSourceIsStructured
 	t.Parallel()
 
 	tmpDir := t.TempDir()
+	backupRoot := newESServiceUserTestBackupRoot(t, tmpDir)
 	fakeBin := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
@@ -2343,7 +2647,7 @@ remote_alpha_prepare_es_writable_state_ownership_stage_make_local_upload_tree() 
 }
 remote_alpha_prepare_es_writable_state_ownership_stage_main --ssh-target fake-target --run-id missing-upload-source --output-dir %q
 `, outputDir)
-	output, err := runSourcedESWritableStateOwnershipHelper(t, envWithPath(fakeBin), shellBody)
+	output, err := runSourcedESWritableStateOwnershipHelper(t, backupRoot, 0, envWithPath(fakeBin), shellBody)
 	if err == nil {
 		t.Fatalf("expected missing upload source failure\noutput=%q", output)
 	}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -23,6 +24,84 @@ type fakeWritableStateAccount struct {
 	UID       int
 	GID       int
 	GroupName string
+}
+
+type readinessOwnedFixturePath struct {
+	path      string
+	mode      uint32
+	directory bool
+}
+
+func readinessReadyRootPaths(stagingRoot, resultsRoot string) []readinessOwnedFixturePath {
+	return []readinessOwnedFixturePath{
+		{path: stagingRoot, mode: 0o750, directory: true},
+		{path: resultsRoot, mode: 0o750, directory: true},
+	}
+}
+
+func readinessStagedRunPaths(stagingRoot, runID string, marker bool) []readinessOwnedFixturePath {
+	runRoot := filepath.Join(stagingRoot, runID)
+	paths := []readinessOwnedFixturePath{
+		{path: runRoot, mode: 0o750, directory: true},
+		{path: filepath.Join(runRoot, "run", "platform"), mode: 0o750, directory: true},
+		{path: filepath.Join(runRoot, "run", "work"), mode: 0o750, directory: true},
+		{path: filepath.Join(runRoot, "run", "result"), mode: 0o750, directory: true},
+	}
+	if marker {
+		paths = append(paths, readinessOwnedFixturePath{path: filepath.Join(runRoot, "run", "platform", "ownership-normalization.json"), mode: 0o600})
+	}
+	return paths
+}
+
+func readinessRetainedRunPaths(resultsRoot, runID string, marker bool, bundleMode uint32) []readinessOwnedFixturePath {
+	runRoot := filepath.Join(resultsRoot, runID)
+	paths := []readinessOwnedFixturePath{
+		{path: runRoot, mode: 0o750, directory: true},
+		{path: filepath.Join(runRoot, "result.tar.gz"), mode: bundleMode},
+	}
+	if marker {
+		paths = append(paths, readinessOwnedFixturePath{path: filepath.Join(runRoot, "ownership-normalization.json"), mode: 0o600})
+	}
+	return paths
+}
+
+func establishReadinessFixtureOwnership(t *testing.T, fixtureRoot string, uid, gid int, paths ...readinessOwnedFixturePath) {
+	t.Helper()
+	if uid != os.Getuid() || gid != os.Getgid() {
+		t.Fatalf("fixture ownership target %d:%d must be the current test identity", uid, gid)
+	}
+	for _, item := range paths {
+		rel, err := filepath.Rel(fixtureRoot, item.path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			t.Fatalf("fixture ownership path is outside test temporary root: %s", item.path)
+		}
+		before, err := os.Lstat(item.path)
+		if err != nil {
+			t.Fatalf("stat fixture ownership path %s: %v", item.path, err)
+		}
+		beforeStat, ok := before.Sys().(*syscall.Stat_t)
+		if !ok || beforeStat.Uid != uint32(os.Geteuid()) {
+			t.Fatalf("fixture ownership path %s is not owned by the current test user", item.path)
+		}
+		if item.directory != before.IsDir() || (!item.directory && !before.Mode().IsRegular()) {
+			t.Fatalf("fixture ownership path %s has unexpected type %s", item.path, before.Mode())
+		}
+		if err := os.Chown(item.path, uid, gid); err != nil {
+			t.Fatalf("set fixture ownership %s to fake es %d:%d: %v", item.path, uid, gid, err)
+		}
+		if err := os.Chmod(item.path, os.FileMode(item.mode)); err != nil {
+			t.Fatalf("set fixture mode %s to %04o: %v", item.path, item.mode, err)
+		}
+		after, err := os.Lstat(item.path)
+		if err != nil {
+			t.Fatalf("verify fixture ownership path %s: %v", item.path, err)
+		}
+		afterStat, ok := after.Sys().(*syscall.Stat_t)
+		if !ok || item.directory != after.IsDir() || (!item.directory && !after.Mode().IsRegular()) ||
+			afterStat.Uid != uint32(uid) || afterStat.Gid != uint32(gid) || uint32(afterStat.Mode)&0o7777 != item.mode {
+			t.Fatalf("fixture ownership path %s did not establish fake es %d:%d mode %04o", item.path, uid, gid, item.mode)
+		}
+	}
 }
 
 func runESWritableStateReadinessScript(t *testing.T, env []string, args ...string) ([]byte, error) {
@@ -215,6 +294,7 @@ func TestRemoteAlphaESWritableStateReadinessIsNonMutating(t *testing.T) {
 		t.Fatalf("mkdir results root: %v", err)
 	}
 
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), readinessReadyRootPaths(stagingRoot, resultsRoot)...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -302,6 +382,7 @@ func TestRemoteAlphaESWritableStateReadinessPassesForESOwnedRoots(t *testing.T) 
 		t.Fatalf("mkdir results root: %v", err)
 	}
 
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), readinessReadyRootPaths(stagingRoot, resultsRoot)...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -404,6 +485,8 @@ func TestRemoteAlphaESWritableStateReadinessUnreadableRetainedResultBlocks(t *te
 		t.Fatalf("write bundle: %v", err)
 	}
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessRetainedRunPaths(resultsRoot, "run-123", false, 0o000)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -468,6 +551,9 @@ func TestRemoteAlphaESWritableStateReadinessCompletedRunWithoutNormalizationEvid
 	if err := os.WriteFile(filepath.Join(bundleDir, "result.tar.gz"), []byte("bundle"), 0o600); err != nil {
 		t.Fatalf("write retained bundle: %v", err)
 	}
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, false)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	if err := os.Chmod(workDir, 0o000); err != nil {
 		t.Fatalf("chmod work dir: %v", err)
 	}
@@ -537,6 +623,9 @@ func TestRemoteAlphaESWritableStateReadinessDefaultAlphaModeWarnsWhenMarkerMissi
 		t.Fatalf("write retained bundle: %v", err)
 	}
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, false)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -600,6 +689,9 @@ func TestRemoteAlphaESWritableStateReadinessCompletedRunWithoutMarkerBlocksFutur
 		t.Fatalf("write retained bundle: %v", err)
 	}
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, false)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -662,6 +754,9 @@ func TestRemoteAlphaESWritableStateReadinessValidMarkerPasses(t *testing.T) {
 	}
 	writeWritableStateNormalizationMarker(t, platformDir, runID, nil)
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, true)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -736,6 +831,8 @@ func TestRemoteAlphaESWritableStateReadinessUsesPreservedRetainedEvidenceAfterCl
 	}
 	writeWritableStateNormalizationMarker(t, retainedRunDir, runID, nil)
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessRetainedRunPaths(resultsRoot, runID, true, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -803,6 +900,8 @@ func TestRemoteAlphaESWritableStateReadinessInvalidPreservedRetainedEvidenceBloc
 		"completed_at": "not-a-timestamp",
 	})
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessRetainedRunPaths(resultsRoot, runID, true, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -861,6 +960,9 @@ func TestRemoteAlphaESWritableStateReadinessInvalidPresentMarkerBlocks(t *testin
 		"completed_at": "not-a-timestamp",
 	})
 
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, true)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), ownedPaths...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -917,16 +1019,33 @@ func TestRemoteAlphaESWritableStateReadinessTargetOwnerMismatchBlocks(t *testing
 	writeWritableStateNormalizationMarker(t, platformDir, runID, map[string]any{
 		"target_uid": os.Getuid() + 1,
 	})
+	fakeESUID, fakeESGID := os.Getuid(), os.Getgid()
+	ownedPaths := append(readinessReadyRootPaths(stagingRoot, resultsRoot), readinessStagedRunPaths(stagingRoot, runID, true)...)
+	ownedPaths = append(ownedPaths, readinessRetainedRunPaths(resultsRoot, runID, false, 0o600)...)
+	establishReadinessFixtureOwnership(t, tmpDir, fakeESUID, fakeESGID, ownedPaths...)
+	for _, root := range []string{stagingRoot, resultsRoot} {
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != 1 || entries[0].Name() != runID || !entries[0].IsDir() {
+			t.Fatalf("expected only fixture run %s under %s, got %v, %v", runID, root, entries, err)
+		}
+	}
+	markerBefore := readJSONFile(t, filepath.Join(platformDir, "ownership-normalization.json"))
+	markerUID, uidOK := markerBefore["target_uid"].(float64)
+	markerGID, gidOK := markerBefore["target_gid"].(float64)
+	if !uidOK || !gidOK || int(markerUID) != fakeESUID+1 || int(markerUID) == fakeESUID || int(markerGID) != fakeESGID {
+		t.Fatalf("fixture marker target must deliberately differ only in UID from fake es %d:%d, got %v:%v", fakeESUID, fakeESGID, markerBefore["target_uid"], markerBefore["target_gid"])
+	}
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
+	mutationLogPath := filepath.Join(tmpDir, "mutations.log")
 	setupFakeWritableStateReadinessCommands(t, fakeBin, fakeWritableStateAccount{
 		Present:   true,
-		UID:       os.Getuid(),
-		GID:       os.Getgid(),
+		UID:       fakeESUID,
+		GID:       fakeESGID,
 		GroupName: "es",
-	}, nil, filepath.Join(tmpDir, "mutations.log"))
+	}, nil, mutationLogPath)
 
 	output, err := runESWritableStateReadinessScript(
 		t,
@@ -953,6 +1072,9 @@ func TestRemoteAlphaESWritableStateReadinessTargetOwnerMismatchBlocks(t *testing
 	if !ok {
 		t.Fatalf("observed run payload was %T", observedRuns[0])
 	}
+	if runPayload["run_id"] != runID {
+		t.Fatalf("expected observed run %s, got %v", runID, runPayload["run_id"])
+	}
 	markerPayload, ok := runPayload["marker"].(map[string]any)
 	if !ok {
 		t.Fatalf("marker payload was %T", runPayload["marker"])
@@ -962,6 +1084,20 @@ func TestRemoteAlphaESWritableStateReadinessTargetOwnerMismatchBlocks(t *testing
 	}
 	if markerPayload["target_owner_checked"] != true {
 		t.Fatalf("expected target_owner_checked=true, got %v", markerPayload["target_owner_checked"])
+	}
+	issues, ok := markerPayload["issues"].([]any)
+	if !ok || len(issues) != 1 || issues[0] != "normalization marker target_uid does not match expected es UID" {
+		t.Fatalf("expected only the intended marker target UID mismatch, got %v", markerPayload["issues"])
+	}
+	verification := nestedMap(t, payload, "target_owner_verification")
+	if verification["status"] != "mismatch" || verification["checked_against_expected_owner"] != true {
+		t.Fatalf("expected checked target-owner mismatch, got %+v", verification)
+	}
+	if payload["overall_classification"] != "blocker" || payload["non_mutating"] != true {
+		t.Fatalf("expected blocked non-mutating readiness result, got classification=%v non_mutating=%v", payload["overall_classification"], payload["non_mutating"])
+	}
+	if _, err := os.Stat(mutationLogPath); !os.IsNotExist(err) {
+		t.Fatalf("readiness helper must not mutate fixture state: %v", err)
 	}
 }
 
@@ -1157,6 +1293,7 @@ func TestRemoteAlphaESWritableStateReadinessLabelsCompatibilityEdgesWithoutBlock
 		t.Fatalf("mkdir results root: %v", err)
 	}
 
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), readinessReadyRootPaths(stagingRoot, resultsRoot)...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
@@ -1216,6 +1353,7 @@ func TestRemoteAlphaESWritableStateReadinessJSONShapeStable(t *testing.T) {
 		t.Fatalf("mkdir results root: %v", err)
 	}
 
+	establishReadinessFixtureOwnership(t, tmpDir, os.Getuid(), os.Getgid(), readinessReadyRootPaths(stagingRoot, resultsRoot)...)
 	configPath := filepath.Join(tmpDir, "es.json")
 	writeWritableStateReadinessConfig(t, configPath, stagingRoot, resultsRoot)
 
