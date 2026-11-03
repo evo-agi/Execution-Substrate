@@ -1,7 +1,10 @@
 package executionsubstrate_test
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -9,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -63,6 +67,74 @@ sys.exit(status)
 `
 	commandArgs := append([]string{"-c", python, "/bin/bash", scriptPath}, args...)
 	cmd := exec.Command("python3", commandArgs...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(env, "ES_REPO_ROOT="+executionSubstrateRepoRoot)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func runRemoteAlphaOperatorWithPromptPTY(t *testing.T, env []string, args ...string) (string, error) {
+	t.Helper()
+	python := `
+import os
+import pty
+import secrets
+import select
+import signal
+import subprocess
+import sys
+import termios
+import time
+
+master, slave = pty.openpty()
+settings = termios.tcgetattr(slave)
+settings[3] &= ~termios.ECHO
+termios.tcsetattr(slave, termios.TCSANOW, settings)
+sentinel = secrets.token_hex(16).encode("ascii")
+proc = subprocess.Popen(sys.argv[1:], cwd=os.environ["ES_REPO_ROOT"],
+                        stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+os.close(slave)
+output = bytearray()
+sent = False
+deadline = time.monotonic() + 12
+try:
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("bounded prompt fixture timed out")
+        ready, _, _ = select.select([master], [], [], 0.2)
+        if ready:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > 131072:
+                raise RuntimeError("bounded prompt fixture output exceeded limit")
+            if not sent and b"FAKE_SUDO_PASSWORD_PROMPT: " in output:
+                response = b"\x04" if os.environ.get("FAKE_STATUS_PROMPT_MODE") == "eof" else sentinel + b"\n"
+                os.write(master, response)
+                sent = True
+        elif proc.poll() is not None:
+            break
+    status = proc.wait(timeout=1)
+finally:
+    if proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    os.close(master)
+if sentinel in output:
+    raise RuntimeError("fixture response appeared in terminal output")
+for name in ("FAKE_STATUS_SSH_ARGV", "FAKE_STATUS_SSH_LOG", "FAKE_STATUS_SCP_LOG"):
+    path = os.environ[name]
+    if os.path.exists(path) and sentinel in open(path, "rb").read():
+        raise RuntimeError("fixture response appeared in transport evidence")
+sys.stdout.buffer.write(output)
+sys.exit(status)
+`
+	commandArgs := append([]string{"-I", "-B", "-c", python, "/bin/bash", remoteAlphaOperatorScriptPath()}, args...)
+	cmd := exec.Command("/usr/bin/python3", commandArgs...)
 	cmd.Dir = executionSubstrateRepoRoot
 	cmd.Env = append(env, "ES_REPO_ROOT="+executionSubstrateRepoRoot)
 	output, err := cmd.CombinedOutput()
@@ -147,8 +219,8 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"Remote Alpha operator facade",
 		"P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route",
 		"P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
-		"P0s adds recovery-session es-service-tls-status and es-service-tls-renew",
-		"P0t adds recovery-session es-governance-tls-status and es-governance-tls-renew",
+		"P0s uses a dedicated status-only collector",
+		"P0t uses the same collector mechanics",
 		"P0u adds recovery-session operator-healthcheck-tls-status and operator-healthcheck-tls-renew",
 		"bounded proof/support helper",
 		"evidence/projection only",
@@ -179,10 +251,6 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty",
 		"recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty",
-		"recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty",
-		"recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
-		"recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty",
-		"recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty",
 		"recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"Implemented through P0s, P0t, and P0u",
@@ -203,13 +271,12 @@ func TestRemoteAlphaOperatorExistsExecutableAndHelpDocumentsP0kScope(t *testing.
 		"bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation",
 		"Mac-side vault-workload-auth-bootstrap execution",
 		"Mac-side runtime-identity-summary",
-		"bounded es-service-tls status/renew",
-		"bounded es-governance-tls status/renew",
+		"dedicated P0s/P0t status-only collection",
+		"dedicated P0s/P0t status-only collection",
 		"bounded operator-healthcheck-tls status/renew",
 		"fixed workload-auth public/internal helper pair",
 		"fixed bootstrap public/internal helper pair",
 		"fixed public runtime identity helper",
-		"fixed TLS renewal public/internal helper pair",
 		"helper's --dry-run mode",
 		"helper's --execute-reset mode",
 		"supports --plan, --inventory, --next-steps",
@@ -261,10 +328,6 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"prepare the bootstrap summary path, then config readability, then SPIRE bundle-read access",
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 		"recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
-		"recovery-session es-service-tls-status --ssh-target <target> --interactive-tty",
-		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
-		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
-		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"stages only scripts/remote_alpha_reset_disposable_vault.sh",
@@ -285,13 +348,8 @@ func TestRemoteAlphaOperatorInventoryClassifiesImplementedFutureAndBlockedSurfac
 		"canonical bootstrap summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json",
 		"stages only scripts/remote_alpha_runtime_identity_helper_summary.sh",
 		"canonical summary remote at /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json",
-		"scripts/remote_alpha_es_service_tls_renew.sh",
-		"scripts/internal/remote_alpha_es_service_tls_renew.sh",
-		"canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json",
-		"bounded internal ARS artifact-registry mTLS recovery only",
-		"leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json",
-		"bounded ES -> EGS execution-governance trust-model mTLS material",
-		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
+		"protected canonical evidence remote",
+		"leaves protected canonical evidence remote",
 		"scripts/remote_alpha_operator_healthcheck_tls_renew.sh",
 		"scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh",
 		"canonical summary remote at /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json",
@@ -576,8 +634,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty",
 		"recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty",
 		"recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
-		"recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty",
-		"recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew",
 		"Mac-side dry-run planning only",
 		"destructive Mac-side operator route",
 		"stages only the reset helper",
@@ -595,9 +651,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"Vault bootstrap authority and proof secret values only in the visible remote helper prompt",
 		"stages only the public runtime identity helper summary script",
 		"does not claim runtime-profile readiness or submit readiness",
-		"stages only the ES service TLS public/internal helper pair",
-		"bounded to ARS/AGS/ES artifact-registry mTLS",
-		"bounded to ES -> EGS trust-model mTLS",
 		"exact confirmation phrase",
 		"visible remote terminal",
 		"non-destructive and does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run IM, or collect support bundles",
@@ -637,10 +690,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"summary preparation, config readability preparation, then SPIRE bundle-read preparation run before helper staging and before any Vault/root/proof prompt",
 		"vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode",
 		"runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode",
-		"es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode",
-		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode",
-		"es-governance-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged ES/EGS governance TLS evidence mode",
-		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged ES/EGS governance TLS recovery mode",
 		"operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode",
 		"operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode",
 		"RESET DISPOSABLE REMOTE ALPHA VAULT",
@@ -657,7 +706,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"not workload-auth success, not ES Vault token brokerage",
 		"runtime-identity-summary is evidence/projection only",
 		"not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation",
-		"es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only",
 		"operator-healthcheck-tls status/renew is bounded host-local operator healthcheck client TLS recovery only",
 		"no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0u",
 		"vault-unseal-existing does not validate default noninteractive readiness",
@@ -677,10 +725,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty",
 		"vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty",
 		"runtime-identity-summary --ssh-target <target> --interactive-tty",
-		"es-service-tls-status --ssh-target <target> --interactive-tty",
-		"es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
-		"es-governance-tls-status --ssh-target <target> --interactive-tty",
-		"es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
 		"operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"separate IM actions",
@@ -699,8 +743,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"scripts/remote_alpha_vault_workload_auth_check.sh",
 		"scripts/internal/remote_alpha_vault_workload_auth_check.sh",
 		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
-		"scripts/remote_alpha_es_service_tls_renew.sh --status",
-		"scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --status",
+		"scripts/remote_alpha_es_service_tls_renew.sh - public wrapper refuses locally",
+		"scripts/internal/remote_alpha_es_service_tls_renew.sh - historical source only",
 		"scripts/remote_alpha_operator_healthcheck_tls_renew.sh --status",
 		"scripts/remote_alpha_migrate_vault_service_user.sh --check-only",
 		"scripts/remote_alpha_operator.sh readiness-session",
@@ -721,10 +765,6 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty",
 		"recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
 		"recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty",
-		"recovery-session es-service-tls-status --ssh-target <target> --interactive-tty",
-		"recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
-		"recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty",
-		"recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty",
 		"recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew",
 		"implemented host-local explicit operator mode",
@@ -735,8 +775,8 @@ func TestRemoteAlphaOperatorRecoverySessionHelpPlanInventoryAndNextStepsDocument
 		"invokes only the staged public helper through ssh -tt",
 		"leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json on the remote host",
 		"leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host",
-		"leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host",
-		"leaves /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json on the remote host",
+		"leaves only protected canonical summary remote",
+		"leaves only protected canonical summary remote",
 		"leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host",
 		"no summary copy-back",
 		"safe local/print-only planning",
@@ -3560,570 +3600,373 @@ func (h *fakeRemoteAlphaESServiceTLSHarness) env() []string {
 	)
 }
 
-func TestRemoteAlphaOperatorRecoverySessionESServiceTLSRejectsUnsafeArgsBeforeDelegation(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		args     []string
-		required []string
-	}{
-		{
-			name:     "status missing ssh target",
-			args:     []string{"es-service-tls-status", "--interactive-tty"},
-			required: []string{"recovery-session es-service-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "status missing tty",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host"},
-			required: []string{"recovery-session es-service-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "status execute renew forbidden",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host", "--interactive-tty", "--execute-renew"},
-			required: []string{"recovery-session es-service-tls-status forbids --execute-renew", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing execute renew",
-			args:     []string{"es-service-tls-renew", "--ssh-target", "host", "--interactive-tty"},
-			required: []string{"recovery-session es-service-tls-renew requires --execute-renew", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing ssh target",
-			args:     []string{"es-service-tls-renew", "--execute-renew", "--interactive-tty"},
-			required: []string{"recovery-session es-service-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing tty",
-			args:     []string{"es-service-tls-renew", "--ssh-target", "host", "--execute-renew"},
-			required: []string{"recovery-session es-service-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "helper override",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host", "--interactive-tty", "--summary-path", "/tmp/x"},
-			required: []string{"forbids helper override flag --summary-path", "fixed documented ARS/AGS/ES TLS paths", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "forbidden status flag",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host", "--interactive-tty", "--status"},
-			required: []string{"recovery-session es-service-tls forbids --status", "bounded ARS/AGS/ES internal TLS status/renew route", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "unknown flag",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host", "--interactive-tty", "--unknown-flag"},
-			required: []string{"unknown option for recovery-session es-service-tls: --unknown-flag", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "equals form",
-			args:     []string{"es-service-tls-status", "--ssh-target=host", "--interactive-tty"},
-			required: []string{"recovery-session es-service-tls does not accept equals-form options: --ssh-target=host", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "duplicate interactive tty",
-			args:     []string{"es-service-tls-status", "--ssh-target", "host", "--interactive-tty", "--interactive-tty"},
-			required: []string{"duplicate option for recovery-session: --interactive-tty", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "ssh target option injection",
-			args:     []string{"es-service-tls-status", "--ssh-target", "-oProxyCommand=sh", "--interactive-tty"},
-			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
-			assertContainsAll(t, "es-service-tls refusal", output, tc.required...)
-			assertContainsNone(t, "es-service-tls refusal", output,
-				"Running Mac-side ES service TLS",
-				"remote_alpha_es_service_tls_renew.sh",
-			)
-		})
-	}
+type fakeRemoteAlphaESTLSStatusHarness struct {
+	localBin  string
+	sshLog    string
+	sshArgv   string
+	scpLog    string
+	stageRoot string
 }
 
-func TestRemoteAlphaOperatorRecoverySessionESServiceTLSRejectsSecretLikeArgsBeforeDelegation(t *testing.T) {
-	for _, args := range [][]string{
-		{"--api-key=dummy"},
-		{"--root-token", "dummy"},
-		{"--unseal-key", "dummy"},
-		{"--vault-token", "dummy"},
-		{"--client-token", "dummy"},
-		{"--jwt-svid", "dummy"},
-		{"--private-key", "dummy"},
-		{"--password", "dummy"},
-		{"--secret", "dummy"},
-	} {
-		t.Run(strings.Join(args, "_"), func(t *testing.T) {
-			routeArgs := append([]string{
-				"recovery-session", "es-service-tls-renew",
-				"--ssh-target", "host",
-				"--interactive-tty",
-				"--execute-renew",
-			}, args...)
-			output := requireRemoteAlphaOperatorFailure(t, routeArgs...)
-			assertContainsAll(t, "es-service-tls secret flag refusal", output,
-				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
-			)
-			assertContainsNone(t, "es-service-tls secret flag refusal", output,
-				"Running Mac-side ES service TLS",
-				"remote_alpha_es_service_tls_renew.sh",
-			)
-		})
-	}
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESServiceTLSNoTTYFailsBeforeStaging(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
-		"recovery-session", "es-service-tls-status",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-	)
-	if err == nil {
-		t.Fatalf("expected no-TTY failure before ES service TLS staging, got success:\n%s", output)
-	}
-	assertContainsAll(t, "es-service-tls no tty refusal", output,
-		"requires visible local terminal",
-		"no staging or SSH occurred",
-		"No recovery-session live helper or IM execution occurred.",
-	)
-	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
-		t.Fatalf("ssh should not run when ES service TLS local TTY guard fails: %v", err)
-	}
-	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
-		t.Fatalf("scp should not run when ES service TLS local TTY guard fails: %v", err)
-	}
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusStagesOnlyFixedHelperPair(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-service-tls-renew-summary.json"))...)
-
-	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
-		"recovery-session", "es-service-tls-status",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-	)
-	if err != nil {
-		t.Fatalf("Mac-side fake ES service TLS status route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
-			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
-	}
-
-	assertESServiceTLSFakeRoute(t, h, output, "--status")
-	assertContainsAll(t, "Mac-side fake ES service TLS status output", output,
-		"Running Mac-side ES service TLS status through an explicit interactive SSH TTY.",
-		"Invoking only the staged public helper with --status",
-		"Status mode is non-mutating",
-		"Status mode is non-mutating and does not restart services.",
-	)
-	assertContainsNone(t, "Mac-side fake ES service TLS status output", output,
-		"--execute-renew",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		"BEGIN PRIVATE KEY",
-		"BEGIN CERTIFICATE",
-	)
-	assertNoNewPaths(t, "Mac-side fake ES service TLS status route", before)
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESServiceTLSRenewStagesOnlyFixedHelperPair(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-service-tls-renew-summary.json"))...)
-
-	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
-		"recovery-session", "es-service-tls-renew",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-		"--execute-renew",
-	)
-	if err != nil {
-		t.Fatalf("Mac-side fake ES service TLS renew route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
-			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
-	}
-
-	assertESServiceTLSFakeRoute(t, h, output, "--execute-renew")
-	assertContainsAll(t, "Mac-side fake ES service TLS renew output", output,
-		"Running Mac-side ES service TLS renewal through an explicit interactive SSH TTY.",
-		"Invoking only the staged public helper with --execute-renew",
-		"bounded to ARS/AGS/ES internal artifact-registry mTLS material",
-		"restarted only ars.service, ags.service, and es.service",
-	)
-	assertContainsNone(t, "Mac-side fake ES service TLS renew output", output,
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		"BEGIN PRIVATE KEY",
-		"BEGIN CERTIFICATE",
-	)
-	assertNoNewPaths(t, "Mac-side fake ES service TLS renew route", before)
-}
-
-func assertESServiceTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLSHarness, output string, helperMode string) {
+func setupFakeRemoteAlphaESTLSStatusHarness(t *testing.T) *fakeRemoteAlphaESTLSStatusHarness {
 	t.Helper()
-	assertContainsAll(t, "Mac-side fake ES service TLS output", output,
-		"Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh.",
-		"Canonical summary stays remote at /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json.",
-		"Remote Alpha ES service TLS helper finished.",
-		"Canonical remote summary path: /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json",
-		"did not copy it back to Mac .out",
-		"did not print full summary JSON",
-	)
-
-	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
-	scpLines := strings.Split(scpLog, "\n")
-	if len(scpLines) != 2 {
-		t.Fatalf("expected exactly two staged file uploads, got %q", scpLog)
+	root := t.TempDir()
+	h := &fakeRemoteAlphaESTLSStatusHarness{
+		localBin:  filepath.Join(root, "bin"),
+		sshLog:    filepath.Join(root, "ssh.log"),
+		sshArgv:   filepath.Join(root, "ssh-argv.bin"),
+		scpLog:    filepath.Join(root, "scp.log"),
+		stageRoot: filepath.Join(root, "stages"),
 	}
-	assertContainsAll(t, "fake ES service TLS scp log", scpLog,
-		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_es_service_tls_renew.sh"),
-		filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_service_tls_renew.sh"),
-		"/scripts/remote_alpha_es_service_tls_renew.sh",
-		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
-	)
-	assertContainsNone(t, "fake ES service TLS scp log", scpLog,
-		"remote_alpha_operator.sh",
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_vault_workload_auth_bootstrap.sh",
-		"remote_alpha_runtime_identity_helper_summary.sh",
-		"remote_alpha_migrate_vault_service_user.sh",
-		"remote_alpha_prepare_es_config_tls",
-		"remote_alpha_deploy_es_binaries",
-		"bundle",
-	)
-
-	sshLog := mustRead(t, h.sshLogPath)
-	if got := strings.Count(sshLog, "tty=true"); got != 1 {
-		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	if err := os.MkdirAll(h.localBin, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	assertContainsAll(t, "fake ES service TLS ssh log", sshLog,
-		"tty=true target=ds@m75q-test",
-		"execution-substrate-remote-alpha-es-service-tls-renew",
-		"exec /bin/bash -c",
-	)
-	assertContainsNone(t, "fake ES service TLS ssh log forbidden capture", sshLog,
-		" tee ",
-		"script ",
-		"transcript",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		".out",
-	)
-
-	sudoLog := strings.TrimSpace(mustRead(t, h.sudoLog))
-	assertContainsAll(t, "fake ES service TLS sudo log", sudoLog,
-		"sudo_args=",
-		"/scripts/remote_alpha_es_service_tls_renew.sh",
-		helperMode,
-	)
-	assertContainsNone(t, "fake ES service TLS sudo log forbidden args", sudoLog,
-		"--summary-path",
-		"--dry-run",
-		"--check-only",
-		"--ars-config-path",
-		"--es-tls-dir",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_reset_disposable_vault.sh",
-	)
-
-	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
-	assertContainsAll(t, "fake ES service TLS helper log", helperLog,
-		"public_args="+helperMode,
-		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
-	)
-	assertContainsNone(t, "fake ES service TLS helper log forbidden args", helperLog,
-		"--summary-path",
-		"--dry-run",
-		"--check-only",
-		"--root-token",
-	)
-
-	rmLog := mustRead(t, h.rmLogPath)
-	assertContainsAll(t, "fake ES service TLS remote cleanup log", rmLog,
-		"execution-substrate-remote-alpha-es-service-tls-renew",
-	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-es-service-tls-renew")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote ES service TLS staged helper directory to be cleaned, found %d entries", len(entries))
+	if err := os.Mkdir(h.stageRoot, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	writeExecutable(t, h.localBin, "ssh", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == -tt ]]; then
+  [[ "$#" -eq 3 && "${2:-}" == ds@m75q-test && -t 0 ]] || exit 64
+  printf '%%s\0' "$@" > "$FAKE_STATUS_SSH_ARGV"
+  remote_command=$3
+  [[ "$remote_command" =~ /tmp/\.es-tls-status-[0-9a-f]{32} ]] || exit 64
+  stage_dir=${BASH_REMATCH[0]}
+  stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
+  printf 'COLLECT_WRAPPER\n' >> %q
+  [[ "${FAKE_STATUS_WRAPPER_FAIL:-0}" != 1 ]] || exit 1
+  if [[ "${FAKE_STATUS_PROMPT_MODE:-none}" != none ]]; then
+    [[ "${FAKE_STATUS_PROMPT_MODE}" != before_prompt ]] || exit 1
+    printf 'FAKE_SUDO_PASSWORD_PROMPT: ' >&2
+    if ! IFS= read -r reply; then exit 1; fi
+    [[ "$reply" =~ ^[0-9a-f]{32}$ ]] || exit 1
+    unset reply
+    [[ "${FAKE_STATUS_PROMPT_MODE}" != refuse ]] || exit 1
+    printf 'PROMPT_READ\n' >> %q
+  fi
+  /bin/rm -- "$stage/remote_alpha_es_tls_status.py"
+  /bin/rmdir -- "$stage"
+  [[ "${FAKE_STATUS_PROMPT_MODE:-none}" != remote_nonzero ]] || exit 12
+else
+  printf 'ARGS:%%s\n' "$*" >> %q
+  cat >> %q
+  stage_dir=${@: -1}
+  [[ "$stage_dir" == /tmp/.es-tls-status-* ]] || exit 64
+  stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
+  printf 'STAGE_CREATE\n' >> %q
+  [[ "${FAKE_STATUS_STAGE_CREATE_FAIL:-0}" != 1 ]] || exit 1
+  /bin/mkdir -m 0700 -- "$stage"
+  printf '%%s\n' "${FAKE_STATUS_STAGE_OUTPUT:-123:456}"
+fi
+`, h.sshLog, h.sshLog, h.sshLog, h.sshLog, h.sshLog))
+	writeExecutable(t, h.localBin, "scp", fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "$*" >> %q
+remote="${2#*:}"
+stage_dir="$(/usr/bin/dirname "$remote")"
+stage="$FAKE_STATUS_STAGE_ROOT/$(/usr/bin/basename "$stage_dir")"
+[[ "${FAKE_STATUS_UPLOAD_FAIL:-0}" != 1 ]] || exit 1
+/bin/cp -- "$1" "$stage/remote_alpha_es_tls_status.py"
+`, h.scpLog))
+	return h
 }
 
-func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRejectsUnsafeArgsBeforeDelegation(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		args     []string
-		required []string
-	}{
-		{
-			name:     "status missing ssh target",
-			args:     []string{"es-governance-tls-status", "--interactive-tty"},
-			required: []string{"recovery-session es-governance-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "status missing tty",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "host"},
-			required: []string{"recovery-session es-governance-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "status execute renew forbidden",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--execute-renew"},
-			required: []string{"recovery-session es-governance-tls-status forbids --execute-renew", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing execute renew",
-			args:     []string{"es-governance-tls-renew", "--ssh-target", "host", "--interactive-tty"},
-			required: []string{"recovery-session es-governance-tls-renew requires --execute-renew", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing ssh target",
-			args:     []string{"es-governance-tls-renew", "--execute-renew", "--interactive-tty"},
-			required: []string{"recovery-session es-governance-tls requires --ssh-target <target>", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "renew missing tty",
-			args:     []string{"es-governance-tls-renew", "--ssh-target", "host", "--execute-renew"},
-			required: []string{"recovery-session es-governance-tls requires --interactive-tty", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "helper override",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--summary-path", "/tmp/x"},
-			required: []string{"forbids helper override flag --summary-path", "fixed documented ES/EGS governance TLS paths", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "scope override",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--scope", "artifact-registry"},
-			required: []string{"forbids --scope", "fixed execution-governance scope", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "unknown flag",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "host", "--interactive-tty", "--unknown-flag"},
-			required: []string{"unknown option for recovery-session es-governance-tls: --unknown-flag", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "equals form",
-			args:     []string{"es-governance-tls-status", "--ssh-target=host", "--interactive-tty"},
-			required: []string{"recovery-session es-governance-tls does not accept equals-form options: --ssh-target=host", "No recovery-session live helper or IM execution occurred."},
-		},
-		{
-			name:     "ssh target option injection",
-			args:     []string{"es-governance-tls-status", "--ssh-target", "-oProxyCommand=sh", "--interactive-tty"},
-			required: []string{"--ssh-target must be a single SSH target, not an option or shell command", "No recovery-session live helper or IM execution occurred."},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			output := requireRemoteAlphaOperatorFailure(t, append([]string{"recovery-session"}, tc.args...)...)
-			assertContainsAll(t, "es-governance-tls refusal", output, tc.required...)
-			assertContainsNone(t, "es-governance-tls refusal", output,
-				"Running Mac-side ES governance TLS",
-				"remote_alpha_es_service_tls_renew.sh",
-			)
-		})
-	}
+func (h *fakeRemoteAlphaESTLSStatusHarness) env() []string {
+	return envWithPath(h.localBin,
+		"FAKE_STATUS_STAGE_ROOT="+h.stageRoot,
+		"FAKE_STATUS_SSH_ARGV="+h.sshArgv,
+		"FAKE_STATUS_SSH_LOG="+h.sshLog,
+		"FAKE_STATUS_SCP_LOG="+h.scpLog)
 }
 
-func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRejectsSecretLikeArgsBeforeDelegation(t *testing.T) {
-	for _, args := range [][]string{
-		{"--api-key=dummy"},
-		{"--root-token", "dummy"},
-		{"--unseal-key", "dummy"},
-		{"--vault-token", "dummy"},
-		{"--client-token", "dummy"},
-		{"--jwt-svid", "dummy"},
-		{"--private-key", "dummy"},
-		{"--password", "dummy"},
-		{"--secret", "dummy"},
-	} {
-		t.Run(strings.Join(args, "_"), func(t *testing.T) {
-			routeArgs := append([]string{
-				"recovery-session", "es-governance-tls-renew",
-				"--ssh-target", "host",
-				"--interactive-tty",
-				"--execute-renew",
-			}, args...)
-			output := requireRemoteAlphaOperatorFailure(t, routeArgs...)
-			assertContainsAll(t, "es-governance-tls secret flag refusal", output,
-				"secret material must never be passed by CLI args/env/logs/reports/artifacts",
-			)
-			assertContainsNone(t, "es-governance-tls secret flag refusal", output,
-				"Running Mac-side ES governance TLS",
-				"remote_alpha_es_service_tls_renew.sh",
-			)
-		})
-	}
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSNoTTYFailsBeforeStaging(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	output, err := runRemoteAlphaOperatorWithEnv(h.env(),
-		"recovery-session", "es-governance-tls-status",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-	)
-	if err == nil {
-		t.Fatalf("expected no-TTY failure before ES governance TLS staging, got success:\n%s", output)
-	}
-	assertContainsAll(t, "es-governance-tls no tty refusal", output,
-		"requires visible local terminal",
-		"no staging or SSH occurred",
-		"No recovery-session live helper or IM execution occurred.",
-	)
-	if _, err := os.Stat(h.sshLogPath); !os.IsNotExist(err) {
-		t.Fatalf("ssh should not run when ES governance TLS local TTY guard fails: %v", err)
-	}
-	if _, err := os.Stat(h.scpLogPath); !os.IsNotExist(err) {
-		t.Fatalf("scp should not run when ES governance TLS local TTY guard fails: %v", err)
-	}
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSStatusStagesOnlyFixedHelperPair(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-governance-tls-renew-summary.json"))...)
-
-	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
-		"recovery-session", "es-governance-tls-status",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-	)
-	if err != nil {
-		t.Fatalf("Mac-side fake ES governance TLS status route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
-			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
-	}
-
-	assertESGovernanceTLSFakeRoute(t, h, output, "--scope execution-governance --status")
-	assertContainsAll(t, "Mac-side fake ES governance TLS status output", output,
-		"Running Mac-side ES governance TLS status through an explicit interactive SSH TTY.",
-		"Invoking only the staged public helper with --scope execution-governance --status",
-		"Status mode is non-mutating",
-		"Status mode is non-mutating and does not restart services.",
-	)
-	assertContainsNone(t, "Mac-side fake ES governance TLS status output", output,
-		"--execute-renew",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		"BEGIN PRIVATE KEY",
-		"BEGIN CERTIFICATE",
-	)
-	assertNoNewPaths(t, "Mac-side fake ES governance TLS status route", before)
-}
-
-func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSRenewStagesOnlyFixedHelperPair(t *testing.T) {
-	h := setupFakeRemoteAlphaESServiceTLSHarness(t)
-	before := snapshotPathExistence(t, remoteAlphaOperatorRouteArtifactPaths(filepath.Join(".out", "remote-alpha-m75q", "es-governance-tls-renew-summary.json"))...)
-
-	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
-		"recovery-session", "es-governance-tls-renew",
-		"--ssh-target", "ds@m75q-test",
-		"--interactive-tty",
-		"--execute-renew",
-	)
-	if err != nil {
-		t.Fatalf("Mac-side fake ES governance TLS renew route failed: %v\noutput=%s\nssh=%s\nscp=%s\nsudo=%s\nhelper=%s\nrm=%s",
-			err, output, readIfExists(h.sshLogPath), readIfExists(h.scpLogPath), readIfExists(h.sudoLog), readIfExists(h.helperLog), readIfExists(h.rmLogPath))
-	}
-
-	assertESGovernanceTLSFakeRoute(t, h, output, "--scope execution-governance --execute-renew")
-	assertContainsAll(t, "Mac-side fake ES governance TLS renew output", output,
-		"Running Mac-side ES governance TLS renewal through an explicit interactive SSH TTY.",
-		"Invoking only the staged public helper with --scope execution-governance --execute-renew",
-		"bounded to ES/EGS execution-governance trust-model mTLS material",
-		"restarted only egs.service and es.service",
-	)
-	assertContainsNone(t, "Mac-side fake ES governance TLS renew output", output,
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		"BEGIN PRIVATE KEY",
-		"BEGIN CERTIFICATE",
-	)
-	assertNoNewPaths(t, "Mac-side fake ES governance TLS renew route", before)
-}
-
-func assertESGovernanceTLSFakeRoute(t *testing.T, h *fakeRemoteAlphaESServiceTLSHarness, output string, helperArgs string) {
+func statusSSHCommandTokens(t *testing.T, h *fakeRemoteAlphaESTLSStatusHarness) []string {
 	t.Helper()
-	assertContainsAll(t, "Mac-side fake ES governance TLS output", output,
-		"Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh.",
-		"Canonical summary stays remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json.",
-		"Remote Alpha ES service TLS helper finished.",
-		"Canonical remote summary path: /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json",
-		"did not copy it back to Mac .out",
-		"did not print full summary JSON",
-	)
-
-	scpLog := strings.TrimSpace(mustRead(t, h.scpLogPath))
-	scpLines := strings.Split(scpLog, "\n")
-	if len(scpLines) != 2 {
-		t.Fatalf("expected exactly two staged file uploads, got %q", scpLog)
+	raw, err := os.ReadFile(h.sshArgv)
+	if err != nil {
+		t.Fatalf("read captured SSH argv: %v", err)
 	}
-	assertContainsAll(t, "fake ES governance TLS scp log", scpLog,
-		filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_es_service_tls_renew.sh"),
-		filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_service_tls_renew.sh"),
-		"/scripts/remote_alpha_es_service_tls_renew.sh",
-		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
-	)
-	assertContainsNone(t, "fake ES governance TLS scp log", scpLog,
-		"remote_alpha_operator.sh",
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_vault_workload_auth_bootstrap.sh",
-		"remote_alpha_runtime_identity_helper_summary.sh",
-		"remote_alpha_migrate_vault_service_user.sh",
-		"remote_alpha_prepare_es_config_tls",
-		"remote_alpha_deploy_es_binaries",
-		"bundle",
-	)
-
-	sshLog := mustRead(t, h.sshLogPath)
-	if got := strings.Count(sshLog, "tty=true"); got != 1 {
-		t.Fatalf("expected exactly one interactive ssh -tt invocation, got %d log=%q", got, sshLog)
+	argv := strings.Split(string(raw), "\x00")
+	if len(argv) != 4 || argv[0] != "-tt" || argv[1] != "ds@m75q-test" || argv[3] != "" {
+		t.Fatal("status SSH argv has unexpected shape")
 	}
-	assertContainsAll(t, "fake ES governance TLS ssh log", sshLog,
-		"tty=true target=ds@m75q-test",
-		"execution-substrate-remote-alpha-es-governance-tls-renew",
-		"exec /bin/bash -c",
-	)
-	assertContainsNone(t, "fake ES governance TLS ssh log forbidden capture", sshLog,
-		" tee ",
-		"script ",
-		"transcript",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		"cp-proof",
-		".out",
-	)
+	parser := exec.Command("/usr/bin/python3", "-I", "-B", "-c",
+		"import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))")
+	parser.Stdin = strings.NewReader(argv[2])
+	decoded, err := parser.Output()
+	if err != nil {
+		t.Fatalf("parse fixed remote command: %v", err)
+	}
+	var tokens []string
+	if err := json.Unmarshal(decoded, &tokens); err != nil {
+		t.Fatalf("decode fixed remote command tokens: %v", err)
+	}
+	if len(tokens) != 8 || tokens[0] != "/bin/bash" || tokens[1] != "-c" || tokens[3] != "--" {
+		t.Fatal("fixed remote command does not invoke Bash with exact operands")
+	}
+	if len(argv[2]) > 32768 {
+		t.Fatal("fixed remote command exceeded the documented byte bound")
+	}
+	return tokens
+}
 
-	sudoLog := strings.TrimSpace(mustRead(t, h.sudoLog))
-	assertContainsAll(t, "fake ES governance TLS sudo log", sudoLog,
-		"sudo_args=",
-		"/scripts/remote_alpha_es_service_tls_renew.sh",
-		helperArgs,
-	)
-	assertContainsNone(t, "fake ES governance TLS sudo log forbidden args", sudoLog,
-		"--summary-path",
-		"--dry-run",
-		"--check-only",
-		"--egs-config-path",
-		"--es-tls-dir",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_reset_disposable_vault.sh",
-	)
+func assertStatusFixedRemoteCommand(t *testing.T, h *fakeRemoteAlphaESTLSStatusHarness, scope string) {
+	t.Helper()
+	tokens := statusSSHCommandTokens(t, h)
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	const opening = "IFS= read -r -d '' wrapper <<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true\n"
+	const closing = "\nREMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER\n"
+	start := strings.Index(source, opening)
+	if start < 0 {
+		t.Fatal("fixed remote wrapper source missing")
+	}
+	start += len(opening)
+	end := strings.Index(source[start:], closing)
+	if end < 0 || tokens[2] != source[start:start+end+1] {
+		t.Fatal("remote command program differs from the fixed source-controlled wrapper")
+	}
+	if !regexp.MustCompile(`^/tmp/\.es-tls-status-[0-9a-f]{32}$`).MatchString(tokens[4]) ||
+		tokens[5] != "123:456" || tokens[6] != scope {
+		t.Fatal("remote command stage, custody identity, or scope boundaries changed")
+	}
+	collector, err := os.ReadFile(filepath.Join(executionSubstrateRepoRoot,
+		"scripts", "internal", "remote_alpha_es_tls_status.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(collector)
+	if tokens[7] != hex.EncodeToString(digest[:]) {
+		t.Fatal("remote command collector digest differs from fixed local source")
+	}
+}
 
-	helperLog := strings.TrimSpace(mustRead(t, h.helperLog))
-	assertContainsAll(t, "fake ES governance TLS helper log", helperLog,
-		"public_args="+helperArgs,
-		"/scripts/internal/remote_alpha_es_service_tls_renew.sh",
-	)
-	assertContainsNone(t, "fake ES governance TLS helper log forbidden args", helperLog,
-		"--summary-path",
-		"--dry-run",
-		"--check-only",
-		"--root-token",
-	)
+func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusStagesOnlyCollector(t *testing.T) {
+	h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "es-service-tls-status", "--ssh-target", "ds@m75q-test", "--interactive-tty")
+	if err != nil {
+		t.Fatalf("fake P0s status route failed: %v\n%s", err, output)
+	}
+	scp := mustRead(t, h.scpLog)
+	if strings.Count(strings.TrimSpace(scp), "\n") != 0 {
+		t.Fatalf("expected exactly one staged collector: %q", scp)
+	}
+	assertContainsAll(t, "P0s collector staging", scp, "scripts/internal/remote_alpha_es_tls_status.py")
+	assertContainsNone(t, "P0s collector staging", scp, "remote_alpha_es_service_tls_renew.sh")
+	assertStatusFixedRemoteCommand(t, h, "artifact-registry")
+	ssh := mustRead(t, h.sshLog)
+	assertContainsAll(t, "P0s transport", ssh, "STAGE_CREATE", "COLLECT_WRAPPER")
+}
 
-	rmLog := mustRead(t, h.rmLogPath)
-	assertContainsAll(t, "fake ES governance TLS remote cleanup log", rmLog,
-		"execution-substrate-remote-alpha-es-governance-tls-renew",
-	)
-	if entries, err := os.ReadDir(filepath.Join(h.remoteRoot, "tmp", "execution-substrate-remote-alpha-es-governance-tls-renew")); err == nil && len(entries) > 0 {
-		t.Fatalf("expected remote ES governance TLS staged helper directory to be cleaned, found %d entries", len(entries))
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusFixedRootBootstrapArgv(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	section := docSection(t, source, "remote_alpha_es_tls_status_remote_wrapper() {", "\nrecovery_session_es_service_tls() {")
+	assertContainsAll(t, "fixed status bootstrap", section,
+		`collector_digest="$(/usr/bin/shasum -a 256 "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}"`,
+		`[[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]]`,
+		`sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}"`,
+		`remote_alpha_es_tls_status.py "${collector_digest}" "${scope}"`,
+		`hashlib.sha256(payload).hexdigest() != digest`,
+		`exec(compile(payload, label, "exec"), namespace)`)
+	assertContainsNone(t, "root pathname execution", section,
+		`sudo LC_ALL=C /usr/bin/python3 -I -B "${collector}"`,
+		`--digest`, `--script-path`)
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESGovernanceTLSStatusStagesOnlyCollector(t *testing.T) {
+	h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+	output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+		"recovery-session", "es-governance-tls-status", "--ssh-target", "ds@m75q-test", "--interactive-tty")
+	if err != nil {
+		t.Fatalf("fake P0t status route failed: %v\n%s", err, output)
+	}
+	scp := mustRead(t, h.scpLog)
+	if strings.Count(strings.TrimSpace(scp), "\n") != 0 {
+		t.Fatalf("expected exactly one staged collector: %q", scp)
+	}
+	assertContainsAll(t, "P0t collector staging", scp, "scripts/internal/remote_alpha_es_tls_status.py")
+	assertContainsNone(t, "P0t collector staging", scp, "remote_alpha_es_service_tls_renew.sh")
+	assertStatusFixedRemoteCommand(t, h, "execution-governance")
+	ssh := mustRead(t, h.sshLog)
+	assertContainsAll(t, "P0t transport", ssh, "STAGE_CREATE", "COLLECT_WRAPPER")
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractiveStdinSourceGuard(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	start := strings.Index(source, "remote_alpha_es_tls_status_shell_quote() {")
+	end := strings.Index(source, "\nrecovery_session_es_service_tls() {")
+	if start < 0 || end < start {
+		t.Fatal("P0s/P0t status transport source boundaries missing")
+	}
+	section := source[start:end]
+	if regexp.MustCompile(`\|\s*ssh\s+-tt\b`).MatchString(section) ||
+		strings.Contains(section, `ssh -tt "${target}" /bin/bash -s`) ||
+		strings.Contains(section, "sudo -n") ||
+		strings.Contains(section, "/dev/tty") {
+		t.Fatal("P0s/P0t status transport still consumes wrapper bytes from SSH stdin")
+	}
+	for _, fixed := range []string{
+		`ssh -tt "${ssh_target}" "${remote_command}"`,
+		`remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}"`,
+		`[[ ${#remote_command} -le 32768 ]]`,
+	} {
+		if !strings.Contains(section, fixed) {
+			t.Fatal("P0s/P0t fixed command construction or preflight is missing")
+		}
+	}
+	preflight := strings.Index(section, `remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615"`)
+	contact := strings.Index(section, `stage_identity="$(ssh "${ssh_target}"`)
+	if preflight < 0 || contact < 0 || preflight > contact {
+		t.Fatal("remote command size preflight does not precede host contact")
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusRejectsHostileTransportInputs(t *testing.T) {
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		for _, target := range []string{"-oProxyCommand=sh", "host;id", "host'quote", "user@@host", "host/path", "host$(id)"} {
+			t.Run(route+"/"+target, func(t *testing.T) {
+				h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+				output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+					"--ssh-target", target, "--interactive-tty")
+				if err == nil || !strings.Contains(output, "single SSH target") {
+					t.Fatal("hostile target was not rejected before contact")
+				}
+				for _, path := range []string{h.sshLog, h.scpLog, h.sshArgv} {
+					if _, err := os.Lstat(path); !os.IsNotExist(err) {
+						t.Fatal("hostile target contacted fake transport")
+					}
+				}
+			})
+		}
+	}
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	start := strings.Index(source, "remote_alpha_es_tls_status_shell_quote() {")
+	end := strings.Index(source, "\nrecovery_session_es_tls_status() {")
+	if start < 0 || end < start {
+		t.Fatal("fixed command builder source boundaries missing")
+	}
+	build := "set -euo pipefail\n" + source[start:end] + "\nremote_alpha_es_tls_status_remote_wrapper \"$@\""
+	validStage := "/tmp/.es-tls-status-" + strings.Repeat("a", 32)
+	validDigest := strings.Repeat("b", 64)
+	for _, operands := range [][]string{
+		{validStage + "';id", "123:456", "artifact-registry", validDigest},
+		{validStage, "123:456;id", "artifact-registry", validDigest},
+		{validStage, "123:456", "artifact-registry;id", validDigest},
+		{validStage, "123:456", "artifact-registry", validDigest + "'"},
+		{validStage, "18446744073709551616:1", "artifact-registry", validDigest},
+	} {
+		cmd := exec.Command("/bin/bash", append([]string{"-c", build, "status-builder"}, operands...)...)
+		output, err := cmd.CombinedOutput()
+		if err == nil || len(output) != 0 {
+			t.Fatal("hostile fixed-command operand was accepted or echoed")
+		}
+	}
+	const sizeGuard = `[[ ${#remote_command} -le 32768 ]]`
+	if !strings.Contains(build, sizeGuard) {
+		t.Fatal("fixed command size guard missing")
+	}
+	forcedOverlarge := strings.Replace(build, sizeGuard, `[[ ${#remote_command} -le 1 ]]`, 1)
+	cmd := exec.Command("/bin/bash", "-c", forcedOverlarge, "status-builder",
+		validStage, "123:456", "artifact-registry", validDigest)
+	output, err := cmd.CombinedOutput()
+	if err == nil || len(output) != 0 {
+		t.Fatal("overlarge fixed command was accepted or echoed")
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractivePromptAndFailureResidue(t *testing.T) {
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		for _, tc := range []struct {
+			mode         string
+			wantSuccess  bool
+			wantPrompt   bool
+			wantResponse bool
+			wantResidue  bool
+		}{
+			{"success", true, true, true, false},
+			{"before_prompt", false, false, false, true},
+			{"refuse", false, true, false, true},
+			{"eof", false, true, false, true},
+			{"remote_nonzero", false, true, true, false},
+		} {
+			t.Run(route+"/"+tc.mode, func(t *testing.T) {
+				h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+				env := append(h.env(), "FAKE_STATUS_PROMPT_MODE="+tc.mode)
+				output, err := runRemoteAlphaOperatorWithPromptPTY(t, env, "recovery-session", route,
+					"--ssh-target", "ds@m75q-test", "--interactive-tty")
+				if (err == nil) != tc.wantSuccess {
+					t.Fatalf("interactive route result differs for %s: %v", tc.mode, err)
+				}
+				if strings.Contains(output, "FAKE_SUDO_PASSWORD_PROMPT: ") != tc.wantPrompt {
+					t.Fatal("fake sudo prompt visibility differs")
+				}
+				log := mustRead(t, h.sshLog)
+				if strings.Contains(log, "PROMPT_READ") != tc.wantResponse {
+					t.Fatal("fake sudo prompt response result differs")
+				}
+				entries, err := os.ReadDir(h.stageRoot)
+				if err != nil || (len(entries) == 1) != tc.wantResidue {
+					t.Fatal("stage residue disposition differs after interactive result")
+				}
+				if tc.wantResidue {
+					leaves, err := os.ReadDir(filepath.Join(h.stageRoot, entries[0].Name()))
+					if err != nil || len(leaves) != 1 || leaves[0].Name() != "remote_alpha_es_tls_status.py" {
+						t.Fatal("failed interactive handoff did not retain only diagnostic collector residue")
+					}
+				}
+			})
+		}
+	}
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+		output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+			"--ssh-target", "ds@m75q-test", "--interactive-tty")
+		if err == nil || !strings.Contains(output, "requires a visible local terminal") {
+			t.Fatal("status route did not require a real local terminal")
+		}
+		for _, path := range []string{h.sshLog, h.scpLog, h.sshArgv} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatal("non-terminal route contacted fake transport")
+			}
+		}
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESServiceTLSRenewHeldBeforeContact(t *testing.T) {
+	for _, route := range []string{"es-service-tls-renew", "es-governance-tls-renew"} {
+		t.Run(route, func(t *testing.T) {
+			h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+			output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+				"--ssh-target", "ds@m75q-test", "--interactive-tty", "--execute-renew")
+			if err == nil {
+				t.Fatalf("held renewal route unexpectedly succeeded: %s", output)
+			}
+			assertContainsAll(t, "renewal refusal", output, "held")
+			if _, err := os.Stat(h.sshLog); !os.IsNotExist(err) {
+				t.Fatalf("SSH was contacted: %v", err)
+			}
+			if _, err := os.Stat(h.scpLog); !os.IsNotExist(err) {
+				t.Fatalf("SCP was contacted: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusRejectsRenewBeforeContact(t *testing.T) {
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		t.Run(route, func(t *testing.T) {
+			h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+			output, err := runRemoteAlphaOperatorWithEnv(h.env(), "recovery-session", route,
+				"--ssh-target", "ds@m75q-test", "--interactive-tty", "--execute-renew")
+			if err == nil {
+				t.Fatalf("renew flag unexpectedly accepted: %s", output)
+			}
+			if _, err := os.Stat(h.sshLog); !os.IsNotExist(err) {
+				t.Fatalf("SSH was contacted: %v", err)
+			}
+			if _, err := os.Stat(h.scpLog); !os.IsNotExist(err) {
+				t.Fatalf("SCP was contacted: %v", err)
+			}
+		})
 	}
 }
 
@@ -6709,25 +6552,19 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault_workload_auth_check.sh"`,
 		`REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_check.sh"`,
 		`REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"`,
-		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"`,
-		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"`,
 		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_operator_healthcheck_tls_renew.sh"`,
 		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_operator_healthcheck_tls_renew.sh"`,
-		`REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"`,
 		`REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-operator-healthcheck-tls-renew"`,
 		`REMOTE_ALPHA_VAULT_UNSEAL_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-unseal-existing"`,
 		`REMOTE_ALPHA_VAULT_RESET_DRY_RUN_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-reset-disposable-dry-run"`,
 		`REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-vault-workload-auth-check"`,
 		`REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-runtime-identity-summary"`,
-		`REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-service-tls-renew"`,
 		`exec "${REMOTE_ALPHA_ES_WRITABLE_STATE_READINESS_HELPER}" "${helper_args[@]}"`,
 		`exec "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "--unseal-only"`,
 		`scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}" "${ssh_target}:${remote_helper_path}"`,
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
 		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
 		`scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}" "${ssh_target}:${remote_helper_path}"`,
-		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
-		`scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
 		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"`,
 		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"`,
 		`"${helper_path}" --unseal-only`,
@@ -6737,10 +6574,6 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		`recovery_session_vault_workload_auth_bootstrap`,
 		`recovery_session_runtime_identity_summary`,
 		`recovery_session_runtime_identity_summary_remote`,
-		`recovery_session_es_service_tls`,
-		`recovery_session_es_service_tls_remote`,
-		`recovery_session_es_governance_tls`,
-		`recovery_session_es_governance_tls_remote`,
 		`recovery_session_operator_healthcheck_tls`,
 		`recovery_session_operator_healthcheck_tls_remote`,
 		`ssh -tt "${ssh_target}"`,
@@ -6869,22 +6702,61 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 	)
 
 	liveCommand := regexp.MustCompile(`(^|[;&|()]|\bthen\b|\bdo\b)\s*(sudo|ssh|scp|vault|nomad|docker|spire|systemctl)(\s|$|[;&|()<>])`)
+	statusTransport := `ssh -tt "${ssh_target}" "${remote_command}"`
+	statusStage := `if ! stage_identity="$(ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_STAGE' | /usr/bin/python3 -I -B -c '`
+	statusBootstrap := `sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \`
+	allowedStatusLine := func(line string) bool {
+		return line == statusTransport || line == statusStage || line == statusBootstrap
+	}
+	existingPrefixes := []string{
+		`ssh "${ssh_target}"`, `ssh -tt "${ssh_target}"`,
+		`scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`,
+		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`,
+		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`,
+		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`,
+		`scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`,
+		`scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}"`,
+		`scp "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}"`,
+		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}"`,
+		`scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}"`,
+		`sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`,
+		`sudo -v -p "Remote Alpha OS sudo password for config readability preparation: "`,
+		`sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`,
+		`sudo -n "$@"`, `sudo -n test "${predicate}" "${path}"`,
+		`systemctl is-active --quiet spire-server`,
+	}
+	allowedLiveLine := func(line string) bool {
+		if allowedStatusLine(line) {
+			return true
+		}
+		for _, prefix := range existingPrefixes {
+			if strings.HasPrefix(line, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, line := range []string{statusTransport, statusStage, statusBootstrap} {
+		if !liveCommand.MatchString(line) || !allowedLiveLine(line) {
+			t.Fatalf("fixed status delegation was rejected: %s", line)
+		}
+	}
 	for lineNumber, line := range strings.Split(source, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if liveCommand.MatchString(trimmed) {
-			if strings.HasPrefix(trimmed, `ssh "${ssh_target}"`) || strings.HasPrefix(trimmed, `ssh -tt "${ssh_target}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_RESET_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER}"`) || strings.HasPrefix(trimmed, `scp "${REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER}"`) {
-				continue
-			}
-			if strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for summary path preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for config readability preparation: "`) || strings.HasPrefix(trimmed, `sudo -v -p "Remote Alpha OS sudo password for SPIRE bundle-read preparation: "`) || strings.HasPrefix(trimmed, `sudo -n "$@"`) || strings.HasPrefix(trimmed, `sudo -n test "${predicate}" "${path}"`) {
-				continue
-			}
-			if strings.HasPrefix(trimmed, `systemctl is-active --quiet spire-server`) {
-				continue
-			}
+		if liveCommand.MatchString(trimmed) && !allowedLiveLine(trimmed) {
 			t.Fatalf("operator source line %d appears to invoke a live tool: %s", lineNumber+1, line)
+		}
+	}
+	for _, injected := range []string{
+		`printf '%s\n' "${arbitrary}" | ssh -tt "${target}" /bin/bash -s -- arbitrary`,
+		`sudo LC_ALL=C /usr/bin/python3 -I -B -c "${arbitrary}" "${stage_dir}"`,
+		`printf '%s\n' "${wrapper}" | ssh -tt "${target}" /bin/bash -s -- another-route`,
+	} {
+		if !liveCommand.MatchString(injected) || allowedLiveLine(injected) {
+			t.Fatalf("arbitrary delegation passed fixed status source guard: %s", injected)
 		}
 	}
 
@@ -6908,5 +6780,373 @@ func TestRemoteAlphaOperatorSourceLimitsP0kDelegationSurface(t *testing.T) {
 		if captureCommand.MatchString(trimmed) {
 			t.Fatalf("operator source line %d appears to invoke transcript capture: %s", lineNumber+1, line)
 		}
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESServiceTLSStatusHelpInventoryHeld(t *testing.T) {
+	for _, args := range [][]string{{"help"}, {"inventory"}, {"recovery-session", "--help"}, {"recovery-session", "--inventory"}} {
+		output := requireRemoteAlphaOperatorSuccess(t, args...)
+		assertContainsAll(t, "P0s/P0t held route text", output,
+			"es-service-tls-status", "es-governance-tls-status",
+			"es-service-tls-renew", "es-governance-tls-renew", "held")
+		assertContainsNone(t, "P0s/P0t held route text", output,
+			"ES service TLS public/internal helper pair", "renews only bounded ARS/AGS/ES")
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusPreCollectorStageCleanup(t *testing.T) {
+	facade := mustRead(t, remoteAlphaOperatorScriptPath())
+	section := docSection(t, facade, "remote_alpha_es_tls_status_remote_wrapper() {", "\nrecovery_session_es_service_tls() {")
+	assertContainsAll(t, "P0s/P0t custody owner", section,
+		"REMOTE_ALPHA_ES_TLS_STATUS_CREATE", "os.mkdir(name, 0o700, dir_fd=parent_fd)",
+		"O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC", "os.listdir(directory_fd) != []",
+		"os.fchown(dir_fd, 0, 0)", "os.unlink(basename, dir_fd=dir_fd)")
+	assertContainsNone(t, "no destructive caller cleanup", section,
+		"cleanup-only", "CALLER_CLEANUP", "STATUS_CLEANUP", "cleanup_stage()",
+		"mkdir -m 0700 --", "rm -rf /tmp/.es-tls-status-*")
+	for _, tc := range []struct {
+		name          string
+		extra         []string
+		wantNoSCP     bool
+		wantNoCollect bool
+		wantStage     bool
+	}{
+		{"stage create failure", []string{"FAKE_STATUS_STAGE_CREATE_FAIL=1"}, true, true, false},
+		{"malformed identity", []string{"FAKE_STATUS_STAGE_OUTPUT=123:456\nextra"}, true, true, true},
+		{"overflow identity", []string{"FAKE_STATUS_STAGE_OUTPUT=18446744073709551616:2"}, true, true, true},
+		{"upload failure", []string{"FAKE_STATUS_UPLOAD_FAIL=1"}, false, true, true},
+		{"wrapper failure before collector", []string{"FAKE_STATUS_WRAPPER_FAIL=1"}, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+			env := append(h.env(), tc.extra...)
+			output, err := runRemoteAlphaOperatorWithPTY(t, env,
+				"recovery-session", "es-service-tls-status", "--ssh-target", "ds@m75q-test", "--interactive-tty")
+			if err == nil {
+				t.Fatalf("pre-collector failure unexpectedly succeeded: %s", output)
+			}
+			ssh := mustRead(t, h.sshLog)
+			assertContainsAll(t, tc.name+" SSH", ssh, "STAGE_CREATE")
+			assertContainsNone(t, tc.name+" SSH", ssh, "CLEANUP_ONLY", "WRAPPER_CLEANUP_TRAP")
+			if tc.wantNoCollect {
+				assertContainsNone(t, tc.name+" SSH", ssh, "COLLECT_WRAPPER")
+			}
+			if tc.wantNoSCP {
+				if _, err := os.Stat(h.scpLog); !os.IsNotExist(err) {
+					t.Fatalf("SCP ran after stage creation failed: %v", err)
+				}
+			} else {
+				assertContainsAll(t, tc.name+" SCP", mustRead(t, h.scpLog), "remote_alpha_es_tls_status.py")
+			}
+			assertContainsNone(t, "no accepted generation on failure", output, "collector published a completed observation")
+			assertContainsNone(t, "bounded failure text", output, "ds@m75q-test", "123:456")
+			stages, err := os.ReadDir(h.stageRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantStage != (len(stages) == 1) {
+				t.Fatalf("stage residue count=%d wantStage=%v", len(stages), tc.wantStage)
+			}
+			if tc.wantStage {
+				entries, err := os.ReadDir(filepath.Join(h.stageRoot, stages[0].Name()))
+				if err != nil || len(entries) > 1 || (len(entries) == 1 && entries[0].Name() != "remote_alpha_es_tls_status.py") {
+					t.Fatalf("unsafe residue entry set: %v %v", entries, err)
+				}
+				if len(entries) == 1 {
+					got := mustRead(t, filepath.Join(h.stageRoot, stages[0].Name(), entries[0].Name()))
+					want := mustRead(t, "scripts/internal/remote_alpha_es_tls_status.py")
+					if got != want {
+						t.Fatal("residue payload differs from fixed public collector")
+					}
+				}
+			}
+		})
+	}
+	for _, scope := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		t.Run(scope+" success has no later cleanup", func(t *testing.T) {
+			h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+			output, err := runRemoteAlphaOperatorWithPTY(t, h.env(),
+				"recovery-session", scope, "--ssh-target", "ds@m75q-test", "--interactive-tty")
+			if err != nil {
+				t.Fatalf("status route failed: %v\n%s", err, output)
+			}
+			ssh := mustRead(t, h.sshLog)
+			assertContainsAll(t, scope, ssh, "STAGE_CREATE", "COLLECT_WRAPPER")
+			assertContainsNone(t, scope, ssh, "CLEANUP_ONLY", "WRAPPER_CLEANUP_TRAP")
+			stages, err := os.ReadDir(h.stageRoot)
+			if err != nil || len(stages) != 0 {
+				t.Fatalf("successful fake root cleanup left stage: %v %v", stages, err)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	assertContainsAll(t, "staged-leaf boundary", source,
+		"entry = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)",
+		"stat.S_ISREG(entry.st_mode)", "os.O_NONBLOCK")
+	for _, mode := range []string{"fifo", "safe"} {
+		t.Run(mode, func(t *testing.T) {
+			for label, ok := range runRemoteAlphaESStatusBootstrapCase(t, mode) {
+				if !ok {
+					t.Errorf("%s did not reach the staged-leaf boundary or expected outcome", label)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	const opening = "<<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true\n"
+	const closing = "\nREMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER\n"
+	start := strings.Index(source, opening)
+	if start < 0 {
+		t.Fatal("remote wrapper heredoc missing")
+	}
+	start += len(opening)
+	end := strings.Index(source[start:], closing)
+	if end < 0 {
+		t.Fatal("remote wrapper heredoc closure missing")
+	}
+	wrapper := source[start : start+end]
+	// The fixed target /tmp is a real directory. The local macOS fixture uses
+	// /private/tmp because its /tmp is a symlink.
+	wrapper = strings.ReplaceAll(wrapper, "/tmp", "/private/tmp")
+	wrapper = strings.ReplaceAll(wrapper,
+		`if any(attr not in ("security.selinux", "com.apple.provenance") for attr in os.listxattr(fd)):`,
+		"if False:")
+	for _, tc := range []struct {
+		name, outcome string
+		filePresent   bool
+		wantCalls     int
+		wantSuccess   bool
+		wantStage     bool
+	}{
+		{"setup failure before sudo", "fail", false, 0, false, true},
+		{"sudo authentication failure", "fail", true, 1, false, true},
+		{"sudo launch failure", "launchfail", true, 1, false, true},
+		{"bootstrap rejection", "reject", true, 1, false, true},
+		{"substituted stage refusal", "substitute", true, 1, false, true},
+		{"collector success", "success", true, 1, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identifier := make([]byte, 16)
+			if _, err := rand.Read(identifier); err != nil {
+				t.Fatal(err)
+			}
+			stage := "/private/tmp/.es-tls-status-" + hex.EncodeToString(identifier)
+			moved := stage + ".moved"
+			if err := os.Mkdir(stage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chown(stage, os.Getuid(), os.Getgid()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.Remove(filepath.Join(stage, "remote_alpha_es_tls_status.py"))
+				_ = os.Remove(stage)
+				_ = os.Remove(filepath.Join(moved, "remote_alpha_es_tls_status.py"))
+				_ = os.Remove(moved)
+			})
+			if tc.filePresent {
+				if err := os.WriteFile(filepath.Join(stage, "remote_alpha_es_tls_status.py"), []byte("# fixture\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chown(filepath.Join(stage, "remote_alpha_es_tls_status.py"), os.Getuid(), os.Getgid()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			info, err := os.Stat(stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := fmt.Sprintf("%d:%d", info.Sys().(*syscall.Stat_t).Dev, info.Sys().(*syscall.Stat_t).Ino)
+			root := t.TempDir()
+			bin := filepath.Join(root, "bin")
+			if err := os.Mkdir(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(root, "sudo.log")
+			writeExecutable(t, bin, "sudo", `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *" -c "* ]]; then
+  printf 'BOOTSTRAP\n' >> "$FAKE_STATUS_SUDO_LOG"
+  if [[ "$FAKE_STATUS_COLLECT_OUTCOME" == success ]]; then
+    /bin/rm -- "$FAKE_STATUS_STAGE/remote_alpha_es_tls_status.py"
+    /bin/rmdir -- "$FAKE_STATUS_STAGE"
+    exit 0
+  fi
+  if [[ "$FAKE_STATUS_COLLECT_OUTCOME" == substitute ]]; then
+    /bin/mv -- "$FAKE_STATUS_STAGE" "$FAKE_STATUS_STAGE.moved"
+    /bin/mkdir -m 0700 -- "$FAKE_STATUS_STAGE"
+    /bin/cp -- "$FAKE_STATUS_STAGE.moved/remote_alpha_es_tls_status.py" "$FAKE_STATUS_STAGE/remote_alpha_es_tls_status.py"
+  fi
+  if [[ "$FAKE_STATUS_COLLECT_OUTCOME" == launchfail ]]; then
+    exit 127
+  fi
+  exit 1
+fi
+printf 'CLEANUP\n' >> "$FAKE_STATUS_SUDO_LOG"
+exit 0
+`)
+			cmd := exec.Command("/bin/bash", "-s", "--", stage, identity, "artifact-registry", strings.Repeat("a", 64))
+			cmd.Stdin = strings.NewReader(wrapper)
+			cmd.Env = envWithPath(bin,
+				"FAKE_STATUS_SUDO_LOG="+log,
+				"FAKE_STATUS_COLLECT_OUTCOME="+tc.outcome,
+				"FAKE_STATUS_STAGE="+stage)
+			output, err := cmd.CombinedOutput()
+			if tc.wantSuccess != (err == nil) {
+				t.Fatalf("remote wrapper result: %v\n%s", err, output)
+			}
+			calls := []string{}
+			if data, readErr := os.ReadFile(log); readErr == nil {
+				calls = strings.Split(strings.TrimSpace(string(data)), "\n")
+			} else if !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("sudo call count %d, want %d: %q", len(calls), tc.wantCalls, calls)
+			}
+			if tc.filePresent && calls[0] != "BOOTSTRAP" {
+				t.Fatalf("first call was not bootstrap: %q", calls)
+			}
+			_, stageErr := os.Lstat(stage)
+			if tc.wantStage != (stageErr == nil) {
+				t.Fatalf("stage residue mismatch: stage=%v, err=%v, sudo=%q, wrapper=%s", tc.wantStage, stageErr, calls, output)
+			}
+			if tc.outcome == "substitute" {
+				if _, err := os.Lstat(moved); err != nil {
+					t.Fatalf("original stage was deleted after substitution: %v", err)
+				}
+			}
+			if tc.wantStage {
+				entries, err := os.ReadDir(stage)
+				if err != nil || len(entries) > 1 || (len(entries) == 1 && entries[0].Name() != "remote_alpha_es_tls_status.py") {
+					t.Fatalf("stage residue must contain only the public collector: entries=%v err=%v", entries, err)
+				}
+			}
+			for _, call := range calls {
+				if call != "BOOTSTRAP" {
+					t.Fatalf("unexpected post-stage cleanup call: %q", calls)
+				}
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageCustodyAcquisition(t *testing.T) {
+	source := mustRead(t, remoteAlphaOperatorScriptPath())
+	const opening = "<<'REMOTE_ALPHA_ES_TLS_STATUS_CREATE'\n"
+	const closing = "\nREMOTE_ALPHA_ES_TLS_STATUS_CREATE\n"
+	start := strings.Index(source, opening)
+	if start < 0 {
+		t.Fatal("fixed stage creator missing")
+	}
+	start += len(opening)
+	end := strings.Index(source[start:], closing)
+	if end < 0 {
+		t.Fatal("fixed stage creator closure missing")
+	}
+	script := source[start : start+end]
+	assertContainsAll(t, "one fixed creator", script,
+		"os.open(\"/tmp\", flags)", "os.mkdir(name, 0o700, dir_fd=parent_fd)",
+		"os.open(name, flags, dir_fd=parent_fd)", "os.fstat(directory_fd)",
+		"os.listdir(directory_fd) != []", "os.close(directory_fd)", "os.close(parent_fd)")
+	parent := filepath.Join(t.TempDir(), "stage-parent")
+	if err := os.Mkdir(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, os.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(parent, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	script = strings.ReplaceAll(script, "/tmp", parent)
+	script = strings.ReplaceAll(script, "parent.st_uid != 0 or parent.st_gid != 0",
+		"parent.st_uid != os.geteuid() or parent.st_gid != os.getegid()")
+	script = strings.Replace(script,
+		`if any(attr not in ("security.selinux", "com.apple.provenance") for attr in os.listxattr(fd)):`,
+		"if False:", 1)
+	identifier := make([]byte, 16)
+	if _, err := rand.Read(identifier); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(parent, ".es-tls-status-"+hex.EncodeToString(identifier))
+	run := func(path string) (string, error) {
+		t.Helper()
+		cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-", path)
+		cmd.Stdin = strings.NewReader(script)
+		cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+	output, err := run(stage)
+	if err != nil {
+		t.Fatalf("creator refused valid stage: %v %s", err, output)
+	}
+	if !regexp.MustCompile(`^[1-9][0-9]{0,19}:[1-9][0-9]{0,19}\n$`).MatchString(output) {
+		t.Fatalf("creator emitted malformed identity: %q", output)
+	}
+	info, err := os.Lstat(stage)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("stage metadata: %v %v", info, err)
+	}
+	identity := fmt.Sprintf("%d:%d\n", info.Sys().(*syscall.Stat_t).Dev, info.Sys().(*syscall.Stat_t).Ino)
+	if output != identity {
+		t.Fatalf("identity output %q, want %q", output, identity)
+	}
+	entries, err := os.ReadDir(stage)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("new stage not empty: %v %v", entries, err)
+	}
+	if second, err := run(stage); err == nil || second != "" {
+		t.Fatalf("existing stage accepted: %v %q", err, second)
+	}
+	if err := os.Remove(stage); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, stage); err != nil {
+		t.Fatal(err)
+	}
+	if second, err := run(stage); err == nil || second != "" {
+		t.Fatalf("symlink stage accepted: %v %q", err, second)
+	}
+	if err := os.Remove(stage); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	// The same no-follow parent open rejects a symlink or non-directory parent.
+	parentLink := filepath.Join(filepath.Dir(parent), "parent-link")
+	if err := os.Symlink(parent, parentLink); err != nil {
+		t.Fatal(err)
+	}
+	linkedScript := strings.ReplaceAll(script, parent, parentLink)
+	linkedStage := filepath.Join(parentLink, filepath.Base(stage))
+	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-", linkedStage)
+	cmd.Stdin = strings.NewReader(linkedScript)
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	if output, err := cmd.CombinedOutput(); err == nil || len(output) != 0 {
+		t.Fatalf("symlink parent accepted: %v %q", err, output)
+	}
+	nonDir := filepath.Join(filepath.Dir(parent), "not-a-directory")
+	if err := os.WriteFile(nonDir, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nonDirScript := strings.ReplaceAll(script, parent, nonDir)
+	cmd = exec.Command("/usr/bin/python3", "-I", "-B", "-", filepath.Join(nonDir, filepath.Base(stage)))
+	cmd.Stdin = strings.NewReader(nonDirScript)
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	if output, err := cmd.CombinedOutput(); err == nil || len(output) != 0 {
+		t.Fatalf("non-directory parent accepted: %v %q", err, output)
 	}
 }

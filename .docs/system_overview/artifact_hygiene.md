@@ -57,38 +57,49 @@ only. They do not define ES route semantics, renewal semantics, runtime
 authority, IM readiness/provenance authority, CP run-control authority, or
 maintenance-agent authority inside this repository.
 
-Remote Alpha helper summaries under `/var/tmp/execution-substrate-remote-alpha`
-are remote-host evidence/projection only unless an authoritative doc explicitly
-promotes a specific file. The P0s ES service TLS status/renew summary
-`/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json`
-with schema
-`execution-substrate.remote-alpha.es-service-tls-renew-summary.v1` is a
-non-secret helper summary only. It may include paths, byte counts, certificate
-file SHA-256 digests, public fingerprints, validity windows, cert/key
-public-key match status, backup metadata, service restart statuses, mTLS probe
-statuses, verification statuses, and explicit non-claim labels. It must not be
-copied back to Mac `.out` by the operator facade, must not become an IM input
-or CP proof artifact, and must not contain private key PEM bodies, full
-certificate PEM bodies, private-key backup digests, Vault tokens, root tokens,
-unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
-secrets, terminal transcripts, support-bundle content, or raw secret-bearing
-command output.
+`Bounded slice rule`: the P0s/P0t dedicated status collector writes only
+nonsecret evidence/projection under the pre-existing root-owned
+`/var/lib/execution-substrate-remote-alpha/v1/status` namespace. Its exact
+canonical files are `es-service-tls-status-summary.json` and
+`es-governance-tls-status-summary.json`, with separate status-only schemas.
+Their persistent same-scope locks are `.es-service-tls-status.lock` and
+`.es-governance-tls-status.lock`.
+They are not renewal, runtime, IM, CP, MA, scheduler, production-readiness,
+or governed-proof authority. The collector contract is
+`execution-substrate.remote-alpha.es-tls-status-collector/v1` and the path
+contract is `execution-substrate.remote-alpha.es-tls-status-evidence/v1`.
 
-The P0t ES governance TLS status/renew summary
-`/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json`
-with schema
-`execution-substrate.remote-alpha.es-governance-tls-renew-summary.v1` is also a
-non-secret helper summary only. It may include scope, paths, byte counts,
-certificate file SHA-256 digests, public fingerprints, validity windows,
-cert/key public-key match status, backup metadata, service restart statuses for
-`egs.service` and `es.service`, EGS `/v1/trust-model` mTLS probe statuses, ES
-service active status, verification statuses, and explicit non-claim labels. It
-must not be copied back to Mac `.out` by the operator facade, must not become an
-IM input or CP proof artifact, and must not contain private key PEM bodies, full
-certificate PEM bodies, private-key backup digests, Vault tokens, root tokens,
-unseal keys, client tokens, JWT-SVID payloads, API keys, passwords, proof
-secrets, terminal transcripts, support-bundle content, or raw secret-bearing
-command output.
+The collector accepts no arbitrary output path. It requires the protected
+root and status directories to exist as verified root:root `0755` directories;
+missing or unsafe ancestry fails without fresh evidence. Canonical files are
+root:root `0644`, regular, single-link, no-follow, bounded to one MiB and
+without unresolved extended access. Same-scope locks are root:root `0600`
+control objects, not evidence. Neither status mode nor this tranche creates
+`private-backups`. The one-file staged source and invocation directory under
+`/tmp` must be safely removed before status work; there is no later status
+scratch. A completed pass or typed fail reaches the canonical name only by
+atomic replacement after all required work, child reaping, and cleanup.
+Replacement is the final evidence operation; there is no required post-rename
+I/O or crash-durability claim. Incomplete attempts leave the previous
+generation unchanged. The reader requires protected metadata, exact schema,
+finalized marker, scope, route, new generation, five-minute freshness, closed
+vocabulary, consistent result and false non-effect flags. Route acknowledgment
+is separate from evidence acceptance.
+
+Legacy `/var/tmp/execution-substrate-remote-alpha/*tls*summary*.json`, any
+old `*-renew-summary.json`, blocked-candidate protected summaries, and old
+renewal backup directories are historical evidence only. They are not current
+status, fallback readers, or renewal/rollback authority; do not migrate,
+copy, remove, overwrite, or symlink them. P0q retains its separate legacy
+writer contract. P0u privileged legacy use remains held pending its own
+migration or independently reviewed guard. P0v writes no retained remote
+summary. Status records may contain only bounded typed public certificate,
+topology, key-public-match and chain-check classifications, public
+fingerprints and validity times, source-controlled fixed public paths, and
+explicit non-effects. They must never contain private key bytes or digests,
+full certificate PEM, raw config, raw OpenSSL output, environment values,
+secrets, arbitrary paths or commands, backup/rollback fields, transcripts,
+support bundles, or Mac `.out` copy-back.
 
 The P0u operator healthcheck TLS status/renew summary
 `/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`

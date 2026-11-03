@@ -14,8 +14,7 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_vault_workload_auth_bootstrap.sh"
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_vault_workload_auth_bootstrap.sh"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER="${SCRIPT_DIR}/remote_alpha_runtime_identity_helper_summary.sh"
-REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_es_service_tls_renew.sh"
-REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_es_service_tls_renew.sh"
+REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR="${SCRIPT_DIR}/internal/remote_alpha_es_tls_status.py"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_PUBLIC_HELPER="${SCRIPT_DIR}/remote_alpha_operator_healthcheck_tls_renew.sh"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_INTERNAL_HELPER="${SCRIPT_DIR}/internal/remote_alpha_operator_healthcheck_tls_renew.sh"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_STATUS_NONINTERACTIVE_RUNTIME="${SCRIPT_DIR}/remote_alpha_operator_healthcheck_tls_status_noninteractive.py"
@@ -32,10 +31,8 @@ REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_CONFIG="/etc/execution-substrate/vaul
 REMOTE_ALPHA_VAULT_WORKLOAD_AUTH_BOOTSTRAP_SPIRE_SERVER_SOCKET="/run/spire/server/private/api.sock"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-runtime-identity-summary"
 REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json"
-REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-service-tls-renew"
-REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json"
-REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-es-governance-tls-renew"
-REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json"
+REMOTE_ALPHA_ES_SERVICE_TLS_STATUS_REMOTE_SUMMARY="/var/lib/execution-substrate-remote-alpha/v1/status/es-service-tls-status-summary.json"
+REMOTE_ALPHA_ES_GOVERNANCE_TLS_STATUS_REMOTE_SUMMARY="/var/lib/execution-substrate-remote-alpha/v1/status/es-governance-tls-status-summary.json"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_STAGE_ROOT="/tmp/execution-substrate-remote-alpha-operator-healthcheck-tls-renew"
 REMOTE_ALPHA_OPERATOR_HEALTHCHECK_TLS_RENEW_REMOTE_SUMMARY="/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json"
 READINESS_ARTIFACT_NAME="es-writable-state-readiness.json"
@@ -190,8 +187,8 @@ usage() {
     "" \
     "P0q adds recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty as a Mac-side staged bootstrap route, plus --prepare-summary-path, --prepare-config-readability, and --prepare-spire-bundle-read as bounded remote preparation for bootstrap prerequisites, while preserving safe plan/inventory modes and earlier recovery routes." \
     "P0r adds recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty as a bounded Mac-side runtime identity evidence route over the existing public helper." \
-    "P0s adds recovery-session es-service-tls-status and es-service-tls-renew as bounded Mac-side ARS/AGS/ES internal service TLS recovery routes over one fixed public/internal helper pair." \
-    "P0t adds recovery-session es-governance-tls-status and es-governance-tls-renew as bounded Mac-side ES/EGS execution-governance trust-model TLS recovery routes over that same fixed helper pair with a fixed execution-governance scope." \
+    "P0s uses a dedicated status-only collector for artifact-registry evidence; es-service-tls-renew is held before host contact." \
+    "P0t uses the same collector mechanics with a fixed execution-governance scope and distinct evidence; es-governance-tls-renew is held before host contact." \
     "P0u adds recovery-session operator-healthcheck-tls-status and operator-healthcheck-tls-renew as bounded Mac-side host-local operator healthcheck client TLS routes over one fixed public/internal helper pair." \
     "Implemented through P0s, P0t, and P0u; P0v adds only the dedicated read-only noninteractive operator-healthcheck TLS status route." \
     "P0v adds recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json as an implemented read-only no-prompt status observation route over one fixed local Python runtime and one streamed fixed remote collector." \
@@ -224,9 +221,9 @@ usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
+    "  es-service-tls-renew is held before host contact; --execute-renew is refused on status." \
     "  remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
+    "  es-governance-tls-renew is held before host contact; --execute-renew is refused on status." \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <user@host> --format json" \
@@ -240,7 +237,7 @@ usage() {
     "Implemented through P0s, P0t, P0u, and P0v:" \
     "  es-writable-state-readiness-check - delegates only to scripts/remote_alpha_stage_es_writable_state_readiness_check.sh; check-only/non-mutating; requires --ssh-target; preserves es-writable-state-readiness.json and es-writable-state-readiness-helper-staging-record.json." \
     "  readiness-session - runs the existing readiness route; check-only/non-mutating; requires --ssh-target; uses a fresh output directory by default; verifies artifacts; scans for secret-like content; prints only non-secret artifact metadata and IM follow-up commands." \
-    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair, Mac-side runtime-identity-summary over the fixed public runtime identity helper, bounded es-service-tls status/renew over the fixed TLS renewal public/internal helper pair, bounded es-governance-tls status/renew over the same fixed helper pair with a fixed execution-governance scope, bounded operator-healthcheck-tls status/renew over the fixed operator healthcheck TLS helper pair, and read-only operator-healthcheck-tls-status-noninteractive over a fixed local runtime plus streamed fixed remote collector; writes no operator summary." \
+    "  recovery-session - safe/local recovery skeleton; supports --plan, --inventory, --next-steps, schema-aware local evidence-check, host-local vault-unseal-existing, Mac-side interactive TTY vault-unseal-existing over the existing reset helper's --unseal-only mode, Mac-side vault-reset-disposable dry-run planning over the helper's --dry-run mode, Mac-side destructive vault-reset-disposable execute-reset over the helper's --execute-reset mode, Mac-side vault-workload-auth-check over the fixed workload-auth public/internal helper pair, safe vault-workload-auth-bootstrap planning, bounded vault-workload-auth-bootstrap summary-path, config-readability, and SPIRE bundle-read preparation, Mac-side vault-workload-auth-bootstrap execution over the fixed bootstrap public/internal helper pair, Mac-side runtime-identity-summary over the fixed public runtime identity helper, dedicated P0s/P0t status-only collection with renewal held before contact, bounded operator-healthcheck-tls status/renew over the fixed operator healthcheck TLS helper pair, and read-only operator-healthcheck-tls-status-noninteractive over a fixed local runtime plus streamed fixed remote collector; writes no operator summary." \
     "" \
     "The operator facade does not invoke IM refresh or support-bundle collection and does not add ES Vault token brokerage, runtime identity generation, service-user, generic config/TLS deployment, binary deployment, writable-state ownership, or generic helper dispatch." \
     "Secret material must never be passed by CLI args/env/logs/reports/artifacts."
@@ -275,10 +272,10 @@ inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - prepare the bootstrap summary path, then config readability, then SPIRE bundle-read access, then stage and invoke the dedicated bootstrap helper; helper preflights still run before Vault/root/proof prompts" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - Mac-side staged bootstrap route; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public bootstrap helper through ssh -tt; leaves the canonical bootstrap summary remote at /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json; no transcript, no summary copy-back, no support bundle" \
     "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - Mac-side staged runtime identity evidence route; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json; no transcript, no summary copy-back, no support bundle" \
-    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - Mac-side staged internal TLS evidence route; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --status through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json; no transcript, no summary copy-back, no support bundle" \
-    "  recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - Mac-side staged internal TLS recovery route; stages only the same fixed helper pair and invokes only --execute-renew through ssh -tt; renews only the bounded ARS/AGS/ES artifact-registry mTLS material and restarts only ars.service, ags.service, and es.service" \
-    "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - Mac-side staged ES/EGS governance TLS evidence route; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --scope execution-governance --status through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json; no transcript, no summary copy-back, no support bundle" \
-    "  recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - Mac-side staged ES/EGS governance TLS recovery route; stages only the same fixed helper pair and invokes only --scope execution-governance --execute-renew through ssh -tt; renews only the bounded ES -> EGS execution-governance trust-model mTLS material and restarts only egs.service and es.service" \
+    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - stages only scripts/internal/remote_alpha_es_tls_status.py, invokes fixed artifact-registry scope through visible sudo, and leaves protected canonical evidence remote." \
+    "  recovery-session es-service-tls-renew - held before SSH, SCP, staging, and sudo; no renewal authority." \
+    "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - stages only scripts/internal/remote_alpha_es_tls_status.py, invokes fixed execution-governance scope through visible sudo, and leaves protected canonical evidence remote." \
+    "  recovery-session es-governance-tls-renew - held before SSH, SCP, staging, and sudo; no renewal authority." \
     "  recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - Mac-side staged host-local operator healthcheck TLS evidence route; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --status through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json; no transcript, no summary copy-back, no support bundle" \
     "  recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - Mac-side staged host-local operator healthcheck TLS recovery route; stages only the same fixed helper pair and invokes only --execute-renew through ssh -tt; currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists and does not restart ES" \
     "  recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json - ES-owned read-only no-prompt operator healthcheck TLS status route; Bash performs contact-free preflight only, then execs the fixed local Python runtime; the runtime streams a fixed collector over SSH stdin; no Bash JSON, no scp, no remote helper staging, no remote summary, no TTY, no renewal, no scheduling" \
@@ -299,8 +296,8 @@ inventory() {
     "  vault-workload-auth-check is separate post-reset evidence/projection only: not reset/unseal, not workload-auth bootstrap, not ES token brokerage, not IM refresh/support-bundle collection, not CP proof, not runtime identity generation, and not readiness authority" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: not workload-auth success, not reset/unseal, not workload-auth check, not IM/support-bundle/CP proof, not runtime identity generation, and not ES Vault token brokerage" \
     "  runtime-identity-summary is separate evidence/projection only: not workload-auth bootstrap/check, not reset/unseal, not IM/support-bundle/CP proof, not runtime-profile readiness, not submit readiness, not retained-result readiness, and not production readiness" \
-    "  es-service-tls status/renew is bounded internal ARS artifact-registry mTLS recovery only: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, and not production readiness" \
-    "  es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not EGS trust-model redesign, and not production readiness" \
+    "  es-service-tls-status is bounded artifact-registry evidence only; es-service-tls-renew is held; no IM, CP, monitor, scheduler, or restoration authority." \
+    "  es-governance-tls-status is bounded execution-governance evidence only; es-governance-tls-renew is held; no IM, CP, monitor, scheduler, or restoration authority." \
     "  operator-healthcheck-tls status/renew is bounded host-local operator healthcheck client TLS recovery only: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not workload-auth, not runtime identity, and not production readiness" \
     "  operator-healthcheck-tls-status-noninteractive is read-only evidence/projection only: not renewal, not signer/custody resolution, not ES runtime truth, not MA/IM/CP/Bridge authority, not scheduled execution, and not live proof" \
     "  must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a deployment architecture" \
@@ -336,9 +333,9 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session vault-workload-auth-bootstrap --ssh-target <user@host> --execute-bootstrap --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
+    "  es-service-tls-renew is held before contact." \
     "  remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
+    "  es-governance-tls-renew is held before contact." \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <user@host> --format json" \
@@ -371,10 +368,10 @@ recovery_session_usage() {
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-spire-bundle-read --interactive-tty is bounded remote SPIRE bundle-read access preparation only; it may use an OS sudo prompt through the visible SSH TTY and must not stage helpers, run Vault, print SPIRE bundle material, or create a bootstrap summary." \
     "Submode exception: recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty is a Mac-side staged bootstrap route; it stages only the bootstrap public/internal helper pair and relies on the human operator to type Vault bootstrap authority and proof secret values only in the visible remote helper prompt." \
     "Submode exception: recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty is a Mac-side staged evidence route; it stages only the public runtime identity helper summary script, invokes only that staged helper, leaves the canonical summary on the remote host, and does not claim runtime-profile readiness or submit readiness." \
-    "Submode exception: recovery-session es-service-tls-status --ssh-target <target> --interactive-tty is a Mac-side staged internal TLS evidence route; it stages only the ES service TLS public/internal helper pair, invokes only --status, leaves the canonical summary on the remote host, and performs no mutation." \
-    "Submode exception: recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew is a Mac-side staged internal TLS recovery route; it stages only the same helper pair, invokes only --execute-renew, and remains bounded to ARS/AGS/ES artifact-registry mTLS." \
-    "Submode exception: recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty is a Mac-side staged ES/EGS governance TLS evidence route; it stages only the ES service TLS public/internal helper pair, invokes only --scope execution-governance --status, leaves the canonical summary on the remote host, and performs no mutation." \
-    "Submode exception: recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew is a Mac-side staged ES/EGS governance TLS recovery route; it stages only the same helper pair, invokes only --scope execution-governance --execute-renew, and remains bounded to ES -> EGS trust-model mTLS." \
+    "Submode exception: recovery-session es-service-tls-status stages only the dedicated status collector with fixed artifact-registry scope; the collector self-cleans before observation and publishes protected evidence." \
+    "Submode exception: recovery-session es-service-tls-renew is held before contact; a status pass grants no renewal authority." \
+    "Submode exception: recovery-session es-governance-tls-status stages only the dedicated status collector with fixed execution-governance scope; the collector self-cleans before observation and publishes protected evidence." \
+    "Submode exception: recovery-session es-governance-tls-renew is held before contact; a status pass grants no renewal authority." \
     "Submode exception: recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty is a Mac-side staged host-local operator healthcheck TLS evidence route; it stages only the operator healthcheck TLS public/internal helper pair, invokes only --status, leaves the canonical summary on the remote host, and performs no mutation." \
     "Submode exception: recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew is a Mac-side staged host-local operator healthcheck TLS recovery route; it stages only the same helper pair, invokes only --execute-renew, and currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists." \
     "Submode exception: recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json is a read-only no-prompt status route; Bash performs contact-free local preflight and execs the fixed local Python runtime, which streams a fixed collector over SSH stdin and emits the final bounded JSON; no Bash JSON, no scp, no helper staging, no remote summary, no TTY, no renewal, no scheduling." \
@@ -669,10 +666,10 @@ recovery_session_plan() {
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - implemented combined preparation plus staged bootstrap mode; summary preparation, config readability preparation, then SPIRE bundle-read preparation run before helper staging and before any Vault/root/proof prompt" \
     "  vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only the dedicated bootstrap public/internal helper pair, invokes only the public helper over ssh -tt, leaves the non-secret summary remote, and attempts cleanup without transcript capture" \
     "  runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only the public runtime identity helper summary script, invokes only that staged helper over ssh -tt, leaves the canonical summary on the remote host, and attempts cleanup without transcript capture" \
-    "  es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode; stages only the ES service TLS public/internal helper pair, invokes only --status over ssh -tt, leaves the canonical summary on the remote host, and performs no mutation" \
-    "  es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode; stages only the same helper pair, invokes only --execute-renew over ssh -tt, renews only bounded ARS/AGS/ES artifact-registry mTLS material, and attempts cleanup without transcript capture" \
-    "  es-governance-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged ES/EGS governance TLS evidence mode; stages only the ES service TLS public/internal helper pair, invokes only --scope execution-governance --status over ssh -tt, leaves the canonical summary on the remote host, and performs no mutation" \
-    "  es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged ES/EGS governance TLS recovery mode; stages only the same helper pair, invokes only --scope execution-governance --execute-renew over ssh -tt, renews only bounded ES -> EGS trust-model mTLS material, and attempts cleanup without transcript capture" \
+    "  es-service-tls-status --ssh-target <target> --interactive-tty - dedicated collector stages one file, self-cleans before status work, and writes /var/lib/execution-substrate-remote-alpha/v1/status/es-service-tls-status-summary.json." \
+    "  es-service-tls-renew - held before contact pending a separately designed contract." \
+    "  es-governance-tls-status --ssh-target <target> --interactive-tty - dedicated collector stages one file, self-cleans before status work, and writes /var/lib/execution-substrate-remote-alpha/v1/status/es-governance-tls-status-summary.json." \
+    "  es-governance-tls-renew - held before contact pending a separately designed contract." \
     "  operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode; stages only the operator healthcheck TLS public/internal helper pair, invokes only --status over ssh -tt, leaves the canonical summary on the remote host, and performs no mutation" \
     "  operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode; stages only the same helper pair, invokes only --execute-renew over ssh -tt, currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists, and does not restart ES" \
     "  operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json - implemented read-only no-prompt status mode; Bash execs a fixed local Python runtime that streams a fixed remote collector over SSH stdin and emits bounded JSON; no TTY, no scp, no helper staging, no remote summary, no renewal, no scheduling" \
@@ -693,8 +690,8 @@ recovery_session_plan() {
     "  vault-workload-auth-check is evidence/projection only: it is not workload-auth bootstrap, not ES Vault token brokerage, not readiness authority, and not reset/unseal" \
     "  vault-workload-auth-bootstrap configures expected Vault objects only: it is not workload-auth success, not ES Vault token brokerage, and not workload-auth check execution" \
     "  runtime-identity-summary is evidence/projection only: it is not runtime-profile readiness, submit readiness, retained-result readiness, CP proof, production readiness, or runtime identity generation" \
-    "  es-service-tls status/renew is bounded internal ARS artifact-registry mTLS recovery only: it is not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, and not production readiness" \
-    "  es-governance-tls status/renew is bounded ES -> EGS trust-model mTLS recovery only: it is not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not EGS trust-model redesign, and not production readiness" \
+    "  es-service-tls-status is bounded evidence only; renewal is held; no TLS deployment, IM, CP, monitor, scheduler, or production readiness authority." \
+    "  es-governance-tls-status is bounded evidence only; renewal is held; no TLS deployment, IM, CP, monitor, scheduler, or production readiness authority." \
     "  operator-healthcheck-tls status/renew is bounded host-local operator healthcheck client TLS recovery only: it is not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not workload-auth, not runtime identity, and not production readiness" \
     "  the phrase, Vault init output, root token, unseal key, and Vault prompt interactions are never accepted through args/env/files/logs/artifacts/Codex output" \
     "  no post-unseal/service-user/IM/support-bundle/CP-proof bundling is added in P0u" \
@@ -723,10 +720,10 @@ recovery_session_inventory() {
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --prepare-summary-path --prepare-config-readability --prepare-spire-bundle-read --interactive-tty - combined route that prepares the summary path, then config readability, then SPIRE bundle-read access before staging the bootstrap helper pair and before any Vault/root/proof prompt" \
     "  recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty - implemented Mac-side staged bootstrap mode; stages only scripts/remote_alpha_vault_workload_auth_bootstrap.sh and scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh; invokes only the staged public helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "  recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty - implemented Mac-side staged runtime identity evidence mode; stages only scripts/remote_alpha_runtime_identity_helper_summary.sh; invokes only the staged helper through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json on the remote host; no summary copy-back; no transcript capture" \
-    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged internal TLS evidence mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --status through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
-    "  recovery-session es-service-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged internal TLS recovery mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --execute-renew through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
-    "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged ES/EGS governance TLS evidence mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --scope execution-governance --status through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
-    "  recovery-session es-governance-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged ES/EGS governance TLS recovery mode; stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh; invokes only --scope execution-governance --execute-renew through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
+    "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - stages one dedicated collector, selects artifact-registry, and leaves only protected canonical summary remote; no legacy fallback." \
+    "  recovery-session es-service-tls-renew - held before contact; no helper staged or invoked." \
+    "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - stages one dedicated collector, selects execution-governance, and leaves only protected canonical summary remote; no legacy fallback." \
+    "  recovery-session es-governance-tls-renew - held before contact; no helper staged or invoked." \
     "  recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --status through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "  recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --execute-renew through ssh -tt; currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists; leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture; no ES restart" \
     "  recovery-session operator-healthcheck-tls-status-noninteractive --ssh-target <target> --format json - implemented ES-owned read-only no-prompt status route; uses scripts/remote_alpha_operator_healthcheck_tls_status_noninteractive.py and streams scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py over SSH stdin; no Bash JSON, no scp, no helper staging, no remote summary, no TTY, no renewal, no scheduling" \
@@ -734,8 +731,8 @@ recovery_session_inventory() {
     "check-only evidence helpers:" \
     "  scripts/remote_alpha_vault_workload_auth_check.sh - host-local root check; transient JWT/Vault token handling inside helper; now also reachable through the P0n Mac-side staged evidence route; not bootstrap; not ES token brokerage" \
     "  scripts/remote_alpha_runtime_identity_helper_summary.sh - host-local runtime identity helper summary; now also reachable through the P0r Mac-side staged evidence route; dry-run/check-only remain direct-helper modes, not operator route flags" \
-    "  scripts/remote_alpha_es_service_tls_renew.sh --status - host-local internal TLS status helper; now also reachable through the P0s Mac-side staged evidence route; renew remains a separate explicit --execute-renew route" \
-    "  scripts/remote_alpha_es_service_tls_renew.sh --scope execution-governance --status - host-local ES/EGS governance TLS status helper; now also reachable through the P0t Mac-side staged evidence route; renew remains a separate explicit --execute-renew route" \
+    "  scripts/remote_alpha_es_service_tls_renew.sh - public wrapper refuses locally; P0s/P0t renewal is held." \
+    "  scripts/internal/remote_alpha_es_service_tls_renew.sh - historical source only; no supported route stages, sources, or dispatches it." \
     "  scripts/remote_alpha_operator_healthcheck_tls_renew.sh --status - host-local operator healthcheck client TLS status helper; now also reachable through the P0u Mac-side staged evidence route; renew remains a separate explicit --execute-renew route" \
     "  scripts/remote_alpha_operator_healthcheck_tls_status_noninteractive.py --ssh-target <target> --format json - local P0v final route-schema emitter; owns SSH construction, bounds, protocol validation, redaction, and final JSON" \
     "  scripts/internal/remote_alpha_operator_healthcheck_tls_status_noninteractive_remote.py - fixed streamed P0v remote collector; emits only the internal protocol and writes no remote file" \
@@ -2497,36 +2494,6 @@ for classification, path_text, expected_filename in evidence_specs:
 PY
 }
 
-recovery_session_es_service_tls_usage() {
-  printf '%s\n' \
-    "Remote Alpha recovery-session mode: es-service-tls-status/es-service-tls-renew" \
-    "P0s scope: bounded Mac-side Remote Alpha ARS/AGS/ES internal artifact-registry TLS status and renewal route." \
-    "Mac-side mode stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh to the remote host." \
-    "The remote command invokes only --status or --execute-renew through ssh -tt and uses the explicit interactive TTY path for OS sudo when required." \
-    "No transcript, tee/script capture, .out, report, support bundle, operator summary, IM refresh, CP proof, Vault, SPIRE, Nomad, reset/unseal, workload-auth bootstrap/check, runtime identity summary, or general deployment/provisioning/reconciliation is created or run by the facade." \
-    "Canonical remote summary: /var/tmp/execution-substrate-remote-alpha/es-service-tls-renew-summary.json" \
-    "Summary is evidence/projection only, not readiness authority." \
-    "" \
-    "Secret posture:" \
-    "  The route does not accept, parse, print, copy, log, relay, persist, summarize, or handle private keys, certificate PEM bodies, Vault tokens, root tokens, unseal keys, API keys, JWT-SVIDs, passwords, proof secrets, or secret payloads." \
-    "  It relies only on the existing helper's public certificate metadata, key-public-digest matching, backup metadata, service restart metadata, and mTLS verification/probe summaries." \
-    "  It does not print full summary JSON and does not copy the summary back to Mac .out." \
-    "" \
-    "Usage:" \
-    "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-service-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
-    "" \
-    "Allowed flags:" \
-    "  --help" \
-    "  --ssh-target <target>" \
-    "  --interactive-tty" \
-    "  --execute-renew (only with es-service-tls-renew)" \
-    "" \
-    "Topology rules: Mac-side only; --ssh-target is required; --interactive-tty is required; --execute-renew is required for es-service-tls-renew and forbidden for es-service-tls-status; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
-    "Forbidden in P0s: --host-local, --dry-run, --check-only, --status, --apply, --execute-reset, --unseal-only, --post-unseal-check, --execute-bootstrap, --prepare-summary-path, --prepare-config-readability, --prepare-spire-bundle-read, --interactive-sudo, --governed-smoke-command, helper override flags, output/summary path overrides, TLS path overrides, arbitrary command strings, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
-    "Non-claims: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not workload-auth bootstrap/check, not runtime identity evidence, not production readiness, and not Remote Alpha deployment/provisioning/reconciliation architecture."
-}
-
 recovery_session_es_service_tls_require_command() {
   command -v "$1" >/dev/null 2>&1 || recovery_die "$1 is required for Mac-side es-service-tls staging"
 }
@@ -2545,24 +2512,6 @@ recovery_session_es_service_tls_validate_ssh_target() {
   esac
 }
 
-recovery_session_es_service_tls_stage_remote() {
-  local ssh_target=$1
-  local remote_stage_dir=$2
-  local remote_public_helper_path=$3
-  local remote_internal_helper_path=$4
-
-  ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_SERVICE_TLS_PREPARE'
-set -euo pipefail
-stage_dir=$1
-rm -rf -- "${stage_dir}"
-mkdir -p -- "${stage_dir}/scripts/internal"
-chmod 0700 "${stage_dir}" "${stage_dir}/scripts" "${stage_dir}/scripts/internal"
-REMOTE_ALPHA_ES_SERVICE_TLS_PREPARE
-
-  scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" "${ssh_target}:${remote_public_helper_path}"
-  scp "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" "${ssh_target}:${remote_internal_helper_path}"
-}
-
 recovery_session_es_service_tls_cleanup_remote() {
   local ssh_target=$1
   local remote_stage_dir=$2
@@ -2574,401 +2523,389 @@ rm -rf -- "${stage_dir}" || true
 REMOTE_ALPHA_ES_SERVICE_TLS_CLEANUP
 }
 
-recovery_session_es_service_tls_run_remote() {
-  local ssh_target=$1
-  local remote_stage_dir=$2
-  local remote_public_helper_path=$3
-  local remote_internal_helper_path=$4
-  local helper_mode=$5
-  local remote_command remote_shell_command
-
-  case "${helper_mode}" in
-    --status|--execute-renew)
-      ;;
-    *)
-      recovery_die "internal error: unsupported es-service-tls helper mode ${helper_mode}"
-      ;;
-  esac
-
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" %q; else sudo "${helper_path}" %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
-  printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
-  ssh -tt "${ssh_target}" "${remote_shell_command}"
+recovery_session_es_tls_usage() {
+  local route=$1
+  local scope=$2
+  printf '%s\n' \
+    "Remote Alpha recovery-session mode: ${route}" \
+    "P0s/P0t status-only collector; renewal is held pending a separately designed contract." \
+    "Stages only scripts/internal/remote_alpha_es_tls_status.py in one generated /tmp invocation directory." \
+    "The collector self-cleans its stage before status work and writes only the fixed protected summary." \
+    "Collector exit zero means a completed observation was published; inspect an accepted fresh result.status for pass or fail." \
+    "The summary is evidence only and grants no renewal, monitor, scheduler, IM, CP, or restoration authority." \
+    "" \
+    "Usage: remote_alpha_operator.sh recovery-session ${route} --ssh-target <user@host> --interactive-tty" \
+    "Fixed scope: ${scope}" \
+    "Allowed flags: --help, --ssh-target <target>, --interactive-tty" \
+    "--execute-renew and all path, helper, output, and command overrides are refused before contact." \
+    "No summary copy-back, transcript, support bundle, or raw TLS/config output is produced."
 }
 
-recovery_session_es_service_tls_print_success_next_steps() {
-  local helper_mode=$1
-  if [[ "${helper_mode}" == "--execute-renew" ]]; then
-    printf '%s\n' \
-      "Mac-side es-service-tls-renew route finished; staged helper cleanup was attempted." \
-      "Canonical remote summary path: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}" \
-      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
-      "The helper renewed only the bounded ARS/AGS/ES artifact-registry mTLS material and restarted only ars.service, ags.service, and es.service if the helper reported success." \
-      "Separate IM refresh/support-bundle and CP proof actions were not run."
-  else
-    printf '%s\n' \
-      "Mac-side es-service-tls-status route finished; staged helper cleanup was attempted." \
-      "Canonical remote summary path: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}" \
-      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
-      "Status mode is non-mutating and does not restart services." \
-      "Renew, IM refresh/support-bundle, and CP proof actions were not run."
-  fi
+remote_alpha_es_tls_status_shell_quote() {
+  local value=$1
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "${value}"
 }
 
-recovery_session_es_service_tls_remote() {
-  local ssh_target=$1
-  local helper_mode=$2
-  local run_id remote_stage_dir remote_public_helper_path remote_internal_helper_path remote_status cleanup_status
+remote_alpha_es_tls_status_remote_wrapper() {
+  local stage_dir=$1 stage_identity=$2 scope=$3 collector_digest=$4
+  local LC_ALL=C stage_dev stage_ino wrapper remote_command
+  [[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]] || return 2
+  [[ "${stage_identity}" =~ ^[1-9][0-9]{0,19}:[1-9][0-9]{0,19}$ ]] || return 2
+  stage_dev=${stage_identity%%:*}
+  stage_ino=${stage_identity#*:}
+  [[ ${#stage_dev} -lt 20 || "${stage_dev}" < 18446744073709551615 || "${stage_dev}" == 18446744073709551615 ]] || return 2
+  [[ ${#stage_ino} -lt 20 || "${stage_ino}" < 18446744073709551615 || "${stage_ino}" == 18446744073709551615 ]] || return 2
+  case "${scope}" in artifact-registry|execution-governance) ;; *) return 2 ;; esac
+  [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]] || return 2
+  IFS= read -r -d '' wrapper <<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true
+set -euo pipefail
+stage_dir=$1
+stage_identity=$2
+scope=$3
+collector_digest=$4
+collector="${stage_dir}/remote_alpha_es_tls_status.py"
 
-  recovery_session_es_service_tls_require_local_tty
-  recovery_session_es_service_tls_require_command ssh
-  recovery_session_es_service_tls_require_command scp
+[[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]]
+[[ "${stage_identity}" =~ ^[0-9]+:[0-9]+$ ]]
+case "${scope}" in artifact-registry|execution-governance) ;; *) exit 2 ;; esac
+[[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]]
+/usr/bin/python3 -I -B - "${collector}" "${stage_identity}" <<'REMOTE_ALPHA_ES_TLS_STATUS_MODE'
+import os
+import stat
+import sys
 
-  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_STAGE_ROOT}/${run_id}"
-  remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_es_service_tls_renew.sh"
-  remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_es_service_tls_renew.sh"
+path, identity = sys.argv[1:]
+directory, name = os.path.split(path)
+expected_identity = tuple(int(part) for part in identity.split(":"))
+def leaf_identity(info):
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid, info.st_gid,
+            stat.S_IMODE(info.st_mode), info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    directory_info = os.fstat(directory_fd)
+    directory_entry = os.stat(directory, follow_symlinks=False)
+    if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.geteuid() or
+            stat.S_IMODE(directory_info.st_mode) != 0o700 or
+            (directory_info.st_dev, directory_info.st_ino) != expected_identity or
+            (directory_entry.st_dev, directory_entry.st_ino) != expected_identity):
+        raise SystemExit(1)
+    entry_info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    if (not stat.S_ISREG(entry_info.st_mode) or entry_info.st_uid != os.geteuid() or
+            stat.S_IMODE(entry_info.st_mode) not in (0o600, 0o644) or entry_info.st_nlink != 1):
+        raise SystemExit(1)
+    file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=directory_fd)
+    try:
+        file_info = os.fstat(file_fd)
+        if leaf_identity(file_info) != leaf_identity(entry_info):
+            raise SystemExit(1)
+        os.fchmod(file_fd, 0o600)
+        after = os.fstat(file_fd)
+        after_entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (stat.S_IMODE(after.st_mode) != 0o600 or leaf_identity(after) != leaf_identity(after_entry) or
+                (after.st_dev, after.st_ino) != (entry_info.st_dev, entry_info.st_ino)):
+            raise SystemExit(1)
+    finally:
+        os.close(file_fd)
+finally:
+    os.close(directory_fd)
+REMOTE_ALPHA_ES_TLS_STATUS_MODE
+# The fixed root bootstrap loads only digest-bound bytes from the staged leaf.
+# On handoff, a rejected stage remains diagnostic residue.
+IFS= read -r -d '' bootstrap <<'REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP' || true
+import hashlib
+import os
+import pwd
+import re
+import signal
+import stat
+import sys
 
-  if [[ "${helper_mode}" == "--execute-renew" ]]; then
-    printf '%s\n' \
-      "Running Mac-side ES service TLS renewal through an explicit interactive SSH TTY." \
-      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
-      "Invoking only the staged public helper with --execute-renew; no helper override flags are accepted or passed." \
-      "The helper is bounded to ARS/AGS/ES internal artifact-registry mTLS material and may request only OS sudo through the visible remote terminal." \
-      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}." \
-      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, ES token brokerage, or CP proof is created or run." \
-      "The operator facade will not read, log, relay, persist, summarize, copy, or print private keys, PEM bodies, Vault tokens, JWT-SVIDs, API keys, passwords, or secret payloads."
-  else
-    printf '%s\n' \
-      "Running Mac-side ES service TLS status through an explicit interactive SSH TTY." \
-      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
-      "Invoking only the staged public helper with --status; no helper override flags are accepted or passed." \
-      "Status mode is non-mutating and bounded to ARS/AGS/ES internal artifact-registry mTLS evidence." \
-      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_REMOTE_SUMMARY}." \
-      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, renew, service restart, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, ES token brokerage, or CP proof is created or run."
+stage, basename, digest, scope, expected_dev, expected_ino = sys.argv[1:]
+def strict_uint64(value):
+    if re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", value) is None:
+        raise SystemExit(1)
+    number = int(value)
+    if number == 0 or number > 18446744073709551615:
+        raise SystemExit(1)
+    return number
+expected_identity = (strict_uint64(expected_dev), strict_uint64(expected_ino))
+if (re.fullmatch(r"/tmp/\.es-tls-status-[0-9a-f]{32}", stage) is None or
+        basename != "remote_alpha_es_tls_status.py" or
+        re.fullmatch(r"[0-9a-f]{64}", digest) is None or
+        scope not in ("artifact-registry", "execution-governance")):
+    raise SystemExit(1)
+if os.geteuid() != 0 or os.environ.get("SUDO_USER") != "ds":
+    raise SystemExit(1)
+try:
+    operator = pwd.getpwnam("ds")
+    operator_uid, operator_gid = operator.pw_uid, operator.pw_gid
+    if (operator_uid == 0 or int(os.environ.get("SUDO_UID", "")) != operator_uid or
+            int(os.environ.get("SUDO_GID", "")) != operator_gid):
+        raise ValueError()
+except (KeyError, ValueError):
+    raise SystemExit(1)
+interrupted = [False]
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+    signal.signal(signum, lambda _signum, _frame: interrupted.__setitem__(0, True))
+def check_signal():
+    if interrupted[0]:
+        raise SystemExit(1)
+def leaf_identity(info):
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid, info.st_gid,
+            stat.S_IMODE(info.st_mode), info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+def check_access(fd):
+    if any(attr not in ("security.selinux", "com.apple.provenance") for attr in os.listxattr(fd)):
+        raise SystemExit(1)
+parent_fd = os.open("/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    parent = os.fstat(parent_fd)
+    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_gid != 0 or
+            stat.S_IMODE(parent.st_mode) != 0o1777):
+        raise SystemExit(1)
+    check_access(parent_fd)
+    name = os.path.basename(stage)
+    entry_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if (not stat.S_ISDIR(entry_dir.st_mode) or
+            (entry_dir.st_dev, entry_dir.st_ino) != expected_identity or
+            entry_dir.st_uid != operator_uid or entry_dir.st_gid != operator_gid or
+            stat.S_IMODE(entry_dir.st_mode) != 0o700 or entry_dir.st_nlink < 2):
+        raise SystemExit(1)
+    dir_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=parent_fd)
+    try:
+        directory = os.fstat(dir_fd)
+        entry_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != operator_uid or
+                directory.st_gid != operator_gid or
+                stat.S_IMODE(directory.st_mode) != 0o700 or directory.st_nlink < 2 or
+                (directory.st_dev, directory.st_ino) != expected_identity or
+                (entry_dir.st_dev, entry_dir.st_ino) != expected_identity):
+            raise SystemExit(1)
+        check_access(dir_fd)
+        if os.listdir(dir_fd) != [basename]:
+            raise SystemExit(1)
+        entry = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(entry.st_mode) or entry.st_uid != operator_uid or
+                entry.st_gid != operator_gid or
+                stat.S_IMODE(entry.st_mode) != 0o600 or entry.st_nlink != 1 or
+                entry.st_size > 1048576):
+            raise SystemExit(1)
+        file_fd = os.open(basename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                          dir_fd=dir_fd)
+        try:
+            opened = os.fstat(file_fd)
+            if leaf_identity(opened) != leaf_identity(entry):
+                raise SystemExit(1)
+            check_access(file_fd)
+            chunks = []
+            total = 0
+            while True:
+                block = os.read(file_fd, min(16384, 1048577 - total))
+                if not block:
+                    break
+                total += len(block)
+                if total > 1048576:
+                    raise SystemExit(1)
+                chunks.append(block)
+            payload = b"".join(chunks)
+            after = os.fstat(file_fd)
+            current = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
+            if (total != opened.st_size or leaf_identity(after) != leaf_identity(opened) or
+                    leaf_identity(current) != leaf_identity(opened) or
+                    hashlib.sha256(payload).hexdigest() != digest):
+                raise SystemExit(1)
+            check_signal()
+            os.fchown(dir_fd, 0, 0)
+            current_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            current = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
+            if (os.fstat(dir_fd).st_uid != 0 or os.fstat(dir_fd).st_gid != 0 or
+                    (current_dir.st_dev, current_dir.st_ino) !=
+                    expected_identity or
+                    leaf_identity(current) != leaf_identity(opened)):
+                raise SystemExit(1)
+            os.unlink(basename, dir_fd=dir_fd)
+        finally:
+            os.close(file_fd)
+        if os.listdir(dir_fd):
+            raise SystemExit(1)
+        current_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if ((current_dir.st_dev, current_dir.st_ino) != expected_identity or
+                (os.fstat(dir_fd).st_dev, os.fstat(dir_fd).st_ino) != expected_identity):
+            raise SystemExit(1)
+        os.rmdir(name, dir_fd=parent_fd)
+        check_signal()
+    finally:
+        os.close(dir_fd)
+finally:
+    os.close(parent_fd)
+label = "<verified-es-tls-status-collector>"
+sys.argv = [label, "--scope", scope]
+namespace = {"__name__": "__main__", "__file__": label,
+             "ES_TLS_STATUS_BOOTSTRAP_VERIFIED": True,
+             "ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED": interrupted}
+exec(compile(payload, label, "exec"), namespace)
+REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP
+stage_dev=${stage_identity%%:*}
+stage_ino=${stage_identity#*:}
+sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \
+  remote_alpha_es_tls_status.py "${collector_digest}" "${scope}" "${stage_dev}" "${stage_ino}"
+REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER
+  remote_command="/bin/bash -c $(remote_alpha_es_tls_status_shell_quote "${wrapper}") -- $(remote_alpha_es_tls_status_shell_quote "${stage_dir}") $(remote_alpha_es_tls_status_shell_quote "${stage_identity}") $(remote_alpha_es_tls_status_shell_quote "${scope}") $(remote_alpha_es_tls_status_shell_quote "${collector_digest}")"
+  [[ ${#remote_command} -le 32768 ]] || return 2
+  printf '%s' "${remote_command}"
+}
+
+recovery_session_es_tls_status() {
+  local route=$1
+  local scope=$2
+  shift 2
+  local ssh_target_seen=false interactive_tty_seen=false ssh_target=""
+  local option
+  for option in "$@"; do
+    case "${option}" in
+      --execute-renew|--execute-renew=*)
+        recovery_die "${route} refuses --execute-renew; P0s/P0t renewal is held before host contact"
+        ;;
+    esac
+  done
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --help|-h)
+        recovery_session_es_tls_usage "${route}" "${scope}"
+        return 0
+        ;;
+      --ssh-target)
+        require_recovery_option_not_seen "$1" "${ssh_target_seen}"
+        require_recovery_option_value "$1" "$#" "${2:-}"
+        ssh_target_seen=true
+        ssh_target=$2
+        shift 2
+        ;;
+      --interactive-tty)
+        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
+        interactive_tty_seen=true
+        shift
+        ;;
+      --execute-renew|--execute-renew=*)
+        recovery_die "${route} refuses --execute-renew; P0s/P0t renewal is held before host contact"
+        ;;
+      --*=*)
+        recovery_die "${route} does not accept equals-form options: $1"
+        ;;
+      --*)
+        recovery_die "${route} refuses unsupported option: $1"
+        ;;
+      *)
+        recovery_die "${route} refuses positional argument: $1"
+        ;;
+    esac
+  done
+  [[ "${ssh_target_seen}" == true ]] || recovery_die "${route} requires --ssh-target <target>"
+  [[ "${interactive_tty_seen}" == true ]] || recovery_die "${route} requires --interactive-tty"
+  if [[ ! "${ssh_target}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ || ${#ssh_target} -gt 255 ]]; then
+    recovery_die "${route} --ssh-target must be a single SSH target"
   fi
+  [[ -t 0 && -t 1 ]] || recovery_die "${route} requires a visible local terminal; no host contact occurred"
+  command -v ssh >/dev/null 2>&1 || recovery_die "ssh is required for ${route}"
+  command -v scp >/dev/null 2>&1 || recovery_die "scp is required for ${route}"
+  [[ -r "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" ]] || recovery_die "status collector is not readable"
 
-  if ! recovery_session_es_service_tls_stage_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"; then
-    recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}" || true
-    return 1
+  local run_id remote_stage_dir remote_collector stage_identity collector_digest remote_command preflight_command
+  [[ -f "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" && ! -L "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" ]] || recovery_die "status collector source is not a regular file"
+  collector_digest="$(/usr/bin/shasum -a 256 "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" | /usr/bin/cut -d ' ' -f 1)" || recovery_die "status collector digest derivation failed"
+  [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]] || recovery_die "status collector digest derivation failed"
+  run_id="$(/usr/bin/uuidgen | /usr/bin/tr -d '-' | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  [[ "${run_id}" =~ ^[0-9a-f]{32}$ ]] || recovery_die "status stage identifier generation failed"
+  remote_stage_dir="/tmp/.es-tls-status-${run_id}"
+  remote_collector="${remote_stage_dir}/remote_alpha_es_tls_status.py"
+  preflight_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command preflight failed; no host contact occurred"
+  unset preflight_command
+  printf '%s\n' "${route}: staging one dedicated status collector; scope=${scope}; protected summary remains remote."
+  if ! stage_identity="$(ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_STAGE' | /usr/bin/python3 -I -B -c '
+import re, sys
+raw = sys.stdin.buffer.read(64)
+match = re.fullmatch(rb"([1-9][0-9]{0,19}):([1-9][0-9]{0,19})\n", raw)
+if match is None or any(int(part) > 18446744073709551615 for part in match.groups()):
+    raise SystemExit(1)
+sys.stdout.write(raw[:-1].decode("ascii"))
+'
+set -euo pipefail
+stage_dir=$1
+[[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]]
+/usr/bin/python3 -I -B - "${stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_CREATE'
+import os
+import re
+import stat
+import sys
+
+stage = sys.argv[1]
+if re.fullmatch(r"/tmp/\.es-tls-status-[0-9a-f]{32}", stage) is None:
+    raise SystemExit(1)
+name = os.path.basename(stage)
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+def check_access(fd):
+    if any(attr not in ("security.selinux", "com.apple.provenance") for attr in os.listxattr(fd)):
+        raise SystemExit(1)
+def main():
+    parent_fd = os.open("/tmp", flags)
+    try:
+        parent = os.fstat(parent_fd)
+        if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_gid != 0 or
+                stat.S_IMODE(parent.st_mode) != 0o1777):
+            raise SystemExit(1)
+        check_access(parent_fd)
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise SystemExit(1)
+        prior_umask = os.umask(0)
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        finally:
+            os.umask(prior_umask)
+        directory_fd = os.open(name, flags, dir_fd=parent_fd)
+        try:
+            info = os.fstat(directory_fd)
+            entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                    info.st_gid != os.getegid() or stat.S_IMODE(info.st_mode) != 0o700 or
+                    info.st_nlink < 2 or (info.st_dev, info.st_ino) != (entry.st_dev, entry.st_ino) or
+                    os.listdir(directory_fd) != []):
+                raise SystemExit(1)
+            check_access(directory_fd)
+            if any(value <= 0 or value > 18446744073709551615 for value in (info.st_dev, info.st_ino)):
+                raise SystemExit(1)
+            print(f"{info.st_dev}:{info.st_ino}")
+        finally:
+            os.close(directory_fd)
+    finally:
+        os.close(parent_fd)
+try:
+    main()
+except (OSError, ValueError):
+    raise SystemExit(1)
+REMOTE_ALPHA_ES_TLS_STATUS_CREATE
+REMOTE_ALPHA_ES_TLS_STATUS_STAGE
+)"; then
+    recovery_die "${route} stage creation or custody acquisition failed; possible diagnostic residue retained"
   fi
-
-  set +e
-  recovery_session_es_service_tls_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}"
-  remote_status=$?
-  set -e
-
-  set +e
-  recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}"
-  cleanup_status=$?
-  set -e
-  if [[ "${cleanup_status}" -ne 0 ]]; then
-    printf '%s\n' "warning: Mac-side es-service-tls route could not verify remote staged helper cleanup; inspect the route-specific scratch path manually from a visible terminal." >&2
+  if ! scp "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" "${ssh_target}:${remote_collector}"; then
+    recovery_die "${route} upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
   fi
-
-  if [[ "${remote_status}" -eq 0 ]]; then
-    recovery_session_es_service_tls_print_success_next_steps "${helper_mode}"
-  else
-    printf '%s\n' "Mac-side es-service-tls route failed; staged helper cleanup was attempted." >&2
-  fi
-
-  if [[ "${remote_status}" -eq 0 && "${cleanup_status}" -ne 0 ]]; then
-    return "${cleanup_status}"
-  fi
-  return "${remote_status}"
+  remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
+  ssh -tt "${ssh_target}" "${remote_command}" || recovery_die "${route} collector or remote setup failed; stage retained as diagnostic residue unless root completed verified removal; no fresh status generation accepted"
+  printf '%s\n' "${route}: collector published a completed observation; validate the fresh protected record for result.status."
 }
 
 recovery_session_es_service_tls() {
-  local route_kind=$1
-  shift
-  local ssh_target_seen="false"
-  local interactive_tty_seen="false"
-  local execute_renew_seen="false"
-  local ssh_target=""
-  local helper_mode
-
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --help|-h)
-        recovery_session_es_service_tls_usage
-        return 0
-        ;;
-      --ssh-target)
-        require_recovery_option_not_seen "$1" "${ssh_target_seen}"
-        require_recovery_option_value "$1" "$#" "${2:-}"
-        ssh_target_seen="true"
-        ssh_target=$2
-        shift 2
-        ;;
-      --interactive-tty)
-        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
-        interactive_tty_seen="true"
-        shift
-        ;;
-      --execute-renew)
-        require_recovery_option_not_seen "$1" "${execute_renew_seen}"
-        execute_renew_seen="true"
-        shift
-        ;;
-      --host-local|--host-local=*|--dry-run|--dry-run=*|--check-only|--check-only=*|--status|--status=*|--apply|--apply=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--execute-bootstrap|--execute-bootstrap=*|--prepare-summary-path|--prepare-summary-path=*|--prepare-config-readability|--prepare-config-readability=*|--prepare-spire-bundle-read|--prepare-spire-bundle-read=*|--interactive-sudo|--interactive-sudo=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session es-service-tls forbids $1; P0s is a separate bounded ARS/AGS/ES internal TLS status/renew route and does not combine reset, unseal, workload-auth, runtime identity, IM, support bundles, Vault/SPIRE/Nomad changes, generic TLS deployment, or CP proof"
-        ;;
-      --summary-path|--summary-path=*|--output|--output=*|--ars-config-path|--ars-config-path=*|--ags-config-path|--ags-config-path=*|--es-config-path|--es-config-path=*|--egs-config-path|--egs-config-path=*|--ars-tls-dir|--ars-tls-dir=*|--ags-tls-dir|--ags-tls-dir=*|--es-tls-dir|--es-tls-dir=*|--ca-path|--ca-path=*|--cert-path|--cert-path=*|--key-path|--key-path=*)
-        recovery_die "recovery-session es-service-tls forbids helper override flag $1; P0s uses fixed documented ARS/AGS/ES TLS paths and the canonical remote summary path"
-        ;;
-      --*=*)
-        recovery_die "recovery-session es-service-tls does not accept equals-form options: $1"
-        ;;
-      --*)
-        recovery_die "unknown option for recovery-session es-service-tls: $1"
-        ;;
-      *)
-        recovery_die "unexpected positional argument for recovery-session es-service-tls: $1"
-        ;;
-    esac
-  done
-
-  if [[ "${ssh_target_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-service-tls requires --ssh-target <target>"
-  fi
-  if [[ "${interactive_tty_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-service-tls requires --interactive-tty"
-  fi
-  if [[ "${route_kind}" == "renew" && "${execute_renew_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-service-tls-renew requires --execute-renew"
-  fi
-  if [[ "${route_kind}" == "status" && "${execute_renew_seen}" == "true" ]]; then
-    recovery_die "recovery-session es-service-tls-status forbids --execute-renew"
-  fi
-  recovery_session_es_service_tls_validate_ssh_target "${ssh_target}"
-
-  if [[ ! -x "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" ]]; then
-    recovery_die "ES service TLS public helper is not executable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"
-  fi
-  if [[ ! -r "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" ]]; then
-    recovery_die "ES service TLS internal helper is not readable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"
-  fi
-
-  if [[ "${route_kind}" == "renew" ]]; then
-    helper_mode="--execute-renew"
-  else
-    helper_mode="--status"
-  fi
-  recovery_session_es_service_tls_remote "${ssh_target}" "${helper_mode}"
-}
-
-recovery_session_es_governance_tls_usage() {
-  printf '%s\n' \
-    "Remote Alpha recovery-session mode: es-governance-tls-status/es-governance-tls-renew" \
-    "P0t scope: bounded Mac-side Remote Alpha ES/EGS execution-governance trust-model TLS status and renewal route." \
-    "Mac-side mode stages only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh to the remote host." \
-    "The remote command invokes only --scope execution-governance --status or --scope execution-governance --execute-renew through ssh -tt and uses the explicit interactive TTY path for OS sudo when required." \
-    "No transcript, tee/script capture, .out, report, support bundle, operator summary, IM refresh, CP proof, Vault, SPIRE, Nomad, reset/unseal, workload-auth bootstrap/check, runtime identity summary, EGS trust-model redesign, or general deployment/provisioning/reconciliation is created or run by the facade." \
-    "Canonical remote summary: /var/tmp/execution-substrate-remote-alpha/es-governance-tls-renew-summary.json" \
-    "Summary is evidence/projection only, not readiness authority." \
-    "" \
-    "Secret posture:" \
-    "  The route does not accept, parse, print, copy, log, relay, persist, summarize, or handle private keys, certificate PEM bodies, Vault tokens, root tokens, unseal keys, API keys, JWT-SVIDs, passwords, proof secrets, or secret payloads." \
-    "  It relies only on the existing helper's fixed execution-governance scope, public certificate metadata, key-public-digest matching, backup metadata, service restart metadata, and mTLS verification/probe summaries." \
-    "  It does not print full summary JSON and does not copy the summary back to Mac .out." \
-    "" \
-    "Usage:" \
-    "  remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty" \
-    "  remote_alpha_operator.sh recovery-session es-governance-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
-    "" \
-    "Allowed flags:" \
-    "  --help" \
-    "  --ssh-target <target>" \
-    "  --interactive-tty" \
-    "  --execute-renew (only with es-governance-tls-renew)" \
-    "" \
-    "Topology rules: Mac-side only; --ssh-target is required; --interactive-tty is required; --execute-renew is required for es-governance-tls-renew and forbidden for es-governance-tls-status; --host-local is not accepted; the SSH target must be a single target, not an option or shell command." \
-    "Forbidden in P0t: --host-local, --dry-run, --check-only, --status, --scope, --apply, --execute-reset, --unseal-only, --post-unseal-check, --execute-bootstrap, --prepare-summary-path, --prepare-config-readability, --prepare-spire-bundle-read, --interactive-sudo, --governed-smoke-command, helper override flags, output/summary path overrides, TLS path overrides, arbitrary command strings, unknown flags, duplicate flags, positional args beyond the submode, secret-like flags, and equals-form options." \
-    "Non-claims: not generic TLS deployment, not IM reconciliation, not CP proof, not Vault/SPIRE/Nomad changes, not workload-auth bootstrap/check, not runtime identity evidence, not EGS trust-model redesign, not production readiness, and not Remote Alpha deployment/provisioning/reconciliation architecture."
-}
-
-recovery_session_es_governance_tls_run_remote() {
-  local ssh_target=$1
-  local remote_stage_dir=$2
-  local remote_public_helper_path=$3
-  local remote_internal_helper_path=$4
-  local helper_mode=$5
-  local remote_command remote_shell_command
-
-  case "${helper_mode}" in
-    --status|--execute-renew)
-      ;;
-    *)
-      recovery_die "internal error: unsupported es-governance-tls helper mode ${helper_mode}"
-      ;;
-  esac
-
-  printf -v remote_command 'set -euo pipefail; stage_dir=%q; helper_path=%q; internal_helper_path=%q; cleanup() { rm -rf -- "${stage_dir}" || true; }; trap cleanup EXIT; chmod 0700 "${helper_path}"; chmod 0600 "${internal_helper_path}" 2>/dev/null || true; if [[ "$(id -u)" == "0" ]]; then "${helper_path}" --scope execution-governance %q; else sudo "${helper_path}" --scope execution-governance %q; fi' "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}" "${helper_mode}"
-  printf -v remote_shell_command 'exec /bin/bash -c %q' "${remote_command}"
-  ssh -tt "${ssh_target}" "${remote_shell_command}"
-}
-
-recovery_session_es_governance_tls_print_success_next_steps() {
-  local helper_mode=$1
-  if [[ "${helper_mode}" == "--execute-renew" ]]; then
-    printf '%s\n' \
-      "Mac-side es-governance-tls-renew route finished; staged helper cleanup was attempted." \
-      "Canonical remote summary path: ${REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY}" \
-      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
-      "The helper renewed only the bounded ES/EGS execution-governance trust-model mTLS material and restarted only egs.service and es.service if the helper reported success." \
-      "Separate IM refresh/support-bundle and CP proof actions were not run."
-  else
-    printf '%s\n' \
-      "Mac-side es-governance-tls-status route finished; staged helper cleanup was attempted." \
-      "Canonical remote summary path: ${REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY}" \
-      "The summary remains on the remote host; this route did not copy it back to Mac .out and did not print full summary JSON." \
-      "Status mode is non-mutating and does not restart services." \
-      "Renew, IM refresh/support-bundle, and CP proof actions were not run."
-  fi
-}
-
-recovery_session_es_governance_tls_remote() {
-  local ssh_target=$1
-  local helper_mode=$2
-  local run_id remote_stage_dir remote_public_helper_path remote_internal_helper_path remote_status cleanup_status
-
-  recovery_session_es_service_tls_require_local_tty
-  recovery_session_es_service_tls_require_command ssh
-  recovery_session_es_service_tls_require_command scp
-
-  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  remote_stage_dir="${REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_STAGE_ROOT}/${run_id}"
-  remote_public_helper_path="${remote_stage_dir}/scripts/remote_alpha_es_service_tls_renew.sh"
-  remote_internal_helper_path="${remote_stage_dir}/scripts/internal/remote_alpha_es_service_tls_renew.sh"
-
-  if [[ "${helper_mode}" == "--execute-renew" ]]; then
-    printf '%s\n' \
-      "Running Mac-side ES governance TLS renewal through an explicit interactive SSH TTY." \
-      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
-      "Invoking only the staged public helper with --scope execution-governance --execute-renew; no helper override flags are accepted or passed." \
-      "The helper is bounded to ES/EGS execution-governance trust-model mTLS material and may request only OS sudo through the visible remote terminal." \
-      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY}." \
-      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, EGS trust-model redesign, ES token brokerage, or CP proof is created or run." \
-      "The operator facade will not read, log, relay, persist, summarize, copy, or print private keys, PEM bodies, Vault tokens, JWT-SVIDs, API keys, passwords, or secret payloads."
-  else
-    printf '%s\n' \
-      "Running Mac-side ES governance TLS status through an explicit interactive SSH TTY." \
-      "Staging only scripts/remote_alpha_es_service_tls_renew.sh and scripts/internal/remote_alpha_es_service_tls_renew.sh." \
-      "Invoking only the staged public helper with --scope execution-governance --status; no helper override flags are accepted or passed." \
-      "Status mode is non-mutating and bounded to ES/EGS execution-governance trust-model mTLS evidence." \
-      "Canonical summary stays remote at ${REMOTE_ALPHA_ES_GOVERNANCE_TLS_RENEW_REMOTE_SUMMARY}." \
-      "No transcript, tee/script capture, .out, report, support bundle, operator summary, generated Mac artifact, renew, service restart, reset/unseal, workload-auth bootstrap/check, runtime identity summary, IM refresh, Vault/SPIRE/Nomad change, EGS trust-model redesign, ES token brokerage, or CP proof is created or run."
-  fi
-
-  if ! recovery_session_es_service_tls_stage_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}"; then
-    recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}" || true
-    return 1
-  fi
-
-  set +e
-  recovery_session_es_governance_tls_run_remote "${ssh_target}" "${remote_stage_dir}" "${remote_public_helper_path}" "${remote_internal_helper_path}" "${helper_mode}"
-  remote_status=$?
-  set -e
-
-  set +e
-  recovery_session_es_service_tls_cleanup_remote "${ssh_target}" "${remote_stage_dir}"
-  cleanup_status=$?
-  set -e
-  if [[ "${cleanup_status}" -ne 0 ]]; then
-    printf '%s\n' "warning: Mac-side es-governance-tls route could not verify remote staged helper cleanup; inspect the route-specific scratch path manually from a visible terminal." >&2
-  fi
-
-  if [[ "${remote_status}" -eq 0 ]]; then
-    recovery_session_es_governance_tls_print_success_next_steps "${helper_mode}"
-  else
-    printf '%s\n' "Mac-side es-governance-tls route failed; staged helper cleanup was attempted." >&2
-  fi
-
-  if [[ "${remote_status}" -eq 0 && "${cleanup_status}" -ne 0 ]]; then
-    return "${cleanup_status}"
-  fi
-  return "${remote_status}"
+  recovery_session_es_tls_status es-service-tls-status artifact-registry "$@"
 }
 
 recovery_session_es_governance_tls() {
-  local route_kind=$1
-  shift
-  local ssh_target_seen="false"
-  local interactive_tty_seen="false"
-  local execute_renew_seen="false"
-  local ssh_target=""
-  local helper_mode
-
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --help|-h)
-        recovery_session_es_governance_tls_usage
-        return 0
-        ;;
-      --ssh-target)
-        require_recovery_option_not_seen "$1" "${ssh_target_seen}"
-        require_recovery_option_value "$1" "$#" "${2:-}"
-        ssh_target_seen="true"
-        ssh_target=$2
-        shift 2
-        ;;
-      --interactive-tty)
-        require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
-        interactive_tty_seen="true"
-        shift
-        ;;
-      --execute-renew)
-        require_recovery_option_not_seen "$1" "${execute_renew_seen}"
-        execute_renew_seen="true"
-        shift
-        ;;
-      --scope|--scope=*)
-        recovery_die "recovery-session es-governance-tls forbids --scope; P0t always uses the fixed execution-governance scope"
-        ;;
-      --host-local|--host-local=*|--dry-run|--dry-run=*|--check-only|--check-only=*|--status|--status=*|--apply|--apply=*|--execute-reset|--execute-reset=*|--unseal-only|--unseal-only=*|--post-unseal-check|--post-unseal-check=*|--execute-bootstrap|--execute-bootstrap=*|--prepare-summary-path|--prepare-summary-path=*|--prepare-config-readability|--prepare-config-readability=*|--prepare-spire-bundle-read|--prepare-spire-bundle-read=*|--interactive-sudo|--interactive-sudo=*|--governed-smoke-command|--governed-smoke-command=*)
-        recovery_die "recovery-session es-governance-tls forbids $1; P0t is a separate bounded ES/EGS governance TLS status/renew route and does not combine reset, unseal, workload-auth, runtime identity, IM, support bundles, Vault/SPIRE/Nomad changes, generic TLS deployment, EGS trust-model redesign, or CP proof"
-        ;;
-      --summary-path|--summary-path=*|--output|--output=*|--ars-config-path|--ars-config-path=*|--ags-config-path|--ags-config-path=*|--es-config-path|--es-config-path=*|--egs-config-path|--egs-config-path=*|--ars-tls-dir|--ars-tls-dir=*|--ags-tls-dir|--ags-tls-dir=*|--es-tls-dir|--es-tls-dir=*|--egs-tls-dir|--egs-tls-dir=*|--ca-path|--ca-path=*|--cert-path|--cert-path=*|--key-path|--key-path=*)
-        recovery_die "recovery-session es-governance-tls forbids helper override flag $1; P0t uses fixed documented ES/EGS governance TLS paths and the canonical remote summary path"
-        ;;
-      --*=*)
-        recovery_die "recovery-session es-governance-tls does not accept equals-form options: $1"
-        ;;
-      --*)
-        recovery_die "unknown option for recovery-session es-governance-tls: $1"
-        ;;
-      *)
-        recovery_die "unexpected positional argument for recovery-session es-governance-tls: $1"
-        ;;
-    esac
-  done
-
-  if [[ "${ssh_target_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-governance-tls requires --ssh-target <target>"
-  fi
-  if [[ "${interactive_tty_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-governance-tls requires --interactive-tty"
-  fi
-  if [[ "${route_kind}" == "renew" && "${execute_renew_seen}" != "true" ]]; then
-    recovery_die "recovery-session es-governance-tls-renew requires --execute-renew"
-  fi
-  if [[ "${route_kind}" == "status" && "${execute_renew_seen}" == "true" ]]; then
-    recovery_die "recovery-session es-governance-tls-status forbids --execute-renew"
-  fi
-  recovery_session_es_service_tls_validate_ssh_target "${ssh_target}"
-
-  if [[ ! -x "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}" ]]; then
-    recovery_die "ES service TLS public helper is not executable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_PUBLIC_HELPER}"
-  fi
-  if [[ ! -r "${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}" ]]; then
-    recovery_die "ES service TLS internal helper is not readable: ${REMOTE_ALPHA_ES_SERVICE_TLS_RENEW_INTERNAL_HELPER}"
-  fi
-
-  if [[ "${route_kind}" == "renew" ]]; then
-    helper_mode="--execute-renew"
-  else
-    helper_mode="--status"
-  fi
-  recovery_session_es_governance_tls_remote "${ssh_target}" "${helper_mode}"
+  recovery_session_es_tls_status es-governance-tls-status execution-governance "$@"
 }
 
 recovery_session_operator_healthcheck_tls_status_noninteractive_usage() {
@@ -3421,22 +3358,22 @@ recovery_session() {
   fi
   if [[ "$#" -gt 0 && "$1" == "es-service-tls-status" ]]; then
     shift
-    recovery_session_es_service_tls "status" "$@"
+    recovery_session_es_service_tls "$@"
     return 0
   fi
   if [[ "$#" -gt 0 && "$1" == "es-service-tls-renew" ]]; then
     shift
-    recovery_session_es_service_tls "renew" "$@"
+    recovery_die "es-service-tls-renew is held pending a separately designed contract; no host contact occurred"
     return 0
   fi
   if [[ "$#" -gt 0 && "$1" == "es-governance-tls-status" ]]; then
     shift
-    recovery_session_es_governance_tls "status" "$@"
+    recovery_session_es_governance_tls "$@"
     return 0
   fi
   if [[ "$#" -gt 0 && "$1" == "es-governance-tls-renew" ]]; then
     shift
-    recovery_session_es_governance_tls "renew" "$@"
+    recovery_die "es-governance-tls-renew is held pending a separately designed contract; no host contact occurred"
     return 0
   fi
   if [[ "$#" -gt 0 && "$1" == "operator-healthcheck-tls-status-noninteractive" ]]; then
