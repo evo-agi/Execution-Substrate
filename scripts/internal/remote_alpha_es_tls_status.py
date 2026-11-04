@@ -1065,7 +1065,11 @@ def _valid_der_sequence(data: bytes) -> bool:
 def _valid_x509_text(output: bytes) -> bool:
     if not output.startswith(b"Certificate:\n    Data:\n") or b"\r" in output or b"\x00" in output:
         return False
-    return re.search(rb"\n    Signature Algorithm: [A-Za-z0-9-]+\n(?: {9}[0-9a-f]{2}(?::[0-9a-f]{2})*:?(?:\n|\Z))+\Z", output) is not None
+    row = rb"[0-9a-f]{2}(?::[0-9a-f]{2})*:?(?:\n|\Z)"
+    legacy_tail = rb"(?: {9}" + row + rb")+"
+    openssl3_tail = rb"    Signature Value:\n(?: {8}" + row + rb")+"
+    pattern = rb"\n    Signature Algorithm: [A-Za-z0-9-]+\n(?:" + legacy_tail + rb"|" + openssl3_tail + rb")\Z"
+    return re.search(pattern, output) is not None
 
 
 SINGLE_TRUST_ANCHOR = re.compile(

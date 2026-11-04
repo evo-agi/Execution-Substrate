@@ -3313,11 +3313,23 @@ least 64 bytes. Both require exit zero and empty stderr. The `x509 -text`
 success boundary is narrower than a full certificate-text parser: exit zero,
 empty stderr, a fixed `Certificate:\n    Data:\n` prefix, no carriage-return
 or NUL byte, UTF-8 text, and a terminal `    Signature Algorithm: <token>`
-line followed by one or more nine-space-indented lowercase hexadecimal
-signature lines with optional terminal colon and newline. The token matches
-`[A-Za-z0-9-]+`; no bytes may follow that signature tail. The intervening
-certificate text is not independently validated as a complete grammar;
-fixed SAN/EKU extraction governs the role checks. `verify` success requires
+line followed by exactly one of two complete signature-tail alternatives:
+the existing one or more nine-space-indented lowercase hexadecimal signature
+lines with no heading, or exactly one `    Signature Value:` heading followed
+by one or more eight-space-indented lowercase hexadecimal signature lines.
+The token matches `[A-Za-z0-9-]+`. Each alternative retains the existing
+optional terminal colon and newline policy, requires consistent indentation,
+and is anchored at end of output. A heading plus nine-space rows, eight-space
+rows without a heading, mixed indentation, repeated or unknown headings, and
+trailing bytes remain incomplete. The intervening certificate text is not
+independently validated as a complete grammar; fixed SAN/EKU extraction
+governs the role checks. This bounded text-tail refinement is supported by
+local synthetic public material and a retained OpenSSL 3.6.2 response; it
+does not qualify the target's reported OpenSSL 3.0.13 binary, the complete
+collector run, or the metadata, PEM, DER, malformed-key, and verify response
+families. In particular, OpenSSL 3-shaped code 10/9 verify failures are not
+admitted without actual response evidence and a separate bounded contract
+decision. `verify` success requires
 exit zero, empty stderr, and exactly
 `/dev/stdin: OK\n` on stdout. A generic nonzero status never
 means malformed certificate, malformed key, or failed chain.

@@ -101,6 +101,18 @@ full certificate PEM, raw config, raw OpenSSL output, environment values,
 secrets, arbitrary paths or commands, backup/rollback fields, transcripts,
 support bundles, or Mac `.out` copy-back.
 
+`Bounded slice rule`: the tracked synthetic public fixtures
+`testdata/remote_alpha_es_tls_status/openssl3_x509_text.stdout` and
+`testdata/remote_alpha_es_tls_status/openssl3_public_cert.pem` are
+non-authoritative test inputs for the exact P0s/P0t certificate-text
+compatibility regression. The captured text is a local Homebrew OpenSSL
+3.6.2 response to the synthetic public certificate, not Remote Alpha host
+output, an accepted status summary, a trust anchor, or evidence that the
+target's reported OpenSSL 3.0.13 behavior is qualified. No synthetic
+private key, generator output, or reproduction archive is tracked with these
+fixtures. Their presence does not widen the collector's other whole-response
+acceptance sets or its renewal and publication authority.
+
 The P0u operator healthcheck TLS status/renew summary
 `/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`
 with schema
