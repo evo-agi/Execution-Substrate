@@ -1,7 +1,9 @@
 package executionsubstrate_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -17,6 +19,31 @@ import (
 
 func remoteAlphaESServiceTLSStatusCollectorPath() string {
 	return filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_tls_status.py")
+}
+
+// This helper runs only a non-main parser fixture in a local Python child.
+// It never invokes the collector entry point or a real OpenSSL child.
+func runRemoteAlphaESServiceTLSStatusX509TextFixture(t *testing.T, probe string, stdin []byte, paths ...string) map[string]bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := append([]string{"-I", "-B", "-c", probe, remoteAlphaESServiceTLSStatusCollectorPath()}, paths...)
+	cmd := exec.CommandContext(ctx, "/usr/bin/python3", args...)
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	cmd.Stdin = bytes.NewReader(stdin)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("local x509 text fixture timed out: %v", ctx.Err())
+	}
+	if err != nil {
+		t.Fatalf("local x509 text fixture: %v\n%s", err, output)
+	}
+	var result map[string]bool
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("local x509 text fixture JSON: %v\n%s", err, output)
+	}
+	return result
 }
 
 func TestRemoteAlphaESServiceTLSStatusCollectorSourceBoundary(t *testing.T) {
@@ -937,6 +964,230 @@ print(json.dumps(results,sort_keys=True))
 	for name, ok := range results {
 		if !ok {
 			t.Errorf("OpenSSL grammar check %s failed", name)
+		}
+	}
+}
+
+func TestRemoteAlphaESServiceTLSStatusX509TextSignatureTails(t *testing.T) {
+	const probe = `
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("status_x509_tail_fixture",sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+prefix=b"Certificate:\n    Data:\n"
+algorithm=b"    Signature Algorithm: sha256WithRSAEncryption\n"
+old=prefix+algorithm+b"         01:ab:ff\n"
+new=prefix+algorithm+b"    Signature Value:\n        01:ab:ff\n"
+cases={
+ "legacy":old,
+ "legacy_multiple":prefix+algorithm+b"         01:ab:\n         cd:ef\n",
+ "openssl3":new,
+ "openssl3_multiple":prefix+algorithm+b"    Signature Value:\n        01:ab:\n        cd:ef\n",
+ "wrong_heading":prefix+algorithm+b"    Signature Values:\n        01:ab\n",
+ "repeated_heading":prefix+algorithm+b"    Signature Value:\n    Signature Value:\n        01:ab\n",
+ "heading_plus_nine":prefix+algorithm+b"    Signature Value:\n         01:ab\n",
+ "no_heading_eight":prefix+algorithm+b"        01:ab\n",
+ "mixed_indentation":prefix+algorithm+b"    Signature Value:\n        01:ab\n         cd:ef\n",
+ "zero_rows":prefix+algorithm+b"    Signature Value:\n",
+ "malformed_truncated_hex":prefix+algorithm+b"    Signature Value:\n        01:ab:f\n",
+ "extra_trailing":new+b"extra\n",
+ "carriage_return":new.replace(b"\n",b"\r\n"),
+ "nul_control":new+b"\x00",
+ "bad_prefix":b"Not a certificate:\n    Data:\n"+algorithm+b"    Signature Value:\n        01:ab\n",
+ "uppercase_hex":prefix+algorithm+b"    Signature Value:\n        AB:CD\n",
+}
+print(json.dumps({name:module._valid_x509_text(value) for name,value in cases.items()},sort_keys=True))
+`
+	got := runRemoteAlphaESServiceTLSStatusX509TextFixture(t, probe, nil)
+	want := map[string]bool{
+		"legacy": true, "legacy_multiple": true,
+		"openssl3": true, "openssl3_multiple": true,
+		"wrong_heading": false, "repeated_heading": false,
+		"heading_plus_nine": false, "no_heading_eight": false,
+		"mixed_indentation": false, "zero_rows": false,
+		"malformed_truncated_hex": false, "extra_trailing": false,
+		"carriage_return": false, "nul_control": false,
+		"bad_prefix": false, "uppercase_hex": false,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("signature-tail case count = %d, want %d: %v", len(got), len(want), got)
+	}
+	for label, expected := range want {
+		actual, present := got[label]
+		if !present || actual != expected {
+			t.Errorf("signature-tail %s = %t (present %t), want %t", label, actual, present, expected)
+		}
+	}
+}
+
+func TestRemoteAlphaESServiceTLSStatusX509TextNativeOpenSSL3Response(t *testing.T) {
+	root := filepath.Join(executionSubstrateRepoRoot, "testdata", "remote_alpha_es_tls_status")
+	text, err := os.ReadFile(filepath.Join(root, "openssl3_x509_text.stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := os.ReadFile(filepath.Join(root, "openssl3_public_cert.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(text) != 3059 || fmt.Sprintf("%x", sha256.Sum256(text)) != "b9b4211e036dee8819e68711e5d254db289abc20c6ae5bfbb2683fe4085087e4" {
+		t.Fatal("retained synthetic OpenSSL 3 text identity changed")
+	}
+	if len(cert) != 1172 || fmt.Sprintf("%x", sha256.Sum256(cert)) != "a6f1256b5d7ce3485eeadd59e974637e49e3857b4aa159923a1bd0dd0a367c55" {
+		t.Fatal("retained synthetic public certificate identity changed")
+	}
+	if !bytes.Contains(text, []byte("\n    Signature Value:\n        ")) ||
+		!bytes.HasPrefix(cert, []byte("-----BEGIN CERTIFICATE-----\n")) {
+		t.Fatal("retained synthetic fixture shape changed")
+	}
+	const probe = `
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("status_x509_native_fixture",sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+raw=sys.stdin.buffer.read(3060)
+print(json.dumps({"accepted":module._valid_x509_text(raw),"input_bound":len(raw)==3059}))
+`
+	got := runRemoteAlphaESServiceTLSStatusX509TextFixture(t, probe, text)
+	if len(got) != 2 || !got["accepted"] || !got["input_bound"] {
+		t.Fatalf("retained synthetic OpenSSL 3 response was not admitted unchanged: %v", got)
+	}
+}
+
+func TestRemoteAlphaESServiceTLSStatusX509TextRoleCompatibility(t *testing.T) {
+	root := filepath.Join(executionSubstrateRepoRoot, "testdata", "remote_alpha_es_tls_status")
+	textPath := filepath.Join(root, "openssl3_x509_text.stdout")
+	certPath := filepath.Join(root, "openssl3_public_cert.pem")
+	text, err := os.ReadFile(textPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(text)) != "b9b4211e036dee8819e68711e5d254db289abc20c6ae5bfbb2683fe4085087e4" ||
+		fmt.Sprintf("%x", sha256.Sum256(cert)) != "a6f1256b5d7ce3485eeadd59e974637e49e3857b4aa159923a1bd0dd0a367c55" {
+		t.Fatal("synthetic role witness fixture identity changed")
+	}
+	const probe = `
+import datetime,importlib.util,json,os,pathlib,sys
+source,text_path,cert_path=sys.argv[1:]
+spec=importlib.util.spec_from_file_location("status_x509_role_fixture",source)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+native=pathlib.Path(text_path).read_bytes()
+cert=pathlib.Path(cert_path).read_bytes()
+now=datetime.datetime(2026,11,4,0,0,0,tzinfo=datetime.timezone.utc)
+expected_argv=(module.OPENSSL,"x509","-in","/dev/stdin","-noout","-text")
+results={}
+def text_for(item,san_mode="ok",eku_mode="ok"):
+    _label,_path,role,hostname,eku=item
+    body=b"Certificate:\n    Data:\n"
+    if hostname is not None and san_mode!="missing":
+        name=hostname if san_mode=="ok" else "wrong.ge-p0t-parser-fixture.invalid"
+        body+=b"            X509v3 Subject Alternative Name:\n                DNS:"+name.encode()+b"\n"
+    if eku_mode!="missing":
+        wanted="TLS Web Server Authentication" if eku=="server" else "TLS Web Client Authentication"
+        if eku_mode=="wrong":
+            wanted="TLS Web Client Authentication" if eku=="server" else "TLS Web Server Authentication"
+        body+=b"            X509v3 Extended Key Usage:\n                "+wanted.encode()+b"\n"
+    return body+b"    Signature Algorithm: sha256WithRSAEncryption\n    Signature Value:\n        01:ab:ff\n"
+def invoke(item,text,response=None,status="pass",code="pass"):
+    calls=[]
+    def metadata(path,observed_at=None,single_trust_anchor=False):
+        assert path==item[1] and observed_at==now
+        assert single_trust_anchor==(item[2]=="ca")
+        return {"status":status,"code":code,"not_before":"2026-11-03T00:00:00Z",
+                "not_after":"2026-11-05T00:00:00Z","expired":code=="certificate_expired",
+                "not_yet_valid":code=="certificate_not_yet_valid","sha256":"a"*64,
+                "fingerprint_sha256":"b"*64,"public_key_sha256":"c"*64,
+                "subject_sha256":"d"*64,"issuer_sha256":"e"*64},cert
+    def fixed(argv,input_bytes=None,anchor_bytes=None):
+        calls.append((tuple(argv),input_bytes,anchor_bytes))
+        assert tuple(argv)==expected_argv and input_bytes==cert and anchor_bytes is None
+        return response if response is not None else (0,text,b"")
+    module.cert_metadata=metadata
+    module.run_fixed=fixed
+    try:
+        record,returned=module.cert_role(item,now)
+    except module.Incomplete as exc:
+        return None,calls,str(exc)
+    assert returned==cert
+    return record,calls,None
+counts={}
+all_roles_pass=True
+ca_no_child=True
+argv_and_bytes_bound=True
+for scope in ("artifact-registry","execution-governance"):
+    counts[scope]={"ca":0,"non_ca":0}
+    for item in module.SCOPES[scope]["certs"]:
+        record,calls,error=invoke(item,text_for(item))
+        if item[2]=="ca":
+            counts[scope]["ca"]+=1
+            ca_no_child=ca_no_child and error is None and calls==[] and record["san_match"] is None and record["eku_match"] is None
+        else:
+            counts[scope]["non_ca"]+=1
+            all_roles_pass=all_roles_pass and error is None and record["status"]=="pass" and record["code"]=="pass"
+            all_roles_pass=all_roles_pass and record["eku_match"] is True
+            if item[3] is not None: all_roles_pass=all_roles_pass and record["san_match"] is True
+            argv_and_bytes_bound=argv_and_bytes_bound and len(calls)==1 and calls[0]==(expected_argv,cert,None)
+results["p0s_role_counts"]=counts["artifact-registry"]=={"ca":3,"non_ca":3}
+results["p0t_role_counts"]=counts["execution-governance"]=={"ca":2,"non_ca":2}
+results["both_scopes_non_ca_role_handling"]=all_roles_pass
+results["ca_behavior_unchanged"]=ca_no_child
+results["exact_argv_and_input_bytes"]=argv_and_bytes_bound
+server=next(item for item in module.SCOPES["artifact-registry"]["certs"] if item[2]=="server")
+client=next(item for item in module.SCOPES["execution-governance"]["certs"] if item[2]=="client")
+record,_,error=invoke(server,text_for(server,san_mode="missing"))
+results["san_missing"]=error is None and record["code"]=="san_missing"
+record,_,error=invoke(server,text_for(server,san_mode="wrong"))
+results["san_mismatch"]=error is None and record["code"]=="san_mismatch"
+record,_,error=invoke(client,text_for(client,eku_mode="missing"))
+results["eku_missing"]=error is None and record["code"]=="eku_missing"
+record,_,error=invoke(client,text_for(client,eku_mode="wrong"))
+results["eku_mismatch"]=error is None and record["code"]=="eku_mismatch"
+record,_,error=invoke(server,text_for(server,san_mode="missing",eku_mode="missing"),status="fail",code="certificate_expired")
+results["expired_precedence"]=error is None and record["code"]=="certificate_expired"
+record,_,error=invoke(client,text_for(client,eku_mode="missing"),status="fail",code="certificate_not_yet_valid")
+results["not_yet_valid_precedence"]=error is None and record["code"]=="certificate_not_yet_valid"
+record,_,error=invoke(client,text_for(client),response=(1,b"",b""))
+results["wrong_exit_incomplete"]=record is None and error=="unexpected_openssl_grammar"
+record,_,error=invoke(client,text_for(client),response=(0,text_for(client),b"warning\n"))
+results["nonempty_stderr_incomplete"]=record is None and error=="unexpected_openssl_grammar"
+record,_,error=invoke(client,native)
+results["native_text_reaches_role_checks"]=error is None and record["code"]=="eku_missing"
+# The following pipeline fixture injects local /dev/null descriptors and a
+# rejected cert-role response. It proves no encode/publish call on this path,
+# not root custody, process capability, lock behavior, or live publication.
+module.ES_TLS_STATUS_BOOTSTRAP_VERIFIED=True
+module.ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED=[False]
+module.open_status_dir=lambda:os.open(os.devnull,os.O_RDONLY)
+module.open_scope_lock=lambda _status,_name:os.open(os.devnull,os.O_RDONLY)
+module.validate_process_capability=lambda:None
+module.preexisting_generation=lambda _status,_scope:module._PriorSummarySnapshot(module._PriorSummaryState.ABSENT)
+module.encode_document=lambda *_args:(_ for _ in ()).throw(AssertionError("encode reached"))
+module.publish=lambda *_args:(_ for _ in ()).throw(AssertionError("publish reached"))
+def failing_collect(_scope,_previous):
+    record,calls,error=invoke(client,text_for(client),response=(0,b"unknown grammar\n",b""))
+    if error is not None:raise module.Incomplete(error)
+    return record
+module.collect=failing_collect
+results["rejected_tuple_no_publication"]=module.main(["--scope","execution-governance"])==1
+print(json.dumps(results,sort_keys=True))
+`
+	got := runRemoteAlphaESServiceTLSStatusX509TextFixture(t, probe, nil, textPath, certPath)
+	want := []string{
+		"p0s_role_counts", "p0t_role_counts", "both_scopes_non_ca_role_handling",
+		"ca_behavior_unchanged", "exact_argv_and_input_bytes",
+		"san_missing", "san_mismatch", "eku_missing", "eku_mismatch",
+		"expired_precedence", "not_yet_valid_precedence",
+		"wrong_exit_incomplete", "nonempty_stderr_incomplete",
+		"native_text_reaches_role_checks", "rejected_tuple_no_publication",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("x509 role witness count = %d, want %d: %v", len(got), len(want), got)
+	}
+	for _, label := range want {
+		if !got[label] {
+			t.Errorf("x509 role witness %s false or missing", label)
 		}
 	}
 }

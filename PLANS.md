@@ -1426,6 +1426,22 @@ can produce completed success or typed material failure. Extra or mixed
 lines, unknown nonzero output, signal exit, output overflow, or runtime
 OpenSSL grammar drift are incomplete.
 
+`Bounded slice rule refinement` within the reopened P0s/P0t collector seam:
+the fixed `x509 -in /dev/stdin -noout -text` success response admits exactly
+two complete terminal signature tails. The existing tail has a
+`    Signature Algorithm: <token>` line immediately followed by one or more
+nine-space-indented lowercase hexadecimal rows. The additional tail has the
+same algorithm line, exactly one `    Signature Value:` line, and one or more
+eight-space-indented lowercase hexadecimal rows. Each alternative retains
+the current token, colon, newline, prefix, CR/NUL, UTF-8, exit-zero,
+empty-stderr, output-bound, and end-of-input rules. A heading-plus-nine,
+no-heading-plus-eight, mixed-indentation, or unknown-heading hybrid is
+incomplete. This local synthetic-response refinement does not qualify the
+target host's OpenSSL 3.0.13 binary or the other fixed OpenSSL response
+families. Metadata, PEM, DER, malformed-key, and verify tuples, including
+unobserved OpenSSL 3 code 10/9 failures, retain their existing closed
+acceptance sets pending separate target evidence and a bounded decision.
+
 Fixed config, certificate, and key inputs use verified no-follow ancestor and
 leaf descriptors. The final entry is inspected without following it before
 any blocking read open. FIFO, socket, symlink, directory, device, and every

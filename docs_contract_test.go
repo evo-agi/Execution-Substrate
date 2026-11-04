@@ -8753,6 +8753,27 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"## 1. Authority, scope, and status", "## 2. Versioned profile and ownership")
 	accessPrivilege := compactDocSection(t, accessRaw,
 		"## 6. Service and privilege boundaries", "## 7. Future work and restoration boundary")
+	fixtureHygiene := compactDocSection(t, mustRead(t, ".docs/system_overview/artifact_hygiene.md"),
+		"`Bounded slice rule`: the tracked synthetic public fixtures",
+		"The P0u operator healthcheck TLS status/renew summary")
+
+	assertContainsAll(t, "P0s/P0t x509 text plan refinement", plans,
+		"`Bounded slice rule refinement`", "exactly", "two complete terminal signature tails",
+		"nine-space-indented lowercase hexadecimal", "Signature Value:",
+		"eight-space-indented lowercase hexadecimal", "heading-plus-nine",
+		"no-heading-plus-eight", "mixed-indentation", "unknown-heading",
+		"target host's OpenSSL 3.0.13", "code 10/9", "closed acceptance sets")
+	assertContainsAll(t, "P0s/P0t x509 text whole-response contract", status,
+		"exactly one of two complete signature-tail alternatives",
+		"nine-space-indented lowercase hexadecimal", "Signature Value:",
+		"eight-space-indented lowercase hexadecimal", "consistent indentation",
+		"anchored at end of output", "mixed indentation", "repeated or unknown headings",
+		"does not qualify", "OpenSSL 3-shaped code 10/9",
+		"separate bounded contract decision")
+	assertContainsAll(t, "P0s/P0t synthetic fixture hygiene", fixtureHygiene,
+		"openssl3_x509_text.stdout", "openssl3_public_cert.pem",
+		"non-authoritative test inputs", "not Remote Alpha host",
+		"No synthetic private key", "other whole-response acceptance sets")
 
 	for label, section := range map[string]string{"PLANS status slice": plans, "Remote Alpha status slice": status} {
 		assertContainsAll(t, label+" interactive stdin contract", section,
