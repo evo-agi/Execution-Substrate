@@ -15,9 +15,22 @@ status result.
   subject under `ge-p0t-parser-fixture.invalid`; SHA-256
   `a6f1256b5d7ce3485eeadd59e974637e49e3857b4aa159923a1bd0dd0a367c55`.
 
-The local response is a deterministic regression input, not qualification of
-the Linux host's reported OpenSSL 3.0.13 binary or of metadata, PEM, DER,
-malformed-key, or verify response families. The generator private key was
-removed and is not tracked. Tests construct negative text shapes in memory
-and keep the collector's fixed command, SAN/EKU logic, validity precedence,
-and unknown-response refusal in scope.
+The local text response is a deterministic regression input, not target
+OpenSSL 3.0.13 evidence. The generator private key was removed and is not
+tracked. Tests construct negative text shapes in memory and keep the fixed
+command, SAN/EKU logic, validity precedence, and unknown-response refusal.
+
+`openssl3013_negative_responses.json` is a separate, finite projection of
+thirteen actionable synthetic negative tuples and three native-only downstream
+malformed-response controls in the retained nonroot target native report (SHA-256 `41620e727d0f28e40a38f8a8965696274faa57679b3d91555e9becc903b19e34`).
+It holds only the public certificate/anchor inputs or malformed literals used
+by those cases, their exact fixed argv and base64 response streams, and
+per-blob hashes. Decoding restores the captured bytes exactly. The original
+report and evidence ZIP remain outside this repository. The fixture excludes
+private keys, host/account metadata, scratch paths, and all unrelated native
+rows. The two original key-match private inputs were not exported and are not
+reconstructed. This fixture supports exactly two command-specific malformed
+failures and the six coupled verification alternatives documented in
+`PLANS.md` and `.docs/system_overview/remote_supported_host_alpha.md`; other
+responses remain incomplete. It is not production material, a status result,
+P0t qualification, or authority for target contact and service action.

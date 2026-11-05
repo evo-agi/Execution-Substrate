@@ -1436,11 +1436,25 @@ eight-space-indented lowercase hexadecimal rows. Each alternative retains
 the current token, colon, newline, prefix, CR/NUL, UTF-8, exit-zero,
 empty-stderr, output-bound, and end-of-input rules. A heading-plus-nine,
 no-heading-plus-eight, mixed-indentation, or unknown-heading hybrid is
-incomplete. This local synthetic-response refinement does not qualify the
-target host's OpenSSL 3.0.13 binary or the other fixed OpenSSL response
-families. Metadata, PEM, DER, malformed-key, and verify tuples, including
-unobserved OpenSSL 3 code 10/9 failures, retain their existing closed
-acceptance sets pending separate target evidence and a bounded decision.
+incomplete. The earlier local synthetic text-tail response did not qualify the
+target host's OpenSSL 3.0.13 binary or other fixed response families. A later
+single nonroot synthetic observation of that target binary captured 55 complete
+native tuples: 39 accepted by the unchanged consumer, 13 closed-grammar gaps,
+and three downstream malformed-output controls unreachable at current call
+sites. This is finite response evidence, not proof of production material,
+root-context execution, complete P0t inventory, or service readiness.
+
+`Bounded slice rule refinement` for those 13 gaps: the fixed certificate
+metadata command admits exit 1, empty stdout, and exactly
+`Could not read certificate from /dev/stdin\nUnable to load certificate\n`
+as `certificate_malformed`; the fixed private-key-to-public-DER command admits
+exit 1, empty stdout, and exactly
+`Could not read key from /dev/stdin\n` as `key_malformed`. Their existing
+LibreSSL alternatives remain. Later public-PEM, DER, and text malformed
+outputs remain incomplete at their current call sites. No arbitrary nonzero
+response becomes a typed failure. The same observation supports one closed
+three-line `verify` stderr envelope and six coupled alternatives stated below;
+other response families retain their previous acceptance sets.
 
 Fixed config, certificate, and key inputs use verified no-follow ancestor and
 leaf descriptors. The final entry is inspected without following it before
@@ -1492,15 +1506,29 @@ For the not-yet-valid server fixture, stdout is exactly
 `CN = <DNS token>\nerror 9 at 0 depth lookup:certificate is not yet valid\n/dev/stdin: verification failed: 9 (certificate is not yet valid)\n`.
 The bounded wrong-anchor failure has the same LibreSSL-shaped three-line
 stdout grammar with code 20 and `unable to get local issuer certificate`.
-An OpenSSL-3-shaped failure has exit 2, empty stdout, and stderr exactly
+The earlier compact OpenSSL-3-shaped failure remains: exit 2, empty stdout,
+and stderr exactly
 `CN=<DNS token>\nerror <code> at 0 depth lookup: <reason>\nerror /dev/stdin: verification failed\n`,
-where only `(20, unable to get local issuer certificate)` and
-`(62, hostname mismatch)` are admitted. Hostname mismatch is a completed
-`chain_failed` only under that exact tuple. `<DNS token>` is
-`[A-Za-z0-9.-]+`; no warning, extra line, unknown exit, or unadmitted
-response can produce a completed result. These narrow tuples are not a
-general certificate-error parser; target grammar remains a host-preflight
-fact.
+with its existing `(20, unable to get local issuer certificate)` and
+`(62, hostname mismatch)` alternatives. Hostname mismatch requires the fixed
+server hostname. The target OpenSSL 3.0.13 observation additionally admits
+exit 2, empty stdout, and exactly
+`CN = <subject>\nerror <code> at <depth> depth lookup: <reason>\nerror /dev/stdin: verification failed\n`.
+The six coupled code/depth/reason/subject/context alternatives are: 20/0
+`unable to get local issuer certificate`, 10/0 `certificate has expired`, and
+9/0 `certificate is not yet valid`, each with a `[A-Za-z0-9.-]+` subject in
+either purpose; 10/1 `certificate has expired` with subject exactly
+`Remote Alpha Internal Runtime Root CA` in either purpose; 26/0
+`unsuitable certificate purpose` with a bounded subject under `sslclient`
+only; and 62/0 `hostname mismatch` with a bounded subject under `sslserver`
+with its nonempty fixed hostname only. Each admitted negative tuple is the
+existing completed `chain_failed`, including when certificate validity has
+already failed. No code/reason/depth cross-product, arbitrary RDN, extra or
+mixed stream, warning, CR/NUL, missing terminal LF, changed operand, unknown
+exit, or unadmitted response can produce a completed result. These narrow
+tuples are not a general certificate-error parser. Unknown grammar remains
+incomplete and publishes no new generation; target scope remains finite.
+Full positive target capability remains a separate host-preflight fact.
 
 `Current invariant` evidence boundary: completed `pass` and typed completed
 `fail` are both valid observations; interrupted, timed-out, overflowed,
