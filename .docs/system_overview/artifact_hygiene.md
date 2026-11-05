@@ -113,6 +113,24 @@ private key, generator output, or reproduction archive is tracked with these
 fixtures. Their presence does not widen the collector's other whole-response
 acceptance sets or its renewal and publication authority.
 
+`Bounded slice rule`: `testdata/remote_alpha_es_tls_status/openssl3013_negative_responses.json`
+is a minimal, non-authoritative offline projection of thirteen exact synthetic
+negative tuples captured in one nonroot target OpenSSL 3.0.13 observation,
+plus the three exact native-only downstream malformed-response controls.
+It contains only public certificate/anchor PEM, retained malformed literals,
+fixed command arguments, base64-encoded stdout/stderr, case IDs and integrity
+hashes. The source native-result SHA-256 and per-case hashes bind it to the
+separately retained original evidence. It contains no private key, host/account
+metadata, scratch path, complete evidence archive, generated package, or
+status summary. The two original key-match inputs were not exported; this
+fixture does not claim to reconstruct them. Tests decode exact bytes for
+contained parser replay and use artificial mutations only as refusal
+controls. Raw OpenSSL streams and private key bytes never enter published
+status evidence. Completed typed failures may replace status only after the
+normal cleanup and semantic checks; incomplete grammar preserves prior bytes
+and generation. Neither fixture nor replay grants target contact, renewal,
+service repair, or wider production authority.
+
 The P0u operator healthcheck TLS status/renew summary
 `/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`
 with schema

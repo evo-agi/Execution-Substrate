@@ -3323,13 +3323,16 @@ and is anchored at end of output. A heading plus nine-space rows, eight-space
 rows without a heading, mixed indentation, repeated or unknown headings, and
 trailing bytes remain incomplete. The intervening certificate text is not
 independently validated as a complete grammar; fixed SAN/EKU extraction
-governs the role checks. This bounded text-tail refinement is supported by
-local synthetic public material and a retained OpenSSL 3.6.2 response; it
-does not qualify the target's reported OpenSSL 3.0.13 binary, the complete
-collector run, or the metadata, PEM, DER, malformed-key, and verify response
-families. In particular, OpenSSL 3-shaped code 10/9 verify failures are not
-admitted without actual response evidence and a separate bounded contract
-decision. `verify` success requires
+governs the role checks. The earlier bounded text-tail refinement is supported by
+local synthetic public material and a retained OpenSSL 3.6.2 response; by
+itself it did not qualify the target's reported OpenSSL 3.0.13 binary or the
+complete collector run. A subsequent single nonroot synthetic target
+observation captured 55 complete native tuples from OpenSSL 3.0.13: 39 were
+accepted by the unchanged consumer, 13 were closed-grammar gaps, and three
+later malformed-output controls were unreachable at current call sites.
+This later evidence supports only the finite negative-response additions
+below. It does not establish production material, root-context behavior,
+complete P0t inventory, or service readiness. `verify` success requires
 exit zero, empty stderr, and exactly
 `/dev/stdin: OK\n` on stdout. A generic nonzero status never
 means malformed certificate, malformed key, or failed chain.
@@ -3342,6 +3345,17 @@ the first is `unable to load certificate`; for `pkey`, it is
 Apple LibreSSL build-path suffix
 `/Sources/libressl/libressl-3.3/crypto/pem/pem_lib.c:694:Expecting:`, and
 respectively `TRUSTED CERTIFICATE` or `ANY PRIVATE KEY`, then one newline.
+The target 3.0.13 observation additionally admits exactly two command-kind
+specific malformed tuples. For the fixed certificate metadata command, exit
+1, empty stdout and stderr exactly
+`Could not read certificate from /dev/stdin\nUnable to load certificate\n`
+produce the existing `certificate_malformed` with null metadata and dependent
+handling. For the fixed private-key-to-public-DER command, exit 1, empty
+stdout and stderr exactly `Could not read key from /dev/stdin\n` produce the
+existing `key_malformed`. Neither tuple admits the other command kind. Later
+public-PEM, DER and text malformed outputs remain native-only qualification
+controls and incomplete at their current call sites. No generic nonzero
+failure is admitted.
 The admitted fixture-proven chain failure is exit 2, empty stderr, and exactly
 three stdout lines: `CN = <token>`,
 `error 20 at 0 depth lookup:unable to get local issuer certificate`, and
@@ -3355,17 +3369,32 @@ then `/dev/stdin: verification failed: 10 (certificate has expired)\n`.
 The fixture-proven not-yet-valid server failure has exit 2, empty stderr,
 and stdout exactly
 `CN = <DNS token>\nerror 9 at 0 depth lookup:certificate is not yet valid\n/dev/stdin: verification failed: 9 (certificate is not yet valid)\n`.
-An OpenSSL-3-shaped failure has exit 2, empty stdout, and stderr exactly
+The earlier compact OpenSSL-3-shaped failure remains: exit 2, empty
+stdout, and stderr exactly
 `CN=<DNS token>\nerror <code> at 0 depth lookup: <reason>\nerror /dev/stdin: verification failed\n`,
-with only code/reason pair `(20, unable to get local issuer certificate)` or
-`(62, hostname mismatch)` admitted. Hostname mismatch is typed completed
-`chain_failed` only under that whole tuple. `<DNS token>` matches
-`[A-Za-z0-9.-]+`; the final operand is always `/dev/stdin`. No extra line
-or warning is allowed. These narrow grammars are bounded fixture responses, not a claim that all
-OpenSSL or LibreSSL versions emit them. An unknown error-stack variant,
-unknown verify code/depth, signal exit, truncated output, setup failure, or
-runtime grammar drift is incomplete and publishes no generation. Raw child
-output never enters evidence.
+with its existing code/reason pairs `(20, unable to get local issuer certificate)`
+and `(62, hostname mismatch)`. The latter requires `sslserver` with a nonempty
+fixed hostname. The target 3.0.13 observation adds one exact three-line
+envelope: exit 2, empty stdout, and stderr
+`CN = <subject>\nerror <code> at <depth> depth lookup: <reason>\nerror /dev/stdin: verification failed\n`.
+The six alternatives couple every field: code 20/depth 0/`unable to get local
+issuer certificate`, code 10/depth 0/`certificate has expired`, and code
+9/depth 0/`certificate is not yet valid` use a `[A-Za-z0-9.-]+` subject under
+either `sslclient` or `sslserver`; code 10/depth 1/`certificate has expired`
+uses exactly `Remote Alpha Internal Runtime Root CA` under either purpose;
+code 26/depth 0/`unsuitable certificate purpose` uses a bounded subject under
+`sslclient` only; code 62/depth 0/`hostname mismatch` uses a bounded subject
+under `sslserver` with its nonempty fixed hostname only. Every admitted
+negative tuple returns the existing completed `chain_failed`, even if a
+separate certificate validity check already failed. The final operand is
+always `/dev/stdin`. Each admitted response is a whole tuple. Code, depth, reason, subject and
+context are not independent options. No cross-product, arbitrary RDN, CR/NUL, missing final
+LF, changed operand, extra/reordered/repeated error block, warning, mixed
+stream or unknown exit is admitted. These narrow grammars are bounded
+responses, not a claim that all OpenSSL or LibreSSL versions emit them. An
+unknown stack variant, code/depth, signal exit, truncated output, setup
+failure or runtime grammar drift is incomplete and publishes no generation.
+Raw child output never enters evidence.
 
 The common collector contract is
 `execution-substrate.remote-alpha.es-tls-status-collector/v1`. Each completed

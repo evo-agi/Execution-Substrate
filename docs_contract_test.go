@@ -8762,18 +8762,30 @@ func TestRemoteAlphaESServiceTLSStatusOnlyRepairContract(t *testing.T) {
 		"nine-space-indented lowercase hexadecimal", "Signature Value:",
 		"eight-space-indented lowercase hexadecimal", "heading-plus-nine",
 		"no-heading-plus-eight", "mixed-indentation", "unknown-heading",
-		"target host's OpenSSL 3.0.13", "code 10/9", "closed acceptance sets")
+		"target host's OpenSSL 3.0.13")
 	assertContainsAll(t, "P0s/P0t x509 text whole-response contract", status,
 		"exactly one of two complete signature-tail alternatives",
 		"nine-space-indented lowercase hexadecimal", "Signature Value:",
 		"eight-space-indented lowercase hexadecimal", "consistent indentation",
 		"anchored at end of output", "mixed indentation", "repeated or unknown headings",
-		"does not qualify", "OpenSSL 3-shaped code 10/9",
-		"separate bounded contract decision")
+		"by itself it did not qualify")
+	for label, section := range map[string]string{"plan": plans, "status": status} {
+		assertContainsAll(t, "P0s/P0t target 3.0.13 finite response grammar "+label, section,
+			"39", "13", "three", "nonroot", "certificate_malformed", "key_malformed",
+			"Could not read certificate from /dev/stdin\\nUnable to load certificate\\n",
+			"Could not read key from /dev/stdin\\n",
+			"CN = <subject>\\nerror <code> at <depth> depth lookup: <reason>\\nerror /dev/stdin: verification failed\\n",
+			"unable to get local issuer certificate", "certificate has expired",
+			"certificate is not yet valid", "Remote Alpha Internal Runtime Root CA",
+			"unsuitable certificate purpose", "hostname mismatch", "sslclient", "sslserver",
+			"chain_failed", "incomplete", "generation")
+	}
 	assertContainsAll(t, "P0s/P0t synthetic fixture hygiene", fixtureHygiene,
 		"openssl3_x509_text.stdout", "openssl3_public_cert.pem",
 		"non-authoritative test inputs", "not Remote Alpha host",
-		"No synthetic private key", "other whole-response acceptance sets")
+		"No synthetic private key", "other whole-response acceptance sets",
+		"openssl3013_negative_responses.json", "retained malformed literals",
+		"no private key", "incomplete grammar preserves prior bytes")
 
 	for label, section := range map[string]string{"PLANS status slice": plans, "Remote Alpha status slice": status} {
 		assertContainsAll(t, label+" interactive stdin contract", section,

@@ -1042,6 +1042,10 @@ LIBRESSL_PEM_ERROR_PATH = b"/AppleInternal/Library/BuildRoots/4~CVR0ugD7d_x9KkNi
 def _known_malformed_pem(code: int, output: bytes, error: bytes, kind: str) -> bool:
     if code != 1 or output != b"" or kind not in ("certificate", "key"):
         return False
+    target3013 = (b"Could not read certificate from /dev/stdin\nUnable to load certificate\n"
+                  if kind == "certificate" else b"Could not read key from /dev/stdin\n")
+    if error == target3013:
+        return True
     expected = b"TRUSTED CERTIFICATE" if kind == "certificate" else b"ANY PRIVATE KEY"
     first = b"unable to load certificate\n" if kind == "certificate" else b"unable to load key\n"
     pattern = (re.escape(first) + rb"[0-9]+:error:09FFF06C:PEM routines:CRYPTO_internal:no start line:" +
@@ -1221,7 +1225,20 @@ def verify_chain(label: str, ca: dict[str, object], cert: dict[str, object], ca_
         admitted_openssl3 = not output and re.fullmatch(openssl3, error) is not None
         if admitted_openssl3 and not hostname and b"error 62 " in error:
             admitted_openssl3 = False
-        if code != 2 or not (admitted_libressl or admitted_openssl3):
+        target3013_end = rb"error /dev/stdin: verification failed\n"
+        target3013_leaf = rb"CN = [A-Za-z0-9.-]+\nerror "
+        target3013_patterns = (
+            target3013_leaf + rb"20 at 0 depth lookup: unable to get local issuer certificate\n" + target3013_end,
+            target3013_leaf + rb"10 at 0 depth lookup: certificate has expired\n" + target3013_end,
+            target3013_leaf + rb"9 at 0 depth lookup: certificate is not yet valid\n" + target3013_end,
+            rb"CN = Remote Alpha Internal Runtime Root CA\nerror 10 at 1 depth lookup: certificate has expired\n" + target3013_end,
+        )
+        if purpose == "sslclient":
+            target3013_patterns += (target3013_leaf + rb"26 at 0 depth lookup: unsuitable certificate purpose\n" + target3013_end,)
+        if purpose == "sslserver" and hostname:
+            target3013_patterns += (target3013_leaf + rb"62 at 0 depth lookup: hostname mismatch\n" + target3013_end,)
+        admitted_target3013 = not output and any(re.fullmatch(pattern, error) is not None for pattern in target3013_patterns)
+        if code != 2 or not (admitted_libressl or admitted_openssl3 or admitted_target3013):
             raise Incomplete("unexpected_openssl_grammar")
     return {"label": label, "status": "pass" if code == 0 else "fail", "code": "pass" if code == 0 else "chain_failed", "purpose": purpose, "hostname": hostname}
 
