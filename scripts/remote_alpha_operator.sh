@@ -152,6 +152,14 @@ recovery_die() {
   exit 2
 }
 
+# P0s/P0t contact may have run a stage helper even when its response is unproved.
+recovery_es_tls_status_postcontact_die() {
+  local route=$1 detail=$2
+  printf 'error: %s\n' "${route} ${detail}" >&2
+  printf '%s\n' "${route}: remote phase unproved after status contact; stage disposition unproved unless root completed verified removal; inspect protected status independently" >&2
+  exit 2
+}
+
 require_recovery_option_value() {
   local option=$1
   local value_count=$2
@@ -2613,6 +2621,7 @@ REMOTE_ALPHA_ES_TLS_STATUS_MODE
 # The fixed root bootstrap loads only digest-bound bytes from the staged leaf.
 # On handoff, a rejected stage remains diagnostic residue.
 IFS= read -r -d '' bootstrap <<'REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP' || true
+import atexit
 import hashlib
 import os
 import pwd
@@ -2620,6 +2629,107 @@ import re
 import signal
 import stat
 import sys
+
+_FAILURE_WITNESS_COUPLINGS = {
+    "bootstrap_entry": ("invocation_unproved", "caller_identity_unproved"),
+    "stage_custody": ("stage_custody_unproved", "source_unproved"),
+    "stage_disposition": ("stage_disposition_unproved",),
+    "collector_load": ("collector_load_unproved",),
+    "collector_entry": ("invocation_unproved",),
+    "protected_ancestry": ("protected_state_unproved",),
+    "scope_lock": ("lock_state_unproved", "lock_acquisition_unproved"),
+    "process_capability": ("process_capability_unproved",),
+    "prior_snapshot": ("prior_summary_unaccepted", "prior_read_unproved"),
+    "collection": ("fixed_input_unproved", "fixed_command_unproved",
+                   "openssl_child_unproved", "openssl_grammar_unaccepted"),
+    "record_encoding": ("record_unaccepted",),
+    "publication_precommit": ("publication_unproved",),
+}
+
+def format_failure_witness(scope_value, origin, source, source_digest, phase, reason):
+    fields = (scope_value, origin, source, source_digest, phase, reason)
+    if any(type(value) is not str for value in fields):
+        return None
+    if scope_value not in ("artifact-registry", "execution-governance", "unknown"):
+        return None
+    if origin not in ("bootstrap", "collector") or source not in ("verified", "unverified"):
+        return None
+    if ((source == "verified" and re.fullmatch(r"[0-9a-f]{64}", source_digest) is None) or
+            (source == "unverified" and source_digest != "none")):
+        return None
+    if phase not in _FAILURE_WITNESS_COUPLINGS:
+        return None
+    bootstrap_phase = phase in ("bootstrap_entry", "stage_custody", "stage_disposition", "collector_load")
+    if (origin == "bootstrap") is not bootstrap_phase:
+        return None
+    if reason not in _FAILURE_WITNESS_COUPLINGS[phase] and reason not in ("interrupted", "unknown"):
+        return None
+    if scope_value == "unknown" and (origin != "bootstrap" or phase != "bootstrap_entry"):
+        return None
+    if origin == "collector" and (source != "verified" or scope_value == "unknown"):
+        return None
+    if (phase == "bootstrap_entry" and source != "unverified") or (
+            phase in ("stage_disposition", "collector_load") and source != "verified"):
+        return None
+    line = ("ES_TLS_STATUS_FAILURE_V1 scope=" + scope_value + " origin=" + origin +
+            " source=" + source + " collector_sha256=" + source_digest +
+            " phase=" + phase + " reason=" + reason + "\n").encode("ascii")
+    return line if len(line) <= 512 else None
+
+def write_failure_witness(line):
+    # Independently opened output-only terminal; never touch inherited OFDs.
+    fd = None
+    try:
+        fd = os.open("/dev/tty", os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+        if os.isatty(fd):
+            os.write(fd, line)  # One best-effort write; short/blocked output is not retried.
+    except BaseException:
+        pass
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except BaseException:
+                pass
+
+scope_value = "unknown"
+source_verified = False
+verified_digest = "none"
+bootstrap_phase = "bootstrap_entry"
+bootstrap_reason = "invocation_unproved"
+owned_fds = {"parent": False, "directory": False, "file": False}
+stage_closeout = False
+collector_started = False
+collector_failure_exit = False
+collector_namespace = None
+uncaught = [False]
+
+def emit_failure_witness():
+    if uncaught[0] or any(owned_fds.values()):
+        return
+    if collector_started:
+        if (stage_closeout is not True or collector_failure_exit is not True or
+                type(collector_namespace) is not dict or
+                collector_namespace.get("WITNESS_CLOSEOUT_PROVED") is not True or
+                collector_namespace.get("WITNESS_DISPOSITION_UNPROVED") is not False):
+            return
+        selection = collector_namespace.get("WITNESS_SELECTION")
+        if type(selection) is not tuple or len(selection) != 2:
+            return
+        line = format_failure_witness(scope_value, "collector", "verified", verified_digest,
+                                      selection[0], selection[1])
+    else:
+        line = format_failure_witness(scope_value, "bootstrap",
+                                      "verified" if source_verified else "unverified",
+                                      verified_digest, bootstrap_phase, bootstrap_reason)
+    if line is not None:
+        write_failure_witness(line)
+
+def quiet_unhandled(_kind, _value, _traceback):
+    uncaught[0] = True  # Never print an arbitrary exception or infer its disposition.
+
+sys.excepthook = quiet_unhandled
+atexit.register(emit_failure_witness)
 
 stage, basename, digest, scope, expected_dev, expected_ino = sys.argv[1:]
 def strict_uint64(value):
@@ -2635,6 +2745,8 @@ if (re.fullmatch(r"/tmp/\.es-tls-status-[0-9a-f]{32}", stage) is None or
         re.fullmatch(r"[0-9a-f]{64}", digest) is None or
         scope not in ("artifact-registry", "execution-governance")):
     raise SystemExit(1)
+scope_value = scope
+bootstrap_reason = "caller_identity_unproved"
 if os.geteuid() != 0 or os.environ.get("SUDO_USER") != "ds":
     raise SystemExit(1)
 try:
@@ -2645,11 +2757,15 @@ try:
         raise ValueError()
 except (KeyError, ValueError):
     raise SystemExit(1)
+bootstrap_phase = "stage_custody"
+bootstrap_reason = "stage_custody_unproved"
 interrupted = [False]
 for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
     signal.signal(signum, lambda _signum, _frame: interrupted.__setitem__(0, True))
 def check_signal():
+    global bootstrap_reason
     if interrupted[0]:
+        bootstrap_reason = "interrupted"
         raise SystemExit(1)
 def leaf_identity(info):
     return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid, info.st_gid,
@@ -2658,6 +2774,7 @@ def check_access(fd):
     if any(attr not in ("security.selinux", "com.apple.provenance") for attr in os.listxattr(fd)):
         raise SystemExit(1)
 parent_fd = os.open("/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+owned_fds["parent"] = True
 try:
     parent = os.fstat(parent_fd)
     if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_gid != 0 or
@@ -2673,6 +2790,7 @@ try:
         raise SystemExit(1)
     dir_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                      dir_fd=parent_fd)
+    owned_fds["directory"] = True
     try:
         directory = os.fstat(dir_fd)
         entry_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -2693,6 +2811,7 @@ try:
             raise SystemExit(1)
         file_fd = os.open(basename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                           dir_fd=dir_fd)
+        owned_fds["file"] = True
         try:
             opened = os.fstat(file_fd)
             if leaf_identity(opened) != leaf_identity(entry):
@@ -2712,10 +2831,16 @@ try:
             after = os.fstat(file_fd)
             current = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
             if (total != opened.st_size or leaf_identity(after) != leaf_identity(opened) or
-                    leaf_identity(current) != leaf_identity(opened) or
-                    hashlib.sha256(payload).hexdigest() != digest):
+                    leaf_identity(current) != leaf_identity(opened)):
                 raise SystemExit(1)
+            bootstrap_reason = "source_unproved"
+            if hashlib.sha256(payload).hexdigest() != digest:
+                raise SystemExit(1)
+            source_verified = True
+            verified_digest = digest
             check_signal()
+            bootstrap_phase = "stage_disposition"
+            bootstrap_reason = "stage_disposition_unproved"
             os.fchown(dir_fd, 0, 0)
             current_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             current = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
@@ -2727,6 +2852,7 @@ try:
             os.unlink(basename, dir_fd=dir_fd)
         finally:
             os.close(file_fd)
+            owned_fds["file"] = False
         if os.listdir(dir_fd):
             raise SystemExit(1)
         current_dir = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -2737,14 +2863,38 @@ try:
         check_signal()
     finally:
         os.close(dir_fd)
+        owned_fds["directory"] = False
 finally:
     os.close(parent_fd)
+    owned_fds["parent"] = False
+stage_closeout = True
 label = "<verified-es-tls-status-collector>"
 sys.argv = [label, "--scope", scope]
 namespace = {"__name__": "__main__", "__file__": label,
              "ES_TLS_STATUS_BOOTSTRAP_VERIFIED": True,
              "ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED": interrupted}
-exec(compile(payload, label, "exec"), namespace)
+bootstrap_phase = "collector_load"
+bootstrap_reason = "collector_load_unproved"
+try:
+    compiled_payload = compile(payload, label, "exec")
+except BaseException:
+    raise SystemExit(1)
+collector_namespace = namespace
+collector_started = True
+try:
+    exec(compiled_payload, namespace)
+except SystemExit as stopped:
+    # Preserve only the collector's fixed integer exit contract. Python must
+    # never print a hostile SystemExit payload on the operator terminal.
+    if type(stopped.code) is int and stopped.code in (0, 1, 2):
+        collector_failure_exit = stopped.code == 1
+        raise SystemExit(stopped.code)
+    raise SystemExit(1)
+except BaseException:
+    raise SystemExit(1)
+# The verified collector's __main__ path exits explicitly. A return is not a
+# completed record and cannot earn a witness.
+raise SystemExit(1)
 REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP
 stage_dev=${stage_identity%%:*}
 stage_ino=${stage_identity#*:}
@@ -2890,13 +3040,15 @@ except (OSError, ValueError):
 REMOTE_ALPHA_ES_TLS_STATUS_CREATE
 REMOTE_ALPHA_ES_TLS_STATUS_STAGE
 )"; then
-    recovery_die "${route} stage creation or custody acquisition failed; possible diagnostic residue retained"
+    recovery_es_tls_status_postcontact_die "${route}" "stage creation or custody acquisition failed; possible diagnostic residue retained"
   fi
   if ! scp "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" "${ssh_target}:${remote_collector}"; then
-    recovery_die "${route} upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
+    recovery_es_tls_status_postcontact_die "${route}" "upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
   fi
-  remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
-  ssh -tt "${ssh_target}" "${remote_command}" || recovery_die "${route} collector or remote setup failed; stage retained as diagnostic residue unless root completed verified removal; no fresh status generation accepted"
+  remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_es_tls_status_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
+  if ! ssh -tt "${ssh_target}" "${remote_command}"; then
+    recovery_es_tls_status_postcontact_die "${route}" "interactive SSH failed"
+  fi
   printf '%s\n' "${route}: collector published a completed observation; validate the fresh protected record for result.status."
 }
 

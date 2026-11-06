@@ -1592,7 +1592,8 @@ payload=("import json,os,sys\n"
          "assert globals().get('ES_TLS_STATUS_BOOTSTRAP_VERIFIED') is True\n"
          "assert globals().get('ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED') == [False]\n"
          "assert not os.path.exists("+repr(str(stage))+")\n"
-         "print(json.dumps({'ran':'expected','scope':sys.argv[2]}))\n").encode()
+         "print(json.dumps({'ran':'expected','scope':sys.argv[2]}))\n"
+         "raise SystemExit(0)\n").encode()
 alternate=payload.replace(b"expected",b"replaced")
 assert len(payload)==len(alternate)
 digest=hashlib.sha256(payload).hexdigest()
@@ -2630,7 +2631,7 @@ module.check_extended=lambda _fd: None
 module.check_input_ancestor=lambda info: None if stat.S_ISDIR(info.st_mode) else (_ for _ in ()).throw(module.Incomplete("ancestor"))
 def result(path):
     try: module.open_fixed_regular(str(path),module.MAX_INPUT);return "read"
-    except FileNotFoundError:return "missing"
+    except module._VerifiedFinalLeafAbsent:return "missing"
     except module.Incomplete:return "incomplete"
     except OSError:return "incomplete"
 results={"safe_leaf_absent":result(safe/"absent.pem")=="missing"}

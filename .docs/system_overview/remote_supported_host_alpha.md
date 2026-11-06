@@ -3002,6 +3002,97 @@ that terminal, or retained. Invalid targets or an overlarge command fail
 before contact, and the returned custody identity is validated before the
 interactive invocation; no arbitrary remote command or caller shell fragment
 is accepted.
+
+`Bounded slice rule` prospective failure witness: the fixed root bootstrap
+alone may emit at most one diagnostic line on the existing controlling
+terminal after a failed P0s/P0t invocation has proved its applicable
+stage/descriptor/lock, child and temporary closeout. The collector selects a
+private invocation-local phase/reason but never emits. The line is exactly
+`ES_TLS_STATUS_FAILURE_V1 scope=<scope> origin=<origin> source=<source> collector_sha256=<digest> phase=<phase> reason=<reason>`
+plus LF, ASCII and at most 512 bytes including LF, with one space between
+fields. Scope is `artifact-registry`, `execution-governance`, or `unknown`;
+`unknown` is allowed only at bootstrap entry before scope validation. Origin
+is `bootstrap` or `collector`. Source is `verified` only after the current
+stable staged-leaf read has matched its complete SHA-256 to the intended
+digest; that exact payload is dispatched from memory. Before verification,
+source is `unverified` and digest is `none`; verified digest is exactly 64
+lowercase hex digits. Collector-origin selection requires verified source and
+a fixed scope. The digest binds intended source bytes, not a trusted remote
+attestation. The private phase/reason coupling is closed:
+
+| Origin | Phase | Specific reasons (each phase also allows `interrupted` and `unknown`) |
+| --- | --- | --- |
+| bootstrap | `bootstrap_entry` | `invocation_unproved`, `caller_identity_unproved` |
+| bootstrap | `stage_custody` | `stage_custody_unproved`, `source_unproved` |
+| bootstrap | `stage_disposition` | `stage_disposition_unproved` |
+| bootstrap | `collector_load` | `collector_load_unproved` |
+| collector | `collector_entry` | `invocation_unproved` |
+| collector | `protected_ancestry` | `protected_state_unproved` |
+| collector | `scope_lock` | `lock_state_unproved`, `lock_acquisition_unproved` |
+| collector | `process_capability` | `process_capability_unproved` |
+| collector | `prior_snapshot` | `prior_summary_unaccepted`, `prior_read_unproved` |
+| collector | `collection` | `fixed_input_unproved`, `fixed_command_unproved`, `openssl_child_unproved`, `openssl_grammar_unaccepted` |
+| collector | `record_encoding` | `record_unaccepted` |
+| collector | `publication_precommit` | `publication_unproved` |
+
+Selection requires the reached source boundary and exact type-checked literal
+`Incomplete.args` membership; any unmapped or hostile exception selects
+`unknown`, without stringification. The existing flock `OSError` label does
+not prove contention and maps to `lock_acquisition_unproved`. A completed
+negative protected record is completed evidence, so emits no incomplete
+failure witness. No raw exception, path, subject, PID, command, OpenSSL stream,
+config, private material or material digest can enter a witness.
+
+Emission is best effort through one independently opened, output-only,
+nonblocking descriptor to the fixed controlling-terminal device, verified as
+a terminal. It never changes inherited stream flags or terminal input mode,
+captures a sudo/SSH transcript, falls back to a file, waits or retries. A
+blocked, short, missing, forged or duplicate line is not accepted diagnosis.
+The bootstrap emits only after existing resolved closeout; an unproved stage
+may remain as diagnostic residue without a deletion claim. An unresolved
+child/member hold, failed close (including a fixed-input leaf or ancestry
+descriptor close that a config, certificate, or key consumer wraps as an
+`Incomplete`), or uncertain temporary cleanup suppresses output without
+releasing a lock early or adding cleanup. Escaped collector
+dispatch with unproved disposition is suppressed. For parent-owned protected
+ancestry, capability/proc descriptors, selected-anchor pipes, selector and
+OpenSSL streams, the pending close token is consumed before the one explicit
+close attempt. The first failed close stays unproved across `Incomplete`
+wrapping, a stream's `.closed` state, or later cleanup success. A different
+still-owned descriptor or stream receives its own close attempt; an ambiguous
+numeric descriptor is never retried merely to obtain proof. Child exit/reap
+settles only child-owned copies, not the parent's close obligation. This is
+private close accounting, with no change to process holds, lock release order,
+or accepted result. Successful publication retains immediate `os.replace`
+then `os._exit(0)` with no postcommit action.
+For fixed inputs, leaf close precedes independent reverse-ancestry attempts;
+an invalid newly opened child is settled separately from its retained parent
+chain. A missing final leaf is completed absence only when every acquired
+input descriptor closes successfully. If any such close fails, the primitive
+reports a controlled incomplete input operation after all other applicable
+attempts, even if a final-leaf `FileNotFoundError` was already pending. A
+close-raised `FileNotFoundError` cannot become completed missing or absent
+evidence at a config, certificate, or key caller. The scope lock closes before
+the status-directory descriptor, with the second still attempted after an
+uncertain first close. Each acquired member
+pidfd has one local close obligation; a failed close remains invocation-sticky
+while later observed candidates are independently pinned and identity-checked
+before any signal. Per-member faults are aggregated after the finite scan into
+the existing incomplete child-owner hold. None of these close groups retries
+an ambiguous descriptor or converts later cleanup into witness eligibility.
+Only the original no-follow final-leaf stat can provisionally observe missing
+input. After safe ancestry revalidation and settled input closeout, a private
+`_VerifiedFinalLeafAbsent` marker carries that observation to the config,
+certificate and reached-key callers. All other `FileNotFoundError` origins
+are incomplete, including root/ancestor operations, present-leaf reads and
+later rechecks. A settled operation failure can select the existing
+`fixed_input_unproved` advisory reason; failed closeout suppresses it. No
+public result or protected-reader rule changes.
+The facade's fixed post-contact failure acknowledgment covers stage/custody
+response, upload, post-stage command construction, and interactive SSH failures.
+It reports remote phase unproved and public exit 2; it does not parse the TTY,
+infer a root cause from SSH/sudo exit, or claim no helper ran. The witness is not protected status,
+reader acceptance, renewal, readiness, restoration, IM/CP/MA or retry authority.
 The facade sets the one staged collector to `0600` through a no-follow
 descriptor check before sudo; the bootstrap independently verifies stage
 custody and removes it before collector observation.
@@ -3211,8 +3302,11 @@ Only a prechecked regular entry is opened with
 `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, then immediately `fstat`-matched on
 device, inode, type, owner, mode, link count, and governed metadata. A swap to
 another regular file or unsupported type fails closed. Only an absent final
-leaf beneath proved safe ancestry is a completed missing result. Unsafe
-ancestry, type, permission denial, metadata failure, and race are incomplete.
+leaf beneath proved safe ancestry and successful input-descriptor closeout is
+a completed missing result. The primitive conveys that observation through
+the private verified final-leaf marker, never through a generic
+`FileNotFoundError`. Unsafe ancestry, type, permission denial, metadata
+failure, present-leaf read failure, and race are incomplete.
 Bounded bytes
 from the verified leaf become an immutable invocation snapshot. Each fixed
 OpenSSL metadata, SAN/EKU, key, and verification command receives those exact
@@ -3252,7 +3346,10 @@ failure it enumerates only members whose observed PGID equals the reserved
 leader PGID, acquires pidfds, revalidates identity and membership, signals
 members through pidfds, and repeats bounded scans until nonleader members are
 proved gone. An individual member error does not skip other identity-proved
-members in that scan. If group and member signaling remain unproved, the leader stays
+members in that scan; each later candidate must acquire its own pidfd and pass
+the exact group/start-time revalidation before signaling. A member pidfd close
+failure remains unproved even if later group cleanup succeeds. If group and
+member signaling remain unproved, the leader stays
 unreaped and lifecycle ownership and status lock stay held without publication.
 Every ordinary `Exception` from membership scanning, pidfd acquisition,
 identity revalidation, signaling, polling, waiting, or cleanup-state

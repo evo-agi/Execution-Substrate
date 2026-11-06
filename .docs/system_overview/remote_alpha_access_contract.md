@@ -53,6 +53,43 @@ an operator acknowledgment, not machine evidence; no summary is copied to
 Mac `.out`. Stage, cleanup, and protected publication are filesystem effects,
 so these status routes are not write-free access checks. P0t is not a
 write-free access check.
+The fixed root bootstrap alone may place one optional, at-most-512-byte
+fixed-vocabulary failure witness on the existing controlling terminal after
+proved failure closeout. The verified collector selects only a private
+invocation-local phase/reason and never emits. A blocked or absent terminal,
+unresolved child/lock/descriptor/temporary obligation (including a fixed-input
+leaf or ancestry close error even when wrapped as `Incomplete`), or escaped
+collector dispatch with uncertain disposition suppresses the line. The
+collector consumes each parent-owned pending close obligation before its one
+explicit attempt and keeps any first close failure unproved across known
+failure wrapping or later cleanup. It still closes other pending resources;
+a child reap does not prove a parent descriptor close. The independent
+fixed-input leaf/ancestry, scope-lock/status-directory, and per-member pidfd
+groups attempt each applicable distinct close once after a sibling fault;
+the member scan retains its existing identity checks and child-owner hold.
+A safely missing final input is completed absence only after successful
+closeout of every acquired input descriptor. An input close failure makes the
+primitive incomplete after the other applicable attempts, even when a
+missing-leaf exception was pending; a close-raised `FileNotFoundError` is
+never absence evidence for config, certificate, or key callers.
+Only the original no-follow final-leaf stat may provisionally observe that
+absence. Successful ancestry revalidation and input closeout turn it into a
+private `_VerifiedFinalLeafAbsent` marker; the three callers classify missing
+only from that marker. A `FileNotFoundError` from another input operation,
+including a read of a present leaf, is incomplete and can select the existing
+`fixed_input_unproved` advisory reason after proved overall closeout. An
+input close fault still suppresses the witness. This changes no public status
+code, protected-reader meaning, or terminal grammar.
+The independent output-only, nonblocking terminal descriptor does not alter stdin, stdout,
+stderr, terminal modes, visible sudo or the SSH wrapper. No TTY capture,
+password relay, fallback output, retry or additional cleanup is introduced.
+The source SHA-256 is reported as verified only after exact staged-payload
+verification, otherwise `none`; this is an advisory source association, not
+an attestation. The facade's post-contact stage/custody response, upload, command-construction,
+and interactive SSH failures report that remote phase is unproved, preserving
+exit 2 without claiming that no helper ran.
+Neither that acknowledgment nor the optional line is accepted protected
+status or authority to run the route again.
 One fixed remote Python helper opens the fixed `/tmp` parent, refuses an
 existing generated name, creates it with mode `0700`, immediately opens it
 with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, verifies directory type, current

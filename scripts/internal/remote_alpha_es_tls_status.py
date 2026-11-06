@@ -124,12 +124,124 @@ class Incomplete(Exception):
     pass
 
 
+class _VerifiedFinalLeafAbsent(Exception):
+    """Private evidence of the original final-leaf stat and settled closeout."""
+
+
 class StrictJSONRejected(Incomplete):
     pass
 
 
 class StrictJSONDepthRejected(StrictJSONRejected):
     pass
+
+
+# This is private invocation state for the already verified root bootstrap.
+# It is not a status record, terminal writer, or alternate collector contract.
+WITNESS_SELECTION: tuple[str, str] | None = None
+WITNESS_CLOSEOUT_PROVED = False
+WITNESS_DISPOSITION_UNPROVED = False
+
+_FAILURE_REASON_LITERALS = {
+    "protected_ancestry": {
+        "unsafe_protected_ancestor": "protected_state_unproved",
+        "extended_access_unproved": "protected_state_unproved",
+        "entry_identity_changed": "protected_state_unproved",
+    },
+    "scope_lock": {
+        "unsafe_lock": "lock_state_unproved",
+        "unsafe_protected_file": "lock_state_unproved",
+        "lock_identity_changed": "lock_state_unproved",
+        "entry_identity_changed": "lock_state_unproved",
+        "extended_access_unproved": "lock_state_unproved",
+        # flock may raise for reasons other than contention.
+        "same_scope_lock_contended": "lock_acquisition_unproved",
+    },
+    "process_capability": {
+        "process_capability_unavailable": "process_capability_unproved",
+        "child_waitid_unavailable": "process_capability_unproved",
+        "child_waitid_indeterminate": "process_capability_unproved",
+    },
+    "prior_snapshot": {
+        "prior_summary_unaccepted": "prior_summary_unaccepted",
+        "unsafe_existing_summary": "prior_read_unproved",
+        "unsafe_protected_file": "prior_read_unproved",
+        "extended_access_unproved": "prior_read_unproved",
+        "summary_leaf_changed": "prior_read_unproved",
+        "leaf_identity_changed": "prior_read_unproved",
+        "record_size": "prior_read_unproved",
+        "record_changed": "prior_read_unproved",
+    },
+    "collection": {
+        "invalid_fixed_path": "fixed_input_unproved",
+        "unsafe_input_ancestor": "fixed_input_unproved",
+        "input_ancestor_changed": "fixed_input_unproved",
+        "unsafe_fixed_input": "fixed_input_unproved",
+        "fixed_input_changed": "fixed_input_unproved",
+        "fixed_input_overflow": "fixed_input_unproved",
+        "config_read_unproved": "fixed_input_unproved",
+        "certificate_read_unproved": "fixed_input_unproved",
+        "key_read_unproved": "fixed_input_unproved",
+        "fixed_input_close_unproved": "fixed_input_unproved",
+        "fixed_input_read_unproved": "fixed_input_unproved",
+        "invalid_fixed_command": "fixed_command_unproved",
+        "invalid_verification_inputs": "fixed_command_unproved",
+        "child_pipe_unproved": "openssl_child_unproved",
+        "child_spawn_unproved": "openssl_child_unproved",
+        "child_run_unproved": "openssl_child_unproved",
+        "child_resource_unproved": "openssl_child_unproved",
+        "child_waitid_indeterminate": "openssl_child_unproved",
+        "child_waitid_unavailable": "openssl_child_unproved",
+        "process_identity_unproved": "openssl_child_unproved",
+        "process_members_unproved": "openssl_child_unproved",
+        "process_member_signal_unproved": "openssl_child_unproved",
+        "child_reap_unproved": "openssl_child_unproved",
+        "child_unreaped": "openssl_child_unproved",
+        "child_interrupted": "openssl_child_unproved",
+        "child_timeout": "openssl_child_unproved",
+        "child_output_overflow": "openssl_child_unproved",
+        "process_capability_unavailable": "openssl_child_unproved",
+        "unexpected_openssl_grammar": "openssl_grammar_unaccepted",
+    },
+    "record_encoding": {
+        **{name: "record_unaccepted" for name in (
+            "record_code", "record_scope", "record_shape", "record_identity",
+            "record_generation", "record_timestamp", "record_freshness",
+            "record_roles", "record_status", "record_topology_shape",
+            "record_topology_code", "record_topology_relationship",
+            "record_certificate_shape", "record_certificate_hash",
+            "record_certificate_flag", "record_certificate_role_flag",
+            "record_trust_anchor_role", "record_certificate_absence",
+            "record_certificate_time", "record_certificate_metadata",
+            "record_certificate_validity", "record_certificate_semantics",
+            "record_verification_shape", "record_verification_relationship",
+            "record_pair_shape", "record_pair_consistency",
+            "record_pair_relationship", "record_blockers", "record_result",
+            "record_effects", "record_security", "record_encoding",
+        )},
+    },
+    "publication_precommit": {
+        **{name: "publication_unproved" for name in (
+            "summary_write", "temporary_identity", "precommit_signal",
+            "signal_boundary_unproved", "publication_returned",
+            "unsafe_existing_summary", "unsafe_protected_file",
+            "extended_access_unproved", "summary_leaf_changed",
+            "leaf_identity_changed", "record_size", "record_changed",
+        )},
+    },
+}
+
+
+def _failure_reason(phase: str, failure: BaseException) -> str:
+    # Never convert an exception or an argument to text, even for comparison.
+    if type(phase) is not str or type(failure) is not Incomplete or len(failure.args) != 1:
+        return "unknown"
+    literal = failure.args[0]
+    if type(literal) is not str:
+        return "unknown"
+    if literal in ("interrupted", "child_interrupted"):
+        return "interrupted"
+    return _FAILURE_REASON_LITERALS.get(phase, {}).get(literal, "unknown")
 
 
 class _PriorSummaryState(Enum):
@@ -197,6 +309,7 @@ def check_protected_dir(fd: int, exact_mode: int | None = None) -> os.stat_resul
 
 
 def open_status_dir() -> int:
+    global WITNESS_DISPOSITION_UNPROVED
     fd = os.open("/", DIR_FLAGS)
     try:
         check_protected_dir(fd)
@@ -206,13 +319,26 @@ def open_status_dir() -> int:
                 info = check_protected_dir(child, mode)
                 same_entry(fd, name, info)
             except BaseException:
-                os.close(child)
+                try:
+                    os.close(child)
+                except BaseException:
+                    WITNESS_DISPOSITION_UNPROVED = True
+                    raise
                 raise
-            os.close(fd)
+            previous_fd = fd
             fd = child
+            try:
+                os.close(previous_fd)
+            except BaseException:
+                WITNESS_DISPOSITION_UNPROVED = True
+                raise
         return fd
     except BaseException:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
         raise
 
 
@@ -315,11 +441,26 @@ def check_input_ancestor(info: os.stat_result) -> None:
         raise Incomplete("unsafe_input_ancestor")
 
 
+def _close_fixed_input(fd: int) -> None:
+    # Close errors are never evidence that the final input leaf is absent.
+    global WITNESS_DISPOSITION_UNPROVED
+    try:
+        os.close(fd)
+    except BaseException as exc:
+        WITNESS_DISPOSITION_UNPROVED = True
+        if isinstance(exc, Exception) and not isinstance(exc, Incomplete):
+            raise Incomplete("fixed_input_close_unproved") from exc
+        raise
+
+
 def open_fixed_regular(path: str, limit: int, read_content: bool = True) -> bytes | None:
     if not canonical_material_path(path):
         raise Incomplete("invalid_fixed_path")
     parts = path.split("/")[1:]
     chain: list[tuple[int | None, str | None, int, os.stat_result]] = []
+    failure: BaseException | None = None
+    verified_final_leaf_absent = False
+    non_final_not_found = False
     try:
         root_fd = os.open("/", DIR_FLAGS)
         try:
@@ -327,11 +468,12 @@ def open_fixed_regular(path: str, limit: int, read_content: bool = True) -> byte
             check_input_ancestor(root_info)
             check_extended(root_fd)
         except BaseException:
-            os.close(root_fd)
+            _close_fixed_input(root_fd)
             raise
         chain.append((None, None, root_fd, root_info))
         for part in parts[:-1]:
             parent_fd = chain[-1][2]
+            child: int | None = None
             try:
                 child = os.open(part, DIR_FLAGS, dir_fd=parent_fd)
                 info = os.fstat(child)
@@ -339,14 +481,17 @@ def open_fixed_regular(path: str, limit: int, read_content: bool = True) -> byte
                 check_extended(child)
                 same_entry(parent_fd, part, info)
             except OSError as exc:
-                if "child" in locals() and child not in (entry[2] for entry in chain):
-                    os.close(child)
+                if child is not None:
+                    closing_child, child = child, None
+                    _close_fixed_input(closing_child)
                 raise Incomplete("unsafe_input_ancestor") from exc
             except BaseException:
-                if "child" in locals() and child not in (entry[2] for entry in chain):
-                    os.close(child)
+                if child is not None:
+                    closing_child, child = child, None
+                    _close_fixed_input(closing_child)
                 raise
             chain.append((parent_fd, part, child, info))
+            child = None
 
         def revalidate_ancestry() -> None:
             try:
@@ -367,52 +512,78 @@ def open_fixed_regular(path: str, limit: int, read_content: bool = True) -> byte
             entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             revalidate_ancestry()
-            raise
+            verified_final_leaf_absent = True
         except OSError as exc:
             raise Incomplete("unsafe_fixed_input") from exc
-        if not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1 or not 0 <= entry.st_size <= limit:
-            raise Incomplete("unsafe_fixed_input")
-        try:
-            file_fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | FILE_FLAGS, dir_fd=parent_fd)
-        except OSError as exc:
-            raise Incomplete("fixed_input_changed") from exc
-        try:
-            info = os.fstat(file_fd)
-            if leaf_identity(info) != leaf_identity(entry):
-                raise Incomplete("fixed_input_changed")
-            check_extended(file_fd)
+        if not verified_final_leaf_absent:
+            if not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1 or not 0 <= entry.st_size <= limit:
+                raise Incomplete("unsafe_fixed_input")
             try:
-                same_leaf(parent_fd, name, info)
+                file_fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | FILE_FLAGS, dir_fd=parent_fd)
             except OSError as exc:
                 raise Incomplete("fixed_input_changed") from exc
-            if not read_content:
+            try:
+                info = os.fstat(file_fd)
+                if leaf_identity(info) != leaf_identity(entry):
+                    raise Incomplete("fixed_input_changed")
+                check_extended(file_fd)
+                try:
+                    same_leaf(parent_fd, name, info)
+                except OSError as exc:
+                    raise Incomplete("fixed_input_changed") from exc
+                if not read_content:
+                    revalidate_ancestry()
+                    return None
+                chunks: list[bytes] = []
+                total = 0
+                while True:
+                    block = os.read(file_fd, CHUNK)
+                    if not block:
+                        break
+                    total += len(block)
+                    if total > limit:
+                        raise Incomplete("fixed_input_overflow")
+                    chunks.append(block)
+                after = os.fstat(file_fd)
+                if total != info.st_size or leaf_identity(after) != leaf_identity(info):
+                    raise Incomplete("fixed_input_changed")
+                check_extended(file_fd)
+                try:
+                    same_leaf(parent_fd, name, after)
+                except OSError as exc:
+                    raise Incomplete("fixed_input_changed") from exc
                 revalidate_ancestry()
-                return None
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                block = os.read(file_fd, CHUNK)
-                if not block:
-                    break
-                total += len(block)
-                if total > limit:
-                    raise Incomplete("fixed_input_overflow")
-                chunks.append(block)
-            after = os.fstat(file_fd)
-            if total != info.st_size or leaf_identity(after) != leaf_identity(info):
-                raise Incomplete("fixed_input_changed")
-            check_extended(file_fd)
-            try:
-                same_leaf(parent_fd, name, after)
-            except OSError as exc:
-                raise Incomplete("fixed_input_changed") from exc
-            revalidate_ancestry()
-            return b"".join(chunks)
-        finally:
-            os.close(file_fd)
+                return b"".join(chunks)
+            finally:
+                _close_fixed_input(file_fd)
+    except FileNotFoundError as exc:
+        failure = exc
+        non_final_not_found = True
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
-        for _parent, _name, directory_fd, _info in reversed(chain):
-            os.close(directory_fd)
+        close_failure: Exception | None = None
+        close_interrupt: BaseException | None = None
+        while chain:
+            _parent, _name, directory_fd, _info = chain.pop()
+            try:
+                _close_fixed_input(directory_fd)
+            except BaseException as exc:
+                if isinstance(exc, Exception):
+                    if close_failure is None:
+                        close_failure = exc
+                elif close_interrupt is None:
+                    close_interrupt = exc
+        if failure is None or isinstance(failure, Exception):
+            if close_interrupt is not None:
+                raise close_interrupt
+            if close_failure is not None and (failure is None or not isinstance(failure, Incomplete)):
+                raise close_failure
+    if non_final_not_found:
+        raise Incomplete("fixed_input_read_unproved") from None
+    if verified_final_leaf_absent:
+        raise _VerifiedFinalLeafAbsent()
 
 
 def waitid_terminal(pid: int) -> bool:
@@ -465,6 +636,7 @@ class ProcessCapabilityBackend:
 
 def validate_process_capability(backend: ProcessCapabilityBackend | None = None) -> None:
     """Prove cleanup behavior with one fixed child before the first OpenSSL spawn."""
+    global WITNESS_DISPOSITION_UNPROVED
     if backend is None:
         backend = ProcessCapabilityBackend()
     if any(getattr(backend, name, None) is None for name in
@@ -477,6 +649,7 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
     pid = -1
     reaped = False
     waitable = True
+    closeout_uncertain = False
     failure: Exception | None = None
     try:
         read_fd, write_fd = backend.pipe()
@@ -499,8 +672,12 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
             os._exit(child_code)
         if pid < 0:
             raise Incomplete("process_capability_unavailable")
-        backend.close(read_fd)
-        read_fd = -1
+        closing_fd, read_fd = read_fd, -1
+        try:
+            backend.close(closing_fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
         identity = backend.read_identity(pid)
         if identity is None or identity[1] <= 0:
             raise Incomplete("process_capability_unavailable")
@@ -511,8 +688,12 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
             raise Incomplete("process_capability_unavailable")
         backend.pidfd_send_signal(probe_fd, 0, None, 0)
         backend.write(write_fd, b"x")
-        backend.close(write_fd)
-        write_fd = -1
+        closing_fd, write_fd = write_fd, -1
+        try:
+            backend.close(closing_fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
         deadline = time.monotonic() + CHILD_GRACE
         while time.monotonic() < deadline:
             if backend.terminal(pid):
@@ -533,11 +714,15 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
     except Exception as exc:
         failure = exc
     finally:
-        for fd in (read_fd, write_fd):
+        pending_read, pending_write = read_fd, write_fd
+        read_fd = write_fd = -1
+        for fd in (pending_read, pending_write):
             if fd >= 0:
                 try:
                     backend.close(fd)
                 except Exception as exc:
+                    closeout_uncertain = True
+                    WITNESS_DISPOSITION_UNPROVED = True
                     failure = exc
         if pid > 0 and not reaped and waitable:
             try:
@@ -550,6 +735,7 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
             except ProcessLookupError:
                 pass
             except Exception as exc:
+                closeout_uncertain = True
                 failure = exc
             while True:
                 try:
@@ -561,21 +747,29 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
                     # A broken nonreaping waitid may already have reaped it.
                     failure = Incomplete("process_capability_unavailable")
                     waitable = False
+                    closeout_uncertain = True
                     break
                 except Exception as exc:
+                    closeout_uncertain = True
                     failure = exc
                 time.sleep(0.01)
         if probe_fd >= 0:
+            closing_fd, probe_fd = probe_fd, -1
             try:
-                backend.close(probe_fd)
+                backend.close(closing_fd)
             except Exception as exc:
+                closeout_uncertain = True
+                WITNESS_DISPOSITION_UNPROVED = True
                 failure = exc
+    if closeout_uncertain or not reaped:
+        WITNESS_DISPOSITION_UNPROVED = True
     if failure is not None or not reaped:
         raise Incomplete("process_capability_unavailable") from failure
 
 
 def read_proc_identity(pid: int) -> tuple[int, int] | None:
     """Return (PGID, starttime) from one bounded, no-follow proc stat read."""
+    global WITNESS_DISPOSITION_UNPROVED
     if pid <= 0:
         raise Incomplete("process_identity_unproved")
     try:
@@ -588,7 +782,11 @@ def read_proc_identity(pid: int) -> tuple[int, int] | None:
     try:
         raw = os.read(fd, 4097)
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
     if len(raw) > 4096:
         raise Incomplete("process_identity_unproved")
     try:
@@ -623,6 +821,7 @@ def scan_group_members(pgid: int) -> list[tuple[int, int]]:
 
 def signal_same_group_members(pgid: int, signum: int) -> None:
     """Pin each observed identity before signaling; never signal a bare PID."""
+    global WITNESS_DISPOSITION_UNPROVED
     if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
         raise Incomplete("process_capability_unavailable")
     unproved = False
@@ -631,13 +830,13 @@ def signal_same_group_members(pgid: int, signum: int) -> None:
             fd = os.pidfd_open(pid, 0)
         except ProcessLookupError:
             continue
-        except OSError:
+        except Exception:
             unproved = True
             continue
         try:
             try:
                 identity = read_proc_identity(pid)
-            except Incomplete:
+            except Exception:
                 unproved = True
                 continue
             if identity != (pgid, starttime):
@@ -646,10 +845,17 @@ def signal_same_group_members(pgid: int, signum: int) -> None:
                 signal.pidfd_send_signal(fd, signum, None, 0)
             except ProcessLookupError:
                 continue
-            except OSError:
+            except Exception:
                 unproved = True
         finally:
-            os.close(fd)
+            closing_fd, fd = fd, -1
+            try:
+                os.close(closing_fd)
+            except BaseException as exc:
+                WITNESS_DISPOSITION_UNPROVED = True
+                if not isinstance(exc, Exception):
+                    raise
+                unproved = True
     if unproved:
         raise Incomplete("process_member_signal_unproved")
 def reap_child(proc: subprocess.Popen[bytes]) -> int:
@@ -776,6 +982,7 @@ PROCESS_CAPABILITY_READY = False
 
 def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
               anchor_bytes: bytes | None = None) -> tuple[int, bytes, bytes]:
+    global WITNESS_DISPOSITION_UNPROVED
     check_signal()
     if not argv or argv[0] != OPENSSL or (input_bytes is not None and len(input_bytes) > MAX_INPUT):
         raise Incomplete("invalid_fixed_command")
@@ -801,16 +1008,40 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
     failure: BaseException | None = None
     resource_error = False
     cleanup_uncertain = False
+    pending_streams = []
+
+    def close_stream_once(stream: object) -> None:
+        nonlocal resource_error
+        global WITNESS_DISPOSITION_UNPROVED
+        for index, owned in enumerate(pending_streams):
+            if owned is stream:
+                del pending_streams[index]
+                try:
+                    stream.close()
+                except BaseException:
+                    resource_error = True
+                    WITNESS_DISPOSITION_UNPROVED = True
+                    raise
+                return
+        resource_error = True
+        WITNESS_DISPOSITION_UNPROVED = True
+        raise Incomplete("child_resource_unproved")
+
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
                                 close_fds=True, pass_fds=(anchor_read,) if anchor_read >= 0 else (),
                                 start_new_session=True, env=CHILD_ENV)
+        pending_streams = [stream for stream in (proc.stdin, proc.stdout, proc.stderr) if stream is not None]
         # From here through reap, this function is the sole cleanup owner.
         try:
             if anchor_read >= 0:
-                os.close(anchor_read)
-                anchor_read = -1
+                closing_fd, anchor_read = anchor_read, -1
+                try:
+                    os.close(closing_fd)
+                except BaseException:
+                    WITNESS_DISPOSITION_UNPROVED = True
+                    raise
             selector = selectors.DefaultSelector()
             out = bytearray()
             err = bytearray()
@@ -846,10 +1077,14 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
                         if sent == 0 or offsets[label] >= len(payload):
                             selector.unregister(stream)
                             if label == "stdin" and proc.stdin is not None:
-                                proc.stdin.close()
+                                close_stream_once(proc.stdin)
                             elif label == "anchor" and anchor_write >= 0:
-                                os.close(anchor_write)
-                                anchor_write = -1
+                                closing_fd, anchor_write = anchor_write, -1
+                                try:
+                                    os.close(closing_fd)
+                                except BaseException:
+                                    WITNESS_DISPOSITION_UNPROVED = True
+                                    raise
                     else:
                         try:
                             chunk = os.read(stream.fileno(), CHUNK)
@@ -857,7 +1092,7 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
                             continue
                         if not chunk:
                             selector.unregister(stream)
-                            stream.close()
+                            close_stream_once(stream)
                             continue
                         target = out if label == "out" else err
                         target.extend(chunk)
@@ -876,12 +1111,12 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
                     selector.close()
                 except BaseException:
                     resource_error = True
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream is not None and not stream.closed:
-                    try:
-                        stream.close()
-                    except BaseException:
-                        resource_error = True
+                    WITNESS_DISPOSITION_UNPROVED = True
+            for stream in tuple(pending_streams):
+                try:
+                    close_stream_once(stream)
+                except BaseException:
+                    pass
     except BaseException as exc:
         if proc is None:
             failure = Incomplete("child_spawn_unproved")
@@ -891,12 +1126,17 @@ def run_fixed(argv: tuple[str, ...], input_bytes: bytes | None = None,
             failure.__cause__ = exc
             cleanup_uncertain = own_child_until_proved(proc) or cleanup_uncertain
     finally:
-        for fd in (anchor_read, anchor_write):
+        pending_read, pending_write = anchor_read, anchor_write
+        anchor_read = anchor_write = -1
+        for fd in (pending_read, pending_write):
             if fd >= 0:
                 try:
                     os.close(fd)
                 except OSError:
                     resource_error = True
+                    WITNESS_DISPOSITION_UNPROVED = True
+    if resource_error or cleanup_uncertain:
+        WITNESS_DISPOSITION_UNPROVED = True
     if failure is not None:
         if isinstance(failure, Incomplete):
             raise failure
@@ -952,7 +1192,7 @@ def _config_structure_valid(payload: dict[str, object]) -> bool:
 def read_config(name: str, required: bool) -> tuple[dict[str, object], str]:
     try:
         raw = open_fixed_regular(CONFIG[name], MAX_INPUT)
-    except FileNotFoundError:
+    except _VerifiedFinalLeafAbsent:
         return {}, "config_missing" if required else "absent"
     except OSError as exc:
         raise Incomplete("config_read_unproved") from exc
@@ -1089,7 +1329,7 @@ def cert_metadata(path: str, observed_at: dt.datetime | None = None,
                                  "subject_sha256": None, "issuer_sha256": None}
     try:
         raw = open_fixed_regular(path, MAX_INPUT)
-    except FileNotFoundError:
+    except _VerifiedFinalLeafAbsent:
         return empty | {"status": "fail", "code": "certificate_missing"}, None
     except OSError as exc:
         raise Incomplete("certificate_read_unproved") from exc
@@ -1182,7 +1422,7 @@ def key_pair(label: str, cert: dict[str, object], key_path: str) -> dict[str, ob
         return {"label": label, "status": "fail", "code": "certificate_unavailable", "matches": False}
     try:
         raw = open_fixed_regular(key_path, MAX_INPUT)
-    except FileNotFoundError:
+    except _VerifiedFinalLeafAbsent:
         return {"label": label, "status": "fail", "code": "key_missing", "matches": False}
     except OSError as exc:
         raise Incomplete("key_read_unproved") from exc
@@ -1536,6 +1776,7 @@ def read_accepted_status(scope_name: str, previous_generation: str | None, now: 
 
 
 def publish(status_fd: int, scope_name: str, payload: bytes) -> None:
+    global WITNESS_DISPOSITION_UNPROVED
     scope = SCOPES[scope_name]
     name = scope["canonical"]
     temporary = "." + name + "." + secrets.token_hex(16) + ".tmp"
@@ -1572,14 +1813,16 @@ def publish(status_fd: int, scope_name: str, payload: bytes) -> None:
                 try:
                     identity = file_identity(os.fstat(fd))
                 except OSError:
-                    pass
+                    WITNESS_DISPOSITION_UNPROVED = True
             if identity is not None:
                 try:
                     entry = os.stat(temporary, dir_fd=status_fd, follow_symlinks=False)
                     if file_identity(entry) == identity and stat.S_ISREG(entry.st_mode) and entry.st_nlink == 1:
                         os.unlink(temporary, dir_fd=status_fd)
+                    else:
+                        WITNESS_DISPOSITION_UNPROVED = True
                 except OSError:
-                    pass
+                    WITNESS_DISPOSITION_UNPROVED = True
         finally:
             os.close(fd)
 
@@ -1591,11 +1834,20 @@ def parse_cli(argv: list[str]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    global PROCESS_CAPABILITY_READY
+    global PROCESS_CAPABILITY_READY, WITNESS_SELECTION, WITNESS_CLOSEOUT_PROVED, WITNESS_DISPOSITION_UNPROVED
+    WITNESS_SELECTION = None
+    WITNESS_CLOSEOUT_PROVED = False
+    WITNESS_DISPOSITION_UNPROVED = False
     if globals().get("ES_TLS_STATUS_BOOTSTRAP_VERIFIED") is not True:
         return 2
     bootstrap_interrupted = globals().get("ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED")
-    if not isinstance(bootstrap_interrupted, list) or bootstrap_interrupted != [False]:
+    if not isinstance(bootstrap_interrupted, list) or len(bootstrap_interrupted) != 1:
+        return 1
+    if bootstrap_interrupted[0] is True:
+        WITNESS_SELECTION = ("collector_entry", "interrupted")
+        WITNESS_CLOSEOUT_PROVED = True
+        return 1
+    if bootstrap_interrupted[0] is not False:
         return 1
     try:
         scope_name = parse_cli(argv)
@@ -1604,15 +1856,21 @@ def main(argv: list[str]) -> int:
     for signum in SIGNALS:
         signal.signal(signum, _latch)
     if bootstrap_interrupted[0] or LATCHED_SIGNAL is not None:
+        WITNESS_SELECTION = ("collector_entry", "interrupted")
+        WITNESS_CLOSEOUT_PROVED = True
         return 1
     status_fd = None
     lock_fd = None
+    phase = "protected_ancestry"
     try:
         status_fd = open_status_dir()
+        phase = "scope_lock"
         lock_fd = open_scope_lock(status_fd, SCOPES[scope_name]["lock"])
+        phase = "process_capability"
         PROCESS_CAPABILITY_READY = False
         validate_process_capability()
         PROCESS_CAPABILITY_READY = True
+        phase = "prior_snapshot"
         prior = preexisting_generation(status_fd, scope_name)
         if prior.state is _PriorSummaryState.INVALID_OR_UNACCEPTED:
             raise Incomplete("prior_summary_unaccepted")
@@ -1624,19 +1882,42 @@ def main(argv: list[str]) -> int:
             previous = None
         else:
             raise Incomplete("prior_summary_unaccepted")
+        phase = "collection"
         record = collect(scope_name, previous)
         check_signal()
+        phase = "record_encoding"
         encoded = encode_document(record, scope_name)
+        phase = "publication_precommit"
         publish(status_fd, scope_name, encoded)
         raise Incomplete("publication_returned")
-    except (Incomplete, OSError, ValueError, UnicodeError, json.JSONDecodeError):
+    except (Incomplete, OSError, ValueError, UnicodeError, json.JSONDecodeError) as failure:
+        WITNESS_SELECTION = (phase, _failure_reason(phase, failure))
+        if type(failure) is not Incomplete:
+            WITNESS_DISPOSITION_UNPROVED = True
         return 1
     finally:
         PROCESS_CAPABILITY_READY = False
+        close_interrupt: BaseException | None = None
         if lock_fd is not None:
-            os.close(lock_fd)
+            closing_fd, lock_fd = lock_fd, None
+            try:
+                os.close(closing_fd)
+            except BaseException as exc:
+                WITNESS_DISPOSITION_UNPROVED = True
+                if not isinstance(exc, Exception):
+                    close_interrupt = exc
         if status_fd is not None:
-            os.close(status_fd)
+            closing_fd, status_fd = status_fd, None
+            try:
+                os.close(closing_fd)
+            except BaseException as exc:
+                WITNESS_DISPOSITION_UNPROVED = True
+                if not isinstance(exc, Exception) and close_interrupt is None:
+                    close_interrupt = exc
+        if close_interrupt is not None:
+            raise close_interrupt
+        if WITNESS_SELECTION is not None and not WITNESS_DISPOSITION_UNPROVED:
+            WITNESS_CLOSEOUT_PROVED = True
 
 
 if __name__ == "__main__":

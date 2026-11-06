@@ -1201,6 +1201,63 @@ fail before host contact; the returned custody identity is validated before
 the interactive invocation. No caller-supplied command fragment enters the
 remote command.
 
+`Bounded slice rule` failure-visibility refinement within this reopened seam:
+the fixed root bootstrap is the sole owner of an optional, at-most-one,
+source-bound P0s/P0t failure witness on its existing controlling terminal.
+The verified collector selects only an invocation-local closed phase/reason;
+it never writes a diagnostic itself. A witness is permitted only after the
+applicable stage, child, temporary, status-directory and scope-lock closeout
+is proved. Unresolved ownership or cleanup suppresses it. The output is one
+fixed ASCII line of at most 512 bytes, with scope, bootstrap/collector origin,
+verified/unverified source, the exact verified payload SHA-256 or `none`, and
+a coupled fixed phase/reason. It is advisory operator text, never a protected
+record, accepted TLS result, restoration or retry authority. No TTY input is
+captured, no new wait or cleanup is added, and blocked or missing output cannot
+change the status result. Successful completed pass and completed typed fail
+publish silently through the existing final `os.replace` -> `os._exit(0)`
+boundary. Post-contact facade failure says the remote phase is unproved;
+it cannot infer a collector phase from SSH/sudo exit or witness absence.
+
+For this bounded witness, each parent-owned descriptor or stream has its own
+pending close obligation. Consume that obligation before an explicit close
+attempt; a failed attempt leaves invocation-local disposition unproved even
+when a stream reports itself closed or a later close of the same numeric value
+would succeed. Do not retry that ambiguous resource. Still attempt the
+separately owned resources that remain pending, including a newly opened
+protected-ancestry child after its former parent's close fails. This narrow
+close-accounting refinement does not change capability criteria, child/group
+holds, scope-lock order, publication, or protected reader acceptance.
+The fixed-input leaf and reverse ancestry chain, the scope lock then status
+directory, and each acquired same-group member pidfd are finite ownership
+groups. An ordinary failed close remains unproved while other applicable
+pending obligations receive their own single attempts before the existing
+incomplete outcome; a later successful close never clears that uncertainty.
+For a fixed input, a missing final leaf is completed absence only after all
+acquired input descriptors have received successful closeout. If any input
+close fails, the primitive yields a controlled incomplete result after the
+other pending close attempts, even when final-leaf `FileNotFoundError` was
+already pending. A `FileNotFoundError` raised by close is not an absence
+observation. Required or optional config, certificate, and key callers may
+classify completed missing only after this proved input closeout.
+`Bounded slice rule` input-origin refinement: the original no-follow stat of
+the final component is the only operation that may provisionally observe a
+missing fixed input. Only after ancestry revalidation and successful input
+closeout does the primitive deliver a private, payload-free
+`_VerifiedFinalLeafAbsent` marker. The config, certificate, and reached-key
+callers classify completed missing only from that marker. A
+`FileNotFoundError` from root/ancestor acquisition, metadata, a present-leaf
+read or later identity recheck remains incomplete, never completed absence;
+the private `fixed_input_read_unproved` literal maps to the existing
+`fixed_input_unproved` collection witness reason when no narrower incomplete
+classification applies. A settled operation failure may retain that advisory
+witness after the ordinary lock/status closeout; failed input closeout still
+suppresses it. This private interface changes no public code, schema, reader,
+terminal grammar, publication boundary or retry authority.
+After one member fault, later observed candidates still require their own
+pidfd and exact group/start-time revalidation before signaling. Aggregate
+member uncertainty enters the existing child-owner hold after that finite
+scan, without changing its signal, reap, or lock authority.
+
 The facade uses one fixed remote Python stage-creation helper. It opens the
 fixed `/tmp` parent, refuses an existing generated name, creates only that
 name with mode `0700`, immediately opens it with
