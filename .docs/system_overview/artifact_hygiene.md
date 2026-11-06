@@ -86,6 +86,20 @@ finalized marker, scope, route, new generation, five-minute freshness, closed
 vocabulary, consistent result and false non-effect flags. Route acknowledgment
 is separate from evidence acceptance.
 
+`Bounded slice rule` failure witness diagnostics are separate from this evidence
+namespace. On incomplete P0s/P0t attempts, the fixed root bootstrap may
+emit one closed-vocabulary, source-bound ASCII line of at most 512 bytes to
+the existing controlling terminal only after applicable child, temporary,
+stage, status and lock closeout is proved. Uncertain disposition suppresses
+it. The collector retains only a private invocation-local selection; no
+witness file, summary field, durable log, raw error, TLS/config/key material,
+digest of private material or alternate reader is added. A completed pass or
+typed completed fail publishes its protected record without a witness;
+successful replacement remains the last evidence operation immediately
+before exit. The optional terminal line and the facade's remote-phase-unproved
+failure acknowledgment are advisory and cannot grant reader acceptance,
+renewal, restoration, retry or any execution authority.
+
 Legacy `/var/tmp/execution-substrate-remote-alpha/*tls*summary*.json`, any
 old `*-renew-summary.json`, blocked-candidate protected summaries, and old
 renewal backup directories are historical evidence only. They are not current

@@ -39,7 +39,11 @@ func runRemoteAlphaOperatorWithEnv(env []string, args ...string) (string, error)
 
 func runRemoteAlphaOperatorWithPTY(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
-	scriptPath := remoteAlphaOperatorScriptPath()
+	return runRemoteAlphaOperatorWithPTYPath(t, remoteAlphaOperatorScriptPath(), env, args...)
+}
+
+func runRemoteAlphaOperatorWithPTYPath(t *testing.T, scriptPath string, env []string, args ...string) (string, error) {
+	t.Helper()
 	python := `
 import os
 import pty
@@ -3766,7 +3770,8 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusFixedRootBootstrapArgv(t *
 		`sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}"`,
 		`remote_alpha_es_tls_status.py "${collector_digest}" "${scope}"`,
 		`hashlib.sha256(payload).hexdigest() != digest`,
-		`exec(compile(payload, label, "exec"), namespace)`)
+		`compiled_payload = compile(payload, label, "exec")`,
+		`exec(compiled_payload, namespace)`)
 	assertContainsNone(t, "root pathname execution", section,
 		`sudo LC_ALL=C /usr/bin/python3 -I -B "${collector}"`,
 		`--digest`, `--script-path`)
@@ -3800,9 +3805,13 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractiveStdinSourceGuar
 	section := source[start:end]
 	if regexp.MustCompile(`\|\s*ssh\s+-tt\b`).MatchString(section) ||
 		strings.Contains(section, `ssh -tt "${target}" /bin/bash -s`) ||
-		strings.Contains(section, "sudo -n") ||
-		strings.Contains(section, "/dev/tty") {
+		strings.Contains(section, "sudo -n") {
 		t.Fatal("P0s/P0t status transport still consumes wrapper bytes from SSH stdin")
+	}
+	if !strings.Contains(section, `os.open("/dev/tty", os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)`) ||
+		strings.Contains(section, "os.set_blocking(0") || strings.Contains(section, "os.set_blocking(1") ||
+		strings.Contains(section, "sys.stdin.read(") {
+		t.Fatal("fixed witness terminal output changed inherited streams or captured input")
 	}
 	for _, fixed := range []string{
 		`ssh -tt "${ssh_target}" "${remote_command}"`,
@@ -3895,6 +3904,12 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusInteractivePromptAndFailur
 					"--ssh-target", "ds@m75q-test", "--interactive-tty")
 				if (err == nil) != tc.wantSuccess {
 					t.Fatalf("interactive route result differs for %s: %v", tc.mode, err)
+				}
+				if !tc.wantSuccess {
+					if !strings.Contains(output, "remote phase unproved after status contact") ||
+						strings.Contains(output, "No recovery-session live helper or IM execution occurred.") {
+						t.Fatal("post-contact status failure fabricated or hid remote phase")
+					}
 				}
 				if strings.Contains(output, "FAKE_SUDO_PASSWORD_PROMPT: ") != tc.wantPrompt {
 					t.Fatal("fake sudo prompt visibility differs")
@@ -6876,6 +6891,95 @@ func TestRemoteAlphaOperatorRecoverySessionESTLSStatusPreCollectorStageCleanup(t
 			stages, err := os.ReadDir(h.stageRoot)
 			if err != nil || len(stages) != 0 {
 				t.Fatalf("successful fake root cleanup left stage: %v %v", stages, err)
+			}
+		})
+	}
+}
+
+func TestRemoteAlphaOperatorRecoverySessionESTLSStatusPostContactRefusals(t *testing.T) {
+	const commandBuildLine = `remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_es_tls_status_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"`
+	for _, route := range []string{"es-service-tls-status", "es-governance-tls-status"} {
+		for _, tc := range []struct {
+			name, injected          string
+			stage, scp, interactive int
+			residue                 bool
+			fragment                string
+		}{
+			{"stage transport failure", "FAKE_STATUS_STAGE_CREATE_FAIL=1", 1, 0, 0, false, "stage creation or custody acquisition failed"},
+			{"malformed custody response", "FAKE_STATUS_STAGE_OUTPUT=malformed", 1, 0, 0, true, "stage creation or custody acquisition failed"},
+			{"upload failure", "FAKE_STATUS_UPLOAD_FAIL=1", 1, 1, 0, true, "upload failed"},
+			{"command construction failure", "", 1, 1, 0, true, "fixed remote command construction failed"},
+			{"interactive SSH failure", "FAKE_STATUS_WRAPPER_FAIL=1", 1, 1, 1, true, "remote phase unproved"},
+		} {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+				env := h.env()
+				if tc.injected != "" {
+					env = append(env, tc.injected)
+				}
+				scriptPath := remoteAlphaOperatorScriptPath()
+				if tc.name == "command construction failure" {
+					original := mustRead(t, scriptPath)
+					if strings.Count(original, commandBuildLine) != 1 {
+						t.Fatal("post-stage command construction site changed")
+					}
+					copyDir := filepath.Join(t.TempDir(), "scripts")
+					if err := os.MkdirAll(filepath.Join(copyDir, "internal"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					scriptPath = filepath.Join(copyDir, "remote_alpha_operator.sh")
+					injected := strings.Replace(original, commandBuildLine,
+						`remote_command="$(false)" || recovery_es_tls_status_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"`, 1)
+					if err := os.WriteFile(scriptPath, []byte(injected), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					collector := mustRead(t, remoteAlphaESServiceTLSStatusCollectorPath())
+					if err := os.WriteFile(filepath.Join(copyDir, "internal", "remote_alpha_es_tls_status.py"), []byte(collector), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if mustRead(t, remoteAlphaOperatorScriptPath()) != original {
+						t.Fatal("source-bound construction fault changed the repository source")
+					}
+				}
+				output, err := runRemoteAlphaOperatorWithPTYPath(t, scriptPath, env, "recovery-session", route,
+					"--ssh-target", "ds@m75q-test", "--interactive-tty")
+				exitErr, ok := err.(*exec.ExitError)
+				if !ok || exitErr.ExitCode() != 2 || !strings.Contains(output, tc.fragment) ||
+					!strings.Contains(output, "remote phase unproved after status contact") ||
+					strings.Contains(output, "No recovery-session live helper or IM execution occurred.") {
+					t.Fatalf("post-contact refusal mislabeled remote effects: exit=%v output=%s", err, output)
+				}
+				ssh := mustRead(t, h.sshLog)
+				if strings.Count(ssh, "STAGE_CREATE\n") != tc.stage || strings.Count(ssh, "COLLECT_WRAPPER\n") != tc.interactive ||
+					strings.Contains(ssh, "CLEANUP_ONLY") || strings.Contains(ssh, "WRAPPER_CLEANUP_TRAP") {
+					t.Fatalf("unexpected stage/interactive transport count or cleanup: %s", ssh)
+				}
+				if tc.scp == 0 {
+					if _, err := os.Lstat(h.scpLog); !os.IsNotExist(err) {
+						t.Fatalf("unexpected SCP: %v", err)
+					}
+				} else if strings.Count(mustRead(t, h.scpLog), "\n") != tc.scp {
+					t.Fatal("SCP count changed")
+				}
+				stages, err := os.ReadDir(h.stageRoot)
+				if err != nil || (len(stages) == 1) != tc.residue {
+					t.Fatalf("stage residue changed: %v %v", stages, err)
+				}
+			})
+		}
+		t.Run(route+"/pre-contact refusal", func(t *testing.T) {
+			h := setupFakeRemoteAlphaESTLSStatusHarness(t)
+			output, err := runRemoteAlphaOperatorWithPTY(t, h.env(), "recovery-session", route,
+				"--ssh-target", "bad;target", "--interactive-tty")
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 2 || !strings.Contains(output, "No recovery-session live helper or IM execution occurred.") ||
+				strings.Contains(output, "remote phase unproved after status contact") {
+				t.Fatalf("pre-contact refusal changed: exit=%v output=%s", err, output)
+			}
+			for _, path := range []string{h.sshLog, h.scpLog, h.sshArgv} {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("pre-contact transport ran: %v", err)
+				}
 			}
 		})
 	}
