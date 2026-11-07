@@ -8697,6 +8697,77 @@ func TestRemoteAlphaOperatorP0rDocsRuntimeIdentitySummaryRoute(t *testing.T) {
 	)
 }
 
+func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	access := compactText(mustRead(t, ".docs/system_overview/remote_alpha_access_contract.md"))
+	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
+
+	for label, doc := range map[string]string{"PLANS": plans, "host": remote, "access": access, "artifact": artifact} {
+		assertContainsAll(t, label+" P0t diagnostic boundary", doc,
+			"es-governance-tls-grammar-diagnostic", "execution-governance",
+			"Bounded slice rule", "Temporary compatibility edge",
+			"first", "nonpublishing", "status")
+		assertContainsAll(t, label+" P0t diagnostic nonauthority", doc,
+			"no", "retry", "restoration", "source", "lock")
+	}
+	assertContainsAll(t, "plan diagnostic effect boundary", plans,
+		"--verify-only", "zero", "at most eighteen", "first_grammar_rejection",
+		"no_grammar_rejection_reached", "incomplete_other",
+		"ES_TLS_GRAMMAR_DIAGNOSTIC_V1", "2048", "no status generation")
+	assertContainsAll(t, "host diagnostic custody and ownership", remote,
+		"O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK", "size-zero", "flock(LOCK_EX|LOCK_NB)",
+		"one explicit", "status descriptor", "child", "no canonical", "os._exit(child_code)")
+	assertContainsAll(t, "access diagnostic privilege boundary", access,
+		"visible", "sudo", "SUDO", "zero remote", "no new account-wide sudo grant",
+		"remote phase is unproved", "no helper ran")
+	assertContainsAll(t, "artifact private schema boundary", artifact,
+		"grammar_diagnostic_schema.json", "reference/test data", "not a protected P0t status schema",
+		"No raw stdout/stderr", "2048", "other", "material-derived hashes")
+	assertContainsAll(t, "plan diagnostic projection precision", plans,
+		"exactly one complete supported LF-terminated", "original stdout or stderr stream",
+		"split fragments", "repeated lines", "LF/non-LF capacity", "counts authenticate native contents")
+	assertContainsAll(t, "host diagnostic projection precision", remote,
+		"original native stream", "repeated identical lines", "multiple recognized",
+		"distinct CR, NUL and invalid UTF-8", "minimum", "do not reconstruct")
+	assertContainsAll(t, "access diagnostic projection nonauthority", access,
+		"one complete supported line", "original native stream", "not whole-response status acceptance")
+	assertContainsAll(t, "artifact diagnostic projection privacy", artifact,
+		"original stdout and stderr streams", "zero, split, repeated or multiple",
+		"byte/line/CR/NUL/UTF-8 capacity", "do not export or authenticate native content")
+	assertContainsAll(t, "plan diagnostic literal capacity", plans,
+		"two admitted ASCII literal lengths", "every other LF consumes a byte",
+		"distinct", "outside the literal", "no nonliteral flag or residual byte")
+	assertContainsAll(t, "host diagnostic literal capacity", remote,
+		"two admitted ASCII literal", "after all other LF bytes", "unterminated tail",
+		"outside that literal", "no nonliteral")
+	assertContainsAll(t, "access and artifact capacity boundary", access+artifact,
+		"structural capacity is not access proof", "two admitted ASCII literal lengths",
+		"charging other LF bytes", "sole line has no nonliteral residual capacity")
+	assertContainsAll(t, "plan prior reader close precision", plans,
+		"shared protected-summary reader", "disposition-unproved marker",
+		"same exception", "53-function freeze", "other 52 original functions",
+		"Settled read/metadata failure with successful close")
+	assertContainsAll(t, "host prior reader close precision", remote,
+		"canonical-leaf close attempt", "disposition unproved", "FileNotFoundError",
+		"other 52 original functions", "does not blanket-suppress")
+	assertContainsAll(t, "access prior reader close precision", access,
+		"failed canonical-leaf close", "disposition unproved", "FileNotFoundError",
+		"independent lock and status close attempts")
+	for label, value := range map[string]string{"plan": plans, "host": remote, "access": access} {
+		assertContainsAll(t, label+" fixed verify-success predicate", value,
+			"verify_success_stderr_nonempty", "verify_success_stdout_not_exact",
+			"15 bytes", "one line", "UTF-8", "final LF", "no CR", "no NUL")
+		assertContainsAll(t, label+" exact scalar types", value,
+			"schema", "scope", "exact string types")
+	}
+	schema := mustRead(t, "testdata/remote_alpha_es_tls_status/grammar_diagnostic_schema.json")
+	assertContainsAll(t, "private diagnostic schema precision", schema,
+		"schema_version and scope must be built-in strings", "verify_success_stderr_nonempty implies",
+		"bytes=15", "lines=1", "empty=false", "utf8=true", "final_lf=true",
+		"has_cr=false", "has_nul=false", "shape does not authenticate native text")
+}
+
 func TestRemoteAlphaESServiceTLSStatusOnlyContract(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))

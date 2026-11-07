@@ -238,6 +238,53 @@ prove the actual signer, agent or Keychain participation, certificate use,
 effective system SSH config, known-hosts source, post-logout availability,
 service health, or TLS state. They are evidence, not repository contract.
 
+`Temporary compatibility edge` P0t diagnostic extension: the separate
+`recovery-session es-governance-tls-grammar-diagnostic` facade is fixed to
+execution-governance. It uses the existing validated `--ssh-target` shape and
+real local `--interactive-tty` for a later authorized live invocation, with
+one stage SSH, one single-source SCP and one interactive SSH at most. Visible
+foreground sudo retains the existing SUDO caller/UID/GID and measured-stage
+custody checks; no new account-wide sudo grant, NOPASSWD rule, password relay,
+TTY capture, SSH policy change, arbitrary root command or scope/path override
+is introduced. The route's local `--verify-only` proves only local source and
+command construction, with zero remote or native dispatch and no host identity,
+sudo or lock-freedom claim. Incomplete transport acknowledgment says the
+remote phase is unproved, never that no helper ran.
+
+`Bounded slice rule`: the source-bound root diagnostic uses a distinct private
+bootstrap marker, non-`__main__` module load and existing process capability,
+fixed-input and selected-anchor ownership. It acquires only a verified
+pre-existing execution-governance status lock without creating or writing it,
+reads the production prior canonical snapshot once under that lock and
+continues to material only if `ABSENT`. Stage creation and identity-proved
+root-only disposal, transient flock, protected metadata reads and capability/
+child effects make the route nonpublishing rather than effect-free. The
+collector stops on the first direct strict OpenSSL grammar rejection, emits
+no protected summary/generation and cannot reach status publication even on
+all-success. A single bounded closed terminal line is advisory only after
+proved source/stage/child/input/lock/status closeout; no old status failure
+witness is combined with it. Missing/partial line and exit code grant no
+accepted P0t status or automatic retry. Retire or explicitly re-justify the
+diagnostic after a required status observation can complete. It does not
+supply this access-profile Tranche A contract, P0v, IM/MA/CP, scheduler,
+renewal, readiness or service restoration authority.
+Its recognized verification token means one complete supported line in one
+original native stream, not whole-response status acceptance or access proof;
+split or repeated lines remain `other`. The private result validator reserves
+the literal and its LF in that one stream and places any CR, NUL or invalid
+UTF-8 evidence outside it; structural capacity is not access proof.
+The shared prior-summary reader marks a failed canonical-leaf close as
+disposition unproved and re-raises the same exception, including a
+close-raised `FileNotFoundError` or interruption; independent lock and status
+close attempts still follow. This is the explicit close-bookkeeping exception
+to the original 53-function freeze, not a blanket refusal of settled prior
+read failures. The private `verify_success_stderr_nonempty` predicate requires
+the entire fixed ASCII success stdout shape (15 bytes, one line, nonempty,
+UTF-8, final LF, no CR and no NUL). `verify_success_stdout_not_exact` retains
+feasible same-shape opaque bytes. Private schema and scope values require
+exact string types before equality checks; neither shape nor type validation
+creates status acceptance or host authority.
+
 ## 2. Versioned profile and ownership
 
 The exact local input schema is `es.remote-alpha.access-profile/v1`.

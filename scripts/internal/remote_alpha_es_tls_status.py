@@ -352,6 +352,7 @@ def check_protected_file(fd: int, mode: int) -> os.stat_result:
 
 def read_protected_summary_leaf(status_fd: int, name: str) -> bytes | None:
     """Read a canonical regular leaf without any blocking final-entry open."""
+    global WITNESS_DISPOSITION_UNPROVED
     try:
         entry = os.stat(name, dir_fd=status_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -385,7 +386,11 @@ def read_protected_summary_leaf(status_fd: int, name: str) -> bytes | None:
         same_leaf(status_fd, name, after)
         return b"".join(chunks)
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+            raise
 
 
 def check_existing(status_fd: int, name: str) -> None:
@@ -426,6 +431,46 @@ def open_scope_lock(status_fd: int, name: str) -> int:
         raise
 
 
+
+
+def open_existing_scope_lock(status_fd: int) -> int:
+    """Acquire only the fixed, already existing P0t lock; never create it."""
+    global WITNESS_DISPOSITION_UNPROVED
+    name = SCOPES["execution-governance"]["lock"]
+    try:
+        entry = os.stat(name, dir_fd=status_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise Incomplete("diagnostic_lock_missing") from exc
+    if (not stat.S_ISREG(entry.st_mode) or entry.st_uid != 0 or entry.st_gid != 0 or
+            stat.S_IMODE(entry.st_mode) != 0o600 or entry.st_nlink != 1 or entry.st_size != 0):
+        raise Incomplete("diagnostic_lock_unsafe")
+    try:
+        fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     dir_fd=status_fd)
+    except OSError as exc:
+        raise Incomplete("diagnostic_lock_open_unproved") from exc
+    try:
+        opened = check_protected_file(fd, 0o600)
+        if opened.st_size != 0 or leaf_identity(opened) != leaf_identity(entry):
+            raise Incomplete("diagnostic_lock_identity_unproved")
+        same_leaf(status_fd, name, opened)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise Incomplete("diagnostic_lock_acquisition_unproved") from exc
+        after = check_protected_file(fd, 0o600)
+        if after.st_size != 0 or leaf_identity(after) != leaf_identity(opened):
+            raise Incomplete("diagnostic_lock_identity_unproved")
+        same_leaf(status_fd, name, after)
+        return fd
+    except BaseException:
+        # Ownership began at open. Consume it before this sole close attempt.
+        closing_fd, fd = fd, -1
+        try:
+            os.close(closing_fd)
+        except BaseException:
+            WITNESS_DISPOSITION_UNPROVED = True
+        raise
 
 
 def canonical_material_path(value: object) -> bool:
@@ -1321,9 +1366,201 @@ SINGLE_TRUST_ANCHOR = re.compile(
     rb"-----END CERTIFICATE-----[ \t\r\n\v\f]*"
 )
 
+# The execution-governance diagnostic below is entered only through its own
+# verified bootstrap. It is not a status record or a parser acceptance rule.
+DIAGNOSTIC_CERT_ROLES = tuple(item[0] for item in SCOPES["execution-governance"]["certs"])
+DIAGNOSTIC_LEAF_ROLES = ("egs_server", "es_execution_governance_client")
+DIAGNOSTIC_VERIFY_CLIENT = "es_execution_governance_client_cert_against_egs_client_ca"
+DIAGNOSTIC_VERIFY_SERVER = "egs_server_cert_against_es_execution_governance_root_ca"
+DIAGNOSTIC_OPERATION_ROLES = {
+    "x509_metadata": DIAGNOSTIC_CERT_ROLES,
+    "x509_public_pem": DIAGNOSTIC_CERT_ROLES,
+    "public_key_der": DIAGNOSTIC_CERT_ROLES,
+    "x509_text": DIAGNOSTIC_LEAF_ROLES,
+    "private_key_public_der": DIAGNOSTIC_LEAF_ROLES,
+    "verify_client": (DIAGNOSTIC_VERIFY_CLIENT,),
+    "verify_server": (DIAGNOSTIC_VERIFY_SERVER,),
+}
+DIAGNOSTIC_SITE_OPERATIONS = {
+    "META_NEGATIVE_UNADMITTED": ("x509_metadata",),
+    "META_FIELDS_UNADMITTED": ("x509_metadata",),
+    "CERT_PUBLIC_PEM_UNADMITTED": ("x509_public_pem",),
+    "CERT_PUBLIC_DER_UNADMITTED": ("public_key_der",),
+    "ROLE_TEXT_EXIT_UNADMITTED": ("x509_text",),
+    "ROLE_TEXT_ENVELOPE_UNADMITTED": ("x509_text",),
+    "KEY_NEGATIVE_UNADMITTED": ("private_key_public_der",),
+    "KEY_DER_UNADMITTED": ("private_key_public_der",),
+    "VERIFY_SUCCESS_ENVELOPE_UNADMITTED": ("verify_client", "verify_server"),
+    "VERIFY_FAILURE_ENVELOPE_UNADMITTED": ("verify_client", "verify_server"),
+}
+DIAGNOSTIC_SITE_PREDICATES = {
+    "META_NEGATIVE_UNADMITTED": ("negative_exit_not_one", "negative_stdout_nonempty", "malformed_certificate_tuple_unadmitted"),
+    "META_FIELDS_UNADMITTED": ("metadata_stderr_nonempty", "metadata_final_lf_missing", "metadata_utf8_invalid", "metadata_line_count", "metadata_field_shape", "metadata_fingerprint_shape", "metadata_date_shape"),
+    "CERT_PUBLIC_PEM_UNADMITTED": ("public_pem_exit_nonzero", "public_pem_stderr_nonempty", "public_pem_envelope"),
+    "CERT_PUBLIC_DER_UNADMITTED": ("public_der_exit_nonzero", "public_der_stderr_nonempty", "public_der_sequence"),
+    "ROLE_TEXT_EXIT_UNADMITTED": ("text_exit_nonzero",),
+    "ROLE_TEXT_ENVELOPE_UNADMITTED": ("text_stderr_nonempty", "text_prefix", "text_cr_or_nul", "text_signature_tail"),
+    "KEY_NEGATIVE_UNADMITTED": ("negative_exit_not_one", "negative_stdout_nonempty", "malformed_key_tuple_unadmitted"),
+    "KEY_DER_UNADMITTED": ("key_der_stderr_nonempty", "key_der_sequence"),
+    "VERIFY_SUCCESS_ENVELOPE_UNADMITTED": ("verify_success_stdout_not_exact", "verify_success_stderr_nonempty"),
+    "VERIFY_FAILURE_ENVELOPE_UNADMITTED": ("verify_failure_exit_not_two", "verify_failure_stream_placement", "verify_failure_context_coupling", "verify_failure_whole_alternative_unadmitted"),
+}
+DIAGNOSTIC_VERIFY_TOKENS = (
+    "none", "20_0_issuer_unavailable", "10_0_expired", "10_1_expired",
+    "9_0_not_yet_valid", "26_0_purpose_unsuitable", "62_0_hostname_mismatch", "other",
+)
+DIAGNOSTIC_OTHER_FAILURES = (
+    "protected_ancestry_unproved", "scope_lock_unproved", "process_capability_unproved",
+    "canonical_not_absent", "prior_snapshot_unproved", "fixed_input_unproved",
+    "fixed_command_unproved", "openssl_child_unproved", "interrupted", "other_unproved",
+)
+
+
+def _diagnostic_stream_shape(raw: bytes, limit: int) -> dict[str, object]:
+    if type(raw) is not bytes or len(raw) > limit:
+        raise Incomplete("diagnostic_projection_unproved")
+    try:
+        raw.decode("utf-8", "strict")
+        utf8 = True
+    except UnicodeError:
+        utf8 = False
+    final_lf = bool(raw) and raw.endswith(b"\n")
+    return {"bytes": len(raw), "lines": raw.count(b"\n") + int(bool(raw) and not final_lf),
+            "empty": not raw, "utf8": utf8, "final_lf": final_lf,
+            "has_cr": b"\r" in raw, "has_nul": b"\x00" in raw}
+
+
+def _diagnostic_verify_token(output: bytes, error: bytes) -> str:
+    # A line token is informational only; whole-response acceptance is unchanged.
+    patterns = (
+        (rb"error 20 at 0 depth lookup: ?unable to get local issuer certificate\n", "20_0_issuer_unavailable"),
+        (rb"error 10 at 0 depth lookup: ?certificate has expired\n", "10_0_expired"),
+        (rb"error 10 at 1 depth lookup: ?certificate has expired\n", "10_1_expired"),
+        (rb"error 9 at 0 depth lookup: ?certificate is not yet valid\n", "9_0_not_yet_valid"),
+        (rb"error 26 at 0 depth lookup: ?unsuitable certificate purpose\n", "26_0_purpose_unsuitable"),
+        (rb"error 62 at 0 depth lookup: ?hostname mismatch\n", "62_0_hostname_mismatch"),
+    )
+    found = []
+    for stream in (output, error):
+        # Only an LF-terminated line from one original stream can earn a token.
+        for fragment in stream.split(b"\n")[:-1]:
+            line = fragment + b"\n"
+            for pattern, token in patterns:
+                if re.fullmatch(pattern, line) is not None:
+                    found.append(token)
+    return found[0] if len(found) == 1 else "other"
+
+
+def _diagnostic_predicate(site: str, operation: str, code: int, output: bytes, error: bytes) -> str:
+    if site in ("META_NEGATIVE_UNADMITTED", "KEY_NEGATIVE_UNADMITTED"):
+        if code != 1:
+            return "negative_exit_not_one"
+        if output:
+            return "negative_stdout_nonempty"
+        return ("malformed_certificate_tuple_unadmitted" if site == "META_NEGATIVE_UNADMITTED"
+                else "malformed_key_tuple_unadmitted")
+    if site == "META_FIELDS_UNADMITTED":
+        if error:
+            return "metadata_stderr_nonempty"
+        if not output.endswith(b"\n"):
+            return "metadata_final_lf_missing"
+        try:
+            lines = output.decode("utf-8", "strict").split("\n")[:-1]
+        except UnicodeError:
+            return "metadata_utf8_invalid"
+        if len(lines) != 5:
+            return "metadata_line_count"
+        keys = ("subject", "issuer", "notBefore", "notAfter")
+        if any(not line.startswith(key + "=") or not line[len(key) + 1:]
+               for line, key in zip(lines[:4], keys)):
+            return "metadata_field_shape"
+        if re.fullmatch(r"(?:sha256 Fingerprint|SHA256 Fingerprint)=(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}", lines[4]) is None:
+            return "metadata_fingerprint_shape"
+        if not parse_openssl_time(lines[2].split("=", 1)[1]) or not parse_openssl_time(lines[3].split("=", 1)[1]):
+            return "metadata_date_shape"
+        return "metadata_date_shape"  # Includes the original final date conversion failure.
+    if site == "CERT_PUBLIC_PEM_UNADMITTED":
+        if code != 0:
+            return "public_pem_exit_nonzero"
+        if error:
+            return "public_pem_stderr_nonempty"
+        return "public_pem_envelope"
+    if site == "CERT_PUBLIC_DER_UNADMITTED":
+        if code != 0:
+            return "public_der_exit_nonzero"
+        if error:
+            return "public_der_stderr_nonempty"
+        return "public_der_sequence"
+    if site == "ROLE_TEXT_EXIT_UNADMITTED":
+        return "text_exit_nonzero"
+    if site == "ROLE_TEXT_ENVELOPE_UNADMITTED":
+        if error:
+            return "text_stderr_nonempty"
+        if not output.startswith(b"Certificate:\n    Data:\n"):
+            return "text_prefix"
+        if b"\r" in output or b"\x00" in output:
+            return "text_cr_or_nul"
+        return "text_signature_tail"
+    if site == "KEY_DER_UNADMITTED":
+        return "key_der_stderr_nonempty" if error else "key_der_sequence"
+    if site == "VERIFY_SUCCESS_ENVELOPE_UNADMITTED":
+        return "verify_success_stdout_not_exact" if output != b"/dev/stdin: OK\n" else "verify_success_stderr_nonempty"
+    if site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED":
+        if code != 2:
+            return "verify_failure_exit_not_two"
+        if output and error:
+            return "verify_failure_stream_placement"
+        token = _diagnostic_verify_token(output, error)
+        if (operation == "verify_client" and token == "62_0_hostname_mismatch") or (
+                operation == "verify_server" and token == "26_0_purpose_unsuitable"):
+            return "verify_failure_context_coupling"
+        return "verify_failure_whole_alternative_unadmitted"
+    raise Incomplete("diagnostic_projection_unproved")
+
+
+class DiagnosticContext:
+    def __init__(self) -> None:
+        self.fixed_call_attempts = 0
+        self.last_role: str | None = None
+        self.last_operation: str | None = None
+        self.first_rejection: dict[str, object] | None = None
+
+    def attempt(self, role: str, operation: str) -> None:
+        if (self.first_rejection is not None or operation not in DIAGNOSTIC_OPERATION_ROLES or
+                role not in DIAGNOSTIC_OPERATION_ROLES[operation] or self.fixed_call_attempts >= 18):
+            raise Incomplete("diagnostic_projection_unproved")
+        self.fixed_call_attempts += 1
+        self.last_role, self.last_operation = role, operation
+
+    def reject(self, site: str, code: int, output: bytes, error: bytes) -> None:
+        operation, role = self.last_operation, self.last_role
+        if (self.first_rejection is not None or type(site) is not str or
+                operation not in DIAGNOSTIC_SITE_OPERATIONS.get(site, ()) or
+                role not in DIAGNOSTIC_OPERATION_ROLES.get(operation, ()) or
+                type(code) is not int or type(output) is not bytes or type(error) is not bytes):
+            raise Incomplete("diagnostic_projection_unproved")
+        predicate = _diagnostic_predicate(site, operation, code, output, error)
+        if predicate not in DIAGNOSTIC_SITE_PREDICATES[site]:
+            raise Incomplete("diagnostic_projection_unproved")
+        exit_class = "zero" if code == 0 else "one" if code == 1 else "two" if code == 2 else "other_nonzero"
+        token = "none"
+        if operation in ("verify_client", "verify_server") and site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED":
+            token = _diagnostic_verify_token(output, error) if code == 2 else "other"
+            if predicate == "verify_failure_context_coupling":
+                token = "other"
+        self.first_rejection = {
+            "role": role, "operation": operation, "site": site, "predicate": predicate,
+            "call_ordinal": self.fixed_call_attempts,
+            "response_shape": {"exit_class": exit_class,
+                               "stdout": _diagnostic_stream_shape(output, MAX_OUTPUT),
+                               "stderr": _diagnostic_stream_shape(error, MAX_ERROR),
+                               "verify_token": token},
+        }
+
 
 def cert_metadata(path: str, observed_at: dt.datetime | None = None,
-                  single_trust_anchor: bool = False) -> tuple[dict[str, object], bytes | None]:
+                  single_trust_anchor: bool = False, diagnostic: DiagnosticContext | None = None,
+                  diagnostic_role: str | None = None) -> tuple[dict[str, object], bytes | None]:
     empty: dict[str, object] = {"not_before": None, "not_after": None, "expired": None, "not_yet_valid": None,
                                  "sha256": None, "fingerprint_sha256": None, "public_key_sha256": None,
                                  "subject_sha256": None, "issuer_sha256": None}
@@ -1336,10 +1573,14 @@ def cert_metadata(path: str, observed_at: dt.datetime | None = None,
     assert raw is not None
     if single_trust_anchor and SINGLE_TRUST_ANCHOR.fullmatch(raw) is None:
         return empty | {"status": "fail", "code": "trust_anchor_count_mismatch"}, None
+    if diagnostic is not None:
+        diagnostic.attempt(diagnostic_role, "x509_metadata")
     code, output, error = run_fixed((OPENSSL, "x509", "-in", "/dev/stdin", "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256", "-nameopt", "RFC2253"), raw)
     if code != 0:
         if _known_malformed_pem(code, output, error, "certificate"):
             return empty | {"status": "fail", "code": "certificate_malformed"}, None
+        if diagnostic is not None:
+            diagnostic.reject("META_NEGATIVE_UNADMITTED", code, output, error)
         raise Incomplete("unexpected_openssl_grammar")
     try:
         if error or not output.endswith(b"\n"):
@@ -1363,12 +1604,22 @@ def cert_metadata(path: str, observed_at: dt.datetime | None = None,
         before_dt = dt.datetime.strptime(before, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
         after_dt = dt.datetime.strptime(after, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
     except (UnicodeError, ValueError, KeyError) as exc:
+        if diagnostic is not None:
+            diagnostic.reject("META_FIELDS_UNADMITTED", code, output, error)
         raise Incomplete("unexpected_openssl_grammar") from exc
+    if diagnostic is not None:
+        diagnostic.attempt(diagnostic_role, "x509_public_pem")
     pub_code, public, pub_error = run_fixed((OPENSSL, "x509", "-in", "/dev/stdin", "-pubkey", "-noout"), raw)
     if pub_code != 0 or pub_error or re.fullmatch(rb"-----BEGIN PUBLIC KEY-----\n(?:[A-Za-z0-9+/=]{1,64}\n)+-----END PUBLIC KEY-----\n", public) is None:
+        if diagnostic is not None:
+            diagnostic.reject("CERT_PUBLIC_PEM_UNADMITTED", pub_code, public, pub_error)
         raise Incomplete("unexpected_openssl_grammar")
+    if diagnostic is not None:
+        diagnostic.attempt(diagnostic_role, "public_key_der")
     der_code, der, der_error = run_fixed((OPENSSL, "pkey", "-pubin", "-outform", "DER"), public)
     if der_code != 0 or der_error or not _valid_der_sequence(der):
+        if diagnostic is not None:
+            diagnostic.reject("CERT_PUBLIC_DER_UNADMITTED", der_code, der, der_error)
         raise Incomplete("unexpected_openssl_grammar")
     checked = observed_at or dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     expired = checked > after_dt
@@ -1384,15 +1635,25 @@ def cert_metadata(path: str, observed_at: dt.datetime | None = None,
     }, raw
 
 
-def cert_role(item: tuple[str, str, str, str | None, str | None], observed_at: dt.datetime | None = None) -> tuple[dict[str, object], bytes | None]:
+def cert_role(item: tuple[str, str, str, str | None, str | None], observed_at: dt.datetime | None = None,
+              diagnostic: DiagnosticContext | None = None) -> tuple[dict[str, object], bytes | None]:
     label, path, role, hostname, eku = item
-    meta, raw = cert_metadata(path, observed_at, role == "ca")
+    if diagnostic is None:
+        meta, raw = cert_metadata(path, observed_at, role == "ca")
+    else:
+        meta, raw = cert_metadata(path, observed_at, role == "ca", diagnostic, label)
     record = {"label": label, "path": path, "role": role, **meta, "san_match": None, "eku_match": None}
     if raw is not None and role != "ca":
+        if diagnostic is not None:
+            diagnostic.attempt(label, "x509_text")
         code, output, error = run_fixed((OPENSSL, "x509", "-in", "/dev/stdin", "-noout", "-text"), raw)
         if code != 0:
+            if diagnostic is not None:
+                diagnostic.reject("ROLE_TEXT_EXIT_UNADMITTED", code, output, error)
             raise Incomplete("unexpected_openssl_grammar")
         if error or not _valid_x509_text(output):
+            if diagnostic is not None:
+                diagnostic.reject("ROLE_TEXT_ENVELOPE_UNADMITTED", code, output, error)
             raise Incomplete("unexpected_openssl_grammar")
         text = output.decode("utf-8", "strict")
         if hostname is not None:
@@ -1417,7 +1678,8 @@ def cert_role(item: tuple[str, str, str, str | None, str | None], observed_at: d
     return record, raw
 
 
-def key_pair(label: str, cert: dict[str, object], key_path: str) -> dict[str, object]:
+def key_pair(label: str, cert: dict[str, object], key_path: str,
+             diagnostic: DiagnosticContext | None = None) -> dict[str, object]:
     if cert["public_key_sha256"] is None:
         return {"label": label, "status": "fail", "code": "certificate_unavailable", "matches": False}
     try:
@@ -1427,18 +1689,26 @@ def key_pair(label: str, cert: dict[str, object], key_path: str) -> dict[str, ob
     except OSError as exc:
         raise Incomplete("key_read_unproved") from exc
     assert raw is not None
+    if diagnostic is not None:
+        diagnostic.attempt(label, "private_key_public_der")
     code, der, error = run_fixed((OPENSSL, "pkey", "-in", "/dev/stdin", "-pubout", "-outform", "DER"), raw)
     if code != 0:
         if _known_malformed_pem(code, der, error, "key"):
             return {"label": label, "status": "fail", "code": "key_malformed", "matches": False}
+        if diagnostic is not None:
+            diagnostic.reject("KEY_NEGATIVE_UNADMITTED", code, der, error)
         raise Incomplete("unexpected_openssl_grammar")
     if error or not _valid_der_sequence(der):
+        if diagnostic is not None:
+            diagnostic.reject("KEY_DER_UNADMITTED", code, der, error)
         raise Incomplete("unexpected_openssl_grammar")
     matches = hashlib.sha256(der).hexdigest() == cert["public_key_sha256"]
     return {"label": label, "status": "pass" if matches else "fail", "code": "pass" if matches else "key_mismatch", "matches": matches}
 
 
-def verify_chain(label: str, ca: dict[str, object], cert: dict[str, object], ca_bytes: bytes | None, cert_bytes: bytes | None, purpose: str, hostname: str) -> dict[str, object]:
+def verify_chain(label: str, ca: dict[str, object], cert: dict[str, object], ca_bytes: bytes | None,
+                 cert_bytes: bytes | None, purpose: str, hostname: str,
+                 diagnostic: DiagnosticContext | None = None) -> dict[str, object]:
     if ca["sha256"] is None or cert["sha256"] is None:
         return {"label": label, "status": "fail", "code": "certificate_unavailable", "purpose": purpose, "hostname": hostname}
     if ca_bytes is None or cert_bytes is None or purpose not in ("sslclient", "sslserver") or bool(hostname) != (purpose == "sslserver"):
@@ -1447,9 +1717,13 @@ def verify_chain(label: str, ca: dict[str, object], cert: dict[str, object], ca_
     if hostname:
         argv += ["-verify_hostname", hostname]
     argv += ["/dev/stdin"]
+    if diagnostic is not None:
+        diagnostic.attempt(label, "verify_server" if purpose == "sslserver" else "verify_client")
     code, output, error = run_fixed(tuple(argv), cert_bytes, ca_bytes)
     if code == 0:
         if output != b"/dev/stdin: OK\n" or error:
+            if diagnostic is not None:
+                diagnostic.reject("VERIFY_SUCCESS_ENVELOPE_UNADMITTED", code, output, error)
             raise Incomplete("unexpected_openssl_grammar")
     else:
         operand = rb"/dev/stdin"
@@ -1479,6 +1753,8 @@ def verify_chain(label: str, ca: dict[str, object], cert: dict[str, object], ca_
             target3013_patterns += (target3013_leaf + rb"62 at 0 depth lookup: hostname mismatch\n" + target3013_end,)
         admitted_target3013 = not output and any(re.fullmatch(pattern, error) is not None for pattern in target3013_patterns)
         if code != 2 or not (admitted_libressl or admitted_openssl3 or admitted_target3013):
+            if diagnostic is not None:
+                diagnostic.reject("VERIFY_FAILURE_ENVELOPE_UNADMITTED", code, output, error)
             raise Incomplete("unexpected_openssl_grammar")
     return {"label": label, "status": "pass" if code == 0 else "fail", "code": "pass" if code == 0 else "chain_failed", "purpose": purpose, "hostname": hostname}
 
@@ -1918,6 +2194,318 @@ def main(argv: list[str]) -> int:
             raise close_interrupt
         if WITNESS_SELECTION is not None and not WITNESS_DISPOSITION_UNPROVED:
             WITNESS_CLOSEOUT_PROVED = True
+
+
+def diagnose_first_rejection(diagnostic: DiagnosticContext) -> None:
+    """Traverse the fixed P0t inputs without constructing a status record."""
+    scope = SCOPES["execution-governance"]
+    observed_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    collect_topology(scope)
+    observations = [cert_role(item, observed_at, diagnostic) for item in scope["certs"]]
+    by_label = {record["label"]: record for record, _raw in observations}
+    cert_bytes = {item[0]: raw for item, (_record, raw) in zip(scope["certs"], observations)}
+    for label, cert_label, key_path in scope["pairs"]:
+        key_pair(label, by_label[cert_label], key_path, diagnostic)
+    for label, ca, cert, purpose, hostname in scope["verify"]:
+        verify_chain(label, by_label[ca], by_label[cert], cert_bytes[ca], cert_bytes[cert],
+                     purpose, hostname, diagnostic)
+
+
+def _diagnostic_failure_class(phase: str, failure: Exception) -> str:
+    if type(failure) is Incomplete and len(failure.args) == 1 and type(failure.args[0]) is str:
+        if failure.args[0] in ("interrupted", "child_interrupted"):
+            return "interrupted"
+        if phase == "collection":
+            reason = _failure_reason("collection", failure)
+            if reason in ("fixed_input_unproved", "fixed_command_unproved", "openssl_child_unproved"):
+                return reason
+    return {
+        "protected_ancestry": "protected_ancestry_unproved",
+        "scope_lock": "scope_lock_unproved",
+        "process_capability": "process_capability_unproved",
+        "prior_snapshot": "prior_snapshot_unproved",
+    }.get(phase, "other_unproved")
+
+
+def diagnostic_main() -> dict[str, object] | None:
+    """Return only a closed private measurement after all owned closeout."""
+    global PROCESS_CAPABILITY_READY, WITNESS_DISPOSITION_UNPROVED, LATCHED_SIGNAL
+    if (globals().get("ES_TLS_GRAMMAR_DIAGNOSTIC_BOOTSTRAP_VERIFIED") is not True or
+            globals().get("ES_TLS_STATUS_BOOTSTRAP_VERIFIED") is True):
+        return None
+    digest = globals().get("ES_TLS_GRAMMAR_DIAGNOSTIC_SOURCE_SHA256")
+    interrupted = globals().get("ES_TLS_GRAMMAR_DIAGNOSTIC_BOOTSTRAP_INTERRUPTED")
+    if (type(digest) is not str or HEX64.fullmatch(digest) is None or
+            type(interrupted) is not list or len(interrupted) != 1 or
+            type(interrupted[0]) is not bool):
+        return None
+    WITNESS_DISPOSITION_UNPROVED = False  # Fresh verified module, before resource acquisition.
+    PROCESS_CAPABILITY_READY = False
+    LATCHED_SIGNAL = None
+    diagnostic = DiagnosticContext()
+    if interrupted[0]:
+        return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v1",
+                "scope": "execution-governance", "source_sha256": digest,
+                "outcome": "incomplete_other", "fixed_call_attempts": 0,
+                "first_rejection": None, "other_failure": "interrupted"}
+    for signum in SIGNALS:
+        signal.signal(signum, _latch)
+    status_fd = None
+    lock_fd = None
+    phase = "protected_ancestry"
+    outcome = "no_grammar_rejection_reached"
+    other_failure: str | None = None
+    try:
+        check_signal()
+        status_fd = open_status_dir()
+        phase = "scope_lock"
+        lock_fd = open_existing_scope_lock(status_fd)
+        phase = "process_capability"
+        validate_process_capability()
+        PROCESS_CAPABILITY_READY = True
+        phase = "prior_snapshot"
+        prior = preexisting_generation(status_fd, "execution-governance")
+        if prior.state is not _PriorSummaryState.ABSENT:
+            raise Incomplete("diagnostic_canonical_not_absent")
+        phase = "collection"
+        diagnose_first_rejection(diagnostic)
+        check_signal()
+    except Exception as failure:
+        if (phase == "collection" and type(failure) is Incomplete and
+                failure.args == ("unexpected_openssl_grammar",) and
+                diagnostic.first_rejection is not None):
+            outcome = "first_grammar_rejection"
+        else:
+            outcome = "incomplete_other"
+            if (phase == "prior_snapshot" and type(failure) is Incomplete and
+                    failure.args == ("diagnostic_canonical_not_absent",)):
+                other_failure = "canonical_not_absent"
+            else:
+                other_failure = _diagnostic_failure_class(phase, failure)
+    finally:
+        PROCESS_CAPABILITY_READY = False
+        close_interrupt: BaseException | None = None
+        if lock_fd is not None:
+            closing_fd, lock_fd = lock_fd, None
+            try:
+                os.close(closing_fd)
+            except BaseException as exc:
+                WITNESS_DISPOSITION_UNPROVED = True
+                if not isinstance(exc, Exception):
+                    close_interrupt = exc
+        if status_fd is not None:
+            closing_fd, status_fd = status_fd, None
+            try:
+                os.close(closing_fd)
+            except BaseException as exc:
+                WITNESS_DISPOSITION_UNPROVED = True
+                if not isinstance(exc, Exception) and close_interrupt is None:
+                    close_interrupt = exc
+        if close_interrupt is not None:
+            raise close_interrupt
+    if WITNESS_DISPOSITION_UNPROVED:
+        return None
+    if LATCHED_SIGNAL is not None or interrupted[0]:
+        outcome, other_failure = "incomplete_other", "interrupted"
+    return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v1",
+            "scope": "execution-governance", "source_sha256": digest,
+            "outcome": outcome, "fixed_call_attempts": diagnostic.fixed_call_attempts,
+            "first_rejection": diagnostic.first_rejection if outcome == "first_grammar_rejection" else None,
+            "other_failure": other_failure}
+
+
+def _diagnostic_shape_valid(stream: object, limit: int) -> bool:
+    if type(stream) is not dict or set(stream) != {
+            "bytes", "lines", "empty", "utf8", "final_lf", "has_cr", "has_nul"}:
+        return False
+    size, lines = stream["bytes"], stream["lines"]
+    if (type(size) is not int or type(lines) is not int or not 0 <= size <= limit or
+            not 0 <= lines <= size or any(type(stream[key]) is not bool for key in
+                                         ("empty", "utf8", "final_lf", "has_cr", "has_nul"))):
+        return False
+    if stream["empty"] is not (size == 0):
+        return False
+    if size == 0:
+        return (lines == 0 and stream["utf8"] is True and
+                all(stream[key] is False for key in ("final_lf", "has_cr", "has_nul")))
+    if not 1 <= lines <= size:
+        return False
+    lf_count = lines if stream["final_lf"] else lines - 1
+    non_lf = size - lf_count
+    # CR, NUL, and an invalid UTF-8 byte require distinct non-LF positions.
+    required = int(stream["has_cr"]) + int(stream["has_nul"]) + int(not stream["utf8"])
+    return non_lf >= max(required, 0 if stream["final_lf"] else 1)
+
+
+def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None:
+    """Strict private result gate; the JSON Schema file is not loaded at runtime."""
+    if (type(result) is not dict or set(result) != {"schema_version", "scope", "source_sha256",
+            "outcome", "fixed_call_attempts", "first_rejection", "other_failure"} or
+            type(verified_digest) is not str or HEX64.fullmatch(verified_digest) is None or
+            type(result["schema_version"]) is not str or
+            type(result["scope"]) is not str or
+            result["schema_version"] != "es-p0t-openssl-grammar-diagnostic/v1" or
+            result["scope"] != "execution-governance" or
+            type(result["source_sha256"]) is not str or result["source_sha256"] != verified_digest):
+        return None
+    attempts = result["fixed_call_attempts"]
+    if type(attempts) is not int or not 0 <= attempts <= 18:
+        return None
+    outcome, first, other = result["outcome"], result["first_rejection"], result["other_failure"]
+    if type(outcome) is not str or outcome not in (
+            "first_grammar_rejection", "no_grammar_rejection_reached", "incomplete_other"):
+        return None
+    if outcome == "first_grammar_rejection":
+        if (other is not None or type(first) is not dict or set(first) != {
+                "role", "operation", "site", "predicate", "call_ordinal", "response_shape"}):
+            return None
+        role, operation, site, predicate = (first[key] for key in
+                                            ("role", "operation", "site", "predicate"))
+        ordinal, shape = first["call_ordinal"], first["response_shape"]
+        if (any(type(value) is not str for value in (role, operation, site, predicate)) or
+                operation not in DIAGNOSTIC_OPERATION_ROLES or
+                role not in DIAGNOSTIC_OPERATION_ROLES[operation] or
+                operation not in DIAGNOSTIC_SITE_OPERATIONS.get(site, ()) or
+                predicate not in DIAGNOSTIC_SITE_PREDICATES.get(site, ()) or
+                type(ordinal) is not int or ordinal != attempts or ordinal < 1 or
+                type(shape) is not dict or set(shape) != {"exit_class", "stdout", "stderr", "verify_token"}):
+            return None
+        exit_class, token = shape["exit_class"], shape["verify_token"]
+        if (type(exit_class) is not str or exit_class not in ("zero", "one", "two", "other_nonzero") or
+                type(token) is not str or token not in DIAGNOSTIC_VERIFY_TOKENS or
+                not _diagnostic_shape_valid(shape["stdout"], MAX_OUTPUT) or
+                not _diagnostic_shape_valid(shape["stderr"], MAX_ERROR)):
+            return None
+        stdout, stderr = shape["stdout"], shape["stderr"]
+        negative_sites = ("META_NEGATIVE_UNADMITTED", "KEY_NEGATIVE_UNADMITTED",
+                          "ROLE_TEXT_EXIT_UNADMITTED", "VERIFY_FAILURE_ENVELOPE_UNADMITTED")
+        if (site in negative_sites and exit_class == "zero") or (
+                site not in negative_sites and predicate not in
+                ("public_pem_exit_nonzero", "public_der_exit_nonzero") and exit_class != "zero"):
+            return None
+        if site in ("META_NEGATIVE_UNADMITTED", "KEY_NEGATIVE_UNADMITTED"):
+            if (predicate == "negative_exit_not_one") != (exit_class != "one"):
+                return None
+            if predicate == "negative_stdout_nonempty" and (exit_class != "one" or stdout["empty"]):
+                return None
+            if predicate.startswith("malformed_") and (exit_class != "one" or not stdout["empty"]):
+                return None
+        if predicate in ("public_pem_exit_nonzero", "public_der_exit_nonzero") and exit_class == "zero":
+            return None
+        if site == "META_FIELDS_UNADMITTED":
+            if (not stderr["empty"] and predicate != "metadata_stderr_nonempty") or (
+                    stderr["empty"] and not stdout["final_lf"] and
+                    predicate != "metadata_final_lf_missing") or (
+                    stderr["empty"] and stdout["final_lf"] and not stdout["utf8"] and
+                    predicate != "metadata_utf8_invalid") or (
+                    stderr["empty"] and stdout["final_lf"] and stdout["utf8"] and
+                    stdout["lines"] != 5 and predicate != "metadata_line_count"):
+                return None
+            if predicate in ("metadata_line_count", "metadata_field_shape",
+                             "metadata_fingerprint_shape", "metadata_date_shape") and (
+                    not stderr["empty"] or not stdout["final_lf"] or not stdout["utf8"]):
+                return None
+        if site in ("CERT_PUBLIC_PEM_UNADMITTED", "CERT_PUBLIC_DER_UNADMITTED"):
+            nonzero = "public_pem_exit_nonzero" if site == "CERT_PUBLIC_PEM_UNADMITTED" else "public_der_exit_nonzero"
+            stderr_predicate = "public_pem_stderr_nonempty" if site == "CERT_PUBLIC_PEM_UNADMITTED" else "public_der_stderr_nonempty"
+            if (exit_class != "zero" and predicate != nonzero) or (
+                    exit_class == "zero" and not stderr["empty"] and predicate != stderr_predicate) or (
+                    exit_class == "zero" and stderr["empty"] and
+                    predicate in (nonzero, stderr_predicate)):
+                return None
+        if site == "ROLE_TEXT_ENVELOPE_UNADMITTED" and (
+                (not stderr["empty"] and predicate != "text_stderr_nonempty") or (
+                    stderr["empty"] and predicate == "text_stderr_nonempty") or (
+                    predicate == "text_signature_tail" and (stdout["has_cr"] or stdout["has_nul"]))):
+            return None
+        if site == "KEY_DER_UNADMITTED" and (
+                (not stderr["empty"] and predicate != "key_der_stderr_nonempty") or (
+                    stderr["empty"] and predicate != "key_der_sequence")):
+            return None
+        if site == "VERIFY_SUCCESS_ENVELOPE_UNADMITTED" and (
+                (stdout["empty"] and predicate != "verify_success_stdout_not_exact") or (
+                    predicate == "verify_success_stderr_nonempty" and
+                    stdout != {"bytes": len(b"/dev/stdin: OK\n"), "lines": 1,
+                               "empty": False, "utf8": True, "final_lf": True,
+                               "has_cr": False, "has_nul": False})):
+            return None
+        if predicate in ("public_pem_stderr_nonempty", "public_der_stderr_nonempty",
+                         "text_stderr_nonempty", "key_der_stderr_nonempty",
+                         "verify_success_stderr_nonempty", "metadata_stderr_nonempty") and stderr["empty"]:
+            return None
+        if predicate == "metadata_final_lf_missing" and stdout["final_lf"]:
+            return None
+        if predicate == "metadata_utf8_invalid" and stdout["utf8"]:
+            return None
+        if predicate == "metadata_line_count" and stdout["lines"] == 5:
+            return None
+        if predicate == "text_cr_or_nul" and not (stdout["has_cr"] or stdout["has_nul"]):
+            return None
+        if predicate == "verify_failure_exit_not_two" and exit_class == "two":
+            return None
+        if site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED":
+            if predicate != "verify_failure_exit_not_two" and exit_class != "two":
+                return None
+            if predicate == "verify_failure_exit_not_two" and token != "other":
+                return None
+            if predicate == "verify_failure_stream_placement" and (stdout["empty"] or stderr["empty"]):
+                return None
+            if exit_class == "two" and not stdout["empty"] and not stderr["empty"] and (
+                    predicate != "verify_failure_stream_placement"):
+                return None
+            if predicate == "verify_failure_context_coupling" and token != "other":
+                return None
+        if operation not in ("verify_client", "verify_server"):
+            if token != "none":
+                return None
+        elif site == "VERIFY_SUCCESS_ENVELOPE_UNADMITTED":
+            if token != "none":
+                return None
+        elif token == "none" or (operation == "verify_client" and token == "62_0_hostname_mismatch") or (
+                operation == "verify_server" and token == "26_0_purpose_unsuitable"):
+            return None
+        if token not in ("none", "other"):
+            minimum_line_bytes = {
+                "20_0_issuer_unavailable": len(b"error 20 at 0 depth lookup:unable to get local issuer certificate\n"),
+                "10_0_expired": len(b"error 10 at 0 depth lookup:certificate has expired\n"),
+                "10_1_expired": len(b"error 10 at 1 depth lookup:certificate has expired\n"),
+                "9_0_not_yet_valid": len(b"error 9 at 0 depth lookup:certificate is not yet valid\n"),
+                "26_0_purpose_unsuitable": len(b"error 26 at 0 depth lookup:unsuitable certificate purpose\n"),
+                "62_0_hostname_mismatch": len(b"error 62 at 0 depth lookup:hostname mismatch\n"),
+            }[token]
+            possible = False
+            for stream in (stdout, stderr):
+                lf_count = stream["lines"] if stream["final_lf"] else stream["lines"] - 1
+                if lf_count < 1:
+                    continue
+                outside_flags = (int(stream["has_cr"]) + int(stream["has_nul"]) +
+                                 int(not stream["utf8"]))
+                for literal_bytes in (minimum_line_bytes, minimum_line_bytes + 1):
+                    # The literal has one LF; all other LF bytes are unavailable
+                    # to its ASCII body or to distinct outside-token evidence.
+                    residual_non_lf = stream["bytes"] - literal_bytes - (lf_count - 1)
+                    if residual_non_lf < 0:
+                        continue
+                    if stream["final_lf"] and lf_count == 1:
+                        possible |= residual_non_lf == 0 and outside_flags == 0
+                    else:
+                        possible |= residual_non_lf >= max(outside_flags, int(not stream["final_lf"]))
+            if not possible:
+                return None
+    elif outcome == "no_grammar_rejection_reached":
+        if first is not None or other is not None:
+            return None
+    elif first is not None or type(other) is not str or other not in DIAGNOSTIC_OTHER_FAILURES:
+        return None
+    try:
+        body = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                          allow_nan=False).encode("ascii")
+    except (TypeError, ValueError, UnicodeError):
+        return None
+    line = b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 " + body + b"\n"
+    if len(line) > 2048 or b"\r" in line or line.count(b"\n") != 1:
+        return None
+    return line
 
 
 if __name__ == "__main__":

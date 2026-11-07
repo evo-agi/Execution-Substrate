@@ -1,0 +1,1060 @@
+{
+  "$id": "urn:es-p0t-openssl-grammar-diagnostic-private-contract-v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "first_grammar_rejection"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "first_rejection": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "else": {
+                  "properties": {
+                    "response_shape": {
+                      "properties": {
+                        "verify_token": {
+                          "const": "none"
+                        }
+                      }
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "operation": {
+                      "enum": [
+                        "verify_client",
+                        "verify_server"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                },
+                "then": {}
+              }
+            ],
+            "oneOf": [
+              {
+                "properties": {
+                  "operation": {
+                    "const": "x509_metadata"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "negative_exit_not_one",
+                      "negative_stdout_nonempty",
+                      "malformed_certificate_tuple_unadmitted"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_trusted_runtime_client_ca",
+                      "egs_server",
+                      "es_execution_governance_client",
+                      "es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "META_NEGATIVE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "x509_metadata"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "metadata_stderr_nonempty",
+                      "metadata_final_lf_missing",
+                      "metadata_utf8_invalid",
+                      "metadata_line_count",
+                      "metadata_field_shape",
+                      "metadata_fingerprint_shape",
+                      "metadata_date_shape"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_trusted_runtime_client_ca",
+                      "egs_server",
+                      "es_execution_governance_client",
+                      "es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "META_FIELDS_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "x509_public_pem"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "public_pem_exit_nonzero",
+                      "public_pem_stderr_nonempty",
+                      "public_pem_envelope"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_trusted_runtime_client_ca",
+                      "egs_server",
+                      "es_execution_governance_client",
+                      "es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "CERT_PUBLIC_PEM_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "public_key_der"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "public_der_exit_nonzero",
+                      "public_der_stderr_nonempty",
+                      "public_der_sequence"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_trusted_runtime_client_ca",
+                      "egs_server",
+                      "es_execution_governance_client",
+                      "es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "CERT_PUBLIC_DER_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "x509_text"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "text_exit_nonzero"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server",
+                      "es_execution_governance_client"
+                    ]
+                  },
+                  "site": {
+                    "const": "ROLE_TEXT_EXIT_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "x509_text"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "text_stderr_nonempty",
+                      "text_prefix",
+                      "text_cr_or_nul",
+                      "text_signature_tail"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server",
+                      "es_execution_governance_client"
+                    ]
+                  },
+                  "site": {
+                    "const": "ROLE_TEXT_ENVELOPE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "private_key_public_der"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "negative_exit_not_one",
+                      "negative_stdout_nonempty",
+                      "malformed_key_tuple_unadmitted"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server",
+                      "es_execution_governance_client"
+                    ]
+                  },
+                  "site": {
+                    "const": "KEY_NEGATIVE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "private_key_public_der"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "key_der_stderr_nonempty",
+                      "key_der_sequence"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server",
+                      "es_execution_governance_client"
+                    ]
+                  },
+                  "site": {
+                    "const": "KEY_DER_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "verify_client"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "verify_success_stdout_not_exact",
+                      "verify_success_stderr_nonempty"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "es_execution_governance_client_cert_against_egs_client_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "VERIFY_SUCCESS_ENVELOPE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "verify_server"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "verify_success_stdout_not_exact",
+                      "verify_success_stderr_nonempty"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server_cert_against_es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "VERIFY_SUCCESS_ENVELOPE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "verify_client"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "verify_failure_exit_not_two",
+                      "verify_failure_stream_placement",
+                      "verify_failure_context_coupling",
+                      "verify_failure_whole_alternative_unadmitted"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "es_execution_governance_client_cert_against_egs_client_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "VERIFY_FAILURE_ENVELOPE_UNADMITTED"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "operation": {
+                    "const": "verify_server"
+                  },
+                  "predicate": {
+                    "enum": [
+                      "verify_failure_exit_not_two",
+                      "verify_failure_stream_placement",
+                      "verify_failure_context_coupling",
+                      "verify_failure_whole_alternative_unadmitted"
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "egs_server_cert_against_es_execution_governance_root_ca"
+                    ]
+                  },
+                  "site": {
+                    "const": "VERIFY_FAILURE_ENVELOPE_UNADMITTED"
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "call_ordinal": {
+                "maximum": 18,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "operation": {
+                "type": "string"
+              },
+              "predicate": {
+                "type": "string"
+              },
+              "response_shape": {
+                "additionalProperties": false,
+                "properties": {
+                  "exit_class": {
+                    "enum": [
+                      "zero",
+                      "one",
+                      "two",
+                      "other_nonzero"
+                    ]
+                  },
+                  "stderr": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bytes": {
+                        "maximum": 8192,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "empty": {
+                        "type": "boolean"
+                      },
+                      "final_lf": {
+                        "type": "boolean"
+                      },
+                      "has_cr": {
+                        "type": "boolean"
+                      },
+                      "has_nul": {
+                        "type": "boolean"
+                      },
+                      "lines": {
+                        "maximum": 8192,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "utf8": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "bytes",
+                      "lines",
+                      "empty",
+                      "utf8",
+                      "final_lf",
+                      "has_cr",
+                      "has_nul"
+                    ],
+                    "type": "object"
+                  },
+                  "stdout": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bytes": {
+                        "maximum": 65536,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "empty": {
+                        "type": "boolean"
+                      },
+                      "final_lf": {
+                        "type": "boolean"
+                      },
+                      "has_cr": {
+                        "type": "boolean"
+                      },
+                      "has_nul": {
+                        "type": "boolean"
+                      },
+                      "lines": {
+                        "maximum": 65536,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "utf8": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "bytes",
+                      "lines",
+                      "empty",
+                      "utf8",
+                      "final_lf",
+                      "has_cr",
+                      "has_nul"
+                    ],
+                    "type": "object"
+                  },
+                  "verify_token": {
+                    "enum": [
+                      "none",
+                      "20_0_issuer_unavailable",
+                      "10_0_expired",
+                      "10_1_expired",
+                      "9_0_not_yet_valid",
+                      "26_0_purpose_unsuitable",
+                      "62_0_hostname_mismatch",
+                      "other"
+                    ]
+                  }
+                },
+                "required": [
+                  "exit_class",
+                  "stdout",
+                  "stderr",
+                  "verify_token"
+                ],
+                "type": "object"
+              },
+              "role": {
+                "type": "string"
+              },
+              "site": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "operation",
+              "site",
+              "predicate",
+              "call_ordinal",
+              "response_shape"
+            ],
+            "type": "object"
+          },
+          "other_failure": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "no_grammar_rejection_reached"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "first_rejection": {
+            "type": "null"
+          },
+          "other_failure": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "incomplete_other"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "first_rejection": {
+            "type": "null"
+          },
+          "other_failure": {
+            "enum": [
+              "protected_ancestry_unproved",
+              "scope_lock_unproved",
+              "process_capability_unproved",
+              "canonical_not_absent",
+              "prior_snapshot_unproved",
+              "fixed_input_unproved",
+              "fixed_command_unproved",
+              "openssl_child_unproved",
+              "interrupted",
+              "other_unproved"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "first_rejection": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "properties": {
+                  "response_shape": {
+                    "properties": {
+                      "verify_token": {
+                        "const": "none"
+                      }
+                    }
+                  }
+                }
+              },
+              "if": {
+                "properties": {
+                  "operation": {
+                    "enum": [
+                      "verify_client",
+                      "verify_server"
+                    ]
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {}
+            }
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "operation": {
+                  "const": "x509_metadata"
+                },
+                "predicate": {
+                  "enum": [
+                    "negative_exit_not_one",
+                    "negative_stdout_nonempty",
+                    "malformed_certificate_tuple_unadmitted"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_trusted_runtime_client_ca",
+                    "egs_server",
+                    "es_execution_governance_client",
+                    "es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "META_NEGATIVE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "x509_metadata"
+                },
+                "predicate": {
+                  "enum": [
+                    "metadata_stderr_nonempty",
+                    "metadata_final_lf_missing",
+                    "metadata_utf8_invalid",
+                    "metadata_line_count",
+                    "metadata_field_shape",
+                    "metadata_fingerprint_shape",
+                    "metadata_date_shape"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_trusted_runtime_client_ca",
+                    "egs_server",
+                    "es_execution_governance_client",
+                    "es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "META_FIELDS_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "x509_public_pem"
+                },
+                "predicate": {
+                  "enum": [
+                    "public_pem_exit_nonzero",
+                    "public_pem_stderr_nonempty",
+                    "public_pem_envelope"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_trusted_runtime_client_ca",
+                    "egs_server",
+                    "es_execution_governance_client",
+                    "es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "CERT_PUBLIC_PEM_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "public_key_der"
+                },
+                "predicate": {
+                  "enum": [
+                    "public_der_exit_nonzero",
+                    "public_der_stderr_nonempty",
+                    "public_der_sequence"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_trusted_runtime_client_ca",
+                    "egs_server",
+                    "es_execution_governance_client",
+                    "es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "CERT_PUBLIC_DER_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "x509_text"
+                },
+                "predicate": {
+                  "enum": [
+                    "text_exit_nonzero"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server",
+                    "es_execution_governance_client"
+                  ]
+                },
+                "site": {
+                  "const": "ROLE_TEXT_EXIT_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "x509_text"
+                },
+                "predicate": {
+                  "enum": [
+                    "text_stderr_nonempty",
+                    "text_prefix",
+                    "text_cr_or_nul",
+                    "text_signature_tail"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server",
+                    "es_execution_governance_client"
+                  ]
+                },
+                "site": {
+                  "const": "ROLE_TEXT_ENVELOPE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "private_key_public_der"
+                },
+                "predicate": {
+                  "enum": [
+                    "negative_exit_not_one",
+                    "negative_stdout_nonempty",
+                    "malformed_key_tuple_unadmitted"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server",
+                    "es_execution_governance_client"
+                  ]
+                },
+                "site": {
+                  "const": "KEY_NEGATIVE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "private_key_public_der"
+                },
+                "predicate": {
+                  "enum": [
+                    "key_der_stderr_nonempty",
+                    "key_der_sequence"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server",
+                    "es_execution_governance_client"
+                  ]
+                },
+                "site": {
+                  "const": "KEY_DER_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "verify_client"
+                },
+                "predicate": {
+                  "enum": [
+                    "verify_success_stdout_not_exact",
+                    "verify_success_stderr_nonempty"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "es_execution_governance_client_cert_against_egs_client_ca"
+                  ]
+                },
+                "site": {
+                  "const": "VERIFY_SUCCESS_ENVELOPE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "verify_server"
+                },
+                "predicate": {
+                  "enum": [
+                    "verify_success_stdout_not_exact",
+                    "verify_success_stderr_nonempty"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server_cert_against_es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "VERIFY_SUCCESS_ENVELOPE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "verify_client"
+                },
+                "predicate": {
+                  "enum": [
+                    "verify_failure_exit_not_two",
+                    "verify_failure_stream_placement",
+                    "verify_failure_context_coupling",
+                    "verify_failure_whole_alternative_unadmitted"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "es_execution_governance_client_cert_against_egs_client_ca"
+                  ]
+                },
+                "site": {
+                  "const": "VERIFY_FAILURE_ENVELOPE_UNADMITTED"
+                }
+              }
+            },
+            {
+              "properties": {
+                "operation": {
+                  "const": "verify_server"
+                },
+                "predicate": {
+                  "enum": [
+                    "verify_failure_exit_not_two",
+                    "verify_failure_stream_placement",
+                    "verify_failure_context_coupling",
+                    "verify_failure_whole_alternative_unadmitted"
+                  ]
+                },
+                "role": {
+                  "enum": [
+                    "egs_server_cert_against_es_execution_governance_root_ca"
+                  ]
+                },
+                "site": {
+                  "const": "VERIFY_FAILURE_ENVELOPE_UNADMITTED"
+                }
+              }
+            }
+          ],
+          "properties": {
+            "call_ordinal": {
+              "maximum": 18,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "predicate": {
+              "type": "string"
+            },
+            "response_shape": {
+              "additionalProperties": false,
+              "properties": {
+                "exit_class": {
+                  "enum": [
+                    "zero",
+                    "one",
+                    "two",
+                    "other_nonzero"
+                  ]
+                },
+                "stderr": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "maximum": 8192,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "empty": {
+                      "type": "boolean"
+                    },
+                    "final_lf": {
+                      "type": "boolean"
+                    },
+                    "has_cr": {
+                      "type": "boolean"
+                    },
+                    "has_nul": {
+                      "type": "boolean"
+                    },
+                    "lines": {
+                      "maximum": 8192,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "utf8": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "bytes",
+                    "lines",
+                    "empty",
+                    "utf8",
+                    "final_lf",
+                    "has_cr",
+                    "has_nul"
+                  ],
+                  "type": "object"
+                },
+                "stdout": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "maximum": 65536,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "empty": {
+                      "type": "boolean"
+                    },
+                    "final_lf": {
+                      "type": "boolean"
+                    },
+                    "has_cr": {
+                      "type": "boolean"
+                    },
+                    "has_nul": {
+                      "type": "boolean"
+                    },
+                    "lines": {
+                      "maximum": 65536,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "utf8": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "bytes",
+                    "lines",
+                    "empty",
+                    "utf8",
+                    "final_lf",
+                    "has_cr",
+                    "has_nul"
+                  ],
+                  "type": "object"
+                },
+                "verify_token": {
+                  "enum": [
+                    "none",
+                    "20_0_issuer_unavailable",
+                    "10_0_expired",
+                    "10_1_expired",
+                    "9_0_not_yet_valid",
+                    "26_0_purpose_unsuitable",
+                    "62_0_hostname_mismatch",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "exit_class",
+                "stdout",
+                "stderr",
+                "verify_token"
+              ],
+              "type": "object"
+            },
+            "role": {
+              "type": "string"
+            },
+            "site": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "operation",
+            "site",
+            "predicate",
+            "call_ordinal",
+            "response_shape"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "fixed_call_attempts": {
+      "maximum": 18,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "other_failure": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "protected_ancestry_unproved",
+            "scope_lock_unproved",
+            "process_capability_unproved",
+            "canonical_not_absent",
+            "prior_snapshot_unproved",
+            "fixed_input_unproved",
+            "fixed_command_unproved",
+            "openssl_child_unproved",
+            "interrupted",
+            "other_unproved"
+          ]
+        }
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "first_grammar_rejection",
+        "no_grammar_rejection_reached",
+        "incomplete_other"
+      ]
+    },
+    "schema_version": {
+      "const": "es-p0t-openssl-grammar-diagnostic/v1"
+    },
+    "scope": {
+      "const": "execution-governance"
+    },
+    "source_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "scope",
+    "source_sha256",
+    "outcome",
+    "fixed_call_attempts",
+    "first_rejection",
+    "other_failure"
+  ],
+  "title": "Private P0t first-rejection terminal body contract; reference and test data only",
+  "type": "object",
+  "x-semantic-constraints": [
+    "This annotation is specification text only. The source-owned standard-library validator enforces every cross-field rule; JSON Schema alone does not.",
+    "One ASCII JSON body follows ES_TLS_GRAMMAR_DIAGNOSTIC_V1 and one space; the complete line including LF is at most 2048 bytes.",
+    "Reject duplicate, missing, extra or unsupported fields, non-ASCII, multiline and non-canonical envelopes.",
+    "source_sha256 equals the bootstrap-verified digest of the exact staged source in the same invocation.",
+    "All types are exact: schema_version and scope must be built-in strings before literal equality checks, so equality-overloaded subclasses are refused without invoking their comparison methods; bool is never accepted as an integer; first_grammar_rejection has a nonnull coupled first_rejection and null other_failure; no_grammar_rejection_reached has both null; incomplete_other has null first_rejection and a closed other_failure.",
+    "fixed_call_attempts is 0 through 18 attempted fixed calls, not native spawn count. At first rejection call_ordinal equals fixed_call_attempts and no further native dispatch occurs.",
+    "Site, operation, role, predicate and exit class are coupled to the original source guard. Negative-response sites cannot have zero exit; successful-command envelope sites require zero exit.",
+    "verify_success_stderr_nonempty implies the full structural shape of the fixed ASCII /dev/stdin: OK plus LF stdout: bytes=15, lines=1, empty=false, utf8=true, final_lf=true, has_cr=false and has_nul=false. The separate verify_success_stdout_not_exact predicate may have the same shape with different opaque bytes; shape does not authenticate native text.",
+    "Stream bytes and lines are bounded. Empty streams have bytes=0, lines=0, utf8=true, final_lf=false, has_cr=false, has_nul=false. Lines equal LF count plus one for nonempty unterminated tail. Distinct CR, NUL and invalid-UTF8 evidence needs enough non-LF byte capacity. All flags derive from the same returned tuple.",
+    "Nonverify operations require verify_token=none. A specific verify token requires exactly one complete LF-terminated supported error-line occurrence wholly within one original native stream. Split fragments, repeated identical lines and multiple recognized lines map to other. The formatter reserves one of the two admitted ASCII literal lengths including LF, charges every other LF byte, requires a nonempty unterminated tail, and places distinct CR, NUL and invalid-UTF8 evidence outside the literal. A sole complete line without a tail has exactly one admitted length and no nonliteral residual bytes or flags. These necessary capacity checks do not authenticate content; unknown and context-invalid content cannot become accepted grammar.",
+    "No line unless stage/source, child/input, scope-lock and status-directory closeout are proved. No field asserts TLS health, readiness, status acceptance, lock freedom, binary version or historical cause."
+  ]
+}
