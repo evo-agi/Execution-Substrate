@@ -160,6 +160,13 @@ recovery_es_tls_status_postcontact_die() {
   exit 2
 }
 
+recovery_es_tls_diagnostic_postcontact_die() {
+  local route=$1 detail=$2
+  printf 'error: %s\n' "${route} ${detail}" >&2
+  printf '%s\n' "${route}: remote phase unproved after diagnostic contact; stage disposition unproved unless root completed verified removal; no P0t status accepted" >&2
+  exit 2
+}
+
 require_recovery_option_value() {
   local option=$1
   local value_count=$2
@@ -231,6 +238,8 @@ usage() {
     "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
     "  es-service-tls-renew is held before host contact; --execute-renew is refused on status." \
     "  remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --verify-only" \
+    "  remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --ssh-target <user@host> --interactive-tty" \
     "  es-governance-tls-renew is held before host contact; --execute-renew is refused on status." \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
@@ -283,6 +292,7 @@ inventory() {
     "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - stages only scripts/internal/remote_alpha_es_tls_status.py, invokes fixed artifact-registry scope through visible sudo, and leaves protected canonical evidence remote." \
     "  recovery-session es-service-tls-renew - held before SSH, SCP, staging, and sudo; no renewal authority." \
     "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - stages only scripts/internal/remote_alpha_es_tls_status.py, invokes fixed execution-governance scope through visible sudo, and leaves protected canonical evidence remote." \
+    "  recovery-session es-governance-tls-grammar-diagnostic --verify-only or --ssh-target <target> --interactive-tty - separate bounded P0t first-rejection diagnostic; no status publication, renewal, repair, or restoration." \
     "  recovery-session es-governance-tls-renew - held before SSH, SCP, staging, and sudo; no renewal authority." \
     "  recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - Mac-side staged host-local operator healthcheck TLS evidence route; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --status through ssh -tt; leaves the canonical summary remote at /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json; no transcript, no summary copy-back, no support bundle" \
     "  recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - Mac-side staged host-local operator healthcheck TLS recovery route; stages only the same fixed helper pair and invokes only --execute-renew through ssh -tt; currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists and does not restart ES" \
@@ -343,6 +353,8 @@ recovery_session_usage() {
     "  remote_alpha_operator.sh recovery-session es-service-tls-status --ssh-target <user@host> --interactive-tty" \
     "  es-service-tls-renew is held before contact." \
     "  remote_alpha_operator.sh recovery-session es-governance-tls-status --ssh-target <user@host> --interactive-tty" \
+    "  remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --verify-only" \
+    "  remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --ssh-target <user@host> --interactive-tty" \
     "  es-governance-tls-renew is held before contact." \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-status --ssh-target <user@host> --interactive-tty" \
     "  remote_alpha_operator.sh recovery-session operator-healthcheck-tls-renew --ssh-target <user@host> --interactive-tty --execute-renew" \
@@ -379,6 +391,7 @@ recovery_session_usage() {
     "Submode exception: recovery-session es-service-tls-status stages only the dedicated status collector with fixed artifact-registry scope; the collector self-cleans before observation and publishes protected evidence." \
     "Submode exception: recovery-session es-service-tls-renew is held before contact; a status pass grants no renewal authority." \
     "Submode exception: recovery-session es-governance-tls-status stages only the dedicated status collector with fixed execution-governance scope; the collector self-cleans before observation and publishes protected evidence." \
+    "Submode exception: recovery-session es-governance-tls-grammar-diagnostic is a separate bounded first-rejection diagnostic; --verify-only is contact-free and live mode requires --ssh-target and --interactive-tty; no P0t status publication or renewal." \
     "Submode exception: recovery-session es-governance-tls-renew is held before contact; a status pass grants no renewal authority." \
     "Submode exception: recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty is a Mac-side staged host-local operator healthcheck TLS evidence route; it stages only the operator healthcheck TLS public/internal helper pair, invokes only --status, leaves the canonical summary on the remote host, and performs no mutation." \
     "Submode exception: recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew is a Mac-side staged host-local operator healthcheck TLS recovery route; it stages only the same helper pair, invokes only --execute-renew, and currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists." \
@@ -677,6 +690,7 @@ recovery_session_plan() {
     "  es-service-tls-status --ssh-target <target> --interactive-tty - dedicated collector stages one file, self-cleans before status work, and writes /var/lib/execution-substrate-remote-alpha/v1/status/es-service-tls-status-summary.json." \
     "  es-service-tls-renew - held before contact pending a separately designed contract." \
     "  es-governance-tls-status --ssh-target <target> --interactive-tty - dedicated collector stages one file, self-cleans before status work, and writes /var/lib/execution-substrate-remote-alpha/v1/status/es-governance-tls-status-summary.json." \
+    "  es-governance-tls-grammar-diagnostic --verify-only or --ssh-target <target> --interactive-tty - separate bounded first-rejection diagnostic; no status publication, renewal, repair, or restoration." \
     "  es-governance-tls-renew - held before contact pending a separately designed contract." \
     "  operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode; stages only the operator healthcheck TLS public/internal helper pair, invokes only --status over ssh -tt, leaves the canonical summary on the remote host, and performs no mutation" \
     "  operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode; stages only the same helper pair, invokes only --execute-renew over ssh -tt, currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists, and does not restart ES" \
@@ -731,6 +745,7 @@ recovery_session_inventory() {
     "  recovery-session es-service-tls-status --ssh-target <target> --interactive-tty - stages one dedicated collector, selects artifact-registry, and leaves only protected canonical summary remote; no legacy fallback." \
     "  recovery-session es-service-tls-renew - held before contact; no helper staged or invoked." \
     "  recovery-session es-governance-tls-status --ssh-target <target> --interactive-tty - stages one dedicated collector, selects execution-governance, and leaves only protected canonical summary remote; no legacy fallback." \
+    "  recovery-session es-governance-tls-grammar-diagnostic --verify-only or --ssh-target <target> --interactive-tty - separate P0t grammar localization; stages one collector in live mode, emits at most one closed terminal line, and publishes no status summary." \
     "  recovery-session es-governance-tls-renew - held before contact; no helper staged or invoked." \
     "  recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty - implemented Mac-side staged host-local operator healthcheck TLS evidence mode; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --status through ssh -tt; leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture" \
     "  recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew - implemented Mac-side staged host-local operator healthcheck TLS recovery mode; stages only scripts/remote_alpha_operator_healthcheck_tls_renew.sh and scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh; invokes only --execute-renew through ssh -tt; currently fails closed before backup/install with unsupported_signing_topology until a documented CA custody/signing design exists; leaves /var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json on the remote host; no summary copy-back; no transcript capture; no ES restart" \
@@ -2549,6 +2564,18 @@ recovery_session_es_tls_usage() {
     "No summary copy-back, transcript, support bundle, or raw TLS/config output is produced."
 }
 
+recovery_session_es_tls_diagnostic_usage() {
+  printf '%s\n' \
+    "Remote Alpha recovery-session mode: es-governance-tls-grammar-diagnostic" \
+    "Fixed execution-governance first-rejection diagnostic; no protected P0t status is published." \
+    "Stages only scripts/internal/remote_alpha_es_tls_status.py with verified source and custody." \
+    "A completed diagnostic line is advisory, not TLS pass, readiness, restoration or retry authority." \
+    "Usage: remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --ssh-target <user@host> --interactive-tty" \
+    "Local only: remote_alpha_operator.sh recovery-session es-governance-tls-grammar-diagnostic --verify-only" \
+    "Allowed flags: --help alone, --ssh-target <target> with --interactive-tty for live use, or --verify-only alone." \
+    "No raw native output, transcript, summary copy-back, renewal, service action or automatic retry."
+}
+
 remote_alpha_es_tls_status_shell_quote() {
   local value=$1
   value=${value//\'/\'\\\'\'}
@@ -2556,7 +2583,7 @@ remote_alpha_es_tls_status_shell_quote() {
 }
 
 remote_alpha_es_tls_status_remote_wrapper() {
-  local stage_dir=$1 stage_identity=$2 scope=$3 collector_digest=$4
+  local stage_dir=$1 stage_identity=$2 scope=$3 collector_digest=$4 diagnostic_mode=${5:-status}
   local LC_ALL=C stage_dev stage_ino wrapper remote_command
   [[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]] || return 2
   [[ "${stage_identity}" =~ ^[1-9][0-9]{0,19}:[1-9][0-9]{0,19}$ ]] || return 2
@@ -2566,18 +2593,29 @@ remote_alpha_es_tls_status_remote_wrapper() {
   [[ ${#stage_ino} -lt 20 || "${stage_ino}" < 18446744073709551615 || "${stage_ino}" == 18446744073709551615 ]] || return 2
   case "${scope}" in artifact-registry|execution-governance) ;; *) return 2 ;; esac
   [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]] || return 2
+  case "${diagnostic_mode}" in
+    status) ;;
+    grammar-diagnostic) [[ "${scope}" == execution-governance ]] || return 2 ;;
+    *) return 2 ;;
+  esac
   IFS= read -r -d '' wrapper <<'REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER' || true
 set -euo pipefail
 stage_dir=$1
 stage_identity=$2
 scope=$3
 collector_digest=$4
+diagnostic_mode=${5:-status}
 collector="${stage_dir}/remote_alpha_es_tls_status.py"
 
 [[ "${stage_dir}" =~ ^/tmp/\.es-tls-status-[0-9a-f]{32}$ ]]
 [[ "${stage_identity}" =~ ^[0-9]+:[0-9]+$ ]]
 case "${scope}" in artifact-registry|execution-governance) ;; *) exit 2 ;; esac
 [[ "${collector_digest}" =~ ^[0-9a-f]{64}$ ]]
+case "${diagnostic_mode}" in
+  status) ;;
+  grammar-diagnostic) [[ "${scope}" == execution-governance ]] ;;
+  *) exit 2 ;;
+esac
 /usr/bin/python3 -I -B - "${collector}" "${stage_identity}" <<'REMOTE_ALPHA_ES_TLS_STATUS_MODE'
 import os
 import stat
@@ -2729,9 +2767,13 @@ def quiet_unhandled(_kind, _value, _traceback):
     uncaught[0] = True  # Never print an arbitrary exception or infer its disposition.
 
 sys.excepthook = quiet_unhandled
-atexit.register(emit_failure_witness)
+diagnostic_mode = len(sys.argv) == 8 and sys.argv[-1] == "grammar-diagnostic"
+if len(sys.argv) != 7 and not diagnostic_mode:
+    raise SystemExit(1)
+if not diagnostic_mode:
+    atexit.register(emit_failure_witness)
 
-stage, basename, digest, scope, expected_dev, expected_ino = sys.argv[1:]
+stage, basename, digest, scope, expected_dev, expected_ino = sys.argv[1:7]
 def strict_uint64(value):
     if re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", value) is None:
         raise SystemExit(1)
@@ -2743,7 +2785,8 @@ expected_identity = (strict_uint64(expected_dev), strict_uint64(expected_ino))
 if (re.fullmatch(r"/tmp/\.es-tls-status-[0-9a-f]{32}", stage) is None or
         basename != "remote_alpha_es_tls_status.py" or
         re.fullmatch(r"[0-9a-f]{64}", digest) is None or
-        scope not in ("artifact-registry", "execution-governance")):
+        scope not in ("artifact-registry", "execution-governance") or
+        (diagnostic_mode and scope != "execution-governance")):
     raise SystemExit(1)
 scope_value = scope
 bootstrap_reason = "caller_identity_unproved"
@@ -2868,11 +2911,19 @@ finally:
     os.close(parent_fd)
     owned_fds["parent"] = False
 stage_closeout = True
-label = "<verified-es-tls-status-collector>"
-sys.argv = [label, "--scope", scope]
-namespace = {"__name__": "__main__", "__file__": label,
-             "ES_TLS_STATUS_BOOTSTRAP_VERIFIED": True,
-             "ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED": interrupted}
+if diagnostic_mode:
+    label = "<verified-es-tls-grammar-diagnostic>"
+    sys.argv = [label]
+    namespace = {"__name__": "_es_tls_grammar_diagnostic", "__file__": label,
+                 "ES_TLS_GRAMMAR_DIAGNOSTIC_BOOTSTRAP_VERIFIED": True,
+                 "ES_TLS_GRAMMAR_DIAGNOSTIC_BOOTSTRAP_INTERRUPTED": interrupted,
+                 "ES_TLS_GRAMMAR_DIAGNOSTIC_SOURCE_SHA256": digest}
+else:
+    label = "<verified-es-tls-status-collector>"
+    sys.argv = [label, "--scope", scope]
+    namespace = {"__name__": "__main__", "__file__": label,
+                 "ES_TLS_STATUS_BOOTSTRAP_VERIFIED": True,
+                 "ES_TLS_STATUS_BOOTSTRAP_INTERRUPTED": interrupted}
 bootstrap_phase = "collector_load"
 bootstrap_reason = "collector_load_unproved"
 try:
@@ -2884,6 +2935,8 @@ collector_started = True
 try:
     exec(compiled_payload, namespace)
 except SystemExit as stopped:
+    if diagnostic_mode:
+        raise SystemExit(1)
     # Preserve only the collector's fixed integer exit contract. Python must
     # never print a hostile SystemExit payload on the operator terminal.
     if type(stopped.code) is int and stopped.code in (0, 1, 2):
@@ -2892,16 +2945,43 @@ except SystemExit as stopped:
     raise SystemExit(1)
 except BaseException:
     raise SystemExit(1)
+if diagnostic_mode:
+    try:
+        entry = namespace.get("diagnostic_main")
+        formatter = namespace.get("format_diagnostic_line")
+        if not callable(entry) or not callable(formatter):
+            raise SystemExit(1)
+        result = entry()
+        line = formatter(result, digest)
+        if (type(result) is not dict or type(line) is not bytes or
+                not line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ") or
+                not line.endswith(b"\n") or line.count(b"\n") != 1 or
+                len(line) > 2048 or not line.isascii()):
+            raise SystemExit(1)
+    except BaseException:
+        raise SystemExit(1)
+    write_failure_witness(line)  # One output-only terminal attempt; no status witness is installed.
+    if result["outcome"] in ("first_grammar_rejection", "no_grammar_rejection_reached"):
+        raise SystemExit(0)
+    raise SystemExit(1)
 # The verified collector's __main__ path exits explicitly. A return is not a
 # completed record and cannot earn a witness.
 raise SystemExit(1)
 REMOTE_ALPHA_ES_TLS_STATUS_BOOTSTRAP
 stage_dev=${stage_identity%%:*}
 stage_ino=${stage_identity#*:}
-sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \
-  remote_alpha_es_tls_status.py "${collector_digest}" "${scope}" "${stage_dev}" "${stage_ino}"
+if [[ "${diagnostic_mode}" == grammar-diagnostic ]]; then
+  sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \
+    remote_alpha_es_tls_status.py "${collector_digest}" "${scope}" "${stage_dev}" "${stage_ino}" grammar-diagnostic
+else
+  sudo LC_ALL=C /usr/bin/python3 -I -B -c "${bootstrap}" "${stage_dir}" \
+    remote_alpha_es_tls_status.py "${collector_digest}" "${scope}" "${stage_dev}" "${stage_ino}"
+fi
 REMOTE_ALPHA_ES_TLS_STATUS_REMOTE_WRAPPER
   remote_command="/bin/bash -c $(remote_alpha_es_tls_status_shell_quote "${wrapper}") -- $(remote_alpha_es_tls_status_shell_quote "${stage_dir}") $(remote_alpha_es_tls_status_shell_quote "${stage_identity}") $(remote_alpha_es_tls_status_shell_quote "${scope}") $(remote_alpha_es_tls_status_shell_quote "${collector_digest}")"
+  if [[ "${diagnostic_mode}" == grammar-diagnostic ]]; then
+    remote_command="${remote_command} $(remote_alpha_es_tls_status_shell_quote "${diagnostic_mode}")"
+  fi
   [[ ${#remote_command} -le 32768 ]] || return 2
   printf '%s' "${remote_command}"
 }
@@ -2910,6 +2990,8 @@ recovery_session_es_tls_status() {
   local route=$1
   local scope=$2
   shift 2
+  local diagnostic=false verify_only=false help_seen=false
+  [[ "${route}" != es-governance-tls-grammar-diagnostic ]] || diagnostic=true
   local ssh_target_seen=false interactive_tty_seen=false ssh_target=""
   local option
   for option in "$@"; do
@@ -2922,8 +3004,14 @@ recovery_session_es_tls_status() {
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --help|-h)
-        recovery_session_es_tls_usage "${route}" "${scope}"
-        return 0
+        if [[ "${diagnostic}" == true ]]; then
+          [[ "${help_seen}" == false ]] || recovery_die "${route} duplicate help flag"
+          help_seen=true
+          shift
+        else
+          recovery_session_es_tls_usage "${route}" "${scope}"
+          return 0
+        fi
         ;;
       --ssh-target)
         require_recovery_option_not_seen "$1" "${ssh_target_seen}"
@@ -2935,6 +3023,12 @@ recovery_session_es_tls_status() {
       --interactive-tty)
         require_recovery_option_not_seen "$1" "${interactive_tty_seen}"
         interactive_tty_seen=true
+        shift
+        ;;
+      --verify-only)
+        [[ "${diagnostic}" == true ]] || recovery_die "${route} refuses --verify-only"
+        require_recovery_option_not_seen "$1" "${verify_only}"
+        verify_only=true
         shift
         ;;
       --execute-renew|--execute-renew=*)
@@ -2951,11 +3045,28 @@ recovery_session_es_tls_status() {
         ;;
     esac
   done
+  if [[ "${diagnostic}" == true && "${help_seen}" == true ]]; then
+    [[ "${ssh_target_seen}" == false && "${interactive_tty_seen}" == false && "${verify_only}" == false ]] || recovery_die "${route} --help must stand alone"
+    recovery_session_es_tls_diagnostic_usage
+    return 0
+  fi
+  if [[ "${diagnostic}" == true && "${verify_only}" == true ]]; then
+    [[ "${ssh_target_seen}" == false && "${interactive_tty_seen}" == false ]] || recovery_die "${route} --verify-only must stand alone"
+    [[ -r "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" && -f "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" && ! -L "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" ]] || recovery_die "diagnostic collector source is not a regular readable file"
+    local verify_digest verify_command
+    verify_digest="$(/usr/bin/shasum -a 256 "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" | /usr/bin/cut -d ' ' -f 1)" || recovery_die "diagnostic collector digest derivation failed"
+    [[ "${verify_digest}" =~ ^[0-9a-f]{64}$ ]] || recovery_die "diagnostic collector digest derivation failed"
+    verify_command="$(remote_alpha_es_tls_status_remote_wrapper "/tmp/.es-tls-status-00000000000000000000000000000000" "18446744073709551615:18446744073709551615" "execution-governance" "${verify_digest}" grammar-diagnostic)" || recovery_die "diagnostic fixed command construction failed"
+    [[ ${#verify_command} -le 32768 ]] || recovery_die "diagnostic fixed command too large"
+    unset verify_command
+    printf '%s\n' "${route}: local source and command construction verified; no host contact or P0t status observation occurred."
+    return 0
+  fi
   [[ "${ssh_target_seen}" == true ]] || recovery_die "${route} requires --ssh-target <target>"
-  [[ "${interactive_tty_seen}" == true ]] || recovery_die "${route} requires --interactive-tty"
   if [[ ! "${ssh_target}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ || ${#ssh_target} -gt 255 ]]; then
     recovery_die "${route} --ssh-target must be a single SSH target"
   fi
+  [[ "${interactive_tty_seen}" == true ]] || recovery_die "${route} requires --interactive-tty"
   [[ -t 0 && -t 1 ]] || recovery_die "${route} requires a visible local terminal; no host contact occurred"
   command -v ssh >/dev/null 2>&1 || recovery_die "ssh is required for ${route}"
   command -v scp >/dev/null 2>&1 || recovery_die "scp is required for ${route}"
@@ -2969,9 +3080,17 @@ recovery_session_es_tls_status() {
   [[ "${run_id}" =~ ^[0-9a-f]{32}$ ]] || recovery_die "status stage identifier generation failed"
   remote_stage_dir="/tmp/.es-tls-status-${run_id}"
   remote_collector="${remote_stage_dir}/remote_alpha_es_tls_status.py"
-  preflight_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command preflight failed; no host contact occurred"
+  if [[ "${diagnostic}" == true ]]; then
+    preflight_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}" grammar-diagnostic)" || recovery_die "${route} fixed remote command preflight failed; no host contact occurred"
+  else
+    preflight_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "18446744073709551615:18446744073709551615" "${scope}" "${collector_digest}")" || recovery_die "${route} fixed remote command preflight failed; no host contact occurred"
+  fi
   unset preflight_command
-  printf '%s\n' "${route}: staging one dedicated status collector; scope=${scope}; protected summary remains remote."
+  if [[ "${diagnostic}" == true ]]; then
+    printf '%s\n' "${route}: staging one fixed diagnostic source; no protected P0t summary will be published."
+  else
+    printf '%s\n' "${route}: staging one dedicated status collector; scope=${scope}; protected summary remains remote."
+  fi
   if ! stage_identity="$(ssh "${ssh_target}" /bin/bash -s -- "${remote_stage_dir}" <<'REMOTE_ALPHA_ES_TLS_STATUS_STAGE' | /usr/bin/python3 -I -B -c '
 import re, sys
 raw = sys.stdin.buffer.read(64)
@@ -3040,16 +3159,36 @@ except (OSError, ValueError):
 REMOTE_ALPHA_ES_TLS_STATUS_CREATE
 REMOTE_ALPHA_ES_TLS_STATUS_STAGE
 )"; then
-    recovery_es_tls_status_postcontact_die "${route}" "stage creation or custody acquisition failed; possible diagnostic residue retained"
+    if [[ "${diagnostic}" == true ]]; then
+      recovery_es_tls_diagnostic_postcontact_die "${route}" "stage creation or custody acquisition failed; possible stage residue retained"
+    else
+      recovery_es_tls_status_postcontact_die "${route}" "stage creation or custody acquisition failed; possible diagnostic residue retained"
+    fi
   fi
   if ! scp "${REMOTE_ALPHA_ES_TLS_STATUS_COLLECTOR}" "${ssh_target}:${remote_collector}"; then
-    recovery_es_tls_status_postcontact_die "${route}" "upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
+    if [[ "${diagnostic}" == true ]]; then
+      recovery_es_tls_diagnostic_postcontact_die "${route}" "upload failed; stage retained as diagnostic residue"
+    else
+      recovery_es_tls_status_postcontact_die "${route}" "upload failed; stage retained as diagnostic residue; no fresh status generation accepted"
+    fi
   fi
-  remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_es_tls_status_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
+  if [[ "${diagnostic}" == true ]]; then
+    remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}" grammar-diagnostic)" || recovery_es_tls_diagnostic_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue"
+  else
+    remote_command="$(remote_alpha_es_tls_status_remote_wrapper "${remote_stage_dir}" "${stage_identity}" "${scope}" "${collector_digest}")" || recovery_es_tls_status_postcontact_die "${route}" "fixed remote command construction failed; stage retained as diagnostic residue; no fresh status generation accepted"
+  fi
   if ! ssh -tt "${ssh_target}" "${remote_command}"; then
-    recovery_es_tls_status_postcontact_die "${route}" "interactive SSH failed"
+    if [[ "${diagnostic}" == true ]]; then
+      recovery_es_tls_diagnostic_postcontact_die "${route}" "interactive SSH failed"
+    else
+      recovery_es_tls_status_postcontact_die "${route}" "interactive SSH failed"
+    fi
   fi
-  printf '%s\n' "${route}: collector published a completed observation; validate the fresh protected record for result.status."
+  if [[ "${diagnostic}" == true ]]; then
+    printf '%s\n' "${route}: diagnostic invocation acknowledged; only a complete closed terminal line is usable, and no P0t status was published."
+  else
+    printf '%s\n' "${route}: collector published a completed observation; validate the fresh protected record for result.status."
+  fi
 }
 
 recovery_session_es_service_tls() {
@@ -3058,6 +3197,10 @@ recovery_session_es_service_tls() {
 
 recovery_session_es_governance_tls() {
   recovery_session_es_tls_status es-governance-tls-status execution-governance "$@"
+}
+
+recovery_session_es_governance_tls_grammar_diagnostic() {
+  recovery_session_es_tls_status es-governance-tls-grammar-diagnostic execution-governance "$@"
 }
 
 recovery_session_operator_healthcheck_tls_status_noninteractive_usage() {
@@ -3521,6 +3664,11 @@ recovery_session() {
   if [[ "$#" -gt 0 && "$1" == "es-governance-tls-status" ]]; then
     shift
     recovery_session_es_governance_tls "$@"
+    return 0
+  fi
+  if [[ "$#" -gt 0 && "$1" == "es-governance-tls-grammar-diagnostic" ]]; then
+    shift
+    recovery_session_es_governance_tls_grammar_diagnostic "$@"
     return 0
   fi
   if [[ "$#" -gt 0 && "$1" == "es-governance-tls-renew" ]]; then

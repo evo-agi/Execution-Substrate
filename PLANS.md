@@ -1655,6 +1655,115 @@ candidate is design evidence and is not the implementation base. Validation
 is local static/fake only; no live SSH, sudo, host certificate/key/config read,
 service operation, Docker, Nomad, IM, CP, or host preparation is allowed.
 
+`Bounded slice rule` diagnostic extension inside the reopened P0s/P0t seam:
+`recovery-session es-governance-tls-grammar-diagnostic` is a third, separate
+nonpublishing source-controlled route for **execution-governance only**. It identifies the
+first newly observed rejection at one of the existing ten strict OpenSSL
+grammar guards by fixed role, command kind, source predicate and bounded
+response shape. It neither diagnoses the consumed attempt retrospectively nor
+asserts TLS pass, readiness, restoration or P0t status acceptance. The two
+publishing status routes remain exactly two and retain their existing
+bootstrap, output and publication behavior. All renewal routes remain held.
+This diagnostic must be reviewed for retirement or explicit re-justification
+after the installed-response issue is resolved and a required status
+observation can complete; it is not general privileged inspection authority.
+
+`Temporary compatibility edge`: the new Mac facade form accepts only the
+existing validated `--ssh-target` and visible `--interactive-tty` for live use,
+plus a diagnostic-only local `--verify-only`. Verify-only checks the fixed local
+source, stage/custody and worst-case command construction without SSH, SCP,
+sudo, OpenSSL, installed material, lock or summary access; it grants no host
+identity, sudo or lock-freedom claim. The live facade stages one exact
+source-bound collector under the existing generated `/tmp/.es-tls-status-`
+namespace (one `0700` directory, one `0600` regular leaf), with one stage SSH,
+one SCP and one interactive SSH at most. It retains the existing bounded
+single-quoted remote command, real operator stdin, visible foreground sudo,
+source digest and measured stage device/inode. Root verifies both custody
+identity and exact staged bytes, removes only its proved stage before loading
+those bytes from memory, and uses a distinct diagnostic bootstrap marker and
+synthetic non-`__main__` module name. It never fabricates the status marker or
+emits the existing status failure witness. Failed/unproved stage custody
+leaves residue; there is no nonroot cleanup, transcript capture, password
+relay, NOPASSWD change, automatic retry, or status package copy-back.
+
+The diagnostic parent enters only through that verified bootstrap. It opens
+the existing root-owned protected status directory and acquires only the
+pre-existing `.es-governance-tls-status.lock`: initial no-follow root:root
+regular single-link `0600` size-zero metadata, then
+`O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK` without creation, truncate, write,
+chmod, chown, or fsync. It checks the opened object's extended access and
+full descriptor/path identity before and after nonblocking exclusive flock.
+Missing, unsafe, changed, unproved or unavailable lock refuses before any
+material read. A flock error is lock-acquisition-unproved, not proof of
+contention. The lock is held through the unchanged one-time behavioral
+process capability preflight, a fresh production prior-summary snapshot
+requiring `ABSENT`, fixed topology/input observations and all child/input
+closeout. The snapshot may read a present canonical leaf to refuse it, but
+never alters it. The lock closes once after all child/input obligations;
+the status directory receives its independent close attempt afterward.
+Close failure is sticky and suppresses diagnostic output; no descriptor
+rescue, forced unlock, broad scan or blanket parent timeout is permitted.
+The shared protected-summary reader records a failed canonical-leaf close at
+its one close boundary by setting the existing disposition-unproved marker
+before re-raising the same exception, including close-raised interruptions
+and `FileNotFoundError`. This is the explicit close-bookkeeping exception to
+the original 53-function freeze; the other 52 original functions remain
+unchanged. Successful close does not clear earlier uncertainty. Settled
+read/metadata failure with successful close may still produce the existing
+`incomplete_other` advisory after all other closeout succeeds; the diagnostic
+does not suppress every prior-reader error or change status-reader acceptance.
+
+The new diagnostic entrypoint follows existing four certificate, two key-pair
+and two verification roles in source order, reusing exact fixed input,
+selected-anchor, argv/environment, process/child/group and parser behavior.
+It counts at most eighteen **attempted fixed OpenSSL calls**, including an
+attempt that fails before spawn, but excluding the capability child. An
+invocation-local context records at most one first direct grammar rejection,
+then terminates native observations. The diagnostic graph does not call the
+status `collect`, generation creation, `main`, `encode_document` or `publish`;
+the unchanged capability child's required `os._exit` is allowed. Even an
+all-success parser traversal creates no status generation, summary temp or
+canonical replacement. Typed missing/malformed/expired input and dependency
+skips remain distinct from accepted TLS health.
+
+Only after verified stage/source, settled child/descriptor/lock/status closeout
+and strict private validation may root make one best-effort nonblocking
+output-only `/dev/tty` write: `ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ` plus one closed
+ASCII JSON body and LF, at most 2048 bytes. The body has one of
+`first_grammar_rejection`, `no_grammar_rejection_reached`, or
+`incomplete_other`, a verified source digest and bounded attempted-call count.
+Role/operation/site/predicate, ordinal, exit class, stream structural facts
+and closed verification token occur only for a first rejection. Exact types,
+outcome/nullability, ordinal equality, role/site/operation/predicate/exit
+coupling and stream count/flag consistency are enforced in code. A specific
+`verify_success_stderr_nonempty` predicate requires the entire fixed ASCII
+`/dev/stdin: OK` plus LF stdout shape: 15 bytes, one line, nonempty, valid
+UTF-8, final LF, no CR and no NUL. The distinct
+`verify_success_stdout_not_exact` predicate retains feasible opaque shapes,
+including the same counts and flags; shape does not authenticate text.
+Private `schema_version` and `scope` must have exact string types before
+literal comparison, so equality-overloaded subclasses cannot pass. A specific
+verification token requires exactly one complete supported LF-terminated
+error-line occurrence wholly within one original stdout or stderr stream;
+split fragments, repeated lines and multiple recognized lines remain
+`other`. The private validator checks necessary LF/non-LF capacity. A specific
+token reserves one of its two admitted ASCII literal lengths including LF in
+one original stream; every other LF consumes a byte, any unterminated tail is
+nonempty, and CR, NUL and invalid UTF-8 evidence each needs a distinct
+non-LF byte outside the literal. If that literal is the only complete line
+and there is no tail, its stream has exactly one admitted length and no
+nonliteral flag or residual byte. These necessary shape checks do not claim
+that counts authenticate native contents. A private
+JSON Schema is reference/test data, not a runtime package or protected status
+schema. No raw native stream, subject/SAN/serial, PEM/DER/key bytes, material
+digest, path/PID, provider text or exception string is emitted. Unknown or
+context-invalid grammar stays `other` or is refused. The optional line is
+advisory; short/blocked/missing output, transport exit or `--verify-only`
+cannot establish a usable measurement. A completed diagnostic can return
+acknowledgment exit zero; incomplete/refusal uses nonzero with remote phase
+uncertain. No follow-on scan, repair, status retry, IM/MA/CP authority or
+service action follows.
+
 The P0u implementation/self-audit/merge-readiness slice may add exactly one
 bounded Remote Alpha host-local operator healthcheck client TLS helper pair and
 exactly two Mac-side recovery-session routes:

@@ -3591,6 +3591,111 @@ current status, or renewal/rollback authority. Status validation is static
 and fake only. No live SSH, sudo, host config/certificate/key read, service,
 Docker, Nomad, IM, CP, P0t package, or host-preparation effect belongs here.
 
+### P0t First-Rejection OpenSSL Grammar Diagnostic
+
+`Bounded slice rule` inside the P0s/P0t reopened seam: the fixed
+`recovery-session es-governance-tls-grammar-diagnostic` nonpublishing route is separate from
+the two status routes above. It is execution-governance only and records a
+newly observed first rejection at one of the existing ten direct
+`unexpected_openssl_grammar` guards. It does not reconstruct the consumed
+attempt, publish P0t status, prove TLS health/readiness, or grant renewal or
+service restoration. Retire or explicitly re-justify this route after the
+installed-response issue is resolved and required status observation can
+complete. The facade remains a Temporary compatibility edge.
+
+The diagnostic route has only the existing validated `--ssh-target` and
+visible `--interactive-tty` live operands, plus contact-free `--verify-only`.
+Verify-only checks its single fixed local collector source and worst-case
+source-controlled command/custody construction with zero transport, sudo,
+native OpenSSL or host-material dispatch. Live use retains real terminal stdin
+and visible foreground sudo; no cached sudo/NOPASSWD requirement, password
+relay, TTY capture, weakened SSH policy or arbitrary scope/path/argv/entrypoint
+is introduced. At most one stage SSH, one source SCP and one interactive SSH
+are dispatched; the fixed command stays at most 32768 bytes. The exact
+`/tmp/.es-tls-status-[0-9a-f]{32}` one-file stage, measured device/inode,
+source digest, no-follow type-first checks and identity-safe root-only disposal
+remain in force. An unproved or substituted stage is retained as residue, not
+executed or broadly cleaned. Root loads only verified bytes already in memory
+under a distinct diagnostic marker and non-`__main__` synthetic module name;
+the old status marker and `ES_TLS_STATUS_FAILURE_V1` emitter are not installed
+for this branch. A source/custody/load uncertainty has no detailed result.
+
+The diagnostic parent calls only `open_status_dir`, new
+`open_existing_scope_lock`, `validate_process_capability`, the production
+`preexisting_generation` reader, then `diagnose_first_rejection` if the fresh
+snapshot is `ABSENT`. The new lock adapter requires an initially no-follow
+root:root regular single-link `0600` size-zero existing lock, opens only its
+fixed name through the verified status descriptor with
+`O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, checks governed extended access
+and full descriptor/path identity before and after `flock(LOCK_EX|LOCK_NB)`,
+and never creates, truncates, writes, chmods, chowns, fsyncs, unlinks or
+explicitly unlocks it. A missing/unsafe/replaced/held/unproved lock fails
+before material work; flock error does not prove contention. Ownership starts
+as soon as open succeeds. Every acquired descriptor gets at most one explicit
+close attempt; a failed lock close remains sticky while the independently
+owned status descriptor is still closed. Child/member/selected-anchor/input
+obligations settle before lock release, including existing unresolved owner
+holds; no blanket timeout or double-close rescue is added. The prior reader
+may read present canonical evidence to refuse it; no canonical, lock or
+summary namespace change is made by the diagnostic.
+The shared protected-summary reader's one canonical-leaf close attempt marks
+disposition unproved and re-raises the same close failure, including
+`FileNotFoundError` and interruptions. This is the sole explicit exception to
+the original 53-function freeze: its close bookkeeping changes, while the
+other 52 original functions remain exact. A successful close never clears an
+earlier unproved marker. A settled prior read/metadata failure with successful
+close retains its existing `incomplete_other` path after independent lock and
+status closeout; the diagnostic does not blanket-suppress prior-reader errors.
+
+The finite traversal reuses `collect_topology` (all four fixed config paths),
+then four cert roles, two key-pair roles and two verify roles in existing
+execution-governance order. It keeps the exact fixed input snapshots,
+OpenSSL argv/environment, selected CA, strict parser predicates, typed
+missing/malformed/dependency results and one behavior-based capability child.
+Only optional invocation-local context at `cert_metadata`, `cert_role`,
+`key_pair` and `verify_chain` observes a returned native tuple after an
+unchanged direct guard rejects. At most eighteen attempted fixed calls are
+counted, including a pre-spawn attempt and excluding capability children;
+first rejection stops later native calls. The all-success graph never reaches
+status `collect`, generation, `main`, `encode_document`, `publish`, summary
+temp, canonical replacement or publisher `os._exit(0)`. The unchanged
+capability child's `os._exit(child_code)` remains required.
+
+After proved source/stage and all child, input, lock and status closeout, root
+alone may write one strict ASCII terminal line of at most 2048 bytes including
+LF, prefixed `ES_TLS_GRAMMAR_DIAGNOSTIC_V1 `. The closed body includes source
+digest, fixed scope, one of `first_grammar_rejection`,
+`no_grammar_rejection_reached`, `incomplete_other`, 0–18 attempted fixed-call
+count and a coupled first-rejection shape only for that outcome. Its ten site
+IDs, seven operation IDs, role/predicate coupling, stream byte/line/UTF-8/LF/
+CR/NUL flags, closed exit class and closed verify token are checked with
+standard-library code. Recognized verify lines are counted in each original
+native stream, requiring exactly one complete LF-terminated occurrence;
+cross-stream fragments, repeated identical lines and multiple recognized
+lines yield `other`. The formatter rejects impossible LF/non-LF byte
+capacity. A specific token must fit one of its two admitted ASCII literal
+lengths including LF in one original stream after all other LF bytes are
+charged. Any unterminated tail is nonempty, and distinct CR, NUL and invalid
+UTF-8 evidence occupies non-LF bytes outside that literal. A sole complete
+line without a tail has exactly an admitted literal length and no nonliteral
+flag or residual byte. These necessary checks do not reconstruct or
+authenticate native bytes from counts.
+For `verify_success_stderr_nonempty`, the private formatter requires the full
+shape of exact ASCII stdout `/dev/stdin: OK` plus LF: 15 bytes, one line,
+nonempty, valid UTF-8, final LF, no CR and no NUL. It does not impose that
+shape on `verify_success_stdout_not_exact`, because different bytes can have
+identical shape. Private `schema_version` and `scope` have exact string types
+before literal comparison; equality-overloaded subclasses are refused.
+JSON Schema annotations alone do not enforce these relations. Raw native stdout/stderr, PEM/DER, key/config contents and digests,
+subjects/SANs/serials/fingerprints, paths/PIDs, provider text and exceptions
+never enter the advisory. Unknown/context-invalid observations map only to a
+closed `other` token or refusal, never new parser acceptance. No terminal
+retry, tee, file fallback or inherited stream-mode change is allowed. A
+completed diagnostic exit acknowledges only diagnostic completion; an
+incomplete/transport failure leaves remote phase uncertain. Neither line nor
+exit is a protected record, status acceptance, live identity proof, retry
+permission, or restoration authority.
+
 ### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session
 
 `Bounded slice rule`: P0u implements exactly one bounded Remote Alpha

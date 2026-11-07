@@ -100,6 +100,38 @@ before exit. The optional terminal line and the facade's remote-phase-unproved
 failure acknowledgment are advisory and cannot grant reader acceptance,
 renewal, restoration, retry or any execution authority.
 
+`Bounded slice rule` P0t grammar diagnostic and `Temporary compatibility edge`
+`recovery-session es-governance-tls-grammar-diagnostic` facade for
+execution-governance: the private
+`testdata/remote_alpha_es_tls_status/grammar_diagnostic_schema.json` is
+reference/test data for one nonpublishing, source-bound, first-rejection
+terminal advisory. It is not a protected P0t status schema or a runtime-loaded
+operator schema. The diagnostic may stage one verified public collector source,
+acquire the existing same-scope lock, and read the prior canonical leaf, but
+it creates no lock leaf, status generation, summary temp, canonical replacement,
+backup, host material or repository `.out` artifact. Successful and typed-fail
+traversals are not TLS health or accepted status results. The sole terminal
+line is closed ASCII of at most 2048 bytes, after proved custody and resource
+closeout; it contains only source digest, fixed role/operation/site/predicate,
+attempt ordinal, bounded stream structural flags/counts and closed verify
+tokens. No raw stdout/stderr, installed paths, subjects/SANs/serials,
+fingerprints, PEM/DER, key/config bytes or material-derived hashes, provider
+errors, exceptions, PIDs, TTY transcript or secret-like data are retained in
+Mac/chat, repository, temp file or diagnostic output. `other` remains a
+bounded evidence gap, never an accepted grammar. The line and route exit are
+advisory, not renewal, retry, readiness, IM/MA/CP or restoration authority.
+The source counts complete LF-terminated recognized lines separately in the
+original stdout and stderr streams; zero, split, repeated or multiple
+recognized occurrences cannot become a specific token. Its private formatter
+refuses impossible byte/line/CR/NUL/UTF-8 capacity claims, including a
+specific token unsupported by either original stream after reserving one of
+the two admitted ASCII literal lengths and its LF, charging other LF bytes,
+and assigning any nonempty tail and distinct CR/NUL/invalid-UTF-8 evidence
+outside the literal. A sole line has no nonliteral residual capacity. These
+structural checks do not export or authenticate native content.
+The temporary facade route must be retired or re-justified when the response
+issue is resolved and the required protected status observation can complete.
+
 Legacy `/var/tmp/execution-substrate-remote-alpha/*tls*summary*.json`, any
 old `*-renew-summary.json`, blocked-candidate protected summaries, and old
 renewal backup directories are historical evidence only. They are not current
