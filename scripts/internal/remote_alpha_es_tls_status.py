@@ -1518,6 +1518,251 @@ def _diagnostic_predicate(site: str, operation: str, code: int, output: bytes, e
     raise Incomplete("diagnostic_projection_unproved")
 
 
+# Private v2 projection of the first already-returned rejected verify tuple.
+# The status parser and its native-response alternatives are deliberately separate.
+_VERIFY_PROJECTION_KNOWN = (
+    (b"error 20 at 0 depth lookup:unable to get local issuer certificate\n", 20, 0,
+     "issuer_unavailable", ("verify_client", "verify_server"), "20_0_issuer_unavailable"),
+    (b"error 10 at 0 depth lookup:certificate has expired\n", 10, 0,
+     "expired", ("verify_client", "verify_server"), "10_0_expired"),
+    (b"error 10 at 1 depth lookup:certificate has expired\n", 10, 1,
+     "expired", ("verify_client", "verify_server"), "10_1_expired"),
+    (b"error 9 at 0 depth lookup:certificate is not yet valid\n", 9, 0,
+     "not_yet_valid", ("verify_client", "verify_server"), "9_0_not_yet_valid"),
+    (b"error 26 at 0 depth lookup:unsuitable certificate purpose\n", 26, 0,
+     "purpose_unsuitable", ("verify_client",), "26_0_purpose_unsuitable"),
+    (b"error 62 at 0 depth lookup:hostname mismatch\n", 62, 0,
+     "hostname_mismatch", ("verify_server",), "62_0_hostname_mismatch"),
+)
+_VERIFY_PROJECTION_KINDS = ("known", "context_invalid_unclassified", "unknown_numeric",
+                            "unclassified", "terminal", "opaque")
+_VERIFY_PROJECTION_TERMINAL = b"error /dev/stdin: verification failed\n"
+_VERIFY_PROJECTION_NUMERIC = re.compile(
+    rb"error ([1-9][0-9]{0,2}) at (0|[1-9]) depth lookup: ([!-~][ -~]{0,127})\n")
+
+
+def _verify_projection_line(line: bytes, operation: str) -> list[object]:
+    if line == _VERIFY_PROJECTION_TERMINAL:
+        return ["terminal"]
+    for literal, code, depth, reason, contexts, _token in _VERIFY_PROJECTION_KNOWN:
+        if line == literal or line == literal.replace(b"lookup:", b"lookup: ", 1):
+            return (["known", code, depth, reason] if operation in contexts
+                    else ["context_invalid_unclassified"])
+    if line.startswith(b"error "):
+        numeric = _VERIFY_PROJECTION_NUMERIC.fullmatch(line)
+        if numeric is not None:
+            return ["unknown_numeric", int(numeric[1]), int(numeric[2])]
+        return ["unclassified"]
+    return ["opaque"]
+
+
+def _diagnostic_verify_projection(output: bytes, error: bytes, operation: str) -> dict[str, object]:
+    if (type(output) is not bytes or type(error) is not bytes or
+            len(output) > MAX_OUTPUT or len(error) > MAX_ERROR or
+            operation not in ("verify_client", "verify_server")):
+        raise Incomplete("diagnostic_projection_unproved")
+    streams: dict[str, dict[str, object]] = {}
+    total = 0
+    for name, raw in (("stdout", output), ("stderr", error)):
+        counts = {kind: 0 for kind in _VERIFY_PROJECTION_KINDS}
+        sequence: list[list[object]] = []
+        start = 0
+        while True:
+            end = raw.find(b"\n", start)
+            if end < 0:
+                break
+            record = _verify_projection_line(raw[start:end + 1], operation)
+            counts[record[0]] += 1
+            total += 1
+            if total <= 8:
+                sequence.append(record)
+            start = end + 1
+        tail = raw[start:]
+        streams[name] = {
+            "complete_lines": sum(counts.values()),
+            "tail_kind": ("error_like_unclassified" if tail.startswith(b"error ") else "opaque") if tail else None,
+            "counts": counts,
+            "sequence": sequence,
+        }
+    capped = total > 8
+    if capped:
+        streams["stdout"]["sequence"] = []
+        streams["stderr"]["sequence"] = []
+    known = sum(streams[name]["counts"]["known"] for name in ("stdout", "stderr"))
+    invalid = sum(streams[name]["counts"]["context_invalid_unclassified"] for name in ("stdout", "stderr"))
+    return {"cap_reached": capped, "sequence_complete": not capped,
+            "known_count": known, "recognized_literal_count": known + invalid,
+            "streams": streams}
+
+
+def _verify_projection_record_bounds(record: list[object], operation: str) -> tuple[int, int] | None:
+    if type(record) is not list or not record or type(record[0]) is not str:
+        return None
+    kind = record[0]
+    if kind == "known":
+        if (len(record) != 4 or type(record[1]) is not int or type(record[2]) is not int or
+                type(record[3]) is not str):
+            return None
+        for literal, code, depth, reason, contexts, _token in _VERIFY_PROJECTION_KNOWN:
+            if (record[1], record[2], record[3]) == (code, depth, reason) and operation in contexts:
+                return len(literal), len(literal) + 1
+        return None
+    if kind == "unknown_numeric":
+        if (len(record) != 3 or type(record[1]) is not int or type(record[2]) is not int or
+                not 1 <= record[1] <= 999 or not 0 <= record[2] <= 9):
+            return None
+        minimum = len(f"error {record[1]} at {record[2]} depth lookup: x\n".encode("ascii"))
+        return minimum, minimum + 127
+    if len(record) != 1:
+        return None
+    if kind == "context_invalid_unclassified":
+        sizes = [len(literal) for literal, _code, _depth, _reason, contexts, _token in
+                 _VERIFY_PROJECTION_KNOWN if operation not in contexts]
+        return min(sizes), max(sizes) + 1
+    if kind == "terminal":
+        return len(_VERIFY_PROJECTION_TERMINAL), len(_VERIFY_PROJECTION_TERMINAL)
+    if kind == "unclassified":
+        return len(b"error \n"), MAX_OUTPUT
+    if kind == "opaque":
+        return 1, MAX_OUTPUT
+    return None
+
+
+def _verify_projection_stream_valid(item: object, old: dict[str, object],
+                                    operation: str, capped: bool,
+                                    forced_token: str | None = None) -> bool:
+    if (type(item) is not dict or any(type(key) is not str for key in item) or
+            set(item) != {"complete_lines", "tail_kind", "counts", "sequence"}):
+        return False
+    count, tail, counts, sequence = (item[key] for key in
+                                      ("complete_lines", "tail_kind", "counts", "sequence"))
+    if (type(count) is not int or not 0 <= count <= old["bytes"] or
+            (tail is not None and type(tail) is not str) or
+            tail not in (None, "error_like_unclassified", "opaque") or
+            type(counts) is not dict or any(type(key) is not str for key in counts) or
+            set(counts) != set(_VERIFY_PROJECTION_KINDS) or
+            any(type(value) is not int or value < 0 or value > count for value in counts.values()) or
+            type(sequence) is not list or sum(counts.values()) != count or
+            old["lines"] != count + int(tail is not None) or
+            old["empty"] is not (count == 0 and tail is None) or
+            old["final_lf"] is not (count > 0 and tail is None)):
+        return False
+    if (capped and sequence) or (not capped and len(sequence) != count):
+        return False
+    minimum = 0
+    maximum = 0
+    flexible = False
+    opaque_tail = tail == "opaque"
+    if not capped:
+        observed = {kind: 0 for kind in _VERIFY_PROJECTION_KINDS}
+        for record in sequence:
+            bounds = _verify_projection_record_bounds(record, operation)
+            if bounds is None:
+                return False
+            kind = record[0]
+            observed[kind] += 1
+            minimum += bounds[0]
+            maximum += bounds[1]
+            flexible |= kind in ("unclassified", "opaque")
+        if observed != counts:
+            return False
+    else:
+        valid_known = [len(literal) for literal, _c, _d, _r, contexts, _t in
+                       _VERIFY_PROJECTION_KNOWN if operation in contexts]
+        invalid_known = [len(literal) for literal, _c, _d, _r, contexts, _t in
+                         _VERIFY_PROJECTION_KNOWN if operation not in contexts]
+        if forced_token is not None:
+            valid_known = [len(literal) for literal, _c, _d, _r, _contexts, token in
+                           _VERIFY_PROJECTION_KNOWN if token == forced_token]
+            if counts["known"] != 1 or not valid_known:
+                return False
+        for kind, (low, high) in (
+                ("known", (min(valid_known), max(valid_known) + 1)),
+                ("context_invalid_unclassified", (min(invalid_known), max(invalid_known) + 1)),
+                ("unknown_numeric", (len(b"error 1 at 0 depth lookup: x\n"),
+                                     len(b"error 999 at 9 depth lookup: " + b"x" * 128 + b"\n"))),
+                ("unclassified", (len(b"error \n"), MAX_OUTPUT)),
+                ("terminal", (len(_VERIFY_PROJECTION_TERMINAL), len(_VERIFY_PROJECTION_TERMINAL))),
+                ("opaque", (1, MAX_OUTPUT))):
+            minimum += counts[kind] * low
+            maximum += counts[kind] * high
+        flexible = bool(counts["unclassified"] or counts["opaque"])
+    if tail == "error_like_unclassified":
+        minimum += len(b"error ")
+        flexible = True
+    elif opaque_tail:
+        minimum += 1
+        flexible = True
+    if old["bytes"] < minimum or (not flexible and old["bytes"] > maximum):
+        return False
+    required = int(old["has_cr"]) + int(old["has_nul"]) + int(not old["utf8"])
+    if required and not flexible:
+        return False
+    return required <= old["bytes"] - minimum + int(opaque_tail)
+
+
+def _diagnostic_verify_projection_valid(projection: object, shape: dict[str, object],
+                                        operation: str, predicate: str) -> bool:
+    if (type(projection) is not dict or any(type(key) is not str for key in projection) or
+            set(projection) != {"cap_reached", "sequence_complete", "known_count",
+                                "recognized_literal_count", "streams"}):
+        return False
+    capped, complete = projection["cap_reached"], projection["sequence_complete"]
+    known, recognized = projection["known_count"], projection["recognized_literal_count"]
+    streams = projection["streams"]
+    if (type(capped) is not bool or type(complete) is not bool or complete is capped or
+            type(known) is not int or type(recognized) is not int or
+            known < 0 or recognized < 0 or
+            type(streams) is not dict or any(type(key) is not str for key in streams) or
+            set(streams) != {"stdout", "stderr"}):
+        return False
+    for name in ("stdout", "stderr"):
+        if not _verify_projection_stream_valid(streams[name], shape[name], operation, capped):
+            return False
+    total = sum(streams[name]["complete_lines"] for name in ("stdout", "stderr"))
+    known_sum = sum(streams[name]["counts"]["known"] for name in ("stdout", "stderr"))
+    invalid_sum = sum(streams[name]["counts"]["context_invalid_unclassified"] for name in ("stdout", "stderr"))
+    if (capped is not (total > 8) or known != known_sum or recognized != known_sum + invalid_sum or
+            recognized > total):
+        return False
+    exit_two = shape["exit_class"] == "two"
+    placement = not shape["stdout"]["empty"] and not shape["stderr"]["empty"]
+    token = shape["verify_token"]
+    if not exit_two:
+        return predicate == "verify_failure_exit_not_two" and token == "other"
+    if (placement and predicate != "verify_failure_stream_placement") or (
+            not placement and predicate == "verify_failure_stream_placement"):
+        return False
+    if token not in ("none", "other"):
+        if recognized != 1 or known != 1 or (
+                not placement and predicate != "verify_failure_whole_alternative_unadmitted"):
+            return False
+        mapped = next(((_code, _depth, _reason) for _literal, _code, _depth, _reason,
+                       _contexts, candidate in _VERIFY_PROJECTION_KNOWN if candidate == token), None)
+        if mapped is None:
+            return False
+        if not capped:
+            records = [record for name in ("stdout", "stderr") for record in streams[name]["sequence"]
+                       if record[0] == "known"]
+            return len(records) == 1 and tuple(records[0][1:]) == mapped
+        return any(streams[name]["counts"]["known"] == 1 and
+                   _verify_projection_stream_valid(streams[name], shape[name], operation, True, token)
+                   for name in ("stdout", "stderr"))
+    if token != "other":
+        return False
+    if recognized == 1 and known == 1:
+        return False
+    # Placement leaves a single wrong-context producer token specific; changing
+    # only that token to other cannot make the same counts admissible.
+    if placement and recognized == 1 and known == 0:
+        return False
+    context = recognized == 1 and known == 0 and not placement
+    if context:
+        return predicate == "verify_failure_context_coupling"
+    return predicate == ("verify_failure_stream_placement" if placement else
+                         "verify_failure_whole_alternative_unadmitted")
+
+
 class DiagnosticContext:
     def __init__(self) -> None:
         self.fixed_call_attempts = 0
@@ -1556,6 +1801,9 @@ class DiagnosticContext:
                                "stderr": _diagnostic_stream_shape(error, MAX_ERROR),
                                "verify_token": token},
         }
+        if site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED":
+            self.first_rejection["verify_projection"] = _diagnostic_verify_projection(
+                output, error, operation)
 
 
 def cert_metadata(path: str, observed_at: dt.datetime | None = None,
@@ -2244,7 +2492,7 @@ def diagnostic_main() -> dict[str, object] | None:
     LATCHED_SIGNAL = None
     diagnostic = DiagnosticContext()
     if interrupted[0]:
-        return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v1",
+        return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v2",
                 "scope": "execution-governance", "source_sha256": digest,
                 "outcome": "incomplete_other", "fixed_call_attempts": 0,
                 "first_rejection": None, "other_failure": "interrupted"}
@@ -2307,7 +2555,7 @@ def diagnostic_main() -> dict[str, object] | None:
         return None
     if LATCHED_SIGNAL is not None or interrupted[0]:
         outcome, other_failure = "incomplete_other", "interrupted"
-    return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v1",
+    return {"schema_version": "es-p0t-openssl-grammar-diagnostic/v2",
             "scope": "execution-governance", "source_sha256": digest,
             "outcome": outcome, "fixed_call_attempts": diagnostic.fixed_call_attempts,
             "first_rejection": diagnostic.first_rejection if outcome == "first_grammar_rejection" else None,
@@ -2339,12 +2587,13 @@ def _diagnostic_shape_valid(stream: object, limit: int) -> bool:
 
 def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None:
     """Strict private result gate; the JSON Schema file is not loaded at runtime."""
-    if (type(result) is not dict or set(result) != {"schema_version", "scope", "source_sha256",
+    if (type(result) is not dict or any(type(key) is not str for key in result) or
+            set(result) != {"schema_version", "scope", "source_sha256",
             "outcome", "fixed_call_attempts", "first_rejection", "other_failure"} or
             type(verified_digest) is not str or HEX64.fullmatch(verified_digest) is None or
             type(result["schema_version"]) is not str or
             type(result["scope"]) is not str or
-            result["schema_version"] != "es-p0t-openssl-grammar-diagnostic/v1" or
+            result["schema_version"] != "es-p0t-openssl-grammar-diagnostic/v2" or
             result["scope"] != "execution-governance" or
             type(result["source_sha256"]) is not str or result["source_sha256"] != verified_digest):
         return None
@@ -2356,8 +2605,10 @@ def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None
             "first_grammar_rejection", "no_grammar_rejection_reached", "incomplete_other"):
         return None
     if outcome == "first_grammar_rejection":
-        if (other is not None or type(first) is not dict or set(first) != {
-                "role", "operation", "site", "predicate", "call_ordinal", "response_shape"}):
+        if (other is not None or type(first) is not dict or
+                any(type(key) is not str for key in first) or
+                set(first) not in ({"role", "operation", "site", "predicate", "call_ordinal", "response_shape"},
+                                   {"role", "operation", "site", "predicate", "call_ordinal", "response_shape", "verify_projection"})):
             return None
         role, operation, site, predicate = (first[key] for key in
                                             ("role", "operation", "site", "predicate"))
@@ -2368,7 +2619,11 @@ def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None
                 operation not in DIAGNOSTIC_SITE_OPERATIONS.get(site, ()) or
                 predicate not in DIAGNOSTIC_SITE_PREDICATES.get(site, ()) or
                 type(ordinal) is not int or ordinal != attempts or ordinal < 1 or
-                type(shape) is not dict or set(shape) != {"exit_class", "stdout", "stderr", "verify_token"}):
+                type(shape) is not dict or any(type(key) is not str for key in shape) or
+                set(shape) != {"exit_class", "stdout", "stderr", "verify_token"} or
+                (site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED") is not ("verify_projection" in first) or
+                any(type(shape[name]) is not dict or
+                    any(type(key) is not str for key in shape[name]) for name in ("stdout", "stderr"))):
             return None
         exit_class, token = shape["exit_class"], shape["verify_token"]
         if (type(exit_class) is not str or exit_class not in ("zero", "one", "two", "other_nonzero") or
@@ -2492,6 +2747,9 @@ def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None
                         possible |= residual_non_lf >= max(outside_flags, int(not stream["final_lf"]))
             if not possible:
                 return None
+        if site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED" and not _diagnostic_verify_projection_valid(
+                first["verify_projection"], shape, operation, predicate):
+            return None
     elif outcome == "no_grammar_rejection_reached":
         if first is not None or other is not None:
             return None
@@ -2502,7 +2760,7 @@ def format_diagnostic_line(result: object, verified_digest: str) -> bytes | None
                           allow_nan=False).encode("ascii")
     except (TypeError, ValueError, UnicodeError):
         return None
-    line = b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 " + body + b"\n"
+    line = b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 " + body + b"\n"
     if len(line) > 2048 or b"\r" in line or line.count(b"\n") != 1:
         return None
     return line

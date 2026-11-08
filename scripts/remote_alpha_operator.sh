@@ -2954,7 +2954,7 @@ if diagnostic_mode:
         result = entry()
         line = formatter(result, digest)
         if (type(result) is not dict or type(line) is not bytes or
-                not line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ") or
+                not line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ") or
                 not line.endswith(b"\n") or line.count(b"\n") != 1 or
                 len(line) > 2048 or not line.isascii()):
             raise SystemExit(1)

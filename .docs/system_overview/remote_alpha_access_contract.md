@@ -273,6 +273,18 @@ original native stream, not whole-response status acceptance or access proof;
 split or repeated lines remain `other`. The private result validator reserves
 the literal and its LF in that one stream and places any CR, NUL or invalid
 UTF-8 evidence outside it; structural capacity is not access proof.
+The active private advisory is now versioned v2, including all three outcomes;
+the consumed v1 line remains historical. Only the already returned first
+rejected verify tuple gains stream-separated ordered/count projection. Six
+closed line categories distinguish context-valid known, content-free
+context-invalid, bounded numeric-unknown, unclassified error-like, terminal,
+and opaque content. Counts retain repeats and tails separately. A global
+eight-complete-line cap suppresses both sequences together but retains all
+counts and explicit incomplete-sequence flags. The formatter couples these
+facts to the legacy token and predicate priority and checks byte/flag
+capacity within the same 2048-byte terminal limit. It cannot expose native
+text or become whole-response status acceptance, a host access proof, or a
+reason for automatic retry.
 The shared prior-summary reader marks a failed canonical-leaf close as
 disposition unproved and re-raises the same exception, including a
 close-raised `FileNotFoundError` or interruption; independent lock and status

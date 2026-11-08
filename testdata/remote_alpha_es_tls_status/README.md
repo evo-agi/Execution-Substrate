@@ -34,3 +34,16 @@ failures and the six coupled verification alternatives documented in
 `PLANS.md` and `.docs/system_overview/remote_supported_host_alpha.md`; other
 responses remain incomplete. It is not production material, a status result,
 P0t qualification, or authority for target contact and service action.
+
+`grammar_diagnostic_v2_schema.json` is the current private reference/test
+contract for the nonpublishing first-rejection terminal advisory. It is not
+runtime-loaded or a protected status schema. The prior
+`grammar_diagnostic_schema.json` remains byte-identical historical v1 data.
+The v2 body adds `verify_projection` only at the first rejected verification
+failure. It retains ordered complete lines in separate streams through eight
+lines globally and otherwise reports complete counts, tail kinds and explicit
+cap flags. Closed known and numeric-unknown records never export raw reasons,
+subjects or installed material. The schema annotations describe semantic
+couplings enforced by the source validator; JSON Schema alone does not prove
+native text or status acceptance. The consumed v1 advisory cannot be
+reinterpreted as v2 without its unavailable native response.

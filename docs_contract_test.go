@@ -8714,7 +8714,8 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 	assertContainsAll(t, "plan diagnostic effect boundary", plans,
 		"--verify-only", "zero", "at most eighteen", "first_grammar_rejection",
 		"no_grammar_rejection_reached", "incomplete_other",
-		"ES_TLS_GRAMMAR_DIAGNOSTIC_V1", "2048", "no status generation")
+		"ES_TLS_GRAMMAR_DIAGNOSTIC_V2", "2048", "no status generation",
+		"recognized_literal_count", "cap_reached=true", "sequence_complete=false")
 	assertContainsAll(t, "host diagnostic custody and ownership", remote,
 		"O_RDWR|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK", "size-zero", "flock(LOCK_EX|LOCK_NB)",
 		"one explicit", "status descriptor", "child", "no canonical", "os._exit(child_code)")
@@ -8722,7 +8723,7 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 		"visible", "sudo", "SUDO", "zero remote", "no new account-wide sudo grant",
 		"remote phase is unproved", "no helper ran")
 	assertContainsAll(t, "artifact private schema boundary", artifact,
-		"grammar_diagnostic_schema.json", "reference/test data", "not a protected P0t status schema",
+		"grammar_diagnostic_v2_schema.json", "reference/test data", "not a protected P0t status schema",
 		"No raw stdout/stderr", "2048", "other", "material-derived hashes")
 	assertContainsAll(t, "plan diagnostic projection precision", plans,
 		"exactly one complete supported LF-terminated", "original stdout or stderr stream",
@@ -8766,6 +8767,22 @@ func TestRemoteAlphaP0tGrammarDiagnosticDocsContract(t *testing.T) {
 		"schema_version and scope must be built-in strings", "verify_success_stderr_nonempty implies",
 		"bytes=15", "lines=1", "empty=false", "utf8=true", "final_lf=true",
 		"has_cr=false", "has_nul=false", "shape does not authenticate native text")
+	v2 := mustRead(t, "testdata/remote_alpha_es_tls_status/grammar_diagnostic_v2_schema.json")
+	assertContainsAll(t, "current private diagnostic schema", v2,
+		"es-p0t-openssl-grammar-diagnostic/v2", "verify_projection",
+		"context_invalid_unclassified", "recognized_literal_count", "cap_reached",
+		"sequence_complete", "unknown_numeric", "terminal", "opaque")
+	assertContainsAll(t, "plan context-placement refusal", plans,
+		"both original streams nonempty", "single context-invalid literal",
+		"Replacing that token with `other` is also refused", "global sequence cap")
+	assertContainsAll(t, "host context-placement refusal", remote,
+		"one context-invalid literal", "placement retains priority",
+		"substituted `other` token also fails", "ordered sequences are absent")
+	assertContainsAll(t, "private schema context-placement refusal", v2,
+		"exactly one recognized context-invalid literal", "zero known literals",
+		"replacing it with other is also refused", "full or capped sequences")
+	assertContainsAll(t, "v2 diagnostic ownership", artifact+remote+access,
+		"historical v1", "2048", "both sequences", "native text")
 }
 
 func TestRemoteAlphaESServiceTLSStatusOnlyContract(t *testing.T) {

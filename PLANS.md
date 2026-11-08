@@ -1728,7 +1728,7 @@ skips remain distinct from accepted TLS health.
 
 Only after verified stage/source, settled child/descriptor/lock/status closeout
 and strict private validation may root make one best-effort nonblocking
-output-only `/dev/tty` write: `ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ` plus one closed
+output-only `/dev/tty` write: `ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ` plus one closed
 ASCII JSON body and LF, at most 2048 bytes. The body has one of
 `first_grammar_rejection`, `no_grammar_rejection_reached`, or
 `incomplete_other`, a verified source digest and bounded attempted-call count.
@@ -1763,6 +1763,41 @@ cannot establish a usable measurement. A completed diagnostic can return
 acknowledgment exit zero; incomplete/refusal uses nonzero with remote phase
 uncertain. No follow-on scan, repair, status retry, IM/MA/CP authority or
 service action follows.
+
+`Bounded slice rule` verification-projection refinement: the current private
+terminal body uses `es-p0t-openssl-grammar-diagnostic/v2` for all three outcomes
+and all first-rejection sites. The consumed v1 advisory and its private schema
+remain immutable historical evidence; neither is parsed as v2 or used for
+protected status acceptance. Exactly at a first
+`VERIFY_FAILURE_ENVELOPE_UNADMITTED` rejection, the source projects the
+already returned stdout and stderr separately without another native call or
+weakened `verify_chain` grammar. Complete LF-terminated lines keep order and
+repetitions. Each receives one of six bounded categories: context-valid
+`known` code/depth/closed reason; content-free
+`context_invalid_unclassified`; bounded `unknown_numeric` code/depth;
+`unclassified` error-like; exact `terminal`; or `opaque`. Unknown numeric
+requires canonical ASCII code 1–999, depth 0–9, exact framing and 1–128
+printable reason bytes, but exposes no reason. Unterminated tails are only
+`error_like_unclassified` or `opaque`; no terminator is invented. Per-stream
+counts include every bounded complete line, and `known_count` plus
+`recognized_literal_count` retain multiplicity. At most eight complete lines
+across both streams retain both ordered sequences; above eight both sequences
+are empty with `cap_reached=true` and `sequence_complete=false`, while all
+counts and tail kinds remain. The v2 gate checks exact types, legacy
+token/predicate priority and identity where available, count and shape
+coupling, classified-byte minimum/maximum capacity and nonliteral room for
+CR/NUL/invalid-UTF-8 flags. These necessary checks do not authenticate native
+text. The line remains ASCII, one LF and at most 2048 bytes including prefix;
+over-limit output is refused without truncation or v1 fallback. The diagnostic
+route and facade retain their retirement or explicit re-justification condition
+after the response issue and required protected status observation can complete.
+
+For exit two with both original streams nonempty, a single context-invalid
+literal cannot form an admissible advisory. Placement keeps predicate priority,
+and the unchanged producer's specific wrong-context token is refused by the
+existing formatter. Replacing that token with `other` is also refused, including
+when the global sequence cap hides order but retains the recognized counts.
+This consistency rule does not change native grammar or predicate selection.
 
 The P0u implementation/self-audit/merge-readiness slice may add exactly one
 bounded Remote Alpha host-local operator healthcheck client TLS helper pair and
