@@ -3663,7 +3663,7 @@ capability child's `os._exit(child_code)` remains required.
 
 After proved source/stage and all child, input, lock and status closeout, root
 alone may write one strict ASCII terminal line of at most 2048 bytes including
-LF, prefixed `ES_TLS_GRAMMAR_DIAGNOSTIC_V1 `. The closed body includes source
+LF, prefixed `ES_TLS_GRAMMAR_DIAGNOSTIC_V2 `. The closed body includes source
 digest, fixed scope, one of `first_grammar_rejection`,
 `no_grammar_rejection_reached`, `incomplete_other`, 0–18 attempted fixed-call
 count and a coupled first-rejection shape only for that outcome. Its ten site
@@ -3695,6 +3695,39 @@ completed diagnostic exit acknowledges only diagnostic completion; an
 incomplete/transport failure leaves remote phase uncertain. Neither line nor
 exit is a protected record, status acceptance, live identity proof, retry
 permission, or restoration authority.
+
+The current private diagnostic identity is
+`es-p0t-openssl-grammar-diagnostic/v2` for every outcome and first-rejection
+site. Its v1 schema and consumed v1 observation remain historical. Only a
+first `VERIFY_FAILURE_ENVELOPE_UNADMITTED` receives `verify_projection` from
+the already returned tuple. The fixed argv, selected anchor, status parser,
+traversal, ownership, closeout and single terminal writer are unchanged.
+Each original stream is split only at LF. Its complete lines retain order and
+repetitions as `known` (closed code/depth/reason in context),
+`context_invalid_unclassified` (no code/reason disclosed),
+`unknown_numeric` (canonical code 1–999 and depth 0–9 only), `unclassified`
+error-like, exact `terminal`, or `opaque` (including subject-like lines).
+Unknown-numeric framing requires a 1–128-byte printable ASCII reason, which
+is never emitted. An unterminated tail is separately `error_like_unclassified`
+or `opaque`. Both streams retain all six kind counts, complete-line counts,
+tail kinds, `known_count` and `recognized_literal_count`. Up to eight complete
+lines globally retain both full sequences; above eight both sequences are
+empty with explicit cap and incompleteness flags while counts still cover all
+bounded bytes. Exact type/field, legacy token and predicate, count/shape,
+classified-byte range and nonliteral CR/NUL/invalid-UTF-8 capacity checks
+refuse contradictions. A specific legacy token requires one recognized,
+context-valid literal; a single context-invalid literal takes the existing
+context predicate only when the higher-priority exit and placement predicates
+do not apply. Capped counts support only derivable relationships. The
+2048-byte single-line bound refuses overlong v2 output without truncation or
+v1 fallback. Structural consistency does not authenticate native text or
+identify the prior five-line failure.
+For exit two with both original streams nonempty, one context-invalid literal
+cannot form an admissible advisory: placement retains priority, the unchanged
+producer's specific wrong-context token fails the existing formatter, and a
+substituted `other` token also fails even above the eight-line sequence cap.
+Counts preserve this contradiction when ordered sequences are absent. No
+native-response alternative or source-side predicate changes.
 
 ### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session
 

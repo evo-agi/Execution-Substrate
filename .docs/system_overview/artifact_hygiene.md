@@ -103,8 +103,8 @@ renewal, restoration, retry or any execution authority.
 `Bounded slice rule` P0t grammar diagnostic and `Temporary compatibility edge`
 `recovery-session es-governance-tls-grammar-diagnostic` facade for
 execution-governance: the private
-`testdata/remote_alpha_es_tls_status/grammar_diagnostic_schema.json` is
-reference/test data for one nonpublishing, source-bound, first-rejection
+`testdata/remote_alpha_es_tls_status/grammar_diagnostic_v2_schema.json` is
+current reference/test data for one nonpublishing, source-bound, first-rejection
 terminal advisory. It is not a protected P0t status schema or a runtime-loaded
 operator schema. The diagnostic may stage one verified public collector source,
 acquire the existing same-scope lock, and read the prior canonical leaf, but
@@ -129,6 +129,21 @@ the two admitted ASCII literal lengths and its LF, charging other LF bytes,
 and assigning any nonempty tail and distinct CR/NUL/invalid-UTF-8 evidence
 outside the literal. A sole line has no nonliteral residual capacity. These
 structural checks do not export or authenticate native content.
+The original `grammar_diagnostic_schema.json` is unchanged historical v1
+reference data. The active `ES_TLS_GRAMMAR_DIAGNOSTIC_V2` line has one closed
+`verify_projection` only at the first rejected verify-failure site. Separate
+stdout/stderr complete-line sequences classify exact known literals,
+content-free context-invalid literals, bounded numeric-unknown code/depth,
+unclassified error-like lines, terminal markers and opaque lines. No raw
+reason, subject or provider text is retained. Unterminated tails receive only
+closed kinds. All six per-stream counts and both global recognized counts
+cover every bounded line, including repeats. Above eight complete lines
+globally, both ordered sequences are omitted with explicit cap/incomplete
+flags but counts remain complete. The private validator enforces exact types,
+token/predicate consistency and classified-byte/flag capacity. An overlong
+2048-byte line is refused without truncation or v1 fallback. These fields are
+advisory evidence only; neither version is a protected status or health
+assertion.
 The temporary facade route must be retired or re-justified when the response
 issue is resolved and the required protected status observation can complete.
 

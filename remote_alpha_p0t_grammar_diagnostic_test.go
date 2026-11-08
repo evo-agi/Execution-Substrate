@@ -71,7 +71,7 @@ def traverse(target=0, bad=None, reader=None):
 
 def closed_line(result):
     line = m.format_diagnostic_line(result, digest)
-    assert line is not None and line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ")
+    assert line is not None and line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ")
     assert line.endswith(b"\n") and line.count(b"\n") == 1 and line.isascii()
     assert len(line) <= 2048
     return line
@@ -107,6 +107,16 @@ func TestRemoteAlphaP0tGrammarDiagnosticSourceAndPublicationBoundary(t *testing.
 	}
 	if _, ok := schema["x-semantic-constraints"]; !ok {
 		t.Fatal("reference schema lost its explicit semantic annotations")
+	}
+	v2Path := filepath.Join(executionSubstrateRepoRoot, "testdata", "remote_alpha_es_tls_status",
+		"grammar_diagnostic_v2_schema.json")
+	var v2 map[string]any
+	if err := json.Unmarshal([]byte(mustRead(t, v2Path)), &v2); err != nil {
+		t.Fatalf("parse current private diagnostic schema as data: %v", err)
+	}
+	if v2["$id"] != "urn:es-p0t-openssl-grammar-diagnostic-private-contract-v2" ||
+		v2["additionalProperties"] != false {
+		t.Fatal("current diagnostic schema lost its closed v2 identity")
 	}
 	assertContainsAll(t, "diagnostic source boundary", source,
 		"def open_existing_scope_lock(", "def diagnostic_main()", "def diagnose_first_rejection(",
@@ -193,10 +203,11 @@ for site, ordinals, bad, predicate in cases:
         assert failure == "unexpected_openssl_grammar", (site, ordinal, failure)
         first = context.first_rejection
         assert first and first["site"] == site and first["predicate"] == predicate
+        assert ("verify_projection" in first) is (site == "VERIFY_FAILURE_ENVELOPE_UNADMITTED")
         assert first["call_ordinal"] == context.fixed_call_attempts == ordinal
         assert calls == expected_calls[:ordinal], (site, ordinal, "argv/input/anchor drift")
         assert first["role"] in m.DIAGNOSTIC_OPERATION_ROLES[first["operation"]]
-        result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+        result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
                       scope="execution-governance", source_sha256=digest,
                       outcome="first_grammar_rejection", fixed_call_attempts=ordinal,
                       first_rejection=first, other_failure=None)
@@ -303,7 +314,7 @@ for raw, changes in (
 issuer = b"error 20 at 0 depth lookup: unable to get local issuer certificate\n"
 context, _, failure = traverse(17, (2, b"", issuer))
 assert failure == "unexpected_openssl_grammar"
-record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
               scope="execution-governance", source_sha256=digest,
               outcome="first_grammar_rejection", fixed_call_attempts=17,
               first_rejection=context.first_rejection, other_failure=None)
@@ -315,14 +326,15 @@ for out, err in ((b"", b""), (issuer[:-1], b""),
     forged["first_rejection"]["response_shape"]["stdout"] = shape(out)
     forged["first_rejection"]["response_shape"]["stderr"] = shape(err)
     assert m.format_diagnostic_line(forged, digest) is None, (out, err)
-# Counts are necessary capacity checks, not authentication of private bytes.
+# The new projection refuses a changed stream placement unless its counts
+# move with it; shape counts alone never authenticate private bytes.
 opaque = copy.deepcopy(record)
 opaque["first_rejection"]["response_shape"]["stdout"] = shape(b"x" * (len(issuer)-1) + b"\n")
 opaque["first_rejection"]["response_shape"]["stderr"] = shape(b"")
-closed_line(opaque)
+assert m.format_diagnostic_line(opaque, digest) is None
 key_context, _, failure = traverse(15, (0, b"x", b""))
 assert failure == "unexpected_openssl_grammar"
-key_record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+key_record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
                   scope="execution-governance", source_sha256=digest,
                   outcome="first_grammar_rejection", fixed_call_attempts=15,
                   first_rejection=key_context.first_rejection, other_failure=None)
@@ -371,7 +383,7 @@ for token, minimum, purposes in known:
                 first = context.first_rejection
                 assert first["predicate"] == "verify_failure_whole_alternative_unadmitted"
                 assert first["response_shape"]["verify_token"] == token
-                result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+                result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
                               scope="execution-governance", source_sha256=digest,
                               outcome="first_grammar_rejection", fixed_call_attempts=1,
                               first_rejection=first, other_failure=None)
@@ -385,6 +397,7 @@ for token, minimum, purposes in known:
         changed = copy.deepcopy(reference)
         changed["first_rejection"]["response_shape"][target] = shape(raw)
         changed["first_rejection"]["response_shape"]["stdout"] = shape(b"")
+        changed["first_rejection"]["verify_projection"] = m._diagnostic_verify_projection(b"", raw, "verify_client" if purpose == "sslclient" else "verify_server")
         return changed
     def refuses(raw, changes=None):
         changed = candidate(raw)
@@ -414,7 +427,7 @@ for token, minimum, purposes in known:
     admits(minimum + b"\r\x00\xff\n")
     admits(minimum + b"x")
     admits(minimum + b"\r\x00\xff")
-    admits(b"x" * (len(minimum)-1) + b"\n")  # Feasible counts do not authenticate content.
+    refuses(b"x" * (len(minimum)-1) + b"\n")  # Zero recognized cannot carry this specific token.
     changed = candidate(b"\n" * len(minimum))
     changed["first_rejection"]["response_shape"]["verify_token"] = "other"
     closed_line(changed)  # Unknown/other has ordinary shape rules only.
@@ -520,7 +533,7 @@ for secret in (b"subject-secret", b"provider-secret", b"-----BEGIN PRIVATE KEY--
                b"\x00\xff DER secret", b"exception-secret"):
     context, _, failure = traverse(1,(0,secret,b""))
     assert failure == "unexpected_openssl_grammar"
-    result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+    result = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
                   scope="execution-governance",source_sha256=digest,
                   outcome="first_grammar_rejection",fixed_call_attempts=1,
                   first_rejection=context.first_rejection,other_failure=None)
@@ -530,7 +543,7 @@ for secret in (b"subject-secret", b"provider-secret", b"-----BEGIN PRIVATE KEY--
 first,_,_ = traverse(1,(0,b"alpha",b""))
 second,_,_ = traverse(1,(0,b"omega",b""))
 assert first.first_rejection == second.first_rejection
-base = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+base = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
             scope="execution-governance",source_sha256=digest,
             outcome="first_grammar_rejection",fixed_call_attempts=1,
             first_rejection=first.first_rejection,other_failure=None)
@@ -989,6 +1002,12 @@ def run_case(mode):
         assert namespace["ES_TLS_GRAMMAR_DIAGNOSTIC_SOURCE_SHA256"] == digest
         assert namespace["ES_TLS_GRAMMAR_DIAGNOSTIC_BOOTSTRAP_VERIFIED"] is True
         assert "diagnostic_main" in namespace and "format_diagnostic_line" in namespace
+        if mode == "v1_prefix":
+            actual_formatter = namespace["format_diagnostic_line"]
+            namespace["format_diagnostic_line"] = lambda result, source_digest: (
+                actual_formatter(result, source_digest).replace(
+                    b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ",
+                    b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ", 1))
         def forbidden(*_args, **_kwargs):
             events["published"] = True
             raise AssertionError("status publication or generation reached")
@@ -1076,6 +1095,7 @@ for mode, expected_exit, marker, attempts in (
         ("prior_reader_close_fault", 1, None, 0),
         ("terminal_unavailable", 0, None, 18),
         ("terminal_short", 0, b"no_grammar_rejection_reached", 18),
+        ("v1_prefix", 1, None, 18),
         ("source_substitution", 1, None, 0),
         ("same_stage_substitution", 1, None, 0)):
     if sys.argv[3:] and mode not in sys.argv[3:]: continue
@@ -1091,7 +1111,7 @@ for mode, expected_exit, marker, attempts in (
         assert events["writes"] == [], (mode, events)
     else:
         assert len(events["writes"]) == 1 and marker in events["writes"][0], (mode, events)
-        assert events["writes"][0].startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V1 ")
+        assert events["writes"][0].startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ")
         assert b"ES_TLS_STATUS_FAILURE_V1" not in events["writes"][0]
     if mode == "hold": assert events["holds"] > 0
 print("OK")
@@ -1126,7 +1146,7 @@ for purpose, role, hostname in (
         assert first["response_shape"]["stdout"] == {
             "bytes": 15, "lines": 1, "empty": False, "utf8": True,
             "final_lf": True, "has_cr": False, "has_nul": False}
-        record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v1",
+        record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
                       scope="execution-governance", source_sha256=digest,
                       outcome="first_grammar_rejection", fixed_call_attempts=1,
                       first_rejection=first, other_failure=None)
@@ -1378,5 +1398,382 @@ print("OK")
 	output, err := cmd.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(output)) != "OK" {
 		t.Fatalf("contained prior-close bootstrap composition failed: %v\n%s", err, output)
+	}
+}
+
+// Every v2 producer control below passes through the current verify_chain and
+// DiagnosticContext. The fake asserts its exact argv and synthetic inputs.
+const grammarV2Fixture = `
+import base64
+
+def v2_case(out, err, code=2, operation="verify_client", expect_line=True):
+    assert type(out) is bytes and type(err) is bytes and type(expect_line) is bool
+    purpose = "sslclient" if operation == "verify_client" else "sslserver"
+    role = m.DIAGNOSTIC_VERIFY_CLIENT if operation == "verify_client" else m.DIAGNOSTIC_VERIFY_SERVER
+    hostname = "" if operation == "verify_client" else "egs.internal"
+    expected = [m.OPENSSL, "verify", "-trusted", m.TRUST_FD_OPERAND,
+                "-purpose", purpose]
+    if hostname: expected += ["-verify_hostname", hostname]
+    expected += ["/dev/stdin"]
+    calls = []
+    def fake(argv, input_bytes=None, anchor_bytes=None):
+        calls.append(argv)
+        assert argv == tuple(expected)
+        assert input_bytes == b"synthetic-certificate"
+        assert anchor_bytes == b"synthetic-anchor"
+        return code, out, err
+    m.run_fixed = fake
+    context = m.DiagnosticContext()
+    try:
+        m.verify_chain(role, {"sha256":"synthetic-ca"}, {"sha256":"synthetic-cert"},
+                       b"synthetic-anchor", b"synthetic-certificate",
+                       purpose, hostname, context)
+    except m.Incomplete as exc:
+        assert exc.args == ("unexpected_openssl_grammar",)
+    else:
+        raise AssertionError("unadmitted synthetic tuple became accepted")
+    assert calls == [tuple(expected)] and context.fixed_call_attempts == 1
+    first = context.first_rejection
+    assert first["site"] == "VERIFY_FAILURE_ENVELOPE_UNADMITTED"
+    assert first["operation"] == operation and first["call_ordinal"] == 1
+    record = dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
+                  scope="execution-governance", source_sha256=digest,
+                  outcome="first_grammar_rejection", fixed_call_attempts=1,
+                  first_rejection=first, other_failure=None)
+    line = m.format_diagnostic_line(record, digest)
+    if expect_line:
+        assert line is not None and line.startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ")
+        assert len(line) <= 2048 and line.isascii() and line.count(b"\n") == 1
+    else:
+        assert line is None
+    return record, line
+
+def v2_refuses(record):
+    assert m.format_diagnostic_line(record, digest) is None
+
+def v2_projection(record):
+    return record["first_rejection"]["verify_projection"]
+`
+
+func runGrammarV2Python(t *testing.T, body string) {
+	t.Helper()
+	runGrammarPython(t, grammarV2Fixture+"\n"+body)
+}
+
+func TestRemoteAlphaP0tGrammarDiagnosticV2VerifyProjection(t *testing.T) {
+	runGrammarV2Python(t, `
+issuer=b"error 20 at 0 depth lookup: unable to get local issuer certificate\n"
+expired=b"error 10 at 0 depth lookup: certificate has expired\n"
+terminal=b"error /dev/stdin: verification failed\n"
+first=b"CN = synthetic-one\n"+issuer+expired+terminal+b"warning synthetic-one"
+second=b"CN = synthetic-two\nerror 77 at 0 depth lookup: other\n"+terminal+b"warning synthetic-two\n"
+second+=b"x"*(219-len(second)-1)+b"\n"
+first+=b"x"*(219-len(first)-1)+b"\n"
+assert len(first)==len(second)==219 and first.count(b"\n")==second.count(b"\n")==5
+one,line_one=v2_case(b"",first)
+zero,line_zero=v2_case(b"",second)
+assert one["first_rejection"]["response_shape"]==zero["first_rejection"]["response_shape"]
+assert v2_projection(one)["known_count"]==2 and v2_projection(zero)["known_count"]==0
+assert v2_projection(one)["recognized_literal_count"]==2
+assert v2_projection(zero)["recognized_literal_count"]==0
+assert line_one!=line_zero
+assert v2_projection(one)["streams"]["stderr"]["sequence"][1:3]==[
+    ["known",20,0,"issuer_unavailable"],["known",10,0,"expired"]]
+assert v2_projection(zero)["streams"]["stderr"]["counts"]["unknown_numeric"]==1
+assert b"synthetic-one" not in line_one and b"synthetic-two" not in line_zero
+known=((20,0,"issuer_unavailable",b"unable to get local issuer certificate",("verify_client","verify_server")),
+       (10,0,"expired",b"certificate has expired",("verify_client","verify_server")),
+       (10,1,"expired",b"certificate has expired",("verify_client","verify_server")),
+       (9,0,"not_yet_valid",b"certificate is not yet valid",("verify_client","verify_server")),
+       (26,0,"purpose_unsuitable",b"unsuitable certificate purpose",("verify_client",)),
+       (62,0,"hostname_mismatch",b"hostname mismatch",("verify_server",)))
+for code,depth,reason,text,contexts in known:
+    for operation in contexts:
+        for space in (b"",b" "):
+            literal=b"error "+str(code).encode()+b" at "+str(depth).encode()+b" depth lookup:"+space+text+b"\n"
+            record,_=v2_case(b"",literal,operation=operation)
+            p=v2_projection(record)
+            assert p["known_count"]==p["recognized_literal_count"]==1
+            assert p["streams"]["stderr"]["sequence"]==[["known",code,depth,reason]]
+            assert p["streams"]["stdout"]["sequence"]==[]
+both,_=v2_case(issuer,issuer+expired)
+p=v2_projection(both)
+assert p["known_count"]==p["recognized_literal_count"]==3
+assert p["streams"]["stdout"]["sequence"]==[["known",20,0,"issuer_unavailable"]]
+assert p["streams"]["stderr"]["sequence"]==[["known",20,0,"issuer_unavailable"],["known",10,0,"expired"]]
+assert both["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+for operation,wrong in (("verify_client",b"error 62 at 0 depth lookup: hostname mismatch\n"),
+                        ("verify_server",b"error 26 at 0 depth lookup: unsuitable certificate purpose\n")):
+    single,_=v2_case(b"",wrong,operation=operation)
+    p=v2_projection(single)
+    assert single["first_rejection"]["predicate"]=="verify_failure_context_coupling"
+    assert p["known_count"]==0 and p["recognized_literal_count"]==1
+    assert p["streams"]["stderr"]["sequence"]==[["context_invalid_unclassified"]]
+    repeated,_=v2_case(b"",wrong*2,operation=operation)
+    assert repeated["first_rejection"]["predicate"]=="verify_failure_whole_alternative_unadmitted"
+    assert v2_projection(repeated)["recognized_literal_count"]==2
+for size in (7,8,9):
+    record,_=v2_case(b"\n"*(size//2),b"\n"*(size-size//2)+b"tail")
+    p=v2_projection(record)
+    assert p["cap_reached"] is (size>8) and p["sequence_complete"] is (size<=8)
+    assert sum(p["streams"][s]["complete_lines"] for s in ("stdout","stderr"))==size
+    assert all(len(p["streams"][s]["sequence"])==(0 if size>8 else p["streams"][s]["complete_lines"])
+               for s in ("stdout","stderr"))
+    assert p["streams"]["stderr"]["tail_kind"]=="opaque"
+assert v2_projection(v2_case(b"error 20 at 0 depth lookup: ",b"unable to get local issuer certificate\n")[0])["known_count"]==0
+print("OK")
+`)
+}
+
+func TestRemoteAlphaP0tGrammarDiagnosticV2ProjectionSemanticConsistency(t *testing.T) {
+	runGrammarV2Python(t, `
+issuer=b"error 20 at 0 depth lookup: unable to get local issuer certificate\n"
+source,_=v2_case(b"",issuer+b"\n")
+assert source["first_rejection"]["response_shape"]["verify_token"]=="20_0_issuer_unavailable"
+def change(fn):
+    candidate=copy.deepcopy(source);fn(candidate);v2_refuses(candidate)
+# Reviewer V2-CROSS-TOKEN: source-produced specific token, zero recognized projection.
+change(lambda x:x["first_rejection"].update(verify_projection=m._diagnostic_verify_projection(b"",b"\n\n","verify_client")))
+change(lambda x:x["first_rejection"]["verify_projection"].update(known_count=2,recognized_literal_count=2))
+change(lambda x:x["first_rejection"]["response_shape"].update(verify_token="other"))
+change(lambda x:x["first_rejection"]["verify_projection"].update(recognized_literal_count=0))
+two,_=v2_case(b"",issuer*2)
+assert two["first_rejection"]["response_shape"]["verify_token"]=="other"
+wrong=copy.deepcopy(two);wrong["first_rejection"]["response_shape"]["verify_token"]="20_0_issuer_unavailable";v2_refuses(wrong)
+wrong=copy.deepcopy(two);wrong["first_rejection"]["predicate"]="verify_failure_context_coupling";v2_refuses(wrong)
+for key,value in (("known_count",True),("recognized_literal_count",-1),("cap_reached",1),("sequence_complete",0)):
+    change(lambda x:x["first_rejection"]["verify_projection"].update({key:value}))
+for bad in ([],"opaque",type("StrTrap",(str,),{"__eq__":lambda self,other: (_ for _ in ()).throw(AssertionError("equality"))})("opaque")):
+    change(lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"].update(tail_kind=bad))
+change(lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"].__setitem__(0,["known",20,0,"wrong"]))
+change(lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["counts"].update(opaque=0))
+change(lambda x:x["first_rejection"]["verify_projection"].update(extra="hidden"))
+change(lambda x:x["first_rejection"].pop("verify_projection"))
+other,_=v2_case(b"",b"error 62 at 0 depth lookup: hostname mismatch\n")
+for predicate in ("verify_failure_whole_alternative_unadmitted","verify_failure_stream_placement"):
+    bad=copy.deepcopy(other);bad["first_rejection"]["predicate"]=predicate;v2_refuses(bad)
+placement,_=v2_case(issuer,b"warning\n")
+assert placement["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+bad=copy.deepcopy(placement);bad["first_rejection"]["predicate"]="verify_failure_context_coupling";v2_refuses(bad)
+non_two,_=v2_case(b"",issuer,code=3)
+assert non_two["first_rejection"]["predicate"]=="verify_failure_exit_not_two"
+bad=copy.deepcopy(non_two);bad["first_rejection"]["predicate"]="verify_failure_whole_alternative_unadmitted";v2_refuses(bad)
+mixed,_=v2_case(issuer,b"error 62 at 0 depth lookup: hostname mismatch\n")
+assert mixed["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+assert v2_projection(mixed)["known_count"]==1 and v2_projection(mixed)["recognized_literal_count"]==2
+assert mixed["first_rejection"]["response_shape"]["verify_token"]=="other"
+# V2-CONTEXT-PLACEMENT-01: actual caller records remain refused. Changing only
+# their wrong-context specific token to other must not rescue the advisory.
+accepted_forged=[]
+for operation,wrong,wrong_token in (
+        ("verify_client",b"error 62 at 0 depth lookup: hostname mismatch\n","62_0_hostname_mismatch"),
+        ("verify_server",b"error 26 at 0 depth lookup: unsuitable certificate purpose\n","26_0_purpose_unsuitable")):
+    for wrong_stream in ("stdout","stderr"):
+        for capped in (False,True):
+            opaque=b"\n"*8 if capped else b"x\n"
+            out,err=(wrong,opaque) if wrong_stream=="stdout" else (opaque,wrong)
+            actual,line=v2_case(out,err,operation=operation,expect_line=False)
+            first=actual["first_rejection"]
+            assert line is None and first["predicate"]=="verify_failure_stream_placement"
+            assert first["response_shape"]["verify_token"]==wrong_token
+            projection=v2_projection(actual)
+            assert projection["known_count"]==0 and projection["recognized_literal_count"]==1
+            assert projection["cap_reached"] is capped and projection["sequence_complete"] is not capped
+            assert projection["streams"][wrong_stream]["counts"]["context_invalid_unclassified"]==1
+            assert projection["streams"]["stdout"]["complete_lines"]+projection["streams"]["stderr"]["complete_lines"]==(9 if capped else 2)
+            if capped:
+                assert all(not projection["streams"][name]["sequence"] for name in ("stdout","stderr"))
+            forged=copy.deepcopy(actual)
+            forged["first_rejection"]["response_shape"]["verify_token"]="other"
+            restored=copy.deepcopy(forged)
+            restored["first_rejection"]["response_shape"]["verify_token"]=wrong_token
+            assert restored==actual
+            if m.format_diagnostic_line(forged,digest) is not None:
+                accepted_forged.append((operation,wrong_stream,"capped" if capped else "full"))
+assert not accepted_forged, accepted_forged
+for operation,wrong,_ in (
+        ("verify_client",b"error 62 at 0 depth lookup: hostname mismatch\n","62_0_hostname_mismatch"),
+        ("verify_server",b"error 26 at 0 depth lookup: unsuitable certificate purpose\n","26_0_purpose_unsuitable")):
+    for capped in (False,True):
+        single,_=v2_case(b"",wrong+b"\n"*8 if capped else wrong,operation=operation)
+        assert single["first_rejection"]["predicate"]=="verify_failure_context_coupling"
+        assert single["first_rejection"]["response_shape"]["verify_token"]=="other"
+        assert v2_projection(single)["recognized_literal_count"]==1
+        assert v2_projection(single)["cap_reached"] is capped
+    repeated,_=v2_case(b"x\n",wrong*2,operation=operation)
+    assert repeated["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+    assert repeated["first_rejection"]["response_shape"]["verify_token"]=="other"
+    assert v2_projection(repeated)["known_count"]==0 and v2_projection(repeated)["recognized_literal_count"]==2
+    mixed,_=v2_case(issuer,wrong,operation=operation)
+    assert mixed["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+    assert mixed["first_rejection"]["response_shape"]["verify_token"]=="other"
+    assert v2_projection(mixed)["known_count"]==1 and v2_projection(mixed)["recognized_literal_count"]==2
+    valid,_=v2_case(issuer,b"x\n",operation=operation)
+    assert valid["first_rejection"]["predicate"]=="verify_failure_stream_placement"
+    assert valid["first_rejection"]["response_shape"]["verify_token"]=="20_0_issuer_unavailable"
+    assert v2_projection(valid)["known_count"]==v2_projection(valid)["recognized_literal_count"]==1
+    non_two,_=v2_case(b"x\n",wrong,code=3,operation=operation)
+    assert non_two["first_rejection"]["predicate"]=="verify_failure_exit_not_two"
+    assert non_two["first_rejection"]["response_shape"]["verify_token"]=="other"
+    assert v2_projection(non_two)["known_count"]==0 and v2_projection(non_two)["recognized_literal_count"]==1
+    zero,_=v2_case(b"x\n",b"error trailing",operation=operation)
+    assert v2_projection(zero)["recognized_literal_count"]==0
+    assert v2_projection(zero)["streams"]["stderr"]["tail_kind"]=="error_like_unclassified"
+class DictTrap(dict): pass
+class ListTrap(list): pass
+class IntTrap(int): pass
+class StrTrap(str):
+    def __eq__(self,other): raise AssertionError("subclass equality reached")
+    def __str__(self): raise AssertionError("subclass conversion reached")
+for mutator in (
+    lambda x:x["first_rejection"].update(verify_projection=DictTrap(v2_projection(x))),
+    lambda x:x["first_rejection"]["verify_projection"].update(streams=DictTrap(v2_projection(x)["streams"])),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"].update(counts=DictTrap(v2_projection(x)["streams"]["stderr"]["counts"])),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"].update(sequence=ListTrap(v2_projection(x)["streams"]["stderr"]["sequence"])),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"].__setitem__(0,ListTrap(v2_projection(x)["streams"]["stderr"]["sequence"][0])),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].__setitem__(0,StrTrap("known")),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].__setitem__(1,IntTrap(20)),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].__setitem__(1,True),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].__setitem__(3,StrTrap("issuer_unavailable")),
+):
+    candidate=copy.deepcopy(source);mutator(candidate);v2_refuses(candidate)
+for mutator in (
+    lambda x:x["first_rejection"]["verify_projection"]["streams"].pop("stderr"),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"].update(extra={}),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].append("extra"),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0].__setitem__(2,9),
+    lambda x:x["first_rejection"]["verify_projection"]["streams"]["stderr"]["counts"].update(known=0),
+):
+    candidate=copy.deepcopy(source);mutator(candidate);v2_refuses(candidate)
+for replacement in (["known",20,0], ["known",20,0,"expired"],
+                    ["unknown_numeric",0,0], ["unknown_numeric",1000,0],
+                    ["unknown_numeric",1,10], ["context_invalid_unclassified",20],
+                    ["terminal","extra"], ["unknown_numeric",1,0,1]):
+    candidate=copy.deepcopy(source)
+    candidate["first_rejection"]["verify_projection"]["streams"]["stderr"]["sequence"][0]=replacement
+    v2_refuses(candidate)
+print("OK")
+`)
+}
+
+func TestRemoteAlphaP0tGrammarDiagnosticV2ProjectionLimitsAndPrivacy(t *testing.T) {
+	runGrammarV2Python(t, `
+issuer=b"error 20 at 0 depth lookup: unable to get local issuer certificate\n"
+for code,depth,reason,kind in ((1,0,b"x","unknown_numeric"),(999,9,b"x"*128,"unknown_numeric"),
+                               (0,0,b"x","unclassified"),(1000,0,b"x","unclassified"),
+                               (1,10,b"x","unclassified"),(1,0,b"x"*129,"unclassified")):
+    raw=b"error "+str(code).encode()+b" at "+str(depth).encode()+b" depth lookup: "+reason+b"\n"
+    record,line=v2_case(b"",raw)
+    seq=v2_projection(record)["streams"]["stderr"]["sequence"]
+    assert seq[0][0]==kind
+    if kind=="unknown_numeric":assert seq==[[kind,code,depth]]
+    assert reason not in line or reason==b"x"
+for raw,kind in ((b"error 01 at 0 depth lookup: x\n","unclassified"),
+                 (b"error 1 at 00 depth lookup: x\n","unclassified"),
+                 (b"error -1 at 0 depth lookup: x\n","unclassified"),
+                 (b"error 1 at 0 depth lookup:x\n","unclassified"),
+                 (b"error 1 at 0 depth lookup: x\r\n","unclassified"),
+                 (b"error 1 at 0 depth lookup: \x00\n","unclassified"),
+                 (b"error 1 at 0 depth lookup: \xff\n","unclassified"),
+                 (issuer[:-1],"tail"),(b"\n","opaque"),
+                 (b"provider secret\n","opaque")):
+    record,line=v2_case(b"",raw)
+    stream=v2_projection(record)["streams"]["stderr"]
+    assert (stream["sequence"][0][0] if kind!="tail" else stream["tail_kind"]) == ("error_like_unclassified" if kind=="tail" else kind)
+    assert b"provider secret" not in line and b"lookup:" not in line
+# Reviewer V2-CLOSED-ASCII-CAPACITY: two exact literals cannot carry CR.
+record,_=v2_case(b"",issuer*2)
+bad=copy.deepcopy(record);bad["first_rejection"]["response_shape"]["stderr"].update(has_cr=True)
+v2_refuses(bad)
+bad=copy.deepcopy(record);bad["first_rejection"]["response_shape"]["stderr"].update(bytes=len(issuer)*2+1)
+v2_refuses(bad)
+terminal,_=v2_case(b"",b"error /dev/stdin: verification failed\n")
+bad=copy.deepcopy(terminal);bad["first_rejection"]["response_shape"]["stderr"].update(has_nul=True)
+v2_refuses(bad)
+opaque,_=v2_case(b"",issuer*2+b"\r\n")
+assert opaque["first_rejection"]["response_shape"]["stderr"]["has_cr"]
+long,_=v2_case(b"",b"\n"*9)
+assert v2_projection(long)["cap_reached"]
+bad=copy.deepcopy(long);bad["first_rejection"]["response_shape"]["stderr"].update(has_cr=True)
+v2_refuses(bad)
+for raw in (b"\n"*7,b"\n"*8,b"\n"*9):
+    record,line=v2_case(b"",raw)
+    assert len(line)<=2048
+oversized,_=v2_case(b"",b"\n"*100)
+assert v2_projection(oversized)["streams"]["stderr"]["complete_lines"]==100
+for operation in ("verify_client","verify_server"):
+    full,line=v2_case(b"\n"*4,b"\n"*4,operation=operation)
+    assert not v2_projection(full)["cap_reached"] and len(line)<=2048
+    capped,line=v2_case(b"\n"*4,b"\n"*5,operation=operation)
+    assert v2_projection(capped)["cap_reached"] and len(line)<=2048
+    longest=b"error 999 at 9 depth lookup: "+b"x"*128+b"\n"
+    full,line=v2_case(longest*4,longest*4,operation=operation)
+    assert not v2_projection(full)["cap_reached"] and len(line)<=2048
+    assert b"x"*32 not in line
+    capped,line=v2_case(longest*4,longest*5,operation=operation)
+    assert v2_projection(capped)["cap_reached"] and len(line)<=2048
+terminal_only,_=v2_case(b"",b"error /dev/stdin: verification failed\n")
+for mutation in (lambda s:s.update(bytes=s["bytes"]+1),
+                 lambda s:s.update(has_cr=True),
+                 lambda s:s.update(has_nul=True),
+                 lambda s:s.update(utf8=False)):
+    bad=copy.deepcopy(terminal_only)
+    mutation(bad["first_rejection"]["response_shape"]["stderr"])
+    v2_refuses(bad)
+numeric_min,_=v2_case(b"",b"error 1 at 0 depth lookup: x\n")
+numeric_max,_=v2_case(b"",b"error 999 at 9 depth lookup: "+b"x"*128+b"\n")
+for source,delta in ((numeric_min,-1),(numeric_max,1)):
+    bad=copy.deepcopy(source)
+    bad["first_rejection"]["response_shape"]["stderr"]["bytes"]+=delta
+    v2_refuses(bad)
+tail_prefix,_=v2_case(b"",b"error ")
+assert v2_projection(tail_prefix)["streams"]["stderr"]["tail_kind"]=="error_like_unclassified"
+bad=copy.deepcopy(tail_prefix)
+bad["first_rejection"]["response_shape"]["stderr"].update(has_cr=True)
+v2_refuses(bad)
+for raw,tail_kind in ((b"error \r\x00\xff","error_like_unclassified"),(b"\r\x00\xff","opaque"),
+                      (b"error \r\x00\xff\n","none"),(b"\r\x00\xff\n","none")):
+    record,_=v2_case(b"",raw)
+    assert record["first_rejection"]["response_shape"]["stderr"]["has_cr"]
+    assert record["first_rejection"]["response_shape"]["stderr"]["has_nul"]
+    assert not record["first_rejection"]["response_shape"]["stderr"]["utf8"]
+    if tail_kind!="none":assert v2_projection(record)["streams"]["stderr"]["tail_kind"]==tail_kind
+ascii_capped,_=v2_case(b"",issuer*9)
+assert v2_projection(ascii_capped)["cap_reached"]
+for mutation in (lambda s:s.update(bytes=s["bytes"]+1),
+                 lambda s:s.update(has_cr=True),
+                 lambda s:s.update(has_nul=True),
+                 lambda s:s.update(utf8=False)):
+    bad=copy.deepcopy(ascii_capped)
+    mutation(bad["first_rejection"]["response_shape"]["stderr"])
+    v2_refuses(bad)
+print("OK")
+`)
+}
+
+func TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap(t *testing.T) {
+	runGrammarV2Python(t, `
+for outcome,other in (("no_grammar_rejection_reached",None),("incomplete_other","other_unproved")):
+    record=dict(schema_version="es-p0t-openssl-grammar-diagnostic/v2",
+                scope="execution-governance",source_sha256=digest,outcome=outcome,
+                fixed_call_attempts=0,first_rejection=None,other_failure=other)
+    assert closed_line(record).startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ")
+    old=copy.deepcopy(record);old["schema_version"]="es-p0t-openssl-grammar-diagnostic/v1"
+    v2_refuses(old)
+record,_=v2_case(b"",b"error 77 at 0 depth lookup: synthetic\n")
+assert closed_line(record).startswith(b"ES_TLS_GRAMMAR_DIAGNOSTIC_V2 ")
+missing=copy.deepcopy(record);missing["first_rejection"].pop("verify_projection")
+v2_refuses(missing)
+print("OK")
+`)
+	source := filepath.Join(executionSubstrateRepoRoot, "scripts", "internal", "remote_alpha_es_tls_status.py")
+	facade := remoteAlphaOperatorScriptPath()
+	cmd := exec.Command("/usr/bin/python3", "-I", "-B", "-c", grammarBootstrapCompositionFixture,
+		source, facade, "first_rejection", "all_success", "non_grammar_incomplete", "v1_prefix")
+	cmd.Dir = executionSubstrateRepoRoot
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "OK" {
+		t.Fatalf("v2 contained bootstrap outcomes failed: %v\n%s", err, output)
 	}
 }
