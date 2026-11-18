@@ -9,8 +9,16 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -978,5 +986,248 @@ func TestReplayExistingStateModeNotRepaired(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o640 {
 		t.Fatal("existing state mode was repaired")
+	}
+}
+
+// Each case runs in a child test process because the original blocking open
+// cannot be interrupted by canceling a Go context. The parent owns the bound.
+func TestReplayObjectFIFORefusal(t *testing.T) {
+	const childScenario = "ES_PR8_REPLAY_FIFO_CHILD_SCENARIO"
+	if scenario := os.Getenv(childScenario); scenario != "" {
+		runReplayObjectFIFOChild(t, scenario)
+		return
+	}
+	for _, scenario := range []string{"marker", "preclaim", "claimed"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReplayObjectFIFORefusal$", "-test.v")
+			cmd.Env = append(os.Environ(), childScenario+"="+scenario)
+			output, err := cmd.CombinedOutput()
+			ready := []byte("PR8_FIFO_READY " + scenario + "\n")
+			done := []byte("PR8_FIFO_DONE " + scenario + "\n")
+			if !bytes.Contains(output, ready) {
+				t.Fatalf("FIFO helper did not reach the guarded open: error=%v output_sha256=%x", err, sha256.Sum256(output))
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("FIFO helper blocked after readiness: scenario=%s deadline=%v", scenario, ctx.Err())
+			}
+			if err != nil || !bytes.Contains(output, done) {
+				t.Fatalf("FIFO helper failed after readiness: error=%v output_sha256=%x", err, sha256.Sum256(output))
+			}
+		})
+	}
+}
+
+func runReplayObjectFIFOChild(t *testing.T, scenario string) {
+	t.Helper()
+	ctx := context.Background()
+	if scenario == "marker" {
+		root := fixtureReplayRoot(t)
+		marker := filepath.Join(root, "synthetic-replay-v1.marker")
+		if err := os.Remove(marker); err != nil {
+			t.Fatal(err)
+		}
+		makeReplayFIFO(t, marker)
+		fmt.Printf("PR8_FIFO_READY %s\n", scenario)
+		custody, err := OpenPrivateReplayCustody(ctx, root)
+		if custody != nil {
+			_ = custody.Close()
+			t.Fatal("FIFO marker returned custody")
+		}
+		if !errors.Is(err, errClaimStoreUnsupported) {
+			t.Fatalf("FIFO marker refusal category: %v", err)
+		}
+		fmt.Printf("PR8_FIFO_DONE %s\n", scenario)
+		return
+	}
+	if scenario != "preclaim" && scenario != "claimed" {
+		t.Fatalf("unknown FIFO scenario %q", scenario)
+	}
+	record, _ := syntheticReplayRecordFixture(t)
+	keys := fixtureReplayKeys(t, 29)
+	root := fixtureReplayRoot(t)
+	custody, err := OpenPrivateReplayCustody(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer custody.Close()
+	frozen, err := NewPrivateReplayFrozen(record.claim, record.plan, keys, fixtureReplayPayload(t, record, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := custody.ReserveSealUse(ctx, frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := custody.PublishSealedSynthetic(ctx, frozen, grant)
+	if err != nil || !publication.descriptor.valid() {
+		t.Fatalf("valid publication failed: %v", err)
+	}
+	if scenario == "claimed" {
+		_, created, err := custody.EstablishSyntheticClaim(ctx, frozen, publication)
+		if err != nil || !created {
+			t.Fatalf("valid claim created=%v error=%v", created, err)
+		}
+		called := false
+		if err := custody.WithAuthenticatedClaim(ctx, record.claim, keys, func(AuthenticatedClaimMeta, []byte) error {
+			called = true
+			return nil
+		}); err != nil || !called {
+			t.Fatalf("valid pre-replacement read called=%v error=%v", called, err)
+		}
+	}
+	object := filepath.Join(root, filepath.FromSlash(publication.descriptor.ref))
+	if err := os.Rename(object, object+".original"); err != nil {
+		t.Fatal(err)
+	}
+	makeReplayFIFO(t, object)
+	fmt.Printf("PR8_FIFO_READY %s\n", scenario)
+	if scenario == "preclaim" {
+		_, created, err := custody.EstablishSyntheticClaim(ctx, frozen, publication)
+		if created || !errors.Is(err, errClaimStoreUnavailable) {
+			t.Fatalf("FIFO preclaim created=%v error=%v", created, err)
+		}
+		var count int64
+		if err := custody.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reliable_submit_claims WHERE codec_version=3`).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("FIFO preclaim row count=%d error=%v", count, err)
+		}
+		called := false
+		if err := custody.WithAuthenticatedClaim(ctx, record.claim, keys, func(AuthenticatedClaimMeta, []byte) error {
+			called = true
+			return nil
+		}); !errors.Is(err, errClaimStoreNotFound) || called {
+			t.Fatalf("FIFO preclaim callback=%v error=%v", called, err)
+		}
+	} else {
+		called := false
+		if err := custody.WithAuthenticatedClaim(ctx, record.claim, keys, func(AuthenticatedClaimMeta, []byte) error {
+			called = true
+			return nil
+		}); !errors.Is(err, errClaimStoreUnavailable) || called {
+			t.Fatalf("FIFO claimed callback=%v error=%v", called, err)
+		}
+		var count int64
+		if err := custody.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM reliable_submit_claims WHERE codec_version=3`).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("FIFO claimed row count=%d error=%v", count, err)
+		}
+	}
+	fmt.Printf("PR8_FIFO_DONE %s\n", scenario)
+}
+
+func makeReplayFIFO(t *testing.T, path string) {
+	t.Helper()
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 || info.Mode().Perm() != 0o600 {
+		t.Fatalf("FIFO fixture did not qualify: %v", err)
+	}
+}
+
+func TestReplayReadOnlyCandidateOpenContract(t *testing.T) {
+	const directChild = "ES_PR8_REPLAY_FIFO_DIRECT_CHILD"
+	if os.Getenv(directChild) == "1" {
+		root := t.TempDir()
+		makeReplayFIFO(t, filepath.Join(root, "fifo"))
+		rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(rootFD)
+		fmt.Println("PR8_DIRECT_READY")
+		fd, err := openReplayReadOnlyCandidate(rootFD, "fifo")
+		if err != nil {
+			t.Fatalf("nonblocking FIFO open failed: %v", err)
+		}
+		var held unix.Stat_t
+		statErr := unix.Fstat(fd, &held)
+		closeErr := unix.Close(fd)
+		if statErr != nil || closeErr != nil || replayFileQualified(held) {
+			t.Fatalf("FIFO descriptor was accepted or not closed: stat=%v close=%v", statErr, closeErr)
+		}
+		fmt.Println("PR8_DIRECT_DONE")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestReplayReadOnlyCandidateOpenContract$", "-test.v")
+	cmd.Env = append(os.Environ(), directChild+"=1")
+	output, err := cmd.CombinedOutput()
+	if !bytes.Contains(output, []byte("PR8_DIRECT_READY\n")) {
+		t.Fatalf("direct FIFO helper did not reach open: error=%v output_sha256=%x", err, sha256.Sum256(output))
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("direct FIFO helper blocked after readiness: %v", ctx.Err())
+	}
+	if err != nil || !bytes.Contains(output, []byte("PR8_DIRECT_DONE\n")) {
+		t.Fatalf("direct FIFO helper failed: error=%v output_sha256=%x", err, sha256.Sum256(output))
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "replay_custody_file.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := make(map[string]*ast.FuncDecl)
+	for _, declaration := range file.Decls {
+		if fn, ok := declaration.(*ast.FuncDecl); ok {
+			functions[fn.Name.Name] = fn
+		}
+	}
+	nodeText := func(node ast.Node) string {
+		var rendered bytes.Buffer
+		if err := format.Node(&rendered, fset, node); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(rendered.String()), "")
+	}
+	helper := functions["openReplayReadOnlyCandidate"]
+	if helper == nil || nodeText(helper) != strings.Join(strings.Fields(`
+		func openReplayReadOnlyCandidate(dirFD int, name string) (int, error) {
+			return unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		}`), "") {
+		t.Fatal("read-only candidate helper flags or body changed")
+	}
+	expected := []struct {
+		name   string
+		helper []string
+		direct []string
+	}{
+		{"OpenPrivateReplayCustody", []string{`openReplayReadOnlyCandidate(rootFD,"synthetic-replay-v1.marker")`}, []string{
+			`unix.Openat(rootFD,"objects",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
+			`unix.Openat(objectsFD,"v1",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
+		}},
+		{"PublishSealedSynthetic", []string{`openReplayReadOnlyCandidate(c.parentFD,visibleName)`}, []string{
+			`unix.Openat(c.parentFD,basename,unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC,0o600)`,
+		}},
+		{"checkPublishedRef", []string{
+			`openReplayReadOnlyCandidate(c.parentFD,basename)`,
+			`openReplayReadOnlyCandidate(c.parentFD,basename)`,
+		}, nil},
+	}
+	for _, want := range expected {
+		fn := functions[want.name]
+		if fn == nil {
+			t.Fatalf("missing custody function %s", want.name)
+		}
+		var helperCalls, directCalls []string
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch nodeText(call.Fun) {
+			case "openReplayReadOnlyCandidate":
+				helperCalls = append(helperCalls, nodeText(call))
+			case "unix.Openat":
+				directCalls = append(directCalls, nodeText(call))
+			}
+			return true
+		})
+		if !slices.Equal(helperCalls, want.helper) || !slices.Equal(directCalls, want.direct) {
+			t.Fatalf("custody open inventory changed in %s: helper=%v direct=%v", want.name, helperCalls, directCalls)
+		}
 	}
 }

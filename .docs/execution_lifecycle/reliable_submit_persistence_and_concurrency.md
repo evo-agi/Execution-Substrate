@@ -1089,8 +1089,9 @@ and fixed parent are validated at opening/setup. Under held root/parent
 identity it exclusively creates a regular owner-only one-link no-follow file,
 consumes one permit, Seals frozen payload/header/AAD with separate AES-256-GCM
 key and Go NewGCMWithRandomNonce, writes exact bounded bytes, readback-checks
-the held file, fsyncs file and parent, checks close, then reopens no-follow
-under the held parent and compares visible/held identity and full bytes.
+the held file, fsyncs file and parent, checks close, then reopens the visible
+candidate read-only, nonblocking, no-follow and close-on-exec under the held
+parent and compares visible/held identity and full bytes.
 Only a complete verified publication descriptor may enter claim INSERT.
 Unclaimed partial or complete files remain inert; no rewrite/delete/adoption.
 The later reader loads expected associations only from the real claim row,
@@ -1100,6 +1101,23 @@ the admission-owned PB1 verifier as its last internal callback. The preclaim
 writer validates against frozen prospective associations and never fabricates
 an authoritative claim for its own check. SQL cannot authenticate external
 file bytes.
+
+Every read-only open of the synthetic marker or a replay-object candidate,
+including held and visible reader opens, uses
+`O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC` before descriptor `Fstat` and
+regular-file qualification. `O_NONBLOCK` is a liveness control only: a FIFO,
+Unix-domain socket, directory, or other nonregular pathname replacement must
+return promptly through open failure or post-open type refusal rather than
+block before qualification. Such replacements fail closed before claim creation
+or any authenticated callback. Only an owner-only regular one-link descriptor
+with the required mode, bounded size, held/visible identity, complete bytes,
+SHA and AEAD checks may proceed. Qualified regular-file reads retain their
+complete existing behavior; `O_NONBLOCK` relaxes no read, identity, integrity
+or authority check. Directory opens retain their directory-qualified semantics,
+and the publication creator retains exclusive `O_CREAT|O_EXCL|O_RDWR` creation.
+No pathname-only precheck, polling, retry, goroutine, background thread,
+adoption, repair or new path-based authority is selected. This source-level
+rule does not qualify live-host or native VFS behavior.
 
 Migration 0→3 applies 1+2+3 in one transaction; 1→3 applies 2+3 together;
 2→3 applies 3. A pre-COMMIT failure with confirmed rollback retains the

@@ -173,7 +173,7 @@ func OpenPrivateReplayCustody(ctx context.Context, root string) (*PrivateReplayC
 	}
 	// The fixture marker is created only with a new synthetic state root. It
 	// refuses silent adoption of an unrelated owner-owned database directory.
-	markerFD, err := unix.Openat(rootFD, "synthetic-replay-v1.marker", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	markerFD, err := openReplayReadOnlyCandidate(rootFD, "synthetic-replay-v1.marker")
 	if err != nil {
 		return nil, errClaimStoreUnsupported
 	}
@@ -251,6 +251,10 @@ func replayDirectoryQualified(st unix.Stat_t) bool {
 func replayFileQualified(st unix.Stat_t) bool {
 	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&0o7777 == 0o600 &&
 		st.Nlink == 1 && st.Uid == uint32(os.Getuid()) && st.Gid == uint32(os.Getgid())
+}
+
+func openReplayReadOnlyCandidate(dirFD int, name string) (int, error) {
+	return unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
 func sameReplayIdentity(a, b unix.Stat_t) bool {
@@ -506,7 +510,7 @@ func (c *PrivateReplayCustody) PublishSealedSynthetic(ctx context.Context, froze
 		// no-follow reopen failure after the sealed object's final close.
 		visibleName += "-missing"
 	}
-	visibleFD, err := unix.Openat(c.parentFD, visibleName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	visibleFD, err := openReplayReadOnlyCandidate(c.parentFD, visibleName)
 	if err != nil {
 		return PrivateReplayPublication{}, errClaimStoreUnavailable
 	}
@@ -673,7 +677,7 @@ func (c *PrivateReplayCustody) checkPublishedRef(ctx context.Context, claim Clai
 	if len(basename) != 64 {
 		return nil, errReplayFormat
 	}
-	fd, err := unix.Openat(c.parentFD, basename, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := openReplayReadOnlyCandidate(c.parentFD, basename)
 	if err != nil {
 		return nil, errClaimStoreUnavailable
 	}
@@ -687,7 +691,7 @@ func (c *PrivateReplayCustody) checkPublishedRef(ctx context.Context, claim Clai
 	if err != nil || closeErr != nil || c.checkParents() != nil {
 		return nil, errClaimStoreUnavailable
 	}
-	visibleFD, err := unix.Openat(c.parentFD, basename, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	visibleFD, err := openReplayReadOnlyCandidate(c.parentFD, basename)
 	if err != nil {
 		return nil, errClaimStoreUnavailable
 	}
