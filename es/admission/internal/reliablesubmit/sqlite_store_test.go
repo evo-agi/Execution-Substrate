@@ -1051,3 +1051,370 @@ func sqliteTestPath(t *testing.T, elem ...string) string {
 	parts := append([]string{root}, elem...)
 	return filepath.Join(parts...)
 }
+
+// O2 exercises historical rows that were created under schema 2 and then
+// migrated. The fault hooks change only this test's CAS response boundary;
+// SQLite statements, pool ownership, and writer locks remain real.
+func legacyCASFixture(t *testing.T) (*sqliteClaimStore, durableFixture, durableClaimRecord, compareAndSwapClaimCommand) {
+	t.Helper()
+	path := sqliteTestPath(t, "state", "legacy-cas.sqlite3")
+	legacy := mustOpenLegacyV2ClaimStore(t, path)
+	f := newDurableFixture(t)
+	service := mustDurableService(t, legacy, fixedClaimClock{now: f.now})
+	created := mustServiceEstablish(t, service, f)
+	if created.kind != durableClaimOutcomeEstablished || !created.hasRecord {
+		t.Fatalf("historical schema-2 establish outcome = %+v", created)
+	}
+	if err := legacy.close(); err != nil {
+		t.Fatalf("close historical fixture: %v", err)
+	}
+	store := mustOpenSQLiteClaimStore(t, path)
+	t.Cleanup(func() {
+		if err := store.close(); err != nil {
+			t.Errorf("close migrated store: %v", err)
+		}
+	})
+	store.db.SetMaxOpenConns(1)
+	store.db.SetMaxIdleConns(1)
+	current, err := store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	if err != nil || !current.equal(created.record) || current.codecVersion != durableClaimCodecVersion {
+		t.Fatalf("migrated historical row mismatch: codec=%d error=%v", current.codecVersion, err)
+	}
+	return store, f, current, legacyCASAssignCommand(t, current, f)
+}
+
+func legacyCASAssignCommand(t *testing.T, current durableClaimRecord, f durableFixture) compareAndSwapClaimCommand {
+	t.Helper()
+	operation, err := deriveDurableOperationDescriptor(f.nextMut, durableOperationAssignRun,
+		current.revision, operationPartRunRef(f.run))
+	if err != nil {
+		t.Fatalf("derive legacy CAS operation: %v", err)
+	}
+	phase, err := current.hydratePhase()
+	if err != nil {
+		t.Fatalf("hydrate legacy phase: %v", err)
+	}
+	pre, ok := phase.(PreAssignmentPhase)
+	if !ok {
+		t.Fatal("legacy fixture is not pre-assignment")
+	}
+	assigned, err := AssignRun(pre, f.run)
+	if err != nil {
+		t.Fatalf("assign legacy run: %v", err)
+	}
+	next, err := current.withPhaseAndOperation(assigned, operation, f.later,
+		someClaimTime(f.later), current.effects, current.retention)
+	if err != nil {
+		t.Fatalf("construct legacy CAS successor: %v", err)
+	}
+	return compareAndSwapClaimCommand{claim: current.claim, expectedRevision: current.revision, next: next}
+}
+
+func assertLegacyCASIndependentWriter(t *testing.T, path string) {
+	t.Helper()
+	independentDB, independentConn := c1IndependentSQLiteConn(t, path)
+	defer independentDB.Close()
+	defer independentConn.Close()
+	if _, err := independentConn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("O2 independent writer lock retained: %v", err)
+	}
+	if _, err := independentConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Fatalf("O2 independent writer rollback: %v", err)
+	}
+}
+
+func assertLegacyCASDiscarded(t *testing.T, store *sqliteClaimStore) {
+	t.Helper()
+	stats := store.db.Stats()
+	if stats.Idle != 0 || stats.OpenConnections != 0 {
+		t.Fatalf("O2 uncertain driver connection remained pooled: idle=%d open=%d", stats.Idle, stats.OpenConnections)
+	}
+}
+
+func TestSQLiteLegacyCASConnectionCleanup(t *testing.T) {
+	t.Run("codec2 ordinary CAS, replay, and missing row", func(t *testing.T) {
+		store, f, current, cmd := legacyCASFixture(t)
+		missing := f
+		missing.caller = mustPrivateCallerRef(t, []byte("ordinary-missing-cas-caller"))
+		missing.claim = mustPrivateClaimID(t, missing.caller, missing.submitKey)
+		missing.plan = mustPrivateBoundPlan(t, missing.binding, missing.witness)
+		absent := mustPrivateRecord(t, mustPrivatePendingBefore(t, missing), missing)
+		miss, err := store.compareAndSwapClaim(context.Background(), legacyCASAssignCommand(t, absent, missing))
+		if err != nil || miss.applied || miss.found {
+			t.Fatalf("ordinary missing CAS: result=%+v error=%v", miss, err)
+		}
+		assertLegacyCASIndependentWriter(t, store.path)
+		applied, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !applied.applied || !applied.found || !applied.record.equal(cmd.next) {
+			t.Fatalf("ordinary applied CAS: result=%+v error=%v", applied, err)
+		}
+		winner, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || winner.applied || !winner.found || !winner.record.equal(applied.record) {
+			t.Fatalf("ordinary stale winner CAS: result=%+v error=%v", winner, err)
+		}
+		service := mustDurableService(t, store, fixedClaimClock{now: f.later})
+		replay, err := service.assignRun(context.Background(), assignRunRequest{
+			claim: f.claim, binding: f.binding, expectedRevision: current.revision,
+			run: f.run, mutation: f.nextMut,
+		})
+		if err != nil || replay.kind != durableClaimOutcomeAssigned || !replay.record.equal(applied.record) {
+			t.Fatalf("ordinary exact replay: outcome=%+v error=%v", replay, err)
+		}
+		assertSQLiteClaimUnchanged(t, store, applied.record)
+		assertSQLiteClaimRowCount(t, store.db, 1)
+	})
+
+	t.Run("codec2 cancel after real BEGIN", func(t *testing.T) {
+		store, _, current, cmd := legacyCASFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		begun := false
+		rollbackIndependent := false
+		store.casAfterBegin = func(context.Context, *sql.Conn) error {
+			begun = true
+			cancel()
+			return nil
+		}
+		store.casRollbackAttempt = func(ctx context.Context, conn *sql.Conn) error {
+			rollbackIndependent = ctx.Err() == nil
+			_, err := conn.ExecContext(ctx, "ROLLBACK")
+			return err
+		}
+		result, err := store.compareAndSwapClaim(ctx, cmd)
+		if !begun || !rollbackIndependent || err == nil || result.applied || result.found {
+			t.Fatalf("cancel-after-BEGIN cleanup missed request-independent rollback: begun=%t independent=%t result=%+v error=%v", begun, rollbackIndependent, result, err)
+		}
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+		store.casAfterBegin, store.casRollbackAttempt = nil, nil
+		later, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !later.applied || !later.found || !later.record.equal(cmd.next) {
+			t.Fatalf("later same-store CAS failed: result=%+v error=%v", later, err)
+		}
+	})
+
+	t.Run("codec2 cancel after real UPDATE before COMMIT", func(t *testing.T) {
+		store, _, current, cmd := legacyCASFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		attempted := false
+		store.casCommitAttempt = func(ctx context.Context, conn *sql.Conn) error {
+			attempted = true
+			cancel()
+			return commit(ctx, conn)
+		}
+		result, err := store.compareAndSwapClaim(ctx, cmd)
+		if !attempted || !errors.Is(err, errClaimStoreCommitUnknown) || result.applied || result.found {
+			t.Fatalf("cancel-after-UPDATE did not reach uncertain COMMIT: attempted=%t result=%+v error=%v", attempted, result, err)
+		}
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+		store.casCommitAttempt = nil
+		later, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !later.applied || !later.record.equal(cmd.next) {
+			t.Fatalf("later same-store CAS failed: result=%+v error=%v", later, err)
+		}
+	})
+
+	t.Run("codec2 rollback error discards live transaction", func(t *testing.T) {
+		store, _, current, cmd := legacyCASFixture(t)
+		store.casAfterBegin = func(context.Context, *sql.Conn) error { return errClaimStoreInternal }
+		rollbackAttempted := false
+		store.casRollbackAttempt = func(context.Context, *sql.Conn) error {
+			rollbackAttempted = true
+			return errors.New("synthetic rollback response failure before dispatch")
+		}
+		result, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if !rollbackAttempted || !errors.Is(err, errClaimStoreUnavailable) || result.applied || result.found {
+			t.Fatalf("failed rollback did not override result: attempted=%t result=%+v error=%v", rollbackAttempted, result, err)
+		}
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+		store.casAfterBegin, store.casRollbackAttempt = nil, nil
+		later, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !later.applied || !later.record.equal(cmd.next) {
+			t.Fatalf("later same-store CAS failed: result=%+v error=%v", later, err)
+		}
+	})
+
+	t.Run("codec2 real COMMIT lost response reloads exact winner", func(t *testing.T) {
+		store, f, current, _ := legacyCASFixture(t)
+		var disposed, noPooled bool
+		store.casCommitAttempt = func(ctx context.Context, conn *sql.Conn) error {
+			if err := commit(ctx, conn); err != nil {
+				return err
+			}
+			return errClaimStoreCommitUnknown
+		}
+		store.casDiscardAttempt = func(conn *sql.Conn) error {
+			disposed = true
+			err := discardUncertainSQLiteConn(conn)
+			stats := store.db.Stats()
+			noPooled = stats.Idle == 0 && stats.OpenConnections == 0
+			return err
+		}
+		rollbackAfterAttempt := false
+		store.casRollbackAttempt = func(context.Context, *sql.Conn) error {
+			rollbackAfterAttempt = true
+			return errors.New("post-COMMIT rollback is forbidden")
+		}
+		service := mustDurableService(t, store, fixedClaimClock{now: f.later})
+		outcome, err := service.assignRun(context.Background(), assignRunRequest{
+			claim: f.claim, binding: f.binding, expectedRevision: current.revision,
+			run: f.run, mutation: f.nextMut,
+		})
+		if err != nil || outcome.kind != durableClaimOutcomeAssigned || !outcome.hasRecord ||
+			outcome.record.revision != current.revision+1 || !disposed || !noPooled || rollbackAfterAttempt {
+			t.Fatalf("lost real COMMIT was not safely classified: kind=%d revision=%d disposed=%t noPooled=%t error=%v",
+				outcome.kind, outcome.record.revision, disposed, noPooled, err)
+		}
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, outcome.record)
+		store.casCommitAttempt, store.casDiscardAttempt, store.casRollbackAttempt = nil, nil, nil
+		replayed, err := service.assignRun(context.Background(), assignRunRequest{
+			claim: f.claim, binding: f.binding, expectedRevision: current.revision,
+			run: f.run, mutation: f.nextMut,
+		})
+		if err != nil || replayed.kind != durableClaimOutcomeAssigned || !replayed.record.equal(outcome.record) {
+			t.Fatalf("exact operation replay changed durable winner: outcome=%+v error=%v", replayed, err)
+		}
+	})
+
+	t.Run("codec2 COMMIT predispatch error discards", func(t *testing.T) {
+		store, _, current, cmd := legacyCASFixture(t)
+		attempted := false
+		store.casCommitAttempt = func(context.Context, *sql.Conn) error {
+			attempted = true
+			return errClaimStoreCommitUnknown
+		}
+		result, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if !attempted || !errors.Is(err, errClaimStoreCommitUnknown) || result.applied || result.found {
+			t.Fatalf("COMMIT predispatch uncertainty did not fail closed: attempted=%t result=%+v error=%v", attempted, result, err)
+		}
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+		store.casCommitAttempt = nil
+		later, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !later.applied || !later.record.equal(cmd.next) {
+			t.Fatalf("later same-store CAS failed: result=%+v error=%v", later, err)
+		}
+	})
+
+	t.Run("codec2 CAS miss cleanup failure overrides nil", func(t *testing.T) {
+		store, f, _, originalCmd := legacyCASFixture(t)
+		other := f
+		other.caller = mustPrivateCallerRef(t, []byte("missing-cas-caller"))
+		other.claim = mustPrivateClaimID(t, other.caller, other.submitKey)
+		other.plan = mustPrivateBoundPlan(t, other.binding, other.witness)
+		absent := mustPrivateRecord(t, mustPrivatePendingBefore(t, other), other)
+		cmd := legacyCASAssignCommand(t, absent, other)
+		rollbackAttempted := false
+		store.casRollbackAttempt = func(context.Context, *sql.Conn) error {
+			rollbackAttempted = true
+			return errors.New("synthetic rollback response failure before dispatch")
+		}
+		result, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if !rollbackAttempted || !errors.Is(err, errClaimStoreUnavailable) || result.applied || result.found {
+			t.Fatalf("CAS-miss cleanup failure returned success: attempted=%t result=%+v error=%v", rollbackAttempted, result, err)
+		}
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		_, err = store.loadClaim(context.Background(), loadClaimQuery{claim: other.claim})
+		if !errors.Is(err, errClaimStoreNotFound) {
+			t.Fatalf("missing row unexpectedly appeared: %v", err)
+		}
+		store.casRollbackAttempt = nil
+		later, err := store.compareAndSwapClaim(context.Background(), originalCmd)
+		if err != nil || !later.applied || !later.record.equal(originalCmd.next) {
+			t.Fatalf("later same-store CAS failed: result=%+v error=%v", later, err)
+		}
+	})
+
+	t.Run("codec2 unconfirmed disposal result is unavailable", func(t *testing.T) {
+		store, _, current, cmd := legacyCASFixture(t)
+		store.casAfterBegin = func(context.Context, *sql.Conn) error { return errClaimStoreInternal }
+		store.casRollbackAttempt = func(context.Context, *sql.Conn) error {
+			return errors.New("synthetic rollback response failure before dispatch")
+		}
+		store.casDiscardAttempt = func(*sql.Conn) error {
+			return errors.New("synthetic disposal response loss before Raw")
+		}
+		result, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if !errors.Is(err, errClaimStoreUnavailable) || result.applied || result.found {
+			t.Fatalf("unconfirmed disposal authorized result: result=%+v error=%v", result, err)
+		}
+		// The CAS-local rescue performs real Raw/ErrBadConn disposal while the
+		// synthetic first response remains an unavailable result.
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+	})
+
+	t.Run("codec2 stale winner second COMMIT branch", func(t *testing.T) {
+		store, _, _, cmd := legacyCASFixture(t)
+		winner, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !winner.applied || !winner.record.equal(cmd.next) {
+			t.Fatalf("seed winner: result=%+v error=%v", winner, err)
+		}
+		store.casCommitAttempt = func(ctx context.Context, conn *sql.Conn) error {
+			if err := commit(ctx, conn); err != nil {
+				return err
+			}
+			return errClaimStoreCommitUnknown
+		}
+		rollbackAfterAttempt := false
+		store.casRollbackAttempt = func(context.Context, *sql.Conn) error {
+			rollbackAfterAttempt = true
+			return errors.New("post-COMMIT rollback is forbidden")
+		}
+		result, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if !errors.Is(err, errClaimStoreCommitUnknown) || result.applied || result.found || rollbackAfterAttempt {
+			t.Fatalf("second COMMIT branch did not report uncertainty without rollback: result=%+v rollback=%t error=%v", result, rollbackAfterAttempt, err)
+		}
+		assertLegacyCASDiscarded(t, store)
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, winner.record)
+	})
+
+	t.Run("codec1 migrated cleanup then upgrade", func(t *testing.T) {
+		path := sqliteTestPath(t, "state", "codec1.sqlite3")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create codec-1 fixture parent: %v", err)
+		}
+		fixtureSchemaVersion(t, path, 1)
+		store := mustOpenSQLiteClaimStore(t, path)
+		t.Cleanup(func() { _ = store.close() })
+		store.db.SetMaxOpenConns(1)
+		store.db.SetMaxIdleConns(1)
+		f := newDurableFixture(t)
+		f.caller = mustPrivateCallerRef(t, []byte("c"))
+		f.submitKey = mustPrivateSubmitKeyRef(t, []byte("k"))
+		f.claim = mustPrivateClaimID(t, f.caller, f.submitKey)
+		f.binding = mustPrivatePlanBinding(t, bytes.Repeat([]byte("b"), 257))
+		f.plan = mustPrivateBoundPlan(t, f.binding, f.witness)
+		current, err := store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+		if err != nil || current.codecVersion != durableClaimCodecVersionLegacy {
+			t.Fatalf("migrated codec-1 row: codec=%d error=%v", current.codecVersion, err)
+		}
+		cmd := legacyCASAssignCommand(t, current, f)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store.casAfterBegin = func(context.Context, *sql.Conn) error { cancel(); return nil }
+		result, err := store.compareAndSwapClaim(ctx, cmd)
+		if err == nil || result.applied || result.found {
+			t.Fatalf("codec-1 cancel authorized CAS: result=%+v error=%v", result, err)
+		}
+		assertLegacyCASIndependentWriter(t, store.path)
+		assertSQLiteClaimUnchanged(t, store, current)
+		store.casAfterBegin = nil
+		upgraded, err := store.compareAndSwapClaim(context.Background(), cmd)
+		if err != nil || !upgraded.applied || !upgraded.record.equal(cmd.next) ||
+			upgraded.record.codecVersion != durableClaimCodecVersion {
+			t.Fatalf("codec-1 later upgrade failed: result=%+v error=%v", upgraded, err)
+		}
+		assertSQLiteClaimUnchanged(t, store, upgraded.record)
+	})
+}

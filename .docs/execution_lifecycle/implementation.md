@@ -1211,9 +1211,10 @@ The current stable-service-namespace/trusted-operator assumption is explicit:
 the last check is not atomic against a privileged mount or hostile same-UID
 rename in the final syscall window, and concealed backing-store aliasing is not
 claimed. Modeled tests are not mounted-topology evidence. C's selected native
-observations remain historical exact-source evidence, not an execution of this
-unaccepted integration. Focused changed-interaction review/validation and a
-separately authorized commit remain pending. Deployment observation, mounted
+observations remain historical exact-source evidence, not an execution of the
+then-unaccepted integration. Focused changed-interaction review/validation and
+a separately authorized commit were pending at that gate; PR #8 later
+completed source publication only. Deployment observation, mounted
 fixtures, native Linux validation, and key/capacity/residence/reclamation
 requirements remain operational gates for claimed environments; they are not
 a blanket local source-preservation or integration commit gate.

@@ -41,12 +41,13 @@ claim depends on it.
 These are environment-bound operational qualification requirements under
 `PLANS.md` and `.docs/execution_lifecycle/contracts.md`. They are not an
 independent blanket prerequisite to a separately authorized local source-
-preservation or integration commit. This H/C/T integrated source remains
-unaccepted and requires focused changed-interaction assessment and explicit
-commit authority. A concrete changed interaction may require a separately
+preservation or integration commit. At that historical gate, the H/C/T
+integrated source was unaccepted and required focused changed-interaction
+assessment and explicit commit authority. PR #8 later completed source
+publication only. A concrete changed interaction may require a separately
 selected bounded witness; merge ancestry alone does not create a blanket
 native campaign. C's selected observations remain historical exact-C evidence,
-not executions of this integrated tree. No current deployment compatibility,
+not executions of the PR #8 merged tree. No current deployment compatibility,
 supported-host claim, or rollout readiness is inferred here.
 
 It is not the final commercial deployment target. Full remote Control Plane plus remote Execution Substrate with the operator's Mac browser as the human surface, remote Temporal, HA, object storage, and source/workspace sync models remain out of scope for this alpha.

@@ -140,7 +140,8 @@ Cross-compilation is compile evidence only and cannot replace those runtime
 observations. Darwin behavior, a fake filesystem, containers running a
 different kernel or architecture, and an OS label cannot replace them either.
 C's selected native programme remains historical evidence for its exact source
-and environments, not an execution of this unaccepted H/C/T integrated tree.
+and environments, not an execution of the then-unaccepted H/C/T integrated
+tree. PR #8 later completed source publication only.
 Evidence reuse or a new bounded witness depends on the concrete changed
 interaction and operating claim; merge ancestry alone does not require a
 blanket native campaign. Until the relevant claimed-architecture behavior is

@@ -707,10 +707,11 @@ rejects same-FSID distinct presentations. Both reject canonical descendant
 mounts and fail closed when proof is unavailable or inconsistent.
 
 Local implementation and modeled tests do not establish mounted or deployment
-compatibility. C's selected native observations remain historical exact-C
-evidence, not executions of this unaccepted integrated tree. Focused independent
-changed-interaction assessment may select a new bounded witness for a concrete
-need; a local commit requires separate authority. Running-deployment topology,
+compatibility. At the pre-PR #8 integration gate, C's selected native
+observations were historical exact-C evidence, not executions of the
+then-unaccepted integrated tree. PR #8 later completed source publication;
+focused independent changed-interaction assessment may still select a new
+bounded witness for a concrete operating claim. Running-deployment topology,
 key isolation, capacity, residence, reclamation, publication, and native
 qualification for claimed architectures remain gates for their operational scope,
 not blanket local pre-commit conditions. No integrated native qualification is

@@ -1987,11 +1987,12 @@ failure does not fall through to Nomad.
 
 Modeled topology tests do not claim an actual bind or casefold mount. C's
 selected native observations remain historical evidence for exact C source and
-its environments, not executions of this unaccepted integrated tree; T and
-this candidate do not inherit C's development acceptance. Local source or
-integration acceptance of this candidate requires focused candidate-specific
-changed-interaction assessment and validation. A local source-preservation or
-integration commit then requires separate explicit authorization.
+its environments, not executions of the then-unaccepted integrated tree; T and
+that candidate did not inherit C's development acceptance. At that gate, local
+source or integration acceptance required focused candidate-specific
+changed-interaction assessment and validation, followed by separate explicit
+commit authority. PR #8 later completed source publication of the accepted
+tree, without operational qualification.
 
 Running-deployment topology observation for a claimed Remote Alpha environment,
 real repaired-helper mounted-alias fixtures where the operational claim depends

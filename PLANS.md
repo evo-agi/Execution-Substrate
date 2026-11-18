@@ -2,14 +2,37 @@
 
 ## Status
 
-## Current-remote-base private synthetic replay custody selection (2026-11-17)
+## Post-PR #8 merged source and O2 hardening selection (2026-11-18)
 
-This candidate contains the accepted `d408877545c16ee94968b04eab236da9e3ad6db0`
+PR #8 completed development acceptance, local source preservation, remote
+source publication, and the squash merge on official `trunk_dev` at
+`2478a24a18852f1abd7d474c0525c46bd2c05e5e`, complete tree
+`e7defd3a0df278ad70762f17f0f2a5b1c14a795b`. This source publication
+is not artifact publication, operational acceptance, deployment, native
+installed-source qualification, or a CI-pass claim. Private codec-3 custody
+remains a **Bounded slice rule** on the reliable-submit **Reopened redesign
+seam**, limited to `synthetic_nonoperational_v1`: runtime-unwired,
+effect-ineligible, and unavailable as public reliable Submit. Public
+structural reliable-request refusal and unkeyed Submit remain in force.
+
+The next selected source-only refinement is O2, historical codec-1/2 CAS
+transaction cleanup after known BEGIN success and across COMMIT uncertainty.
+The persistence ADR owns its bounded contract; tests and implementation must
+prove request-independent rollback, exact-connection disposal when needed,
+and unchanged durable/replay results. This uncommitted O2 patch requires its
+own focused validation and fresh independent audit before acceptance. A1,
+canceled-context original-key read availability and read-transaction cleanup,
+remains a separate before-runtime concern and is not closed by O2. Neither
+slice authorizes runtime wiring or public reliable Submit.
+
+## Historical current-remote-base private synthetic replay custody selection (2026-11-17)
+
+At selection, this candidate contained the accepted `d408877545c16ee94968b04eab236da9e3ad6db0`
 private replay-custody delta as its third logical layer on the verified current
 remote base. Private codec-3 custody is a **Bounded slice rule** on the
 **Reopened redesign seam** for reliable-submit canonical binding and replay
 completeness. Its only scope is `synthetic_nonoperational_v1`: source-local,
-runtime-unwired, unpublished, effect-ineligible, and unavailable as public
+runtime-unwired, then-unpublished, effect-ineligible, and unavailable as public
 reliable submit. It introduces no Service.Submit, HTTP, app, configuration,
 provider, staging, deployed key-loader, TTL/GC, backup/restore, or runtime
 wiring change. Public structural reliable-request refusal and unkeyed Submit
@@ -25,11 +48,12 @@ migration-1/2 literals and hashes. Codec-1/2 generic domains and historical
 compatibility remain; old binaries refuse schema 3. The owner contracts in
 `.docs/execution_lifecycle/` govern the exact shape. The pre-existing
 historical codec-1/2 CAS cleanup concern remains a separate post-publication,
-pre-runtime-wiring hardening tranche, outside this candidate.
+pre-runtime-wiring hardening tranche, outside that historical candidate and
+selected above as O2.
 
-## Current-remote-base PB1 binding selection (2026-11-17)
+## Historical current-remote-base PB1 binding selection (2026-11-17)
 
-This candidate contains the accepted predecessor's private admission binding v1
+At selection, this candidate contained the accepted predecessor's private admission binding v1
 source at `1c44483fcb6978125a3c4f11ff168d094200dd4e` for its second
 logical layer. The admission-local HMAC-SHA-256 effective-plan commitment and
 fourteen-category completeness witness remain a **Bounded slice rule** on the
@@ -39,7 +63,7 @@ integration I. It carries the signature-verified returned mount artifact
 digest and signed payload digest into the private assessment without changing
 legacy admission rejection or acquisition count. There was no production
 caller at PB1; the private replay composer is the only later source-local
-caller in this candidate.
+caller selected in that historical candidate.
 The producer is private and runtime-unwired; every assessment remains
 effect-ineligible. Current public structural reliable-request refusal, unkeyed
 Submit, job/handoff/receipt behavior, result authentication, and lifecycle
@@ -47,13 +71,13 @@ authority remain unchanged. This selection adds no public reliable submit,
 schema migration, provider route, or key-custody authority.
 Reliable submit remains unavailable.
 
-## Current-remote-base H/C/T foundation selection (2026-11-17)
+## Historical current-remote-base H/C/T foundation selection (2026-11-17)
 
-This current-base tranche re-derives the reviewed H/C/T foundation tree on official `trunk_dev` `87d262de8748f49197c5bba6020bd5dddc334bc7`. The 2026-11-13 construction snapshot is historical; the preservation-only T commit grants no publication or operational authority and is not part of this branch ancestry. T's one-time checkpoint exception is consumed. The accepted predecessor source, this candidate's validation, independent audit, local commit, and remote publication remain separate gates. This tranche preserves the remote P0s/P0t dedicated status-only collector and pre-contact renewal hold while retaining the locally selected effect-free existing-host route retirements.
+At selection, this current-base tranche re-derived the reviewed H/C/T foundation tree on official `trunk_dev` `87d262de8748f49197c5bba6020bd5dddc334bc7`. The 2026-11-13 construction snapshot is historical; the preservation-only T commit grants no publication or operational authority and is not part of this branch ancestry. T's one-time checkpoint exception is consumed. The accepted predecessor source, the then-candidate's validation, independent audit, local commit, and remote publication were separate gates. This tranche preserves the remote P0s/P0t dedicated status-only collector and pre-contact renewal hold while retaining the locally selected effect-free existing-host route retirements.
 
 Current unkeyed Submit retains T's admission-owned semantic plan and fixed B2 public/privacy boundaries while using C's post-`prepareAdmission` execution/placement snapshot. That snapshot begins after successful admission and supplies one staging/results pair through the current Submit resolution, materialization, and handoff. It does not atomically capture concurrently mutated configuration, earlier admission/trust/Vault/policy reads, or later Status/Logs/Result requests. Artifact, capability, target, and profile errors precede placement errors. C's archive, mount, custody, authenticated-result and no-repair rules remain the safety baseline. Incomplete leaves and startup probe fixtures remain retained where exact effect-time identity for removal is unproved. Paired-root proof is an active **Bounded slice rule pending integrated review**; whole-root reclamation remains a **Reopened redesign seam**.
 
-The six named existing-host Remote Alpha ES writable-state/service-user helper routes remain fixed effect-free tombstones. Archived v1 claims are a **Temporary compatibility edge** and not current host truth; no v2 replacement or fresh-host provisioning is selected. The operator-facade evidence-compatibility cutoff is separate and does not retire underlying owner-local producer scripts. Supported-local and unrelated Remote Alpha routes remain outside this retirement. Development acceptance, a later commit, operational rollout, and publication are distinct decisions. Key isolation, topology, capacity, residence, reclamation, and publication gates remain open. Reliable submit remains unavailable and runtime-unwired.
+The six named existing-host Remote Alpha ES writable-state/service-user helper routes remain fixed effect-free tombstones. Archived v1 claims are a **Temporary compatibility edge** and not current host truth; no v2 replacement or fresh-host provisioning is selected. The operator-facade evidence-compatibility cutoff is separate and does not retire underlying owner-local producer scripts. Supported-local and unrelated Remote Alpha routes remain outside this retirement. At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions; PR #8 later completed source publication only. Key isolation, topology, capacity, residence, reclamation, and publication gates remain open. Reliable submit remains unavailable and runtime-unwired.
 
 
 This document is the authoritative planning document for the current Execution Substrate workstreams, bounded platform hardening, and explicitly reopened seams.
@@ -975,9 +999,12 @@ allowed repository implementation and local validation before a running-
 deployment topology observation, then treated that observation, repaired-helper
 mounted fixtures, sequential native Linux lanes, and a fresh audit as blanket
 pre-commit gates. That pre-integration linkage is not a current local commit
-rule. The accepted predecessor tree supplies source evidence for this
-current-base candidate, which remains uncommitted and pending independent
-audit. It requires focused changed-interaction assessment and validation plus a separately authorized commit. C's selected native observations remain historical evidence
+rule. The accepted predecessor tree supplied source evidence for the
+then-current-base candidate, which at that gate remained uncommitted and
+pending independent audit. That historical source gate closed with PR #8;
+its source publication did not close operating gates. Focused changed-interaction
+assessment, validation, and separately authorized commit were required there.
+C's selected native observations remain historical evidence
 for exact C source and command identities, not executions of this tree. Any
 new bounded witness must be selected for a concrete changed interaction rather
 than inferred from merge ancestry. Operational topology, key exposure,
