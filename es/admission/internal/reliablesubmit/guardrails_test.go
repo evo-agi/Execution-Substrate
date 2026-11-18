@@ -42,8 +42,10 @@ func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 		"store.go",
 	}
 	sqliteSpecific := map[string]bool{
-		"sqlite_migrations.go": true,
-		"sqlite_store.go":      true,
+		"replay_custody_file.go":   true,
+		"replay_key_use_sqlite.go": true,
+		"sqlite_migrations.go":     true,
+		"sqlite_store.go":          true,
 	}
 
 	for _, path := range backendNeutral {
@@ -59,6 +61,73 @@ func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 		assertSQLiteSpecificImports(t, path, file)
 		assertNoPublicStorageSurface(t, path, file)
 		assertNoPostgreSQLSource(t, path, source)
+	}
+	publicationFile, publicationSource := mustParseReliableSubmitSource(t, "replay_custody_file.go")
+	if !strings.Contains(publicationSource, "type replayPublicationFault uint8") ||
+		!strings.Contains(publicationSource, "testPublicationFault") ||
+		strings.Contains(publicationSource, "var testPublicationFault") {
+		t.Fatal("publication fault seam is not a finite per-custody test selector")
+	}
+	ownedCloseFound := false
+	for _, declaration := range publicationFile.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "close" || function.Recv == nil || len(function.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		name, ok := receiver.X.(*ast.Ident)
+		if !ok || name.Name != "replayPublicationOwnedFD" {
+			continue
+		}
+		var ownershipClear, closeCall token.Pos
+		closeCalls := 0
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.AssignStmt:
+				for _, left := range typed.Lhs {
+					selector, ok := left.(*ast.SelectorExpr)
+					if ok && selector.Sel.Name == "fd" {
+						if receiver, ok := selector.X.(*ast.Ident); ok && receiver.Name == "o" {
+							ownershipClear = typed.Pos()
+						}
+					}
+				}
+			case *ast.CallExpr:
+				if selector, ok := typed.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Close" {
+					if receiver, ok := selector.X.(*ast.Ident); ok && receiver.Name == "unix" {
+						closeCalls++
+						closeCall = typed.Pos()
+					}
+				}
+			}
+			return true
+		})
+		if closeCalls != 1 || ownershipClear == token.NoPos || ownershipClear >= closeCall {
+			t.Fatal("owned publication FD must clear ownership before one close syscall")
+		}
+		ownedCloseFound = true
+	}
+	if !ownedCloseFound {
+		t.Fatal("owned publication FD close helper missing")
+	}
+	permitSource := mustReadReliableSubmitSource(t, "replay_key_use_sqlite.go")
+	if reason := replayPermitIssuerViolation(permitSource); reason != "" {
+		t.Fatalf("issuing-store permit guard: %s", reason)
+	}
+	for _, mutant := range []struct {
+		name string
+		old  string
+	}{
+		{"missing_issuer_assignment", "issuer: s, "},
+		{"missing_issuer_comparison", "p.issuer == issuer && "},
+	} {
+		changed := strings.Replace(permitSource, mutant.old, "", 1)
+		if changed == permitSource || replayPermitIssuerViolation(changed) == "" {
+			t.Fatalf("issuing-store guard accepted %s mutant", mutant.name)
+		}
 	}
 
 	storeSource := mustReadReliableSubmitSource(t, "store.go")
@@ -105,6 +174,273 @@ func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 	assertNoSQLiteOutsideReliableSubmitPackage(t, repoRoot)
 	assertNoReliableSubmitRuntimeWiring(t, repoRoot)
 	assertNoReliableSubmitConfigFields(t, repoRoot)
+}
+
+// replayPermitIssuerViolation checks only the finite private grant path. The
+// issuer is the store object that committed the grant, never a path or key ID.
+func replayPermitIssuerViolation(source string) string {
+	file, err := parser.ParseFile(token.NewFileSet(), "replay_key_use_sqlite.go", source, 0)
+	if err != nil {
+		return "permit source did not parse"
+	}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			return "permit import did not parse"
+		}
+		switch path {
+		case "encoding/json", "encoding/gob", "encoding/xml", "path", "path/filepath":
+			return "permit source gained serialization or path authority"
+		}
+	}
+	var reserve, consume, storeConsume *ast.FuncDecl
+	issuerFields := 0
+	for _, declaration := range file.Decls {
+		switch typed := declaration.(type) {
+		case *ast.GenDecl:
+			for _, spec := range typed.Specs {
+				definition, ok := spec.(*ast.TypeSpec)
+				if !ok || definition.Name.Name != "privateSealPermit" {
+					continue
+				}
+				fields, ok := definition.Type.(*ast.StructType)
+				if !ok {
+					return "permit is not a struct"
+				}
+				for _, field := range fields.Fields.List {
+					if field.Tag != nil {
+						return "permit gained a serialization tag"
+					}
+					for _, name := range field.Names {
+						if name.Name != "issuer" {
+							continue
+						}
+						pointer, ok := field.Type.(*ast.StarExpr)
+						if !ok {
+							return "issuer is not a store pointer"
+						}
+						store, ok := pointer.X.(*ast.Ident)
+						if !ok || store.Name != "sqliteClaimStore" {
+							return "issuer is not the exact SQLite store type"
+						}
+						issuerFields++
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			receiver := replayPermitReceiverName(typed)
+			if receiver == "privateSealPermit" && typed.Name.IsExported() {
+				return "permit gained an exported method"
+			}
+			if typed.Name.IsExported() {
+				exposesPermit := false
+				ast.Inspect(typed.Type, func(node ast.Node) bool {
+					name, ok := node.(*ast.Ident)
+					if ok && name.Name == "privateSealPermit" {
+						exposesPermit = true
+					}
+					return true
+				})
+				if exposesPermit {
+					return "permit gained an exported accessor"
+				}
+			}
+			switch {
+			case receiver == "sqliteClaimStore" && typed.Name.Name == "reserveReplaySealUse":
+				reserve = typed
+			case receiver == "privateSealPermit" && typed.Name.Name == "consume":
+				consume = typed
+			case receiver == "sqliteClaimStore" && typed.Name.Name == "consumeReplaySealPermit":
+				storeConsume = typed
+			}
+		}
+	}
+	if issuerFields != 1 || reserve == nil || consume == nil || storeConsume == nil {
+		return "finite permit owner or methods are missing"
+	}
+	var allLiterals int
+	ast.Inspect(file, func(node ast.Node) bool {
+		literal, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		kind, ok := literal.Type.(*ast.Ident)
+		if ok && kind.Name == "privateSealPermit" {
+			allLiterals++
+		}
+		return true
+	})
+	if allLiterals != 1 {
+		return "permit construction escaped the single grant site"
+	}
+	var commitChecked token.Pos
+	for _, statement := range reserve.Body.List {
+		condition, ok := statement.(*ast.IfStmt)
+		if !ok || condition.Init == nil || len(condition.Body.List) != 1 {
+			continue
+		}
+		assignment, ok := condition.Init.(*ast.AssignStmt)
+		if !ok || len(assignment.Rhs) != 1 {
+			continue
+		}
+		call, ok := assignment.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		name, ok := call.Fun.(*ast.Ident)
+		if !ok || name.Name != "commitGrant" {
+			continue
+		}
+		comparison, ok := condition.Cond.(*ast.BinaryExpr)
+		if !ok || comparison.Op != token.NEQ {
+			return "grant commit result is not checked"
+		}
+		failure, ok := condition.Body.List[0].(*ast.ReturnStmt)
+		if !ok || len(failure.Results) != 2 {
+			return "grant commit failure does not return without a permit"
+		}
+		first, firstOK := failure.Results[0].(*ast.Ident)
+		second, secondOK := failure.Results[1].(*ast.Ident)
+		if !firstOK || !secondOK || first.Name != "nil" || second.Name != "err" {
+			return "grant commit failure can return a permit"
+		}
+		commitChecked = condition.End()
+	}
+	if commitChecked == token.NoPos {
+		return "known successful grant commit is missing"
+	}
+	var issued token.Pos
+	var assignments int
+	ast.Inspect(reserve.Body, func(node ast.Node) bool {
+		literal, ok := node.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		kind, ok := literal.Type.(*ast.Ident)
+		if !ok || kind.Name != "privateSealPermit" {
+			return true
+		}
+		issued = literal.Pos()
+		for _, element := range literal.Elts {
+			pair, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, keyOK := pair.Key.(*ast.Ident)
+			value, valueOK := pair.Value.(*ast.Ident)
+			if keyOK && valueOK && key.Name == "issuer" && value.Name == "s" {
+				assignments++
+			}
+		}
+		return true
+	})
+	if assignments != 1 || issued <= commitChecked {
+		return "permit issuer was not assigned after known commit"
+	}
+	if len(consume.Type.Params.List) == 0 {
+		return "permit consumption has no issuer argument"
+	}
+	firstParameter := consume.Type.Params.List[0]
+	firstPointer, ok := firstParameter.Type.(*ast.StarExpr)
+	if !ok || len(firstParameter.Names) != 1 || firstParameter.Names[0].Name != "issuer" {
+		return "permit consumption lacks exact issuer parameter"
+	}
+	firstType, ok := firstPointer.X.(*ast.Ident)
+	if !ok || firstType.Name != "sqliteClaimStore" {
+		return "permit consumption accepts nonstore issuer"
+	}
+	var burned token.Pos
+	var compared token.Pos
+	var nonNil token.Pos
+	ast.Inspect(consume.Body, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.AssignStmt:
+			if len(typed.Lhs) != 1 || len(typed.Rhs) != 1 {
+				break
+			}
+			left, ok := typed.Lhs[0].(*ast.SelectorExpr)
+			if !ok || !replayPermitSelector(left, "p", "used") {
+				break
+			}
+			right, ok := typed.Rhs[0].(*ast.Ident)
+			if ok && right.Name == "true" {
+				burned = typed.Pos()
+			}
+		case *ast.ReturnStmt:
+			if len(typed.Results) != 1 {
+				break
+			}
+			ast.Inspect(typed.Results[0], func(child ast.Node) bool {
+				binary, ok := child.(*ast.BinaryExpr)
+				if !ok {
+					return true
+				}
+				if binary.Op == token.LOR {
+					compared = token.NoPos
+					nonNil = token.NoPos
+					return false
+				}
+				left, leftOK := binary.X.(*ast.SelectorExpr)
+				right, rightOK := binary.Y.(*ast.Ident)
+				if binary.Op == token.EQL && leftOK && rightOK &&
+					replayPermitSelector(left, "p", "issuer") && right.Name == "issuer" {
+					compared = typed.Pos()
+				}
+				if binary.Op == token.NEQ {
+					ident, ok := binary.X.(*ast.Ident)
+					nilIdent, nilOK := binary.Y.(*ast.Ident)
+					if ok && nilOK && ident.Name == "issuer" && nilIdent.Name == "nil" {
+						nonNil = typed.Pos()
+					}
+				}
+				return true
+			})
+		}
+		return true
+	})
+	if burned == token.NoPos || compared <= burned || nonNil != compared {
+		return "permit is not burned before exact issuer comparison"
+	}
+	var passedIssuer int
+	ast.Inspect(storeConsume.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !replayPermitSelector(selector, "permit", "consume") {
+			return true
+		}
+		first, ok := call.Args[0].(*ast.Ident)
+		if ok && first.Name == "s" {
+			passedIssuer++
+		}
+		return true
+	})
+	if passedIssuer != 1 {
+		return "key-use authority did not pass its own store to consumption"
+	}
+	return ""
+}
+
+func replayPermitReceiverName(function *ast.FuncDecl) string {
+	if function.Recv == nil || len(function.Recv.List) != 1 {
+		return ""
+	}
+	value := function.Recv.List[0].Type
+	if pointer, ok := value.(*ast.StarExpr); ok {
+		value = pointer.X
+	}
+	name, ok := value.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return name.Name
+}
+
+func replayPermitSelector(selector *ast.SelectorExpr, receiver string, name string) bool {
+	value, ok := selector.X.(*ast.Ident)
+	return ok && value.Name == receiver && selector.Sel.Name == name
 }
 
 func assertPureModelImports(t *testing.T, file *ast.File) {

@@ -4,7 +4,7 @@ import "crypto/sha256"
 
 const (
 	sqliteClaimStoreApplicationID = 1163088467
-	sqliteClaimStoreSchemaVersion = 2
+	sqliteClaimStoreSchemaVersion = 3
 	sqliteDefaultBusyTimeoutMS    = 5000
 	sqliteDefaultMaxOpenConns     = 4
 )
@@ -346,6 +346,11 @@ BEGIN
   SELECT CASE WHEN OLD.retention_state != 1 AND NEW.retention_state = 1 THEN RAISE(ABORT, 'inactive claim cannot become active') END;
 END;
 `,
+	},
+	{
+		version: 3,
+		name:    "private synthetic replay custody",
+		sql:     sqliteMigration3SQL,
 	},
 }
 

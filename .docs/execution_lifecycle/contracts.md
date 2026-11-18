@@ -1,5 +1,20 @@
 # Execution Lifecycle Contracts
 
+## H/C/T integration candidate status and exact boundary (historical construction scope)
+
+The following construction-stage disposition predates accepted integration I
+and the completed original-checkout local cutover. It is retained for its
+original source/evidence limits, not as today's source acceptance status. The
+private admission binding v1 candidate is a separate, unaccepted and
+runtime-unwired source slice; current public reliable-submit refusal and legacy
+Submit behavior remain unchanged.
+
+This uncommitted source is unaccepted. C's dated exact-source development acceptance and selected native evidence retain their original identities and limits; T is a preservation-only WIP, and its consumed one-time checkpoint exception confers no qualification or commit authority. This candidate requires changed-interaction review. Historical process `PARTIAL`, modeled ownership, compile-only results, operational key/topology/capacity/residence/reclamation gates, and publication limits remain open. Reliable submit remains runtime-unwired and unavailable.
+
+For current unkeyed Submit, one execution/placement snapshot is captured after successful `prepareAdmission` and reused through resolution, materialization, and handoff, including one staging/results pair. It does not promise atomic concurrent configuration capture, a snapshot of earlier admission/trust/Vault/policy reads, or lifetime consistency for later Status/Logs/Result calls. Artifact, capability, target, and profile gates precede placement errors. T's semantic plan is admission-owned and separate from placement. C's complete archive scan, exact mount and custody modes, retained incomplete leaves/probe fixtures, mandatory result authenticator, authenticated final/record pair, and no in-place metadata repair govern this candidate. Result refuses an invalid existing pair without Nomad fallback or a success body; Status and Logs retain their documented Nomad projections and best-effort retention attempts. The three retention failure events contain the fixed message and validated public run ID only.
+
+The paired-root topology contract is a **Bounded slice rule pending integrated review**. Retained roots and probe fixtures are a **Temporary compatibility edge** with capacity and sensitive-material residence costs. Governed whole-root reclamation is a **Reopened redesign seam** and remains unavailable. The six existing-host ES helper routes are retired tombstones; the separate operator-facade evidence cutoff does not retire underlying owner-local producers.
+
 ## 1. Purpose and status
 
 This document defines the current ES lifecycle and public execution contract in the repository's bounded platform phase.
@@ -10,12 +25,16 @@ The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, compatibility edges, and reopened seams lives in
 `es_execution_admission_model.md`.
 
-The target submit idempotency, submit correlation, and recovery contract seam
-is documented in
-`submit_idempotency_correlation_and_recovery.md`. That document is target-only:
-it does not change current endpoint behavior, does not add a current request
-field, response field, route, header, persistence implementation, error code,
-or Nomad behavior, and does not make reliable keyed submit available today.
+The target submit idempotency, correlation and recovery contract seam is in
+`submit_idempotency_correlation_and_recovery.md`. Its public/operational rules
+remain target-only. Its bounded private codec-3 synthetic custody is source
+behavior but changes no current endpoint, request/response, route, header,
+error code, Nomad behavior or reliable keyed-submit availability.
+
+The private `resolved-execution-plan-extraction-foundation` changes only the
+internal current-Submit resolution boundary. It does not add or change a public
+request field, response field, route, status, code, fixed error message,
+producer declaration, configuration field, or reliable-submit behavior.
 
 C0 is the docs and docs-contract-test gate for the ES-owned public
 execution/admission/runtime model. It makes no runtime implementation changes,
@@ -80,6 +99,69 @@ authority. `control-plane-normal-shell/v1` and
 explicit migration/versioning plan exists. Existing workload-auth Remote Alpha
 helpers remain bounded operator/support surfaces, not ES token brokerage or
 production Vault readiness.
+
+The supported-local host `.out` proof directory is evidence-only and private
+`0700`. Task-owned bootstrap/transport scratch is separate from that directory,
+the repository, guest scopes, deployed state, and the externally provisioned
+retained-result key. Only an identity-revalidated exact scratch cleanup may
+remove it; unproven cleanup retains it. The host source snapshot is built from
+guarded Git's explicit tracked and non-ignored untracked source set, with
+bounded deterministic files, a source manifest, and a snapshot digest. Its
+archive and other transport inputs never become host proof evidence.
+
+Guest evidence admits only fixed-schema non-secret projections. Raw
+Nomad/Docker/systemd configuration, service logs, arbitrary execution
+responses, workdirs, and opaque result bundles are not retained. A bounded
+exact-schema validation of the controlled normal-shell result emits only
+non-secret member hashes, sizes, and fixed proof assertions. Guest collection
+publishes exclusive setup, final, or failure generations, without merge or
+overwrite. A labeled capture writes only its own summary, status, and fixed
+execution projections, so a partial second capture cannot mix base lineage.
+Its summary and fixed execution projection retain the exact validated public
+`run-[0-9a-f]{16}` run ID, derived `exec-<run_id>` job ID, and bounded Nomad
+allocation ID. An unlabeled capture alone writes the base forms.
+For the bounded normal-shell proof, capture verifies that its copied summary
+names the selected private workdir and that workdir's `result.tar.gz` exactly.
+Result-validation uses that captured summary, not a new latest-workdir scan or
+a proof-root raw-result alias. It requires a successful terminal exit-zero run,
+`result_available=true`, a positive compressed byte count within the existing
+16 MiB bound, and the matching fixed Nomad run/job/allocation projection with
+successful observation booleans. Result-validation parses both captured JSON
+inputs strictly, rejecting duplicate object keys and nonstandard constants.
+The workdir must be a clean absolute direct
+child of this proof's private `workdirs/`; the result path must name its own
+`result.tar.gz`. Held no-follow directory and file reads require an unchanged
+original workdir summary and a stable regular single-link bundle of the
+declared size. The existing exact result schema validates those same buffered
+bytes before the fixed safe result-evidence JSON is created exclusively.
+Missing, mismatched, or rejected input fails result-validation; no other
+workdir or legacy alias is selected. Raw bytes and workdir paths remain private
+guest data and outside host evidence. This is a bounded proof-consumer rule,
+not result authentication or ES/CP lifecycle authority.
+For each unique supported-local proof job, the proof wrapper requires exactly
+one allocation in the Nomad allocation list before observing and retaining its
+ID. The complete allocation-list response must be strict JSON: nonstandard
+`NaN`, `Infinity`, and `-Infinity` constants fail with a fixed safe error even
+inside unknown or nested fields, before allocation selection or observation.
+Zero or multiple allocations, a malformed entry, or an invalid ID fail
+closed without a Nomad execution projection or a successful proof. Honest
+summary, status, and log-assertion projections may remain as partial failure
+evidence in the exclusive failure generation. This is a bounded proof rule,
+not a general Nomad retry, reschedule, or multi-allocation policy; it does not
+change ES's internal latest-`ModifyIndex` allocation-selection rule. A proof
+contract for multiple meaningful allocations requires explicit redesign.
+Node-detail admission parses a loopback-only URL with explicit port and no
+userinfo, query, fragment, or non-root path; responses are individually and
+aggregately bounded and reduced to fixed counters without retaining raw node
+details. The deterministic final host manifest is the root evidence record:
+its `self_excluded` field is true, and its rows cover every other retained
+proof file, excluding the manifest itself. The manifest is reopened through
+the held directory descriptor, verified, and reported by SHA-256 without a
+digest sidecar. Unclassified material is rejected. Failure finalization preserves the
+primary proof status and never falls back to recursive copying. These
+manifests and projections are evidence, not ES, Nomad, result-authentication,
+or lifecycle authority. The external retained-result key is never copied or
+cleaned by this proof scope.
 
 C5 is the focused tests/docs guardrail slice for current
 status/logs/result/cancel compatibility and non-authority posture. C5 is
@@ -477,6 +559,38 @@ Successful response is `200` JSON with these contract fields:
 - If required policy input cannot be safely inspected, ES fails closed with
   reason code `admission_policy_input_unavailable` and safe message
   `admission policy input unavailable`.
+- For the current `static-script` policy input, ES requires one effective
+  regular top-level `entrypoint` after trimming pathname whitespace and
+  cleaning slash-separated tar paths. A lone normalized alias is supported.
+  The entire archive must have no duplicate regular destination (including
+  identical-body duplicates), file/directory or implicit-parent conflict,
+  traversal, link, special entry, nonzero decoded tar tail, or additional
+  compressed gzip member/bytes. An ambiguous or malformed archive fails with
+  `admission_policy_input_unavailable` before policy allow, Submit run
+  assignment, materialization, or provider registration. Inspection retains
+  the 256 KiB compressed payload, 64 KiB entrypoint text and 64 tar-entry
+  limits, and limits the whole decoded tar stream, including headers, skipped
+  bodies and trailing bytes, to 16 MiB. Runtime extraction independently
+  enforces the same canonical destination and stream-tail integrity before
+  launch; generic runtime archives need not contain a top-level entrypoint.
+  This bounded rule does not inspect nested workspace archives or establish
+  universal script safety. Extraction failure may leave temporary files already
+  written; it never authorizes a workload launch.
+- GNU sparse representations are outside the current static-script archive
+  contract: the old GNU sparse type and any effective header carrying a
+  `GNU.sparse.*` PAX record reject before policy body reading or runtime
+  destination creation, including recognized 0.0/0.1/1.0, all-hole, and
+  unknown sparse metadata. Go's tar reader may parse bounded sparse metadata
+  during `Next` before ES checks the returned header. The 16 MiB policy
+  decoded-stream budget counts physical gzip-emitted tar bytes, not logical
+  sparse holes, so ES does not read those holes. This does not add a 16 MiB cap
+  to generic runtime extraction or exclude ordinary PAX/GNU long names.
+  Canonical destination interpretation trims the raw effective tar name once
+  and then cleans slash-separated components once. Both namespace registration
+  and runtime placement use that same value without re-trimming it. Significant
+  component whitespace exposed by cleaning remains: `./ entrypoint` becomes
+  ` entrypoint`, distinct from `entrypoint`. True aliases and collisions still
+  reject; runtime containment and exclusive file creation still apply.
 - Policy denial responses must not expose raw payload text, matched content,
   prompts, workspaces, model outputs, logs, retained bundles, support bundles,
   credentials, environment values, DB contents, local process records,
@@ -543,6 +657,18 @@ bounded receipt, and Nomad submission through ES.
 
 - Request body uses the same JSON execution request shape as `:prepare`.
 - The request is revalidated through the full preparation path before submission proceeds.
+- The shared admission path borrows the caller request and immediately
+  deep-copies every mutable member. One private Prepare-versus-Submit intent
+  makes that admission-owned working copy the sole mutable authority for mode
+  handling, schema defaulting, validation, and normalization. Successful
+  admission returns one frozen authoritative snapshot; immutable defensive
+  transfer copies are permitted and are not competing authorities.
+- The caller retains ownership until the initial admission copy completes and
+  must keep the request and every reachable mutable member race-free through
+  that copy. Concurrent unsynchronized mutation during copying is a caller
+  data race, not an ES synchronization guarantee. After the owned copy
+  completes, later caller mutation cannot change admitted or submitted state;
+  downstream defensive copies do not create a second mutable authority.
 
 **Current contract invariants**
 
@@ -565,9 +691,330 @@ bounded receipt, and Nomad submission through ES.
   cannot bypass a policy that `:prepare` would deny.
 - Policy denial happens before payload staging, mount staging, run ID creation,
   and Nomad submission.
+- Current submit resolves and freezes one private source-grounded semantic plan
+  plus owned payload/runtime-support/mount/trust material before assigning its
+  run ID. Successful resolver return is the freeze point. There is no staging
+  directory creation, file write, ownership mutation, or Nomad registration before
+  that point.
+- The private `resolvedExecutionPlan` is admitted semantic truth. It owns
+  request/invocation schema facts, effective mode and timeout, CPU and memory,
+  runtime-profile identity and selected image, semantic profile/caller
+  environment inputs, one typed runtime command, distinct
+  artifact/payload/derivation/output identities, ordered governed mounts,
+  network permission, current authority inputs, runtime-support digest,
+  runtime-identity tmpfs size, and the fixed semantic job envelope. The
+  source-grounded payload digest comes only from the discovery/evidence
+  relationship already cross-checked by admission; raw payload bytes remain
+  material and do not enter the plan or public/Nomad projections.
+- Captured host context contains only normalized qualified values: the cleaned
+  absolute staging root, qualified owner UID/GID, cleaned absolute SPIRE source
+  directory, and trimmed non-empty Nomad datacenter. The results root is
+  trimmed, cleaned, and required absolute for current ES service/custody
+  qualification, but remains outside the semantic plan, captured host context,
+  provider-job projection, and B1 binding. The plan owns none of those
+  placement facts and owns no run/job identity, owner-derived environment,
+  endpoint URI, staged path, workspace path, or other derived host/run path.
+  Runtime-identity tmpfs size remains
+  semantic plan state because it changes the workload resource contract.
+- After freeze, the run projection combines only the semantic plan, captured
+  host context, and assigned locator. It adds run/job identity,
+  owner/run/endpoint environment, host/staged mount sources, datacenter,
+  endpoint, and derived run paths. Submit builders consume those typed
+  projections and do not reread request, prepared admission, live service
+  config, runtime-profile maps, workload-Vault/trust/ARS sources, filesystem
+  owner state, SPIRE source, or datacenter.
+- Current authority handoff is structurally present and unconditional for every
+  successful current Submit. There is no plan-level applicability flag; the
+  Codex credential-location subcomponent remains genuinely optional.
+- The semantic plan is admitted semantic truth only. Semantic-plan equality
+  across qualified host contexts is not provider-job, dispatch, replay,
+  restart, safe-host-substitution, or provider-effect identity. Captured host
+  context and run/provider projection add additional execution-shaping facts.
+  The later private v1 `PlanBinding` producer now binds admitted semantics and
+  captured material identities while keeping host/run facts outside semantic
+  binding as later prerequisites. Historical B1 selected no canonical
+  encoding, witness, replay, restart, or host-context binding treatment.
+- One private typed runtime command is constructed before freeze and copied
+  through plan, run, and provider projections. No execution-package or test
+  helper owns a second complete supervisor grammar. A complete
+  source-distinct literal default-profile expected job, direct pointer-owned
+  token/template ledger expanded only in the expected tree, unmodified actual
+  job tree, and separate literal authority-handoff expected object reached
+  through real `Service.Submit` protect current successful behavior. A finite
+  package-local direct-call closure plus exact producer, freeze, validation,
+  payload-projection, and metadata inventories protect the B1 shape without
+  claiming whole-program noninterference or general analysis. Tranche B2 now
+  completes fixed public operational messages, prepared-admission ordinary
+  redaction, bounded result-retention logs, selected structured Nomad response
+  bounds, an explicit unbounded job-summary and public-Logs compatibility
+  policy, a second source-distinct control-plane-profile golden, and dedicated
+  finite assurance. Reliable keyed-submit runtime remains unwired, and native
+  Linux runtime validation remains pending.
+- After the freeze, exclusive creation of the run-scoped staging root is the
+  first filesystem mutation. ES holds and verifies the parent/root descriptors,
+  refuses every pre-existing object type, never adopts or mutates a pre-existing
+  name, and revalidates the complete expected tree immediately before the one
+  Nomad registration. Expected ownership is an invocation-local hierarchy in
+  which each directory owns only its direct-child map and each unique edge owns
+  its segment bytes and expected identity once. No cumulative path or second
+  full-path index is retained. Revalidation keeps the identity descriptor and
+  opens a fresh independent no-follow open-file description for enumeration at
+  position zero. That fresh description is used directly, and its observed
+  direct-child set must equal the owning node's map exactly. Each expected child
+  is then checked descriptor-relative and no-follow for type, device,
+  retained identity, owner/group, mode, and link-count policy. Missing,
+  replaced, malformed, duplicate, unexpected, symlink, special-file, or
+  cross-device state fails closed before Nomad without changing the entry.
+  Regular expected children require link count exactly one. Expected
+  directories require a positive link count because their count may grow as
+  expected child directories are materialized.
+  Construction is linear in traversed path-segment occurrences; retained
+  variable data is linear in unique edge-segment bytes plus expected nodes;
+  validation uses the expected tree plus one fixed enumeration batch. These
+  are structural bounds, not exact Go heap, allocator, stack, descriptor, RSS,
+  or secure-erasure claims.
+  Once creation succeeds, every return closes descriptors and retains the
+  visible root. Descriptor-close failure cannot replace a primary error or
+  convert an accepted registration into a public failure.
 - Payload staging, mount staging, and runtime-ready package assembly are now localized behind one internal ES-owned execution-package layout rather than being public contract.
-- Successful submit staging remains available only while the running workload may still depend on those host bind mounts. Terminal result files written under the bounded reserved runtime result directory are retained outside staging before successful staging cleanup.
+- Successful and failed post-claim staging remains retained. Terminal result files written under the bounded reserved runtime result directory may also be retained outside staging, but result publication never authorizes staging mutation.
+
+### Tranche A resource and filesystem custody contract
+
+The following are active `Bounded slice rule` and compatibility/security
+requirements for current Submit:
+
+| Resource | ES consumer limit | Accounting boundary |
+| --- | ---: | --- |
+| discovery, evidence, workload-zone runtime-config, and trust-model JSON | 256 KiB each | response bytes before strict JSON decode |
+| admission-policy payload | 256 KiB | response bytes before archive inspection |
+| primary Submit payload | 32 MiB | response bytes before resolved material ownership |
+| governed mount transport | 8 MiB per mount; 32 MiB aggregate | response bytes, including unknown/chunked bodies |
+| complete decompressed mount stream | 16 MiB per mount; 64 MiB aggregate | bytes between gzip and tar, including metadata, headers, padding, bodies, end records, and trailing bytes |
+| extracted regular-file bodies | 8 MiB per mount; 32 MiB aggregate | declared and consumed regular body bytes before allocation |
+| runtime-support binary | 32 MiB | stable no-follow regular-file capture |
+| normalized Vault CA; selected system CA | 256 KiB each | normalized captured bytes |
+| combined workload trust bundle | 524,289 bytes | two bounded inputs plus at most one separator |
+
+Every bounded response rejects `Content-Length` above its effective limit
+before reading, reads at most effective-limit-plus-one for all other cases, and
+accepts equality only with EOF. A governed mount read receives the smaller of
+its per-mount limit and remaining aggregate transport budget. The archive
+stream budget is installed before `tar.NewReader`, and the remaining gzip
+stream is drained through the same budget after logical tar EOF. PAX local
+headers and GNU long names remain supported under that stream budget. There is
+no separate ES entry-count or resolved-name-length limit. Zero remaining
+aggregate regular-body budget still permits directories and empty regular
+files when compressed and whole-stream budgets remain available; any positive
+regular-file body is rejected before allocation. The parser itself performs no
+body allocation: it converts a checked header size to a closed internal token,
+and a narrow reader allocates only from that token.
+
+The staging parent and results root are opened without following any configured
+path component. The run root is claimed with exclusive directory creation and
+held by descriptor plus device/inode identity. Descendant creation is
+descriptor-relative, no-follow, exclusive for files, and verified for type,
+device, link count, owner, and mode on the opened object. There is no claim
+marker, cleanup eligibility state, mutation/adoption reopening path,
+quarantine rename, general residue or cleanup scan, or recursive whole-root
+deletion. The bounded pre-handoff enumeration above is operation-local
+completeness validation only and cannot be reused for discovery, adoption,
+cleanup, quarantine, or reclamation.
+
+Result packaging may call `openStagingTree` to reopen a retained root read-only.
+That read-only handle exposes only visibility verification, no-follow directory
+opening, and descriptor closure. It exposes no write, unlink, rename, mutation,
+adoption, cleanup, quarantine, or reclamation method. Result publication,
+terminal status, failure, cancellation, loss, or ambiguity grants no staging
+deletion authority.
+
+A post-claim failure preserves its existing primary public error, closes held
+descriptors best-effort, and retains all partial invocation-owned state. An
+ambiguous Nomad response retains the complete root and preserves the existing
+`503 submission_failed` behavior. Successful registration retains the root and
+returns the unchanged receipt. Exactly one registration remains.
+
+Incomplete exclusive leaves, unpublished result and normalization temporaries,
+and startup capability-probe fixtures remain when exact effect-time identity
+for deletion is unproved. Pathname reuse is insufficient. No scan, recursive
+cleanup, or later residue-reclamation owner is selected. Automatic whole-run-root reclamation is not implemented;
+governed reclamation is an ES-owned `Reopened redesign seam`.
+- Governed runtime-mount staging uses a distinct normalized workload-visibility rule: the complete mount subtree has `0755` directories, `0644` non-executable regular files, and `0755` executable regular files. Ownership stays with the selected execution-platform state owner; only executable intent survives archive-mode normalization. The claimed `0750` run-root ancestry and generic private payload, runtime-support, platform, trust, result-auth, and non-mount modes do not change. Exact custody identity registration and complete-tree pre-dispatch validation apply to these mount modes, and the Nomad/Docker mount stays read-only. This candidate-only source rule does not prove the later live Docker bind or native runtime success.
+- The Review-07 CUSTODY-MODE-01 repair requires pre-dispatch expected-tree validation to compare the recorded and observed Unix file type, ordinary `0777` permissions, setuid, setgid, and sticky bits exactly. The claimed run root receives the same exact recorded-mode check. A mismatch fails before provider submission without chmod, chown, deletion, or replacement. Object-identity comparisons used for pathname binding and controlled metadata transitions retain their separate meaning.
+- The Review-08 REGISTRATION-MODE-01 repair requires each newly created staging child directory and file, after its controlled ownership, mode, and file-content operations, to match the intended Unix file type and all `07777` mode bits before its identity enters the expected tree. A registration mismatch retains the unregistered child and claimed root without metadata repair or deletion and prevents provider submission. Later complete-tree handoff still validates the exact recorded state. This Review-08 source-stage correction required independent re-audit and did not by itself qualify native runtime or deployment behavior; missing historical Review-08 runtime records are not reconstructed by later selected evidence.
+- The isolated candidate retains every successfully claimed run root, including terminal success and post-claim failure. Terminal result files remain opaque bundles outside staging; whole-root reclamation remains a pending environment-bound operational/rollout acceptance decision. No reclamation implementation or authority is selected by development-source acceptance.
 - For the current `static-script` slice, ES reserves `/execution/run/result` as a writable workload-authored terminal output directory. The workload may write result files there, and ES treats those files as opaque bundle content rather than interpreting their semantics.
+
+### Isolated resolved-plan and custody candidate
+
+This local candidate refines the reopened internal Submit seam and bounded
+slice rules; it is not accepted for rollout. `prepareAdmission` owns a copied
+request and performs its established artifact, trust, Vault/auth and policy
+reads and gates. Following successful admission, `Submit` takes one owned
+execution/placement configuration snapshot for subsequent profile, placement
+and materialization facts. This is not an atomic snapshot of earlier admission
+or all service-configuration reads. Artifact, capability, target and profile gates
+precede placement validation; runtime-unavailable still precedes mode rejection,
+and sync rejection precedes dependency admission. Policy denial precedes run
+assignment, run-specific materialization and Nomad dispatch. Material capture
+may now reject before run assignment. A private semantic plan owns admitted
+execution meaning and one typed command; private captured material owns bytes,
+private host context owns qualified host facts, and a separate custody-placement
+value owns both staging and results roots from the same snapshot. The results
+root is absent from the semantic plan, host context, job and private v1 binding.
+
+Per-submission byte limits: 256 KiB for each dependency JSON body and admission
+policy payload; 32 MiB for primary Submit payload; 8 MiB per governed mount and
+32 MiB aggregate compressed transport; 8 MiB per mount and 32 MiB aggregate
+extracted regular-file bodies; 16 MiB per mount and 64 MiB aggregate for the
+complete decompressed tar stream, including headers and trailing bytes; 32 MiB
+for a stable no-follow runtime-support file; 256 KiB each for normalized Vault
+and system CA input; 524,289 bytes for the combined bundle. Limits are checked
+before unsafe allocation or accumulation. No global concurrency/capacity budget
+or new ES mount entry/name cap is selected. Oversize material, unstable files,
+invalid roots, unavailable filesystem capabilities, malformed archives and
+unsafe links now reject. Startup fails when configured Submit cannot prove a
+required capability; prepare-only does not acquire run/staging effects. Two
+missing roots in the same deepest existing lookup context reject before
+provisioning. Roots with provably disjoint existing parents may be provisioned
+one component at a time, with the pair requalified after each creation. Linux
+qualification binds the held descriptor to fstat/statx mount ID, canonical
+`/proc/self/fd` presentation and bounded mountinfo selection; an opaque
+selected namespace root or unprovable mount topology rejects. Darwin binds
+F_GETPATH/fstatfs/getfsstat and refuses unprovable same-FSID presentations.
+These are implementation requirements, not native Linux qualification evidence.
+
+Exclusive descriptor-held claim refuses every pre-existing run-root object.
+Materialization uses captured bytes and verifies the complete expected tree
+before one Nomad registration. Every successfully claimed root is retained,
+including partial materialization, failed/ambiguous registration, terminal
+success and result-publication failure. Cleanup requires effect-time proof of
+the exact operation-created object. Incomplete leaves and unpublished result or
+normalization temporaries remain when pathname reuse prevents that proof.
+Current capability-probe fixtures also remain because their names do not prove
+exact-object ownership at unlink time. No cleanup scans or recurses.
+Materialization preserves validated archive component names,
+including whitespace within a component. Complete-tree pre-dispatch validation
+must not retain a descriptor per sibling directory. Existing result directories
+and normalization evidence are validated without chown, chmod or adoption.
+Fresh pair/topology qualification is a prerequisite for named result operations,
+not independent cleanup or existing-object metadata-repair authority. New
+unpublished result temporaries/records and newly created normalization
+evidence receive their selected owner/mode on creation; existing directories,
+finals, and evidence are only checked. Result packaging reopens staging
+read-only and uses no-replace publication.
+The isolated R1 refinement requires a writer-derived compressed-byte
+commitment, held-candidate and installed-winner validation, and a private
+authenticated completion record before public result bytes are eligible.
+Existing final objects require identity, owner, mode, link-count, size, digest
+and stable-path validation. A pre-existing unmarked final is never signed or
+adopted on retry. No whole-
+root reclamation policy is implemented;
+capacity use and sensitive-material residence increase. Captured in-memory
+bytes are not durable replay custody, and a held descriptor/tree check does not
+prove the later Nomad/Docker mount topology. Image tags do not prove immutable
+content. One registration per unkeyed Submit does not deduplicate retries.
+The following Review-20/21/22 source-stage fixture requirements and supplied
+report outcomes are historical; the dated current evidence overlay follows.
+Review-19 independently accepted the bounded A2/material-capture and focused
+composition source interaction only. The Review-20 test-owned governed-mount
+fixture must later prove actual installed directory and selected file identity
+in one live, correlated, bounded native single-host allocation, with a held
+pre-registration source anchor and a qualified common filesystem domain.
+Failure teardown attempts barrier release or container stop and exact captured
+test-owned Nomad job cancellation before closing held source anchors.
+Offline modeled comparisons, Nomad/Docker source strings, and equal contents
+do not close that gate. A running-deployment topology observation, native
+architecture qualification, deployed key isolation, capacity and retention
+decisions, and final acceptance remain separate.
+The Review-21 test-only repair orders fixed workload readiness after supervisor
+preparation, admitted-container identity before effects, installed-object
+observation while held, release, and exact-allocation terminal success. The
+observer cannot release before readiness or act on a rejected Docker candidate.
+Its bounded selected-field Nomad job and terminal reads use fixed safe failures
+without raw response bodies, logs, task messages, or allocation formatting.
+Control-request success alone is not observed termination. This is a bounded
+qualification-fixture rule, not a production lifecycle or authority change.
+The test-only `test-mounted-source-identity/v2` projection records anchor,
+ready, installed-object observation, release and terminal times separately.
+The Review-22 test-owned task-label prerequisite correction applies only to
+the fresh installed-identity fixture agent. Its Docker plugin requests exactly
+`extra_labels = ["task_name"]`, with volumes enabled and image cleanup disabled
+in one profile; ordinary and capability-probe agents retain their prior
+configuration. This is a Bounded slice rule for the qualification fixture,
+not an unconditional Nomad label guarantee or a production ES contract. The
+task driver derives the label from its task identity, and the observer still
+requires the actual immutable ID, running state, allocation label and task
+label before adoption or any Docker effect. The supplied Review-21 native N4
+attempt refused before readiness and installed-object observation and emitted
+no v2 identity record; N5 and arm64 did not run. Separately reported N1-N3
+amd64 passes remain report-supported pending safe-package inspection. The
+repair changes fixture-agent configuration only; native receipt of the label
+and installed-object identity require a future witness. Running-deployment,
+key, retention, architecture and final acceptance gates remain open.
+
+### Development-source foundation and acceptance boundaries
+
+The 2026-11-13 `DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED` disposition in
+`PLANS.md` binds the exact authenticated Review-22 implementation archive and
+canonical source manifest to the accepted source reviews, selected linux/amd64
+and linux/arm64 N1-N5 native programme, and bounded original-byte Review-17
+proof contribution. The documentation-only successor preserves the reviewed
+implementation bytes; its new all-file manifest is not a historical native
+execution identity. Earlier refusals, missing records, supplied-record limits
+and process PARTIAL remain historical. The test-owned installed-source witness
+does not observe a running deployment or create a production Nomad label rule.
+
+Development-qualified source foundation is an engineering evidence state, not
+final product or environment acceptance. It grants no standing workload or
+feature/producer enablement, reliable-submit availability, general platform
+support, isolated qualification task, staging, cleanup, commit, integration,
+merge, publication or deployment authority. Current admission, startup
+capability, key-load, no-follow/ownership and authenticated result-byte rules
+remain unchanged and fail closed.
+
+A local source-preservation commit is a separate, explicitly authorized effect.
+It may be considered after the governing amendment and focused document tests
+are reviewed and the exact candidate, index and intended commit contents are
+reauthenticated. Development evidence alone grants no Git effect. Integration
+into another checkout/branch, merge, remote publication and rollout require
+their own authority and applicable checks; a local tracking ref is not current
+remote truth. The unresolved publication/remote-owner policy is not selected
+here. Absence of a selected production environment alone does not forbid
+consideration of a separately authorized local preservation gate.
+
+Environment-bound operational/rollout acceptance remains open. Before expanded
+or unattended workload operation it requires a named environment and
+architecture; observed actual service/operator/workload trust and permission
+relationships; actual running mount/source paths and backing objects; actual
+key exposure and isolation, including physical aliases and relevant same-UID
+contexts; selected and enforced accumulated-root/result/probe capacity and
+sensitive-material residence bounds; and an explicit reclamation owner,
+authority and implementation or enforceable bounded operating disposition.
+The current-source/environment supported-local consumer interaction must be
+qualified when claimed. The selected native programme and test-owned witness
+do not replace these observations. Qualification scratch caps, including the
+4 GiB task cap and 8 GiB free-space gate, are not an ES product retention
+policy. Existing retained test material remains resident and protected pending
+its own disposition. No target, trust model, TTL, numeric product cap, cleanup
+authority or successful deployment-key-isolation result is selected here.
+
+Selected Submit-path fixed operational messages are `workload-zone vault
+configuration is invalid`, `derive execution host context failed`, `stage
+workload vault trust material failed`, `derive execution platform state owner
+failed` and `execution submission failed`. Registration response JSON is
+limited to 256 KiB and one compatible document; unknown provider fields remain
+accepted. Raw provider bodies, host paths and request values are not public
+error messages. Private admission formatting redacts ordinary output. No
+universal provider-response or logs limit is selected. Successful public
+receipt, job and handoff shapes stay compatible. Blank schema/version defaults
+to v1; explicit nonblank legacy versions remain accepted; mode defaults async,
+timeout zero and omitted CPU/memory to 10/128. Empty environment allowlist
+meaning and caller/profile/platform precedence stay unchanged. Structural
+`reliable_submit` bodies remain strictly rejected. The selected private schema
+is `execution-substrate.reliable-submit-request/v1` with nested
+`reliable_submit.contract = execution-substrate.reliable-submit/v1`; reliable
+runtime and producer remain unavailable.
 
 ### Response contract
 
@@ -616,6 +1063,21 @@ Successful response is `202` JSON with these fields:
 | Execution runtime unavailable | `503` | `execution_runtime_unavailable` |
 | Nomad submission failed | `503` | `submission_failed` |
 
+B2 preserves every status and code above and the public
+`{success,error,code}` DTO. The selected cause-bearing messages are fixed:
+
+| Cause family | HTTP | Code | Exact public message |
+| --- | --- | --- | --- |
+| Workload-zone Vault resolution | `503` | `workload_zone_vault_unavailable` | `workload-zone vault configuration is invalid` |
+| Host-context derivation | `500` | `submission_failed` | `derive execution host context failed` |
+| Workload Vault trust capture or materialization | `500` | `submission_failed` | `stage workload vault trust material failed` |
+| Platform-state owner derivation | `500` | `submission_failed` | `derive execution platform state owner failed` |
+| Nomad submission transport, bounded read, decode, trailing document, or missing EvalID | `503` | `submission_failed` | `execution submission failed` |
+
+No underlying cause, provider body, cause field, diagnostic field, or new code
+is included. Existing safe specific errors outside these families remain
+unchanged.
+
 ### Bounded slice notes
 
 **Bounded slice contract**
@@ -623,6 +1085,11 @@ Successful response is `202` JSON with these fields:
 - `:submit` is the real execution surface, but it is intentionally narrow.
 - It is async-only.
 - Its response is a bounded receipt, not a durable run model.
+- The Nomad registration response is limited to 256 KiB before buffering and
+  must be exactly one unknown-field-compatible JSON document. Exact limit is
+  accepted; limit plus one, fixed-length truncation or surplus, malformed or
+  trailing JSON, and missing EvalID fail with the fixed submission message.
+  Non-success response bodies are not read or exposed.
 - It uses the explicit payload reference carried by the ARS discovery record and cross-checks that reference against aggregate evidence rather than treating `artifact_digest` as the payload locator.
 - `control-plane-normal-shell/v1` is a bounded runtime contract for the CP-owned normal-shell attempt path, not an ES-owned orchestration, review, checkpoint, or finalization contract.
 
@@ -695,7 +1162,9 @@ semantics, but current handlers do not call that foundation. It does not select
 or implement source-grounded resolved effective-plan extraction, canonical
 effective-plan encoding, `PlanBinding` construction from admitted facts, complete
 effective-plan witness construction, durable replay-envelope custody, or runtime
-orchestration.
+orchestration. The later private PB1 producer and codec-3 synthetic custody
+implement only the runtime-unwired internal binding/reload subset; they do
+not change this public target contract or create a RunRef/effect permit.
 
 ## 7. Status contract
 
@@ -769,8 +1238,9 @@ Successful response is `200` JSON with these current fields:
 - `outcome_evidence` remains bounded evidence/projection; current labels are
   compatibility surfaces, not final scheduler/result/log/cancel vocabulary.
 - When status observes terminal execution, ES first attempts idempotent retention of any files under `/execution/run/result`.
-- When status observes terminal success, ES best-effort removes `execution.staging_root_dir/<run_id>/` only after result retention has been attempted.
-- Failed, canceled, lost, or otherwise ambiguous terminal outcomes do not trigger staging cleanup through `status`.
+- Lifecycle projection and result-attempt timing have no staging-mutation
+  consequence. Successful, failed, canceled, lost, running, unknown, missing,
+  and contradictory provider evidence all leave the same run root retained.
 
 ### Authority handoff read surface
 
@@ -861,6 +1331,14 @@ Current shape:
 **Bounded slice contract**
 
 - Status is intentionally minimal.
+- Projected-allocation list and allocation-detail responses use the 256 KiB
+  one-document compatible JSON boundary. Unknown provider fields remain
+  accepted; non-success bodies are not read for diagnostics.
+- Job lookup remains explicitly unbounded but exactly one compatible JSON
+  document. This preserves currently valid submissions whose allowed caller
+  environment makes Nomad's echoed `Task.Env` exceed 256 KiB. A universal job-
+  summary cap requires a separate caller-environment count/value/aggregate
+  budget decision.
 - The contract is built around current Nomad projection rather than a richer ES-owned execution model.
 - The public response no longer carries scheduler job/allocation identifiers or task-state detail.
 - The projection revision is the only current status lifecycle read-coordination fact; it does not imply an ES-owned lifecycle-state store.
@@ -921,7 +1399,13 @@ Successful response is:
   scheduler, CP run-control, credential, or policy authority.
 - No streaming, pagination, tailing, stderr aggregation, or multi-allocation merge exists in the current contract.
 - If logs observes a terminal task, ES first attempts idempotent retention of any files under `/execution/run/result`.
-- If logs observes a terminal successful task, ES may best-effort remove `execution.staging_root_dir/<run_id>/` after reading stdout and attempting result retention.
+- Logs retrieval and its result-retention attempt never authorize staging
+  deletion or any other staging mutation.
+- Successful Logs bytes are intentionally unbounded opaque authenticated
+  workload output. They remain byte-identical, including empty bodies and
+  bodies larger than 256 KiB; ES selects no truncation, partial-success,
+  normalization, or oversize status/code in B2. “Bounded Nomad log path” above
+  means the current slice-bounded task/allocation selection, not a byte limit.
 
 ### Error contract
 
@@ -946,6 +1430,7 @@ Successful response is:
   - no streaming
   - no pagination
   - no stderr aggregation
+- It is explicitly outside the structured Nomad control-JSON boundary.
 
 ### Reopened seams
 
@@ -990,10 +1475,135 @@ Successful response is:
 - The current route shape, public `run_id` lookup, `application/gzip` encoding, and successful outcome-evidence headers are the active bounded compatibility retrieval path for those ES-owned bundles.
 - Result retention is idempotent:
   - repeated terminal `status`, `logs`, and `result` calls are safe
-  - if the bundle already exists, ES reuses it
-  - successful staging cleanup does not remove retained result bundles
+  - if an authenticated bundle/record pair already exists, ES reuses it before
+    staging traversal or temporary publication, even if retained staging later
+    changes or disappears; no refresh or newest-result rule applies
+  - a partial or invalid pair fails closed; only an absent final and record
+    allows new publication, while already prepared competing candidates retain
+    their no-overwrite conflict rule and possible unpublished residue
+  - retained bundles are independent of retained staging
 - If no retained bundle exists yet, `result` uses the same bounded Nomad-backed terminal observation model as `status` to decide whether retention can be attempted.
 - Result availability is evidence/projection for the ES-retained output surface. `result_not_found` means ES has no retained bundle for that `run_id`; it is not, by itself, Control Plane workflow failure, review failure, checkpoint failure, finalization failure, or Temporal run-control truth.
+
+**Selected isolated R1 byte-eligibility contract.** Configured Submit requires
+`execution.retained_result_auth.store_id`, `key_id`, and `key_file` at startup.
+The first two are stable, non-secret identifiers of 1–32 ASCII bytes matching
+`[a-z][a-z0-9_-]{0,31}`. `key_file` is an explicitly configured, clean absolute
+path with a non-root parent directory, outside staging/results storage, to exactly 32 raw bytes of independent
+HMAC-SHA-256 key material. There is no default, generator, fallback, keyring,
+rotation or automatic recovery. ES reads the key once into private service
+memory at configured-Submit initialization. A genuinely Submit-disabled
+service does not require or read it; `BRINGUP_PROFILE=prepare-only` does not
+remove the canonical supported-local Submit configuration or its startup key
+and root-capability prerequisites. Retained reads without a configured verifier fail closed. Static file checks
+cannot establish deployment isolation against an arbitrary same-UID process.
+Actual key isolation and exposure remain environment-bound
+operational/rollout acceptance gates. Development-source acceptance does not
+establish deployment isolation or remove those gates.
+Key exclusion uses the same effective `Clean(TrimSpace(root))` staging and
+results paths as root custody; an already canonical key path and every
+component of its derived parent are opened exactly, without another trim.
+The supported-local setup and proof wrapper accept the two non-secret IDs and
+an external guest-local key-file reference from a trusted operator. They reject
+lexically unsafe placement before setup effects, and neither provisions nor
+reads the key bytes. Raw key bytes never enter environment variables, argv,
+proof assets, workload environment, Nomad, authority handoff or public output.
+This lexical fence does not prove physical alias or same-UID isolation.
+Owned proof, bootstrap, repository, host collection and cleanup scopes require
+clean single-leading-slash absolute non-root paths; root and either direction
+of key/scope containment are rejected before wrapper effects or finalizer
+registration. The setup helper dispatches direct-file and canonical stdin
+invocations once, while sourcing it for production-function reuse has no setup
+effect. Neither rule changes ES key custody or result-publication authority.
+
+For the bounded supported-local `service-root-v1` rootful identity-mapped
+profile, canonical setup is the sole creator of the two fresh configured
+execution roots, with owner `0:0` and exact mode `0755`. The generated env
+selects one static, no-repair read-only validator for prepare-only bring-up,
+the ES launcher, and full-profile submit-readiness through the direct health
+check and diagnostics consumer. The validator checks proof binding, generated
+config, service image and Dockerfile, root owner/mode/identity, and exact
+same-path read-write mounts before the ordinary operator's own write access is
+omitted from the readiness test. Generic callers without that profile retain
+their prior caller-writable check of existing roots; unknown profiles refuse.
+Readiness does not create roots or write staging-invariant evidence. This
+profile does not alter ES's natural `0750` per-run
+directory rule, prove the future container's identity or mapping, or approve
+rootless/non-root variants.
+Within this bounded setup profile, the privileged helper checks each new
+fixed child against its held no-follow descriptor before owner/mode mutation,
+retains both held identities through a final visible pair and proof-root
+binding check, and refuses substitution without adoption or cleanup. This
+establishes that successful visible roots are the objects the helper held and
+initialized. The operator-owned proof parent does not make `mkdir` plus
+subsequent `open` atomic: an arbitrary concurrent replacement before
+descriptor acquisition cannot be ruled out by a later pathname stat. A
+protected creation namespace would be a separate authority decision, not a
+claim of this bounded repair.
+The retained `execution-roots-setup-safe.json` projection reports only the
+fixed profile and successful static configured-root owner/mode check, with no
+root paths or key data. Its explicit container-capability-false field is not
+a substitute for ES's later behavioral qualification or live proof.
+
+The private record is `<results_root>/<run_id>/result.commit.v1`, mode `0600`,
+separate from `ownership-normalization.json`. It is at most 512 bytes and has
+exactly ten LF-terminated ASCII lines, with no extra bytes:
+
+```text
+es-retained-result-commit-v1
+store_id=<identifier>
+key_id=<identifier>
+run_id=run-<16 lowercase hex digits>
+root=<16 lowercase hex device>:<16 lowercase hex inode>:d
+run_dir=<16 lowercase hex device>:<16 lowercase hex inode>:d
+final=<16 lowercase hex device>:<16 lowercase hex inode>:f
+length=<16 lowercase hex digits>
+sha256=<64 lowercase hex digits>
+mac=<64 lowercase hex digits>
+```
+
+All integer fields are unsigned, fixed-width hexadecimal, most significant
+digit first. The `d`/`f` suffix is the observed directory/regular-file type.
+The HMAC covers every byte through the `sha256` line's LF, including the
+domain/version first line; `mac` is the lowercase hex encoding of that 32-byte
+HMAC. The bounded reader verifies the HMAC with `crypto/hmac.Equal` before
+parsing semantic fields or using a stored length for allocation. It then
+requires this exact canonical grammar and rejects unknown versions, duplicate
+or extra fields, trailing data, uppercase hex, and wrong run/store/key or
+root/run/final identity context. The HMAC key never appears in this record.
+Object identities are local custody context, not portable content identity.
+The restart claim covers reopening the same backing store/objects with the
+same key; it does not promise relocation, backup restore, host migration,
+reboot-independent device identity or power-loss durability.
+
+The producer hashes/counts compressed bytes as the archive writer emits them,
+including successful compressor close, and compares the synced held candidate
+descriptor against that independent commitment. Successful no-replace
+installation is not completion. The winner must reopen the final no-follow,
+prove it is the held candidate object, and validate metadata, size and digest.
+Only then may it exclusively publish a complete authenticated record. A later
+or competing publisher that finds an unmarked pre-existing final must not
+sign, rebuild-and-endorse or adopt it. It may observe a completed matching
+pair, but cannot overwrite or endorse conflicting bytes. Uncertain objects
+remain in place; no name-based cleanup or metadata repair is authorized.
+
+Before `Service.Result` succeeds, ES authenticates the record for the requested
+run/store and qualified object context, reads the final through the existing
+non-mutating no-follow path under the authenticated length and existing size
+limit, and compares the length/SHA-256 of the *buffered response bytes* with
+the record. It does not validate one pathname read and serve another. The held
+final descriptor must itself satisfy the required owner, mode,
+link-count, device, regular-file and size policy before any response read;
+visible-path identity alone is insufficient. No final and no record retains
+the existing terminal lookup/retention behavior. A final
+without a valid record, a record without a matching final, altered bytes or
+malformed/forged/context-mismatched evidence returns fixed `409
+result_unavailable` without Nomad-backed endorsement or repair. Genuine
+terminal no-output retains `404 result_not_found`. A record that became valid
+before a publisher error may still authorize a matching read. This protocol
+authenticates bytes but is not anti-rollback or a lifecycle truth source.
+Legacy unmarked finals and crash-interrupted final-only states stay unavailable
+until a separately selected migration/recovery policy exists.
 
 ### Response contract
 
@@ -1019,11 +1629,13 @@ Successful response is:
   bundle body remains opaque output content under the existing compatibility
   contract; ES does not sanitize, parse, or promote bundle contents into CP
   checkpoint, finalization, review, scheduler, credential, or policy authority.
-- ES does not add raw logs, proof payloads, support bundle payloads,
-  retained-internal metadata, credentials, environment values, TLS/SPIFFE/Vault
-  material, PEM/cert/key bodies, endpoint secrets, unsafe paths, scheduler IDs,
-  CP workflow fields, review fields, checkpoint fields, or finalization fields
-  to the result response envelope or synthesized retained-result sidecars.
+- ES does not add raw logs, proof payloads, support bundle payloads, retained-internal metadata, credentials, environment values, TLS/SPIFFE/Vault material, PEM/cert/key
+  bodies, endpoint secrets, unsafe paths, scheduler IDs, CP workflow fields,
+  review fields, checkpoint fields, or finalization fields to the result
+  response envelope. The private completion record contains only
+  the bounded authentication fields specified above; its key and key-file
+  path are never recorded. No retained-internal metadata enters the public
+  response envelope.
   Workload-authored files under `/execution/run/result` remain opaque bundle
   content; this is not a sanitization guarantee over those workload-authored
   bytes.
@@ -1328,3 +1940,70 @@ These seams are active today and intentionally not fixed.
 - Keep high-level lifecycle ownership in `.docs/execution_lifecycle/design.md`.
 - If code and tests disagree with this file, update this file to match reality.
 - Do not describe a contract as fixed unless that decision is explicit and intentional.
+
+## 19. Final-audit archive and execution-root contract refinements
+
+Each runtime mount archive uses one invocation-local iterative compressed
+byte-radix namespace ledger. Its non-root labels are substring views into
+normalized names already retained by the ordered validated entries; branches
+are keyed by the next byte, terminals distinguish directory and regular file,
+and the ledger creates nodes only for accepted terminals and required branch
+points. It does not split per path segment, copy cumulative prefixes, recurse,
+or build a second full-name index. File ancestry is recognized only across a
+`/` boundary. Probe precedes type/body work where required by existing error
+precedence, while commit occurs only after every fallible per-entry check and
+the ordered entry append.
+
+This structural repair preserves repeated directories, implicit-parent
+completion, normalized-alias behavior, duplicate/file-directory/ancestor
+refusals, entry order, and all existing compressed, body, aggregate, and
+complete decompressed-stream limits. Reachable PAX/GNU deep/shared-prefix
+fixtures and the exact 32,768-header EOF boundary instrument real production
+probe, comparison, lookup, allocation, and commit sites. The pinned Go
+`archive/tar` reader's 1-MiB hidden special-file processing limit is inherited
+dependency behavior; it is not a new ES resolved-name or entry-count limit and
+dependency refusal is not radix coverage.
+
+`execution.staging_root_dir` and `execution.results_root_dir` are one
+operation-local qualified root set. Lexical non-overlap is an early shape
+check, not physical proof. Canonical descriptor identity and platform topology
+must reject equality and either-direction ancestry before startup provisioning,
+Submit claim, or every named retained-result mutation. Linux derives source
+coordinates from the held descriptor presentation and its mount-ID-selected
+bounded mountinfo record only when that record has canonical pathname-root
+semantics. Complete source-valid `nsfs` records with opaque namespace-object
+roots remain in snapshot integrity and descendant checks, but an opaque
+selected root refuses before coordinate arithmetic or effects; its mountpoint
+and the configured spelling are never substitute coordinates. The accepted
+opaque envelope is an exact `mnt|net|uts|ipc|pid|user|cgroup|time` kind plus a
+canonical decimal inode label, without numeric interpretation or a separate
+ES width limit. Malformed or other non-path roots reject, and recognizing such
+records does not authorize `nsfs` as a configured execution-root filesystem.
+Darwin uses `F_GETPATH`/`fstatfs`/bounded
+`getfsstat` and rejects same-FSID distinct presentations. Ambiguous
+dual-missing roots fail closed. Existing retained bundles remain readable when
+staging is absent; missing results are not provisioned by reads, and topology
+failure does not fall through to Nomad.
+
+Modeled topology tests do not claim an actual bind or casefold mount. C's
+selected native observations remain historical evidence for exact C source and
+its environments, not executions of this unaccepted integrated tree; T and
+this candidate do not inherit C's development acceptance. Local source or
+integration acceptance of this candidate requires focused candidate-specific
+changed-interaction assessment and validation. A local source-preservation or
+integration commit then requires separate explicit authorization.
+
+Running-deployment topology observation for a claimed Remote Alpha environment,
+real repaired-helper mounted-alias fixtures where the operational claim depends
+on them, and native syscall and mount-crossing evidence for each claimed Linux
+operating architecture remain environment-bound qualification requirements.
+They are not an independent blanket prerequisite to a separately authorized
+local commit. A concrete uncovered changed interaction or operating claim may
+require a separately selected bounded witness; merge ancestry alone does not
+create a blanket native campaign. No integrated native observation,
+supported-host qualification, or rollout readiness is inferred here. Operational topology,
+key exposure, capacity, sensitive-material residence, reclamation, and
+publication gates remain open for their operational scope. See `PLANS.md` under
+"Current paired-root custody and acceptance scope" and the current gates in
+`.docs/system_overview/remote_supported_host_alpha.md` and
+`.docs/system_overview/supported_linux_host_qualification.md`.

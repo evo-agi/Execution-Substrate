@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,15 +17,28 @@ import (
 )
 
 const (
-	runtimeMountRoot          = "/execution/mounts"
-	maxRuntimeMounts          = 8
-	maxRuntimeMountBytes      = 8 << 20
-	maxRuntimeMountTotalBytes = 32 << 20
+	runtimeMountRoot                      = "/execution/mounts"
+	governedMountDirMode                  = 0o755
+	governedMountFileMode                 = 0o644
+	governedMountExecFileMode             = 0o755
+	maxRuntimeMounts                      = 8
+	maxRuntimeMountBytes            int64 = 8 << 20
+	maxRuntimeMountTotalBytes       int64 = 32 << 20
+	maxRuntimeMountStreamBytes      int64 = 16 << 20
+	maxRuntimeMountTotalStreamBytes       = 64 << 20
 )
+
+func normalizedGovernedMountFileMode(mode os.FileMode) os.FileMode {
+	if mode.Perm()&0o111 != 0 {
+		return governedMountExecFileMode
+	}
+	return governedMountFileMode
+}
 
 type stagedRuntimeMount struct {
 	sourceDir  string
 	targetPath string
+	readOnly   bool
 }
 
 func validateRuntimeMounts(mounts []RuntimeMount) *Error {
@@ -42,7 +54,8 @@ func validateRuntimeMounts(mounts []RuntimeMount) *Error {
 	}
 
 	targets := make([]string, 0, len(mounts))
-	for _, mount := range mounts {
+	for index := range mounts {
+		mount := &mounts[index]
 		if !isLabeledSHA256Digest(mount.Source.ArtifactDigest) {
 			return &Error{
 				Status:  http.StatusBadRequest,
@@ -66,6 +79,7 @@ func validateRuntimeMounts(mounts []RuntimeMount) *Error {
 				Message: err.Error(),
 			}
 		}
+		mount.TargetPath = targetPath
 		targets = append(targets, targetPath)
 	}
 
@@ -122,94 +136,118 @@ func stagedRuntimeMountTargets(mounts []stagedRuntimeMount) []string {
 	return targets
 }
 
-func (s *Service) stageRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, layout executionPackageLayout, mounts []RuntimeMount, owner executionPlatformStateOwner) ([]stagedRuntimeMount, *Error) {
+func resolvedRuntimeMountTargets(mounts []resolvedMountPlan) []string {
+	targets := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		targets = append(targets, mount.targetPath)
+	}
+	return targets
+}
+
+func (s *Service) resolveRuntimeMounts(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, mounts []RuntimeMount) ([]resolvedMountPlan, []validatedMountArchive, *Error) {
+	if mounts == nil {
+		return nil, nil, nil
+	}
 	if len(mounts) == 0 {
-		return nil, nil
+		return []resolvedMountPlan{}, []validatedMountArchive{}, nil
 	}
-
-	if err := ensureOwnedDirectory(layout.mountsStageRootDir, stableStageDirMode, owner); err != nil {
-		return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging root failed")
-	}
-
 	var totalArchiveBytes int64
 	var totalExtractedBytes int64
-	staged := make([]stagedRuntimeMount, 0, len(mounts))
+	var totalStreamBytes int64
+	plans := make([]resolvedMountPlan, 0, len(mounts))
+	archives := make([]validatedMountArchive, 0, len(mounts))
 
-	for index, mount := range mounts {
-		payloadBytes, err := s.fetchValidatedMountPayload(ctx, trustModel, mount.Source.ArtifactDigest)
+	for _, mount := range mounts {
+		remainingArchiveBytes := maxRuntimeMountTotalBytes - totalArchiveBytes
+		if remainingArchiveBytes <= 0 {
+			return nil, nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payloads exceed the total size limit")
+		}
+		acquisitionLimit := minInt64(maxRuntimeMountBytes, remainingArchiveBytes)
+		payloadBytes, verifiedArtifactDigest, payloadDigest, acquisitionErr, err := s.fetchValidatedMountPayload(ctx, trustModel, mount.Source.ArtifactDigest, acquisitionLimit)
 		if err != nil {
-			return nil, err
+			if boundedResponseTooLarge(acquisitionErr) {
+				if remainingArchiveBytes < maxRuntimeMountBytes {
+					return nil, nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payloads exceed the total size limit")
+				}
+				return nil, nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payload exceeds the per-mount size limit")
+			}
+			return nil, nil, err
 		}
 
 		archiveSize := int64(len(payloadBytes))
-		if archiveSize > maxRuntimeMountBytes {
-			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payload exceeds the per-mount size limit")
-		}
-		totalArchiveBytes += archiveSize
-		if totalArchiveBytes > maxRuntimeMountTotalBytes {
-			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payloads exceed the total size limit")
-		}
-
-		targetPath, normalizeErr := normalizeRuntimeMountTargetPath(mount.TargetPath)
-		if normalizeErr != nil {
-			return nil, &Error{
-				Status:  http.StatusBadRequest,
-				Code:    codeInvalidRequest,
-				Message: normalizeErr.Error(),
-			}
-		}
-
-		mountArchivePath := layout.mountArchivePath(index)
-		mountContentsDir := layout.mountContentsDir(index)
-		if err := ensureOwnedDirectory(mountContentsDir, stableStageDirMode, owner); err != nil {
-			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging directory failed")
-		}
-		if err := os.WriteFile(mountArchivePath, payloadBytes, retainedResultBundleFileMode); err != nil {
-			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "write runtime mount payload failed")
-		}
-		if err := reconcileOwnedPath(mountArchivePath, owner, retainedResultBundleFileMode); err != nil {
-			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "prepare runtime mount payload ownership failed")
+		var ok bool
+		totalArchiveBytes, ok = addWithinLimit(totalArchiveBytes, archiveSize, maxRuntimeMountTotalBytes)
+		if !ok {
+			return nil, nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "mount payloads exceed the total size limit")
 		}
 
 		remainingTotalBytes := maxRuntimeMountTotalBytes - totalExtractedBytes
-		extractedBytes, extractErr := extractRuntimeMountArchive(mountContentsDir, payloadBytes, maxRuntimeMountBytes, remainingTotalBytes, owner)
-		if extractErr != nil {
-			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, extractErr.Error())
+		remainingStreamBytes := maxRuntimeMountTotalStreamBytes - totalStreamBytes
+		archive, extractedBytes, streamBytes, archiveErr := validateRuntimeMountArchiveWithinBudgets(
+			payloadBytes,
+			maxRuntimeMountBytes,
+			remainingTotalBytes,
+			maxRuntimeMountStreamBytes,
+			remainingStreamBytes,
+			nil,
+		)
+		if archiveErr != nil {
+			return nil, nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, archiveErr.Error())
 		}
 		totalExtractedBytes += extractedBytes
-		if err := os.Remove(mountArchivePath); err != nil {
-			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "remove runtime mount payload archive failed")
-		}
-
-		realPath, realPathErr := filepath.EvalSymlinks(mountContentsDir)
-		if realPathErr != nil {
-			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "runtime mount extraction path validation failed")
-		}
-		if !isWithinFilesystemRoot(layout.mountsStageRootDir, realPath) {
-			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, "runtime mount extraction escaped the staging root")
-		}
-
-		staged = append(staged, stagedRuntimeMount{
-			sourceDir:  mountContentsDir,
-			targetPath: targetPath,
+		totalStreamBytes += streamBytes
+		plans = append(plans, resolvedMountPlan{
+			artifactDigest:         strings.TrimSpace(mount.Source.ArtifactDigest),
+			verifiedArtifactDigest: verifiedArtifactDigest,
+			payloadDigest:          payloadDigest,
+			targetPath:             mount.TargetPath,
+			readOnly:               mount.ReadOnly,
 		})
+		archives = append(archives, archive)
 	}
 
+	return plans, archives, nil
+}
+
+func materializeValidatedRuntimeMounts(custody *stagingCustody, layout executionPackageLayout, plans []resolvedMountPlan, archives []validatedMountArchive) ([]stagedRuntimeMount, *Error) {
+	if len(plans) == 0 && len(archives) == 0 {
+		return nil, nil
+	}
+	if len(plans) != len(archives) {
+		return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "runtime mount material did not match the resolved plan")
+	}
+	if err := custody.ensureDirectory(executionMountsStageDirName, governedMountDirMode); err != nil {
+		return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging root failed")
+	}
+
+	staged := make([]stagedRuntimeMount, 0, len(plans))
+	for index, plan := range plans {
+		archive := archives[index]
+		mountContentsDir := layout.mountContentsDir(index)
+		mountContentsRelative := executionMountsStageDirName + "/" + fmt.Sprintf("%02d", index) + "/contents"
+		if err := custody.ensureDirectory(mountContentsRelative, governedMountDirMode); err != nil {
+			return nil, mountArtifactError(http.StatusInternalServerError, codeSubmissionFailed, "create runtime mount staging directory failed")
+		}
+		if err := materializeValidatedMountEntries(custody, mountContentsRelative, archive.entries); err != nil {
+			return nil, mountArtifactError(http.StatusConflict, codeMountArtifactInvalid, err.Error())
+		}
+		staged = append(staged, stagedRuntimeMount{sourceDir: mountContentsDir, targetPath: plan.targetPath, readOnly: plan.readOnly})
+	}
 	return staged, nil
 }
 
-func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string) ([]byte, *Error) {
+func (s *Service) fetchValidatedMountPayload(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string, limit int64) ([]byte, string, string, error, *Error) {
 	trimmedDigest := strings.TrimSpace(artifactDigest)
 	prepared, err := s.prepareMountArtifact(ctx, trustModel, trimmedDigest)
 	if err != nil {
-		return nil, err
+		return nil, "", "", nil, err
 	}
 
-	payloadBytes, err := s.fetchPayloadBytes(ctx, prepared.payloadDigest)
-	if err != nil {
-		return nil, err
+	payloadBytes, acquisitionErr, fetchErr := s.fetchPayloadBytesWithin(ctx, prepared.payloadDigest, limit)
+	if fetchErr != nil {
+		return nil, "", "", acquisitionErr, fetchErr
 	}
-	return payloadBytes, nil
+	return payloadBytes, prepared.manifest.ArtifactDigest, prepared.payloadDigest, acquisitionErr, nil
 }
 
 func (s *Service) prepareMountArtifact(ctx context.Context, trustModel egsmodel.RuntimeTrustPolicy, artifactDigest string) (preparedArtifact, *Error) {
@@ -242,27 +280,277 @@ func remapMountArtifactPreparationError(err *Error) *Error {
 	}
 }
 
-func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, perMountLimit int64, remainingTotalLimit int64, owner executionPlatformStateOwner) (int64, error) {
-	if remainingTotalLimit <= 0 {
-		return 0, fmt.Errorf("mount payloads exceed the total size limit")
+type checkedMountEntrySize int
+
+type mountArchiveRadixKind uint8
+
+const (
+	mountArchiveRadixNone mountArchiveRadixKind = iota
+	mountArchiveRadixDirectory
+	mountArchiveRadixRegular
+)
+
+// mountArchiveRadixWork is optional test-visible accounting at the real
+// production work sites. A nil ledger has no production cost beyond the nil
+// checks and does not change validation behavior.
+type mountArchiveRadixWork struct {
+	ProbeCount         uint64
+	CommitCount        uint64
+	ByteComparisons    uint64
+	ChildLookups       uint64
+	NodeAllocations    uint64
+	MapAllocations     uint64
+	BranchSplits       uint64
+	RetainedLabelBytes uint64
+}
+
+type mountArchiveRadixNode struct {
+	label    string
+	kind     mountArchiveRadixKind
+	children map[byte]*mountArchiveRadixNode
+}
+
+type mountArchiveRadixLedger struct {
+	root mountArchiveRadixNode
+	work *mountArchiveRadixWork
+}
+
+type mountArchiveRadixCommitKind uint8
+
+const (
+	mountArchiveRadixCommitExisting mountArchiveRadixCommitKind = iota
+	mountArchiveRadixCommitTerminal
+	mountArchiveRadixCommitChild
+	mountArchiveRadixCommitSplitTerminal
+	mountArchiveRadixCommitSplitBranch
+)
+
+type mountArchiveRadixCommitPlan struct {
+	kind       mountArchiveRadixCommitKind
+	parent     *mountArchiveRadixNode
+	child      *mountArchiveRadixNode
+	node       *mountArchiveRadixNode
+	name       string
+	nameOffset int
+	common     int
+}
+
+type mountArchiveRadixProbe struct {
+	regularAncestor bool
+	exactKind       mountArchiveRadixKind
+	hasDescendant   bool
+	commit          mountArchiveRadixCommitPlan
+}
+
+func newMountArchiveRadixLedger(work *mountArchiveRadixWork) *mountArchiveRadixLedger {
+	return &mountArchiveRadixLedger{work: work}
+}
+
+// probe scans name once from left to right. It does not mutate the ledger, so
+// the caller can preserve validation error precedence and commit only after
+// every other fallible step has succeeded.
+func (ledger *mountArchiveRadixLedger) probe(name string) mountArchiveRadixProbe {
+	if ledger.work != nil {
+		ledger.work.ProbeCount++
+	}
+	node := &ledger.root
+	offset := 0
+	for {
+		if node.kind == mountArchiveRadixRegular && offset < len(name) && name[offset] == '/' {
+			return mountArchiveRadixProbe{regularAncestor: true}
+		}
+		if offset == len(name) {
+			hasDescendant := false
+			if node.children != nil {
+				if ledger.work != nil {
+					ledger.work.ChildLookups++
+				}
+				_, hasDescendant = node.children['/']
+			}
+			commitKind := mountArchiveRadixCommitTerminal
+			if node.kind != mountArchiveRadixNone {
+				commitKind = mountArchiveRadixCommitExisting
+			}
+			return mountArchiveRadixProbe{
+				exactKind:     node.kind,
+				hasDescendant: hasDescendant,
+				commit: mountArchiveRadixCommitPlan{
+					kind: commitKind,
+					node: node,
+					name: name,
+				},
+			}
+		}
+
+		if ledger.work != nil {
+			ledger.work.ChildLookups++
+		}
+		child := node.children[name[offset]]
+		if child == nil {
+			return mountArchiveRadixProbe{commit: mountArchiveRadixCommitPlan{
+				kind:       mountArchiveRadixCommitChild,
+				parent:     node,
+				name:       name,
+				nameOffset: offset,
+			}}
+		}
+
+		common := 0
+		remaining := len(name) - offset
+		limit := len(child.label)
+		if remaining < limit {
+			limit = remaining
+		}
+		for common < limit {
+			if ledger.work != nil {
+				ledger.work.ByteComparisons++
+			}
+			if name[offset+common] != child.label[common] {
+				break
+			}
+			common++
+		}
+		if common == len(child.label) {
+			offset += common
+			node = child
+			continue
+		}
+		if offset+common == len(name) {
+			return mountArchiveRadixProbe{
+				hasDescendant: child.label[common] == '/',
+				commit: mountArchiveRadixCommitPlan{
+					kind:       mountArchiveRadixCommitSplitTerminal,
+					parent:     node,
+					child:      child,
+					name:       name,
+					nameOffset: offset,
+					common:     common,
+				},
+			}
+		}
+		return mountArchiveRadixProbe{commit: mountArchiveRadixCommitPlan{
+			kind:       mountArchiveRadixCommitSplitBranch,
+			parent:     node,
+			child:      child,
+			name:       name,
+			nameOffset: offset,
+			common:     common,
+		}}
+	}
+}
+
+func (ledger *mountArchiveRadixLedger) commit(plan mountArchiveRadixCommitPlan, kind mountArchiveRadixKind) {
+	if ledger.work != nil {
+		ledger.work.CommitCount++
+	}
+	switch plan.kind {
+	case mountArchiveRadixCommitExisting:
+		return
+	case mountArchiveRadixCommitTerminal:
+		plan.node.kind = kind
+		return
+	case mountArchiveRadixCommitChild:
+		if plan.parent.children == nil {
+			plan.parent.children = make(map[byte]*mountArchiveRadixNode)
+			if ledger.work != nil {
+				ledger.work.MapAllocations++
+			}
+		}
+		label := plan.name[plan.nameOffset:]
+		plan.parent.children[label[0]] = &mountArchiveRadixNode{label: label, kind: kind}
+		if ledger.work != nil {
+			ledger.work.NodeAllocations++
+			ledger.work.RetainedLabelBytes += uint64(len(label))
+		}
+		return
+	case mountArchiveRadixCommitSplitTerminal, mountArchiveRadixCommitSplitBranch:
+		oldLabel := plan.child.label
+		prefix := plan.name[plan.nameOffset : plan.nameOffset+plan.common]
+		plan.child.label = oldLabel[plan.common:]
+		branch := &mountArchiveRadixNode{
+			label:    prefix,
+			children: make(map[byte]*mountArchiveRadixNode),
+		}
+		branch.children[plan.child.label[0]] = plan.child
+		if plan.kind == mountArchiveRadixCommitSplitTerminal {
+			branch.kind = kind
+		} else {
+			newLabel := plan.name[plan.nameOffset+plan.common:]
+			branch.children[newLabel[0]] = &mountArchiveRadixNode{label: newLabel, kind: kind}
+			if ledger.work != nil {
+				ledger.work.NodeAllocations++
+				ledger.work.RetainedLabelBytes += uint64(len(newLabel))
+			}
+		}
+		plan.parent.children[prefix[0]] = branch
+		if ledger.work != nil {
+			ledger.work.NodeAllocations++
+			ledger.work.MapAllocations++
+			ledger.work.BranchSplits++
+		}
+	}
+}
+
+func validateRuntimeMountArchive(archiveBytes []byte, perMountLimit int64, remainingTotalLimit int64) (validatedMountArchive, int64, error) {
+	archive, extractedBytes, _, err := validateRuntimeMountArchiveWithinBudgets(
+		archiveBytes,
+		perMountLimit,
+		remainingTotalLimit,
+		maxRuntimeMountStreamBytes,
+		maxRuntimeMountTotalStreamBytes,
+		nil,
+	)
+	return archive, extractedBytes, err
+}
+
+func validateRuntimeMountArchiveWithinBudgets(
+	archiveBytes []byte,
+	perMountBodyLimit int64,
+	remainingTotalBodyLimit int64,
+	perMountStreamLimit int64,
+	remainingTotalStreamLimit int64,
+	radixWork *mountArchiveRadixWork,
+) (validatedMountArchive, int64, int64, error) {
+	if remainingTotalBodyLimit < 0 {
+		return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payloads exceed the total size limit")
+	}
+	if remainingTotalStreamLimit <= 0 {
+		return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload streams exceed the total decompressed-stream size limit")
 	}
 
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archiveBytes))
 	if err != nil {
-		return 0, fmt.Errorf("mount payload must be a valid tar.gz archive")
+		return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload must be a valid tar.gz archive")
 	}
-	defer gzipReader.Close()
 
-	tarReader := tar.NewReader(gzipReader)
+	effectiveStreamLimit := minInt64(perMountStreamLimit, remainingTotalStreamLimit)
+	streamReader := &io.LimitedReader{R: gzipReader, N: effectiveStreamLimit + 1}
+	tarReader := tar.NewReader(streamReader)
 	var extractedBytes int64
+	entries := make([]validatedMountEntry, 0)
+	namespace := newMountArchiveRadixLedger(radixWork)
+
+	streamLimitError := func() error {
+		if remainingTotalStreamLimit < perMountStreamLimit {
+			return fmt.Errorf("mount payload streams exceed the total decompressed-stream size limit")
+		}
+		return fmt.Errorf("mount payload exceeds the per-mount decompressed-stream size limit")
+	}
+	streamExceeded := func() bool {
+		return streamReader.N == 0
+	}
 
 	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
+		header, nextErr := tarReader.Next()
+		if nextErr == io.EOF {
 			break
 		}
-		if err != nil {
-			return 0, fmt.Errorf("mount payload archive could not be read")
+		if nextErr != nil {
+			_ = gzipReader.Close()
+			if streamExceeded() {
+				return validatedMountArchive{}, 0, 0, streamLimitError()
+			}
+			return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive could not be read")
 		}
 		if header == nil {
 			continue
@@ -270,64 +558,124 @@ func extractRuntimeMountArchive(destinationRoot string, archiveBytes []byte, per
 
 		entryName, normalizeErr := normalizeArchiveEntryName(header.Name)
 		if normalizeErr != nil {
-			return 0, normalizeErr
+			_ = gzipReader.Close()
+			return validatedMountArchive{}, 0, 0, normalizeErr
 		}
-
-		absolutePath := filepath.Join(destinationRoot, filepath.FromSlash(entryName))
-		if !isWithinFilesystemRoot(destinationRoot, absolutePath) {
-			return 0, fmt.Errorf("mount payload archive contains a path outside the extraction root")
+		probe := namespace.probe(entryName)
+		if probe.regularAncestor {
+			_ = gzipReader.Close()
+			return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload directory creation failed")
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := ensureOwnedDirectory(absolutePath, stableStageDirMode, owner); err != nil {
-				return 0, fmt.Errorf("mount payload directory creation failed")
+			if probe.exactKind == mountArchiveRadixRegular {
+				_ = gzipReader.Close()
+				return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload directory creation failed")
 			}
-			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-				return 0, err
-			}
+			entries = append(entries, validatedMountEntry{name: entryName, directory: true, mode: governedMountDirMode})
+			namespace.commit(probe.commit, mountArchiveRadixDirectory)
 		case tar.TypeReg, tar.TypeRegA:
-			if header.Size < 0 {
-				return 0, fmt.Errorf("mount payload archive contains an invalid file size")
+			entrySize, sizeErr := checkMountEntrySize(header.Size, extractedBytes, perMountBodyLimit, remainingTotalBodyLimit)
+			if sizeErr != nil {
+				_ = gzipReader.Close()
+				return validatedMountArchive{}, 0, 0, sizeErr
 			}
-			extractedBytes += header.Size
-			if extractedBytes > perMountLimit {
-				return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
+			if probe.exactKind != mountArchiveRadixNone || probe.hasDescendant {
+				_ = gzipReader.Close()
+				return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload file creation failed")
 			}
-			if extractedBytes > remainingTotalLimit {
-				return 0, fmt.Errorf("mount payloads exceed the total size limit")
+			contents, readErr := readCheckedMountEntry(tarReader, entrySize)
+			if readErr != nil {
+				_ = gzipReader.Close()
+				if streamExceeded() {
+					return validatedMountArchive{}, 0, 0, streamLimitError()
+				}
+				return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload file extraction failed")
 			}
-
-			if err := ensureOwnedDirectory(filepath.Dir(absolutePath), stableStageDirMode, owner); err != nil {
-				return 0, fmt.Errorf("mount payload directory creation failed")
-			}
-			file, err := os.OpenFile(absolutePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, normalizedStableStageFileMode(header.FileInfo().Mode()))
-			if err != nil {
-				return 0, fmt.Errorf("mount payload file creation failed")
-			}
-			if _, err := io.CopyN(file, tarReader, header.Size); err != nil {
-				file.Close()
-				return 0, fmt.Errorf("mount payload file extraction failed")
-			}
-			if err := file.Close(); err != nil {
-				return 0, fmt.Errorf("mount payload file extraction failed")
-			}
-			if err := reconcileOwnedPath(absolutePath, owner, normalizedStableStageFileMode(header.FileInfo().Mode())); err != nil {
-				return 0, fmt.Errorf("mount payload ownership normalization failed")
-			}
-			if err := ensureRealPathWithin(destinationRoot, absolutePath); err != nil {
-				return 0, err
-			}
+			extractedBytes += int64(entrySize)
+			entries = append(entries, validatedMountEntry{
+				name:     entryName,
+				mode:     normalizedGovernedMountFileMode(header.FileInfo().Mode()),
+				contents: contents,
+			})
+			namespace.commit(probe.commit, mountArchiveRadixRegular)
 		case tar.TypeSymlink, tar.TypeLink:
-			return 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
+			_ = gzipReader.Close()
+			return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive contains symbolic or hard links, which are unsupported")
 		case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-			return 0, fmt.Errorf("mount payload archive contains unsupported special files")
+			_ = gzipReader.Close()
+			return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive contains unsupported special files")
 		default:
-			return 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
+			_ = gzipReader.Close()
+			return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive contains an unsupported entry type")
 		}
 	}
 
-	return extractedBytes, nil
+	if _, drainErr := io.Copy(io.Discard, streamReader); drainErr != nil {
+		_ = gzipReader.Close()
+		if streamExceeded() {
+			return validatedMountArchive{}, 0, 0, streamLimitError()
+		}
+		return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive could not be read")
+	}
+	if streamExceeded() {
+		_ = gzipReader.Close()
+		return validatedMountArchive{}, 0, 0, streamLimitError()
+	}
+	if closeErr := gzipReader.Close(); closeErr != nil {
+		return validatedMountArchive{}, 0, 0, fmt.Errorf("mount payload archive could not be read")
+	}
+	streamBytes := effectiveStreamLimit + 1 - streamReader.N
+
+	return validatedMountArchive{
+		compressedBytes: archiveBytes,
+		entries:         entries,
+	}, extractedBytes, streamBytes, nil
+}
+
+func checkMountEntrySize(size int64, extractedBytes int64, perMountLimit int64, remainingTotalLimit int64) (checkedMountEntrySize, error) {
+	if size < 0 || size > int64(maximumInt()) {
+		return 0, fmt.Errorf("mount payload archive contains an invalid file size")
+	}
+	if extractedBytes < 0 || extractedBytes > perMountLimit || size > perMountLimit-extractedBytes {
+		return 0, fmt.Errorf("mount payload exceeds the per-mount size limit")
+	}
+	if extractedBytes > remainingTotalLimit || size > remainingTotalLimit-extractedBytes {
+		return 0, fmt.Errorf("mount payloads exceed the total size limit")
+	}
+	return checkedMountEntrySize(size), nil
+}
+
+func readCheckedMountEntry(reader io.Reader, size checkedMountEntrySize) ([]byte, error) {
+	contents := make([]byte, int(size))
+	if _, err := io.ReadFull(reader, contents); err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
+
+func materializeValidatedMountEntries(custody *stagingCustody, destinationRoot string, entries []validatedMountEntry) error {
+	for _, entry := range entries {
+		relativePath := destinationRoot + "/" + entry.name
+		if entry.directory {
+			if err := custody.ensureDirectory(relativePath, governedMountDirMode); err != nil {
+				return fmt.Errorf("mount payload directory creation failed")
+			}
+			continue
+		}
+		if err := custody.ensureDirectory(pathDir(relativePath), governedMountDirMode); err != nil {
+			return fmt.Errorf("mount payload directory creation failed")
+		}
+		if err := custody.writeFileWithParentMode(relativePath, entry.contents, entry.mode, governedMountDirMode); err != nil {
+			return fmt.Errorf("mount payload file creation failed")
+		}
+	}
+	return nil
+}
+
+func maximumInt() int {
+	return int(^uint(0) >> 1)
 }
 
 func normalizeArchiveEntryName(name string) (string, error) {
@@ -348,31 +696,6 @@ func normalizeArchiveEntryName(name string) (string, error) {
 		return "", fmt.Errorf("mount payload archive contains an empty path")
 	}
 	return cleaned, nil
-}
-
-func ensureRealPathWithin(root string, candidate string) error {
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("mount payload extraction path validation failed")
-	}
-	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return fmt.Errorf("mount payload extraction path validation failed")
-	}
-	if !isWithinFilesystemRoot(resolvedRoot, resolvedCandidate) {
-		return fmt.Errorf("mount payload extraction escaped the staging root")
-	}
-	return nil
-}
-
-func isWithinFilesystemRoot(root string, candidate string) bool {
-	cleanRoot := filepath.Clean(root)
-	cleanCandidate := filepath.Clean(candidate)
-	rel, err := filepath.Rel(cleanRoot, cleanCandidate)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func mountArtifactError(status int, code string, message string) *Error {

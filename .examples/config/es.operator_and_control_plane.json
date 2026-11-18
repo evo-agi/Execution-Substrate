@@ -40,7 +40,7 @@
   },
   "runtime_config": {
     "workload_zone_vault_config_ref": {
-      "digest": "sha256:<workload-zone-vault-config-digest>"
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
   "verification": {
@@ -76,6 +76,11 @@
   "execution": {
     "staging_root_dir": "/abs/path/es-staging",
     "results_root_dir": "/abs/path/es-results",
+    "retained_result_auth": {
+      "store_id": "fresh_store_example",
+      "key_id": "fresh_key_example",
+      "key_file": "/external/private/retained-result-auth/key"
+    },
     "base_image": "alpine:3.20",
     "runtime_support_binary": "/usr/local/bin/es-runtime-support",
     "spire_workload_api_socket_path": "/run/spire/sockets/agent.sock",

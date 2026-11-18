@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -462,6 +463,36 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	}
 	if !strings.Contains(logs, "vault_identity_jwt") {
 		t.Fatalf("expected bounded auth mode marker in logs, got %q", logs)
+	}
+}
+
+const mountFixtureDiagnosticStreamLimit = 4096
+
+func formatMountFixtureAllocationFailure(status string, stdout string, stdoutErr error, stderr string, stderrErr error) string {
+	formatStream := func(content string, err error) string {
+		if err != nil {
+			return fmt.Sprintf("unavailable (%v)", err)
+		}
+		if len(content) > mountFixtureDiagnosticStreamLimit {
+			return fmt.Sprintf("%q [truncated from %d bytes]", content[:mountFixtureDiagnosticStreamLimit], len(content))
+		}
+		return fmt.Sprintf("%q", content)
+	}
+	return fmt.Sprintf("expected complete allocation, got %q; test-owned stdout=%s; test-owned stderr=%s",
+		status, formatStream(stdout, stdoutErr), formatStream(stderr, stderrErr))
+}
+
+func TestSubmitMountFixtureFailureDiagnosticIsBounded(t *testing.T) {
+	message := formatMountFixtureAllocationFailure("failed", "START-BANNER\n", nil, "cat: permission denied\n", nil)
+	for _, want := range []string{`expected complete allocation, got "failed"`, `test-owned stdout="START-BANNER\n"`, `test-owned stderr="cat: permission denied\n"`} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("diagnostic %q missing %q", message, want)
+		}
+	}
+	long := strings.Repeat("x", mountFixtureDiagnosticStreamLimit+100)
+	message = formatMountFixtureAllocationFailure("failed", long, nil, "", errors.New("logs unavailable"))
+	if strings.Contains(message, long) || !strings.Contains(message, "truncated from 4196 bytes") || !strings.Contains(message, "test-owned stderr=unavailable (logs unavailable)") {
+		t.Fatalf("diagnostic was unbounded or hid unavailable stream: %q", message)
 	}
 }
 
@@ -939,6 +970,76 @@ echo START-BANNER
 cat /execution/mounts/config/app.conf
 echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 `))
+	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{{Name: "app.conf", Mode: 0o644, Body: []byte(mountedSourceText)}}), "runtime-mount")
+	response := submitExecutionRequest(t, stack, buildSubmitRequestBodyWithMounts(t, stack, []admission.RuntimeMount{{Source: admission.MountSource{ArtifactDigest: mountArtifact.ArtifactDigest}, TargetPath: mountedSourceTarget, ReadOnly: true}}))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
+	job := stack.nomad.fetchJobDetail(t, jobID)
+	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], mountedSourceTarget)
+	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
+		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
+	}
+	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
+	if allocation.ClientStatus != "complete" {
+		stdout, stdoutErr := stack.nomad.tryAllocLogs(allocation.ID)
+		stderr, stderrErr := stack.nomad.tryAllocStderrLogs(allocation.ID)
+		t.Fatal(formatMountFixtureAllocationFailure(allocation.ClientStatus, stdout, stdoutErr, stderr, stderrErr))
+	}
+	statusResponse := doJSONRequest(t, stack.es.Addr(), http.MethodGet, "/v1/executions/"+payload.RunID+"/status", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false), nil)
+	defer statusResponse.Body.Close()
+	if statusResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+	}
+	logsResponse := doJSONRequest(t, stack.es.Addr(), http.MethodGet, "/v1/executions/"+payload.RunID+"/logs", stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false), nil)
+	defer logsResponse.Body.Close()
+	if logsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from logs, got %d body=%s", logsResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, logsResponse.Body))))
+	}
+	logs := string(mustReadBody(t, logsResponse.Body))
+	if !strings.Contains(logs, "START-BANNER") || !strings.Contains(logs, "MOUNT-CONTENT") {
+		t.Fatalf("expected mounted content in logs, got %q", logs)
+	}
+}
+
+// This native qualification sibling subsumes the portable mount/lifecycle
+// assertions above and adds the actual installed-source identity witness.
+func TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity(t *testing.T) {
+	requireMountedSourceNativeCapabilities(t)
+	envelope := requireMountedSourceWitnessEnvelope(t)
+	capture := &mountedSourceRegistrationCapture{}
+	stack := startRuntimeIdentitySubmitStackWithOptions(t, submitStackOptions{
+		mountRegistrationCapture:         capture,
+		mountedSourceDockerTaskNameLabel: true,
+	})
+	t.Cleanup(func() { _ = capture.close() })
+	session := newMountedSourceWitnessSession(capture)
+	session.cancelFunc = stack.nomad.cancelMountedJob
+	t.Cleanup(func() {
+		session.teardown()
+		if session.stopResult == "request_failed" || session.stopResult == "request_unavailable" || session.jobCancelResult == "request_failed" || session.handleCloseResult == "failed" {
+			t.Errorf("mount witness: task-owned teardown incomplete (stop=%s job=%s handles=%s)", session.stopResult, session.jobCancelResult, session.handleCloseResult)
+		}
+	})
+	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
+set -eu
+printf 'MOUNT-OBSERVER-READY\n' > /execution/run/result/.mount-observer-ready
+echo START-BANNER
+cat /execution/mounts/config/app.conf
+echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
+count=0
+while [ ! -f /execution/run/result/.mount-observer-release ]; do
+  count=$((count + 1))
+  [ "$count" -lt 120 ] || exit 78
+  sleep 1
+done
+`))
 
 	mountArtifact := publishAuxiliaryArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
 		{
@@ -957,27 +1058,50 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 			ReadOnly:   true,
 		},
 	}))
-	defer response.Body.Close()
-
 	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+		_ = response.Body.Close()
+		t.Fatal("mount witness: Submit was not accepted")
 	}
-
+	responseBytes, err := readMountedBounded(response.Body, 8*1024)
+	if err != nil {
+		t.Fatal("mount witness: bounded Submit receipt unavailable")
+	}
 	var payload admission.SubmitResult
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode submit response: %v", err)
+	if json.Unmarshal(responseBytes, &payload) != nil || !validMountedRunID(payload.RunID) {
+		t.Fatal("mount witness: malformed Submit receipt")
+	}
+	anchor, err := capture.require(payload.RunID)
+	if err != nil {
+		t.Fatalf("mount registration anchor: %v", err)
 	}
 
-	jobID := stack.nomad.waitForExecutionJob(t, payload.RunID)
-	job := stack.nomad.fetchJobDetail(t, jobID)
-	mountConfig := findTaskMountByTarget(t, job.taskConfig(t)["mounts"], "/execution/mounts/config")
-	if readonly, ok := mountConfig["readonly"].(bool); !ok || !readonly {
-		t.Fatalf("expected readonly runtime mount config, got %#v", mountConfig["readonly"])
+	jobCtx, cancelJobRead := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = stack.nomad.fetchMountedSourceJob(jobCtx, anchor)
+	cancelJobRead()
+	if err != nil {
+		t.Fatalf("mount witness: bounded job observation failed: %v", err)
+	}
+	allocation, err := stack.nomad.waitForUniqueRunningMountedAllocation(anchor.jobID, anchor.taskName, 45*time.Second)
+	if err != nil {
+		t.Fatalf("mounted-source witness allocation: %v", err)
+	}
+	observation, err := observeMountedSourceIdentity(anchor, allocation, session)
+	if err != nil {
+		t.Fatalf("mounted-source witness observation: %v", err)
+	}
+	if err := compareMountedSourceIdentity(anchor, observation); err != nil {
+		t.Fatalf("mounted-source witness comparison: %v", err)
+	}
+	if err := session.release(); err != nil {
+		t.Fatalf("mounted-source witness barrier release: %v", err)
 	}
 
-	allocation := stack.nomad.waitForTerminalAllocation(t, jobID)
-	if allocation.ClientStatus != "complete" {
-		t.Fatalf("expected complete allocation, got %q", allocation.ClientStatus)
+	terminalAt, err := stack.nomad.waitForMountedTerminalAllocation(anchor, observation.allocationID, 45*time.Second)
+	if err != nil {
+		t.Fatalf("mount witness: bounded terminal observation failed: %v", err)
+	}
+	if err := session.markTerminal(terminalAt); err != nil {
+		t.Fatal(err)
 	}
 
 	statusResponse := doJSONRequest(
@@ -990,7 +1114,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	)
 	defer statusResponse.Body.Close()
 	if statusResponse.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from status, got %d body=%s", statusResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, statusResponse.Body))))
+		t.Fatal("mount witness: status read failed")
 	}
 
 	logsResponse := doJSONRequest(
@@ -1001,15 +1125,34 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 		stack.fixture.clientTLSConfigForServer(t, stack.fixture.esServerName, "operator/local", false),
 		nil,
 	)
-	defer logsResponse.Body.Close()
 	if logsResponse.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from logs, got %d body=%s", logsResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, logsResponse.Body))))
+		_ = logsResponse.Body.Close()
+		t.Fatal("mount witness: logs read failed")
 	}
-
-	logs := string(mustReadBody(t, logsResponse.Body))
+	logsBytes, err := readMountedBounded(logsResponse.Body, 64*1024)
+	if err != nil {
+		t.Fatal("mount witness: bounded lifecycle logs unavailable")
+	}
+	logs := string(logsBytes)
 	if !strings.Contains(logs, "START-BANNER") || !strings.Contains(logs, "MOUNT-CONTENT") {
-		t.Fatalf("expected mounted content in logs, got %q", logs)
+		t.Fatal("mount witness: required synthetic lifecycle logs absent")
 	}
+	if err := session.complete(); err != nil {
+		t.Fatalf("mounted-source witness cleanup: %v", err)
+	}
+	logMountedSourceWitnessEvidence(t, envelope, anchor, observation, session)
+}
+
+func requireMountedSourceNativeCapabilities(t *testing.T) {
+	t.Helper()
+	socketInfo, err := os.Lstat("/var/run/docker.sock")
+	if err != nil || socketInfo.Mode()&os.ModeSocket == 0 {
+		t.Skip("mounted-source native witness not qualified by this test: direct Docker Unix socket unavailable")
+	}
+	if _, err := readMountedBootID(); err != nil {
+		t.Skip("mounted-source native witness not qualified by this test: host boot ID unavailable")
+	}
+	requireSlice1RuntimeIdentityCapabilities(t)
 }
 
 func TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction(t *testing.T) {
@@ -1214,18 +1357,24 @@ type submitPublishResponse struct {
 }
 
 type submitStackOptions struct {
-	networkAccess                  bool
-	baseImage                      string
-	runtimeIdentityTmpfsSize       int64
-	mockSPIREJWTTTL                time.Duration
-	mockSPIREFetchError            bool
-	workloadVaultAddress           string
-	workloadVaultCABundlePEM       string
-	allowedAGSCallerPrefixes       []string
-	allowedExecutionCallerPrefixes []string
-	publishCallerPath              string
-	executionCallerPath            string
-	nomadHandler                   http.Handler
+	networkAccess                    bool
+	baseImage                        string
+	runtimeIdentityTmpfsSize         int64
+	mockSPIREJWTTTL                  time.Duration
+	mockSPIREFetchError              bool
+	workloadVaultAddress             string
+	workloadVaultCABundlePEM         string
+	allowedAGSCallerPrefixes         []string
+	allowedExecutionCallerPrefixes   []string
+	publishCallerPath                string
+	executionCallerPath              string
+	nomadHandler                     http.Handler
+	mountRegistrationCapture         *mountedSourceRegistrationCapture
+	mountedSourceDockerTaskNameLabel bool
+}
+
+func (opts submitStackOptions) nomadHarnessOptions() nomadHarnessOptions {
+	return nomadHarnessOptions{dockerTaskNameLabel: opts.mountedSourceDockerTaskNameLabel}
 }
 
 func startSubmitStack(t *testing.T) *submitStack {
@@ -1253,9 +1402,133 @@ func startSubmitStackWithNomadHandler(t *testing.T, opts submitStackOptions, han
 	return startSubmitStackWithOptions(t, opts)
 }
 
+func TestPrepareSubmitStackExecutionRootsCreatesIndependentEmptyRoots(t *testing.T) {
+	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-root-fixture-")
+	rootInfo, err := os.Lstat(rootDir)
+	if err != nil {
+		t.Fatalf("lstat fixture workspace root: %v", err)
+	}
+	rootUID, rootGID := fixtureOwnerIDs(t, rootInfo)
+
+	stagingRoot, resultsRoot := prepareSubmitStackExecutionRoots(t, rootDir)
+	if stagingRoot != filepath.Join(rootDir, "es-stage") {
+		t.Fatalf("staging root = %q, want %q", stagingRoot, filepath.Join(rootDir, "es-stage"))
+	}
+	if resultsRoot != filepath.Join(rootDir, "es-results") {
+		t.Fatalf("results root = %q, want %q", resultsRoot, filepath.Join(rootDir, "es-results"))
+	}
+
+	infos := make(map[string]os.FileInfo, 2)
+	for label, root := range map[string]string{
+		"staging": stagingRoot,
+		"results": resultsRoot,
+	} {
+		info, err := os.Lstat(root)
+		if err != nil {
+			t.Fatalf("lstat %s execution root: %v", label, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s execution root mode = %v, want a real directory", label, info.Mode())
+		}
+		if got := info.Mode().Perm(); got != 0o755 {
+			t.Fatalf("%s execution root mode = %04o, want 0755", label, got)
+		}
+		uid, gid := fixtureOwnerIDs(t, info)
+		if uid != rootUID || gid != rootGID {
+			t.Fatalf("%s execution root owner = %d:%d, want fixture owner %d:%d", label, uid, gid, rootUID, rootGID)
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatalf("read %s execution root: %v", label, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("%s execution root entries = %v, want empty root", label, entries)
+		}
+		infos[label] = info
+	}
+	if os.SameFile(infos["staging"], infos["results"]) {
+		t.Fatal("staging and results execution roots resolve to the same filesystem object")
+	}
+}
+
+func prepareSubmitStackExecutionRoots(t *testing.T, rootDir string) (string, string) {
+	t.Helper()
+
+	stagingRoot := filepath.Join(rootDir, "es-stage")
+	resultsRoot := filepath.Join(rootDir, "es-results")
+	if err := os.Mkdir(stagingRoot, 0o755); err != nil {
+		t.Fatalf("create empty staging execution root: %v", err)
+	}
+	if err := os.Mkdir(resultsRoot, 0o755); err != nil {
+		if cleanupErr := os.Remove(stagingRoot); cleanupErr != nil {
+			t.Fatalf("create empty results execution root: %v; remove newly created staging execution root: %v", err, cleanupErr)
+		}
+		t.Fatalf("create empty results execution root: %v", err)
+	}
+	for _, root := range []string{stagingRoot, resultsRoot} {
+		if err := os.Chmod(root, 0o755); err != nil {
+			t.Fatalf("set exact mode on test-owned execution root: %v", err)
+		}
+	}
+	return stagingRoot, resultsRoot
+}
+
+func newSubmitStackSyntheticRetainedResultAuth(t *testing.T, rootDir string) esconfig.RetainedResultAuthConfig {
+	t.Helper()
+	keyDir := filepath.Join(rootDir, "es-auth")
+	if err := os.Mkdir(keyDir, 0o700); err != nil {
+		t.Fatalf("create synthetic result auth directory: %v", err)
+	}
+	keyPath := filepath.Join(keyDir, "key")
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{0x53}, 32), 0o600); err != nil {
+		t.Fatalf("write synthetic result auth key: %v", err)
+	}
+	return esconfig.RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: keyPath}
+}
+
+func TestRetainedResultReviewLegacySubmitFixtureAuthSetup(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, results := prepareSubmitStackExecutionRoots(t, rootDir)
+	auth := newSubmitStackSyntheticRetainedResultAuth(t, rootDir)
+	cfg := esconfig.ExecutionConfig{
+		StagingRootDir: stage, ResultsRootDir: results,
+		RetainedResultAuth:         auth,
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/synthetic/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/synthetic/spire-agent.sock",
+	}
+	if err := cfg.Validate("execution"); err != nil {
+		t.Fatalf("shared submit fixture authentication config: %v", err)
+	}
+	info, err := os.Lstat(auth.KeyFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() != 32 {
+		t.Fatalf("shared submit fixture key has invalid shape: info=%v err=%v", info, err)
+	}
+	if auth.StoreID != "test_store" || auth.KeyID != "test_key" ||
+		strings.HasPrefix(auth.KeyFile, stage+string(os.PathSeparator)) ||
+		strings.HasPrefix(auth.KeyFile, results+string(os.PathSeparator)) {
+		t.Fatal("shared submit fixture authentication is not independent of execution roots")
+	}
+}
+
+func fixtureOwnerIDs(t *testing.T, info os.FileInfo) (uint32, uint32) {
+	t.Helper()
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("filesystem metadata for %q does not expose Unix ownership", info.Name())
+	}
+	return stat.Uid, stat.Gid
+}
+
 func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitStack {
 	t.Helper()
 	rootDir := newExecutionWorkspaceTempDir(t, "es-submit-")
+	stagingRoot, resultsRoot := prepareSubmitStackExecutionRoots(t, rootDir)
+	resultAuth := newSubmitStackSyntheticRetainedResultAuth(t, rootDir)
 	fixture := newTLSFixture(t)
 	var nomad *nomadHarness
 	var nomadServer *httptest.Server
@@ -1265,8 +1538,16 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 		nomadBaseURL = nomadServer.URL
 	} else {
 		requireHealthyDockerBackedNomadClient(t)
-		nomad = startNomadHarness(t, rootDir)
+		nomad = startNomadHarnessWithOptions(t, rootDir, opts.nomadHarnessOptions())
 		nomadBaseURL = nomad.baseURL()
+		if opts.mountRegistrationCapture != nil {
+			proxy, proxyErr := newMountedSourceRegistrationProxy(nomadBaseURL, stagingRoot, opts.mountRegistrationCapture)
+			if proxyErr != nil {
+				t.Fatalf("build mounted-source registration proxy: %v", proxyErr)
+			}
+			nomadServer = proxy
+			nomadBaseURL = proxy.URL
+		}
 	}
 	runtimeSupportBinary := buildRuntimeSupportBinary(t, rootDir)
 	mockSPIRE := startMockWorkloadAPIServer(t, rootDir, mockWorkloadAPIServerOptions{
@@ -1517,8 +1798,9 @@ func startSubmitStackWithOptions(t *testing.T, opts submitStackOptions) *submitS
 			TimeoutSeconds: 5,
 		},
 		Execution: esconfig.ExecutionConfig{
-			StagingRootDir:             filepath.Join(rootDir, "es-stage"),
-			ResultsRootDir:             filepath.Join(rootDir, "es-results"),
+			StagingRootDir:             stagingRoot,
+			ResultsRootDir:             resultsRoot,
+			RetainedResultAuth:         resultAuth,
 			BaseImage:                  firstNonEmpty(opts.baseImage, "alpine:3.20"),
 			RuntimeIdentityTmpfsSize:   opts.runtimeIdentityTmpfsSize,
 			RuntimeSupportBinary:       runtimeSupportBinary,
@@ -2297,6 +2579,7 @@ type nomadHarness struct {
 
 type nomadAllocationSummary struct {
 	ID           string                    `json:"ID"`
+	JobID        string                    `json:"JobID"`
 	ModifyIndex  uint64                    `json:"ModifyIndex"`
 	ClientStatus string                    `json:"ClientStatus"`
 	TaskStates   map[string]nomadTaskState `json:"TaskStates"`
@@ -2346,10 +2629,18 @@ func (s nomadTaskState) exitCode() int {
 	return -1
 }
 
+type nomadHarnessOptions struct {
+	dockerTaskNameLabel bool
+}
+
 func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
+	return startNomadHarnessWithOptions(t, rootDir, nomadHarnessOptions{})
+}
+
+func startNomadHarnessWithOptions(t *testing.T, rootDir string, opts nomadHarnessOptions) *nomadHarness {
 	t.Helper()
 
-	harness, reason := startNomadHarnessForCapabilityProbe(rootDir)
+	harness, reason := startNomadHarnessForCapabilityProbeWithOptions(rootDir, opts, (*exec.Cmd).Start)
 	if reason != "" {
 		t.Fatalf("%s", reason)
 	}
@@ -2357,6 +2648,10 @@ func startNomadHarness(t *testing.T, rootDir string) *nomadHarness {
 }
 
 func startNomadHarnessForCapabilityProbe(rootDir string) (*nomadHarness, string) {
+	return startNomadHarnessForCapabilityProbeWithOptions(rootDir, nomadHarnessOptions{}, (*exec.Cmd).Start)
+}
+
+func startNomadHarnessForCapabilityProbeWithOptions(rootDir string, opts nomadHarnessOptions, launch func(*exec.Cmd) error) (*nomadHarness, string) {
 	httpPort, err := reserveTCPPortValue()
 	if err != nil {
 		return nil, fmt.Sprintf("reserve nomad http port: %v", err)
@@ -2383,6 +2678,22 @@ func startNomadHarnessForCapabilityProbe(rootDir string) (*nomadHarness, string)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Sprintf("mkdir nomad data dir: %v", err)
 	}
+	clientDockerConfig := `  options = {
+    "docker.cleanup.image" = "false"
+    "docker.volumes.enabled" = "true"
+  }`
+	dockerPluginConfig := ""
+	if opts.dockerTaskNameLabel {
+		clientDockerConfig = ""
+		dockerPluginConfig = `plugin "docker" {
+  config {
+    extra_labels = ["task_name"]
+    volumes { enabled = true }
+    gc { image = false }
+  }
+}
+`
+	}
 	config := fmt.Sprintf(`data_dir = %q
 bind_addr = "127.0.0.1"
 server {
@@ -2392,12 +2703,9 @@ server {
 client {
   enabled = true
 %s
-  options = {
-    "docker.cleanup.image" = "false"
-    "docker.volumes.enabled" = "true"
-  }
+%s
 }
-ports {
+%sports {
   http = %d
   rpc  = %d
   serf = %d
@@ -2407,7 +2715,7 @@ advertise {
   rpc  = "127.0.0.1:%d"
   serf = "127.0.0.1:%d"
 }
-`, dataDir, clientCPUOverride, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
+`, dataDir, clientCPUOverride, clientDockerConfig, dockerPluginConfig, httpPort, rpcPort, serfPort, httpPort, rpcPort, serfPort)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		return nil, fmt.Sprintf("write nomad config: %v", err)
 	}
@@ -2421,7 +2729,7 @@ advertise {
 	cmd := exec.Command("nomad", "agent", "-dev", "-config="+configPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
+	if err := launch(cmd); err != nil {
 		_ = logFile.Close()
 		return nil, fmt.Sprintf("start nomad agent: %v", err)
 	}
@@ -3204,4 +3512,25 @@ func reserveTCPPortValue() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func TestSubmitPublicRouteRejectsStructuralReliableBody(t *testing.T) {
+	stack := startStack(t, stackOptions{}) // local TLS/ARS/EGS fixtures; Submit is unavailable
+	var body map[string]any
+	if err := json.Unmarshal(buildPrepareRequestBody(t, stack), &body); err != nil {
+		t.Fatal(err)
+	}
+	body["schema_version"] = "execution-substrate.reliable-submit-request/v1"
+	body["reliable_submit"] = map[string]any{
+		"contract":   "execution-substrate.reliable-submit/v1",
+		"submit_key": "fixture-key",
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := doJSONRequest(t, stack.es.Addr(), http.MethodPost, "/v1/executions:submit",
+		stack.fixture.clientTLSConfig(t, "operator/local", false), encoded)
+	defer response.Body.Close()
+	assertErrorResponseCode(t, response, http.StatusBadRequest, "invalid_request")
 }

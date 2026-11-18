@@ -2,6 +2,7 @@ package reliablesubmit
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -86,9 +87,12 @@ func TestSQLiteClaimStorePathAndPermissionPosture(t *testing.T) {
 		path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 		store := mustOpenSQLiteClaimStore(t, path)
 		defer store.close()
-		f := newDurableFixture(t)
-		service := mustDurableService(t, store, fixedClaimClock{now: f.now})
-		_ = mustServiceEstablish(t, service, f)
+		record, descriptor := syntheticReplayRecordFixture(t)
+		registerSyntheticRecordKeys(t, store, descriptor)
+		result, err := store.establishClaim(context.Background(), establishClaimCommand{record: record})
+		if err != nil || !result.created {
+			t.Fatalf("establish synthetic claim: %v", err)
+		}
 		checkModeExactly(t, filepath.Dir(path), 0o700)
 		checkModeExactly(t, path, 0o600)
 		checkExistingSidecarMode(t, path+"-wal", 0o600)
@@ -121,8 +125,9 @@ func TestSQLiteClaimStoreMalformedAndInvalidCodecFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sqliteRecordArgs: %v", err)
 		}
-		args[len(args)-1] = int64(durableClaimCodecVersion + 1)
-		if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+		args[len(args)-1] = int64(durableClaimCodecVersionSynthetic + 1)
+		// Only the deliberate corruption seed bypasses the current insert guard.
+		if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
 			t.Fatalf("drop insert guard for corruption seed: %v", err)
 		}
 		if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
@@ -130,6 +135,9 @@ func TestSQLiteClaimStoreMalformedAndInvalidCodecFailClosed(t *testing.T) {
 		}
 		if _, err := store.db.Exec(sqliteInsertClaimSQL, args...); err != nil {
 			t.Fatalf("insert invalid codec row: %v", err)
+		}
+		if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=OFF`); err != nil {
+			t.Fatalf("restore constraints: %v", err)
 		}
 		_, err = store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
 		if !errors.Is(err, errClaimStoreCorrupt) {
@@ -150,10 +158,13 @@ func TestSQLiteClaimStoreTwoHandlesBusyTimeoutAndHelperProcessContention(t *test
 		t.Fatalf("open second handle: %v", err)
 	}
 	defer second.close()
-	f := newDurableFixture(t)
-	service := mustDurableService(t, first, fixedClaimClock{now: f.now})
-	created := mustServiceEstablish(t, service, f)
-	loaded, err := second.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	record, descriptor := syntheticReplayRecordFixture(t)
+	registerSyntheticRecordKeys(t, first, descriptor)
+	created, err := first.establishClaim(context.Background(), establishClaimCommand{record: record})
+	if err != nil || !created.created {
+		t.Fatalf("establish visible synthetic claim: %v", err)
+	}
+	loaded, err := second.loadClaim(context.Background(), loadClaimQuery{claim: record.claim})
 	if err != nil {
 		t.Fatalf("second handle load: %v", err)
 	}
@@ -179,16 +190,15 @@ func TestSQLiteClaimStoreTwoHandlesBusyTimeoutAndHelperProcessContention(t *test
 		_ = cmd.Process.Kill()
 		t.Fatalf("helper did not report lock; text=%q err=%v", scanner.Text(), scanner.Err())
 	}
-	other := newDurableFixture(t)
-	other.caller = mustPrivateCallerRef(t, []byte("private-caller-reference-two"))
-	other.claim = mustPrivateClaimID(t, other.caller, other.submitKey)
-	other.plan = mustPrivateBoundPlan(t, other.binding, other.witness)
-	busyService := mustDurableService(t, second, fixedClaimClock{now: other.now})
-	_, err = busyService.establishOrLoadClaim(context.Background(), establishClaimRequest{
-		claim:    other.claim,
-		plan:     other.plan,
-		mutation: other.mutation,
-	})
+	otherCaller := mustPrivateCallerRef(t, bytes.Repeat([]byte{0x33}, 32))
+	otherClaim := mustPrivateClaimID(t, otherCaller, record.claim.submitKey)
+	otherDescriptor := descriptor
+	otherDescriptor.ref = "objects/v1/" + strings.Repeat("b", 64)
+	other, err := newReplayDurableClaimRecord(otherClaim, record.plan, otherDescriptor, record.createdAt)
+	if err != nil {
+		t.Fatalf("construct unrelated synthetic claim: %v", err)
+	}
+	_, err = second.establishClaim(context.Background(), establishClaimCommand{record: other})
 	if !errors.Is(err, errClaimStoreBusy) {
 		_ = cmd.Process.Kill()
 		t.Fatalf("busy contention error = %v", err)
@@ -227,8 +237,8 @@ func TestSQLiteClaimStoreRollbackLeavesNoPartialMutation(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 	store := mustOpenSQLiteClaimStore(t, path)
 	defer store.close()
-	f := newDurableFixture(t)
-	record := mustPrivateRecord(t, mustPrivatePendingBefore(t, f), f)
+	record, descriptor := syntheticReplayRecordFixture(t)
+	registerSyntheticRecordKeys(t, store, descriptor)
 	args, err := sqliteRecordArgs(record)
 	if err != nil {
 		t.Fatalf("sqliteRecordArgs: %v", err)
@@ -241,13 +251,13 @@ func TestSQLiteClaimStoreRollbackLeavesNoPartialMutation(t *testing.T) {
 	if err := beginImmediate(context.Background(), conn); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := conn.ExecContext(context.Background(), sqliteInsertClaimSQL, args...); err != nil {
+	if _, err := conn.ExecContext(context.Background(), sqliteInsertReplayClaimSQL, args...); err != nil {
 		t.Fatalf("insert in tx: %v", err)
 	}
 	if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	_, err = store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+	_, err = store.loadClaim(context.Background(), loadClaimQuery{claim: record.claim})
 	if !errors.Is(err, errClaimStoreNotFound) {
 		t.Fatalf("load after rollback error = %v", err)
 	}

@@ -749,7 +749,50 @@ Current successful response shapes:
 - ES now localizes submit-time payload staging, mount staging, and runtime-ready package assembly behind one internal execution-package layout rather than letting that contract drift across submit, mount, and handoff helpers.
 - ES reserves `/execution/run/result` as the current bounded workload-authored terminal result directory for the `static-script` slice, then stores non-empty terminal result contents as an opaque tar.gz bundle under `execution.results_root_dir`.
 - ES serves retained opaque result bundles without interpreting checkpoint, review, finalization, or other Control Plane state semantics from their contents. The current result route is not a logs wrapper, checkpoint API, or Control Plane state surface.
-- ES attempts result retention before successful staging cleanup so retained bundles survive removal of `execution.staging_root_dir/<run_id>`.
+- ES result retention is independent of staging retention. Publication success,
+  absence, conflict, or failure never authorizes staging mutation. The current
+  paired-root and authenticated final/record eligibility rules are owned by
+  `.docs/execution_lifecycle/contracts.md`. Pair proof is a prerequisite for
+  permitted result operations, not existing-object repair or deletion authority.
+  New unpublished result objects may receive initial owner/mode; existing
+  directories, finals, and normalization evidence are checked without repair or
+  adoption. Uncertain leaves and startup probe fixtures remain retained; no
+  whole-root reclamation authority is selected.
+- B2 preserves every public route, HTTP status, existing error code, DTO shape,
+  field name, precedence rule, and successful response while replacing only
+  selected operational-cause text. The exact fixed messages are
+  `workload-zone vault configuration is invalid`,
+  `derive execution host context failed`,
+  `stage workload vault trust material failed`,
+  `derive execution platform state owner failed`, and
+  `execution submission failed`. Public errors remain
+  `{success:false,error:<safe message>,code:<existing code>}`; no cause or
+  diagnostic field is added.
+- The three governed result-retention failures use only
+  `es result retention failed run_id=%s` and the validated public run ID. This
+  is a finite call-site contract, not process-wide log noninterference.
+- Nomad Submit registration, projected-allocation list, and allocation-detail
+  JSON are limited to 256 KiB and exactly one compatible JSON document. Unknown
+  provider fields remain accepted. Known oversized bodies are refused before
+  reading, unknown/chunked bodies use a limit-plus-one read, exact equality is
+  accepted, and non-success bodies are not consumed as diagnostics.
+- Nomad job lookup remains explicitly unbounded but one-document because
+  admitted caller-environment aggregates are currently unbounded and the job
+  summary echoes `Task.Env`. Successful authenticated public Logs likewise
+  remain unbounded byte-identical opaque workload output. B2 does not select a
+  universal control-response or workload-output size policy.
+- `preparedAdmission` is a private fixed-redacted aggregate under ordinary
+  formatting and formatted standard-library logging and remains `{}` under
+  ordinary JSON. This bounded structural defense does not cover reflection,
+  `unsafe`, malicious same-package code, arbitrary serializers, secure erasure,
+  or authorize logging the aggregate.
+- The complete `control-plane-normal-shell/v1` direct literal submitted-job and
+  authority-handoff golden is ES profile-coverage evidence only. It is
+  source-distinct from the B1 default golden and is neither current CP request
+  bytes nor CP authority over ES semantics.
+- B2's finite assurance is source-bounded and reviewable, not a general
+  analyzer. Reliable keyed-submit runtime remains unwired, and native Linux
+  runtime validation of the combined candidate remains pending.
 - Runtime network mode is derived directly from signed execution access claims:
   - `network_access=false -> network_mode=none`
   - `network_access=true -> network_mode=bridge`
@@ -760,10 +803,23 @@ Current successful response shapes:
   - under `/execution/mounts`
   - non-overlapping
 - Each runtime mount artifact is revalidated through ARS and runtime-trust enforcement before staging.
-- Failed submit staging is cleaned immediately.
-- Successful submit payload, run, and mount staging remain under `execution.staging_root_dir/<run_id>/` only while the workload may still depend on those bind mounts.
-- Once ES observes terminal success for the run through the current lifecycle path, it attempts retained-result capture and then best-effort removes `execution.staging_root_dir/<run_id>/`.
-- Failed, canceled, lost, or otherwise ambiguous terminal outcomes retain their staging root for operator debugging in the current slice.
+- Once ES exclusively creates `execution.staging_root_dir/<run_id>/`, every
+  post-claim outcome retains that visible root: failed or partial Submit,
+  ambiguous or accepted registration, terminal success or failure,
+  cancellation, loss, unknown evidence, and every result-publication outcome.
+- ES does not adopt, reopen, quarantine, scan, or recursively delete a run
+  root. Automatic whole-root reclamation is not implemented; governed staging
+  reclamation is an ES-owned reopened seam.
+- If Submit never successfully claims a run root, there is no claimed run tree
+  for Submit to reclaim; startup root provisioning and capability probes are
+  separate effects.
+- After successful exclusive claim, the isolated candidate retains
+  `execution.staging_root_dir/<run_id>/` on materialization error, Nomad
+  registration failure or ambiguity, terminal success/failure/cancel/loss, and
+  result-publication failure. Closing held descriptors does not delete it.
+- Authenticated result capture is separate from retained staging. Retention
+  increases disk use and sensitive-material residence; no TTL, garbage
+  collector, operator deletion authority, or reclamation policy is selected.
 - Lifecycle is Nomad-backed only:
   - ES does not persist run state
   - ES resolves status, logs, result readiness when no retained bundle exists, and cancel through Nomad

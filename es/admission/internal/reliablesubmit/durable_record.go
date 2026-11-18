@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	durableClaimCodecVersionLegacy uint16 = 1
-	durableClaimCodecVersion       uint16 = 2
+	durableClaimCodecVersionLegacy    uint16 = 1
+	durableClaimCodecVersion          uint16 = 2
+	durableClaimCodecVersionSynthetic uint16 = 3
 )
 
 var (
@@ -487,6 +488,7 @@ type durableClaimRecord struct {
 	retention       durableRetentionFact
 	lastMutation    durableMutationRef
 	latestOperation durableLatestOperationDescriptor
+	replay          replayClaimDescriptor
 }
 
 type newDurableClaimRecordInput struct {
@@ -531,7 +533,7 @@ func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord
 }
 
 func (r durableClaimRecord) validate() error {
-	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy) ||
+	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy && r.codecVersion != durableClaimCodecVersionSynthetic) ||
 		!r.claim.Valid() ||
 		!r.plan.Valid() ||
 		!r.phase.valid() ||
@@ -556,6 +558,18 @@ func (r durableClaimRecord) validate() error {
 		return errInvalidDurableRecord
 	}
 	if !r.effects.validForPhase(r.phase.tag) {
+		return errInvalidDurableRecord
+	}
+	if r.codecVersion == durableClaimCodecVersionSynthetic {
+		if !r.replay.valid() || r.phase.tag != durablePhasePendingBeforeAssignment ||
+			r.revision != initialClaimRevision || r.expiresAt.valid ||
+			r.assignedAt.valid || r.retention.state != durableRetentionActive ||
+			r.latestOperation.kind != durableOperationEstablishClaim ||
+			len(r.claim.caller.ref.value) != 32 || len(r.claim.submitKey.ref.value) != 32 ||
+			len(r.plan.binding.ref.value) > 256 {
+			return errInvalidDurableRecord
+		}
+	} else if !r.replay.zero() {
 		return errInvalidDurableRecord
 	}
 	return nil
@@ -583,6 +597,7 @@ func (r durableClaimRecord) clone() durableClaimRecord {
 		retention:       r.retention,
 		lastMutation:    r.lastMutation.clone(),
 		latestOperation: r.latestOperation.clone(),
+		replay:          r.replay.clone(),
 	}
 }
 
@@ -610,7 +625,8 @@ func (r durableClaimRecord) equal(other durableClaimRecord) bool {
 		r.expiresAt.equal(other.expiresAt) &&
 		r.retention.equal(other.retention) &&
 		r.lastMutation.equal(other.lastMutation) &&
-		r.latestOperation.equal(other.latestOperation)
+		r.latestOperation.equal(other.latestOperation) &&
+		r.replay.equal(other.replay)
 }
 
 func witnessEqual(left EffectivePlanWitness, right EffectivePlanWitness) bool {

@@ -124,7 +124,7 @@ Role labels used in the classification tables below:
 | --- | --- | --- |
 | AGS publish-time ownership | `Current invariant` | AGS owns publish-time fact assembly, caller binding, aggregate evidence assembly, signing, payload/support upload, and registration into ARS. |
 | ARS post-publication ownership | `Current invariant` | ARS owns blob storage, integrity, registration, runtime-facing discovery, and post-publication read authority. |
-| ES consumer boundary | `Current invariant` | ES consumes designed ARS discoverability outputs plus explicit evidence/payload relationships. ES public grammar must not inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane examples/probes. |
+| ES consumer boundary | `Current invariant` | ES consumes designed ARS discoverability outputs plus explicit evidence/payload relationships. ES public grammar must not inherit AGS publish DTOs, ARS descriptor/index tuples, or Control Plane examples/probes. The Tranche A ES consumer applies explicit compatibility/security bounds without changing ARS ownership: discovery and evidence JSON are each 256 KiB before strict decode, the primary payload is 32 MiB, and governed mount payload transport is 8 MiB per mount and 32 MiB aggregate. |
 
 ### 4B. Publication, storage, and discoverability surfaces
 

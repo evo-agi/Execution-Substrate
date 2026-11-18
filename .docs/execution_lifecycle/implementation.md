@@ -27,15 +27,35 @@ derivation: the function-local wire surrogate may hold the raw key only during
 decode and derivation, while the validated request retains sanitized request
 facts plus safe private caller/key/claim references. It does not claim secure
 memory erasure, and it does not rely on domain types overriding invalid Go
-formatting operations. Full request objects are not safe log payloads. It does
-not include source-grounded resolved effective-plan extraction, canonical
-effective-plan encoding, `PlanBinding` construction from admitted facts,
-complete effective-plan witness construction, durable replay-envelope custody,
-or runtime orchestration. The private store and foundation helpers are
-constructed and exercised only in tests; they are not wired to submit, prepare,
-handlers, producer declaration, staging, lifecycle, results, Nomad behavior,
-runtime startup, runtime configuration, public persistence integration, or
-recovery routes.
+formatting operations. Full request objects are not safe log payloads. Those
+earlier reliable-submit foundation helpers did not themselves include
+source-grounded resolved-plan extraction, canonical effective-plan encoding,
+`PlanBinding`, a complete witness or durable replay custody. The later bounded
+codec-3 path adds only private synthetic custody, still without runtime
+orchestration. A separate private admission-local foundation
+extracts one source-grounded resolved execution plan for the current legacy
+`Submit` path and makes that plan the sole post-freeze source of submit
+decisions. It does not call or wire the reliable helpers, construct a reliable
+binding or witness, add custody to legacy Submit, or change any public request,
+response, producer, lifecycle, or recovery surface. The private reliable store
+and foundation helpers remain constructed and exercised only in tests; they
+are not wired to submit, prepare, handlers, producer declaration, staging,
+lifecycle, results, Nomad behavior, runtime startup, runtime configuration,
+public persistence integration, or recovery routes.
+
+A later package-private `buildReliableSubmitAdmissionBinding` now consumes the
+actual frozen `resolvedExecution` from the same resolver. It checks signed
+mount artifact and payload provenance retained beside the requested source
+digest, validates captured primary/support/mount/trust material coherence, and
+builds the existing opaque binding and fourteen-category witness under an
+explicit synthetic-test key. At PB1 it had no production caller; its only
+selected new non-test caller is the private synthetic composer. It has no
+runtime key source, provider effect or public DTO. Its output is always
+not-effect-ready. The legacy resolver only carries provenance; it does not add
+requested-versus-returned mount artifact refusal to live `Submit`. The private
+producer's extra sequential bounded mount-archive parse is an unwired memory
+and work cost, not part of the prior runtime peak bound. The exact format and
+limitations are in `submit_idempotency_correlation_and_recovery.md`.
 
 The private durable source now implements
 `reliable-submit-durable-same-operation-replay-repair`. The durable service
@@ -44,15 +64,48 @@ real v2 mutation, recognizes same-mutation/same-kind/same-input replay before
 stale-revision and inactive-state refusal, returns mutation conflict for
 same-mutation/different descriptor reuse, reloads CAS losers through replay,
 conflict, inactive, and stale classification, and keeps COMMIT-unknown recovery
-on full expected-record equality including the descriptor. The SQLite schema is
-v2; valid v1 rows migrate as codec-1 legacy/unbound rows that preserve the
+on full expected-record equality including the descriptor. Historical SQLite
+schema v2 remains the codec-2 descriptor source; valid v1 rows migrated as
+codec-1 legacy/unbound rows that preserve the
 retained mutation reference and fail closed for same-mutation replay instead of
-inventing operation semantics. No mutation history is stored.
+inventing operation semantics. Schema 3 appends a complete immutable codec-3
+synthetic claim, same-DB key-use ledger, exclusive sealed-object publisher and
+one checked reader. Its admission callback reconstructs the winner-original
+facts and recomputes unchanged PB1. Codec-1/2 generic nonempty opaque lengths
+and CAS semantics remain intact; only codec-3 requires 32-byte caller/key refs
+and 1..256-byte PlanBinding. The private path remains runtime-unwired and
+always not-effect-ready. No mutation history is stored.
 
 The private store remains runtime-unwired. This source repair adds no config
 field, public producer/request/response source, staging behavior, Nomad
 behavior, current submit behavior, HTTP handler behavior, runtime startup, or
 public reliable-submit availability.
+
+## Isolated candidate implementation path
+
+`prepareAdmission` deep-copies the caller request into one owned working value,
+performs its established artifact, trust, Vault/auth and policy reads and gates,
+and retains the successful Vault config reference. After admission succeeds,
+`resolveExecutionForSubmit` takes one owned execution/placement configuration
+snapshot for subsequent profile, placement and materialization facts, including
+both roots. It does not atomically capture earlier admission or all service
+configuration reads and does not guarantee unsynchronized concurrent mutation.
+The resolver then returns a semantic plan,
+captured material, host context and separate custody-placement root pair. Its
+successful return is the pre-effect freeze point. `Submit` then assigns a run
+locator, qualifies the captured root pair, claims one staging root exclusively,
+materializes captured bytes through descriptor-held paths, checks the complete
+expected tree, builds typed handoff/job projections and registers once. Results
+open staging read-only and publish independent opaque bundles without replacing
+existing objects. Lifecycle reads do not remove claimed staging on terminal
+success. Failed exclusive leaves, unpublished result/normalization temporaries
+and startup capability-probe fixtures remain when a later pathname unlink
+cannot prove exact operation ownership. This candidate has no whole-root
+reclamation policy. Selected native Linux and test-owned installed-source
+evidence is accepted under the original Review-22 identities; actual
+running-deployment topology, key exposure and operating capacity/residence
+remain unqualified. `PLANS.md` and the lifecycle contract own the development
+evidence and separate rollout acceptance boundaries.
 
 ## 2. How to read this document
 
@@ -75,7 +128,8 @@ These labels matter because implementation shape and public contract are related
 | `es/admission/executionpackage.go` | Run-scoped staging layout, container-visible runtime layout, payload staging, reserved result-path staging, and shared mount-spec/wrapper assembly inputs | Artifact verification, lifecycle projection, public DTOs | This localizes the current submit-side package-resolution and staging conventions |
 | `es/admission/runtimeprofile.go` | Bounded runtime-profile selection, validation, image selection, and non-secret profile environment metadata | Package-kind redesign, lifecycle semantics, secret brokerage | This keeps the Control Plane normal-shell runtime contract explicit without moving CP control behavior into ES |
 | `es/admission/authorityhandoff.go` | Bounded non-secret authority handoff DTO assembly and recovery from submitted runtime specs | Live credential state, policy approval state, scheduler identity, lifecycle storage | This keeps the CP-consumable handoff read surface grounded in facts ES selected and injected |
-| `es/admission/submit.go` | `Submit`, execution-locator creation, payload fetch, runtime environment assembly, Nomad job spec assembly, Nomad job submission | Lifecycle projection after submission, persistent run ownership | This is where ES crosses from preparation into real execution handoff |
+| `es/admission/resolved_execution_plan.go` | Private admitted-request ownership, one pre-side-effect resolved-plan freeze, captured submit material, and narrow typed post-freeze projections | Public DTOs, reliable-submit binding/witness/custody, lifecycle truth, scheduler reconciliation | This prevents submit decisions and material from being re-derived or re-read after side effects begin |
+| `es/admission/submit.go` | Post-freeze `Submit` orchestration, execution-locator creation, run projection, retained staging custody, typed Nomad job assembly, one Nomad submission, and unchanged receipt construction | Pre-freeze source resolution, lifecycle projection after submission, persistent run ownership | This is where ES crosses from the frozen private plan into the current real execution handoff |
 | `es/admission/lifecycle.go` | `Status`, `Logs`, `Cancel`, internal execution-locator resolution, Nomad lookup helpers, projected-allocation policy use, and terminal-result retention triggers | Any ES-owned lifecycle store, retry orchestration, allocation aggregation | This is the post-submit lifecycle projection path |
 | `es/admission/results.go` | Retained result bundle lookup, idempotent tar.gz packaging of `/execution/run/result`, and result endpoint service behavior | Output semantics, Control Plane checkpoint meaning, lifecycle ownership | This keeps the retained-result slice narrow and ES-owned without turning it into orchestration state |
 | `es/admission/runtimeidentity.go` | Reserved runtime path definitions, endpoint env conventions, run-scoped endpoint derivation, overlap validation | Endpoint implementation, token minting, token population | This is the boundary guardrail for runtime-identity handoff |
@@ -245,25 +299,77 @@ What `Prepare` reads:
 **Observed current implementation path**
 
 1. Reject submission if the Nomad client is unavailable or submit is not configured.
-2. Default omitted mode to `async`.
-3. Reject non-async mode.
-4. Reuse the shared admission helper that also powers `Prepare`, including ES
-   Admission Policy Layer v0.
-5. Enforce submit-time constraints such as `static-script`, supported target platform, and no required runtime capabilities from the prepared artifact data.
-6. Resolve the optional bounded runtime profile selection from invocation annotations.
-7. Fetch payload bytes from ARS using the payload reference carried by the discovery record and cross-checked against aggregate evidence.
-8. Generate the current internal execution locator:
+2. Reuse the shared admission helper that also powers `Prepare`. It borrows the
+   caller request, immediately deep-copies every mutable member, and applies one
+   private Prepare-versus-Submit intent to that owned working copy.
+3. For Submit intent, default omitted mode to `async` and reject non-async mode
+   before dependency I/O. Prepare intent preserves current blank/async/sync
+   handling. The admission-owned copy is the only mutable authority for mode,
+   schema defaulting, validation, and normalization; successful admission
+   returns one frozen authoritative snapshot. Immutable defensive transfer
+   copies remain permitted.
+   The caller retains ownership until the initial copy completes and must keep
+   the request and every reachable mutable member race-free through that copy.
+   Concurrent unsynchronized mutation while copying is a caller data race, not
+   an ES synchronization guarantee. After the owned copy completes, later
+   caller mutation cannot change admitted or submitted state, and downstream
+   defensive copies do not create a second mutable authority.
+4. Continue the shared path, including ES
+   Admission Policy Layer v0, and retain the exact workload-zone Vault config
+   reference that selected the successfully fetched config and auth plan.
+5. Capture one private immutable submit/config snapshot immediately after
+   admission.
+6. Resolve all remaining source-grounded facts before side effects, in this
+   order: submit gates; resources; primary payload bytes; runtime-support bytes
+   and content identity; governed mount discovery/evidence/payload plus one
+   bounded gzip/tar traversal; normalized Vault and combined trust bytes;
+   platform-state owner; and the complete plan, material, and host context.
+7. Build one typed runtime command and the private semantic plan. The plan owns
+   schemas/mode/timeout/resources, profile/image and semantic environment
+   inputs, the command, distinct artifact/payload/derivation/output identities,
+   mounts, network permission, unconditional authority inputs,
+   runtime-support digest, runtime-identity tmpfs size, and the fixed semantic
+   envelope. Material owns captured bytes. Host context contains only the
+   cleaned absolute staging root, qualified owner, cleaned absolute SPIRE
+   source, and trimmed non-empty datacenter. The results root is normalized for
+   current ES service/custody qualification but remains outside the semantic
+   plan, host context, provider-job projection, and B1 binding.
+8. Return the private resolved execution. This successful return is the
+   freeze point: no run ID, filesystem write, ownership mutation, or Nomad
+   registration occurs before it, and no submit decision is re-derived after it.
+9. Generate the current internal execution locator:
   - public `run_id`
   - internal `nomad_job_id = exec-<run_id>`
-9. Create the current internal execution-package layout for the new run.
-10. Stage the payload locally through that run-scoped layout.
-11. Stage runtime mounts through the same layout when mounts are requested.
-12. Validate staged mount targets against reserved runtime paths.
-13. Build runtime environment variables from the localized runtime layout plus any selected profile metadata.
-14. Assemble the bounded non-secret `authority_handoff` fact from the same runtime profile, identity endpoint, workload-vault plan, runtime-config reference, and profile credential-location metadata ES is about to submit.
-15. Build the Nomad job spec with `buildNomadJobSpec`, using the selected profile image when the bounded CP normal-shell profile is selected and carrying only internal handoff metadata needed for later status recovery.
-16. Submit the job through `nomadClient.submitJob`.
-17. Return the bounded `SubmitResult`.
+10. Derive the run projection from only the plan, captured host context, and
+    locator. The semantic plan is admitted semantic truth only; this host/run
+    projection adds additional execution-shaping facts: owner/run/endpoint
+    environment, host/staged paths, datacenter, endpoint, and other derived run
+    facts. Create its staging root exclusively as the first filesystem mutation. Refuse every pre-existing object type, open the
+    new root no-follow, and hold its parent/root identities.
+11. Materialize only captured payload, runtime-support, mount, and trust bytes
+    through descriptor-relative custody operations. Revalidate the complete
+    expected tree immediately before handoff.
+12. Assemble the bounded non-secret `authority_handoff` and one Nomad job spec
+    from narrow typed plan/host/run projections. Do not reread request,
+    prepared admission, live config/service fields, profile maps, dependency
+    sources, owner state, SPIRE source, or datacenter after freeze.
+13. Submit the job once through `nomadClient.submitJob`.
+14. Return the unchanged bounded `SubmitResult`.
+
+The semantic plan is admitted semantic truth only, while host/run projection
+adds additional execution-shaping facts. Tranche B2 now completes its bounded
+privacy and independent-assurance refinement. The selected operational-cause
+families expose only `workload-zone vault configuration is invalid`,
+`derive execution host context failed`,
+`stage workload vault trust material failed`,
+`derive execution platform state owner failed`, or
+`execution submission failed`, while preserving their routes, HTTP statuses,
+codes, DTO fields, precedence, and successful behavior. The three governed
+result-retention log calls emit only
+`es result retention failed run_id=%s` with the validated public run ID; that
+claim is bounded to those calls and is not process-wide log noninterference.
+Reliable keyed-submit runtime remains unwired, and native Linux runtime
+validation remains pending.
 
 Where IDs are created:
 
@@ -282,13 +388,39 @@ Where ES stops and Nomad takes over:
 
 **Implementation invariants**
 
-- `Submit` reuses `Prepare` instead of duplicating the full admission path inline.
+- `Prepare` and `Submit` use the same admission helper. Each path owns one
+  mutable admission working copy and returns one frozen authoritative snapshot;
+  immutable defensive copies do not create another authority. Caller use must
+  remain race-free until the initial copy completes; unsynchronized concurrent
+  mutation during copying is a caller data race, not an ES synchronization
+  guarantee. Post-copy caller mutation cannot alter admitted or submitted
+  state.
 - `Submit` cannot bypass the policy evaluation path used by `Prepare`; policy
   denial happens before run ID creation, payload staging, mount staging, and
   Nomad submission.
-- Failed submits remove the staging root immediately through deferred cleanup.
-- Successful submits retain their host staging directories only until ES later observes terminal success for that run through the lifecycle path.
-- Payload staging, runtime mount staging, wrapper assembly, and base runtime mounts now share one explicit internal execution-package layout instead of rebuilding those conventions across multiple helpers.
+- Once exclusive run-root creation succeeds, all Submit returns retain the
+  visible root and close descriptors best-effort. This includes partial
+  materialization, ordinary failure, ambiguous Nomad registration, and accepted
+  registration. Close failures never replace the primary error or accepted
+  receipt. No marker, reopening, adoption, quarantine, scan, or recursive
+  whole-root deletion exists.
+- Payload staging, runtime mount staging, and base runtime mounts share one
+  explicit internal execution-package layout. The complete runtime executable
+  and supervisor argument grammar instead live in one private
+  `resolvedRuntimeCommand` constructed before freeze and copied through typed
+  projections; the layout and tests do not rebuild that grammar.
+- Current authority handoff is unconditionally applicable for successful
+  Submit. Structural presence of the authority plan represents applicability;
+  only Codex credential-location metadata remains an optional subcomponent.
+- The source-grounded payload digest retained by the plan comes only from the
+  discovery/evidence relationship already cross-checked by admission. Raw
+  payload bytes remain material and the digest is not added to public or Nomad
+  projections.
+- Semantic-plan equality across qualified host contexts is not provider-job,
+  dispatch, replay, restart, or provider-effect equality. Host context and
+  run/provider projection remain additional execution-shaping facts whose
+  treatment in the later private v1 binding is separate captured placement,
+  not semantic PlanBinding input or retained topology proof.
 - Submit-time staging, mount staging, trust-material staging, retained-result expectations, and internal `EXEC_PLATFORM_STATE_OWNER_*` injection now require `execution.staging_root_dir` and `execution.results_root_dir` to resolve to the same target owner UID:GID before ES will submit the run.
 - Submit-time runtime mount assembly uses the configured SPIRE socket source directory as a string input to the helper-private mount model; it does not require the long-lived ES process itself to open the raw host SPIRE socket.
 - If the resolved workload-zone Vault config carries CA trust material, submit staging writes `/execution/run/platform/workload-vault-ca.pem`, writes a combined runtime TLS bundle at `/execution/run/platform/workload-ca-bundle.pem`, and injects `VAULT_CACERT` plus `SSL_CERT_FILE` for workload-side Vault TLS verification.
@@ -314,6 +446,10 @@ Where ES stops and Nomad takes over:
   It does not implement the producer sub-contract, reliable request DTO,
   staging, Nomad reconciliation, recovery lookup, public error vocabulary,
   runtime configuration, or runtime startup integration.
+- The admission-local v1 binding producer is present, package-private,
+  runtime-unwired and always not-effect-ready. It consumes the real resolver
+  tuple and constructs a binding and witness only after its own source/material
+  checks. It does not make keyed recovery or reliable submit available.
 - Current package `admission` now also contains private
   `reliable_submit_*` foundation helpers. They select the reliable request
   schema `execution-substrate.reliable-submit-request/v1`, reliable contract
@@ -326,11 +462,13 @@ Where ES stops and Nomad takes over:
   request. The validated representation retains sanitized request facts plus
   safe private references only. This is not a secure-memory-erasure guarantee
   and not a claim that invalid Go `%w` formatting of non-error values can be
-  made override-safe with formatting hooks. They do not implement source-grounded resolved effective-plan extraction, canonical effective-plan
+  made override-safe with formatting hooks. They do not themselves implement
+  source-grounded resolved execution-plan extraction, canonical effective-plan
   encoding, `PlanBinding` construction from admitted facts, complete
   effective-plan witness construction, durable replay-envelope custody, or
   runtime orchestration. They are not exported, not public DTOs, and not called
-  by current handlers or `Submit`.
+  by current handlers or `Submit`; the separate current legacy-submit resolved
+  plan foundation neither imports nor invokes them.
 - The private durable service implements the
   `reliable-submit-durable-same-operation-replay-repair` latest-operation-only
   source repair. It persists a descriptor made of mutation reference, closed
@@ -353,10 +491,12 @@ Where ES stops and Nomad takes over:
   posture, selects `modernc.org/sqlite v1.54.0` with exact
   `modernc.org/libc v1.74.1` coupling, and selects private same-package
   persistence hydration inside `es/admission/internal/reliablesubmit`. It now
-  also implements the private SQLite schema v2 latest-operation descriptor and
-  legacy/unbound migration posture in source. The historical v1 migration
+  preserves the private SQLite schema-v2 latest-operation descriptor and
+  legacy/unbound migration posture while schema 3 adds immutable synthetic
+  custody in the same DB. The historical v1 migration
   source and metadata remain retained and verified, valid v1 databases migrate
-  forward to v2, and migrated rows remain codec-1 legacy/unbound until a later
+  through v2 to v3 in one grouped transaction, and migrated rows remain
+  codec-1 legacy/unbound until a later
   valid distinct mutation upgrades the row. It adds no config field, public
   producer/request/response source, staging behavior, Nomad behavior, runtime
   behavior, or public reliable-submit availability.
@@ -379,9 +519,9 @@ Where ES stops and Nomad takes over:
   response.
 - Current code can also be ambiguous at the ES-to-Nomad boundary when ES sends
   a Nomad registration request but cannot confirm whether Nomad accepted it.
-  Current non-confirmation may still return `submission_failed` and run the
-  non-submitted cleanup path; that is current implementation behavior, not a
-  reliable proof that no provider effect was accepted.
+  Current non-confirmation returns the existing `submission_failed` behavior
+  and retains the complete staging root; that is not a reliable proof that no
+  provider effect was accepted.
 - The target reliable keyed-submit runtime contract is not implemented here and
   must not be described as current behavior.
 - The selected future public shape remains: one additive narrow reliable-submit
@@ -417,7 +557,8 @@ Status path:
   - `terminal`
 - Fill `exit_code` when available.
 - Treat "job exists but no allocation yet" as a successful `submitted` view.
-- If terminal success is observed, best-effort remove the run-scoped host staging root.
+- Terminal observation controls lifecycle projection and result-attempt timing
+  only. No provider state, task state, or exit code authorizes staging mutation.
 
 Logs path:
 
@@ -426,7 +567,8 @@ Logs path:
 - Require task `task` to be in `running` or `dead`.
 - Fetch stdout via Nomad client FS logs endpoint.
 - Return stdout bytes with outcome evidence that labels the body as `nomad_task_stdout`, access class `plaintext_stdout`, and whether terminal state was observed during the lookup.
-- If the selected task is terminal-successful, best-effort remove the run-scoped host staging root after stdout is fetched.
+- If the selected task is terminal, fetch stdout and attempt result retention;
+  leave staging retained regardless of the result attempt.
 
 Cancel path:
 
@@ -503,14 +645,63 @@ Cancel path:
   - absolute cleaned target paths
   - target paths under `/execution/mounts`
   - no overlapping mount targets
-- `stageRuntimeMounts` runs during submit-time staging.
-- For each mount artifact it:
+- Submit resolution validates mount archives before freeze. For each mount
+  artifact it:
   - re-fetches and revalidates aggregate evidence and trust
-  - fetches payload bytes
-  - writes a temporary archive through the run-scoped execution-package layout
-  - extracts into a per-mount contents directory under that same layout
+  - fetches payload bytes within the smaller of the 8 MiB per-mount transport
+    budget and remaining 32 MiB aggregate transport budget
+  - performs exactly one gzip/tar traversal through a limiter placed between
+    gzip and tar: 16 MiB per mount and 64 MiB aggregate across mounts
+  - counts tar headers, PAX/GNU extension records, resolved names, padding,
+    entry bodies, end/trailer records, and trailing decompressed bytes within
+    that same whole-stream budget; the compressed transport budget separately
+    includes gzip framing and trailer bytes
+  - validates regular-body declared size against the 8 MiB per-mount and
+    32 MiB aggregate body budgets before creating a checked allocation size
+  - preserves PAX local-header and GNU long-name support under the stream
+    budget, without a separate 4096-entry or 4096-byte-name rule
+  - validates entry types and archive-relative paths before transferring file
+    contents into private material
+- Post-freeze mount materialization does not parse gzip or tar. It:
+  - retains the transferred compressed buffer only within governed material
+    accounting and does not write or reparse it
+  - materializes only the already validated ordered directory/file entries
+    through the held run-root descriptor into a per-mount contents directory,
+    using no-follow ancestor traversal and exclusive file creation
   - rejects symlinks, hard links, special files, and extraction escapes
-  - removes the temporary archive after extraction
+  - verifies type, device, link count, owner, and mode on opened objects rather
+    than relying on later path lookup
+- A mount-specific mode normalizer retains only executable intent from an
+  archive: mount directories are `0755`, ordinary files `0644`, and executable
+  files `0755`. The narrow custody file writer uses mount-directory mode for
+  its parents while registering the exact owner, object identity and mode in
+  the same expected tree. The claimed run root remains `0750`; generic payload,
+  runtime-support, platform, trust, result-auth and other non-mount staging
+  keep private modes. The provider bind remains read-only. This source repair
+  does not observe or qualify the later Docker/Nomad mount topology.
+- Review-07 repairs the independently found CUSTODY-MODE-01 check without
+  changing those creation modes. Expected-tree handoff validation and the
+  claimed-root check compare raw Unix mode under `S_IFMT | 07777`: file type,
+  ordinary permissions, setuid, setgid, and sticky bits. They do not compare
+  size, timestamps, or unrelated flags. The object-identity predicate remains
+  separate so controlled ownership/mode transitions can still prove they refer
+  to the same object. A recorded-mode mismatch fails closed before Nomad
+  registration and does not repair or remove the retained object. Source and
+  synthetic tests do not qualify a native runtime or mounted topology.
+- Review-08 closes the registration-time REGISTRATION-MODE-01 gap by checking
+  each newly created child directory and regular file against its intended
+  Unix type and complete `07777` mode after controlled `Fchown`/`Fchmod` and,
+  for files, content write and `Fsync`, before recording the descriptor stat in
+  the expected tree. The check uses the same narrow recorded-mode relation;
+  object-only pathname binding and within-pass stat stability remain separate.
+  A mismatch leaves the child unregistered and retained under the claimed root,
+  without chmod, chown, unlink, replacement, or provider submission. A later
+  handoff sees the retained child as unexpected. At that Review-08 source
+  stage, independent assessment and native runtime evidence remained open;
+  missing historical Review-08 runtime records are not reconstructed by later
+  selected evidence.
+- No temporary mount archive is written or removed during staging. A claimed
+  root remains retained even when materialization fails partway through.
 
 **Implementation invariant**
 
@@ -526,8 +717,19 @@ Submission has visible local side effects under the configured staging root.
 
 **Observed current implementation path**
 
-- Startup creates the top-level staging root when submit is configured.
-- `stageExecutionInputs` creates the current run-scoped execution-package layout:
+- When submit is configured, startup qualifies staging and results as one
+  descriptor-held root pair, provisions each missing configured-root component
+  only through the currently qualified parent, reacquires the pair after every
+  component, probes staging and results primitives separately, and performs a
+  final re-observation before readiness.
+- `Service.Submit` is the only production caller of
+  `resolveExecutionForSubmit`; after that resolver freezes the typed plan,
+  Submit qualifies a fresh root pair, compares the held owner with the frozen
+  owner, reobserves immediately before claim, and transfers the qualified
+  staging descriptor to `claimStagingCustodyFromQualifiedRoot`.
+  `materializeExecutionInputs` then consumes only the resolved run, host, and
+  material projections plus that claimed custody to create the current
+  run-scoped execution-package layout:
   - `<staging_root>/<run_id>/payload`
   - `<staging_root>/<run_id>/run`
   - `<staging_root>/<run_id>/run/result`
@@ -546,19 +748,97 @@ Runtime-path effects in the Nomad job spec are now assembled from that same inte
 - The directory containing the configured SPIRE Workload API socket is bind-mounted under the helper-private runtime-identity internal subtree, and the runtime supervisor materializes the fixed helper-private socket alias from that mounted source directory
 - Runtime identity workspace is mounted as tmpfs at the run-scoped workspace derived from the discovered endpoint
 
-Cleanup behavior visible in code:
+Staging custody and retention visible in code:
 
-- Failed submits remove the staged root directory.
-- Successful submits retain host staging only while the run may still depend on it.
+- No run-scoped filesystem side effect starts before resolved-plan freeze.
+- Exclusive `mkdirat` of `<staging_root>/<run_id>` is the first filesystem
+  mutation. A pre-existing object of any type refuses the claim and is never
+  adopted or reopened.
+- The claimed directory is opened no-follow, verified by device/inode identity,
+  normalized through descriptor-based owner/mode operations, and held with its
+  parent descriptor until the complete expected tree is revalidated immediately
+  before handoff. Expected ownership is an invocation-local hierarchy: the root
+  and every expected directory own only their direct-child maps, and each
+  parent-to-child edge owns its segment bytes and identity once. No cumulative
+  path or second full-path index is retained. Revalidation keeps a directory's
+  identity descriptor separate, opens a fresh independent no-follow open-file
+  description at `"."`, proves the fresh description identifies the expected
+  directory, and uses that fresh description directly as the enumeration
+  stream. It rejects missing, duplicate, malformed, or unexpected names and
+  rechecks every expected child's no-follow type, device, retained identity,
+  owner/group, mode, and link-count policy. Construction is linear in traversed
+  path-segment occurrences; retained variable data is linear in unique
+  edge-segment bytes plus expected nodes; validation uses the expected tree plus
+  one fixed enumeration batch. These are structural bounds, not exact Go heap,
+  allocator, stack, descriptor, RSS, or secure-erasure claims. Enumeration is
+  bounded operation-local completeness validation, not reusable residue
+  discovery or reclamation scanning.
+- Regular expected children require link count exactly one. Expected
+  directories require a positive link count because their count may grow as
+  expected child directories are materialized.
+- Payload, runtime-support, trust, and mount descendants are created through
+  the held descriptor. Direct staging `MkdirAll`, `WriteFile`, path-separated
+  `Lstat`/`Lchown`/`Chmod`, and post-hoc `EvalSymlinks` containment are not used.
+- Every post-claim return retains the visible run root. Failed or partial
+  materialization, ambiguous or successful registration, all lifecycle states,
+  and all retained-result outcomes have the same retention consequence.
+- Incomplete exclusive leaves, unpublished result or normalization temporaries,
+  and startup capability-probe fixtures remain retained when exact effect-time
+  object identity cannot be proved. No pathname-based cleanup, scan, or
+  whole-root reclamation is selected.
 - ES attempts idempotent retained-result capture from `<staging_root>/<run_id>/run/result` when `status`, `logs`, or `result` observes terminal execution.
-- ES best-effort removes `execution.staging_root_dir/<run_id>/` after `status` or `logs` observes terminal success for the run and result retention has been attempted.
-- Failed, canceled, lost, or otherwise ambiguous outcomes retain their staging root for debugging.
+- Result capture may use `openStagingTree` to reopen a retained root read-only
+  solely for packaging. The handle exposes verification, read-only directory
+  opening, and close operations only; it has no mutation, deletion, adoption,
+  cleanup, quarantine, or reclamation method. Result capture never reopens a
+  staging root for deletion and never authorizes staging mutation.
 - The runtime-identity workspace is not host-backed by the submit path.
-- Retained result bundles survive successful staging cleanup because they are stored under `execution.results_root_dir`.
+- Retained result bundles are stored independently under `execution.results_root_dir`.
 
 **Current simplification**
 
 - Local staging is a direct filesystem side effect of submit, not a separate managed artifact-execution cache.
+
+### Filesystem capability and trust boundary
+
+Startup qualifies configured staging/results roots and the local syscall
+mechanism by behavior. The probe is small, local, stateless, and fail-closed.
+Submit and retained-result effects perform fresh visible-object and topology
+re-observation at their named boundaries; lifecycle does not repeat the startup
+behavior probe.
+
+- Linux uses `openat2` with beneath/no-symlink/no-cross-device resolution and
+  `renameat2(RENAME_NOREPLACE)`.
+- Darwin uses component no-follow-any opens, device verification, and
+  `renameatx_np` with exclusive/no-follow-any flags.
+- There is no runtime OS-label selection or silent fallback.
+
+The ES service UID is one trusted security principal. The implementation
+detects accidental same-UID identity changes, but Unix does not provide a fully
+conditional final unlink against an actively malicious same-UID process or
+root. Hostile same-UID/root mutation is outside this bounded contract. Linux
+mount-crossing behavior requires real governed-host validation; Darwin tests
+and Linux cross-compilation are not substitutes.
+
+### Resource acquisition and material ownership
+
+Dependency JSON bodies are limited to 256 KiB before strict decoding. The
+Admission Policy Layer payload remains 256 KiB, the primary Submit payload is
+32 MiB, and mount transport is 8 MiB per mount/32 MiB aggregate. Runtime
+support is a stable no-follow regular file limited to 32 MiB. Normalized Vault
+CA and system CA sources are each 256 KiB; the combined bundle is at most
+524,289 bytes.
+
+Accepted bulk buffers transfer into `resolvedExecutionMaterial`; material
+construction does not recopy primary payload, runtime support, compressed mount
+buffers, parsed entry bodies, or trust bundles. Vault and selected system CA
+inputs are normalized once, and combined-bundle assembly consumes those
+normalized inputs directly rather than normalizing or copying either input
+again. The portable retained variable byte-content ceiling is 168,558,593
+bytes, with 168,820,737 bytes as the peak accounted content during trust
+assembly: retained material plus the one temporary normalized system-CA input.
+These are explicit byte-accounting contracts, not exact Go heap/RSS
+guarantees.
 
 ## 11. Nomad and Docker interaction
 
@@ -572,14 +852,59 @@ Cleanup behavior visible in code:
   - one task group
   - one task named `task`
   - Docker driver
-- The wrapper shell command:
-  - creates `/execution/run/work`
-  - creates `/execution/run/result`
-  - creates the runtime-identity workspace path
-  - untars the staged artifact into the work directory
-  - `chmod +x` on `entrypoint`
-  - optionally wraps execution in `timeout`
-  - execs `/execution/run/work/entrypoint`
+- One pre-freeze private typed command selects executable
+  `/execution/run/platform/es-runtime-support` and the fixed supervisor
+  arguments for payload archive, work directory, result directory, entrypoint,
+  effective timeout, separator, and original workload argv. The runtime helper
+  performs the existing unpack/setup/launch behavior. No execution-package or
+  test helper owns a second full supervisor grammar.
+- B1 protects the complete default-profile job with one source-distinct direct
+  literal expected job, a direct pointer-owned token/template ledger expanded
+  only in the expected tree, the unmodified actual tree, and a separate direct
+  literal public authority-handoff expected object through real
+  `Service.Submit`. A finite package-local direct-call closure plus exact
+  producer, freeze, validation, payload-projection, and metadata inventories
+  and bounded mutants make no whole-program proof claim. Tranche B2 now
+  completes a separate source-distinct direct literal job and authority-handoff
+  golden for `control-plane-normal-shell/v1`; it is ES profile-coverage
+  evidence, not a snapshot of the current Control Plane request or a transfer
+  of CP authority. The dedicated B2 assurance remains finite, explicit,
+  source-bounded, and reviewable rather than a general source, logging, alias,
+  taint, SSA, or whole-program analyzer.
+
+Structured Nomad registration, projected-allocation-list, and
+allocation-detail responses use the existing 256 KiB control-JSON boundary
+and exactly one compatible JSON document. Unknown provider fields remain
+accepted, and non-success bodies are neither consumed into public errors nor
+ordinary logs. Job-summary reads remain explicitly unbounded but
+one-document because admitted caller-environment aggregates are currently
+unbounded and Nomad echoes `Task.Env`. Successful authenticated public Logs
+remain unbounded opaque workload-output bytes. B2 selects neither a universal
+provider-response limit nor a workload-output limit. `preparedAdmission`
+ordinary formatting is fixed-redacted and ordinary JSON remains `{}`; this is
+bounded defense in depth, not reflection, `unsafe`, malicious same-package,
+arbitrary-serializer, or secure-erasure protection. Reliable keyed-submit
+runtime remains unwired, and native Linux runtime validation remains pending.
+
+The rejected 2.9 MB position-indexed B2 guard is not accepted assurance. The
+compact replacement is behavior-first, uses directly authored position-
+independent local reflection and a narrow named-file golden AST check, and
+constructs cancellation directly with the exact non-purging query
+`purge=false`; no private purge option or generic query-options seam remains.
+Its field inventory fixes current public execution JSON and only the eight
+Nomad decode shapes and fields production consumes. It does not reject unknown
+incoming provider fields. `preparedAdmission` claims are limited to ordinary
+formatting, formatted standard-library logging, ordinary JSON, marker
+placement, and field visibility. Existing `fetchJob` and authenticated public
+Logs exceptions are unchanged. Provenance proves byte identity only.
+
+Arbitrary expected-literal honesty, aliases, helper flows, secondary cause or
+logging flows, custom logging sinks, same-package aggregate conversion, and
+whole-runtime reliable-submit nonwiring remain fresh-audit obligations. No
+positional records, replacement-output workflow, package source graph, source
+fingerprint, generated inventory, or general analyzer is selected. The private
+reliable-submit foundation remains present and runtime-unwired, and public
+Submit remains unkeyed.
 
 Current job-spec assumptions:
 
@@ -622,31 +947,70 @@ How Docker appears in the implementation:
 - `executionpackage.go` reserves host path `<staging_root>/<run_id>/run/result` and container path `/execution/run/result`.
 - The runtime supervisor creates the result directory as workload-writable before launching the fixed non-root workload process, temporarily widens only the bind-mounted `/execution/run` traversal and the workload-facing non-secret trust-file readability needed for the current `10000:10000` no-supplemental-groups boundary, then performs the current post-workload normalization phase after workload exit.
 - That post-workload normalization phase now restores the helper-managed host-backed `run/work` and `run/result` trees to the target owner carried in reserved internal `EXEC_PLATFORM_STATE_OWNER_*` runtime env when present, otherwise falling back to the current process owner, keeps `run/platform` as the stable marker authority, and emits `run/platform/ownership-normalization.json` only after the phase succeeds.
-- The same post-workload normalization phase also restores the active runtime widening on the bind-mounted `/execution/run` parent and the staged non-secret trust files under `run/platform` before ES retained-result or cleanup preflights treat the stage root as future non-root evidence.
+- The same post-workload normalization phase also restores the active runtime widening on the bind-mounted `/execution/run` parent and the staged non-secret trust files under `run/platform` before ES retained-result preflight reads that tree.
 - If marker write or marker validation fails after normalization, the supervisor treats the post-workload normalization phase as failed.
 - The shared ownership-normalization validator now exposes two documented modes: current Alpha compatibility mode allows missing marker and accepts structurally valid present-marker evidence without requiring target-owner proof, while future non-root-required mode requires marker presence plus expected-owner verification against `target_uid` and `target_gid`.
 - `Status` attempts retention whenever it observes terminal execution.
-- `Logs` attempts retention whenever it observes a terminal task before any successful-stage cleanup.
+- `Logs` attempts retention whenever it observes a terminal task.
 - `Result` first serves an already retained bundle if one exists, then falls back to Nomad-backed terminal lookup and one idempotent retention attempt.
+- Terminal retention itself authenticates an existing complete pair before
+  traversing staging or making a candidate. A valid pair remains the selected
+  bytes after staging changes or disappearance; a partial or invalid pair
+  fails closed. Only already prepared concurrent candidates can leave a
+  publication loser temporary under the no-uncertain-unlink rule.
 - Retention now performs a repo-local filesystem preflight before bundle creation so unreadable or unsupported result trees fail closed before ES writes a retained bundle.
 - That retained-result preflight now also validates the ownership-normalization marker when the marker is present under `run/platform`, but current Alpha-compatible behavior still accepts a missing marker and does not require expected owner verification by default.
-- Retention now derives the retained-result target owner from the stable results-root stat, packages result directory contents into `<results_root>/<run_id>/result.tar.gz`, preserves validated normalization evidence as `<results_root>/<run_id>/ownership-normalization.json` before successful cleanup can remove the staging copy, and fails closed if that narrow retained artifact set cannot be normalized to the target owner. Submit-side staging now also refuses to proceed if the stable staging root and stable results root do not resolve to that same target owner model in the first place.
-- Repeat retained-result reads may also perform the same narrow retained-artifact reconciliation on the run-scoped results directory, opaque bundle, and preserved normalization evidence sidecar. This is bounded retained-result upkeep only; it does not recurse through arbitrary result trees and does not reinterpret bundle contents.
+- Retention derives the target owner from the qualified results-root handle, packages result contents into `<results_root>/<run_id>/result.tar.gz`, and preserves validated normalization evidence independently. The selected R1 refinement hashes the compressed writer output, keeps and rechecks the candidate descriptor, verifies the installed winner, and exclusively publishes a bounded authenticated `result.commit.v1` record. A public reader authenticates the record and its exact buffered result bytes before success. An unmarked pre-existing final is unavailable and never adopted; existing objects are checked without mutation. Submit requires a qualified staging/results pair with a matching owner model before claim.
+- Repeat retained-result reads validate existing result directories, bundles and normalization evidence without ownership or mode syscalls, root provisioning, arbitrary-tree recursion or bundle-content interpretation.
+- The private key is loaded once from an explicit qualified no-follow regular file at configured-submit startup, including the canonical supported-local `BRINGUP_PROFILE=prepare-only` sequence because its generated ES config retains Submit fields. Synthetic tests can exercise the byte protocol; file shape/ownership checks do not prove deployment key isolation. No key is sent to a workload, provider or public response. A genuinely Submit-disabled service has no verifier, and retained result reads remain fail-closed.
+- Key exclusion uses the normalized effective roots, while the configured
+  canonical key path and its derived parent retain significant component
+  whitespace during no-follow opening. Internal ancestry re-observation of a
+  qualified parent, and descriptor-presentation rewalk, use the same exact
+  component spelling without a second outer-whitespace trim. The held result descriptor is checked
+  against the full metadata policy before response buffering.
+- The configured key path must have a non-root parent directory. The loader
+  uses that parent as a qualified no-follow directory and refuses `/key` before
+  any credential read or execution-root provisioning. Supported-local setup
+  renders stable non-secret store/key IDs and an external key-file reference
+  into ES configuration only after a lexical preflight; the wrapper forwards
+  the reference to the guest without reading or transferring key bytes.
+  The wrapper's `bash -s -- setup` transport must dispatch the unmodified
+  setup file once with explicit repository-root input. File invocation also
+  dispatches; sourcing exposes functions without setup effects. Wrapper
+  preflight requires a clean single-leading-slash non-root spelling for owned
+  proof, bootstrap, repository and host collection scopes. It rejects
+  key/scope overlap before the host proof existence check, any workspace write,
+  guest contact, or EXIT finalizer.
+- A newly created result run directory is used only if its natural owner and mode already match the required values; a restrictive umask or unexpected owner fails closed without chown/chmod repair. Failed result temporaries remain under that directory when pathname ownership cannot be proven for deletion.
+- Configured Submit startup probes that natural `0750` result run-directory
+  behavior under the active process mask using an exclusive synthetic child
+  under the qualified results root. It never chowns or chmods the child and
+  retains the fixture under the no-uncertain-unlink rule; genuinely
+  Submit-disabled service startup does not probe. The selected supported-local
+  root-service profile provisions only the two fresh configured roots as
+  UID:GID `0:0`, exact `0755` directory mode. Its static bring-up check does
+  not replace this later behavioral probe or qualify a future container view.
+  Full-profile submit-readiness and diagnostics consume the same read-only
+  static validator, including proof binding, selected image and Dockerfile,
+  owner/mode/identity, and exact same-path read-write mounts. Only this
+  validated profile omits the ordinary operator's write test; generic
+  readiness still requires existing caller-writable roots and creates none.
+  Setup retains only a fixed safe projection of its static configured-root
+  check, without raw root paths, key contents, or a container-capability claim.
+  The setup helper keeps each newly opened child descriptor from the
+  pre-mutation name/device/inode/type check through owner/mode normalization
+  and final pair revalidation. It closes all held descriptors on refusal and
+  leaves partial objects in place under the existing no-uncertain-cleanup
+  rule. The proof parent remains operator-owned; `mkdir` and subsequent
+  descriptor acquisition are separate operations, so this source check does
+  not qualify arbitrary concurrent pre-acquisition substitution.
 - Empty or missing result directories do not produce a bundle.
-- Successful-stage cleanup now performs a repo-local cleanup-readiness preflight before `RemoveAll` so ES skips cleanup rather than partially deleting a blocked tree.
-- That cleanup preflight also validates the ownership-normalization marker when present, but it does not make the marker mandatory in current Alpha mode and does not require expected owner verification by default.
+- The isolated candidate does not perform successful-stage cleanup or a cleanup-readiness preflight.
 - When future non-root-required expectations are supplied, the same preflights also require marker presence, require `target_uid` and `target_gid` to match the expected ES owner, and require stat-based proof that the packaged or deleted tree is owned by that same expected ES UID:GID.
-- The repo-owned writable-state readiness checker now exposes explicit `--mode alpha-compat` and `--mode future-non-root-required` entrypoints. Default Alpha mode remains non-mutating compatibility reporting, while explicit future mode is a readiness gate only and does not change service identity or approve ES de-rooting by itself.
-- That checker also distinguishes verified, mismatch, and unverified target-owner states: verified means marker `target_uid` and `target_gid` matched the discovered `es` UID:GID, mismatch is a blocker in future mode, and unverified means the marker was structurally valid but no expected ES owner was required or available so the checker reports evidence only, not future non-root-ready proof.
-- These repo-local preflights, validators, checker modes, and normalized-run
-  tests were readiness evidence for the bounded long-lived ES service-user
-  slice and remain design inputs for later runtime-boundary work. By
-  themselves they do not prove the full live-host runtime boundary, they do
-  not by themselves claim full ES/runtime de-root, and they do not supersede
-  the separate bounded live evidence that now records applied config/TLS prep,
-  prepared writable-state roots, the `User=es` / `Group=es` service-user
-  change, post-apply lowest-cost happy-path success, and future writable-state
-  readiness success.
+- The former Remote Alpha writable-state readiness and ES service-user helper
+  modes are retired. Archived v1 output is historical evidence only; it cannot
+  authorize current readiness, migration, drain, reclamation, or mutation.
 - The retained bundle is served as `application/gzip` with outcome evidence that labels the source as the ES retained-result store, observation as `retained_result_bundle`, and access class as `opaque_result_bundle`.
 
 **Implementation invariants**
@@ -655,7 +1019,7 @@ How Docker appears in the implementation:
 - Retention is idempotent and safe across repeated `status`, `logs`, and `result` calls.
 - Result bundles are opaque to ES; ES does not parse workload-authored files for Control Plane semantics.
 - Result outcome evidence does not include host paths, archive entry lists, payload interpretation, or provider terminal proof when the request can be served from an already retained bundle without runtime lookup.
-- Successful staging cleanup must not run before the retention attempt for terminal success.
+- Result retention and staging retention are independent; result behavior never authorizes staging deletion.
 
 **Current simplification**
 
@@ -666,17 +1030,18 @@ How Docker appears in the implementation:
 The most important implementation facts are backed by integration tests:
 
 - `es/app/app_integration_test.go` exercises the live `:prepare` path and confirms that ES now returns bounded preflight success without leaking the richer composition data it still assembles internally.
-- `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission.
-- `es/admission/writablestate_readiness_test.go` covers repo-local non-root writable-state readiness using owner-only temp-dir permissions as the future `es:es` stand-in, including submit-side staging, retained-result fail-closed behavior, successful, failed, lost, and canceled terminal-state staging semantics, repeat retained-result reads after stage cleanup, preserved normalization evidence after successful cleanup, cleanup-preflight blocking without partial deletion, current Alpha-compatible ownership-normalization marker validation, and future non-root-required marker plus expected-owner enforcement.
+- `es/app/submit_integration_test.go` confirms the live `:submit` wiring into Nomad and Docker, including network-mode selection, runtime-identity tmpfs mounting, environment injection, governed artifact mounts, and lifecycle still working after submission. Its failed-allocation assertion includes bounded test-owned stdout and stderr when available, without treating logs as success authority.
+- `es/admission/writablestate_readiness_test.go` covers repo-local non-root writable-state readiness using owner-only temp-dir permissions as the future `es:es` stand-in, including submit-side staging, retained-result fail-closed behavior, successful, failed, lost, and canceled terminal-state staging semantics, repeat retained-result reads without staging mutation, preserved independent normalization evidence, pre-dispatch custody refusal without partial deletion, current Alpha-compatible ownership-normalization marker validation, and future non-root-required marker plus expected-owner enforcement.
 - The submit-side staging implementation now reconciles the run-scoped stage root itself to the owner model derived from `execution.staging_root_dir`; future writable-state readiness depends on `<staging_root>/<run_id>` being ES-traversable and ES-deletable, not only on the child `run/platform`, `run/work`, and `run/result` directories.
-- The bounded writable-state ownership helper may now repair only direct retained-result artifacts that already carry preserved normalization evidence and may quarantine incompatible legacy retained run directories or inactive run-scoped stage roots outside the live roots, but it still must not recurse through arbitrary retained/debug trees or fabricate missing normalization evidence.
+- The existing-host writable-state ownership-preparation route at `scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh` is a fixed, effect-free exit-2 tombstone. It performs no current host or artifact inspection, mutation, repair, quarantine, or evidence production. The six retired internal routes and their unchanged public-wrapper delegators are bounded by `.docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md`; no v2 replacement or current existing-host migration authority exists for this family. Historical ownership-normalization artifacts and old helper tests grant no current operational permission.
+- ES still validates existing result objects and normalization evidence without in-place metadata repair, and it may initialize owner and mode on newly created unpublished result temporaries, records, and normalization evidence. Existing-object repair and deletion based on an uncertain pathname are unsupported; retained staging and result-side proof do not grant a later cleanup or quarantine authority.
 - `es/app/operator_scripts_integration_test.go` confirms the primary operator bring-up path can start ARS -> EGS -> AGS -> ES -> Nomad in the current full profile, re-run the unified readiness check, and drive the lifecycle helper through public `run_id` only.
 - The same operator-script coverage now also confirms that the readiness helper distinguishes service health, prepare-ready state, full submit-ready state, and missing configured runtime-profile images instead of treating ES `/health` as sufficient on its own.
 - Repo-local integration harness workspaces created by `newExecutionWorkspaceTempDir` now live under `.out/<prefix>*` rather than at the repository root; this is a local generated-artifact convention for test and operator inspection, not a public execution contract.
 - `es/admission/executionpackage_test.go` confirms the run-scoped execution-package layout localizes host staging, runtime paths, wrapper assembly, and base runtime mounts.
 - Runtime-profile unit coverage confirms `control-plane-normal-shell/v1` is rejected when unknown/disabled or when network access is absent, and confirms the selected profile injects only non-secret Codex metadata while selecting the configured profile image.
 - `es/app/lifecycle_integration_test.go` confirms status/logs/cancel are projected from Nomad through the narrowed public DTOs, that failed workloads still surface through `200` status responses, that logs return `409` before readiness, and that Nomad unavailability surfaces as `503`.
-- Result integration coverage confirms the Control Plane caller can submit a current-slice static-script workload, wait for terminal status, fetch the retained result bundle, keep fetching it after staging cleanup, receive `404 result_not_found` for terminal runs with no result files, receive `403` as a disallowed caller, and repeat result fetches idempotently.
+- Result integration coverage confirms the Control Plane caller can submit a current-slice static-script workload, wait for terminal status, fetch the retained result bundle while the same staging root remains, receive `404 result_not_found` for terminal runs with no result files, receive `403` as a disallowed caller, and repeat result fetches idempotently.
 - `es/admission/runtimeidentity_test.go` confirms reserved runtime path overlap is rejected while `/execution/mounts/...` remains allowed.
 - `es/app/observability_integration_test.go` confirms inbound request wrapping and outbound dependency-edge logging, including trace propagation across ES -> ARS health checks.
 - `es/app/execution_loop_integration_test.go` confirms the end-to-end implementation path can drive publish -> prepare -> submit -> status/logs summaries without an ES-owned run store.
@@ -785,3 +1150,70 @@ These seams are active today and intentionally not fixed.
 - If code and tests disagree with this file, update this file to match reality.
 - Label current simplifications explicitly.
 - Do not describe an implementation shortcut as a durable invariant without support.
+
+## 20. Final-audit repair implementation details
+
+`mounts.go` validates each archive namespace with an invocation-local
+compressed byte-radix ledger. Production work accounting is optional and
+private, and increments only at actual probe, byte-comparison, child-lookup,
+node/map/branch allocation, and commit sites. Traversal and commit are
+iterative; labels are retained-name substring views; no per-segment node set,
+prefix reconstruction, recursive walk, or accumulated-map descendant scan is
+used. Entry registration remains after all fallible work so the established
+error order is unchanged.
+
+`execution_roots.go` owns the portable operation-local pair state, descriptor
+ownership, missing-suffix intent, revalidation schedule, and idempotent close.
+`execution_roots_linux.go` binds `fstat` to complete `statx` identity,
+canonical `/proc/self/fd` presentation, strict no-follow rewalk, and a stable
+bounded mount-ID-selected mountinfo snapshot. The parser accepts unknown
+bounded optional fields, parents outside the visible root, and one unique `/`
+top self-parent. Its tagged root representation distinguishes canonical
+pathname roots from opaque `nsfs` namespace-object roots. The latter accept
+only the upstream operation names `mnt`, `net`, `uts`, `ipc`, `pid`, `user`,
+`cgroup`, and `time` with a canonical decimal inode envelope; the digits are
+not parsed and receive no limit beyond the existing bounded record. All such
+records stay in count, uniqueness, graph, stacking, and descendant checks.
+Only pathname roots reach source-coordinate joining. A selected opaque root
+returns a dedicated refusal before device comparison or path arithmetic, and
+the implementation never manufactures a path or substitutes mountpoint or
+configuration. The parser continues rejecting duplicate IDs, nontrivial
+cycles, non-top self-parent records, malformed paths/labels/escapes, unsupported
+non-path classes, incomplete masks, mismatched devices, and ambiguous/unstable
+input. `execution_roots_darwin.go` binds `F_GETPATH`,
+no-follow rewalk, `fstatfs`, and bounded `getfsstat`; same-FSID distinct
+presentations are intentionally unsupported.
+
+Startup plans both roots before mutation, creates one missing staging component
+at a time, reacquires the pair after each creation, proves again before the
+first results component, repeats that schedule for results, probes both
+selected filesystems, and performs a final acquisition. Submit acquires after
+the resolved-plan freeze, compares the held owner with the frozen owner,
+reobserves immediately before claim, and transfers the qualified staging
+descriptor to the production claim constructor. The path-taking claim wrapper
+is test-only.
+
+Result paths open one pair and revalidate before current named descriptor-
+bound directory creation, temporary creation, new-object initialization,
+no-replace final/record publication, and authenticated read/check. `Fchown` and
+`Fchmod` initialize newly created unpublished result temporaries/records and
+newly created normalization evidence; they do not repair existing directories,
+finals, or evidence. Pair proof is a prerequisite for those operations, not an
+independent deletion or metadata-repair authority. No result pathname cleanup
+or existing-object reconciliation is selected; incomplete leaves and uncertain
+temporaries remain. Streamed reads/writes on an already-held descriptor do not
+reacquire topology. Retained-first reads accept missing staging intent, never
+create a missing results root, and never convert a topology error into Nomad
+fallback. An existing final is publicly eligible only with its authenticated
+completion record; an invalid or unmarked pair is refused without adoption.
+
+The current stable-service-namespace/trusted-operator assumption is explicit:
+the last check is not atomic against a privileged mount or hostile same-UID
+rename in the final syscall window, and concealed backing-store aliasing is not
+claimed. Modeled tests are not mounted-topology evidence. C's selected native
+observations remain historical exact-source evidence, not an execution of this
+unaccepted integration. Focused changed-interaction review/validation and a
+separately authorized commit remain pending. Deployment observation, mounted
+fixtures, native Linux validation, and key/capacity/residence/reclamation
+requirements remain operational gates for claimed environments; they are not
+a blanket local source-preservation or integration commit gate.

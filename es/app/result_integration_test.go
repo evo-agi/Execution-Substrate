@@ -14,7 +14,7 @@ import (
 	"execution-substrate/es/admission"
 )
 
-func TestExecutionResultBundleRetainedAcrossStatusCleanupAndRepeatFetch(t *testing.T) {
+func TestExecutionResultBundleAndStageRetainedAcrossStatusAndRepeatFetch(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStack(t)
 	publishSubmitArtifactArchive(t, stack, buildArchiveFromScript(t, `#!/bin/sh
 set -eu
@@ -38,7 +38,7 @@ echo RESULT-WROTE
 	if !status.Terminal || status.ExitCode == nil || *status.ExitCode != 0 {
 		t.Fatalf("expected terminal success status, got %+v", status)
 	}
-	waitForPathRemoved(t, stageRoot)
+	requirePathExists(t, stageRoot)
 
 	first := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator/local")
 	second := fetchExecutionResultBundle(t, stack, submitted.RunID, "operator/local")
@@ -53,11 +53,13 @@ echo RESULT-WROTE
 	if got := strings.TrimSpace(entries["nested/result.json"]); got != `{"status":"ok","kind":"retained-result"}` {
 		t.Fatalf("unexpected nested result content %q entries=%v", got, entries)
 	}
+	requirePathExists(t, stageRoot)
 }
 
 func TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
+	stageRoot := filepath.Join(stack.rootDir, "es-stage", submitted.RunID)
 	stack.nomad.waitForTerminalExecutionAllocation(t, submitted.RunID)
 	fetchExecutionStatus(t, stack, submitted.RunID)
 
@@ -74,6 +76,7 @@ func TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput(t *tes
 	if payload.Code != "result_not_found" {
 		t.Fatalf("expected result_not_found, got %+v", payload)
 	}
+	requirePathExists(t, stageRoot)
 }
 
 func TestExecutionResultReturns403WhenCallerIsDisallowed(t *testing.T) {

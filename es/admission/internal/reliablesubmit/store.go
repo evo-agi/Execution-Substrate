@@ -51,17 +51,19 @@ const (
 	claimStoreErrorCorrupt
 	claimStoreErrorCommitUnknown
 	claimStoreErrorInternal
+	claimStoreErrorMigrationRecoveredOld
 )
 
 var (
-	errClaimStoreNotFound      = claimStoreError{kind: claimStoreErrorNotFound}
-	errClaimStoreStaleRevision = claimStoreError{kind: claimStoreErrorStaleRevision}
-	errClaimStoreBusy          = claimStoreError{kind: claimStoreErrorBusy}
-	errClaimStoreUnavailable   = claimStoreError{kind: claimStoreErrorUnavailable}
-	errClaimStoreUnsupported   = claimStoreError{kind: claimStoreErrorUnsupported}
-	errClaimStoreCorrupt       = claimStoreError{kind: claimStoreErrorCorrupt}
-	errClaimStoreCommitUnknown = claimStoreError{kind: claimStoreErrorCommitUnknown}
-	errClaimStoreInternal      = claimStoreError{kind: claimStoreErrorInternal}
+	errClaimStoreNotFound              = claimStoreError{kind: claimStoreErrorNotFound}
+	errClaimStoreStaleRevision         = claimStoreError{kind: claimStoreErrorStaleRevision}
+	errClaimStoreBusy                  = claimStoreError{kind: claimStoreErrorBusy}
+	errClaimStoreUnavailable           = claimStoreError{kind: claimStoreErrorUnavailable}
+	errClaimStoreUnsupported           = claimStoreError{kind: claimStoreErrorUnsupported}
+	errClaimStoreCorrupt               = claimStoreError{kind: claimStoreErrorCorrupt}
+	errClaimStoreCommitUnknown         = claimStoreError{kind: claimStoreErrorCommitUnknown}
+	errClaimStoreInternal              = claimStoreError{kind: claimStoreErrorInternal}
+	errClaimStoreMigrationRecoveredOld = claimStoreError{kind: claimStoreErrorMigrationRecoveredOld}
 )
 
 type claimStoreError struct {
@@ -84,6 +86,8 @@ func (e claimStoreError) Error() string {
 		return "reliable submit store: corrupt or invariant-invalid state"
 	case claimStoreErrorCommitUnknown:
 		return "reliable submit store: commit outcome unknown"
+	case claimStoreErrorMigrationRecoveredOld:
+		return "reliable submit store: migration recovered old state"
 	default:
 		return "reliable submit store: internal persistence failure"
 	}

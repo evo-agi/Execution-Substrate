@@ -24,30 +24,79 @@ const (
 	executionAuthorityMetadataWorkloadZoneVaultConfigKey = "execution_substrate.authority_handoff.workload_zone_vault_config_digest"
 )
 
-func buildExecutionAuthorityHandoff(
+type executionAuthorityHandoffProjection struct {
+	privateExecutionValue
+	runtimeProfileName            string
+	codexCredential               resolvedCodexCredentialLocation
+	runtimeIdentity               runtimeIdentityHandoff
+	workloadVault                 resolvedWorkloadVaultPlan
+	workloadZoneVaultConfigDigest string
+	trustMaterial                 stagedWorkloadTrustMaterial
+}
+
+type executionAuthorityMetadataProjection struct {
+	privateExecutionValue
+	runtimeProfileName            string
+	workloadZoneVaultConfigDigest string
+}
+
+func newExecutionAuthorityHandoffProjection(
 	runtimeProfile executionRuntimeProfile,
 	runtimeIdentity runtimeIdentityHandoff,
 	workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan,
 	workloadZoneVaultConfigDigest string,
 	trustMaterial stagedWorkloadTrustMaterial,
-) ExecutionAuthorityHandoff {
+) executionAuthorityHandoffProjection {
 	runtimeProfileName := strings.TrimSpace(runtimeProfile.name)
 	if runtimeProfileName == "" {
 		runtimeProfileName = runtimeProfileDefaultStaticScript
 	}
-
-	workloadVault := ExecutionAuthorityWorkloadVault{
-		AuthMode:    strings.TrimSpace(string(workloadVaultPlan.Mode)),
-		Address:     strings.TrimSpace(workloadVaultPlan.Address),
-		AuthMount:   strings.TrimSpace(workloadVaultPlan.AuthMount),
-		AuthRole:    strings.TrimSpace(workloadVaultPlan.AuthRole),
-		JWTAudience: strings.TrimSpace(workloadVaultPlan.JWTAudience),
+	return executionAuthorityHandoffProjection{
+		runtimeProfileName: runtimeProfileName,
+		codexCredential:    resolveCodexCredentialLocation(runtimeProfile.env),
+		runtimeIdentity: runtimeIdentityHandoff{
+			endpointEnvKey: strings.TrimSpace(runtimeIdentity.endpointEnvKey),
+			endpointURI:    strings.TrimSpace(runtimeIdentity.endpointURI),
+		},
+		workloadVault: resolvedWorkloadVaultPlan{
+			mode:        strings.TrimSpace(string(workloadVaultPlan.Mode)),
+			address:     strings.TrimSpace(workloadVaultPlan.Address),
+			authMount:   strings.TrimSpace(workloadVaultPlan.AuthMount),
+			authRole:    strings.TrimSpace(workloadVaultPlan.AuthRole),
+			jwtAudience: strings.TrimSpace(workloadVaultPlan.JWTAudience),
+		},
+		workloadZoneVaultConfigDigest: strings.TrimSpace(workloadZoneVaultConfigDigest),
+		trustMaterial:                 trustMaterial,
 	}
-	if trustMaterial.vaultCACert {
+}
+
+func newExecutionAuthorityHandoffProjectionFromResolvedPlan(plan resolvedAuthorityPlan, runtimeIdentity runtimeIdentityHandoff) executionAuthorityHandoffProjection {
+	return executionAuthorityHandoffProjection{
+		runtimeProfileName: plan.runtimeProfileName,
+		codexCredential:    plan.codexCredential,
+		runtimeIdentity: runtimeIdentityHandoff{
+			endpointEnvKey: strings.TrimSpace(runtimeIdentity.endpointEnvKey),
+			endpointURI:    strings.TrimSpace(runtimeIdentity.endpointURI),
+		},
+		workloadVault:                 plan.workloadVault,
+		workloadZoneVaultConfigDigest: plan.workloadZoneVaultConfigDigest,
+		trustMaterial:                 plan.trustMaterial,
+	}
+}
+
+func buildResolvedExecutionAuthorityHandoff(projection executionAuthorityHandoffProjection) ExecutionAuthorityHandoff {
+	workloadVault := ExecutionAuthorityWorkloadVault{
+		AuthMode:    projection.workloadVault.mode,
+		Address:     projection.workloadVault.address,
+		AuthMount:   projection.workloadVault.authMount,
+		AuthRole:    projection.workloadVault.authRole,
+		JWTAudience: projection.workloadVault.jwtAudience,
+	}
+	if projection.trustMaterial.vaultCACert {
 		workloadVault.CACertEnv = "VAULT_CACERT"
 		workloadVault.CACertPath = executionRuntimePlatformDir + "/" + executionWorkloadVaultCAName
 	}
-	if trustMaterial.workloadTLSBundle {
+	if projection.trustMaterial.workloadTLSBundle {
 		workloadVault.TLSBundleEnv = "SSL_CERT_FILE"
 		workloadVault.TLSBundlePath = executionRuntimePlatformDir + "/" + executionWorkloadTLSBundleName
 	}
@@ -55,18 +104,18 @@ func buildExecutionAuthorityHandoff(
 	result := ExecutionAuthorityHandoff{
 		AuthorityPath: executionAuthorityPathWorkloadVault,
 		RuntimeProfile: ExecutionAuthorityRuntimeProfile{
-			Name: runtimeProfileName,
+			Name: projection.runtimeProfileName,
 		},
 		IdentityHandoff: ExecutionAuthorityIdentityHandoff{
 			Mode:          executionAuthorityIdentityModeEndpoint,
-			EndpointEnv:   strings.TrimSpace(runtimeIdentity.endpointEnvKey),
-			EndpointURI:   strings.TrimSpace(runtimeIdentity.endpointURI),
+			EndpointEnv:   projection.runtimeIdentity.endpointEnvKey,
+			EndpointURI:   projection.runtimeIdentity.endpointURI,
 			JWTSVIDTarget: executionAuthorityJWTSVIDTargetWorkloadVault,
 		},
 		WorkloadVault: workloadVault,
 		RuntimeConfigRefs: ExecutionAuthorityRuntimeConfigRefs{
 			WorkloadZoneVaultConfig: ExecutionAuthorityRuntimeConfigRef{
-				Digest: strings.TrimSpace(workloadZoneVaultConfigDigest),
+				Digest: projection.workloadZoneVaultConfigDigest,
 			},
 		},
 		Evidence: ExecutionAuthorityEvidence{
@@ -78,35 +127,60 @@ func buildExecutionAuthorityHandoff(
 		},
 	}
 
-	if codex := codexCredentialLocationFromRuntimeProfile(runtimeProfile); codex != nil {
+	if codex := executionAuthorityCodexCredential(projection.codexCredential); codex != nil {
 		result.CodexCredentialLocation = codex
 		result.Evidence.CodexCredentialLocation = executionAuthorityEvidenceCodexCredentialLocation
 	}
 	return result
 }
 
-func codexCredentialLocationFromRuntimeProfile(runtimeProfile executionRuntimeProfile) *ExecutionAuthorityCodexCredential {
-	source := strings.TrimSpace(runtimeProfile.env[codexCredentialSourceEnvKey])
+func buildExecutionAuthorityHandoff(
+	runtimeProfile executionRuntimeProfile,
+	runtimeIdentity runtimeIdentityHandoff,
+	workloadVaultPlan esconfig.ResolvedWorkloadVaultAuthPlan,
+	workloadZoneVaultConfigDigest string,
+	trustMaterial stagedWorkloadTrustMaterial,
+) ExecutionAuthorityHandoff {
+	return buildResolvedExecutionAuthorityHandoff(newExecutionAuthorityHandoffProjection(
+		runtimeProfile,
+		runtimeIdentity,
+		workloadVaultPlan,
+		workloadZoneVaultConfigDigest,
+		trustMaterial,
+	))
+}
+
+func resolveCodexCredentialLocation(environment map[string]string) resolvedCodexCredentialLocation {
+	source := strings.TrimSpace(environment[codexCredentialSourceEnvKey])
 	if source == "" {
-		return nil
+		return resolvedCodexCredentialLocation{}
 	}
-	return &ExecutionAuthorityCodexCredential{
-		CLIPath:          strings.TrimSpace(runtimeProfile.env[codexCLIPathEnvKey]),
-		CredentialSource: source,
-		VaultSecretPath:  strings.TrimSpace(runtimeProfile.env[codexCredentialVaultSecretPathEnvKey]),
-		VaultSecretField: strings.TrimSpace(runtimeProfile.env[codexCredentialVaultSecretFieldEnvKey]),
+	return resolvedCodexCredentialLocation{
+		applicable:       true,
+		cliPath:          strings.TrimSpace(environment[codexCLIPathEnvKey]),
+		credentialSource: source,
+		vaultSecretPath:  strings.TrimSpace(environment[codexCredentialVaultSecretPathEnvKey]),
+		vaultSecretField: strings.TrimSpace(environment[codexCredentialVaultSecretFieldEnvKey]),
 	}
 }
 
-func executionAuthorityMetadata(runtimeProfile executionRuntimeProfile, workloadZoneVaultConfigDigest string) map[string]any {
-	runtimeProfileName := strings.TrimSpace(runtimeProfile.name)
-	if runtimeProfileName == "" {
-		runtimeProfileName = runtimeProfileDefaultStaticScript
+func executionAuthorityCodexCredential(location resolvedCodexCredentialLocation) *ExecutionAuthorityCodexCredential {
+	if !location.applicable {
+		return nil
 	}
+	return &ExecutionAuthorityCodexCredential{
+		CLIPath:          location.cliPath,
+		CredentialSource: location.credentialSource,
+		VaultSecretPath:  location.vaultSecretPath,
+		VaultSecretField: location.vaultSecretField,
+	}
+}
+
+func executionAuthorityMetadata(projection executionAuthorityMetadataProjection) map[string]any {
 	return map[string]any{
 		executionAuthorityMetadataSchemaKey:                  executionAuthorityMetadataSchemaVersion,
-		executionAuthorityMetadataRuntimeProfileKey:          runtimeProfileName,
-		executionAuthorityMetadataWorkloadZoneVaultConfigKey: strings.TrimSpace(workloadZoneVaultConfigDigest),
+		executionAuthorityMetadataRuntimeProfileKey:          projection.runtimeProfileName,
+		executionAuthorityMetadataWorkloadZoneVaultConfigKey: projection.workloadZoneVaultConfigDigest,
 	}
 }
 
@@ -131,7 +205,7 @@ func executionAuthorityHandoffFromSubmittedRuntimeSpec(runtimeProfileName string
 			codexCredentialVaultSecretFieldEnvKey: strings.TrimSpace(env[codexCredentialVaultSecretFieldEnvKey]),
 		},
 	}
-	handoff := buildExecutionAuthorityHandoff(
+	handoff := buildResolvedExecutionAuthorityHandoff(newExecutionAuthorityHandoffProjection(
 		runtimeProfile,
 		runtimeIdentityHandoff{
 			endpointEnvKey: runtimeIdentityEndpointEnvKey,
@@ -149,7 +223,7 @@ func executionAuthorityHandoffFromSubmittedRuntimeSpec(runtimeProfileName string
 			vaultCACert:       strings.TrimSpace(env["VAULT_CACERT"]) != "",
 			workloadTLSBundle: strings.TrimSpace(env["SSL_CERT_FILE"]) != "",
 		},
-	)
+	))
 	if handoff.WorkloadVault.CACertPath != "" {
 		handoff.WorkloadVault.CACertPath = strings.TrimSpace(env["VAULT_CACERT"])
 	}

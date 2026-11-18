@@ -230,16 +230,88 @@ for path in ro_files:
 PY
 }
 
+verify_supported_local_es_root_profile() {
+  local config_path=$1
+  local error_prefix=$2
+  local proof_dir="${SUPPORTED_LOCAL_PROOF_DIR:-}"
+  local staging_root
+  local results_root
+  local roots_helper
+  local mount_specs
+  local spec
+  local staging_found=0
+  local results_found=0
+
+  if [[ -z "${proof_dir}" || -z "${SUPPORTED_LOCAL_PROOF_ID:-}" ||
+        "${config_path}" != "${proof_dir}/es.json" ]]; then
+    echo "${error_prefix}: supported-local proof config or roots are mismatched" >&2
+    return 1
+  fi
+  if [[ "$(control_plane_image_ref)" != "execution-substrate/control-plane:supported-local" ]]; then
+    echo "${error_prefix}: supported-local service image is incompatible" >&2
+    return 1
+  fi
+  if [[ "${CONTROL_PLANE_DOCKERFILE:-}" != "${proof_dir}/Dockerfile" ]]; then
+    echo "${error_prefix}: supported-local service Dockerfile is incompatible" >&2
+    return 1
+  fi
+
+  roots_helper="$(bringup_repo_root)/scripts/internal/supported_local_execution_roots.py"
+  if ! python3 "${roots_helper}" check "${proof_dir}" "${SUPPORTED_LOCAL_PROOF_ID}" "${config_path}" >/dev/null 2>&1; then
+    echo "${error_prefix}: supported-local root owner, mode, or identity is invalid" >&2
+    return 1
+  fi
+
+  # The checked helper binds both config fields to these exact proof children.
+  # Require the ES container mount derivation to retain each same-path rw bind.
+  staging_root="${proof_dir}/es-staging"
+  results_root="${proof_dir}/es-results"
+  if ! mount_specs="$(control_plane_mount_specs es "${config_path}" 2>/dev/null)"; then
+    echo "${error_prefix}: supported-local ES mounts are invalid" >&2
+    return 1
+  fi
+  while IFS= read -r spec; do
+    if [[ "${spec}" == "${staging_root}:${staging_root}:rw" ]]; then
+      staging_found=1
+    fi
+    if [[ "${spec}" == "${results_root}:${results_root}:rw" ]]; then
+      results_found=1
+    fi
+  done <<< "${mount_specs}"
+  if (( staging_found == 0 )); then
+    echo "${error_prefix}: ES container is not mounted with ${staging_root}:${staging_root}:rw" >&2
+    return 1
+  fi
+  if (( results_found == 0 )); then
+    echo "${error_prefix}: ES container is not mounted with ${results_root}:${results_root}:rw" >&2
+    return 1
+  fi
+}
+
 verify_es_staging_invariant() {
   local config_path=$1
   local proof_path
   local staging_root
   local results_root
+  local roots_profile="${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-}"
+  local roots_output
+  local root_line
   local -a es_roots
   local staging_found=0
   local results_found=0
 
-  if ! mapfile -t es_roots < <(python3 - <<'PY' "${config_path}"
+  case "${roots_profile}" in
+    "")
+      ;;
+    service-root-v1)
+      ;;
+    *)
+      echo "ES staging invariant failed: unsupported supported-local roots profile" >&2
+      return 1
+      ;;
+  esac
+
+  if ! roots_output="$(python3 - "${config_path}" 2>/dev/null <<'PY'
 import json
 import pathlib
 import sys
@@ -255,7 +327,16 @@ if not results_root:
 print(staging_root)
 print(results_root)
 PY
-  ); then
+)"; then
+    echo "ES staging invariant failed: execution roots config is invalid" >&2
+    return 1
+  fi
+  es_roots=()
+  while IFS= read -r root_line; do
+    es_roots+=("${root_line}")
+  done <<< "${roots_output}"
+  if (( ${#es_roots[@]} != 2 )); then
+    echo "ES staging invariant failed: execution roots config is invalid" >&2
     return 1
   fi
   staging_root="${es_roots[0]}"
@@ -281,27 +362,32 @@ PY
     echo "ES staging invariant failed: execution.results_root_dir must be separate from execution.staging_root_dir" >&2
     return 1
   fi
-  if [[ ! -d "${staging_root}" ]]; then
-    mkdir -p "${staging_root}"
+  if [[ "${roots_profile}" == "service-root-v1" ]]; then
+    verify_supported_local_es_root_profile "${config_path}" "ES staging invariant failed" || return 1
   fi
-  if [[ ! -d "${results_root}" ]]; then
-    mkdir -p "${results_root}"
-  fi
-  if [[ ! -d "${staging_root}" ]]; then
-    echo "ES staging invariant failed: staging root does not exist: ${staging_root}" >&2
-    return 1
-  fi
-  if [[ ! -d "${results_root}" ]]; then
-    echo "ES staging invariant failed: results root does not exist: ${results_root}" >&2
-    return 1
-  fi
-  if [[ ! -w "${staging_root}" ]]; then
-    echo "ES staging invariant failed: staging root is not writable: ${staging_root}" >&2
-    return 1
-  fi
-  if [[ ! -w "${results_root}" ]]; then
-    echo "ES staging invariant failed: results root is not writable: ${results_root}" >&2
-    return 1
+  if [[ -z "${roots_profile}" ]]; then
+    if [[ ! -d "${staging_root}" ]]; then
+      mkdir -p "${staging_root}"
+    fi
+    if [[ ! -d "${results_root}" ]]; then
+      mkdir -p "${results_root}"
+    fi
+    if [[ ! -d "${staging_root}" ]]; then
+      echo "ES staging invariant failed: staging root does not exist: ${staging_root}" >&2
+      return 1
+    fi
+    if [[ ! -d "${results_root}" ]]; then
+      echo "ES staging invariant failed: results root does not exist: ${results_root}" >&2
+      return 1
+    fi
+    if [[ ! -w "${staging_root}" ]]; then
+      echo "ES staging invariant failed: staging root is not writable: ${staging_root}" >&2
+      return 1
+    fi
+    if [[ ! -w "${results_root}" ]]; then
+      echo "ES staging invariant failed: results root is not writable: ${results_root}" >&2
+      return 1
+    fi
   fi
 
   while IFS= read -r spec; do
@@ -325,7 +411,7 @@ PY
 
   proof_path="${BRINGUP_DIR}/staging-invariant.json"
   mkdir -p "$(dirname "${proof_path}")"
-  python3 - <<'PY' "${proof_path}" "${staging_root}" "${results_root}"
+  python3 - <<'PY' "${proof_path}" "${staging_root}" "${results_root}" "${roots_profile}"
 import json
 import pathlib
 import sys
@@ -337,6 +423,16 @@ payload = {
     "es_container_results_path": sys.argv[3],
     "path_translation": False,
 }
+if sys.argv[4] == "service-root-v1":
+    payload.update({
+        "supported_local_es_roots_profile": "service-root-v1",
+        "static_root_owner_mode_checked": True,
+        "configured_root_uid": 0,
+        "configured_root_gid": 0,
+        "configured_root_mode": "0755",
+        "operator_write_access_required": False,
+        "container_identity_or_behavioral_capability_proved": False,
+    })
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 }

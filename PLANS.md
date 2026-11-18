@@ -2,6 +2,60 @@
 
 ## Status
 
+## Current-remote-base private synthetic replay custody selection (2026-11-17)
+
+This candidate contains the accepted `d408877545c16ee94968b04eab236da9e3ad6db0`
+private replay-custody delta as its third logical layer on the verified current
+remote base. Private codec-3 custody is a **Bounded slice rule** on the
+**Reopened redesign seam** for reliable-submit canonical binding and replay
+completeness. Its only scope is `synthetic_nonoperational_v1`: source-local,
+runtime-unwired, unpublished, effect-ineligible, and unavailable as public
+reliable submit. It introduces no Service.Submit, HTTP, app, configuration,
+provider, staging, deployed key-loader, TTL/GC, backup/restore, or runtime
+wiring change. Public structural reliable-request refusal and unkeyed Submit
+remain in force.
+
+The private source selection keeps original typed intent, the same parsed
+delivery and PB1 recomputation, sealed-file AEAD custody, one-database
+claim/key/grant authority, one-use known-committed pre-Seal permission,
+bounded identity and mode checks, no-follow and fsync behavior, fail-closed
+C1/D1 connection quarantine, permit burn, issuing-store and budget limits,
+fixed redaction, and no-effect decisions. Migration 3 appends to the unchanged
+migration-1/2 literals and hashes. Codec-1/2 generic domains and historical
+compatibility remain; old binaries refuse schema 3. The owner contracts in
+`.docs/execution_lifecycle/` govern the exact shape. The pre-existing
+historical codec-1/2 CAS cleanup concern remains a separate post-publication,
+pre-runtime-wiring hardening tranche, outside this candidate.
+
+## Current-remote-base PB1 binding selection (2026-11-17)
+
+This candidate contains the accepted predecessor's private admission binding v1
+source at `1c44483fcb6978125a3c4f11ff168d094200dd4e` for its second
+logical layer. The admission-local HMAC-SHA-256 effective-plan commitment and
+fourteen-category completeness witness remain a **Bounded slice rule** on the
+**Reopened redesign seam** for canonical binding and replay completeness.
+`ES-PRIVATE-ADMISSION-BINDING-V1-20261115-01` was selected on accepted
+integration I. It carries the signature-verified returned mount artifact
+digest and signed payload digest into the private assessment without changing
+legacy admission rejection or acquisition count. There was no production
+caller at PB1; the private replay composer is the only later source-local
+caller in this candidate.
+The producer is private and runtime-unwired; every assessment remains
+effect-ineligible. Current public structural reliable-request refusal, unkeyed
+Submit, job/handoff/receipt behavior, result authentication, and lifecycle
+authority remain unchanged. This selection adds no public reliable submit,
+schema migration, provider route, or key-custody authority.
+Reliable submit remains unavailable.
+
+## Current-remote-base H/C/T foundation selection (2026-11-17)
+
+This current-base tranche re-derives the reviewed H/C/T foundation tree on official `trunk_dev` `87d262de8748f49197c5bba6020bd5dddc334bc7`. The 2026-11-13 construction snapshot is historical; the preservation-only T commit grants no publication or operational authority and is not part of this branch ancestry. T's one-time checkpoint exception is consumed. The accepted predecessor source, this candidate's validation, independent audit, local commit, and remote publication remain separate gates. This tranche preserves the remote P0s/P0t dedicated status-only collector and pre-contact renewal hold while retaining the locally selected effect-free existing-host route retirements.
+
+Current unkeyed Submit retains T's admission-owned semantic plan and fixed B2 public/privacy boundaries while using C's post-`prepareAdmission` execution/placement snapshot. That snapshot begins after successful admission and supplies one staging/results pair through the current Submit resolution, materialization, and handoff. It does not atomically capture concurrently mutated configuration, earlier admission/trust/Vault/policy reads, or later Status/Logs/Result requests. Artifact, capability, target, and profile errors precede placement errors. C's archive, mount, custody, authenticated-result and no-repair rules remain the safety baseline. Incomplete leaves and startup probe fixtures remain retained where exact effect-time identity for removal is unproved. Paired-root proof is an active **Bounded slice rule pending integrated review**; whole-root reclamation remains a **Reopened redesign seam**.
+
+The six named existing-host Remote Alpha ES writable-state/service-user helper routes remain fixed effect-free tombstones. Archived v1 claims are a **Temporary compatibility edge** and not current host truth; no v2 replacement or fresh-host provisioning is selected. The operator-facade evidence-compatibility cutoff is separate and does not retire underlying owner-local producer scripts. Supported-local and unrelated Remote Alpha routes remain outside this retirement. Development acceptance, a later commit, operational rollout, and publication are distinct decisions. Key isolation, topology, capacity, residence, reclamation, and publication gates remain open. Reliable submit remains unavailable and runtime-unwired.
+
+
 This document is the authoritative planning document for the current Execution Substrate workstreams, bounded platform hardening, and explicitly reopened seams.
 
 It supersedes the earlier slice-lock plan that treated ACS, ARS, AGS, EGS, CGS, ES, and the now-removed legacy signing kernel as near-final architectural endpoints.
@@ -52,12 +106,17 @@ Current bounded implementation status:
 - Slice `1A` and slice `1B` are now landed in the bounded sense the repo claims: the real ES -> Nomad -> Docker path now proves a same-container platform-owned supervisor/helper, helper-private SPIRE channel, bounded workload-visible `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, fixed non-root workload launch boundary, bounded real SPIRE-backed JWT-SVID delivery for the `workload_vault` target, and helper-death/task-fatal behavior.
 - That first workload-identity slice is intentionally compatibility-narrow: no root workloads, no arbitrary image-user execution, no shared helper/workload UID, and no supplemental groups that collapse the helper/workload boundary.
 - Useful credential flow completion is now also landed in the bounded sense the repo claims: one workload can use the platform-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` plus the bounded workload-vault metadata to authenticate to a real Vault dev/test target and read one secret through the real ES -> Nomad -> Docker path, without reintroducing workload-authored bridging or platform-owned Vault token brokerage.
-- The current supported local proof path is now repo-owned and converged with the bounded useful credential-flow proof: `scripts/72_supported_local_setup.sh` prepares the guest-side supported-local proof environment, including a proof-scoped real SPIRE server/agent path plus a proof-scoped real Vault dev/test target, while `scripts/73_supported_local_proof.sh run` is the canonical host-side supported-local proof wrapper on this Mac. That path records canonical proof workspaces under `.out/es-proof-<id>/`, keeps generated proof bootstrap material in `managed-secrets.conf`, and uses guest `/tmp` scratch only as an internal Lima implementation detail because the mounted repo tree is read-only inside the guest.
+- The current supported local proof path is repo-owned and converged with the bounded useful credential-flow proof: `scripts/72_supported_local_setup.sh` prepares the guest-side supported-local proof environment, including proof-scoped SPIRE and Vault dev/test targets, while `scripts/73_supported_local_proof.sh run` is the canonical host wrapper on this Mac. The host `.out/es-proof-<id>/` path is evidence-only; task-owned host bootstrap/transport scratch is separate and private. Guest `/tmp` scratch remains an internal Lima implementation detail because the mounted repo tree is read-only inside the guest.
+- `SUPPORTED-LOCAL-ROOT-OWNER-01` is a bounded supported-local configured-consumer integration refinement. The selected rootful, identity-mapped generic ES service profile is UID:GID `0:0`: canonical setup must require a fresh proof root and create only its two fresh configured execution roots as `0:0` with exact `0755` directory mode through a narrow noninteractive privileged helper. The generated profile requires one read-only validator of that static owner/mode contract, proof binding, service image, config, and exact same-path read-write mounts in prepare-only bring-up, the ES launcher, and full-profile submit-readiness (including direct health check and diagnostics use). The ordinary operator needs static inspection access, not write authority to service-owned roots. Generic callers without this explicit profile retain caller-writable readiness; unknown profiles refuse. A fixed safe setup projection records that static owner/mode check in retained proof evidence without paths, key material, or a claim that container capability passed. Existing failed proof roots remain for separately bounded cleanup rather than in-place owner migration. Prepare-only orchestration retains configured Submit, key loading and root capability qualification before listening. ES's `0750` per-run natural-directory capability rule, external result-auth key, and workload `10000:10000` boundary remain unchanged. Review-15's failed full check did not capture its first failed subcheck; this source-demonstrated readiness mismatch does not retrospectively identify that subcheck. Offline fixtures do not qualify a future container view or live supported-local proof; independent review and live proof remain open.
+- `R14-ROOT-CUSTODY-01` refines only that helper's fresh-child custody: it must bind each visible fixed child to the same held descriptor before owner/mode normalization, retain both descriptor identities through a final pair check, and refuse drift without repair or cleanup. The operator-owned proof parent permits an independent writer to replace an entry between `mkdir` and descriptor acquisition; those calls are not atomic creation-and-open proof. No protected creation namespace or proof-parent ownership change is selected here. This bounded source repair closes the initialized-descriptor/reopened-name substitution, while arbitrary concurrent pre-acquisition interference remains an explicit design and live-proof limit.
 - The first bounded Control Plane normal-shell runtime contract is now an explicit opt-in ES runtime profile named `control-plane-normal-shell/v1`. It remains a bounded slice rule on the reopened ES runtime/package seam: CP still owns orchestration, review, checkpoint, and finalization semantics, while ES owns the governed Docker/Nomad runtime realization, platform-owned runtime identity delivery, the profile image selection, and non-secret credential-location metadata needed for workload-side Codex credential retrieval.
 - The supported-local runtime surface for enabled local runtime-profile images now also owns the narrow Nomad/Docker image-lifecycle guardrail needed for repeated client runs from the same prepared environment: the supported single-node Nomad baseline disables Nomad Docker image cleanup through `client.options["docker.cleanup.image"]="false"`, and submit-readiness for enabled runtime-profile images refuses to claim ready when that guardrail is absent. This is a bounded slice rule for local image durability, not a general registry or image-cache architecture.
 - The supported-local proof realization for that profile now uses a repo-owned deterministic proof Codex shim at the configured `EXEC_CODEX_CLI_PATH`, invokes it through the bounded normal-shell profile path, proves workload-side Vault credential acquisition, creates a deterministic workspace mutation and runner-style artifacts, fetches the retained ES result bundle, and validates the expected proof artifacts without depending on a live upstream Codex service.
 - Remote Supported-Host Alpha may now extend the narrower helper-install proof with a separate host-local Vault/workload-auth proof slice: install a single-node Alpha/internal Vault system service on the remote Linux host, constrain it to the helper SPIFFE identity JWT path needed by future ES runtime identity, and record only non-secret host evidence without claiming `runtime_profile_ready`, `submit_ready`, `es_services_healthy`, `producer_contract_compatible`, or retained-result readiness.
 - Remote Supported-Host Alpha may now also use one separate operator-owned Vault service-user migration helper slice: default `check_only`, require explicit `--apply`, stay bounded to the dedicated Vault service account, the Vault systemd drop-in, and the minimum config/storage/log/audit/TLS ownership or readability changes needed for Vault, record backup plus rollback evidence before mutation, and run honest post-apply Vault plus ES health or contract checks. That helper must preserve workload-side Vault JWT login, the ES-owned `EXEC_WORKLOAD_IDENTITY_ENDPOINT` handoff, and the no-ES-Vault-token-brokerage rule; it does not claim `runtime_profile_ready`, `submit_ready`, Vault production readiness, governed execution proof, full ES/runtime de-root, full Nomad client de-root, or SPIRE redesign.
+- The accepted Remote Alpha retirement/retain-staging tranche retires the six existing-host ES writable-state, ES service-user, ownership, staging, rollback-generation, and old-root-planning helper implementations. Their fixed fail-closed tombstones produce no evidence and the unchanged public wrappers only delegate to those tombstones. Archived v1 artifacts are historical evidence only, no live operator route parses or projects them, and no v2 replacement exists for that retired family. This retirement does not apply to unrelated Remote Alpha Vault, TLS, runtime-identity, governance, operator-healthcheck, recovery, or Vault service-user routes; the unrelated current EGS hardening v2 schema also remains current.
+- ES now retains every exclusively created per-run staging root on every post-claim return. Failed or ambiguous submit, accepted registration, every terminal observation, and every retained-result publication outcome have no automatic whole-root cleanup consequence. Descriptor closure is idempotent, exact operation-local temporary cleanup remains bounded to the object created by that operation, and governed staging reclamation is an ES-owned `Reopened redesign seam`.
+- Fresh-host provisioning is the required direction for future Remote Alpha infrastructure recovery, but no complete supported fresh-host ES provisioner currently exists. Reuse of an old or nonempty host remains blocked unless a separately governed existing-host migration contract is selected. No scheduler-drain or submitter-fence contract exists in this tranche.
 
 ## Cross-Repo Hybrid Integration ADR Pointer
 
@@ -185,28 +244,884 @@ and safe private references only, not the raw key, decoded key bytes, or raw
 wire request. This is a bounded lifetime/projection guarantee, not a secure
 memory-erasure claim or a claim that arbitrary invalid Go formatting operations
 are overrideable. Full request objects remain unsuitable as log payloads. These
-helpers are not public DTOs and are not called by current runtime code. This
-tranche still does not select or implement source-grounded resolved effective-plan extraction,
-canonical effective-plan encoding, `PlanBinding` construction from admitted
-facts, complete effective-plan witness construction, durable replay-envelope
-custody, the state-path config key, TTL, HTTP status mapping, public error
-strings, recovery query route, Nomad reconciliation algorithm, public runtime
-response field layout, or `run_id` generation strategy.
+helpers are not public DTOs and are not called by current runtime code. The
+contract-adapter tranche alone does not select source-grounded resolved-plan
+extraction. The selected source tranche is now
+`resolved-execution-plan-extraction-foundation`, a bounded Workstream C
+refinement and re-derivation of the reopened internal prepare/submit resolution
+seam. It extracts one private `resolvedExecutionPlan` from the actual current
+admission and submit-resolution path and makes current legacy `Submit` consume
+only typed projections of that plan after a pre-effect freeze point. It does
+not wire the private reliable-submit runtime or construct a `PlanBinding`.
 
-The next source-bearing seam for that removed scope is
-`resolved-execution-plan-extraction-foundation`. It is not authorized by the
-current scope-reset patch. That later tranche must derive one authoritative
-resolved execution plan from the actual current ES admission and
-runtime-resolution path, including `prepareAdmission` results, artifact and
-manifest facts, policy/trust resolution, resource/default resolution,
-runtime-profile resolution, network fact, mount/environment semantics, current
-runtime command construction, and authority-handoff behavior. Current legacy
-`Submit` and future reliable `PlanBinding` must consume the same
-source-grounded resolved plan. The later tranche must not synthesize
-`PrepareRequest` or `Manifest` proof from the proposed plan itself, create a
-parallel admission engine, silently tighten the current
-empty-environment-allowlist contract, or infer authority-handoff inapplicability
-contrary to current `Submit` behavior.
+The `resolved-execution-plan-extraction-foundation` seam is now authorized for
+construction and local validation as one isolated candidate. This is a bounded
+Workstream C refinement of the reopened internal admission/submit resolution
+seam, combined with the minimum existing material-capture, resource-limit,
+execution-root, staging-custody and retained-result-coherence source needed for
+one coherent implementation. This sequencing permits construction before the
+reported A2/custody acceptance work; it does not accept that work or authorize a
+combined merge, commit or rollout. This records the original construction
+authorization; the 2026-11-13 development-source disposition below records
+current evidence status without retroactive Git or rollout authority. Current
+legacy `Submit` is the immediate consumer of one real-admission-derived private
+resolved plan. A future reliable
+`PlanBinding` must consume the same admitted semantic facts, but no binding,
+canonical encoding, replay custody, keyed dispatch, producer enablement or
+recovery path is selected here. Reliable submit remains unavailable and runtime
+unwired. The plan must not synthesize `PrepareRequest` or `Manifest` proof, create
+a parallel admission engine, tighten the empty-environment-allowlist contract,
+or infer authority-handoff inapplicability contrary to current `Submit`.
+
+**Current invariant:** real artifact, capability, target, runtime-profile,
+policy and trust admission remain authoritative; successful legacy receipt,
+Nomad job and authority handoff retain their public semantics. The strict
+legacy decoder rejects a structural `reliable_submit` body, even when a schema
+string alone is supplied. Blank schema/version still defaults to v1, explicit
+nonblank legacy versions remain compatible, mode defaults to async, timeout to
+zero, and omitted CPU/memory to 10/128. Request maps, slices and resources are
+owned after the admission copy. Caller, profile and platform environment
+precedence, empty allowlist behavior, policy-fetched payload reuse and both
+implicit default and explicit `control-plane-normal-shell/v1` profile behavior
+remain in force.
+
+**Bounded slice rule:** `prepareAdmission` first owns a copy of the request and
+performs its established artifact, trust, Vault/auth and policy reads and gates.
+After successful admission, Submit takes one owned execution/placement
+configuration snapshot for subsequent profile, placement and materialization
+facts, including both roots. It is not an atomic snapshot of earlier admission
+or all service-configuration reads. Artifact, capability, target and profile
+gates run before placement validation; runtime-unavailable still precedes mode
+rejection and sync rejection precedes dependency admission. The effectful
+resolver captures policy-approved payload, runtime support, governed mount
+bytes and trust material before run assignment. The private semantic plan owns
+admitted execution meaning and a single typed command. Private captured
+material owns bytes; private host context owns qualified host facts; a separate
+private custody-placement value owns both normalized staging and results roots
+from the same snapshot. The results root is outside the semantic plan, runtime
+host context, provider job and future `PlanBinding` input. After successful
+resolution, Submit assigns one locator, claims an exclusive descriptor-held run
+root, materializes captured bytes, validates the complete expected tree before
+the one Nomad registration, and returns the existing receipt. This capture is
+not a guarantee against unsynchronized concurrent mutation of caller or config.
+
+**Bounded static-script payload interpretation refinement:** admission inspects
+exactly one effective regular top-level `entrypoint` in the signed compressed
+payload. ES trims surrounding pathname whitespace and cleans slash-separated
+tar paths; a lone normalized alias remains supported. All members share one
+canonical destination namespace. Duplicate regular destinations, even with
+identical bodies, file/directory conflicts (including implicit parents),
+traversal, links and special entries reject. The policy scanner completes the
+archive before allowing, retaining the 256 KiB compressed-input, 64 KiB text
+and 64-entry bounds and adding a 16 MiB whole-decoded-stream bound including
+headers, skipped bodies and trailing bytes. Nonzero decoded tar trailing bytes
+and additional compressed gzip members/bytes reject. Runtime extraction applies
+the same namespace and stream-tail rules and refuses existing destination
+replacement before launch; it does not require a top-level entrypoint for
+generic extraction. This narrows duplicate/ambiguous archive compatibility;
+failure may leave earlier extracted temporary files, which cannot launch after
+preparation fails. No payload rewriting, nested archive inspection, rollback,
+public grammar, or policy-language change is selected. This source repair does
+not constitute independent audit or native runtime qualification.
+
+**Bounded static-script sparse and destination correction:** GNU sparse file
+representations are unsupported: the old GNU sparse type and any effective
+header carrying a `GNU.sparse.*` PAX record reject in the shared ES archive
+layer before logical file-body reading or runtime destination creation. This
+includes recognized 0.0/0.1/1.0, all-hole, and unknown sparse metadata; it
+does not reject ordinary PAX/GNU long names. The 16 MiB policy decoded-stream
+budget counts gzip-emitted tar bytes, so sparse-generated logical hole bytes
+must never reach the policy body discard. Go's tar `Next` can parse bounded
+sparse metadata before ES sees the header; this rule does not claim to prevent
+all internal header-parsing work. Runtime does not acquire a generic 16 MiB
+archive cap. For every supported effective tar name, ES trims the raw name once,
+then cleans slash-separated components once. The resulting canonical name is
+used unchanged for both namespace registration and runtime destination
+resolution; component whitespace exposed by cleaning is significant. Thus
+`./ entrypoint` resolves to ` entrypoint`, distinct from `entrypoint`, while
+true aliases and duplicate destinations still reject. This narrows sparse
+input compatibility and repairs the runtime-only second normalization without
+changing signed payload bytes, policy scope, Submit order, or the post-admission
+execution/placement snapshot boundary. Native final-source qualification was
+pending at this source-correction stage; the 2026-11-13 disposition below
+records the later selected-native evidence.
+
+**Review-19 A2/composition source disposition:** the fresh independent
+Review-19 audit accepted the bounded archive interpretation, material capture,
+and focused composition source interaction with disposition
+`A2_AND_COMPOSITION_SOURCE_ACCEPTED_RUNTIME_GATES_OPEN`. This is source scope
+only. The accepted production bytes do not inherit historical native proof,
+qualify installed mounts, or close the distinct deployment, key, capacity,
+retention, final-acceptance, or reliable-submit gates.
+
+**Review-20 bounded qualification-fixture refinement:** a native-only sibling
+subsumes the existing governed mount/lifecycle fixture's assertions while
+preserving that fixture's portable capability coverage. The sibling adds a
+test-owned single-host installed-source identity witness. It holds the
+selected staged directory and synthetic regular
+file before the unchanged Nomad registration is forwarded, then correlates the
+one run, job, task, allocation and Docker container while a bounded synthetic
+workload barrier keeps that container alive. The witness must establish a common
+host/container backing-filesystem identity domain before comparing held and
+container-visible directory and file coordinates, exact visible source binding,
+type/owner/mode, read-only destination, and synthetic content. Equal paths or
+bytes alone are insufficient. Modeled offline regressions do not claim an
+installed mount. Failure teardown attempts bounded barrier release or container
+stop and exact test-owned Nomad job cancellation when registration was captured.
+The native fixture remains unexecuted in Review-20; its later
+live result is evidence, not ES execution, lifecycle, policy, or acceptance
+authority. The separate running-deployment observation and all other gates
+remain open. No production behavior or provider contract changes are selected.
+
+**Review-21 bounded qualification-fixture correction:** Review-20 source review
+identified three test-only control-flow gaps, not live reproductions. The
+synthetic workload now acknowledges readiness only after supervisor preparation
+has finished, and a bounded observer reads that fixed acknowledgement inside
+the admitted governed container before observing the mount or writing release.
+Docker selection is only a candidate: exact immutable ID, running state,
+allocation label and task label must match before adoption or any container
+exec, release or stop effect. The witness uses bounded selected-field Nomad job
+and exact-allocation terminal reads with fixed safe failures; it never falls
+back to raw Nomad logs, response bodies, task messages or full allocation
+formatting. Failure cleanup may stop only an admitted container, may release
+only after readiness, and may cancel the exact captured test-owned job. A
+successful control request does not prove task or container absence. Anchor,
+ready, installed-object observation, release and terminal times remain distinct.
+The test-only evidence projection uses `test-mounted-source-identity/v2` to
+record those distinct times and the readiness-qualified hold interval.
+The repair is test-only and leaves the native fixture unexecuted; focused
+artifact review and independent assessment remain prerequisites to live use.
+
+**Review-22 test-owned task-label prerequisite correction:** the supplied
+Review-21 bounded native report records separate linux/amd64 N1 A2, N2
+syscall/custody/result, and N3 authenticated-HTTP passes, then one N4 refusal
+at Docker candidate admission. It reports no native v2 installed-identity
+record; N5 and linux/arm64 did not run. Its post-run selected-field observation
+found a new allocation-labeled container without
+`com.hashicorp.nomad.task_name`, but the fixture did not preserve the selected
+candidate ID, so exact historical ps-to-inspect attribution remains open. The
+native package and failed-run state remain unchanged, and these statements are
+supplied report claims pending independent package inspection. Review-22
+refines only the fresh N4 test-owned Nomad agent: its Docker plugin explicitly
+requests `extra_labels = ["task_name"]` while retaining enabled volumes and
+disabled image cleanup in one unambiguous witness profile. Default harness and
+capability-probe agents retain their existing configuration. The label must be
+derived by the task driver from its task identity; ES registration and job
+construction do not supply it. The observer still requires the actual immutable
+container ID, running state, allocation label, and task label before adoption
+or any container effect. Offline config and modeled tests cannot prove that a
+native agent emits the label or that the installed mount has the held backing
+objects. Focused artifact review and independent assessment precede a separately
+authorized native retry; running-deployment, key, retention, architecture, and
+final acceptance gates remain open.
+
+**2026-11-13 Review-22 development-source disposition:**
+`DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED` applies to the exact Review-22
+implementation in the 1,480,369-byte source archive with SHA-256
+`3e89fa9e0b7cc788e2b6c829ea25af00ea6a37b57f249e84d2b98c918511ad65`
+and canonical source manifest SHA-256
+`d108e59ed5a9708bfd38c08f0d9202263fb5207e1d6522772181421ddd4b718d`.
+Review-19 A2/material-capture and focused composition source acceptance is
+preserved by the unchanged production implementation. Review-21/22 fixture
+and task-label source acceptance belongs to the fresh test agent, not a
+production Nomad label guarantee. This documentation-only successor retains
+those implementation bytes; its new all-file manifest was not executed in the
+historical native runs. The lifecycle contract below owns the meaning and
+limits of this development evidence disposition.
+
+The selected native programme is complete on linux/amd64 and linux/arm64
+under its original source and command identities: N1 recorded 13 top-level
+passes/227 subtests/4 package passes per environment; N2 12/13/1; N3 2/0/1;
+N4 1/0/1 plus a validated native-live v2 installed-source witness; and N5
+1/0/1 plus retained-result observations. These are ten selected environment
+selections, not the full app/root suite or general platform support. amd64
+N1-N3 retain their original Review-21 records without invented command IDs;
+amd64 N4 retains its original Review-22 Go pass and external validator exit 1
+alongside accepted exact-record reconciliation, not a rerun; amd64 N5 retains
+its original accepted Review-22 result. arm64 N1-N4 retain their accepted
+launch-accounting session. arm64 N5 is accepted as
+`REVIEW22_ARM64_N5_EVIDENCE_ACCEPTED_SELECTED_NATIVE_PROGRAM_COMPLETE` for
+command `r22-20261113-arm64-n5-71ce04a8` and the 860,160-byte safe package
+SHA-256 `81538e93a2f8ba6017c73edd356ca82f137c6eb6bf1a95463b7d8dda62ad9f9b`.
+Its selected records remain bounded supplied-record evidence; post-N5
+recursive allocation was intentionally unmeasured. Older NOT_RUN selections,
+validator failures, resource/baseline refusals and the unknown first entry in
+the old resource refusal remain historical facts. Process status remains
+PARTIAL, including earlier privilege/Docker and Git procedure exceptions,
+inherited source assumptions, nonblocking observations, the non-green root
+diagnostic and its limited selected-assertion comparison, and missing Review-08
+runtime records. No all-green suite or universal absence of provider effects
+is claimed.
+
+Review-17's accepted 23-phase supported-local compatibility proof applies
+only to its original source and inputs. It is not a Review-22 canonical run,
+real upstream Codex proof, running-deployment or actual key-isolation
+observation. Later source and native evidence has its own scope; neither proof
+inheritance nor a repeat follows automatically without a concrete unaccepted
+interaction for a selected operational claim.
+
+**Bounded material and custody rules:** dependency JSON and admission-policy
+payloads are each limited to 256 KiB; primary Submit payload to 32 MiB;
+per-mount compressed transport and extracted regular-file bodies to 8 MiB,
+with 32 MiB aggregate limits for each; complete decompressed tar streams to
+16 MiB per mount and 64 MiB aggregate, including headers and trailing bytes;
+runtime support to one stable no-follow regular file of at most 32 MiB;
+normalized Vault and selected system CA inputs to 256 KiB each, with a combined
+bundle limit of 524,289 bytes. These are per-submission limits, not a global
+capacity or concurrency guarantee. Configured staging and results roots require
+component-wise no-symlink qualification, distinct non-overlapping backing
+objects, and startup behavioral capability checks when Submit is configured.
+A genuinely Submit-disabled service does not acquire run or staging effects.
+`BRINGUP_PROFILE=prepare-only` skips submit readiness and run effects, but the
+canonical generated service remains Submit-configured and still performs key
+loading and root capability qualification before listening.
+Root claim refuses every pre-existing object and never chowns, chmods, adopts,
+recurses through or deletes it. Two missing roots under the same deepest
+existing lookup context reject before provisioning; roots with provably
+disjoint existing parents may be created one component at a time with the pair
+requalified after each creation. Cleanup may remove only an exact object whose
+operation ownership is provable at the deletion effect; pathname reuse is
+insufficient. Incomplete staging leaves, unpublished result temporaries and
+normalization temporaries are retained when that proof is unavailable.
+Current capability-probe names lack an atomic exact-object unlink proof, so
+their small exclusive fixtures also remain under the configured roots after
+startup validation; capacity impact is still an acceptance issue. No cleanup
+scans or recurses. Materialization preserves each validated archive
+component name, including whitespace inside a component. Complete-tree handoff
+validation keeps its live descriptor count independent of sibling breadth.
+Result access reopens staging read-only, and existing result directories and
+evidence are validated without metadata repair.
+
+**Review-06 MOUNT-READ-01 bounded slice refinement:** governed runtime mounts
+have a distinct workload-visibility policy. Their complete mount subtree uses
+normalized `0755` directories, `0644` non-executable regular files, and `0755`
+executable regular files, while ownership remains with the selected execution-
+platform state owner. Only executable intent survives archive-mode
+normalization; setuid, setgid, sticky and arbitrary archive bits do not.
+The claimed run root remains `0750`, so its host ancestry still prevents
+unrelated users from traversing the mount subtree. Payload, runtime-support,
+platform, trust, result-auth and other non-mount staging retain their private
+modes. The Nomad/Docker governed bind remains read-only. Exact custody identity
+registration and complete-tree pre-dispatch validation still apply to the
+workload-readable mount modes. This source repair does not qualify actual
+Docker/Nomad mount topology or close the pending native runtime gates.
+
+**Review-07 CUSTODY-MODE-01 bounded custody refinement:** the independent
+Review-06 source/evidence audit returned `BLOCK` because complete-tree
+pre-dispatch validation compared only ordinary `0777` permissions against the
+recorded mode. A stable post-registration setuid, setgid, or sticky-bit change
+could therefore pass that comparison. The selected correction compares the
+recorded and observed Unix file type, ordinary permissions, and all three
+special mode bits exactly at expected-tree and claimed-root validation. It
+does not change mount materialization modes, private staging modes, object
+identity rules, ownership, provider submission, or cleanup authority. This
+candidate requires a fresh independent Review-07 re-audit; native runtime,
+mounted-topology, and deployment gates remain open.
+
+**Review-08 REGISTRATION-MODE-01 bounded custody refinement:** the independent
+Review-07 audit returned `BLOCK` on a registration-time gap. Newly created
+staging child directories and files were checked only for ordinary `0777`
+permissions after controlled ownership and mode operations, so a concurrent
+special-bit change could become the recorded expected mode and later pass the
+Review-07 exact-mode handoff check. Before each new child enters the expected
+tree, the post-creation descriptor stat must match the intended Unix file type
+and all `07777` mode bits exactly. A mismatch retains the claimed root and
+unregistered child without repair or deletion and prevents provider submission.
+Object-identity binding, governed mount and private creation modes, the
+Review-07 post-registration check, and cleanup authority do not change. This
+candidate requires a fresh independent Review-08 audit; native runtime,
+mounted-topology, and deployment gates remain open.
+
+**Review-09 PROOF-EVIDENCE-01 bounded proof-artifact refinement:** the accepted
+Review-08 source and native linux/amd64 fixtures do not qualify the remaining
+live supported-local proof. The existing proof wrapper copied the whole guest
+proof workspace into host `.out`, including `managed-secrets.conf`, private
+keys, SPIRE/Vault state, and workdirs. The runtime-identity example also emits
+the proof secret value in its raw logs, so raw execution logs are not safe
+evidence. The selected repair collects only explicitly classified top-level
+proof evidence, records a deterministic relative-path and SHA-256 manifest,
+uses a private `0700` host proof directory, and uses the same fail-closed
+collector on normal progress and failure finalization. Missing safe outputs may
+be omitted; selected unsafe types or excessive sizes fail collection without
+recursive fallback. The proof collector is evidence projection, not ES,
+Nomad, Vault, SPIRE, result-auth, or cleanup authority. The externally
+provisioned retained-result key remains outside proof-owned cleanup. The live
+supported-local compatibility proof and independent Review-09 audit remain
+open; this repair does not enable reliable submit or deployment.
+
+**Review-10 PROOF-RAW-OBS-01 / PROOF-RESULT-01 / PROOF-HOST-SCRATCH-01 /
+PROOF-GENERATION-01 bounded proof-artifact repair:** artifact review of the
+authenticated Review-09 candidate found that filename admission still copied
+raw Nomad/Docker/systemd observations and opaque result bytes, while a
+recursive host source snapshot and direct transcripts remained under host
+`.out`. The host proof directory is evidence-only. A separate task-owned
+private bootstrap scratch holds transport inputs and is removed only after
+identity-bound exact cleanup; failure to prove that cleanup retains scratch
+and reports the condition without widening deletion. The source snapshot uses
+guarded Git's tracked and non-ignored untracked source selection, including
+tracked `.out/Dockerfile`, with deterministic manifest and archive metadata;
+ignored or sensitive local files never enter it. Guest evidence is fixed-schema
+projection only: raw Nomad/Docker/systemd configuration, logs, response bodies,
+and retained result bundles are not host evidence. The controlled normal-shell
+bundle is checked against an exact bounded proof-only schema and represented
+only by hashes, sizes, and fixed assertions. Each guest collection publishes
+an exclusive setup, final, or failure generation; a complete final host
+manifest covers every other retained evidence file and explicitly excludes
+its own root record. This is a bounded slice rule
+refinement of proof artifacts, not ES/CP/Nomad authority. Live supported-local
+proof, independent Review-10 audit, deployment, and reliable-submit enablement
+remain open.
+
+**Review-11 PROOF-EXEC-STATUS-01 / PROOF-NODE-DETAILS-01 /
+PROOF-HOST-MANIFEST-01 / PROOF-RUN-LINEAGE-01 bounded proof repair:**
+source review of the authenticated Review-10 candidate found a deterministic
+second-capture collision on the base status projection, an aggregate-unbounded
+node-detail fetch with prefix-only URL admission, a host-manifest self-coverage
+overclaim, and missing retained run lineage. A labeled capture writes only its
+labeled summary, status, and execution projections, avoiding mixed base
+lineage after a partial second capture. It retains a validated public run ID, its derived
+Nomad job ID, and a bounded allocation ID with its labeled summary and fixed
+execution projection. An unlabeled capture alone may write the base status
+projection. Node details are fetched only from a precisely parsed loopback
+authority, with per-response and aggregate bounds and incremental fixed-count
+projection. The final host manifest is the root evidence record: its explicit
+self-exclusion field states that rows cover every other retained evidence file,
+and its bytes and digest are verified after writing. This is a proof-only
+bounded slice rule refinement with no ES source, runtime, result-authentication,
+public API, or reliable-submit authority change. Live supported-local proof,
+fresh independent Review-11 audit, deployment, and reliable-submit enablement
+remain open.
+
+**Review-12 PROOF-RUN-LINEAGE-01 exact-one allocation repair:** the independent
+Review-11 source audit blocked allocation lineage because the proof wrapper
+retained the first entry from `nomad job allocs -json` without a repository-backed
+ordering guarantee. Each unique supported-local proof job must have exactly one
+Nomad allocation before the wrapper observes that allocation and retains its
+bounded ID. Zero or multiple entries, a malformed entry, or an invalid ID fail
+closed without a Nomad execution projection, result validation, or proof
+success. Previously captured safe evidence remains eligible only for the
+exclusive failure generation, with the primary failure status preserved. This
+is a proof-only bounded slice rule, not a general Nomad retry, reschedule, or
+multi-allocation policy; it does not alter ES's internal allocation-selection
+policy. If multiple meaningful allocations become normal, the
+proof contract must be redesigned explicitly. Live supported-local proof,
+fresh independent Review-12 audit, deployment, and reliable-submit enablement
+remain open.
+
+**Review-13 PROOF-RUN-LINEAGE-01 strict-JSON allocation refinement:** the
+independent Review-12 source audit blocked the proof allocation parser because
+Python's default JSON decoder accepts nonstandard `NaN`, `Infinity`, and
+`-Infinity` constants in otherwise selectable allocation responses. The
+proof-only bounded slice rule requires strict JSON for the complete allocation
+list, including unknown and nested fields. Any nonstandard constant fails with
+the fixed safe allocation-list error before entry or ID selection, allocation
+observation, lineage publication, staging check, result validation, or proof
+success. Exact-one record count, order independence, duplicate refusal, and
+the fixed lineage projection remain unchanged. This refinement does not alter
+ES's internal allocation-selection policy, public contracts, runtime, or
+reliable-submit wiring. Live supported-local proof, fresh independent
+Review-13 audit, deployment, and reliable-submit enablement remain open.
+
+**Review-17 PROOF-RESULT-HANDOFF-01 bounded proof-consumer repair:** the
+Review-16 live supported-local proof passed both executions and captures but
+stopped at result-validation because the producer's private workdir result
+was never copied to the proof-root input expected by the consumer. The
+selected correction binds validation to the already captured normal-shell
+summary, its exact selected workdir and result path, and the matching fixed
+Nomad lineage. It requires successful terminal exit-zero result availability,
+positive bounded byte count, an unchanged original summary, and a stable
+regular single-link result reached through held no-follow directories. It
+then applies the unchanged exact proof bundle schema to those bytes and
+publishes only the existing fixed safe result projection. Missing or rejected
+input fails the existing result-validation phase and failure finalizer; no
+legacy alias or another workdir is selected. The synthetic producer-shaped
+regression no longer pre-creates the old alias. This proof-only bounded slice
+rule does not widen result authentication, execution, collection, cleanup,
+or cross-service authority. The historical live bundle was not inspected for
+schema acceptance; independent source review and a separately authorized
+live proof remain open.
+
+**Targeted source-review repair status:** R2 through R5 are bounded local
+corrections to the isolated candidate. R1 is selected for a candidate-only
+refinement of the reopened retained-result publication/read seam. ES must
+derive a compressed-byte commitment from its archive writer, retain the
+candidate descriptor through no-replace installation, verify the installed
+winner, and publish a private authenticated completion record. Every public
+result read must authenticate that record and the exact buffered response
+bytes before success. A pre-existing unmarked final, including a legacy or
+crash-interrupted final, remains unavailable and is never adopted by a later
+publisher. This is an explicit compatibility change, not a migration policy.
+The record is result-byte eligibility only; it has no lifecycle, Coordinator,
+caller-authorization or reliable-submit authority. The selected protocol and
+synthetic validation do not accept deployment key isolation, native Linux or
+mounted topology, power-loss durability, operational recovery, consumer
+acceptance, independent audit, commit, merge or rollout. R1 closure remains
+subject to implementation and validation of this selected rule.
+An already authenticated result/record pair satisfies later terminal
+observations before staging traversal or candidate creation, even when staging
+has changed or disappeared. A partial or invalid pair remains unavailable;
+only a genuinely absent pair permits publication. Publishers that have already
+prepared different candidates still follow the no-overwrite conflict rule.
+Configured Submit startup also qualifies natural `0750` result run-directory
+creation under its process mask, retaining its exclusive synthetic probe;
+failure refuses startup rather than repairing directory metadata.
+The isolated candidate's AUTH-01 exact-path correction also applies to
+transitive ancestry re-observation: a qualified key parent and descriptor
+presentation are reopened component for component, including whitespace in an
+ancestor. Configured execution-root normalization remains unchanged. This
+source correction does not close deployment key isolation or other acceptance
+gates.
+
+**Independent Review-03 audit status:** the completed audit returned BLOCK on
+supported-local configured-consumer compatibility (F1), contradictory current
+staging-retention wording (F2), and the syntactically accepted root-parent key
+path that the loader cannot open (F3). Review-04 selects a bounded repair:
+trusted operator setup inputs carry stable non-secret store/key identifiers and
+an external key-file reference to the generated ES config; no setup helper
+reads or provisions the key. The supported key-file path has a non-root parent,
+and key placement is lexically outside staging, results, and replaceable proof
+workspaces. Current unkeyed Submit retains every successfully claimed run root
+for all later outcomes. These changes refine configured-consumer compatibility
+and key-placement validation, not the result publication protocol. This repair
+requires new independent assessment and does not clear the audit BLOCK or the
+remaining acceptance gates.
+
+**Review-04 follow-up status:** source review found two remaining F1
+configured-consumer defects. The setup script's sourceability guard does not
+dispatch the wrapper's canonical `bash -s -- setup` stdin invocation, and the
+supported-local key-placement fence fails to reject a filesystem-root owned
+proof scope before the wrapper's later collection path. Review-05 selects only
+the entrypoint and lexical owned-scope repair: direct-file and canonical stdin
+setup dispatch exactly once, sourcing remains inert, and every declared
+proof/bootstrap/repository/collection scope must be a clean single-leading-slash
+non-root path before wrapper mutation or finalizer registration. Root and
+ancestor/descendant overlap must fail closed without key-path diagnostics.
+The Review-04 F2 retention and F3 key-parent fixes remain in force. Synthetic
+entrypoint evidence does not qualify a live guest, physical alias isolation,
+independent assessment, or any remaining acceptance gate.
+
+**Temporary compatibility edge:** every successfully claimed run root is
+retained, including partial materialization, failed or ambiguous registration,
+terminal success and failed result publication. This conservative interim rule
+avoids unsafe deletion but increases disk use and sensitive-material residence.
+No reclamation authority, garbage collector, TTL or cleanup command is selected.
+The operational capacity and reclamation gap must be resolved or explicitly
+bounded before rollout. The held descriptor and pre-dispatch validation do not
+by themselves prove the later Nomad/Docker host mount, and captured in-memory
+bytes are not durable replay custody. Image tags do not prove immutable image
+content. One Nomad registration per unkeyed Submit does not deduplicate retries.
+
+**Acceptance boundaries selected on 2026-11-13:** the development-qualified
+source foundation above is an evidence disposition for the exact authenticated
+implementation and selected observations. It is not final product acceptance,
+workload or feature/producer enablement, reliable-submit availability, general
+platform support, or approval of an unspecified environment. It grants no
+staging, cleanup, Git, integration, publication or deployment effect. Accepted
+source/native evidence retains its original identities and limits.
+
+A local source-preservation commit is a separate, explicitly authorized effect.
+It may be considered only after this governing amendment and focused document
+validation are reviewed and the exact candidate, index and intended commit
+contents are reauthenticated. This disposition does not authorize that commit.
+Integration into another checkout or branch, merge, remote publication and
+rollout require separate authority and applicable checks. A local
+`origin/trunk_dev` tracking ref is not current remote truth; PUB-GOV-01 remains
+unresolved. A production environment need not be selected merely to consider
+the later local preservation gate.
+
+Environment-bound operational/rollout acceptance remains open. Before expanded
+or unattended workload operation it requires a named environment and
+architecture; actual service/operator/workload trust and permission
+relationships; running mount/source paths and backing-object observations;
+actual key exposure and isolation, including aliases and relevant same-UID
+contexts; selected and enforced accumulated-root/result/probe capacity and
+sensitive-material residence bounds; and an explicit reclamation owner,
+authority and implementation or enforceable bounded operating disposition.
+When supported-local consumer operation is claimed, its current-source and
+environment interaction must be qualified. The temporary qualification
+scratch limits are not an ES product retention policy. Existing retained
+material stays protected and resident pending its own disposition. A separately
+scoped development/qualification task is not blanket operational permission,
+and none is granted here. Cross-compilation, Mac fixtures and a test-owned
+installed-mount witness do not observe a running deployment. A demonstrated
+missing prerequisite stops the affected scope; accepted evidence is not rerun
+by default without a concrete unaccepted interaction. The current runtime,
+startup, result-verification and reliable-submit-unavailable guards remain in
+force.
+Tranche B1, `ES-B1-SEMANTIC-OWNERSHIP-COMMAND`, refines that extraction
+foundation without beginning the later privacy/assurance tranche. The shared
+admission helper borrows the caller request, immediately deep-copies every
+mutable member, and applies a private Prepare-versus-Submit admission intent.
+That one admission-owned working copy is the only mutable authority for mode
+handling, schema defaulting, validation, and normalization. Successful
+admission returns one frozen authoritative request snapshot; immutable
+defensive transfer copies remain permitted and are not competing authorities.
+The caller retains ownership until that initial copy completes and must keep
+the request and every reachable mutable member race-free during the copy.
+Concurrent unsynchronized mutation during copying is a caller data race, not
+an ES synchronization guarantee. After the owned copy completes, later caller
+mutation cannot change admitted or submitted state, and downstream defensive
+copies do not create a second mutable authority.
+The helper also retains the exact workload-zone Vault config reference used
+for the successful blob fetch and auth-plan resolution. Submit then captures
+one immutable package-local configuration snapshot before resolving the
+artifact/runtime-profile gates, effective resources, primary payload,
+runtime-support bytes and identity, governed mount bytes and their single
+gzip/tar semantic parse, workload trust bytes, and finally the qualified
+platform-state owner. Successful return from that effectful read resolver is
+the freeze point. No run ID, staging directory, file write, ownership mutation,
+or Nomad call is allowed before it.
+
+The private `resolvedExecutionPlan` is admitted semantic truth. It owns request
+and invocation schemas, effective mode and timeout, CPU and memory, runtime
+profile identity and selected image, semantic profile and caller environment
+inputs, one typed runtime command, distinct artifact/payload/derivation/output
+identities, ordered governed mounts, network permission, current authority
+inputs, runtime-support digest, runtime-identity tmpfs size, and the fixed
+semantic job envelope. The payload digest comes only from the discovery/evidence
+relationship already cross-checked by admission; raw payload bytes remain
+owned material and ARS remains their integrity authority. Current authority
+handoff is unconditionally applicable for every admitted Submit; no plan-level
+applicability degree of freedom remains, while the Codex credential-location
+subcomponent remains genuinely optional.
+
+Separate private material owns payload, runtime-support, compressed/parsed
+mount, normalized Vault CA, and combined trust-bundle bytes. Captured host
+context contains only normalized qualified values: the cleaned absolute
+staging root, qualified numeric owner, cleaned absolute SPIRE source directory,
+and trimmed non-empty Nomad datacenter. The results root is trimmed, cleaned,
+and required absolute for current ES service/custody qualification, but remains
+outside the semantic plan, captured host context, provider-job projection, and
+B1 binding. The semantic plan owns none of those placement facts and owns no
+run/job identity, owner-derived environment, endpoint URI, staged path,
+workspace path, or other derived host/run path. After freeze, current Submit assigns one locator and derives one
+run projection from the semantic plan plus captured host context. That
+projection adds run/job identity, owner/run/endpoint environment, host and
+staged mount sources, datacenter, endpoint, and derived paths. It then claims
+the run-scoped staging root exclusively as its first filesystem mutation,
+materializes only captured bytes, builds the authority handoff and provider job
+from typed projections, calls Nomad once, and returns the unchanged receipt.
+The executable and complete supervisor arguments are represented by one
+private `resolvedRuntimeCommand` constructed exactly once before freeze; the
+execution-package layout does not implement a second command grammar.
+
+The semantic plan is admitted semantic truth only. Semantic-plan equality
+across qualified host contexts proves admitted-semantic equality only. It does
+not prove provider-job, dispatch, replay, restart, safe-host-substitution, or
+provider-effect identity because captured host context and run/provider
+projection add additional execution-shaping facts. Future `PlanBinding`
+work must explicitly select whether and how those facts are bound. B1 selects
+no canonical encoding, witness, replay, restart, or host-context binding
+treatment. B1 protects successful behavior with an unmodified actual job tree,
+one source-distinct complete literal default-profile expected Nomad job, a
+direct pointer-owned token/template ledger expanded only in the expected tree,
+and a separate literal authority-handoff expected object through real
+`Service.Submit`. A finite package-local direct-call closure plus exact
+source/type producer, mutation, validation, payload-projection, and metadata
+inventories protect this B1 shape. Those guards are not whole-program
+noninterference or general alias, taint, SSA, or interprocedural analysis.
+Tranche B2, `ES-B2-PRIVACY-INDEPENDENT-ASSURANCE`, now completes the bounded
+privacy and independent-assurance refinement without reopening B1 semantic
+ownership. Public error serialization retains the existing route, HTTP status,
+error code, DTO shape, field names, precedence, and successful behavior while
+the five selected operational-cause families use only these fixed messages:
+`workload-zone vault configuration is invalid`,
+`derive execution host context failed`,
+`stage workload vault trust material failed`,
+`derive execution platform state owner failed`, and
+`execution submission failed`. Nomad non-success bodies and underlying causes
+are not public or ordinary-log diagnostics. The three governed result-retention
+calls emit only `es result retention failed run_id=%s` with the validated public
+run ID.
+
+Submit registration, projected-allocation list, and allocation-detail JSON use
+the existing 256 KiB transport boundary and one compatible JSON document;
+unknown provider fields remain accepted. `fetchJob` remains explicitly
+unbounded but one-document because current admitted caller-environment
+aggregates are unbounded and Nomad job summaries echo `Task.Env`. Successful
+authenticated public Logs remain unbounded opaque workload-output bytes and are
+not structured provider JSON. B2 therefore selects neither a universal
+provider-response limit nor a public Logs byte/oversize policy.
+
+`preparedAdmission` carries the private formatter marker as its first anonymous
+field, redacts ordinary formatting and formatted standard-library logging to
+`<private execution value redacted>`, and remains `{}` under ordinary
+`encoding/json`. This is bounded defense in depth, not reflection, `unsafe`,
+malicious same-package, arbitrary-serializer, secure-erasure, or authorization-
+to-log protection. A second complete source-distinct direct literal job and
+authority-handoff golden covers `control-plane-normal-shell/v1` through real
+`Service.Submit`; it is ES profile-coverage evidence, not a snapshot of the
+current Control Plane request or a transfer of CP authority. The rejected
+2.9 MB position-indexed B2 guard is not accepted assurance and is replaced,
+not repaired or rolled back. Permanent B2 assurance is behavior-first; the
+structural part is local, directly authored, and position-independent; and
+non-purging cancellation is enforced by a private construction that has no
+purge option. Its compact inventory freezes the current public execution JSON
+fields and the Nomad response fields production consumes without rejecting
+unknown incoming provider fields. The `preparedAdmission` checks cover only
+ordinary formatting, formatted standard-library logging, ordinary JSON,
+marker placement, and field visibility. The `fetchJob` and authenticated
+public Logs exceptions remain exactly as selected above.
+
+Open-world source-flow and test-honesty questions remain fresh-audit
+obligations. Provenance proves byte identity only. No positional records,
+replacement-output workflow, package source graph, source fingerprint,
+generated inventory, or general analyzer is selected. Permanent tests do not
+claim arbitrary alias/helper-flow detection, coverage of custom logging sinks,
+arbitrary same-package aggregate conversion, whole-program noninterference, or
+whole-runtime reliable-submit nonwiring. The accepted B1 guard remains intact.
+Reliable keyed-submit runtime remains unwired; the private foundation remains
+present, current public Submit remains unkeyed, and native Linux runtime
+validation of the combined candidate remains pending.
+
+The opened parent and root identities remain
+held through complete expected-tree revalidation immediately before that one
+handoff. For every registered directory, that revalidation opens a fresh
+independent directory description at position zero, revalidates its identity,
+and reads entries incrementally one at a time from that fresh description.
+Invocation-local expected ownership is a hierarchy: the root owns its
+direct-child map and every expected directory owns only its direct children.
+Each parent-to-child edge owns its segment bytes and identity once; no node or
+secondary index retains cumulative ancestor paths. Construction is linear in
+traversed path-segment occurrences, retained variable data is linear in unique
+edge-segment bytes plus expected nodes, and validation uses the expected tree
+plus one fixed read batch. Each observation is processed immediately and
+validation stops after at most the expected-child count plus one observed
+entry, so it never materializes or sorts the complete untrusted directory
+inventory. These are structural bounds, not exact Go heap, allocator, stack,
+descriptor, RSS, or secure-erasure claims. Each expected object's no-follow
+identity and policy is revalidated.
+Missing, replaced, malformed, duplicate, or unexpected descendants fail before
+Nomad without disclosing an unexpected child name.
+Regular expected children require link count exactly one; expected directories
+require a positive link count because their link count may grow as their
+expected child directories are materialized.
+This is completeness validation for the current operation, not residue
+discovery, adoption, cleanup, quarantine, or reclamation. Every post-claim
+return closes descriptors and retains the visible run root; this custody rule
+is not reliable-submit runtime wiring.
+
+The selected Tranche A filesystem/resource-custody refinement governs the
+following bounded slice rules without beginning the later semantic-plan repair:
+
+- ES bounds discovery, evidence, workload-zone runtime-config, and trust-model
+  dependency JSON bodies to 256 KiB each before strict decoding.
+- The Admission Policy Layer payload remains bounded to 256 KiB; the primary
+  Submit payload is bounded to 32 MiB.
+- Governed mount transport remains 8 MiB per mount and 32 MiB aggregate.
+  Extracted regular-file bodies remain 8 MiB per mount and 32 MiB aggregate.
+  The complete decompressed tar stream is additionally bounded to 16 MiB per
+  mount and 64 MiB aggregate before `archive/tar` parsing so headers, PAX/GNU
+  extension records, names, padding, bodies, end records, and trailing
+  decompressed bytes share one budget. There is no separate ES 4096-entry or
+  4096-byte-name rule.
+- Runtime-support capture is limited to one stable no-follow regular file of at
+  most 32 MiB. Normalized Vault and selected system CA inputs are each limited
+  to 256 KiB; the combined bundle is limited to 524,289 bytes.
+- Configured staging and results roots are qualified component-by-component
+  without symlink traversal. Submit exclusively creates the descriptor-held
+  run-root name and refuses every pre-existing object type. It never adopts,
+  mutates, quarantines, renames, or recursively deletes a pre-existing run
+  root. General residue discovery and cleanup scanning remain prohibited. The
+  sole enumeration exception is the bounded operation-local direct-child
+  completeness check immediately before handoff; it neither follows nor
+  changes an unexpected entry.
+- Once exclusive run-root creation succeeds, the visible root is retained on
+  every return, including partial materialization, failed or ambiguous Nomad
+  registration, successful registration, every terminal lifecycle state, and
+  every result-publication outcome. Descriptor-close errors do not replace a
+  primary failure or convert an accepted registration into a public failure.
+- `openStagingTree` may reopen a retained root read-only solely for result
+  packaging. Its handle exposes verification, read-only directory opening, and
+  descriptor closure only; it grants no mutation, deletion, adoption, cleanup,
+  quarantine, lifecycle, or reclamation authority.
+- Incomplete exclusive leaves, unpublished result and normalization temporaries,
+  and exclusive startup probe fixtures remain when exact effect-time identity
+  for deletion cannot be proved. A pathname alone grants no cleanup authority.
+  No scan, recursive cleanup, or later residue-reclamation owner is selected.
+- Retained staging increases disk use, sensitive-material residence, capacity
+  pressure, and operator burden. Automatic whole-run-root reclamation is not
+  implemented; future reclamation requires a separately governed ES-owned
+  design and cannot be inferred from lifecycle or retained-result facts.
+- Retained-result publication constructs, validates, normalizes, and syncs a
+  complete temporary bundle, then publishes it with the existing platform
+  no-replace rename primitive. A conflict is idempotent success only after the
+  existing final object passes no-follow identity, owner, mode, link-count,
+  size, complete-digest, and stable-path validation; existing final objects are
+  never owner-reconciled in place.
+- Required local filesystem capabilities are probed by behavior at startup.
+  Linux uses beneath/no-symlink/no-cross-device opens and no-replace rename;
+  Darwin uses no-follow-any opens, exclusive rename, and device verification.
+  There is no runtime OS-label branch and no silent capability fallback.
+
+These limits and filesystem requirements are explicit compatibility/security
+changes. They do not change public DTOs, routes, current unkeyed Submit,
+command/argv, environment precedence, runtime-profile semantics, authority
+handoff, Nomad registration count, or successful receipt shape. The Tranche A2
+repair must receive a fresh targeted independent audit with no repair defect
+before the later Tranche B semantic/docs/assurance repair may begin. Native
+Linux validation was not inherited as a pre-B gate. Governed native Linux
+observation remains necessary for an operational claim about a deployment
+architecture: linux/amd64 for Remote Alpha and linux/arm64 for the
+supported-local profile. Cross-compilation is compile evidence only. These
+environment-bound lanes are not an automatic pre-commit condition for local
+source preservation or integration; a new bounded witness for this candidate
+requires a concrete changed-interaction selection.
+
+### Current paired-root custody and acceptance scope
+
+**Superseded CUST-1/CUST-2 gate history.** The earlier final-audit sequence
+allowed repository implementation and local validation before a running-
+deployment topology observation, then treated that observation, repaired-helper
+mounted fixtures, sequential native Linux lanes, and a fresh audit as blanket
+pre-commit gates. That pre-integration linkage is not a current local commit
+rule. The accepted predecessor tree supplies source evidence for this
+current-base candidate, which remains uncommitted and pending independent
+audit. It requires focused changed-interaction assessment and validation plus a separately authorized commit. C's selected native observations remain historical evidence
+for exact C source and command identities, not executions of this tree. Any
+new bounded witness must be selected for a concrete changed interaction rather
+than inferred from merge ancestry. Operational topology, key exposure,
+capacity, residence, reclamation, and publication gates remain open for their
+operational scope; none is waived by local source work. The one-time WIP
+checkpoint exception is consumed and supplies no authority here.
+
+**Current invariant — staging non-mutation and retained-output independence.**
+Result retention, publication, and read do not mutate a claimed staging root;
+result-side proof supplies no independent deletion or existing-object repair
+authority.
+
+**Bounded slice rule pending integrated review — paired-root qualification.**
+`execution.staging_root_dir` and `execution.results_root_dir` form one
+operation-local qualified root set. Lexical absolute/non-overlap validation is
+an early shape check, not physical proof. Before submit-enabled startup
+provisioning, Submit run-root claim, or current retained-result directory
+creation, new-object initialization, no-replace publication, and authenticated
+read/check, ES qualifies both configured paths component-by-component without
+symlink traversal and proves that they are neither the same backing object nor
+ancestor and descendant in either direction. Every named result operation uses
+the descriptor-held root that participated in a fresh visible-object and
+topology proof; ES does not validate one pathname and reopen an unrelated
+pathname for the operation. Pair proof is a prerequisite, not deletion or
+repair authority. Existing result directories, finals, and normalization
+evidence are validated without metadata repair or adoption.
+
+Linux binds each held descriptor to `fstat`, a complete
+`statx(AT_EMPTY_PATH)` identity including `STATX_MNT_ID`, a no-follow rewalk of
+its `/proc/self/fd` canonical presentation, and the uniquely selected record
+from a stable, at-most-8-MiB/65,536-record `/proc/self/mountinfo` acquisition.
+Mountinfo record integrity is separate from root-coordinate eligibility. Every
+bounded record retains its filesystem type, absolute component-clean
+mountpoint, parent/stack relationships, and classified root value. Ordinary
+canonical pathname roots are coordinate-eligible. An `nsfs` root with the
+source-grounded namespace-object envelope `<kind>:[<canonical decimal inode>]`
+is retained as opaque, where `<kind>` is exactly `mnt`, `net`, `uts`, `ipc`,
+`pid`, `user`, `cgroup`, or `time`; the decimal label is structurally checked
+but not numerically interpreted or given a separate ES width limit.
+`pid_for_children` and `time_for_children` are not root kinds because the
+kernel's namespace-object rendering uses their canonical `pid` and `time`
+operations. Malformed `nsfs` labels and every other non-path root class reject.
+Opaque records still count toward byte/record limits, ID and parent/cycle
+integrity, stacking, and canonical descendant-mount checks. If descriptor
+selection names an opaque record, proof refuses before device shortcuts,
+coordinate arithmetic, or any governed effect; ES never prefixes `/`, joins,
+cleans, substitutes the mountpoint for, or otherwise converts that label into
+a directory coordinate. This recognition does not make `nsfs` a supported
+configured execution-root filesystem.
+Source coordinates derive from the selected record and canonical descriptor
+presentation, never configured spelling. Equal or component-prefix
+coordinates reject; component-disjoint coordinates, including provable sibling
+bind sources, are accepted. The parser permits one unambiguous `/` top-of-tree
+self-parent terminal and parents hidden outside the process view, while
+rejecting duplicate IDs, nontrivial cycles, non-top self-parent records,
+malformed escapes, incomplete identity masks, device disagreement, unstable
+snapshots, ambiguity, and canonical descendant mounts. Darwin binds
+`F_GETPATH`, no-follow descriptor identity, `fstatfs`, and bounded `getfsstat`;
+same-FSID distinct presentations remain unprovable and reject. Neither platform
+uses OS-label branching or a fallback proof.
+
+Missing suffixes are validated intent, not canonical objects. A first absent
+component must be observed as `ENOENT`. Two missing roots under the same
+deepest existing object, or otherwise dependent on comparing unobserved names
+in one lookup context, reject; canonically disjoint existing parents may
+proceed. Startup plans without mutation, provisions one descriptor-relative
+component at a time, and reacquires the pair after every component before any
+later effect. Submit acquires after freeze and reobserves immediately before
+the exclusive staging claim. Retained reads may serve an existing bundle when
+staging or its run is absent, but never provision a missing results root and
+never turn a topology failure into Nomad fallback. Result-side operations use
+a fresh pair at each current named directory creation, new-object metadata
+initialization, temporary creation, final/record publication, and authenticated
+read/check boundary; bytes streamed through an already-held descriptor do not
+rescan topology. New unpublished result temporaries/records and newly created
+normalization evidence may receive their selected owner and mode through
+`Fchown`/`Fchmod`. Existing objects are checked without metadata mutation or
+adoption. Incomplete leaves, uncertain unpublished temporaries, and startup
+probe fixtures remain retained where exact-object cleanup ownership is
+unproved. No result pathname cleanup or whole-root reclamation is selected.
+
+The mount-archive namespace validator uses one invocation-local iterative
+compressed byte-radix ledger. Labels are substring views into retained
+normalized entry names, branching is byte-keyed, ancestry is recognized only
+at `/` boundaries, and commit follows all fallible per-entry work. It retains
+existing namespace/error precedence and the 16/64-MiB complete decompressed-
+stream budgets without adding an ES name or entry cap. Reachable PAX/GNU and
+32,768-header EOF cases exercise production probe/commit counters. The pinned
+`archive/tar` implementation's 1-MiB hidden special-file processing ceiling is
+dependency behavior, not an ES resolved-name or entry-count policy.
+
+**App-fixture migration and local revalidation scope.** The positive app
+integration stack closes its test-fixture `Temporary compatibility edge` by
+exclusively creating exactly two independent, empty execution-root directories
+before `esapp.New`. Regression coverage must prove their configured paths,
+directory type, distinct filesystem identity, current test-owner identity,
+expected mode, and emptiness. This is a fixture refinement that aligns positive
+integration paths with the dual-root `Current invariant` and active `Bounded
+slice rule`; it does not relax dual-missing rejection, pre-create a run object,
+or change production admission, provisioning, custody, or capability behavior.
+The correction is confined to the shared constructor in
+`es/app/submit_integration_test.go`; pre-edit inventory found no identical
+direct-construction defect in another app test.
+
+The corresponding external validation runner must use short, unique,
+mode-`0700` lane scratch roots under `/private/tmp` and preserve the inherited
+umask. This removes runner-created Unix-socket pathname inflation without
+changing `TestProofCodexShimAcquiresCredentialAndMutatesWorkspace` or widening
+its capability skip. Passing local app, admission, default, physical-temp, and race lanes does not
+qualify an operational deployment or turn C's historical native observations
+into integrated-source execution. Running-deployment topology, key exposure,
+capacity, residence, reclamation, publication, and claimed-architecture native
+witnesses remain operational gates. A new integrated-source bounded witness is
+selected only for a concrete changed interaction; these gates do not
+collectively become a blanket local pre-commit requirement.
+
+**CUST-2 nsfs assurance continuation.** The current continuation is a bounded
+test-assurance refinement only: it may align the explicit Linux post-freeze
+semantic-call ledger with the already documented nsfs implementation and may
+replace the proof-Codex test's caller-temp-derived Unix-socket path with a
+unique, owner-only, test-owned short physical fixture beneath `/tmp`.
+Production nsfs behavior, capability policy, lifecycle contracts, credential
+flow assertions, and all external gates remain unchanged. Allocation and
+listener failures in that required local test fail rather than masquerade as a
+capability skip. After a single freeze, validation remains ordered local
+default, local physical-temp, local race, native linux/amd64, then native
+linux/arm64. One distinct successor generation is allowed only after closing
+and preserving a causally demonstrated defect confined to the authorized test
+expectation, socket fixture, or minimal validation plumbing; at most two final
+generations may run, unchanged failures are never retried, and no earlier pass
+is credited to changed bytes. This continuation does not pass or waive the
+running-deployment observation, mounted-topology fixtures, supported-local
+consumer/operator proof, fresh independent audit, or exact-byte publication
+authority.
+
+This foundation does not select or implement canonical effective-plan
+encoding, `PlanBinding`, a complete effective-plan witness, durable material or
+replay-envelope custody, host-context replay treatment, mutable image-content
+identity, state-path configuration, TTL, public reliable-submit vocabulary,
+HTTP or recovery routes, Nomad ambiguity reconciliation, reliable dispatch,
+Coordinator integration, or cross-repository behavior. It must not synthesize
+`PrepareRequest` or `Manifest` proof from the plan, create a parallel admission
+engine, silently tighten the current empty-environment-allowlist contract, or
+infer authority-handoff inapplicability contrary to current `Submit` behavior.
 
 The `reliable-submit-durable-same-operation-replay-repair` source tranche is
 implemented inside the private durable source and remains required before
@@ -295,9 +1210,12 @@ ergonomics, then narrowly reviewed delegation to existing staged helpers, and
 only later any secret-sensitive reset/unseal routing after reset-helper tests
 and audit. It must not widen ES public contracts, CP orchestration semantics,
 IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault
-token brokerage. It must preserve Remote Alpha as bounded proof/support
-posture only, preserve existing IM-consumed artifact filenames, and keep any
-operator summary as non-secret evidence/projection rather than a v1 IM input.
+token brokerage. ES product architecture leads: an implemented Remote Alpha
+operator compatibility surface is not thereby an ES product invariant. The
+facade must preserve Remote Alpha as bounded proof/support posture only and
+must preserve unrelated IM-consumed artifact filenames, but obsolete facade
+parsing, aggregation, discovery, staging, and projection compatibility may be
+retired explicitly rather than preserved by inertia.
 The objective is one repo-supported ES operator facade/workflow/script that
 minimizes manual stitching, copying, and recovery sequencing across bounded
 operator work. Operator involvement is expected and allowed: success does not
@@ -317,110 +1235,69 @@ run IM collection commands, stage generic remote helpers, invoke sudo or SSH,
 perform Vault reset/unseal behavior, add Vault workload-auth bootstrap, or
 write generated artifacts.
 
-The P0c design/static-test prep slice is also docs/static-test only. It may
-record the first staged-helper delegation boundary for a later implementation
-slice and add static refusal assertions, but it must not make
-`scripts/remote_alpha_operator.sh` delegate yet. The selected first future
-delegation target is the existing ES writable-state readiness staged wrapper,
-`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`, exposed
-later as the proposed operator subcommand `es-writable-state-readiness-check`.
-That future route is limited to check-only/non-mutating readiness evidence:
-`--apply` is forbidden in the first delegation slice, no reset/unseal, Vault
-workload-auth, runtime-identity, service-user migration, config/TLS apply,
-binary deployment apply, generic remote staging, arbitrary shell passthrough,
-or new aggregate operator summary is allowed, and the exact existing
-Infrastructure Manager-consumed filenames `es-writable-state-readiness.json`
-and `es-writable-state-readiness-helper-staging-record.json` must be
-preserved. The future route must reuse the helper's existing minimal staging
-and sudo model, including noninteractive `sudo -n` preflight by default and
-explicit `--interactive-sudo` only for a visible terminal. The facade may
-continue to print IM commands only; it must not call IM.
+P0c, P0d, and P0f are now retired compatibility history. The
+`es-writable-state-readiness-check` and `readiness-session` operator routes no
+longer inspect or contact a host and no longer produce or refresh evidence.
+Their underlying six public wrappers remain only as compatibility delegators
+to fixed exit-2 tombstones. Selecting a future diagnostic or existing-host
+migration contract is a separately governed decision; this plan does not
+define one. The global privacy prefilter is the first argument-sensitive
+operation for the retired operator routes. Argument classification occurs
+before script-directory canonicalization or helper-path initialization, so a
+privacy or stale-route refusal performs no file access, host inspection, or
+helper execution first.
 
-The P0d implementation slice is limited to exactly that one check-only route:
-`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`. The route
-must require an explicit `--ssh-target`, accept only the P0c allowlisted helper
-flags, reject `--apply`, `--dry-run`, unknown flags, unknown positional
-arguments, duplicate route flags, and secret-like arguments before helper
-execution, and delegate only to the public staged wrapper
-`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`. It must not
-source helpers, invoke `scripts/internal/*`, construct helper paths from user
-input, add generic staging or helper routing, call Infrastructure Manager,
-create an operator-owned summary, rename helper artifacts, or add any reset,
-unseal, Vault workload-auth, runtime-identity, service-user migration,
-config/TLS, binary deployment, or writable-state ownership route.
+### Current Remote Alpha operator evidence-compatibility cutoff
 
-The P0f combined slice may fold in the P0e help/inventory wording alignment
-and add one bounded workflow subcommand:
-`scripts/remote_alpha_operator.sh readiness-session`. This command is an
-operator-workflow consolidation over the already approved writable-state
-readiness route, not a live validation slice and not a new authority source.
-It must minimize manual stitching without implying zero operator involvement:
-the human remains the operator, explicit interactive sudo remains allowed only
-when named, bounded, visible, and secret-safe, and noninteractive sudo remains
-an ergonomic optimization rather than a universal success criterion. The
-session must require an explicit `--ssh-target` for execution, accept only its
-own allowlisted flags, delegate only through the existing
-`es-writable-state-readiness-check` route/helper path, use a fresh
-run-specific output directory by default unless `--output-dir` is supplied,
-refuse pre-existing readiness or staging-record artifacts in the selected
-directory, verify the two expected artifacts after a successful route return,
-scan those artifacts for secret-like content before reading JSON fields, and
-print only non-secret metadata such as paths, byte counts, SHA-256 digests,
-schema names, blocker/warning counts, and sudo/checker status. It must not run
-Infrastructure Manager, support-bundle collection, sudo, SSH, Vault, Nomad,
-Docker, SPIRE, `systemctl`, reset/unseal flows, or live validation except
-through the intentionally invoked readiness route. It must print IM refresh and
-support-bundle commands as follow-up evidence/provenance instructions only,
-write no operator summary file, preserve the existing IM-consumed artifact
-filenames, and add no generic helper dispatch or additional Vault, reset,
-unseal, runtime identity, service-user, config/TLS, binary, or writable-state
-ownership route.
+The former P0g evidence-ingestion surface and the P0n/P0r facade staging and
+aggregation routes are superseded compatibility history. The live operator no
+longer parses, validates, interprets, aggregates, discovers, stages, or projects
+the runtime-identity helper summary, Vault workload-auth summary, or Vault
+service-user summary families. Their retired routes, aliases, and flags fail
+through one fixed, path-free, non-echoing, effect-free refusal before file
+access or helper-path initialization; the global secret-option privacy
+prefilter remains first.
 
-The P0g combined slice may add one bounded safe/local recovery workflow surface:
-`scripts/remote_alpha_operator.sh recovery-session`. This command is a recovery
-sequencing skeleton plus local evidence-check only. Its supported safe modes are
-`--help`, `--plan`, `--inventory`, `--next-steps`, and `--evidence-check`; the
-default no-mode behavior must print the plan/help and exit zero without running
-live tools. `--plan`, `--inventory`, and `--next-steps` are print-only. IM
-refresh and support-bundle commands may be printed as separate
-evidence/provenance instructions only, never executed by ES and never described
-as authority. `--evidence-check` may read only operator-supplied local JSON
-evidence paths, require files to exist, scan for secret-like content before JSON
-parsing, compute byte counts and SHA-256 digests, parse JSON, and print only
-non-secret metadata such as path, byte count, digest, `schema_version`, and
-selected safe status/count fields. It must not print full JSON, create a
-session summary, write `.out`, inspect live host state, dispatch helpers, run
-sudo, SSH, Vault, Nomad, Docker, SPIRE, `systemctl`, Infrastructure Manager,
-support-bundle collection, CP proof, reset/unseal flows, workload-auth live
-checks, or runtime identity summary generation. It must reject `--ssh-target`,
-`--interactive-sudo`, `--apply`, `--dry-run`, `--execute-reset`,
-`--unseal-only`, `--post-unseal-check`, `--governed-smoke-command`, arbitrary
-command strings, helper path overrides, positional arguments, unknown flags,
-duplicate operational flags, equals-form options, and secret-like arguments.
-Unseal-existing, disposable reset, workload-auth check execution, runtime
-identity summary generation, and Vault service-user check/apply remain separate
-audited future slices. P0g must not add Vault token brokerage, IM authority, CP
-recovery authority, or Remote Alpha deployment/provisioning/reconciliation
-architecture.
+The three underlying producer families remain optional owner-local proof
+emitters under their separately documented contracts for this tranche. That
+tranche-local protection neither promotes them to permanent ES architecture nor
+creates an operator compatibility requirement. Their facade compatibility is
+not a Tranche B prerequisite and must not block core ES work. The cutoff does
+not retire or change runtime identity, SPIRE handoff, admission handoff, or
+workload-side Vault product behavior, and it introduces no replacement schema,
+adapter, projection, registry, v2 protocol, or Infrastructure Manager reader.
 
-The P0h combined slice may extend only
-`scripts/remote_alpha_operator.sh recovery-session --evidence-check` with
-schema-aware interpretation of known local evidence summaries. It remains
-local-only and may recognize the readiness summary, readiness staging record,
-Vault workload-auth summary, runtime identity helper summary, and Vault
-service-user migration summary schemas. Recognized schemas must use explicit
-safe-field allowlists and print only non-secret status, classification, boolean,
-count, schema, byte-count, and SHA-256 metadata. Unknown schemas are allowed by
-default with `schema_interpretation=unknown`; `--strict-known-schema` may fail
-unknown schemas. `--evidence-dir <path>` may inspect only direct expected
-filenames in that directory, report missing expected filenames as
-`not_supplied`, and must not recurse or write into the directory. P0h must not
-print full JSON, create a session summary, write `.out`, run live tools,
-dispatch helpers, run IM, support-bundle collection, CP proof, reset/unseal
-flows, workload-auth live checks, runtime identity generation, or Vault
-service-user apply. Schema interpretation is evidence/projection only and must
-not add IM authority, CP recovery authority, ES Vault token brokerage, or Remote
-Alpha deployment/provisioning/reconciliation architecture.
+The resolved-plan documentation-truth and finite-source-inventory obligation
+is now complete. Its accepted scope remains exactly: correcting the
+resolved-plan documentation truth and strengthening finite source inventories
+for expected-tree `ReadDir`, custody claim/materialization entry points,
+synchronized state, rejected A3 topology, and retired operator aliases. The
+authoritative closure inventory is recorded in
+`.docs/execution_lifecycle/es_execution_admission_model.md` and the exact
+operator compatibility inventory is recorded in
+`.docs/system_overview/remote_supported_host_alpha.md`. This completion changes
+no production custody or staging source and begins no additional Tranche B
+behavior.
+
+### Historical P0g evidence ingestion — superseded and non-authoritative
+
+P0g formerly supplied a safe/local recovery sequencing skeleton plus a bounded
+local evidence checker. Its no-follow file-reading, strict JSON, privacy,
+bounded-output, and non-authority rationale remains useful design history, but
+it grants no current facade ingestion or projection behavior and is not a
+compatibility promise.
+
+P0h's historical-v1 display is retired. The live operator no longer accepts
+`--readiness-summary` or `--staging-record`, discovers their historical
+filenames, recognizes the three retired ES schema identifiers, or publishes
+their schema, byte count, digest, or archived fields. Stale historical flags
+receive one fixed non-echoing refusal before file access. Archived v1 fixture
+and artifact bytes remain evidence only outside live operator behavior and
+grant no current authority.
+
+The former current-schema checker, its automatic evidence-directory discovery,
+and its safe-field projections are retired with P0g. No empty generic evidence
+parser or dormant compatibility registry remains in the facade.
 
 The P0i implementation/self-audit slice may add exactly one secret-sensitive
 `recovery-session` route:
@@ -585,8 +1462,10 @@ unseal, execute-reset, Infrastructure Manager refresh, support-bundle
 collection, CP proof, workload-auth live checks, runtime identity generation,
 or network-dependent integration tests. The P0k dry-run route remains the
 prerequisite/planning route, and P0m must preserve the existing P0k dry-run,
-P0i/P0j unseal-existing, recovery-session evidence/plan/inventory, readiness
-session, and writable-state readiness routes.
+P0i/P0j unseal-existing, and recovery-session evidence/plan/inventory behavior.
+The `readiness-session` and `es-writable-state-readiness-check` public names are
+preserved only as fixed effect-free compatibility tombstones, not as helper or
+readiness workflows.
 
 P0m's execute-reset route must require `--ssh-target` and
 `--interactive-tty`; `--execute-reset` without either must fail before staging.
@@ -620,8 +1499,12 @@ proof/support workflow glue only; it must not make ES a Vault token broker, IM
 a reconciler, CP a recovery authority, or Remote Alpha
 production/deployment/reconciliation architecture.
 
-The P0n implementation/self-audit slice may add exactly one Mac-side
-post-reset evidence route:
+### Historical P0n workload-auth facade route — superseded and non-authoritative
+
+The following records the former P0n implementation rationale only. It grants
+no current operator route, staging authority, evidence compatibility, or
+Tranche B prerequisite. P0n formerly added one Mac-side post-reset evidence
+route:
 `scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
 --ssh-target <target> --interactive-tty`. This route exists for the intended
 operator topology where the operator runs the ES operator facade from the Mac,
@@ -1103,8 +1986,12 @@ staging of exactly the bootstrap public/internal helper pair, `ssh -tt` only for
 explicit `--interactive-tty`, public helper invocation only, cleanup attempts,
 no transcript/`tee`/`script`, and no copy-back to Mac `.out`.
 
-The P0r implementation/self-audit/merge-readiness slice may add exactly one
-Mac-side recovery-session runtime identity evidence route:
+### Historical P0r runtime-identity facade route — superseded and non-authoritative
+
+The following records the former P0r implementation rationale only. It grants
+no current operator route, staging authority, evidence compatibility, or
+Tranche B prerequisite. P0r formerly added one Mac-side recovery-session
+runtime identity evidence route:
 `scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary
 --ssh-target <target> --interactive-tty`. This route is evidence/projection
 only over the existing host-local runtime identity helper summary script. It
@@ -2098,12 +2985,16 @@ topology and operator/local identity renewal authority are documented; binary
 deployment apply and workload-auth bootstrap are not monitor auto-renewal
 routes.
 
-## Current Remote Alpha Hardening Tranche
+## Remote Alpha Hardening History and Current Retirement
 
-`Bounded slice rule`: the current Remote Supported-Host Alpha bounded hardening
-posture is `AGS sealed + ARS de-root + EGS de-root + ES config/TLS prep
-applied + ES stable writable-state prep applied + long-lived es.service de-root
-applied`.
+`Temporary compatibility edge`: archived v1 evidence records an earlier Remote
+Supported-Host Alpha hardening exercise. It is historical evidence only and is
+not current host truth, readiness, migration authority, or permission to reuse
+an old or nonempty host. Current ES-owned existing-host writable-state,
+service-user, ownership, staging, rollback-generation, and old-root-planning
+routes are retired through fixed fail-closed tombstones. No v2 replacement is
+defined for that retired ES writable-state/service-user migration family. The
+unrelated current EGS hardening v2 schema remains current.
 
 - AGS is already de-rooted and sealed in this tranche; preserve the landed
   `ags:ags` service posture and its existing host-local summary/evidence shape.
@@ -2113,36 +3004,25 @@ applied`.
 - EGS is already de-rooted in this tranche; preserve the landed `egs:egs`
   service posture and its existing host-local summary/evidence shape.
 - ES config/TLS prep is applied and productized for the live host.
-- ES writable-state roots are prepared under the documented stable `es:es`
-  ownership model, and future writable-state readiness has passed.
-- The current live long-lived `es.service` now runs as `User=es`,
-  `Group=es`, `UMask=0027`.
-- Post-apply `/health`, `GET /v1/executions:contract`, and the current
-  lowest-cost existing post-apply happy path all passed after the bounded live
-  service-user change, and Infrastructure Manager readiness is accepted.
-- The repo-local rollback rehearsal/check-only evidence set for that landed
-  service-user slice now passes and remains non-mutating evidence only.
+- Archived v1 files may record that an earlier host had prepared ES writable
+  roots, ran `es.service` as `User=es`, `Group=es`, `UMask=0027`, and passed
+  bounded checks. Those records do not establish current state, readiness, or
+  apply authority and cannot be refreshed by the retired routes.
 - This tranche does not claim full ES/runtime de-root.
 - The root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad root selector posture, and Vault/workload-zone
   handoff remain bounded compatibility edges.
 - The long-lived ES startup path keeps
   `execution.spire_workload_api_socket_path` as a config-shape and submit
-  input only; operator/readiness tooling remains responsible for proving the
-  host path is a real Unix socket, and runtime-helper failure to use that
-  helper-private raw SPIRE path must remain explicit and fail closed.
-- Future writable-state readiness and service-user migration check-only now
-  require `execution.staging_root_dir` and `execution.results_root_dir` to
-  resolve to one shared target owner UID:GID; mismatched stable-root owner
-  models are honest blockers rather than compatibility noise.
+  input only; runtime-helper failure to use that helper-private raw SPIRE path
+  remains explicit and fail closed. The retired helpers no longer prove that
+  host dependency.
 - Old root-era staging/results roots remain preserved as rollback/debug/evidence
   state until a later explicit cleanup/archive action after the rollback window
   expires; they must not be recursively re-owned or deleted by inertia.
-- Future cleanup/archive planning for those preserved roots is a repo-local,
-  non-mutating evidence step only: consume local apply-summary artifacts,
-  keep rollback-window status explicit, and do not SSH, use `sudo`,
-  recursively re-owner preserved contents, archive live-host content, or
-  delete anything by default.
+- The former old-root cleanup/archive planner is retired. Archived summaries
+  cannot authorize archive, deletion, ownership change, drain, fence, or any
+  other host mutation.
 - This tranche must not change ES public contracts or Control
   Plane/Infrastructure Manager ownership boundaries.
 - This tranche preserves the direct Mac -> AGS/ES HTTPS+mTLS posture, the
@@ -2175,11 +3055,9 @@ applied`.
 `Bounded slice rule`: Milestone 1 is named `least-privilege runtime/security
 boundary closeout`.
 
-`Current invariant`: the landed long-lived `es.service` service-user change is
-already on the least-privilege side of this milestone baseline:
-`User=es`, `Group=es`, `UMask=0027`, with post-apply `/health`,
-`GET /v1/executions:contract`, the current lowest-cost existing happy path,
-and future writable-state readiness all passing.
+Archived v1 evidence records a prior long-lived `es.service` service-user
+change to `User=es`, `Group=es`, `UMask=0027`. That historical record is not a
+current invariant, current readiness proof, or migration authority.
 
 Do not call this milestone `rootless everything` or full ES/runtime de-root.
 
@@ -2202,7 +3080,7 @@ Milestone 1 boundary posture matrix:
 | Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
 | --- | --- | --- | --- | --- | --- |
 | Nomad host client/server substrate | `blocker` | The current supported substrate still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Supported-host qualification still requires a pre-managed non-dev Nomad baseline, `scripts/01_bringup.sh check` still treats Nomad readiness as an environment gate, and the landed ES happy paths still hand lifecycle authority to Nomad rather than replacing it. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
-| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper tests that keep the raw SPIRE path out of workload env, the remote runtime-identity helper summary, and the service-user migration check-only gate that validates helper-private runtime input without making `es:es` a raw-socket reader. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | Slice `1A`/`1B` proof, runtime-helper source and tests that keep the raw SPIRE path out of workload env, and the remote runtime-identity helper summary preserve the helper-private boundary. Retired existing-host migration artifacts are historical evidence only and are not current boundary proof. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
 | Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. The repo preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary already preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
 | ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | Runtime-helper tests, supported-local proof, helper-death/task-fatal behavior, and the remote runtime-identity helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
 | Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The landed happy path still uses the current job-spec model, job-spec tests preserve `User: "0:0"`, and the runtime-helper/workload-boundary tests still depend on that task-start contract. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
@@ -2278,38 +3156,25 @@ long-lived `es.service` user flip remains a future structural design track.
   SPIRE socket traversal, staging/results ownership, retained-result
   materialization, and operator maintenance/rollback model as one boundary
   package rather than as implicit follow-on hardening.
-- One bounded implementation slice on this seam is now landed: the repo-side
-  binary-deployment helper, stable writable-state ownership helper, and
-  long-lived `es.service` migration helper were all exercised in bounded
-  sequence to reach the current live service-user posture.
-- The current accepted Alpha posture now includes bounded long-lived ES
-  service-user de-root: ES config/TLS prep is applied, stable writable-state
-  roots are prepared, live `es.service` runs as `User=es`, `Group=es`,
-  `UMask=0027`, post-apply lowest-cost happy path passed, and future
-  writable-state readiness passed. Do not treat that bounded slice as proof
-  that the full ES/runtime privilege boundary is solved.
-- The current branch now carries design-only and branch-local readiness inputs
-  for parts of Option B: the privileged-operation matrix, writable-state
-  ownership model, runtime ownership-normalization contract, non-mutating
-  writable-state readiness checker with `alpha-compat` and
-  `future-non-root-required` modes, and repo-local normalized-run lifecycle
-  tests covering success, failed, lost, canceled, invalid-marker,
-  missing-marker Alpha compatibility, and future non-root-required preflight
-  behavior.
-- That repo-local readiness was necessary but not sufficient: the bounded live
-  rollout also required host-side ES/runtime-helper binary parity, stable
-  writable-state preparation, an explicit `future-non-root-required`
-  readiness pass, and then the bounded long-lived service-user apply. Those
-  helper flows are live-host evidence for their own bounded slices, not by
-  themselves proof that the runtime/task/SPIRE boundary is fully de-rooted.
-- The bounded rollout sequence that led to the current live posture was:
-  resolve live ES/runtime-helper binary parity first, then prepare only the
-  stable staging/results roots plus any bounded parent-traversal or
-  legacy-artifact reconciliation needed to make those live roots future
-  non-root-manageable, then rerun the explicit
-  `future-non-root-required` writable-state gate, then use the long-lived
-  `es.service` migration helper check-only path immediately before the
-  bounded live service-user apply.
+- Archived v1 evidence records an earlier bounded rollout involving binary
+  parity, stable writable-state preparation, and a long-lived ES service-user
+  change. The ES writable-state, service-user, ownership, staging, rollback,
+  and cleanup-planning helpers from that rollout are now retired and cannot
+  inspect a host, refresh evidence, or authorize another rollout.
+- The privileged-operation matrix, writable-state ownership model, and runtime
+  ownership-normalization document remain design history. They do not define a
+  current existing-host migration contract. Reuse of an old or nonempty host
+  remains blocked without a separately accepted contract.
+- The retained rationale is explicit in the superseded, non-authoritative
+  historical-design sections of
+  `.docs/system_overview/remote_alpha_beta_es_privilege_boundary_assessment.md`,
+  `.docs/system_overview/remote_alpha_beta_es_privileged_operation_matrix.md`,
+  and
+  `.docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md`.
+  Those sections preserve privilege separation, service-user, SPIRE, Vault,
+  ownership-normalization, helper-limit, and compatibility reasoning only;
+  they are not available operator routes and confer no migration, cleanup, or
+  reclamation authority.
 - Post-migration ES/runtime-helper binary refreshes now remain bounded to the
   current accepted live `User=es`, `Group=es`, `UMask=0027` host slice. The
   binary-deployment helper is no longer a root-like service-posture surface;
@@ -2322,47 +3187,21 @@ long-lived `es.service` user flip remains a future structural design track.
   architectures, but implementation work must not proceed until the chosen
   boundary model and required evidence are documented explicitly.
 
-## Explicit Deferred Post-Migration Actions
+## Retired Existing-Host Actions and Later Infrastructure Seams
 
-The current branch-level milestone for the completed long-lived `es.service`
-service-user migration is now:
+The former writable-state preparation, ES service-user migration, generated
+rollback rehearsal, migration staging, and old-root planning actions are
+retired. Their v1 artifacts are historical evidence only. No v1 artifact may
+authorize deployment, migration, drain, reclamation, or mutation, and no v2
+artifact or replacement protocol exists for that retired ES writable-state/
+service-user migration family. This does not describe or retire the unrelated
+current EGS hardening v2 schema.
 
-- ES config/TLS prep applied
-- stable writable-state prep applied
-- live `es.service` running as `User=es`, `Group=es`, `UMask=0027`
-- post-apply `/health` and `GET /v1/executions:contract` passed
-- post-apply lowest-cost existing happy path passed
-- future writable-state readiness passed
-- rollback rehearsal/check-only evidence passed
-- old-root cleanup/archive planner present as a repo-local non-mutating
-  planning surface only
-
-`Current invariant`: that branch-level milestone does not claim full
-ES/runtime de-root.
-
-`Bounded slice rule`: old root-era cleanup/archive execution is explicitly
-deferred.
-
-- Any later implementation must be a separate live-mutating operator action,
-  not a side effect of the writable-state or service-user helpers.
-- Preconditions are explicit:
-  - the rollback window is explicitly closed
-  - preserved old-root evidence is archived elsewhere or explicitly deemed
-    unnecessary
-  - operator signoff is recorded
-- If productized later, the surface should expose explicit `check-only` and
-  `apply` modes.
-- That later action must not recursively `chown` old roots and must not
-  delete by default.
-
-`Bounded slice rule`: an optional rollback execution helper is explicitly
-deferred.
-
-- It is not needed while the current `es:es` service posture is healthy.
-- It must remain recovery-only rather than routine maintenance.
-- Any future implementation must be bounded, must expose explicit
-  `check-only` and `apply` modes, and must not run live rollback unless
-  operationally necessary.
+Fresh-host provisioning is the required recovery direction, but ownership and
+acceptance of a complete supported fresh-host ES provisioner remain unresolved.
+The current repository does not implement one. Old-host migration may return
+only if a real requirement selects a separately governed contract. Scheduler
+drain and submitter fencing likewise remain undefined later seams.
 
 `Reopened redesign seam`: Option C runtime-boundary redesign remains a
 separate architecture track, not a cleanup follow-on.
@@ -2487,7 +3326,8 @@ The following are useful current implementation facts and should remain visible 
 - ES submit/status now include a bounded `authority_handoff` fact for new submissions. It is derived from ES-selected submit-time handoff facts and the submitted runtime spec, and it exposes only non-secret runtime authority facts: selected runtime profile, workload identity endpoint URI/env, workload-vault auth metadata, workload-zone Vault config digest, and the bounded Control Plane normal-shell Codex credential-location metadata when that profile is selected.
 - ES now localizes submit-time payload staging, mount staging, result-directory staging, and runtime-ready package assembly behind one explicit internal execution-package layout; `/execution/staged` and `/execution/run` remain current bounded runtime conventions rather than diffuse helper assumptions.
 - ES currently reserves `/execution/run/result` as the bounded workload-authored terminal output directory for the current `static-script` slice. That convention is active for the retained-result slice, but it remains part of the reopened execution-package/runtime-path surface rather than settled architecture.
-- ES currently retains run-scoped host staging while the submitted workload may still depend on it, captures any terminal result files from the reserved result directory into a retained ES-owned bundle outside staging, then best-effort removes `execution.staging_root_dir/<run_id>` after ES observes terminal success; failed, canceled, lost, or otherwise ambiguous outcomes retain staging for operator debugging.
+- ES currently retains every exclusively created run-scoped host staging root on every post-claim return. Terminal result capture into the ES-owned result store is independent and never authorizes staging mutation; success, failure, cancellation, loss, ambiguity, absence, publication conflict, and publication failure all retain the same visible staging root.
+- The isolated resolved-plan/custody candidate retains every successfully claimed run-scoped host staging root, including terminal success, while the submitted workload may depend on its bind mounts. Terminal result files remain opaque ES-owned bundles outside staging. This interim retention increases disk use and sensitive-material residence; no automatic whole-root reclamation authority is selected, and acceptance gates remain pending.
 - ES now exposes `GET /v1/executions/{run_id}/result` as a bounded retained-result bundle retrieval surface. The bundle is opaque tar.gz data keyed by `run_id`, not a Control Plane checkpoint, orchestration decision, or ES-owned lifecycle-state record.
 - The primary operator bring-up/check path now distinguishes service health, prepare-ready state, and full submit-ready state instead of treating ES `/health` alone as execution readiness.
 - The current bounded operator hot path now uses the operator SPIFFE identity as the sole caller for AGS publish and ES execution/lifecycle entry surfaces; `service/deployment` no longer defines that current slice.
@@ -3076,7 +3916,7 @@ Current bounded planning direction:
   - use Lima `qemu` + Ubuntu 24.04 arm64 as the current supported local reference host on this Mac
   - keep the previously investigated VMware/aarch64 and Lima `vz` local profiles explicit as unsupported on this Mac because natural `cpu.totalcompute` stays `0`
   - use the repo-owned `scripts/72_supported_local_setup.sh` helper plus `scripts/73_supported_local_proof.sh run` for the current supported local proof path instead of the earlier out-of-repo `/tmp` harnesses
-  - keep the canonical supported-local proof workspace under `.out/es-proof-<id>/`, with guest `/tmp` only as internal Lima scratch when the repo mount is read-only
+  - keep canonical supported-local host evidence under `.out/es-proof-<id>/`, private host bootstrap scratch outside the repository and evidence directory, and guest `/tmp` as internal Lima scratch when the repo mount is read-only
 - That runtime narrowing is part of the claim-preserving slice boundary, not an accidental compatibility gap. If bounded implementation cannot preserve the helper-only SPIRE channel or the no-privilege-escalation workload launch model, stop and reopen only the runtime shape needed to keep ownership honest.
 
 F0 - Runtime Identity Handoff Ownership Decision:

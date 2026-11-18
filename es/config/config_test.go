@@ -15,6 +15,7 @@ func TestExecutionConfigValidateAllowsDefaultRuntimeIdentityTmpfsSize(t *testing
 	cfg := ExecutionConfig{
 		StagingRootDir:             "/tmp/es-stage",
 		ResultsRootDir:             "/tmp/es-results",
+		RetainedResultAuth:         RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/tmp/es-auth/key"},
 		BaseImage:                  "alpine:3.20",
 		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
@@ -78,10 +79,108 @@ func TestExecutionConfigValidateAllowsEnabledControlPlaneNormalShellProfile(t *t
 				CredentialVaultSecretField: "api_key",
 			},
 		},
+		RetainedResultAuth: RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/tmp/es-auth/key"},
 	}
 
 	if err := cfg.Validate("execution"); err != nil {
 		t.Fatalf("expected enabled control-plane normal-shell profile to validate, got %v", err)
+	}
+}
+
+func TestRetainedResultAuthConfigRequiresCanonicalExplicitInputs(t *testing.T) {
+	valid := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage",
+		ResultsRootDir:             "/tmp/es-results",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RetainedResultAuth:         RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/tmp/es-auth/key"},
+	}
+	if err := valid.Validate("execution"); err != nil {
+		t.Fatalf("valid explicit result auth config: %v", err)
+	}
+	tests := []struct {
+		name string
+		edit func(*ExecutionConfig)
+	}{
+		{"missing store", func(c *ExecutionConfig) { c.RetainedResultAuth.StoreID = "" }},
+		{"invalid store", func(c *ExecutionConfig) { c.RetainedResultAuth.StoreID = "Upper" }},
+		{"oversized key ID", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyID = strings.Repeat("a", 33) }},
+		{"missing key path", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyFile = "" }},
+		{"relative key path", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyFile = "key" }},
+		{"unclean key path", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyFile = "/tmp/es-auth/../key" }},
+		{"key in results", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyFile = "/tmp/es-results/key" }},
+		{"key in staging", func(c *ExecutionConfig) { c.RetainedResultAuth.KeyFile = "/tmp/es-stage/key" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := valid
+			test.edit(&cfg)
+			if err := cfg.Validate("execution"); err == nil || !strings.Contains(err.Error(), "retained_result_auth") {
+				t.Fatalf("unsafe result auth config accepted or misclassified: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetainedResultAuditF1SubmitExamplesPassFullConfigValidation(t *testing.T) {
+	for _, name := range []string{
+		"es.json",
+		"es.configured_literal_policy_demo.json",
+		"es.operator_and_control_plane.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("..", "..", ".examples", "config", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg Config
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatalf("decode example: %v", err)
+			}
+			if cfg.Nomad.BaseURL == "" || cfg.Execution.StagingRootDir == "" || cfg.Execution.RetainedResultAuth.KeyFile == "" {
+				t.Fatal("Submit-enabled example lacks required configuration")
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("full example configuration rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetainedResultAuditF3RootParentIsOutsideSupportedPlacement(t *testing.T) {
+	cfg := RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/tmp/external-auth/key"}
+	if err := cfg.Validate("execution.retained_result_auth", "/tmp/stage", "/tmp/results"); err != nil {
+		t.Fatalf("nested external key rejected: %v", err)
+	}
+	for _, path := range []string{"/key", "/"} {
+		cfg.KeyFile = path
+		err := cfg.Validate("execution.retained_result_auth", "/tmp/stage", "/tmp/results")
+		if err == nil || !strings.Contains(err.Error(), "execution.retained_result_auth.key_file") ||
+			!strings.Contains(err.Error(), "non-root parent") || strings.Contains(err.Error(), path) {
+			t.Fatalf("root-parent key did not fail with bounded field reason: %v", err)
+		}
+	}
+}
+
+func TestRetainedResultReviewKeyExclusionUsesEffectivePaddedRoots(t *testing.T) {
+	valid := ExecutionConfig{
+		StagingRootDir:             "/tmp/es-stage ",
+		ResultsRootDir:             " /tmp/es-results ",
+		BaseImage:                  "alpine:3.20",
+		RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
+		SPIREWorkloadAPISocketPath: "/run/spire/sockets/agent.sock",
+		RetainedResultAuth:         RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: "/tmp/es-auth /key"},
+	}
+	if err := valid.Validate("execution"); err != nil {
+		t.Fatalf("distinct canonical key parent was rejected: %v", err)
+	}
+	for _, keyPath := range []string{"/tmp/es-stage/auth/key", "/tmp/es-results/auth/key"} {
+		cfg := valid
+		cfg.RetainedResultAuth.KeyFile = keyPath
+		if err := cfg.Validate("execution"); err == nil || !strings.Contains(err.Error(), "retained_result_auth.key_file") {
+			t.Fatalf("key inside normalized execution root was accepted: %v", err)
+		}
 	}
 }
 

@@ -4,6 +4,12 @@ This document defines the current host qualification boundary for the Execution 
 
 It is a system-level environment spec, not an architecture redesign document. It does not widen workload compatibility, does not redefine the Nomad/Docker substrate, and does not lower the honesty bar for the existing `supported`, `bounded-fallback`, and `unsupported` categories.
 
+This qualification spec is not a complete fresh-host ES provisioner. Fresh-host
+provisioning ownership and acceptance remain open; reuse of an old or nonempty
+Remote Alpha host is blocked unless a separately governed existing-host
+migration contract is selected. The former Remote Alpha ES writable-state and
+service-user routes are retired and provide no such contract.
+
 ## 1. Purpose And Scope
 
 This spec answers one narrow question:
@@ -107,6 +113,42 @@ The supported host still has to satisfy the other active slice-0 runtime assumpt
 - the supported-local single-node Nomad baseline disables Nomad Docker image cleanup for local runtime-profile image durability; external Docker image pruning remains outside the support claim and must be followed by a refresh before submit-readiness is claimed again
 - the configured ES runtime support binary and SPIRE socket paths are valid for the execution path
 - the normal governed operator flow can proceed through the existing runbooks
+
+### Tranche A filesystem-custody validation posture
+
+The supported-host profile above does not by itself validate ES
+filesystem-custody syscalls. Historical Tranche A sequencing allowed a fresh
+read-only audit of the retirement/retain-staging candidate to clear Tranche B
+while native Linux remained pending when its source and bounded checks were
+defect-free and Tranche B was independent of those native checks. That former
+sequence does not impose a blanket native pre-commit gate on local source
+preservation or integration. The owning acceptance and local-commit split is in
+`PLANS.md` and `.docs/execution_lifecycle/contracts.md`.
+
+For an actual claimed operating environment and architecture, governed Ubuntu
+24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for
+supported-local must supply real filesystem-custody syscall and mount-crossing
+observations. The relevant admission test must exercise:
+
+- `openat2` with beneath, no-magic-link, no-symlink, and no-cross-device
+  resolution;
+- `renameat2(RENAME_NOREPLACE)` collision behavior;
+- exclusive run-root claim and descriptor-held identity custody; and
+- an actual mount-crossing refusal.
+
+Cross-compilation is compile evidence only and cannot replace those runtime
+observations. Darwin behavior, a fake filesystem, containers running a
+different kernel or architecture, and an OS label cannot replace them either.
+C's selected native programme remains historical evidence for its exact source
+and environments, not an execution of this unaccepted H/C/T integrated tree.
+Evidence reuse or a new bounded witness depends on the concrete changed
+interaction and operating claim; merge ancestry alone does not require a
+blanket native campaign. Until the relevant claimed-architecture behavior is
+qualified, report that operating claim as pending rather than supported by
+inference. Neither the Remote Alpha amd64 nor supported-local arm64 claim is
+narrowed, and no universal platform guarantee is inferred. These operating
+requirements are not an automatic prerequisite to a separately authorized
+local source-preservation or integration commit.
 
 ## 4. Explicit Disqualifiers
 

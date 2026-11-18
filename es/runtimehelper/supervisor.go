@@ -3,7 +3,6 @@ package runtimehelper
 import (
 	"archive/tar"
 	"bufio"
-	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"execution-substrate/es/internal/ownershipnorm"
+	"execution-substrate/es/internal/staticarchive"
 )
 
 const (
@@ -640,15 +640,15 @@ func extractWorkloadArchive(archivePath string, destinationRoot string) error {
 	}
 	defer file.Close()
 
-	gzipReader, err := gzip.NewReader(file)
+	archive, err := staticarchive.Open(file, 0)
 	if err != nil {
 		return fmt.Errorf("open workload archive gzip stream: %w", err)
 	}
-	defer gzipReader.Close()
+	defer archive.Close()
 
-	tarReader := tar.NewReader(gzipReader)
+	var namespace staticarchive.Namespace
 	for {
-		header, err := tarReader.Next()
+		header, err := archive.Next()
 		if err == io.EOF {
 			break
 		}
@@ -656,7 +656,11 @@ func extractWorkloadArchive(archivePath string, destinationRoot string) error {
 			return fmt.Errorf("read workload archive: %w", err)
 		}
 
-		destinationPath, err := archiveDestinationPath(destinationRoot, header.Name)
+		name, err := namespace.Add(header)
+		if err != nil {
+			return fmt.Errorf("invalid workload archive entry: %w", err)
+		}
+		destinationPath, err := canonicalArchiveDestinationPath(destinationRoot, name)
 		if err != nil {
 			return err
 		}
@@ -670,40 +674,48 @@ func extractWorkloadArchive(archivePath string, destinationRoot string) error {
 			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 				return fmt.Errorf("create workload parent directory %s: %w", header.Name, err)
 			}
-			destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode)&0o777)
+			destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(header.Mode)&0o777)
 			if err != nil {
 				return fmt.Errorf("create workload file %s: %w", header.Name, err)
 			}
-			if _, err := io.Copy(destinationFile, tarReader); err != nil {
+			if _, err := io.Copy(destinationFile, archive); err != nil {
 				destinationFile.Close()
 				return fmt.Errorf("write workload file %s: %w", header.Name, err)
 			}
 			if err := destinationFile.Close(); err != nil {
 				return fmt.Errorf("close workload file %s: %w", header.Name, err)
 			}
-		default:
-			return fmt.Errorf("workload archive entry %s uses unsupported type %d", header.Name, header.Typeflag)
 		}
+	}
+	if err := archive.Finish(); err != nil {
+		return fmt.Errorf("finish workload archive: %w", err)
 	}
 	return nil
 }
 
 func archiveDestinationPath(root string, headerName string) (string, error) {
-	cleanName := filepath.Clean(strings.TrimSpace(headerName))
-	if cleanName == "." || cleanName == "" {
-		return "", fmt.Errorf("workload archive entry has an empty path")
+	cleanName, err := staticarchive.CleanName(headerName)
+	if err != nil {
+		return "", fmt.Errorf("invalid workload archive path: %w", err)
 	}
-	if filepath.IsAbs(cleanName) {
-		return "", fmt.Errorf("workload archive entry %s must be relative", headerName)
-	}
+	return canonicalArchiveDestinationPath(root, cleanName)
+}
 
-	destinationPath := filepath.Join(root, cleanName)
+// canonicalArchiveDestinationPath receives the name returned by Namespace.Add.
+// Do not trim or clean it again: cleaning may expose significant component
+// whitespace that a second trim would incorrectly remove.
+func canonicalArchiveDestinationPath(root string, canonicalName string) (string, error) {
+	if canonicalName == "" || canonicalName == "." || filepath.IsAbs(canonicalName) ||
+		canonicalName == ".." || strings.HasPrefix(canonicalName, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workload archive entry %s escapes the work tree", canonicalName)
+	}
+	destinationPath := filepath.Join(root, filepath.FromSlash(canonicalName))
 	relativePath, err := filepath.Rel(root, destinationPath)
 	if err != nil {
-		return "", fmt.Errorf("resolve workload archive entry %s: %w", headerName, err)
+		return "", fmt.Errorf("resolve workload archive entry %s: %w", canonicalName, err)
 	}
-	if strings.HasPrefix(relativePath, "..") {
-		return "", fmt.Errorf("workload archive entry %s escapes the work tree", headerName)
+	if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workload archive entry %s escapes the work tree", canonicalName)
 	}
 	return destinationPath, nil
 }

@@ -9,7 +9,7 @@ import (
 const testWorkloadZoneVaultConfigDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestBuildExecutionAuthorityHandoffReportsSelectedNonSecretFacts(t *testing.T) {
-	handoff := buildExecutionAuthorityHandoff(
+	handoff := buildResolvedExecutionAuthorityHandoff(newExecutionAuthorityHandoffProjection(
 		executionRuntimeProfile{
 			name: runtimeProfileControlPlaneNormalShell,
 			env: map[string]string{
@@ -35,38 +35,38 @@ func TestBuildExecutionAuthorityHandoffReportsSelectedNonSecretFacts(t *testing.
 			vaultCACert:       true,
 			workloadTLSBundle: true,
 		},
-	)
+	))
 
 	if handoff.AuthorityPath != executionAuthorityPathWorkloadVault {
 		t.Fatalf("unexpected authority path %q", handoff.AuthorityPath)
 	}
 	if handoff.RuntimeProfile.Name != runtimeProfileControlPlaneNormalShell {
-		t.Fatalf("unexpected runtime profile %+v", handoff.RuntimeProfile)
+		t.Fatal("unexpected runtime profile")
 	}
 	if handoff.IdentityHandoff.EndpointEnv != runtimeIdentityEndpointEnvKey {
-		t.Fatalf("unexpected identity handoff %+v", handoff.IdentityHandoff)
+		t.Fatal("unexpected identity handoff endpoint environment")
 	}
 	if handoff.IdentityHandoff.JWTSVIDTarget != "workload_vault" {
-		t.Fatalf("unexpected jwt target %+v", handoff.IdentityHandoff)
+		t.Fatal("unexpected JWT target")
 	}
 	if handoff.WorkloadVault.AuthMode != string(esconfig.WorkloadVaultAuthModeVaultIdentityJWT) ||
 		handoff.WorkloadVault.Address != "https://vault.internal:8200" ||
 		handoff.WorkloadVault.CACertPath != "/execution/run/platform/workload-vault-ca.pem" ||
 		handoff.WorkloadVault.TLSBundlePath != "/execution/run/platform/workload-ca-bundle.pem" {
-		t.Fatalf("unexpected workload vault handoff %+v", handoff.WorkloadVault)
+		t.Fatal("unexpected workload Vault handoff")
 	}
 	if handoff.RuntimeConfigRefs.WorkloadZoneVaultConfig.Digest != testWorkloadZoneVaultConfigDigest {
-		t.Fatalf("unexpected workload-zone vault config ref %+v", handoff.RuntimeConfigRefs)
+		t.Fatal("unexpected workload-zone Vault config reference")
 	}
 	if handoff.CodexCredentialLocation == nil ||
 		handoff.CodexCredentialLocation.CredentialSource != codexCredentialSourceWorkloadVault ||
 		handoff.CodexCredentialLocation.VaultSecretPath != "proof-secrets/data/codex-runtime-profile" {
-		t.Fatalf("unexpected codex credential location %+v", handoff.CodexCredentialLocation)
+		t.Fatal("unexpected Codex credential location")
 	}
 	if handoff.Evidence.Source != executionAuthorityEvidenceSourceSubmittedRuntimeSpec ||
 		handoff.Evidence.WorkloadVault != executionAuthorityEvidenceWorkloadVault ||
 		handoff.Evidence.CodexCredentialLocation == "" {
-		t.Fatalf("unexpected evidence %+v", handoff.Evidence)
+		t.Fatal("unexpected authority handoff evidence")
 	}
 }
 
@@ -91,10 +91,10 @@ func TestExecutionAuthorityHandoffFromSubmittedRuntimeSpecRequiresSubmittedFacts
 		t.Fatalf("expected submitted runtime spec to recover authority handoff")
 	}
 	if handoff.RuntimeProfile.Name != runtimeProfileDefaultStaticScript {
-		t.Fatalf("unexpected recovered handoff %+v", handoff)
+		t.Fatal("unexpected recovered authority handoff runtime profile")
 	}
 	if handoff.WorkloadVault.CACertEnv != "VAULT_CACERT" || handoff.WorkloadVault.TLSBundleEnv != "SSL_CERT_FILE" {
-		t.Fatalf("expected trust-material labels in recovered handoff, got %+v", handoff.WorkloadVault)
+		t.Fatal("expected trust-material labels in recovered handoff")
 	}
 
 	delete(env, runtimeIdentityEndpointEnvKey)
@@ -130,7 +130,7 @@ func TestAuthorityHandoffFromNomadJobRequiresESMetadata(t *testing.T) {
 	}
 
 	if handoff, ok := authorityHandoffFromNomadJob(job); !ok || handoff.IdentityHandoff.EndpointURI == "" {
-		t.Fatalf("expected handoff from submitted job, got ok=%t handoff=%+v", ok, handoff)
+		t.Fatal("expected authority handoff from submitted job")
 	}
 
 	job.Meta[executionAuthorityMetadataSchemaKey] = ""

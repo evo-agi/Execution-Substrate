@@ -107,11 +107,14 @@ Those absences are current facts, not design commitments.
   `modernc.org/libc v1.74.1` coupling, private same-package hydration in
   `es/admission/internal/reliablesubmit`, revision/CAS, durable provider-effect
   intent, tombstone/no-reuse retention, fail-closed corruption behavior, and
-  the current latest-operation replay descriptor implemented by SQLite schema
-  v2. Complete codec-2 rows persist `lastMutation`, closed private operation
+  the historical latest-operation replay descriptor implemented by SQLite
+  schema v2, and private codec-3 synthetic custody in current schema v3.
+  Complete codec-2 rows persist `lastMutation`, closed private operation
   kind, and input-binding digest; migrated codec-1 rows preserve only legacy
-  `lastMutation` as unbound state without invented operation semantics. The ADR
-  adds private store source only; it does not add global config or runtime
+  `lastMutation` as unbound state without invented operation semantics. Codec-3
+  alone adds sealed original-intent/material custody and a same-DB key-use
+  ledger; codec-1/2 opaque lengths remain unchanged. The ADR adds private
+  source only; it does not add global config or runtime
   wiring, reuse staging or retained results as the
   database path, import Coordinator writer-session authority, make provider
   metadata a recovery source, promise PostgreSQL implementation, promise live
@@ -123,21 +126,121 @@ Those absences are current facts, not design commitments.
   `reliable_submit`, nested `contract`, nested `submit_key`, caller/key
   safe-reference derivation from the exact authenticated SPIFFE URI, composite
   `ClaimID` construction through the committed pure-model constructor, and
-  ES-neutral outcome semantics. It does not implement source-grounded resolved
-  effective-plan extraction, canonical effective-plan encoding, effective-plan
-  commitments, complete effective-plan witness construction,
-  durable replay-envelope custody, or runtime orchestration. A later
-  `resolved-execution-plan-extraction-foundation` tranche must derive one
-  authoritative resolved execution plan from the actual current ES
-  admission/runtime-resolution path, and current legacy `Submit` and future
-  reliable `PlanBinding` must consume that same source-grounded plan. That later
-  tranche must not synthesize `PrepareRequest` or `Manifest` proof from the
-  proposed plan itself, create a parallel admission engine, silently tighten the
-  current empty-environment-allowlist contract, or infer authority-handoff
-  inapplicability contrary to current `Submit` behavior. The current foundation
-  is not a public DTO surface, producer declaration, config surface, store
-  lifecycle, Nomad reconciliation path, recovery route, shared grammar kernel,
-  or runtime capability claim.
+  ES-neutral outcome semantics. That adapter foundation does not construct a
+  resolved plan, canonical encoding, effective-plan commitment, completeness
+  witness, durable replay envelope, or runtime orchestration.
+- ES now owns the separate
+  `resolved-execution-plan-extraction-foundation` inside package
+  `es/admission`. It derives one private source-grounded semantic plan from the
+  actual shared admission and current submit-resolution path before any run ID
+  or execution-producing effect. Admission borrows the caller request,
+  immediately deep-copies mutable members, and uses one private intent so its
+  owned working copy is the sole mode/default/validation/normalization writer.
+  Successful admission returns one frozen authoritative snapshot; immutable
+  defensive copies remain permitted. The caller retains ownership until the
+  initial copy completes and must keep the request and every reachable mutable
+  member race-free through that copy. Concurrent unsynchronized mutation while
+  copying is a caller data race, not an ES synchronization guarantee. After
+  the owned copy completes, later caller mutation cannot change admitted or
+  submitted state; defensive copies do not create another mutable authority.
+  That snapshot and the exact successfully
+  consumed workload-zone Vault reference feed one immutable submit/config
+  snapshot. The effectful resolver then captures all mutable byte material and
+  resolves the current semantic and host facts; qualified platform-state owner
+  resolution is its final variable host observation. Successful resolver
+  return is the freeze point.
+- After that freeze, current legacy `Submit` may consume only narrow typed plan,
+  material, run-projection, host-materialization, authority-handoff, and
+  Nomad-job inputs. It may use `context.Context` and the existing Nomad client
+  for the one provider call,
+  but it must not reread the request, prepared admission, service config,
+  runtime-profile maps, workload-Vault plan, admission trust model, ARS, runtime
+  support source, mount sources, trust sources, owner state, SPIRE source, or
+  datacenter. The plan owns admitted semantics: schemas/mode/timeout/resources,
+  profile identity/image and semantic environment inputs, one typed command,
+  distinct artifact/payload/derivation/output identities, mounts, network
+  permission, unconditional authority inputs, runtime-support digest,
+  runtime-identity tmpfs size, and the fixed semantic envelope. Private
+  material owns payload/runtime-support/mount/trust bytes. Captured host context
+  contains only normalized qualified values: the cleaned absolute staging root,
+  qualified owner, cleaned absolute SPIRE source, and trimmed non-empty
+  datacenter. The normalized absolute results root remains current ES
+  service/custody placement outside the semantic plan, captured host context,
+  provider-job projection, and B1 binding. Run and
+  provider projections own locator, owner/run/endpoint environment, staged and
+  host paths, endpoint, datacenter projection, and other derived facts.
+- Current authority handoff is unconditional; the semantic plan has no
+  applicability flag, while Codex credential-location applicability remains a
+  real optional subcomponent. The payload digest is retained privately from
+  the admission-cross-checked discovery/evidence relationship but is neither
+  public nor Nomad metadata and is distinct from raw material bytes.
+- The semantic plan is admitted semantic truth only. Semantic-plan equality
+  across qualified host contexts is admitted-semantic equality only, not
+  provider-job, provider-effect, dispatch, replay, restart, or safe-host-
+  substitution identity. Captured host and run/provider facts add additional
+  execution-shaping inputs. The later private v1 producer binds admitted
+  semantics and captured material identities but keeps host/run facts outside
+  semantic `PlanBinding` as separate later prerequisites. The historical B1
+  foundation alone selected no encoding, witness, durable custody, replay,
+  restart, or host-context binding treatment.
+- B1 protects the unchanged default-profile provider job with one complete
+  source-distinct direct literal expected tree, one direct pointer-owned
+  token/template ledger expanded only in that expected tree, the unmodified
+  actual tree, and a separate direct literal public handoff expected object
+  through real `Service.Submit`. A finite package-local direct-call closure and
+  exact producer, freeze, validation, payload-projection, metadata, and source
+  inventories protect the finite plan/host/run/command/source shape. These are
+  not whole-program proofs. Tranche B2 now completes a separate source-bounded privacy and
+  compatibility guard, a second complete source-distinct
+  `control-plane-normal-shell/v1` job and authority-handoff golden, fixed public
+  operational-failure messages, prepared-admission redaction, bounded ordinary
+  result-retention logs, and selected structured-response bounds without
+  changing B1 semantic ownership. Reliable keyed-submit runtime remains
+  unwired, and native Linux runtime validation remains pending.
+- ES owns the B2 fixed-message boundary. Existing routes, HTTP statuses, error
+  codes, the `{success,error,code}` DTO shape, field names, precedence, and
+  successful behavior remain unchanged. The selected fixed messages are
+  `workload-zone vault configuration is invalid`,
+  `derive execution host context failed`,
+  `stage workload vault trust material failed`,
+  `derive execution platform state owner failed`, and
+  `execution submission failed`; neither an underlying cause nor a Nomad body
+  is a public or ordinary-log diagnostic.
+- ES owns the bounded ordinary result-retention event
+  `es result retention failed run_id=%s`, whose only argument is the validated
+  public run ID. This is a three-call source inventory, not process-wide log
+  noninterference; generic HTTP/TLS errors and observability route identifiers
+  remain outside it.
+- Submit registration, projected-allocation list, and allocation-detail
+  responses use a 256 KiB one-document compatible JSON boundary. Unknown Nomad
+  fields remain accepted and non-success bodies are not read for diagnostics.
+  Job lookup remains explicitly unbounded but one-document because admitted
+  caller-environment aggregates are currently unbounded and are echoed in the
+  job summary. Successful authenticated public Logs remain unbounded opaque
+  workload output. ES selects no universal provider-response or workload-output
+  limit in B2.
+- `preparedAdmission` embeds the existing private formatter marker first. Its
+  ordinary formatting and formatted standard-library logging are fixed to
+  `<private execution value redacted>`, and ordinary JSON is `{}`. This does
+  not claim reflection, `unsafe`, malicious same-package, arbitrary serializer,
+  secure-erasure, or authorization-to-log protection.
+- This extraction foundation is not a public DTO surface, producer declaration,
+  config surface, reliable store/runtime integration, canonical encoding,
+  `PlanBinding`, witness, durable-custody decision, Nomad reconciliation path,
+  recovery route, shared grammar kernel, Coordinator integration, or runtime
+  capability claim. It does not implement or imply a public request/response
+  change.
+- The later ES-private admission binding v1 producer consumes the actual
+  frozen resolver tuple, checks signed returned mount artifact and payload
+  identities against requested identity and captured bytes, and builds an
+  opaque commitment and existing fourteen-category witness. The legacy
+  resolver only carries the two verified mount identities; it does not add a
+  live requested-versus-returned artifact refusal. The producer is always
+  not-effect-ready. At PB1 it had no production caller; the later bounded
+  codec-3 synthetic composer is its only selected private non-test caller.
+  It adds no public grammar, shared kernel, provider call, genuine image pin,
+  host-substitution proof, runtime key source or effect authority. Its private
+  encrypted custody stays under the admission/internal SQLite ownership split.
 - The Workstream F F0 runtime-identity handoff ownership decision lives in
   `runtime_identity_handoff.md`: runtime identity handoff is currently
   ES-selected and platform-delivered, `EXEC_WORKLOAD_IDENTITY_ENDPOINT` is the
@@ -364,7 +467,12 @@ Own admission, compose upstream contract checks into an execution decision, subm
 The authoritative Workstream C classification of ES public execution surfaces,
 admission composition, scheduler handoff, retained-result ownership,
 runtime-profile handling, and compatibility edges lives in
-`.docs/execution_lifecycle/es_execution_admission_model.md`.
+`.docs/execution_lifecycle/es_execution_admission_model.md`. The current
+paired-root custody and authenticated final/record eligibility contract is
+owned by `.docs/execution_lifecycle/contracts.md`: pair proof gates permitted
+ES result operations but grants no existing-object repair, pathname deletion,
+or cross-service reclamation authority. Retained roots and probe fixtures remain
+a temporary compatibility edge; whole-root reclamation remains reopened.
 
 **Current ownership**
 
@@ -402,12 +510,15 @@ runtime-profile handling, and compatibility edges lives in
   submit-correlation store family, the current `CGO_ENABLED=0` build posture,
   `modernc.org/sqlite v1.54.0` with exact `modernc.org/libc v1.74.1` coupling,
   private same-package hydration, revision/CAS, durable provider-effect intent,
-  tombstone/no-reuse retention, fail-closed corruption behavior, and the current
-  latest-operation replay descriptor implemented by SQLite schema v2. Complete
-  codec-2 rows persist `lastMutation`, closed private operation kind, and
+  tombstone/no-reuse retention, fail-closed corruption behavior, historical
+  latest-operation replay descriptor from SQLite schema v2, and private
+  codec-3 synthetic custody in schema v3. Complete codec-2 rows persist
+  `lastMutation`, closed private operation kind, and
   input-binding digest; migrated codec-1 rows preserve only legacy
-  `lastMutation` as unbound state without invented operation semantics. It adds
-  private store source only; it does not add global config or runtime wiring, reuse staging or
+  `lastMutation` as unbound state without invented operation semantics. Codec-3
+  alone adds original-intent/complete-material sealed custody and a same-DB
+  key-use ledger; codec-1/2 generic opaque lengths remain unchanged. It adds
+  private source only; it does not add global config or runtime wiring, reuse staging or
   retained results as the database path, import Coordinator writer-session
   authority, make provider metadata a recovery source, promise PostgreSQL
   implementation, promise live backend switching, or promise automatic data

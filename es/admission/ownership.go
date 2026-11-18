@@ -3,7 +3,6 @@ package admission
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"syscall"
 )
 
@@ -24,17 +23,17 @@ type executionPlatformStateOwner struct {
 type executionPlatformStateOwnerResolver func(string) (executionPlatformStateOwner, error)
 
 func executionPlatformStateOwnerFromPath(path string) (executionPlatformStateOwner, error) {
-	info, err := os.Stat(filepath.Clean(path))
+	directory, err := openQualifiedDirectory(path, false, 0)
 	if err != nil {
 		return executionPlatformStateOwner{}, err
 	}
-	uid, gid, err := ownershipIDsFromInfo(info)
-	if err != nil {
+	defer directory.close()
+	if err := directory.verifyVisible(); err != nil {
 		return executionPlatformStateOwner{}, err
 	}
 	return executionPlatformStateOwner{
-		UID: uid,
-		GID: gid,
+		UID: directory.identity.UID,
+		GID: directory.identity.GID,
 	}, nil
 }
 
@@ -74,27 +73,6 @@ func ownershipExpectationsForRun(runID string, owner executionPlatformStateOwner
 		ExpectedGID:   intPtr(owner.GID),
 		RequireMarker: requireMarker,
 	}
-}
-
-func ensureOwnedDirectory(path string, mode os.FileMode, owner executionPlatformStateOwner) error {
-	if err := os.MkdirAll(path, mode); err != nil {
-		return err
-	}
-	return reconcileOwnedPath(path, owner, mode)
-}
-
-func reconcileOwnedPath(path string, owner executionPlatformStateOwner, mode os.FileMode) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to reconcile symlink path %s", path)
-	}
-	if err := os.Lchown(path, owner.UID, owner.GID); err != nil {
-		return err
-	}
-	return os.Chmod(path, mode)
 }
 
 func ownershipIDsFromInfo(info os.FileInfo) (int, int, error) {

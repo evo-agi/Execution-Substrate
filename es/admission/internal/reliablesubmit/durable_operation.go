@@ -115,6 +115,8 @@ func (d durableLatestOperationDescriptor) validForCodec(codecVersion uint16, las
 		return d.legacyUnbound()
 	case durableClaimCodecVersion:
 		return d.complete()
+	case durableClaimCodecVersionSynthetic:
+		return d.complete() && d.kind == durableOperationEstablishClaim
 	default:
 		return false
 	}
@@ -178,6 +180,7 @@ const (
 	durableOperationPartReceiptRef
 	durableOperationPartRetentionState
 	durableOperationPartRetentionReason
+	durableOperationPartSyntheticDescriptor
 )
 
 func deriveDurableOperationDescriptor(mutation durableMutationRef, kind durableOperationKind, predecessor claimRevision, parts ...durableOperationInputPart) (durableLatestOperationDescriptor, error) {
