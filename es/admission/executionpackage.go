@@ -1,14 +1,13 @@
 package admission
 
 import (
+	"bytes"
 	"fmt"
-	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	esconfig "execution-substrate/es/config"
 )
 
 const (
@@ -70,8 +69,35 @@ type stagedWorkloadTrustMaterial struct {
 	workloadTLSBundle bool
 }
 
-func newExecutionPackageLayout(cfg esconfig.Config, locator executionLocator) executionPackageLayout {
-	stageRootDir := filepath.Join(cfg.Execution.StagingRootDir, locator.RunID)
+type resolvedRuntimeCommand struct {
+	privateExecutionValue
+	executable string
+	arguments  []string
+}
+
+func newResolvedRuntimeCommand(workloadArgv []string, timeoutSeconds int) resolvedRuntimeCommand {
+	arguments := []string{
+		"supervisor",
+		"--payload-archive", executionRuntimePayloadRoot + "/" + executionPayloadArchiveName,
+		"--work-dir", executionRuntimeWorkDir,
+		"--result-dir", executionRuntimeResultDir,
+		"--entrypoint", executionRuntimeEntrypointPath,
+		"--timeout-seconds", strconv.Itoa(timeoutSeconds),
+		"--",
+	}
+	return resolvedRuntimeCommand{
+		executable: executionRuntimeSupportPath,
+		arguments:  append(arguments, workloadArgv...),
+	}
+}
+
+func copyResolvedRuntimeCommand(command resolvedRuntimeCommand) resolvedRuntimeCommand {
+	command.arguments = copyStringSlice(command.arguments)
+	return command
+}
+
+func newExecutionPackageLayoutFromHost(host hostMaterializationContext, locator executionLocator) executionPackageLayout {
+	stageRootDir := filepath.Join(host.stagingRootDir, locator.RunID)
 	return executionPackageLayout{
 		runID:              locator.RunID,
 		stageRootDir:       stageRootDir,
@@ -100,16 +126,18 @@ func reservedExecutionRuntimePaths() []string {
 	}
 }
 
-func (l executionPackageLayout) stagePayload(payloadBytes []byte, owner executionPlatformStateOwner) error {
-	for _, dir := range []string{l.stageRootDir, l.payloadStageDir, l.runStageDir, l.platformStageDir, l.resultStageDir} {
-		if err := ensureOwnedDirectory(dir, stableStageDirMode, owner); err != nil {
+func (l executionPackageLayout) stagePayload(custody *stagingCustody, payloadBytes []byte) error {
+	for _, dir := range []string{
+		executionPayloadStageDirName,
+		executionRunStageDirName,
+		executionRunStageDirName + "/platform",
+		executionRunStageDirName + "/" + executionResultStageDirName,
+	} {
+		if err := custody.ensureDirectory(dir, stableStageDirMode); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(l.payloadArchivePath, payloadBytes, retainedResultBundleFileMode); err != nil {
-		return err
-	}
-	return reconcileOwnedPath(l.payloadArchivePath, owner, retainedResultBundleFileMode)
+	return custody.writeFile(executionPayloadStageDirName+"/"+executionPayloadArchiveName, payloadBytes, retainedResultBundleFileMode)
 }
 
 func (l executionPackageLayout) mountStageDir(index int) string {
@@ -122,19 +150,6 @@ func (l executionPackageLayout) mountArchivePath(index int) string {
 
 func (l executionPackageLayout) mountContentsDir(index int) string {
 	return filepath.Join(l.mountStageDir(index), "contents")
-}
-
-func (l executionPackageLayout) runtimeSupervisorArgs(workloadArgv []string, timeoutSeconds int) []string {
-	args := []string{
-		"supervisor",
-		"--payload-archive", filepath.ToSlash(pathJoin(l.runtimePayloadRoot, executionPayloadArchiveName)),
-		"--work-dir", l.runtimeWorkDir,
-		"--result-dir", l.runtimeResultDir,
-		"--entrypoint", l.runtimeEntrypoint,
-		"--timeout-seconds", strconv.Itoa(timeoutSeconds),
-		"--",
-	}
-	return append(args, workloadArgv...)
 }
 
 func (l executionPackageLayout) workloadVaultCACertStagePath() string {
@@ -153,29 +168,21 @@ func (l executionPackageLayout) workloadTLSBundleRuntimePath() string {
 	return pathJoin(l.runtimePlatformDir, executionWorkloadTLSBundleName)
 }
 
-func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(plan esconfig.ResolvedWorkloadVaultAuthPlan, owner executionPlatformStateOwner) (stagedWorkloadTrustMaterial, error) {
-	caBundle := normalizePEMForRuntimeFile(plan.CABundlePEM)
-	if len(caBundle) == 0 {
+func (l executionPackageLayout) stageWorkloadVaultTrustMaterial(custody *stagingCustody, material resolvedTrustMaterial) (stagedWorkloadTrustMaterial, error) {
+	if len(material.vaultCACertBytes) == 0 && len(material.workloadTLSBundleBytes) == 0 {
 		return stagedWorkloadTrustMaterial{}, nil
 	}
-	systemBundle, err := readSystemCABundle()
-	if err != nil {
-		return stagedWorkloadTrustMaterial{}, err
+	if len(material.vaultCACertBytes) == 0 || len(material.workloadTLSBundleBytes) == 0 {
+		return stagedWorkloadTrustMaterial{}, fmt.Errorf("captured workload trust material is incomplete")
 	}
 
-	if err := ensureOwnedDirectory(l.platformStageDir, stableStageDirMode, owner); err != nil {
+	if err := custody.ensureDirectory(executionRunStageDirName+"/platform", stableStageDirMode); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
-	if err := os.WriteFile(l.workloadVaultCACertStagePath(), caBundle, stableStageFileMode); err != nil {
+	if err := custody.writeFile(executionRunStageDirName+"/platform/"+executionWorkloadVaultCAName, material.vaultCACertBytes, stableStageFileMode); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
-	if err := reconcileOwnedPath(l.workloadVaultCACertStagePath(), owner, stableStageFileMode); err != nil {
-		return stagedWorkloadTrustMaterial{}, err
-	}
-	if err := os.WriteFile(l.workloadTLSBundleStagePath(), appendPEMBundle(systemBundle, caBundle), stableStageFileMode); err != nil {
-		return stagedWorkloadTrustMaterial{}, err
-	}
-	if err := reconcileOwnedPath(l.workloadTLSBundleStagePath(), owner, stableStageFileMode); err != nil {
+	if err := custody.writeFile(executionRunStageDirName+"/platform/"+executionWorkloadTLSBundleName, material.workloadTLSBundleBytes, stableStageFileMode); err != nil {
 		return stagedWorkloadTrustMaterial{}, err
 	}
 	return stagedWorkloadTrustMaterial{
@@ -189,65 +196,69 @@ func normalizePEMForRuntimeFile(value string) []byte {
 	if trimmed == "" {
 		return nil
 	}
-	return []byte(trimmed + "\n")
+	normalized := make([]byte, len(trimmed)+1)
+	copy(normalized, trimmed)
+	normalized[len(trimmed)] = '\n'
+	return normalized
 }
 
-func appendPEMBundle(base []byte, extra []byte) []byte {
-	normalizedBase := normalizePEMForRuntimeFile(string(base))
-	normalizedExtra := normalizePEMForRuntimeFile(string(extra))
-	combined := make([]byte, 0, len(normalizedBase)+len(normalizedExtra)+1)
-	combined = append(combined, normalizedBase...)
-	if len(combined) > 0 && len(normalizedExtra) > 0 {
+func normalizePEMBytesForRuntimeFile(value []byte) []byte {
+	trimmed := bytes.TrimSpace(value)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	normalized := make([]byte, len(trimmed)+1)
+	copy(normalized, trimmed)
+	normalized[len(trimmed)] = '\n'
+	return normalized
+}
+
+func appendNormalizedPEMBundle(base []byte, extra []byte) []byte {
+	combined := make([]byte, 0, len(base)+len(extra)+1)
+	combined = append(combined, base...)
+	if len(combined) > 0 && len(extra) > 0 {
 		combined = append(combined, '\n')
 	}
-	combined = append(combined, normalizedExtra...)
+	combined = append(combined, extra...)
 	return combined
 }
 
 func readSystemCABundle() ([]byte, error) {
-	candidates := make([]string, 0, len(systemCABundleCandidatePaths)+1)
 	if configured := strings.TrimSpace(os.Getenv("SSL_CERT_FILE")); configured != "" {
-		candidates = append(candidates, configured)
+		content, err := captureStableRegularFile(configured, maxSystemCABundleBytes)
+		if err != nil {
+			return nil, fmt.Errorf("configured system CA bundle is not a stable bounded regular file: %w", err)
+		}
+		normalized := normalizePEMBytesForRuntimeFile(content)
+		if len(normalized) == 0 || int64(len(normalized)) > maxSystemCABundleBytes {
+			return nil, fmt.Errorf("configured system CA bundle is outside the governed limit")
+		}
+		return normalized, nil
 	}
-	candidates = append(candidates, systemCABundleCandidatePaths...)
 
-	for _, candidate := range candidates {
-		content, err := os.ReadFile(filepath.Clean(candidate))
-		if err != nil || len(strings.TrimSpace(string(content))) == 0 {
+	for _, candidate := range systemCABundleCandidatePaths {
+		content, err := captureStableRegularFile(candidate, maxSystemCABundleBytes)
+		if err != nil {
 			continue
 		}
-		return content, nil
+		normalized := normalizePEMBytesForRuntimeFile(content)
+		if len(normalized) == 0 || int64(len(normalized)) > maxSystemCABundleBytes {
+			continue
+		}
+		return normalized, nil
 	}
 	return nil, fmt.Errorf("system CA bundle not found for workload TLS bundle")
 }
 
-func (l executionPackageLayout) stageRuntimeSupportBinary(sourcePath string, owner executionPlatformStateOwner) error {
-	sourceFile, err := os.Open(filepath.Clean(sourcePath))
-	if err != nil {
-		return err
-	}
-	defer sourceFile.Close()
-
-	destinationFile, err := os.OpenFile(l.runtimeSupportPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, stableStageExecFileMode)
-	if err != nil {
-		return err
-	}
-	defer destinationFile.Close()
-
-	if _, err := io.Copy(destinationFile, sourceFile); err != nil {
-		return err
-	}
-	if err := destinationFile.Close(); err != nil {
-		return err
-	}
-	return reconcileOwnedPath(l.runtimeSupportPath, owner, stableStageExecFileMode)
+func (l executionPackageLayout) stageCapturedRuntimeSupportBinary(custody *stagingCustody, content []byte) error {
+	return custody.writeFile(executionRunStageDirName+"/platform/"+executionRuntimeSupportName, content, stableStageExecFileMode)
 }
 
 func pathJoin(elements ...string) string {
 	return filepath.ToSlash(filepath.Join(elements...))
 }
 
-func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMounts []stagedRuntimeMount) []any {
+func (l executionPackageLayout) runtimeMountSpecs(inputs resolvedRuntimeMountInputs, stagedMounts []stagedRuntimeMount) []any {
 	mounts := []any{
 		map[string]any{
 			"type":     "bind",
@@ -266,12 +277,12 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 			"target":   l.runtimeIdentity.workspaceDir(),
 			"readonly": false,
 			"tmpfs_options": map[string]any{
-				"size": cfg.Execution.EffectiveRuntimeIdentityTmpfsSize(),
+				"size": inputs.identityTmpfsSize,
 			},
 		},
 		map[string]any{
 			"type":     "bind",
-			"source":   filepath.Dir(cfg.Execution.SPIREWorkloadAPISocketPath),
+			"source":   inputs.spireSourceDir,
 			"target":   l.runtimeIdentity.spireSourceDirPath(),
 			"readonly": true,
 		},
@@ -282,21 +293,33 @@ func (l executionPackageLayout) runtimeMountSpecs(cfg esconfig.Config, stagedMou
 			"type":     "bind",
 			"source":   mount.sourceDir,
 			"target":   mount.targetPath,
-			"readonly": true,
+			"readonly": mount.readOnly,
 		})
 	}
 	return mounts
 }
 
-func (s *Service) stageExecutionInputs(locator executionLocator, payloadBytes []byte, owner executionPlatformStateOwner) (stagedExecutionInputs, error) {
-	layout := newExecutionPackageLayout(s.cfg, locator)
-	if err := layout.stagePayload(payloadBytes, owner); err != nil {
-		return stagedExecutionInputs{}, err
+func materializeExecutionInputs(custody *stagingCustody, run resolvedRunProjection, material resolvedExecutionMaterial) (stagedExecutionInputs, *Error) {
+	stage := stagedExecutionInputs{layout: run.layout}
+	if err := stage.layout.stagePayload(custody, material.payloadBytes); err != nil {
+		return stagedExecutionInputs{}, &Error{Status: http.StatusInternalServerError, Code: codeSubmissionFailed, Message: "stage artifact payload failed"}
 	}
-	if err := layout.stageRuntimeSupportBinary(s.cfg.Execution.RuntimeSupportBinary, owner); err != nil {
-		return stagedExecutionInputs{}, err
+	if err := stage.layout.stageCapturedRuntimeSupportBinary(custody, material.runtimeSupportBytes); err != nil {
+		return stagedExecutionInputs{}, &Error{Status: http.StatusInternalServerError, Code: codeSubmissionFailed, Message: "stage artifact payload failed"}
 	}
-	return stagedExecutionInputs{
-		layout: layout,
-	}, nil
+	mounts, mountErr := materializeValidatedRuntimeMounts(custody, stage.layout, run.mounts, material.mounts)
+	if mountErr != nil {
+		return stagedExecutionInputs{}, mountErr
+	}
+	stage.mounts = mounts
+	trustMaterial, trustErr := stage.layout.stageWorkloadVaultTrustMaterial(custody, material.trust)
+	if trustErr != nil {
+		return stagedExecutionInputs{}, &Error{
+			Status:  http.StatusInternalServerError,
+			Code:    codeSubmissionFailed,
+			Message: "stage workload vault trust material failed",
+		}
+	}
+	stage.trustMaterial = trustMaterial
+	return stage, nil
 }

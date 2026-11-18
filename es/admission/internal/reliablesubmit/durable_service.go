@@ -662,6 +662,9 @@ func (s *durableClaimService) validateLoadedRecordBinding(record durableClaimRec
 	if err := record.validate(); err != nil {
 		return nil, durableClaimOutcome{}, false, err
 	}
+	if record.codecVersion == durableClaimCodecVersionSynthetic {
+		return nil, durableClaimOutcome{}, false, errClaimStoreUnsupported
+	}
 	phase, err := record.hydratePhase()
 	if err != nil {
 		return nil, durableClaimOutcome{}, false, err

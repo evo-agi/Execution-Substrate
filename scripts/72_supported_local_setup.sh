@@ -8,6 +8,9 @@ else
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 fi
+source "${SCRIPT_DIR}/internal/supported_local_retained_result_auth.sh"
+ES_ROOTS_HELPER="${SCRIPT_DIR}/internal/supported_local_execution_roots.py"
+ES_ROOTS_PROFILE="service-root-v1"
 
 ACTION="${1:-setup}"
 PROOF_DIR="${SUPPORTED_LOCAL_PROOF_DIR:-/tmp/execution-substrate-supported-local-proof}"
@@ -39,6 +42,9 @@ CODEX_CREDENTIAL_SECRET_FIELD="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_SECRET_FIELD:-
 CODEX_CREDENTIAL_VALUE="${SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE:-}"
 BUILD_CODEX_RUNTIME_PROFILE_IMAGE="${SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE:-1}"
 ALLOW_CONTROL_PLANE_CALLER="${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-0}"
+RETAINED_RESULT_AUTH_STORE_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}"
+RETAINED_RESULT_AUTH_KEY_ID="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}"
+RETAINED_RESULT_AUTH_KEY_FILE="${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
 GO_REQUIRED_VERSION="go1.26.5"
 
 ARS_PORT=$((PORT_BASE + 2))
@@ -101,6 +107,10 @@ Optional environment variables:
   SUPPORTED_LOCAL_CODEX_CREDENTIAL_VALUE=<proof-material>
   SUPPORTED_LOCAL_BUILD_CODEX_RUNTIME_PROFILE_IMAGE=1
   SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=1
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=<stable non-secret identifier>
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/external/private/keys/key
+  SUPPORTED_LOCAL_ES_ROOTS_PROFILE=service-root-v1   only accepted profile
 EOF
 }
 
@@ -134,6 +144,105 @@ supported_local_setup_requires_local_go() {
 preflight_supported_local_setup_go_if_required() {
   if supported_local_setup_requires_local_go; then
     require_supported_go_toolchain
+  fi
+}
+
+preflight_supported_local_setup_retained_result_auth() {
+  local proof_dir="${1:-${PROOF_DIR}}"
+  supported_local_validate_retained_result_auth \
+    "${RETAINED_RESULT_AUTH_STORE_ID}" \
+    "${RETAINED_RESULT_AUTH_KEY_ID}" \
+    "${RETAINED_RESULT_AUTH_KEY_FILE}" \
+    "${proof_dir}" \
+    "${proof_dir}/es-staging" \
+    "${proof_dir}/es-results"
+}
+
+preflight_supported_local_setup_execution_roots() {
+  if [[ "${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-${ES_ROOTS_PROFILE}}" != "${ES_ROOTS_PROFILE}" ]]; then
+    echo "supported-local execution-root profile is invalid" >&2
+    return 1
+  fi
+  if [[ -n "${CONTROL_PLANE_IMAGE:-}" && "${CONTROL_PLANE_IMAGE}" != "execution-substrate/control-plane:supported-local" ]]; then
+    echo "supported-local service image is incompatible" >&2
+    return 1
+  fi
+  if [[ -n "${CONTROL_PLANE_DOCKERFILE:-}" && "${CONTROL_PLANE_DOCKERFILE}" != "${PROOF_DIR}/Dockerfile" ]]; then
+    echo "supported-local service Dockerfile is incompatible" >&2
+    return 1
+  fi
+  if ! python3 "${ES_ROOTS_HELPER}" preflight "${PROOF_DIR}" "${PROOF_ID}" >/dev/null 2>&1; then
+    echo "supported-local execution-root scope is invalid" >&2
+    return 1
+  fi
+  if (( EUID != 0 )); then
+    if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+      echo "supported-local execution-root privilege is unavailable" >&2
+      return 1
+    fi
+  fi
+}
+
+provision_supported_local_execution_roots() {
+  local binding
+  if ! binding="$(python3 "${ES_ROOTS_HELPER}" bind "${PROOF_DIR}" "${PROOF_ID}" 2>/dev/null)"; then
+    echo "supported-local execution roots invalid" >&2
+    return 1
+  fi
+  if (( EUID == 0 )); then
+    if ! python3 "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
+      echo "supported-local execution roots invalid" >&2
+      return 1
+    fi
+  elif ! sudo -n python3 "${ES_ROOTS_HELPER}" provision "${PROOF_DIR}" "${PROOF_ID}" "${binding}" >/dev/null 2>&1; then
+    echo "supported-local execution roots invalid" >&2
+    return 1
+  fi
+}
+
+write_supported_local_execution_root_evidence() {
+  local proof_dir=$1
+  if ! python3 - "${proof_dir}" >/dev/null 2>&1 <<'PY'
+import json
+import os
+import stat
+import sys
+
+payload = (json.dumps({
+    "schema": "supported-local-execution-roots-setup-safe-v1",
+    "profile": "service-root-v1",
+    "configured_root_uid": 0,
+    "configured_root_gid": 0,
+    "configured_root_mode": "0755",
+    "static_root_owner_mode_checked": True,
+    "operator_write_access_required": False,
+    "container_identity_or_behavioral_capability_proved": False,
+}, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+root_fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    name = "execution-roots-setup-safe.json"
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 0o600, dir_fd=root_fd)
+    try:
+        os.fchmod(fd, 0o600)
+        if os.write(fd, payload) != len(payload):
+            raise OSError()
+        os.fsync(fd)
+        held = os.fstat(fd)
+        visible = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1 or
+                stat.S_IMODE(held.st_mode) != 0o600 or held.st_size != len(payload) or
+                (held.st_dev, held.st_ino, held.st_uid, held.st_gid, held.st_mode) !=
+                (visible.st_dev, visible.st_ino, visible.st_uid, visible.st_gid, visible.st_mode)):
+            raise OSError()
+    finally:
+        os.close(fd)
+finally:
+    os.close(root_fd)
+PY
+  then
+    echo "supported-local execution roots invalid" >&2
+    return 1
   fi
 }
 
@@ -985,6 +1094,8 @@ write_runtime_blob_and_configs() {
   local socket_path="${proof_dir}/spire-agent/public/api.sock"
   local digest_file="${proof_dir}/workload-zone-vault-config-digest.txt"
 
+  preflight_supported_local_setup_retained_result_auth "${proof_dir}"
+
   python3 - <<'PY' \
     "${proof_dir}" \
     "${tls_dir}" \
@@ -1010,7 +1121,10 @@ write_runtime_blob_and_configs() {
     "${ARS_HOST}" \
     "${EGS_HOST}" \
     "${AGS_HOST}" \
-    "${ES_HOST}"
+    "${ES_HOST}" \
+    "${RETAINED_RESULT_AUTH_STORE_ID}" \
+    "${RETAINED_RESULT_AUTH_KEY_ID}" \
+    "${RETAINED_RESULT_AUTH_KEY_FILE}"
 import hashlib
 import json
 import os
@@ -1042,6 +1156,9 @@ ars_host = sys.argv[22]
 egs_host = sys.argv[23]
 ags_host = sys.argv[24]
 es_host = sys.argv[25]
+result_auth_store_id = sys.argv[26]
+result_auth_key_id = sys.argv[27]
+result_auth_key_file = sys.argv[28]
 allow_control_plane = os.environ.get("SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE", "0").strip().lower() in {"1", "true", "yes"}
 operator_and_maybe_control_plane = ["operator/local"]
 if allow_control_plane:
@@ -1063,8 +1180,8 @@ blob_path.parent.mkdir(parents=True, exist_ok=True)
 blob_path.write_bytes(blob_bytes)
 digest_file.write_text(digest + "\n", encoding="utf-8")
 index_path.write_text("{}\n", encoding="utf-8")
-staging_root.mkdir(parents=True, exist_ok=True)
-results_root.mkdir(parents=True, exist_ok=True)
+# The renderer serializes the two roots already provisioned by setup. It does
+# not create, adopt, or normalize execution state.
 
 ars_cfg = {
     "http": {"bind_address": "127.0.0.1", "port": ars_port, "read_timeout_seconds": 5, "write_timeout_seconds": 5, "shutdown_timeout_seconds": 5},
@@ -1162,6 +1279,11 @@ es_cfg = {
     "execution": {
         "staging_root_dir": str(staging_root),
         "results_root_dir": str(results_root),
+        "retained_result_auth": {
+            "store_id": result_auth_store_id,
+            "key_id": result_auth_key_id,
+            "key_file": result_auth_key_file,
+        },
         "base_image": "python:3.13-alpine",
         "runtime_support_binary": runtime_support_binary,
         "spire_workload_api_socket_path": str(socket_path),
@@ -1193,6 +1315,7 @@ write_env_file() {
   cat > "${env_path}" <<EOF
 export SUPPORTED_LOCAL_PROOF_ID="${PROOF_ID}"
 export SUPPORTED_LOCAL_PROOF_DIR="${PROOF_DIR}"
+export SUPPORTED_LOCAL_ES_ROOTS_PROFILE="${ES_ROOTS_PROFILE}"
 export SUPPORTED_LOCAL_MANAGED_SECRETS="${PROOF_DIR}/managed-secrets.conf"
 export BRINGUP_DIR="${PROOF_DIR}/bringup-state"
 export READY_TIMEOUT_SECONDS=60
@@ -1241,13 +1364,15 @@ setup() {
     exit 1
   fi
   if [[ -z "${PROOF_DIR}" || "${PROOF_DIR}" == "/" ]]; then
-    echo "SUPPORTED_LOCAL_PROOF_DIR is unsafe: ${PROOF_DIR}" >&2
+    echo "SUPPORTED_LOCAL_PROOF_DIR is unsafe" >&2
     exit 1
   fi
 
   # Exact Go preflight for local-Go-required setup paths must precede proof/process/workspace mutation.
   preflight_supported_local_setup_go_if_required
   supported_local_setup_repair_test_sentinel
+  preflight_supported_local_setup_retained_result_auth
+  preflight_supported_local_setup_execution_roots
 
   local vault_public_host
   local vault_address
@@ -1286,8 +1411,11 @@ setup() {
   stop_background_process "${PROOF_DIR}/spire-server.pid"
   stop_background_process "${PROOF_DIR}/vault-dev.pid"
   stop_vault_dev_listener "${VAULT_PORT}"
-  rm -rf "${PROOF_DIR}"
-  mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/es-staging" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs" "${PROOF_DIR}/downloads" "${PROOF_DIR}/spire"
+  # This setup selects a fresh proof root; retained failed roots belong to the
+  # wrapper's separately bounded cleanup, not an in-place owner migration.
+  mkdir -- "${PROOF_DIR}"
+  mkdir -p "${PROOF_DIR}/tls" "${PROOF_DIR}/ars-storage" "${PROOF_DIR}/bin" "${PROOF_DIR}/logs" "${PROOF_DIR}/workdirs" "${PROOF_DIR}/downloads" "${PROOF_DIR}/spire"
+  provision_supported_local_execution_roots
 
   build_codex_runtime_profile_image
   prepare_runtime_support_binary
@@ -1358,6 +1486,11 @@ setup() {
     "${CODEX_CLI_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_PATH}" \
     "${CODEX_CREDENTIAL_SECRET_FIELD}"
+  if ! python3 "${ES_ROOTS_HELPER}" check "${PROOF_DIR}" "${PROOF_ID}" "${PROOF_DIR}/es.json" >/dev/null 2>&1; then
+    echo "supported-local execution roots invalid" >&2
+    return 1
+  fi
+  write_supported_local_execution_root_evidence "${PROOF_DIR}"
   write_env_file "${PROOF_DIR}/env.sh"
 
   cat <<EOF
@@ -1379,6 +1512,9 @@ next steps:
 EOF
 }
 
+# bash -s has no top-level source filename; a sourced file does. Both direct
+# file execution and the proof wrapper's stdin transport dispatch once.
+if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]-}" == "$0" ]]; then
 case "${ACTION}" in
   setup)
     setup
@@ -1391,3 +1527,4 @@ case "${ACTION}" in
     exit 1
     ;;
 esac
+fi

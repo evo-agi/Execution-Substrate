@@ -90,6 +90,20 @@ Build these from the current validators and the configuration matrix in [configu
 
 For the clean supported-host path, use `BRINGUP_PROFILE=prepare-only scripts/01_bringup.sh up` for the control plane and `BRINGUP_PROFILE=full scripts/01_bringup.sh check` against the already-running pre-managed Nomad endpoint.
 
+Before a configured Submit setup or supported-local proof, provide stable
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID` and
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID` identifiers and
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE`, a reference to an already
+provisioned key on the machine running ES. Through the proof wrapper, this is
+a guest-local path, not a Mac file to upload. The file must be in an external
+private directory outside staging, results, the replaceable proof workspace,
+and guest bootstrap/scratch cleanup scopes. The helpers validate metadata and
+lexical placement but do not read, generate, copy, repair, or qualify key bytes;
+ES startup performs its own file checks. Fresh-store example identifiers are
+placeholders. Existing retained data requires the original stable identifiers
+and key; no automatic lost-key recovery, rotation, or old-result adoption is
+provided.
+
 On the current supported local reference host on this Mac, you do not need the earlier out-of-repo `/tmp` harnesses. The canonical supported-local proof path is now:
 
 ```bash
@@ -361,17 +375,28 @@ Docker daemon logs are outside this repo and are only a useful next step for sub
 | trust / evidence / admission failure | The published artifact, aggregate evidence, signer policy, or admission inputs were rejected after auth succeeded. | The failing publish / prepare / submit helper. | `ags.log` for publish-side evidence handling, `es.log` for prepare / submit rejection, `egs.log` when signer or artifact trust policy is the likely cause. | No. The failure is before runtime handoff. | Check the published artifact digest, aggregate evidence, and EGS trust inputs before retrying. |
 | runtime-config reference or blob failure | ES runtime-config points at a missing, unreadable, or structurally invalid workload-zone Vault blob in ARS, including malformed Vault CA bundle material when supplied. | `scripts/01_bringup.sh check` or `VERIFY_RUNTIME_CONFIG=1 scripts/10_health_check.sh`. | `es.log` and `ars.log`. | No. Fix the referenced blob first. | Re-run `scripts/01_bringup.sh check`, then confirm `ES_CONFIG.runtime_config.workload_zone_vault_config_ref.digest` still points at a readable ARS JSON blob with the expected address/auth shape and valid optional CA bundle. |
 | service health / readiness failure | A required service is down, unhealthy, or not ready enough to claim service health or prepare-ready. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh`. | The failing service log under `logs/`; if ES health is failing because an upstream dependency is sick, inspect that upstream log too. | No. Readiness must be restored first. | Re-run `scripts/01_bringup.sh check`, restore service health or prepare-ready, then retry publish / prepare / submit. |
-| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, required runtime-profile image availability, Nomad image-cleanup guardrail, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info`, `docker image inspect`, or Nomad Docker client-option checks fail. | Usually no. If `:submit` was never accepted, there is no run staging to inspect. | Re-run `scripts/01_bringup.sh check`, then verify Docker, required runtime-profile images, Nomad Docker image cleanup config, Nomad leader/client readiness, and ES submit config before retrying. |
-| execution failure after successful submit | `:submit` returned a `run_id`, but the workload later failed, was canceled, got lost, or otherwise ended non-successfully. | `scripts/50_lifecycle.sh` or `scripts/60_execute_loop.sh`. | Workload logs from `scripts/50_lifecycle.sh` or the per-run `logs.txt` from `scripts/60_execute_loop.sh`, plus `es.log` and `nomad.log` if the runtime handoff itself looks suspicious. | Yes, but only for non-success outcomes with a real `run_id`. | Inspect lifecycle status/logs for the `run_id`, then inspect retained host staging under `execution.staging_root_dir/<run_id>` if the run failed, was canceled, was lost, or never reached clean success. |
+| substrate failure (Docker / Nomad / runtime availability) | ES submit wiring, Docker availability, required runtime-profile image availability, Nomad image-cleanup guardrail, Nomad leadership, or Nomad client readiness is missing for the full submit path. | `scripts/01_bringup.sh check` or `scripts/10_health_check.sh` in `BRINGUP_PROFILE=full`. | `nomad.log`, `es.log`, and Docker daemon logs if `docker info`, `docker image inspect`, or Nomad Docker client-option checks fail. | Depends on the failure boundary. There is no staging only when failure preceded both run assignment and exclusive run-root creation. A failed or ambiguous Submit after claim may retain partial or complete staging without returning a receipt or run ID. | Re-run `scripts/01_bringup.sh check`, then verify Docker, required runtime-profile images, Nomad Docker image cleanup config, Nomad leader/client readiness, and ES submit config before retrying. Treat any retained post-claim root as sensitive diagnostic state, not as proof of Nomad acceptance. |
+| execution outcome after successful submit | `:submit` returned a `run_id` and the workload later reached any observable outcome. | `scripts/50_lifecycle.sh` or `scripts/60_execute_loop.sh`. | Workload logs from `scripts/50_lifecycle.sh` or the per-run `logs.txt` from `scripts/60_execute_loop.sh`, plus `es.log` and `nomad.log` if the runtime handoff itself looks suspicious. | Yes. Successful, failed, canceled, lost, and ambiguous outcomes all retain the same root. | Inspect lifecycle status/logs for the `run_id`, then inspect retained host staging under `execution.staging_root_dir/<run_id>` when needed. |
 | operator misuse / invalid input | The helper caught missing env vars, unreadable files, malformed JSON, or an invalid `run_id`, or the service returned a bounded input-validation error. | The failing helper itself. | Usually none. If the malformed request reached a service, inspect `ags.log` or `es.log` for the matching `400`. | No. Fix the input first. | Validate request JSON, env vars, readable file paths, and `run_id`, then retry. |
 
 Staging inspection guidance in this slice:
 
-- staging is only useful after a successful `:submit` already returned a real `run_id`
-- failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain `execution.staging_root_dir/<run_id>`
-- terminal success may remove `execution.staging_root_dir/<run_id>` best-effort once ES observes success through `status` or `logs`, after ES has attempted retained-result capture from `/execution/run/result`
+- staging may exist after any post-claim Submit return, including a partial or ambiguous failure that did not return a receipt
+- retained post-claim state may contain sensitive payload, trust, runtime-support, or mount material; restrict operator access accordingly
+- retained staging is not proof that Nomad accepted the job, and absence of staging is not proof that no provider effect occurred
+- successful, failed, canceled, lost, ambiguous, and unknown outcomes all retain `execution.staging_root_dir/<run_id>`
+- terminal observation and retained-result capture from `/execution/run/result` never authorize staging deletion
+- staging is relevant after a successful run-root claim, even if a later Submit
+  response fails or is ambiguous; no run tree exists before claim
+- every successfully claimed `execution.staging_root_dir/<run_id>` remains
+  retained through materialization error, registration failure or ambiguity,
+  and terminal success/failure/cancel/loss
+- terminal result capture from `/execution/run/result` is separate from
+  staging retention; descriptor close does not delete the run root
 - retained terminal result bundles, when present, live under `execution.results_root_dir/<run_id>/result.tar.gz` and are fetched through `GET /v1/executions/{run_id}/result`
-- if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step
+- the no-staging case is limited to failure before both run assignment and exclusive run-root creation; receipt absence alone does not establish that boundary
+- the former blanket heuristic, "if publish, prepare, or submit failed before a `run_id` existed, staging is the wrong next step", is obsolete for Submit: it remains safe for publish/prepare, but a Submit without a receipt may still have crossed exclusive claim and retained sensitive staging
+- no current automatic whole-run-root reclamation path exists
 
 Companion diagnostics helper for the same matrix:
 
@@ -380,6 +405,11 @@ Companion diagnostics helper for the same matrix:
 - `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`
 
 The collector accepts either the short category aliases above or the surfaced failure labels from the operator-facing scripts. It gathers only the checks, logs, lifecycle output, and staging inspection signals already called out in this matrix. It prints both `bundle_dir=` and `bundle_json=` so the summary helper can render the collected bundle without re-running diagnostics.
+
+The legacy surfaced label `execution failure after successful submit` remains
+an accepted alias for the execution category. The category now covers every
+observable post-submit outcome; the legacy label does not imply that only
+failed executions retain staging.
 
 ## 6. First Execution Verification
 
@@ -411,7 +441,17 @@ That helper drives:
 
 and writes a structured summary plus captured logs to a per-run work directory.
 
-Because that helper waits for terminal status and then reads logs, it also exercises the current successful-submit staging cleanup policy: ES keeps `execution.staging_root_dir/<run_id>` while the workload may still depend on it, attempts retained-result capture from `/execution/run/result`, then best-effort removes that staging root after terminal success is observed. Failed, canceled, lost, or otherwise ambiguous outcomes intentionally retain staging for debugging.
+Because that helper waits for terminal status and then reads logs, it also
+exercises retained staging: ES attempts retained-result capture from
+`/execution/run/result` while leaving `execution.staging_root_dir/<run_id>` in
+place. Result success, absence, conflict, or failure has no staging-mutation
+consequence.
+Because that helper waits for terminal status and then reads logs, it can
+exercise retained-result capture from `/execution/run/result`. The isolated
+candidate retains every successfully claimed staging root after terminal
+success as well as failure, cancellation, loss, or ambiguous registration.
+This interim rule increases disk use and sensitive-material residence; no
+reclamation authority is selected.
 
 Keep host qualification and smoke proof distinct:
 

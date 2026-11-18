@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"execution-substrate/es/internal/ownershipnorm"
 	"golang.org/x/sys/unix"
@@ -16,6 +15,7 @@ const (
 	ownershipNormalizationMarkerName          = ownershipnorm.MarkerFileName
 	ownershipNormalizationMarkerSchemaVersion = ownershipnorm.SchemaVersion
 	ownershipNormalizationMarkerStatus        = ownershipnorm.MarkerStatus
+	maxOwnershipNormalizationMarkerBytes      = 256 << 10
 )
 
 var ownershipNormalizationRequiredPaths = ownershipnorm.RequiredPaths()
@@ -24,104 +24,44 @@ type ownershipNormalizationMarker = ownershipnorm.Marker
 
 type ownershipNormalizationMarkerExpectations = ownershipnorm.ValidationOptions
 
-func preflightRetainedResultSource(root string, platformDir string, expectations ownershipNormalizationMarkerExpectations) (bool, error) {
-	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(ownershipnorm.MarkerPath(platformDir), platformDir, expectations); err != nil {
-		return false, err
+func loadValidatedOwnershipNormalizationMarkerAt(directoryFD int, expectations ownershipNormalizationMarkerExpectations) (*ownershipNormalizationMarker, []byte, error) {
+	var directoryStat unix.Stat_t
+	if err := unix.Fstat(directoryFD, &directoryStat); err != nil {
+		return nil, nil, fmt.Errorf("ownership-normalization authority directory is not readable: %w", err)
+	}
+	directoryIdentity := custodyIdentityFromStat(directoryStat)
+	if !custodyIdentityIsDirectory(directoryIdentity) || os.FileMode(directoryStat.Mode).Perm()&0o022 != 0 {
+		return nil, nil, fmt.Errorf("ownership-normalization authority directory is not a private directory")
+	}
+	if expectations.ExpectedUID != nil && expectations.ExpectedGID != nil && (directoryIdentity.UID != *expectations.ExpectedUID || directoryIdentity.GID != *expectations.ExpectedGID) {
+		return nil, nil, fmt.Errorf("ownership-normalization authority directory has unexpected ownership")
 	}
 
-	info, err := os.Lstat(root)
+	payloadBytes, markerIdentity, err := readStableRegularFileAt(directoryFD, ownershipNormalizationMarkerName, maxOwnershipNormalizationMarkerBytes, directoryIdentity.Device)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.IsDir() {
-		return false, fmt.Errorf("result path is not a directory")
-	}
-	if err := requireExpectedOwnership(root, info, expectations, "result path"); err != nil {
-		return false, err
-	}
-
-	hasFiles := false
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		displayPath := treeDisplayPath(root, path)
-		if walkErr != nil {
-			return fmt.Errorf("result entry %s is not readable: %w", displayPath, walkErr)
-		}
-		if path == root {
-			return nil
-		}
-
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("result entry %s is not readable: %w", displayPath, err)
-		}
-		if err := requireExpectedOwnership(path, info, expectations, "result entry "+displayPath); err != nil {
-			return err
-		}
-
-		switch {
-		case info.IsDir():
-			return nil
-		case info.Mode().IsRegular():
-			if err := rejectHardLinkedRetainedResultFile(info, displayPath); err != nil {
-				return err
+		if errors.Is(err, unix.ENOENT) {
+			if _, validateErr := ownershipnorm.ValidateState(nil, expectations); validateErr != nil {
+				return nil, nil, validateErr
 			}
-			file, err := openRetainedResultRegularFile(path, displayPath)
-			if err != nil {
-				return err
-			}
-			if err := file.Close(); err != nil {
-				return fmt.Errorf("result entry %s close failed: %w", displayPath, err)
-			}
-			hasFiles = true
-			return nil
-		case info.Mode()&os.ModeSymlink != 0:
-			return fmt.Errorf("result entry %s uses unsupported symbolic link", displayPath)
-		default:
-			return fmt.Errorf("result entry %s uses unsupported file mode %s", displayPath, info.Mode().String())
+			return nil, nil, nil
 		}
-	})
-	if err != nil {
-		return false, err
+		return nil, nil, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
 	}
-	return hasFiles, nil
-}
-
-func preflightSuccessfulStageCleanup(root string, platformDir string, expectations ownershipNormalizationMarkerExpectations) error {
-	if _, err := os.Lstat(root); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
+	if os.FileMode(markerIdentity.Mode).Perm()&0o022 != 0 {
+		return nil, nil, fmt.Errorf("ownership-normalization marker is group- or world-writable")
+	}
+	if expectations.ExpectedUID != nil && expectations.ExpectedGID != nil && (markerIdentity.UID != *expectations.ExpectedUID || markerIdentity.GID != *expectations.ExpectedGID) {
+		return nil, nil, fmt.Errorf("ownership-normalization marker has unexpected ownership")
 	}
 
-	if _, _, _, err := loadValidatedOwnershipNormalizationMarker(ownershipnorm.MarkerPath(platformDir), platformDir, expectations); err != nil {
-		return err
+	var marker ownershipNormalizationMarker
+	if err := json.Unmarshal(payloadBytes, &marker); err != nil {
+		return nil, nil, fmt.Errorf("ownership-normalization marker is not valid JSON: %w", err)
 	}
-
-	if err := requireDirectoryCleanupAccess(filepath.Dir(root), "stage root parent"); err != nil {
-		return err
+	if err := validateOwnershipNormalizationMarker(marker, expectations); err != nil {
+		return nil, nil, err
 	}
-
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		displayPath := treeDisplayPath(root, path)
-		if walkErr != nil {
-			return fmt.Errorf("stage root %s is not cleanup-ready: %w", displayPath, walkErr)
-		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("stage root %s is not cleanup-ready: %w", displayPath, err)
-		}
-		if err := requireExpectedOwnership(path, info, expectations, "stage root "+displayPath); err != nil {
-			return err
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		return requireDirectoryCleanupAccess(path, displayPath)
-	})
+	return &marker, payloadBytes, nil
 }
 
 func preflightOptionalOwnershipNormalizationMarker(platformDir string, expectations ownershipNormalizationMarkerExpectations) (bool, error) {
@@ -130,97 +70,32 @@ func preflightOptionalOwnershipNormalizationMarker(platformDir string, expectati
 }
 
 func loadValidatedOwnershipNormalizationMarker(markerPath string, authorityDir string, expectations ownershipNormalizationMarkerExpectations) (*ownershipNormalizationMarker, []byte, string, error) {
-	markerInfo, err := os.Lstat(markerPath)
+	cleanMarkerPath := filepath.Clean(markerPath)
+	markerParent := filepath.Dir(cleanMarkerPath)
+	if authorityDir != "" && filepath.Clean(authorityDir) != markerParent {
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker authority path does not match its parent")
+	}
+	directory, err := openQualifiedDirectory(markerParent, false, 0)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, unix.ENOENT) {
 			if _, validateErr := ownershipnorm.ValidateState(nil, expectations); validateErr != nil {
 				return nil, nil, markerPath, validateErr
 			}
 			return nil, nil, markerPath, nil
 		}
-		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not readable: %w", err)
 	}
-	if !markerInfo.Mode().IsRegular() {
-		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not a regular file")
+	defer directory.close()
+	if err := directory.verifyVisible(); err != nil {
+		return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not stable: %w", err)
 	}
-	if markerInfo.Mode().Perm()&0o022 != 0 {
-		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is group- or world-writable")
-	}
-
-	if authorityDir != "" {
-		authorityInfo, err := os.Stat(authorityDir)
-		if err != nil {
-			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not readable: %w", err)
-		}
-		if !authorityInfo.IsDir() {
-			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is not a directory")
-		}
-		if authorityInfo.Mode().Perm()&0o022 != 0 {
-			return nil, nil, markerPath, fmt.Errorf("ownership-normalization authority directory is group- or world-writable")
-		}
-	}
-
-	payloadBytes, err := os.ReadFile(markerPath)
+	marker, payloadBytes, err := loadValidatedOwnershipNormalizationMarkerAt(directory.fd, expectations)
 	if err != nil {
-		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not readable: %w", err)
-	}
-
-	var marker ownershipNormalizationMarker
-	if err := json.Unmarshal(payloadBytes, &marker); err != nil {
-		return nil, nil, markerPath, fmt.Errorf("ownership-normalization marker is not valid JSON: %w", err)
-	}
-	if err := validateOwnershipNormalizationMarker(marker, expectations); err != nil {
 		return nil, nil, markerPath, err
 	}
-	return &marker, payloadBytes, markerPath, nil
+	return marker, payloadBytes, markerPath, nil
 }
 
 func validateOwnershipNormalizationMarker(marker ownershipNormalizationMarker, expectations ownershipNormalizationMarkerExpectations) error {
 	return ownershipnorm.Validate(marker, expectations)
-}
-
-func requireExpectedOwnership(path string, info os.FileInfo, expectations ownershipNormalizationMarkerExpectations, display string) error {
-	if expectations.ExpectedUID == nil || expectations.ExpectedGID == nil {
-		return nil
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat == nil {
-		return fmt.Errorf("%s ownership cannot be determined", display)
-	}
-	actualUID := int(stat.Uid)
-	actualGID := int(stat.Gid)
-	if actualUID != *expectations.ExpectedUID || actualGID != *expectations.ExpectedGID {
-		return fmt.Errorf(
-			"%s is not owned by expected ES uid:gid %d:%d (got %d:%d) (%s)",
-			display,
-			*expectations.ExpectedUID,
-			*expectations.ExpectedGID,
-			actualUID,
-			actualGID,
-			path,
-		)
-	}
-	return nil
-}
-
-func requireDirectoryCleanupAccess(path string, displayPath string) error {
-	if err := unix.Access(path, unix.R_OK|unix.W_OK|unix.X_OK); err != nil {
-		return fmt.Errorf("cleanup requires read/write/execute access to %s (%s): %w", displayPath, path, err)
-	}
-	return nil
-}
-
-func treeDisplayPath(root string, path string) string {
-	if path == root {
-		return "."
-	}
-	relativePath, err := filepath.Rel(root, path)
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	relativePath = filepath.ToSlash(relativePath)
-	if relativePath == "." || relativePath == "" {
-		return "."
-	}
-	return relativePath
 }

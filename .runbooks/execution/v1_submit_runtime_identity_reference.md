@@ -85,7 +85,10 @@ For this full-profile runbook, do not continue unless the check reports `submit-
 
 If the later publish / prepare / submit / lifecycle helpers fail, first re-run `scripts/01_bringup.sh check`, then use the operator troubleshooting matrix in [.runbooks/system/v1_bringup.md](../system/v1_bringup.md) to choose the right logs, readiness checks, staging inspection path, and next action for the surfaced failure category. If you want the bounded data bundle for that same guidance, run `scripts/70_diagnostics.sh --category ...` or `scripts/70_diagnostics.sh --run-id ...`, then `scripts/71_diagnostics_summary.sh <bundle_dir|bundle.json>`.
 
-Inspect retained staging only when `:submit` already returned a real `run_id` and the later lifecycle outcome was non-success. Earlier publish / prepare / submit failures are not staging-debug problems.
+Inspect retained staging whenever exclusive run-root creation may have occurred.
+Every post-claim failure and every accepted run retains its root, including
+partial Submit failures that return no receipt, ambiguous registration, and
+terminal success. Failures before run assignment/claim still create no staging.
 
 ## 6. Optional Local Reference Helpers
 

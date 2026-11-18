@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# Direct health and diagnostics entrypoints source only bringup.sh. Load the
+# read-only supported-local root validator they share with staging preflight.
+# shellcheck source=scripts/internal/control_plane.sh
+source "$(dirname "${BASH_SOURCE[0]}")/control_plane.sh"
+
 bringup_repo_root() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -566,9 +571,22 @@ PY
 
 check_es_submit_config_once() {
   local config_path=$1
+  local roots_profile="${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-}"
   local summary
 
-  if ! summary="$(python3 - <<'PY' "$config_path"
+  case "${roots_profile}" in
+    "")
+      ;;
+    service-root-v1)
+      verify_supported_local_es_root_profile "${config_path}" "es submit config" || return 1
+      ;;
+    *)
+      echo "es submit config: unsupported supported-local roots profile" >&2
+      return 1
+      ;;
+  esac
+
+  if ! summary="$(python3 - <<'PY' "$config_path" "$roots_profile"
 import json
 import os
 import pathlib
@@ -612,13 +630,13 @@ if not staging_root.exists():
     raise SystemExit(f"es submit config: execution.staging_root_dir does not exist: {staging_root_dir}")
 if not staging_root.is_dir():
     raise SystemExit(f"es submit config: execution.staging_root_dir is not a directory: {staging_root_dir}")
-if not os.access(staging_root_dir, os.W_OK):
+if sys.argv[2] != "service-root-v1" and not os.access(staging_root_dir, os.W_OK):
     raise SystemExit(f"es submit config: execution.staging_root_dir is not writable: {staging_root_dir}")
 if not results_root.exists():
     raise SystemExit(f"es submit config: execution.results_root_dir does not exist: {results_root_dir}")
 if not results_root.is_dir():
     raise SystemExit(f"es submit config: execution.results_root_dir is not a directory: {results_root_dir}")
-if not os.access(results_root_dir, os.W_OK):
+if sys.argv[2] != "service-root-v1" and not os.access(results_root_dir, os.W_OK):
     raise SystemExit(f"es submit config: execution.results_root_dir is not writable: {results_root_dir}")
 if not pathlib.Path(runtime_support_binary).is_absolute():
     raise SystemExit("es submit config: execution.runtime_support_binary must be an absolute path")

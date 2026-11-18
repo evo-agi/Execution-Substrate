@@ -3,20 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PARENT_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
+source "${SCRIPT_DIR}/internal/supported_local_retained_result_auth.sh"
 
 ACTION="${1:-run}"
 SUPPORTED_LOCAL_INSTANCE="${SUPPORTED_LOCAL_INSTANCE:-es-lima-qemu-arm64}"
 SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST="${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST:-/Users/ds/Repositories/Execution Substrate}"
 SUPPORTED_LOCAL_PROOF_ID="${SUPPORTED_LOCAL_PROOF_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 SUPPORTED_LOCAL_HOST_PROOF_DIR="${SUPPORTED_LOCAL_HOST_PROOF_DIR:-${REPO_ROOT}/.out/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
+SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR="${PARENT_ROOT}/es-proof-bootstrap-${SUPPORTED_LOCAL_PROOF_ID}"
 SUPPORTED_LOCAL_GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR:-/tmp/es-proof-${SUPPORTED_LOCAL_PROOF_ID}}"
 SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR:-${SUPPORTED_LOCAL_GUEST_PROOF_DIR}.bootstrap}"
 SUPPORTED_LOCAL_GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT:-${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/repo}"
 SUPPORTED_LOCAL_PORT_BASE="${SUPPORTED_LOCAL_PORT_BASE:-18440}"
 SUPPORTED_LOCAL_INPUT_SPEC="${SUPPORTED_LOCAL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/runtime_identity_vault_success.input.json}"
-SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/runtime_identity_vault_login/dist/runtime_identity_vault_login.tar.gz}"
+SUPPORTED_LOCAL_DIST_PAYLOAD="${SUPPORTED_LOCAL_DIST_PAYLOAD:-}"
 SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC="${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC:-${REPO_ROOT}/.examples/execution_loop/control_plane_normal_shell_runtime.input.json}"
-SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD="${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD:-${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/dist/control_plane_normal_shell_runtime.tar.gz}"
+SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD="${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD:-}"
 SUPPORTED_LOCAL_SPIRE_VERSION="${SUPPORTED_LOCAL_SPIRE_VERSION:-1.14.4}"
 SUPPORTED_LOCAL_SPIRE_ASSET="${SUPPORTED_LOCAL_SPIRE_ASSET:-spire-${SUPPORTED_LOCAL_SPIRE_VERSION}-linux-arm64-musl.tar.gz}"
 SUPPORTED_LOCAL_SPIRE_URL="${SUPPORTED_LOCAL_SPIRE_URL:-https://github.com/spiffe/spire/releases/download/v${SUPPORTED_LOCAL_SPIRE_VERSION}/${SUPPORTED_LOCAL_SPIRE_ASSET}}"
@@ -24,6 +27,8 @@ SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL="${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL
 GO_REQUIRED_VERSION="go1.26.5"
 
 CONTROL_PLANE_STARTED="false"
+GUEST_COLLECTION_READY="false"
+HOST_BOOTSTRAP_IDENTITY=""
 
 usage() {
   cat <<'EOF'
@@ -44,7 +49,8 @@ Silicon Mac + Lima qemu reference path. It:
   - boots the proof-scoped real Vault dev/test target used by that proof
   - runs the higher-value useful credential-flow proof
   - runs the bounded Control Plane normal-shell runtime-contract proof
-  - copies resulting guest evidence back into the canonical .out workspace
+  - publishes projected guest evidence into exclusive .out generations
+  - keeps source and transport inputs in separate private host bootstrap scratch
   - removes successful guest /tmp/es-proof-* scratch after host evidence is preserved
 
 Optional environment variables:
@@ -59,6 +65,9 @@ Optional environment variables:
   SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=/abs/path/to/spire-linux-arm64-musl.tar.gz
   SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC=/abs/path/to/control_plane_normal_shell_runtime.input.json
   SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD=/abs/path/to/control_plane_normal_shell_runtime.tar.gz
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=<stable non-secret identifier>
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=<stable non-secret identifier>
+  SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=/guest/external/private/keys/key
 EOF
 }
 
@@ -95,6 +104,49 @@ preflight_supported_local_proof_go_if_required() {
   fi
 }
 
+preflight_supported_local_proof_retained_result_auth() {
+  supported_local_validate_retained_result_auth \
+    "${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}" \
+    "${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}" \
+    "${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}" \
+    "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/es-staging" \
+    "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/es-results" \
+    "${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
+    "${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
+    "${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
+    "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
+    "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}"
+}
+
+preflight_supported_local_proof_bootstrap_scope() {
+  python3 - "${REPO_ROOT}" "${PARENT_ROOT}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
+    "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    "${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
+    "${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" "${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}" \
+    "${SUPPORTED_LOCAL_PROOF_ID}" <<'PY'
+import os
+import re
+import sys
+
+repo, parent, evidence, scratch, guest, bootstrap, guest_repo, mounted, key, proof_id = sys.argv[1:]
+def clean(path):
+    return path.startswith('/') and not path.startswith('//') and path != '/' and os.path.normpath(path) == path
+def overlaps(left, right):
+    return left == right or left.startswith(right + '/') or right.startswith(left + '/')
+if not all(clean(path) for path in (repo, parent, evidence, scratch, guest, bootstrap, guest_repo, mounted)):
+    raise SystemExit('supported-local proof scope is invalid')
+if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', proof_id):
+    raise SystemExit('supported-local proof id is invalid')
+if os.path.dirname(scratch) != parent or os.path.basename(scratch) != 'es-proof-bootstrap-' + proof_id:
+    raise SystemExit('supported-local bootstrap placement is invalid')
+if any(overlaps(scratch, path) for path in (repo, evidence, guest, bootstrap, guest_repo, mounted)):
+    raise SystemExit('supported-local bootstrap scope overlaps another scope')
+if key and overlaps(scratch, key):
+    raise SystemExit('supported-local bootstrap scope overlaps retained-result key')
+PY
+}
+
 supported_local_proof_repair_test_sentinel() {
   if [[ "${SUPPORTED_LOCAL_REPAIR_TEST_SENTINEL:-}" == "after-go-preflight" ]]; then
     echo "supported-local proof exact Go preflight complete"
@@ -113,13 +165,109 @@ run_guest_stdin() {
 }
 
 collect_guest_workspace() {
-  mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
+  local generation=${1:?safe evidence generation required}
+  case "${generation}" in setup|final|failure) ;; *) return 1 ;; esac
   if ! limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
-    env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
-    bash -lc 'if [[ -d "${GUEST_PROOF_DIR}" ]]; then tar --ignore-failed-read --exclude=spire-agent/public/api.sock --exclude=spire-server/private/api.sock -C "${GUEST_PROOF_DIR}" -cf - . 2>/dev/null; fi' \
-    | tar -C "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" -xf - 2>/dev/null; then
-    return 0
+    bash -s -- collect-safe "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    < "${SCRIPT_DIR}/internal/supported_local_proof_evidence.sh" 2>/dev/null \
+    | bash "${SCRIPT_DIR}/internal/supported_local_proof_evidence.sh" \
+      receive-safe "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "${generation}" 2>/dev/null; then
+    echo "supported-local safe evidence collection failed" >&2
+    return 1
   fi
+}
+
+create_private_host_bootstrap_dir() {
+  HOST_BOOTSTRAP_IDENTITY="$(python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
+    create-scratch "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_PROOF_ID}")"
+}
+
+cleanup_host_bootstrap_scratch() {
+  if [[ -z "${HOST_BOOTSTRAP_IDENTITY}" ]]; then
+    [[ ! -e "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" && ! -L "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" ]]
+    return
+  fi
+  python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" \
+    cleanup-scratch "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${HOST_BOOTSTRAP_IDENTITY}"
+}
+
+finalize_host_evidence_manifest() {
+  python3 "${SCRIPT_DIR}/internal/supported_local_proof_host_manifest.py" \
+    finalize "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
+}
+
+write_phase_status() {
+  local phase=$1 status=$2
+  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "${phase}" "${status}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+root, phase, status = sys.argv[1:]
+allowed = {'source-snapshot', 'input-preparation', 'package-identity', 'package-normal-shell', 'runtime-support-build',
+           'spire-stage', 'guest-bootstrap', 'snapshot-transfer', 'snapshot-extract', 'snapshot-drop',
+           'cleanup-guest-scratch', 'tooling-transfer', 'guest-setup', 'input-transfer',
+           'prepare-only-up', 'full-check', 'supported-host-capture', 'runtime-identity-execute',
+           'normal-shell-execute', 'runtime-identity-capture', 'normal-shell-capture',
+           'result-validation', 'guest-cleanup'}
+if phase not in allowed or not status.isdecimal() or int(status) > 255:
+    raise SystemExit('invalid proof phase status')
+path = pathlib.Path(root) / ('phase-' + phase + '.json')
+data = (json.dumps({'schema': 'supported-local-proof-phase-v1', 'phase': phase,
+                    'success': int(status) == 0, 'exit_code': int(status)},
+                   sort_keys=True, separators=(',', ':')) + '\n').encode()
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    with os.fdopen(fd, 'wb', closefd=False) as output:
+        output.write(data)
+    os.fchmod(fd, 0o600)
+finally:
+    os.close(fd)
+PY
+}
+
+run_phase() {
+  local phase=$1 status=0
+  shift
+  "$@" >/dev/null 2>&1 || status=$?
+  if ! write_phase_status "${phase}" "${status}" >/dev/null 2>&1; then
+    echo "supported-local proof phase projection failed: ${phase}" >&2
+    if [[ "${status}" -ne 0 ]]; then return "${status}"; fi
+    return 1
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    echo "supported-local proof phase failed: ${phase}" >&2
+    return "${status}"
+  fi
+}
+
+create_private_host_proof_dir() {
+  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+target = pathlib.Path(sys.argv[1])
+if not target.is_absolute() or os.path.normpath(str(target)) != str(target):
+    raise SystemExit("host proof directory must be a clean absolute path")
+old_umask = os.umask(0o077)
+try:
+    os.mkdir(target, 0o700)
+finally:
+    os.umask(old_umask)
+metadata = os.lstat(target)
+if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o700 or metadata.st_uid != os.geteuid():
+    raise SystemExit("host proof directory is not a private real directory")
+descriptor = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+try:
+    observed = os.fstat(descriptor)
+    if (observed.st_dev, observed.st_ino) != (metadata.st_dev, metadata.st_ino):
+        raise SystemExit("host proof directory identity changed")
+finally:
+    os.close(descriptor)
+PY
 }
 
 cleanup_stale_guest_proof_scratch() {
@@ -163,7 +311,7 @@ EOF
 }
 
 remove_current_guest_scratch() {
-  run_guest_stdin <<'EOF' >/dev/null 2>&1 || true
+  run_guest_stdin <<'EOF'
 remove_path() {
   local path=$1
 
@@ -185,85 +333,109 @@ EOF
 
 finalize() {
   local status=$?
-  cleanup_control_plane
-  collect_guest_workspace || true
+  local original_status=${status}
+  local collection_ok=true
+  local scratch_removed=false
+  trap - EXIT
+  if [[ "${status}" -ne 0 && "${GUEST_COLLECTION_READY}" == "true" ]]; then
+    cleanup_control_plane
+    if ! collect_guest_workspace failure; then
+      collection_ok=false
+      echo "supported-local failure evidence collection failed" >&2
+    fi
+  fi
+  if cleanup_host_bootstrap_scratch; then
+    scratch_removed=true
+  else
+    echo "supported-local bootstrap scratch retained: exact cleanup could not be proved" >&2
+    if [[ "${status}" -eq 0 ]]; then status=1; fi
+  fi
+  if ! write_proof_closeout "${original_status}" "${collection_ok}" "${scratch_removed}"; then
+    echo "supported-local proof closeout projection failed" >&2
+    if [[ "${status}" -eq 0 ]]; then status=1; fi
+  fi
+  if ! finalize_host_evidence_manifest; then
+    echo "supported-local host evidence manifest failed" >&2
+    if [[ "${status}" -eq 0 ]]; then status=1; fi
+  fi
   exit "${status}"
+}
+
+write_proof_closeout() {
+  python3 - "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" "$1" "$2" "$3" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+root, status, collection, scratch_removed = sys.argv[1:]
+if not status.isdecimal() or int(status) > 255 or collection not in ('true', 'false') or scratch_removed not in ('true', 'false'):
+    raise SystemExit('invalid proof closeout status')
+data = (json.dumps({'schema': 'supported-local-proof-closeout-v1',
+                    'primary_exit_code': int(status), 'failure_collection_succeeded': collection == 'true',
+                    'bootstrap_scratch_removed': scratch_removed == 'true'},
+                   sort_keys=True, separators=(',', ':')) + '\n').encode()
+fd = os.open(pathlib.Path(root) / 'proof-closeout.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    with os.fdopen(fd, 'wb', closefd=False) as output:
+        output.write(data)
+    os.fchmod(fd, 0o600)
+finally:
+    os.close(fd)
+PY
 }
 
 write_proof_metadata() {
   python3 - <<'PY' \
     "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/proof-metadata.json" \
-    "${SUPPORTED_LOCAL_INSTANCE}" \
-    "${SUPPORTED_LOCAL_REPO_ROOT_IN_GUEST}" \
-    "${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
-    "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
-    "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" \
-    "${SUPPORTED_LOCAL_INPUT_SPEC}" \
-    "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_INPUT_SPEC}" \
     "${SUPPORTED_LOCAL_PROOF_ID}"
 import json
-import pathlib
+import os
 import sys
 
-payload = {
-    "instance": sys.argv[2],
-    "mounted_repo_root_in_guest": sys.argv[3],
-    "guest_repo_root": sys.argv[4],
-    "guest_proof_dir": sys.argv[5],
-    "host_proof_dir": sys.argv[6],
-    "input_spec": sys.argv[7],
-    "control_plane_normal_shell_input_spec": sys.argv[8],
-    "proof_id": sys.argv[9],
-}
-pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+data = (json.dumps({"schema": "supported-local-proof-metadata-v2", "proof_id": sys.argv[2]},
+                   sort_keys=True, separators=(",", ":")) + "\n").encode()
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    with os.fdopen(fd, "wb", closefd=False) as output:
+        output.write(data)
+    os.fchmod(fd, 0o600)
+finally:
+    os.close(fd)
 PY
 }
 
 prepare_host_repo_snapshot() {
-  local snapshot_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.tar.gz"
-  local snapshot_sha_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.sha256"
-  local snapshot_listing_path="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot-files.txt"
-
-  (
-    cd "${REPO_ROOT}"
-    tar \
-      --exclude='.git' \
-      --exclude='.out' \
-      --exclude='.tmp' \
-      -czf "${snapshot_path}" \
-      .
-  )
-
-  python3 - <<'PY' "${snapshot_path}" "${snapshot_sha_path}"
-import hashlib
-import pathlib
-import sys
-
-snapshot_path = pathlib.Path(sys.argv[1])
-digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-pathlib.Path(sys.argv[2]).write_text(digest + "\n", encoding="utf-8")
-PY
-
-  tar -tzf "${snapshot_path}" | LC_ALL=C sort > "${snapshot_listing_path}"
+  python3 "${SCRIPT_DIR}/internal/supported_local_proof_source_snapshot.py" snapshot \
+    "${REPO_ROOT}" "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
 }
 
 prepare_host_inputs() {
-  local payload_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
-  local spec_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/runtime_identity_vault_success.input.json"
-  local cp_payload_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
-  local cp_spec_copy="${SUPPORTED_LOCAL_HOST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"
+  local payload_copy="${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/payload/runtime_identity_vault_login.tar.gz"
+  local spec_copy="${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/runtime_identity_vault_success.input.json"
+  local cp_payload_copy="${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
+  local cp_spec_copy="${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/control_plane_normal_shell_runtime.input.json"
 
-  mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload"
-  "${REPO_ROOT}/.examples/runtime_identity_vault_login/package.sh" | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-package-workload.txt"
-  cp "${SUPPORTED_LOCAL_DIST_PAYLOAD}" "${payload_copy}"
-  "${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/package.sh" | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-package-control-plane-normal-shell.txt"
-  cp "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" "${cp_payload_copy}"
+  mkdir -m 0700 "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/payload"
+  if [[ -n "${SUPPORTED_LOCAL_DIST_PAYLOAD}" ]]; then
+    run_phase package-identity cp "${SUPPORTED_LOCAL_DIST_PAYLOAD}" "${payload_copy}" || return $?
+  else
+    run_phase package-identity python3 "${REPO_ROOT}/scripts/package_example_archive.py" \
+      "${REPO_ROOT}/.examples/runtime_identity_vault_login/entrypoint" "${payload_copy}" entrypoint || return $?
+  fi
+  if [[ -n "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" ]]; then
+    run_phase package-normal-shell cp "${SUPPORTED_LOCAL_CP_NORMAL_SHELL_DIST_PAYLOAD}" "${cp_payload_copy}" || return $?
+  else
+    run_phase package-normal-shell python3 "${REPO_ROOT}/scripts/package_example_archive.py" \
+      "${REPO_ROOT}/.examples/control_plane_normal_shell_runtime/entrypoint" "${cp_payload_copy}" entrypoint || return $?
+  fi
 
   python3 - <<'PY' \
     "${SUPPORTED_LOCAL_INPUT_SPEC}" \
     "${spec_copy}" \
     "${SUPPORTED_LOCAL_GUEST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
 import json
+import os
 import pathlib
 import sys
 
@@ -287,21 +459,24 @@ PY
 }
 
 prepare_host_tooling() {
-  mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin"
+  mkdir -m 0700 "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin"
   require_supported_go_toolchain
 
-  (
-    cd "${REPO_ROOT}"
-    env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support" \
-      ./cmd/es-runtime-support
-  )
+  build_runtime_support() {
+    (
+      cd "${REPO_ROOT}"
+      env GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+        -o "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/es-runtime-support" \
+        ./cmd/es-runtime-support
+    )
+  }
+  run_phase runtime-support-build build_runtime_support
 
   if [[ -n "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" ]]; then
-    cp "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}"
+    run_phase spire-stage cp "${SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL}" "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz"
   else
-    curl -L --fail --silent --show-error \
-      -o "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}" \
+    run_phase spire-stage curl -L --fail --silent --show-error \
+      -o "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz" \
       "${SUPPORTED_LOCAL_SPIRE_URL}"
   fi
 }
@@ -312,19 +487,26 @@ prepare_guest_bootstrap_dir() {
       GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
       GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
       GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
-    bash -lc 'rm -rf "${GUEST_BOOTSTRAP_DIR}" && mkdir -p "${GUEST_BOOTSTRAP_DIR}" "${GUEST_PROOF_DIR}" "$(dirname "${GUEST_REPO_ROOT}")"'
+    bash -lc 'rm -rf "${GUEST_BOOTSTRAP_DIR}" && mkdir -p "${GUEST_BOOTSTRAP_DIR}" "$(dirname "${GUEST_REPO_ROOT}")"'
 }
 
 copy_repo_snapshot_to_guest() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.tar.gz"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/host-repo-snapshot.tar.gz"
 }
 
 extract_guest_repo_snapshot() {
   local host_snapshot_sha
-  host_snapshot_sha="$(tr -d '[:space:]' < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-repo-snapshot.sha256")"
+  host_snapshot_sha="$(python3 - <<'PY' "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/source-snapshot.json"
+import json
+import pathlib
+import sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())['sha256']
+print(value)
+PY
+)"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env \
@@ -333,7 +515,7 @@ extract_guest_repo_snapshot() {
       GUEST_REPO_ROOT="${SUPPORTED_LOCAL_GUEST_REPO_ROOT}" \
       HOST_REPO_SNAPSHOT_SHA256="${host_snapshot_sha}" \
     bash -seuo pipefail <<'EOF'
-python3 - <<'PY' "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" "${GUEST_PROOF_DIR}/guest-repo-snapshot.sha256"
+python3 - <<'PY' "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" "${GUEST_BOOTSTRAP_DIR}/guest-repo-snapshot.sha256"
 import hashlib
 import pathlib
 import sys
@@ -344,7 +526,7 @@ pathlib.Path(sys.argv[2]).write_text(digest + "\n", encoding="utf-8")
 print(digest)
 PY
 
-guest_sha="$(tr -d '[:space:]' < "${GUEST_PROOF_DIR}/guest-repo-snapshot.sha256")"
+guest_sha="$(tr -d '[:space:]' < "${GUEST_BOOTSTRAP_DIR}/guest-repo-snapshot.sha256")"
 if [[ "${guest_sha}" != "${HOST_REPO_SNAPSHOT_SHA256}" ]]; then
   echo "guest repo snapshot digest mismatch: host=${HOST_REPO_SNAPSHOT_SHA256} guest=${guest_sha}" >&2
   exit 1
@@ -353,8 +535,8 @@ fi
 rm -rf "${GUEST_REPO_ROOT}"
 mkdir -p "${GUEST_REPO_ROOT}"
 tar -xzf "${GUEST_BOOTSTRAP_DIR}/repo-snapshot.tar.gz" -C "${GUEST_REPO_ROOT}"
-printf '%s\n' "${GUEST_REPO_ROOT}" > "${GUEST_PROOF_DIR}/guest-repo-root.txt"
-printf '%s\n' "${HOST_REPO_SNAPSHOT_SHA256}" > "${GUEST_PROOF_DIR}/repo-snapshot-match.txt"
+printf '%s\n' "${GUEST_REPO_ROOT}" > "${GUEST_BOOTSTRAP_DIR}/guest-repo-root.txt"
+printf '%s\n' "${HOST_REPO_SNAPSHOT_SHA256}" > "${GUEST_BOOTSTRAP_DIR}/repo-snapshot-match.txt"
 EOF
 }
 
@@ -366,19 +548,19 @@ copy_tooling_to_guest() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/es-runtime-support"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/es-runtime-support"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/es-runtime-support"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -lc 'cat > "${GUEST_BOOTSTRAP_DIR}/spire.tar.gz"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/bin/${SUPPORTED_LOCAL_SPIRE_ASSET}"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/bin/spire.tar.gz"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" \
     bash -lc 'chmod 0755 "${GUEST_BOOTSTRAP_DIR}/es-runtime-support" && chmod 0644 "${GUEST_BOOTSTRAP_DIR}/spire.tar.gz"'
 }
 
-setup_guest_environment() {
+build_supported_local_guest_setup_command() {
   local -a cmd=(
     limactl shell "${SUPPORTED_LOCAL_INSTANCE}" --
     env
@@ -390,6 +572,9 @@ setup_guest_environment() {
     "SUPPORTED_LOCAL_PREBUILT_SPIRE_TARBALL=${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}/spire.tar.gz"
     "SUPPORTED_LOCAL_SPIRE_VERSION=${SUPPORTED_LOCAL_SPIRE_VERSION}"
     "SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE=${SUPPORTED_LOCAL_ALLOW_CONTROL_PLANE:-1}"
+    "SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID:-}"
+    "SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID:-}"
+    "SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE=${SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE:-}"
   )
 
   if [[ -n "${SUPPORTED_LOCAL_VAULT_ADDRESS:-}" ]]; then
@@ -432,10 +617,21 @@ setup_guest_environment() {
   fi
 
   cmd+=(bash -s -- setup)
-  "${cmd[@]}" < "${REPO_ROOT}/scripts/72_supported_local_setup.sh" | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/host-guest-setup.txt"
+  SUPPORTED_LOCAL_GUEST_SETUP_CMD=("${cmd[@]}")
+}
+
+setup_guest_environment() {
+  build_supported_local_guest_setup_command
+  "${SUPPORTED_LOCAL_GUEST_SETUP_CMD[@]}" < "${REPO_ROOT}/scripts/72_supported_local_setup.sh"
 }
 
 copy_inputs_to_guest() {
+  # Setup exclusively creates the fresh proof root. Move only fixed nonsecret
+  # snapshot metadata from earlier bootstrap scratch after setup has returned.
+  limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
+    env GUEST_BOOTSTRAP_DIR="${SUPPORTED_LOCAL_GUEST_BOOTSTRAP_DIR}" GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
+    bash -lc 'cp -- "${GUEST_BOOTSTRAP_DIR}/guest-repo-snapshot.sha256" "${GUEST_BOOTSTRAP_DIR}/guest-repo-root.txt" "${GUEST_BOOTSTRAP_DIR}/repo-snapshot-match.txt" "${GUEST_PROOF_DIR}/"'
+
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'mkdir -p "${GUEST_PROOF_DIR}/payload"'
@@ -443,56 +639,45 @@ copy_inputs_to_guest() {
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'cat > "${GUEST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/runtime_identity_vault_login.tar.gz"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/payload/runtime_identity_vault_login.tar.gz"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'cat > "${GUEST_PROOF_DIR}/runtime_identity_vault_success.input.json"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/runtime_identity_vault_success.input.json"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/runtime_identity_vault_success.input.json"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'cat > "${GUEST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/payload/control_plane_normal_shell_runtime.tar.gz"
 
   limactl shell "${SUPPORTED_LOCAL_INSTANCE}" -- \
     env GUEST_PROOF_DIR="${SUPPORTED_LOCAL_GUEST_PROOF_DIR}" \
     bash -lc 'cat > "${GUEST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"' \
-    < "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/control_plane_normal_shell_runtime.input.json"
+    < "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/control_plane_normal_shell_runtime.input.json"
 }
 
 capture_supported_host_evidence() {
   run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
-systemctl is-enabled nomad > "$GUEST_PROOF_DIR/systemctl-is-enabled-nomad.txt"
-systemctl is-active nomad > "$GUEST_PROOF_DIR/systemctl-is-active-nomad.txt"
-systemctl status nomad --no-pager --full > "$GUEST_PROOF_DIR/systemctl-status-nomad.txt"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/agent/self" > "$GUEST_PROOF_DIR/nomad-agent-self.json"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/status/leader" > "$GUEST_PROOF_DIR/nomad-leader.json"
-curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/nodes" > "$GUEST_PROOF_DIR/nomad-nodes.json"
-python3 - <<'PY' "$GUEST_PROOF_DIR/node-details.json" "$NOMAD_ADDR"
-import json
-import pathlib
-import sys
-import urllib.request
-
-out_path = pathlib.Path(sys.argv[1])
-base_url = sys.argv[2].rstrip("/")
-nodes = json.load(urllib.request.urlopen(base_url + "/v1/nodes"))
-details = []
-for node in nodes:
-    node_id = (node.get("ID") or "").strip()
-    if not node_id:
-        continue
-    details.append(json.load(urllib.request.urlopen(base_url + f"/v1/node/{node_id}")))
-out_path.write_text(json.dumps(details, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
-docker info > "$GUEST_PROOF_DIR/docker-info.txt"
-{
-  grep -R -n 'cpu_total_compute\|NOMAD_CLIENT_CPU_TOTAL_COMPUTE' /etc/nomad.d || true
-  env | grep '^NOMAD_CLIENT_CPU_TOTAL_COMPUTE=' || true
-} > "$GUEST_PROOF_DIR/nomad-compute-override-check.txt"
+projector="$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py"
+systemctl show nomad --no-pager --property=Id,LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus |
+  python3 "$projector" host-systemd - "$GUEST_PROOF_DIR/nomad-service-safe.json"
+curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/agent/self" |
+  python3 "$projector" host-agent - "$GUEST_PROOF_DIR/nomad-agent-safe.json"
+curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/status/leader" |
+  python3 "$projector" host-leader - "$GUEST_PROOF_DIR/nomad-leader-safe.json"
+curl --fail-with-body --silent --show-error "$NOMAD_ADDR/v1/nodes" |
+  python3 "$projector" host-nodes - "$GUEST_PROOF_DIR/nomad-nodes-safe.json"
+python3 "$projector" fetch-node-details "$NOMAD_ADDR" "$GUEST_PROOF_DIR/node-details-safe.json"
+docker info --format '{{json .}}' |
+  python3 "$projector" host-docker - "$GUEST_PROOF_DIR/docker-info-safe.json"
+if grep -R -q 'cpu_total_compute\|NOMAD_CLIENT_CPU_TOTAL_COMPUTE' /etc/nomad.d || [[ -n "${NOMAD_CLIENT_CPU_TOTAL_COMPUTE:-}" ]]; then
+  printf 'true\n'
+else
+  printf 'false\n'
+fi | python3 "$projector" host-compute-override - "$GUEST_PROOF_DIR/nomad-compute-override-safe.json"
 EOF
 }
 
@@ -503,37 +688,69 @@ cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}"
 import json
+import os
 import pathlib
+import re
 import sys
 
 proof_dir = pathlib.Path(sys.argv[1])
 label = sys.argv[2].strip()
+if label not in ("", "runtime-identity-vault", "control-plane-normal-shell"):
+    raise SystemExit("invalid proof evidence label")
 workdirs = sorted([path for path in (proof_dir / "workdirs").iterdir() if path.is_dir()], key=lambda path: path.stat().st_mtime)
 if not workdirs:
     raise SystemExit("no execution-loop workdirs found")
 latest = workdirs[-1]
 
 def write_evidence(name, data):
-    (proof_dir / name).write_bytes(data)
-    if label:
-        (proof_dir / f"{label}-{name}").write_bytes(data)
+    output_name = f"{label}-{name}" if label else name
+    (proof_dir / output_name).write_bytes(data)
 
 for name in (
     "summary.json",
-    "status.json",
-    "logs.txt",
-    "result.tar.gz",
-    "publish-response.json",
-    "prepare-response.json",
-    "submit-response.json",
 ):
     src = latest / name
     if src.exists():
         write_evidence(name, src.read_bytes())
 
+status_path = latest / "status.json"
+if status_path.is_file():
+    import subprocess
+    projector = os.path.join(os.environ["GUEST_REPO_ROOT"], "scripts/internal/supported_local_proof_projection.py")
+    output_name = f"{label}-status-safe.json" if label else "status-safe.json"
+    subprocess.run(["python3", projector, "execution-status", str(status_path), str(proof_dir / output_name)], check=True)
+
+# Workload stdout can contain the proof secret value. Keep only fixed boolean
+# markers; never copy raw logs to the top-level evidence projection.
+logs_path = latest / "logs.txt"
+if label in ("runtime-identity-vault", "control-plane-normal-shell") and logs_path.is_file():
+    if logs_path.stat().st_size > (32 << 20):
+        raise SystemExit("execution log exceeds proof assertion read bound")
+    log_bytes = logs_path.read_bytes()
+    if len(log_bytes) > (32 << 20):
+        raise SystemExit("execution log exceeds proof assertion read bound")
+    assertions = {"schema": "supported-local-proof-log-assertions-v1"}
+    if label == "runtime-identity-vault":
+        assertions.update({
+            "identity_endpoint_used": b"PLATFORM-ENDPOINT-USED" in log_bytes,
+            "identity_jwt_received": b"IDENTITY-JWT-RECEIVED" in log_bytes,
+            "vault_login_success": b"VAULT-LOGIN-SUCCESS" in log_bytes,
+            "secret_read_success": b"SECRET-READ-SUCCESS:" in log_bytes,
+        })
+    else:
+        assertions["runtime_contract_proved"] = b"CP-NORMAL-SHELL-RUNTIME-CONTRACT-PROVED" in log_bytes
+    (proof_dir / f"{label}-log-assertions.json").write_text(
+        json.dumps(assertions, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+
 summary = json.loads((latest / "summary.json").read_text(encoding="utf-8"))
-write_evidence("latest-workdir.txt", (str(latest) + "\n").encode("utf-8"))
-write_evidence("run-id.txt", ((summary.get("run_id") or "").strip() + "\n").encode("utf-8"))
+if label == "control-plane-normal-shell":
+    if summary.get("workdir") != str(latest) or summary.get("result_path") != str(latest / "result.tar.gz"):
+        raise SystemExit("normal-shell proof result binding invalid")
+run_id = summary.get("run_id")
+if not isinstance(run_id, str) or re.fullmatch(r"run-[0-9a-f]{16}", run_id) is None:
+    raise SystemExit("invalid proof run id")
+(proof_dir / "run-id.txt").write_bytes((run_id + "\n").encode("utf-8"))
 PY
 
 run_id="$(tr -d '[:space:]' < "$GUEST_PROOF_DIR/run-id.txt")"
@@ -542,40 +759,75 @@ if [[ -z "${run_id}" ]]; then
   exit 1
 fi
 job_id="exec-${run_id}"
-nomad job status "${job_id}" > "$GUEST_PROOF_DIR/nomad-job-status.txt"
-nomad job allocs -json "${job_id}" > "$GUEST_PROOF_DIR/nomad-job-allocs.json"
-alloc_id="$(python3 - <<'PY' "$GUEST_PROOF_DIR/nomad-job-allocs.json"
+nomad job status "${job_id}" >/dev/null
+alloc_id="$(nomad job allocs -json "${job_id}" | python3 -c '
+import json
+import re
+import sys
+def reject_nonstandard_constant(_value):
+    raise ValueError("nonstandard JSON constant")
+try:
+    allocs = json.load(sys.stdin, parse_constant=reject_nonstandard_constant)
+except (ValueError, UnicodeError):
+    raise SystemExit("proof allocation list invalid") from None
+if not isinstance(allocs, list):
+    raise SystemExit("proof allocation list invalid")
+if len(allocs) != 1:
+    raise SystemExit("proof allocation count must be exactly one")
+if not isinstance(allocs[0], dict):
+    raise SystemExit("proof allocation entry invalid")
+value = allocs[0].get("ID")
+if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value) is None:
+    raise SystemExit("proof allocation id invalid")
+print(value)
+'
+)"
+nomad alloc status "${alloc_id}" >/dev/null
+python3 - <<'PY' "$GUEST_PROOF_DIR" "${EVIDENCE_LABEL:-}" "${run_id}" "${job_id}" "${alloc_id}"
 import json
 import pathlib
 import sys
-
-allocs = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if not allocs:
-    raise SystemExit("no allocations found for job")
-print((allocs[0].get("ID") or "").strip())
+root = pathlib.Path(sys.argv[1])
+label = sys.argv[2]
+run_id, job_id, allocation_id = sys.argv[3:]
+data = (json.dumps({"schema": "supported-local-nomad-execution-safe-v1",
+                    "run_id": run_id, "job_id": job_id, "allocation_id": allocation_id,
+                    "job_observed": True, "allocation_observed": True},
+                   sort_keys=True, separators=(",", ":")) + "\n").encode()
+(root / (f"{label}-nomad-execution-safe.json" if label else "nomad-execution-safe.json")).write_bytes(data)
 PY
-)"
-nomad alloc status "${alloc_id}" > "$GUEST_PROOF_DIR/nomad-alloc-status.txt"
 
-staging_root="$(python3 - <<'PY' "$GUEST_PROOF_DIR/es.json"
+staging_state="$(python3 - <<'PY' "$GUEST_PROOF_DIR/es.json" "${run_id}"
 import json
+import os
 import pathlib
+import stat
 import sys
 
-cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(cfg["execution"]["staging_root_dir"])
+try:
+    cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    staging_root = cfg["execution"]["staging_root_dir"]
+    if not isinstance(staging_root, str) or not os.path.isabs(staging_root):
+        raise ValueError()
+    root_fd = os.open(staging_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            entry = os.stat(sys.argv[2], dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            print("absent")
+        else:
+            if not stat.S_ISDIR(entry.st_mode):
+                raise ValueError()
+            print("present")
+    finally:
+        os.close(root_fd)
+except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+    raise SystemExit("proof staging observation invalid") from None
 PY
 )"
-if [[ -d "${staging_root}/${run_id}" ]]; then
-  echo "present" > "$GUEST_PROOF_DIR/staging-check.txt"
-else
-  echo "absent" > "$GUEST_PROOF_DIR/staging-check.txt"
-fi
+printf '%s\n' "${staging_state}" > "$GUEST_PROOF_DIR/staging-check.txt"
 
 if [[ -n "${EVIDENCE_LABEL:-}" ]]; then
-  cp "$GUEST_PROOF_DIR/nomad-job-status.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-job-status.txt"
-  cp "$GUEST_PROOF_DIR/nomad-job-allocs.json" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-job-allocs.json"
-  cp "$GUEST_PROOF_DIR/nomad-alloc-status.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-nomad-alloc-status.txt"
   cp "$GUEST_PROOF_DIR/staging-check.txt" "$GUEST_PROOF_DIR/${EVIDENCE_LABEL}-staging-check.txt"
 fi
 EOF
@@ -583,63 +835,9 @@ EOF
 
 validate_control_plane_normal_shell_result_bundle() {
   run_guest_stdin <<'EOF'
-python3 - <<'PY' "$GUEST_PROOF_DIR/control-plane-normal-shell-result.tar.gz" "$GUEST_PROOF_DIR/control-plane-normal-shell-result-assertions.json"
-import gzip
-import io
-import json
-import pathlib
-import sys
-import tarfile
-
-bundle_path = pathlib.Path(sys.argv[1])
-assertions_path = pathlib.Path(sys.argv[2])
-if not bundle_path.is_file():
-    raise SystemExit(f"missing retained result bundle: {bundle_path}")
-
-with gzip.open(bundle_path, "rb") as gzip_stream:
-    bundle_bytes = gzip_stream.read()
-with tarfile.open(fileobj=io.BytesIO(bundle_bytes), mode="r:") as archive:
-    entries = {}
-    for member in archive.getmembers():
-        if not member.isfile():
-            continue
-        extracted = archive.extractfile(member)
-        if extracted is None:
-            continue
-        entries[member.name] = extracted.read()
-
-required = [
-    "runtime-contract-proof.json",
-    "codex-stdout.txt",
-    "codex-stderr.txt",
-    "codex-final-message.txt",
-    "workspace.diff",
-    "workspace.tar.gz",
-]
-missing = [name for name in required if name not in entries]
-if missing:
-    raise SystemExit(f"result bundle is missing proof artifacts: {missing}; entries={sorted(entries)}")
-
-summary = json.loads(entries["runtime-contract-proof.json"].decode("utf-8"))
-if summary.get("status") != "ok":
-    raise SystemExit(f"unexpected proof status: {summary}")
-if summary.get("codex", {}).get("realization") != "supported-local-proof-codex-shim/v1":
-    raise SystemExit(f"unexpected Codex realization: {summary}")
-if summary.get("codex", {}).get("credential_material_present") is not True:
-    raise SystemExit(f"credential acquisition was not proved: {summary}")
-if b"ES_CONTROL_PLANE_NORMAL_SHELL_PROOF" not in entries["workspace.diff"]:
-    raise SystemExit("workspace diff does not contain proof mutation marker")
-if b"ES control-plane normal-shell proof completed" not in entries["codex-final-message.txt"]:
-    raise SystemExit("final message is missing proof completion marker")
-
-assertions = {
-    "bundle": str(bundle_path),
-    "entries": sorted(entries),
-    "proof_status": summary.get("status"),
-    "realization": summary.get("codex", {}).get("realization"),
-}
-assertions_path.write_text(json.dumps(assertions, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
+python3 "$GUEST_REPO_ROOT/scripts/internal/supported_local_proof_projection.py" captured-result \
+  "$GUEST_PROOF_DIR" \
+  "$GUEST_PROOF_DIR/control-plane-normal-shell-result-evidence.json"
 EOF
 }
 
@@ -649,30 +847,31 @@ run() {
   require_command tar
   require_command curl
 
-  if [[ -e "${SUPPORTED_LOCAL_HOST_PROOF_DIR}" ]]; then
-    echo "host proof dir already exists: ${SUPPORTED_LOCAL_HOST_PROOF_DIR}" >&2
-    exit 1
-  fi
-
   # Exact Go preflight for local-Go-required proof paths must precede proof/process/workspace mutation.
   preflight_supported_local_proof_go_if_required
   supported_local_proof_repair_test_sentinel
+  preflight_supported_local_proof_retained_result_auth
+  preflight_supported_local_proof_bootstrap_scope
 
-  mkdir -p "${SUPPORTED_LOCAL_HOST_PROOF_DIR}"
-  write_proof_metadata
+  umask 077
+  create_private_host_proof_dir
   trap finalize EXIT
+  create_private_host_bootstrap_dir
+  write_proof_metadata
 
-  prepare_host_repo_snapshot
-  prepare_host_inputs
+  run_phase source-snapshot prepare_host_repo_snapshot
+  run_phase input-preparation prepare_host_inputs
   prepare_host_tooling
-  prepare_guest_bootstrap_dir
-  copy_repo_snapshot_to_guest
-  extract_guest_repo_snapshot
-  cleanup_stale_guest_proof_scratch | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/cleanup-guest-scratch.txt"
-  copy_tooling_to_guest
-  setup_guest_environment
-  copy_inputs_to_guest
-  collect_guest_workspace
+  run_phase guest-bootstrap prepare_guest_bootstrap_dir
+  GUEST_COLLECTION_READY="true"
+  run_phase snapshot-transfer copy_repo_snapshot_to_guest
+  run_phase snapshot-extract extract_guest_repo_snapshot
+  run_phase snapshot-drop rm -- "${SUPPORTED_LOCAL_HOST_BOOTSTRAP_DIR}/host-repo-snapshot.tar.gz"
+  run_phase cleanup-guest-scratch cleanup_stale_guest_proof_scratch
+  run_phase tooling-transfer copy_tooling_to_guest
+  run_phase guest-setup setup_guest_environment
+  run_phase input-transfer copy_inputs_to_guest
+  collect_guest_workspace setup
 
   run_guest_stdin <<'EOF' >/dev/null 2>&1 || true
 cd "$GUEST_REPO_ROOT"
@@ -682,7 +881,7 @@ if [[ -f "$GUEST_PROOF_DIR/env.sh" ]]; then
 fi
 EOF
 
-  run_guest_stdin <<'EOF' | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/prepare-only-up.txt"
+  run_phase prepare-only-up run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 export BRINGUP_PROFILE=prepare-only
@@ -690,21 +889,21 @@ scripts/01_bringup.sh up
 EOF
   CONTROL_PLANE_STARTED="true"
 
-  run_guest_stdin <<'EOF' | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/full-check.txt"
+  run_phase full-check run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 BRINGUP_PROFILE=full scripts/01_bringup.sh check
 EOF
-  capture_supported_host_evidence
+  run_phase supported-host-capture capture_supported_host_evidence
 
-  run_guest_stdin <<'EOF' | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/execute-loop.txt"
+  run_phase runtime-identity-execute run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 scripts/60_execute_loop.sh "$GUEST_PROOF_DIR/runtime_identity_vault_success.input.json"
 EOF
-  capture_execution_evidence runtime-identity-vault
+  run_phase runtime-identity-capture capture_execution_evidence runtime-identity-vault
 
-  run_guest_stdin <<'EOF' | tee "${SUPPORTED_LOCAL_HOST_PROOF_DIR}/execute-loop-control-plane-normal-shell.txt"
+  run_phase normal-shell-execute run_guest_stdin <<'EOF'
 cd "$GUEST_REPO_ROOT"
 source "$GUEST_PROOF_DIR/env.sh"
 export OPERATOR_CERT="$CONTROL_PLANE_CERT"
@@ -712,15 +911,15 @@ export OPERATOR_KEY="$CONTROL_PLANE_KEY"
 export FETCH_RESULT=1
 scripts/60_execute_loop.sh "$GUEST_PROOF_DIR/control_plane_normal_shell_runtime.input.json"
 EOF
-  capture_execution_evidence control-plane-normal-shell
-  validate_control_plane_normal_shell_result_bundle
+  run_phase normal-shell-capture capture_execution_evidence control-plane-normal-shell
+  run_phase result-validation validate_control_plane_normal_shell_result_bundle
 
   cleanup_control_plane
-  collect_guest_workspace
-  remove_current_guest_scratch
-  trap - EXIT
+  collect_guest_workspace final
+  run_phase guest-cleanup remove_current_guest_scratch
 }
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${ACTION}" in
   run)
     run
@@ -733,3 +932,4 @@ case "${ACTION}" in
     exit 1
     ;;
 esac
+fi

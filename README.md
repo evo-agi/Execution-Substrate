@@ -62,7 +62,25 @@ The bounded diagnostics collector is `scripts/70_diagnostics.sh`. Use `--categor
 
 When a later helper reports a readiness or substrate problem, re-run `scripts/01_bringup.sh check` first instead of inferring readiness from a single endpoint call, then use that troubleshooting matrix or `scripts/70_diagnostics.sh`.
 
-In the current bounded execution slice, successful runs keep `execution.staging_root_dir/<run_id>` only until ES observes terminal success through the lifecycle path. Workloads may write terminal result files under `/execution/run/result`; ES retains those as an opaque bundle under `execution.results_root_dir` before successful staging cleanup. Failed, canceled, lost, or otherwise ambiguous outcomes retain staging for debugging.
+In the current bounded execution slice, every exclusively created
+`execution.staging_root_dir/<run_id>` remains retained after claim, including
+failed, ambiguous, accepted, successful, canceled, lost, and result-publication
+outcomes. Workloads may write terminal result files under
+`/execution/run/result`; ES may retain those as an independent opaque bundle
+under `execution.results_root_dir`, but result publication never authorizes
+staging deletion. Automatic whole-run-root reclamation is not implemented.
+
+Remote Alpha existing-host ES writable-state readiness, readiness staging,
+service-user migration, ownership preparation, rollback generation, and
+old-root planning routes are retired fixed tombstones. Archived v1 artifacts
+are historical evidence only, no live operator route parses or projects their
+retired schemas, and no v2 replacement exists for that retired ES writable-
+state/service-user migration family. The unrelated current EGS hardening v2
+schema remains current. Future infrastructure recovery requires a separately
+selected fresh-host setup contract, but this
+repository does not currently provide a complete supported fresh-host ES
+provisioner; old or nonempty host reuse remains blocked without a separately
+governed migration contract.
 
 For the bounded supported-local Control Plane consumer path, including the `control-plane-normal-shell/v1` runtime profile, submit-ready meaning, workload-visible identity/Vault/trust-material handoff, retained-result behavior, and ownership boundaries, use the canonical ES-side runbook: [.docs/supported_local_cp_consumer_runbook.md](.docs/supported_local_cp_consumer_runbook.md).
 

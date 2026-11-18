@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -98,7 +99,8 @@ func (e *Error) Error() string {
 }
 
 type Service struct {
-	cfg esconfig.Config
+	cfg        esconfig.Config
+	resultAuth *retainedResultAuthenticator
 
 	workloadZoneVaultConfigRef runtimeconfigv1.WorkloadZoneVaultConfigRef
 	arsClient                  *dependencyClient
@@ -162,13 +164,23 @@ type preparedArtifact struct {
 }
 
 type preparedAdmission struct {
+	privateExecutionValue
+	admittedRequest             PrepareRequest
 	result                      PrepareResult
 	artifact                    preparedArtifact
 	workloadVaultPlan           esconfig.ResolvedWorkloadVaultAuthPlan
+	workloadZoneVaultConfigRef  runtimeconfigv1.WorkloadZoneVaultConfigRef
 	trustModel                  egsmodel.RuntimeTrustPolicy
 	policyPayloadBytes          []byte
 	policyPayloadBytesAvailable bool
 }
+
+type admissionIntent uint8
+
+const (
+	admissionIntentPrepare admissionIntent = iota
+	admissionIntentSubmit
+)
 
 func NewService(cfg esconfig.Config) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
@@ -201,12 +213,31 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 	}
 
 	var nomadClient *nomadClient
+	var resultAuth *retainedResultAuthenticator
 	if cfg.SubmitConfigured() {
-		if err := os.MkdirAll(cfg.Execution.StagingRootDir, 0o755); err != nil {
-			return nil, fmt.Errorf("create execution staging root: %w", err)
+		resultAuth, err = loadRetainedResultAuthenticator(cfg.Execution)
+		if err != nil {
+			return nil, err
 		}
-		if err := os.MkdirAll(cfg.Execution.ResultsRootDir, 0o755); err != nil {
-			return nil, fmt.Errorf("create execution results root: %w", err)
+		roots, err := provisionExecutionRoots(cfg.Execution.StagingRootDir, cfg.Execution.ResultsRootDir, nil)
+		if err != nil {
+			return nil, err
+		}
+		owner, err := roots.owner()
+		if err != nil {
+			_ = roots.close()
+			return nil, err
+		}
+		if err := roots.probeCapabilities(owner); err != nil {
+			_ = roots.close()
+			return nil, fmt.Errorf("validate execution root capabilities: %w", err)
+		}
+		if err := roots.reobserve(); err != nil {
+			_ = roots.close()
+			return nil, fmt.Errorf("requalify execution roots after capability probes: %w", err)
+		}
+		if err := roots.close(); err != nil {
+			return nil, fmt.Errorf("close qualified execution roots: %w", err)
 		}
 		if err := validateExecutionRuntimeInputs(cfg.Execution); err != nil {
 			return nil, err
@@ -219,6 +250,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 
 	return &Service{
 		cfg:                        cfg,
+		resultAuth:                 resultAuth,
 		workloadZoneVaultConfigRef: workloadZoneVaultConfigRef,
 		arsClient:                  arsClient,
 		egsClient:                  egsClient,
@@ -233,16 +265,8 @@ func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
 	if err := validateSPIREWorkloadAPISocketPathConfigShape(cfg.SPIREWorkloadAPISocketPath); err != nil {
 		return err
 	}
-	resolvedBinaryPath, err := filepath.EvalSymlinks(filepath.Clean(cfg.RuntimeSupportBinary))
-	if err != nil {
+	if err := validateBoundedRegularFile(cfg.RuntimeSupportBinary, maxRuntimeSupportBytes); err != nil {
 		return fmt.Errorf("validate execution.runtime_support_binary: %w", err)
-	}
-	binaryInfo, err := os.Stat(resolvedBinaryPath)
-	if err != nil {
-		return fmt.Errorf("validate execution.runtime_support_binary: %w", err)
-	}
-	if !binaryInfo.Mode().IsRegular() {
-		return fmt.Errorf("validate execution.runtime_support_binary: path must resolve to a regular file")
 	}
 	return nil
 }
@@ -273,7 +297,7 @@ func (s *Service) Initialize(ctx context.Context) error {
 	}
 
 	var payload signedRuntimeTrustResponse
-	if err := decodeJSON(response.Body, &payload); err != nil {
+	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
 		return fmt.Errorf("decode trust model response: %w", err)
 	}
 	if err := payload.RuntimeTrust.Validate(); err != nil {
@@ -325,17 +349,34 @@ func (s *Service) Health(ctx context.Context) HealthSnapshot {
 }
 
 func (s *Service) Prepare(ctx context.Context, req PrepareRequest) (PrepareResult, *Error) {
-	prepared, err := s.prepareAdmission(ctx, req)
+	prepared, err := s.prepareAdmission(ctx, req, admissionIntentPrepare)
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	if err := s.validateRuntimeProfileForPrepare(req, prepared); err != nil {
+	if err := s.validateRuntimeProfileForPrepare(prepared.admittedRequest, prepared); err != nil {
 		return PrepareResult{}, err
 	}
 	return prepared.result, nil
 }
 
-func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (preparedAdmission, *Error) {
+func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest, intent admissionIntent) (preparedAdmission, *Error) {
+	req = snapshotAdmissionRequest(req)
+	switch intent {
+	case admissionIntentPrepare:
+	case admissionIntentSubmit:
+		if req.Mode == "" {
+			req.Mode = ExecutionModeAsync
+		}
+		if req.Mode != ExecutionModeAsync {
+			return preparedAdmission{}, &Error{
+				Status:  http.StatusBadRequest,
+				Code:    codeUnsupportedExecutionMode,
+				Message: "only async submission is supported in this execution slice",
+			}
+		}
+	default:
+		panic("unknown private admission intent")
+	}
 	if err := validatePrepareRequest(&req); err != nil {
 		return preparedAdmission{}, err
 	}
@@ -365,7 +406,7 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 		return preparedAdmission{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
-			Message: resolveErr.Error(),
+			Message: "workload-zone vault configuration is invalid",
 		}
 	}
 
@@ -375,12 +416,14 @@ func (s *Service) prepareAdmission(ctx context.Context, req PrepareRequest) (pre
 	}
 
 	return preparedAdmission{
+		admittedRequest: snapshotAdmissionRequest(req),
 		result: PrepareResult{
 			Success: true,
 		},
 		artifact:                    artifact,
 		workloadVaultPlan:           plan,
-		trustModel:                  *trustModel,
+		workloadZoneVaultConfigRef:  workloadVaultRef,
+		trustModel:                  snapshotRuntimeTrustModel(*trustModel),
 		policyPayloadBytes:          policyPayloadBytes,
 		policyPayloadBytesAvailable: policyPayloadBytesAvailable,
 	}, nil
@@ -400,8 +443,8 @@ func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
 	if s.trustModel == nil {
 		return nil
 	}
-	copy := *s.trustModel
-	return &copy
+	snapshot := snapshotRuntimeTrustModel(*s.trustModel)
+	return &snapshot
 }
 
 func (s *Service) fetchArtifactDiscovery(ctx context.Context, artifactDigest string) (discoveredArtifact, *Error) {
@@ -433,7 +476,7 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 	switch response.StatusCode {
 	case http.StatusOK:
 		var payload arsapi.ArtifactDiscovery
-		if err := decodeJSON(response.Body, &payload); err != nil {
+		if err := decodeBoundedJSONResponse(response, &payload); err != nil {
 			return arsapi.ArtifactDiscovery{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
@@ -443,7 +486,7 @@ func (s *Service) fetchArtifactDiscoveryRecord(ctx context.Context, artifactDige
 		return payload, nil
 	case http.StatusNotFound:
 		var payload artifactRegistryErrorResponse
-		if err := json.NewDecoder(response.Body).Decode(&payload); err == nil {
+		if err := decodeBoundedCompatibleJSONResponse(response, &payload); err == nil {
 			switch strings.TrimSpace(payload.Error) {
 			case "artifact not found", "artifact data not registered":
 				return arsapi.ArtifactDiscovery{}, &Error{
@@ -481,7 +524,7 @@ func (s *Service) fetchArtifactEvidenceBlob(ctx context.Context, artifactDigest 
 	switch response.StatusCode {
 	case http.StatusOK:
 		var payload evidencev1.ArtifactEvidence
-		if err := decodeJSON(response.Body, &payload); err != nil {
+		if err := decodeBoundedJSONResponse(response, &payload); err != nil {
 			return evidencev1.ArtifactEvidence{}, &Error{
 				Status:  http.StatusServiceUnavailable,
 				Code:    codeArtifactEvidenceUnavailable,
@@ -636,7 +679,7 @@ func (s *Service) fetchWorkloadZoneVaultConfig(ctx context.Context, ref runtimec
 	}
 
 	var payload runtimeconfigv1.WorkloadZoneVaultConfigBlob
-	if err := decodeJSON(response.Body, &payload); err != nil {
+	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
 		return runtimeconfigv1.WorkloadZoneVaultConfig{}, &Error{
 			Status:  http.StatusServiceUnavailable,
 			Code:    codeWorkloadZoneVaultUnavailable,
@@ -835,8 +878,10 @@ func (c *dependencyClient) checkReady(ctx context.Context) bool {
 	}
 
 	var payload healthResponse
-	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&payload); err != nil {
+	// Dependency health payloads have historically been extension-tolerant.
+	// Bound their acquisition without silently converting that compatibility
+	// behavior into the strict decoding used by admission-owned contracts.
+	if err := decodeBoundedCompatibleJSONResponse(response, &payload); err != nil {
 		return false
 	}
 	return payload.Status == "healthy" && payload.Ready
@@ -882,6 +927,42 @@ func decodeJSON(reader io.Reader, target any) error {
 		return fmt.Errorf("trailing data after first JSON document")
 	}
 	return nil
+}
+
+func decodeBoundedJSONResponse(response *http.Response, target any) error {
+	payload, err := readBoundedResponseBody(response, maxDependencyJSONResponseBytes)
+	if err != nil {
+		return err
+	}
+	return decodeJSON(bytes.NewReader(payload), target)
+}
+
+func decodeBoundedCompatibleJSONResponse(response *http.Response, target any) error {
+	payload, err := readBoundedResponseBody(response, maxDependencyJSONResponseBytes)
+	if err != nil {
+		return err
+	}
+	return json.NewDecoder(bytes.NewReader(payload)).Decode(target)
+}
+
+func decodeCompatibleJSONDocument(reader io.Reader, target any) error {
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("trailing data after first JSON document")
+	}
+	return nil
+}
+
+func decodeBoundedCompatibleJSONDocumentResponse(response *http.Response, target any) error {
+	payload, err := readBoundedResponseBody(response, maxDependencyJSONResponseBytes)
+	if err != nil {
+		return err
+	}
+	return decodeCompatibleJSONDocument(bytes.NewReader(payload), target)
 }
 
 func digestBytes(data []byte) string {

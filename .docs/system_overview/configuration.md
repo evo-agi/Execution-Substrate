@@ -177,6 +177,7 @@ architecture.
 - the current repo-owned activation path for that caller is the direct API example at `.examples/control_plane_static_script/run.sh`
 - the companion example templates for that path are `.examples/config/ags.operator_and_control_plane.json` and `.examples/config/es.operator_and_control_plane.json`
 - the default templates `ags.json` and `es.json`, plus the operator runbooks, remain operator-only by default
+- the three Submit-enabled `.examples/config/es*.json` templates use a syntactically valid all-zero runtime-config digest only as an inert placeholder; replace it with the actual ARS blob digest, along with the retained-result auth placeholders, before real startup
 
 AGS no longer exposes a legacy-signing compatibility control. The current publish path is evidence-native only.
 
@@ -329,6 +330,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
   - `nomad.datacenter`
   - `execution.staging_root_dir`
   - `execution.results_root_dir`
+  - `execution.retained_result_auth.store_id`, `key_id`, and `key_file`
   - `execution.base_image`
   - `execution.runtime_support_binary`
   - `execution.spire_workload_api_socket_path`
@@ -342,23 +344,101 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - `execution.staging_root_dir` is a writable host-local staging root
   - the current slice-0 operator path requires that host path to be mounted into the ES container at the exact same absolute path with no translation
   - that same-path requirement is a current deployment constraint of the bounded Nomad/Docker slice, not a client-facing governed-execution contract
+  - submit-enabled startup creates missing directory components without
+    following symlinks, reopens the configured root under descriptor custody,
+    probes staging for exclusive run-root creation and actual no-follow refusal,
+    and separately probes results for exclusive temporary creation and
+    no-replace publication; failure is a startup error with no fallback
+  - each new run root is created exclusively, held by parent/root descriptors,
+    and never adopted or reopened from a pre-existing path
+  - it backs run-scoped payload, run, and mount staging, and the same visible
+    root remains retained on every post-claim return
+  - failed, partial, ambiguous, accepted, terminal, canceled, lost, unknown,
+    and result-publication outcomes all retain `<staging_root>/<run_id>`
+  - ES does not quarantine, rename, scan, or recursively delete a run root;
+    automatic whole-root reclamation is not implemented
   - it backs run-scoped payload, run, and mount staging while the workload may still depend on those bind mounts
-  - ES best-effort removes `<staging_root>/<run_id>` after it observes terminal success for that run through the current lifecycle path
-  - failed, canceled, lost, or otherwise ambiguous outcomes retain `<staging_root>/<run_id>` for debugging in the current slice
+  - in the isolated resolved-plan/custody candidate, every successfully claimed `<staging_root>/<run_id>` is retained, including materialization failure, ambiguous registration and terminal success; no whole-run-root reclamation authority exists yet
+  - this interim rule increases disk use and sensitive-material residence; before environment-bound operational/rollout acceptance, accumulated-root/result/probe capacity and residence bounds must be selected and enforced with an explicit reclamation owner and authority or an enforceable bounded operating disposition; development-source acceptance selects none of these
+  - for the selected supported-local `service-root-v1` profile only, canonical setup exclusively provisions the two fresh configured roots as UID:GID `0:0`, exact directory mode `0755`; this is a static root-service provision, not permission to widen the private `0750` per-run staging or result directories
+  - prepare-only bring-up, ES launch, and full-profile submit-readiness share a read-only proof-binding, owner/mode, service-image/config, and exact same-path read-write mount check for that profile; the ordinary operator needs inspection access rather than write authority to those service-owned roots; generic no-profile readiness still checks caller writability and does not create missing roots
+  - the bounded setup helper retains each initialized root's no-follow descriptor through a final visible pair check; it refuses name/identity drift without repair, while `mkdir` and later descriptor acquisition under the operator-owned proof parent do not establish an atomic creation identity against arbitrary concurrent interference
+  - setup retains a fixed, path-free safe projection of that static root owner/mode check in proof evidence; the projection explicitly does not claim the future container's identity or behavioral capability
   - `/execution/run` remains a host-backed writable execution workspace and is not guaranteed non-sensitive
   - `/execution/staged` and caller-visible `/execution/mounts/...` remain host-backed copies of governed artifact content
   - ES does not semantically inspect payloads or mount contents for secrecy
   - a future infra manager may replace the current host-path backing with named volumes or other managed attachment semantics if it preserves the ES-local runtime contract inside the task
 - `execution.results_root_dir` is a writable ES-owned retained-results root
   - it must be an absolute local filesystem path
-  - it must be separate from `execution.staging_root_dir`
-  - future non-root-required readiness and service-user migration check-only require `execution.staging_root_dir` and `execution.results_root_dir` to resolve to the same target owner UID:GID
-  - ES stores retained terminal result bundles under `<results_root>/<run_id>/result.tar.gz`
-  - when validated ownership-normalization evidence exists for a completed run, ES preserves it under `<results_root>/<run_id>/ownership-normalization.json` before successful cleanup can remove the staging copy
-  - retained-result packaging and repeat retained-result reads may perform only narrow retained-artifact owner reconciliation on `<results_root>/<run_id>/`, `result.tar.gz`, and the preserved normalization-evidence sidecar so those retained artifacts stay readable to the future ES service owner
-  - retained bundles survive best-effort cleanup of `<staging_root>/<run_id>`
+  - it must be separate from `execution.staging_root_dir`; lexical separation
+    is only an early non-mutating configuration check, not physical proof
+  - staging and results are qualified together as one operation-local root
+    set before startup provisioning, Submit claim, and every named result-side
+    mutation; descriptor-held canonical objects and topology, not configured
+    spelling, must prove that neither root aliases or contains the other
+  - Linux uses complete `statx` identity including mount ID, no-follow
+    canonical `/proc/self/fd` rewalk, and a bounded mount-ID-selected
+    `/proc/self/mountinfo` record to compare source coordinates; Darwin uses
+    `F_GETPATH`, descriptor identity, `fstatfs`, and bounded `getfsstat`, and
+    rejects same-FSID distinct presentations as unprovable
+  - Linux keeps complete valid `nsfs` namespace-object records in the bounded
+    mount snapshot but classifies their source-grounded `kind:[decimal-inode]`
+    roots as opaque, never as pathname coordinates; only canonical pathname
+    roots are coordinate-eligible, and a descriptor-selected opaque root fails
+    before effects rather than using its mountpoint or configured spelling
+  - supported opaque namespace kinds are exactly `mnt`, `net`, `uts`, `ipc`,
+    `pid`, `user`, `cgroup`, and `time`; malformed labels, child-view aliases,
+    and other non-path root classes fail closed, and this record recognition
+    does not support `nsfs` as an execution-root filesystem
+  - ambiguous dual-missing roots under one deepest existing lookup object
+    fail closed; startup creates at most one missing component per proof and
+    requalifies before the next component or other effect
+  - an existing retained bundle may still be served when staging or its run
+    is absent; a read never provisions a missing results root, and topology
+    refusal never falls through to Nomad
+  - submit requires `execution.staging_root_dir` and `execution.results_root_dir` to resolve to the same target owner UID:GID; the retired Remote Alpha readiness and service-user helpers no longer inspect or certify that property
+  - submit-enabled startup and retained-result operations qualify every path
+    component without symlink traversal and keep the configured root plus the
+    run-scoped result directory under descriptor-held identity custody
+  - ES stores retained terminal result bundles under `<results_root>/<run_id>/result.tar.gz` by syncing a complete temporary object and publishing it with the existing platform no-replace rename primitive
+  - when validated ownership-normalization evidence exists for a completed run, ES preserves it under `<results_root>/<run_id>/ownership-normalization.json`; this has no staging-mutation consequence
+  - retained-result packaging and repeat reads fail closed on an existing final bundle whose owner, mode, link count, size, digest, identity, or stable path is wrong; an existing final bundle is never owner- or mode-reconciled in place
+  - newly constructed unpublished result objects receive their governed modes; existing run directories, final bundles, and normalization evidence are validated without in-place metadata repair
+  - retained bundles and retained staging are independent current surfaces
   - retained bundles are opaque to ES callers and are fetched through `GET /v1/executions/{run_id}/result`
   - this is a bounded current-slice terminal output contract, not a general runtime-output platform or Control Plane state store
+
+The physical-separation implementation is candidate behavior until the
+required running-deployment observation, repaired-helper mounted alias
+fixtures, native linux/amd64 and linux/arm64 validation, and fresh independent
+audit complete. Those gates were deferred until after local implementation;
+they were not passed or waived.
+- `execution.retained_result_auth` is a configured-Submit prerequisite for the isolated R1 candidate
+  - `store_id` and `key_id` are stable non-secret 1–32 byte ASCII identifiers matching `[a-z][a-z0-9_-]{0,31}`
+  - `key_file` is a clean absolute path with a non-root parent directory, outside the staging/results roots, to an externally provisioned regular file containing exactly 32 raw HMAC-SHA-256 key bytes; `/key` and `/` are outside the supported placement contract; no default, generator, fallback, reuse of an existing service key, or automatic rotation exists
+  - exclusion compares the key path with the effective `Clean(TrimSpace(root))` staging/results roots; no-follow key lookup preserves every component of the canonical configured key path, including a space in a parent component
+  - supported-local setup requires the two stable non-secret identifiers and the key-file reference through trusted operator inputs `SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID`, `SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID`, and `SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE`; the proof wrapper forwards these as guest-local metadata and never transfers a Mac key file
+  - the key reference must be lexically outside the setup proof workspace and, through the wrapper, outside guest proof/bootstrap/repository and `/tmp/es-proof-*` cleanup scopes; this lexical check does not prove physical alias isolation or safety against a same-UID process
+  - supported-local owned proof, bootstrap, repository, host collection and cleanup path scopes must be clean, single-leading-slash absolute non-root spellings; root, equality, and either ancestor/descendant overlap with the key reference fail closed before wrapper mutation or finalizer registration, while distinct sibling components remain distinct
+  - the setup script dispatches a requested action once when run as a file or through the wrapper's `bash -s -- setup` stdin transport with explicit `EXECUTION_SUBSTRATE_REPO_ROOT`; sourcing it exposes production functions without dispatching setup
+  - ES loads and privately owns the key once at configured-Submit service initialization. `BRINGUP_PROFILE=prepare-only` changes bring-up/readiness sequencing, not `Config.SubmitConfigured()`; this canonical setup retains Submit configuration, so key loading and execution-root capability qualification still run before ES listens. Only genuinely Submit-disabled service configuration avoids those startup prerequisites
+  - the file and its parent are opened without symlink traversal and checked for owner/access/identity and stable 32-byte content; failure stops configured Submit without repair or key-path/value diagnostics
+  - trusted operator inputs and generated ES configuration may carry only the identifiers and key-file reference; raw key bytes are forbidden from environment variables, argv, logs, generated proof assets, manifests and archives. Neither key bytes nor the key path enters workload environment, execution plan, captured material, Nomad, runtime mount, authority handoff or public diagnostic
+  - static key-file checks and separate storage do not prove isolation from an arbitrary same-UID process or physical alias; actual deployment isolation/exposure, key loss and rotation remain environment-bound operational/rollout acceptance gates, not facts established or requirements removed by development-source acceptance; no recovery or rotation behavior is selected here
+  - authenticated `result.commit.v1` is private result-byte eligibility evidence, not execution success, lifecycle truth, caller authorization or reliable-submit state; legacy unmarked finals stay unavailable
+- The bounded private codec-3 synthetic replay fixture injects a separate
+  32-byte PB1 binding key and a separate 32-byte envelope key in tests only.
+  They are not retained-result authentication keys and are not read from or
+  added to ES configuration, startup, environment, argv or production files.
+  Future operator-provisioned key custody and state-path configuration need a
+  separately governed decision; this private source does not enable runtime.
+- the isolated candidate qualifies staging and results roots as one normalized
+  pair from one configuration snapshot: absolute, component-wise no-symlink,
+  distinct non-overlapping backing objects with a matching owner model
+- configured-submit startup proves required local root and no-replace capabilities
+  by behavior; failure stops startup without fallback
+- a Submit-disabled service does not create run staging; a prepare-only bring-up profile does not itself disable Submit in the generated ES configuration
+
 - the runtime identity contract no longer requires ES-local identity plumbing configuration
 - ES currently backs the injected runtime identity endpoint with a memory-backed tmpfs workspace under a run-scoped subtree rooted at `/run/es-runtime-identity/`
   - this backing workspace is not persisted to host staging
@@ -366,6 +446,12 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - slice `1A` and `1B` additionally require:
   - `execution.runtime_support_binary`: absolute path to the platform-owned runtime supervisor/helper binary staged into the workload task
   - `execution.spire_workload_api_socket_path`: absolute path to the local SPIRE Workload API Unix socket source that ES records and later bind-mounts into the helper-private runtime path
+  - the runtime-support source must be a stable, no-follow, single-link regular
+    file of at most 32 MiB at startup validation and submit capture
+  - normalized workload-zone Vault CA and selected system CA inputs are each
+    limited to 256 KiB; the combined workload TLS bundle is limited to 524,289
+    bytes. These are explicit compatibility/security bounds and add no config
+    fields.
 - the bounded `control-plane-normal-shell/v1` profile additionally requires:
   - `execution.runtime_profiles.control_plane_normal_shell.image`: the Docker image ES selects for opt-in requests instead of `execution.base_image`
   - `execution.runtime_profiles.control_plane_normal_shell.codex_cli_path`: an absolute container path where the profile image provides Codex CLI
@@ -377,7 +463,7 @@ For a minimal active system, `runtime_trust.signer_policy.allowed_signers` must 
 - for the containerized operator bring-up path:
   - the default generated control-plane image now bundles `/usr/local/bin/es-runtime-support`
   - the long-lived ES process keeps `execution.spire_workload_api_socket_path` as a submit/runtime input, may validate only its config shape at startup, and does not need direct raw-socket traversal or `stat(2)` authority there
-  - operator bring-up, submit-readiness, and service-user migration check-only flows must still validate that the configured host SPIRE socket path exists as a local Unix socket before they claim submit-ready or apply-ready
+  - operator bring-up and submit-readiness must still validate that the configured host SPIRE socket path exists as a local Unix socket before claiming submit-ready; the retired Remote Alpha service-user route makes no apply-ready claim
   - runtime-helper failure to validate or reach that helper-private raw SPIRE path remains explicit and fail closed; the workload must not receive raw SPIRE socket access
   - that host socket path is current ES deployment input, not workload-visible contract; future infra-managed attachment can replace the bind form if it preserves the helper-private raw SPIRE boundary
 - for fresh Linux workload-zone VMs, `scripts/70_linux_setup.sh` now installs Docker, Nomad, Vault, and Go, writes the current single-node `/etc/nomad.d/nomad.hcl` with bind mounts enabled and Nomad Docker image cleanup disabled for local runtime-profile durability, and then tries to qualify the root-managed `nomad.service` baseline
@@ -417,105 +503,26 @@ Minimal vault-auth example:
 }
 ```
 
-### Remote Alpha ES service-user migration helper
+### Retired Remote Alpha existing-host ES helpers
 
-For the bounded Option B service-user migration surface, the preferred
-repo-side/operator helper is:
+The Remote Alpha ES writable-state readiness, readiness staging, ES service-user
+migration, ownership preparation, rollback-generation, and old-root planning
+implementations are retired. Their public wrappers remain compatibility
+delegators to fixed exit-2 tombstones that emit only the prescribed two-line
+stderr notice and create no artifact. No check-only, apply, discovery,
+inspection, staging, backup, JSON, Markdown, or migration simulation remains.
 
-- `scripts/remote_alpha_migrate_es_service_user.sh`
-
-Its sourced internal implementation is:
-
-- `scripts/internal/remote_alpha_migrate_es_service_user.sh`
-
-Operator rules for that helper are:
-
-- `--check-only` is the default and must remain non-mutating
-- `--apply` must be explicit and must re-run the check-only gates immediately
-  before any mutation
-- the default staged-wrapper path must use noninteractive `sudo -n` preflight
-  and fail cleanly with structured `sudo_unavailable` evidence before helper
-  upload or root-owned staging when passwordless sudo is unavailable
-- `--interactive-sudo` may be used only from a visible terminal when a
-  bounded password handoff is explicitly authorized; staged batch execution
-  must still use bounded remote commands rather than a forced-PTY heredoc path,
-  and tty-backed staged outputs must be fetched from remote artifact files
-  rather than redirected directly into the local evidence files; interactive
-  check-only should keep the privileged staged-install, stage-stat, and helper
-  execution inside one visible sudo-backed SSH session
-- when `--ssh-target` is used, the default local evidence directory should be
-  `.out/remote-alpha-m75q`
-- remote staging must copy only the migration helper plus the existing
-  writable-state readiness checker helper files; a full repo checkout is not
-  required on the remote host
-- the helper must not claim full ES/runtime de-root
-- the helper must leave the root-start runtime helper, Nomad task
-  `User: "0:0"`, helper-private SPIRE traversal, broad root selector scope,
-  and workload-zone Vault handoff semantics labeled as bounded compatibility
-  edges
-
-The default host-local apply-summary path for that helper is:
-
-- `/var/tmp/execution-substrate-remote-alpha/es-service-user-migration-summary.json`
-
-The required local staged-wrapper artifacts for that helper are:
-
-- `es-service-user-migration-check-only.json`
-- `es-service-user-migration-helper-staging-record.json`
-- `es-service-user-migration-apply-summary.json` when `--apply` is used
-- `es-service-user-migration-apply-stdout.txt` when `--apply` is used
-
-The helper staging record for that wrapper must distinguish:
-
-- `sudo_unavailable`
-- `wrapper_tooling_error`
-- whether staging occurred
-- whether the check-only helper ran
-- whether transient staging was removed
-
-Check-only for that helper must emit machine-readable JSON and must not create
-users or groups, call `chown` or `chmod` on live writable state, rewrite
-systemd units, restart services, delete staging/results, or run governed
-proof. Check-only must not create the host-local apply summary file; it emits
-JSON to stdout only. Apply may change only the bounded `es.service` account
-drop-in needed to set `User=es`, `Group=es`, and the documented `UMask=0027`,
-after readiness gates pass and a pre-mutation backup is created.
-
-The current live bounded state after that later helper apply is now:
-
-- the long-lived `es.service` runs as `User=es`, `Group=es`, `UMask=0027`
-- ES config/TLS prep is applied
-- ES stable writable-state roots are prepared
-- post-apply `/health`, `GET /v1/executions:contract`, the retained-result
-  fetch/materialization flow, and the current lowest-cost existing happy path
-  all passed
-- future writable-state readiness passed
-- this still does not claim full ES/runtime de-root because the root-start
-  runtime helper, Nomad task `User: "0:0"`, helper-private SPIRE traversal,
-  broad selector posture, and Vault/workload-zone handoff remain bounded
-  compatibility edges
-- old root-era staging/results roots remain preserved as rollback/debug/evidence
-  state until a later explicit cleanup/archive action after the rollback window
-  expires; they must not be recursively re-owned or deleted by the migration
-
-For bounded rollback rehearsal after that completed service-user change, the
-repo now carries the local-only checker
-`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`. Its default
-input is `.out/remote-alpha-m75q`, and it emits:
-
-- `es-service-user-rollback-rehearsal.json`
-- `es-service-user-rollback-rehearsal.md`
-
-That rehearsal is non-mutating and local-evidence-only. It must not SSH, use
-`sudo`, mutate the live host, execute rollback, run ES apply, run governed
-proof, or do PR/merge prep. It must classify findings as `pass`, `warning`, or
-`blocker` while verifying that the service-user backup path is recorded, the
-previous service unit/drop-in state is recorded, the bounded drop-in remains
-limited to `User=es`, `Group=es`, and `UMask=0027`, rollback notes exist, the
-binary-deployment backup plus writable-state backup/quarantine paths are
-referenced, old root-era staging/results roots remain preserved as
-rollback/debug/evidence state, and no recorded rollback instruction requires
-recursive chown or broad deletion.
+Archived v1 files remain historical evidence only. No live operator route
+parses or projects the retired readiness, staging, or ES service-user schemas,
+and they do not establish current host state or authorize deployment,
+readiness, migration, drain, reclamation, or mutation. No v2 replacement
+exists for that retired ES writable-state/service-user migration family. The
+unrelated current EGS hardening v2 schema and current Vault service-user family
+remain outside this retirement. Future infrastructure recovery requires a
+separately selected fresh-host setup contract, but a
+complete supported fresh-host ES provisioner is not currently implemented.
+Reuse of an old or nonempty host remains blocked without a separately governed
+existing-host migration contract.
 
 ## CGS
 
@@ -962,35 +969,39 @@ raw retained-result bundles. Its output is not ES `/health`, not
 runtime-profile readiness, not submit readiness, and not a new happy-path
 proof.
 
-Remote Supported-Host Alpha may also extend that current bounded hardening work
-with one separate ES config/TLS ownership prep slice.
+Remote Supported-Host Alpha retains unrelated config/TLS helper history as a
+bounded support surface. It does not reactivate the retired ES writable-state
+or service-user routes.
 
 `Bounded slice rule`: this slice prepares only ES-readable config/TLS
 ownership for a later non-root ES step.
 
-Current live bounded ES state on Remote Alpha is now:
+Archived v1 evidence recorded the following earlier host state:
 
 - ES config/TLS prep is applied.
 - ES stable writable-state roots are prepared.
-- the current live long-lived `es.service` now runs as `User=es`,
+- the observed long-lived `es.service` ran as `User=es`,
   `Group=es`, `UMask=0027`.
 - post-apply `/health`, `GET /v1/executions:contract`, the retained-result
   fetch/materialization flow, and the current lowest-cost existing happy path
   all passed.
-- future writable-state readiness passed.
+- the then-current writable-state check passed.
 - this does not claim full ES/runtime de-root.
 - the root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad selector posture, and Vault/workload-zone handoff
   remain bounded compatibility edges.
 - old root-era staging/results roots remain preserved as rollback/debug/evidence
-  state until a later explicit cleanup/archive action after the rollback window
-  expires; they must not be recursively re-owned or deleted by the migration.
+  state in that historical record.
+
+Those facts are not current host truth or authority. The v1 readiness,
+service-user, ownership, rollback, staging, and cleanup-planning producers are
+retired and cannot refresh them. An old or nonempty host remains blocked without
+a separately governed migration contract.
 
 The config/TLS, binary-deployment, and writable-state subsections below still
 describe earlier bounded slices whose own apply summaries intentionally record
-`root(default)` at those earlier steps. That historical wording remains true
-for those slice-specific artifacts and should not be read as the current live
-service posture after the later bounded `User=es` service-user migration.
+`root(default)` at those earlier steps. All such wording is historical artifact
+context and must not be read as current service posture or apply authority.
 
 `Temporary compatibility edge`: at that earlier step, the live `es.service`
 user/group remained `root(default)` while the ES config file and dedicated ES
@@ -1448,127 +1459,14 @@ must remove all three transient roots when they were created for the run.
 - record rollback notes for restoring the old binaries and restarting
   `es.service` once
 
-Remote Supported-Host Alpha may now also extend that current bounded hardening
-work with one separate ES stable writable-state ownership slice.
-
-`Bounded slice rule`: this earlier slice prepared only the stable
-staging/results root ownership needed before the later non-root
-`es.service` step.
-
-`Temporary compatibility edge`: at that earlier step, the live `es.service`
-user/group remained `root(default)` while only the stable writable-state roots
-moved to the documented `es:es` model. This slice must not recursively re-owner
-retained run trees and must not rewrite ES config/TLS inputs. Default
-empty-root apply must not restart `es.service`; a separate explicit non-empty-
-root maintenance window may stop/start `es.service` once while keeping the
-service identity at `root(default)`.
-
-This slice must:
-
-- inspect only `execution.staging_root_dir` and `execution.results_root_dir`
-  from `/etc/execution-substrate/es.json`
-- target owner `es:es` mode `0750` for both stable roots
-- block by default when either stable root is non-empty
-- advertise explicit maintenance-window rotation only when the helper can rule
-  out active or unknown runs safely
-- classify legacy run directories read-only through the existing configured
-  Nomad connection only when retained-result or normalization-marker evidence
-  is absent
-- require explicit `--accept-stale-orphaned-runs` before rotating non-empty
-  roots whose legacy directories are scheduler-terminal or stale/orphan
-  candidates without retained-result or normalization-marker evidence
-- inspect the minimal common parent traversal directory or directories needed
-  to reach the live staging/results roots
-- preserve the existing parent owner and change only the parent group and mode
-  needed for ES traversal; under the current Remote Alpha host layout that
-  means `root:es` `0750` for `/var/lib/execution-substrate/es`
-- refuse recursive `chown` of arbitrary retained run/debug trees
-- keep the then-live `es.service` posture at `root(default)` through this
-  earlier slice
-- preserve the current direct HTTPS/mTLS ES `/health` plus
-  `GET /v1/executions:contract` path
-- preserve current SPIRE selector posture, SPIRE socket traversal,
-  Vault/runtime-helper semantics, and the current Nomad task user model
-- avoid broader proof reruns
-
-The preferred repo-side/operator wrapper for that slice is:
-
-- `scripts/remote_alpha_prepare_es_writable_state_ownership.sh`
-
-Its sourced implementation is:
-
-- `scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`
-
-When `--output-dir` points at an Infrastructure Manager profile directory such
-as `.out/remote-alpha-m75q`, the wrapper must write predictable local evidence
-artifacts with the filenames Infrastructure Manager consumes directly:
-
-- `es-writable-state-ownership-check-only.json`
-- `es-writable-state-ownership-helper-staging-record.json`
-- `es-writable-state-ownership-apply-summary.json` when `--apply` is used
-
-The summary schema for this host-local ownership record is:
-
-- `execution-substrate.remote-alpha.es-writable-state-ownership-summary.v1`
-
-The current host-local non-secret apply summary for that ownership step is:
-
-- `/var/tmp/execution-substrate-remote-alpha/es-writable-state-ownership-summary.json`
-
-Check-only must not create that file; instead it must emit stdout JSON in the
-same schema family with `mode.name=check_only`, `mode.non_mutating=true`,
-`proof.check_only_is_not_proof=true`, `proof.host_mutation_performed=false`,
-a boolean `plan.apply_ready`, and a boolean
-`plan.roots_nonempty_block_apply`. When non-empty roots are observed, that
-check-only record may still report a separate explicit
-`--rotate-nonempty-roots` maintenance-window path as available, but default
-apply readiness must remain blocked. Apply may change only:
-
-- `execution.staging_root_dir` from `/etc/execution-substrate/es.json`
-- `execution.results_root_dir` from `/etc/execution-substrate/es.json`
-
-Apply must change only those two stable roots to owner `es:es` mode `0750`,
-must not recursively re-owner retained run/debug trees, must not delete
-staging/results contents, and must preserve `validation.es_service_posture` as
-`root(default)`. Empty-root apply may re-owner the two live roots in place
-without a service restart. The separate explicit `--rotate-nonempty-roots`
-maintenance-window path may stop `es.service`, move the old non-empty
-configured roots aside to timestamped root-owned quarantine paths, create
-fresh live roots at the original configured paths, start `es.service` again,
-and require post-start `/health` plus `GET /v1/executions:contract`
-validation. That maintenance-window rotation must preserve the old contents
-without recursive `chown` or deletion, must record that old retained results
-may no longer be available through the normal ES API after rotation, and must
-not claim to be service-user migration or full ES/runtime de-root. This is a
-bounded writable-state ownership record only; it is not governed proof and not
-a service-user migration record.
-When legacy run directories lack retained-result or normalization-marker
-evidence, the helper must classify them read-only via the configured Nomad
-connection and may advertise explicit apply readiness only with both
-`--rotate-nonempty-roots` and `--accept-stale-orphaned-runs`. Active,
-unknown, or scheduler-unavailable classifications remain hard blockers.
-When the live roots already match the documented `es:es` model but a shared
-parent directory still blocks future non-root traversal, the helper may offer
-an additional explicit parent-traversal preparation flag such as
-`--fix-parent-chain`. That parent-only apply must preserve the existing owner
-of the traversal parent, change only the group/mode needed for ES traversal,
-must not revisit root rotation unless drift is detected, must not mutate
-quarantined old roots, and should avoid any `es.service` restart unless a
-measured host proves it is required.
-
-Before any apply-mode mutation primitive runs, the helper must create a
-timestamped backup directory under
-`/var/tmp/execution-substrate-remote-alpha/`. That backup directory must:
-
-- write `pre-apply-snapshot.json`
-- record the pre-apply `es.json` sha256
-- record current staging/results owner, group, mode, size, and immediate
-  contents summary
-- record current `es.service` `User`, `Group`, `ActiveState`, and `SubState`
-- record any active-run or drain evidence the helper could discover
-- record rollback notes for restoring the pre-apply root owner/mode state
-- record any quarantined old-root paths created by a maintenance-window
-  rotation
+The former Remote Alpha ES stable writable-state ownership slice is retired.
+Its wrapper delegates to a fixed tombstone and performs no inspection, Nomad
+classification, rotation, ownership change, staging, backup, or evidence
+production. Historical v1 ownership files may remain archived but cannot
+authorize current readiness, migration, drain, reclamation, or mutation. No
+replacement v2 schema or current existing-host ownership contract exists for
+that retired ES family. The unrelated current EGS hardening v2 schema is not
+part of this statement.
 
 For the separate Remote Supported-Host Alpha host-local Vault/workload-auth
 slice, the active repo-derived workload-auth values remain:

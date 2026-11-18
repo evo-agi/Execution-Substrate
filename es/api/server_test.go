@@ -66,6 +66,21 @@ func TestLifecycleHeadersExposeOutcomeEvidenceForLogsAndResult(t *testing.T) {
 	}
 }
 
+func TestRetainedResultAuthHandlerDoesNotEmitSuccessBodyOnServiceFailure(t *testing.T) {
+	service := fakeLifecycleService{
+		resultBundle: admission.ExecutionResultBundle{MediaType: "application/gzip", Payload: []byte("synthetic-unverified-bundle")},
+		resultErr:    &admission.Error{Status: http.StatusConflict, Code: "result_unavailable", Message: "execution result bundle is not readable"},
+	}
+	server := NewServer(service, "bootstrap", []string{"operator/local"}, func() bool { return true })
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authorizedLifecycleRequest(http.MethodGet, "/v1/executions/run-0123456789abcdef/result"))
+	if recorder.Code != http.StatusConflict || strings.Contains(recorder.Body.String(), "synthetic-unverified-bundle") ||
+		recorder.Header().Get("Content-Type") == "application/gzip" ||
+		recorder.Header().Get(headerOutcomeSource) != "" {
+		t.Fatalf("handler emitted result body or headers before service eligibility: status=%d body=%q headers=%v", recorder.Code, recorder.Body.String(), recorder.Header())
+	}
+}
+
 func TestWorkstreamC2StatusLogsResultCancelCompatibilityShapesStayUnchanged(t *testing.T) {
 	service := fakeLifecycleService{
 		statusResult: admission.ExecutionStatusResult{
@@ -1281,6 +1296,7 @@ func TestExecutionCallerAuthorizationMatchesExactOrSubpathOnly(t *testing.T) {
 type fakeLifecycleService struct {
 	logsResult            admission.ExecutionLogsResult
 	resultBundle          admission.ExecutionResultBundle
+	resultErr             *admission.Error
 	statusResult          admission.ExecutionStatusResult
 	cancelResult          admission.ExecutionCancelResult
 	producerContract      admission.ProducerContractDeclaration
@@ -1358,7 +1374,7 @@ func (f fakeLifecycleService) Result(context.Context, string) (admission.Executi
 	if f.resultCalls != nil {
 		*f.resultCalls = *f.resultCalls + 1
 	}
-	return f.resultBundle, nil
+	return f.resultBundle, f.resultErr
 }
 
 func (f fakeLifecycleService) Cancel(context.Context, string) (admission.ExecutionCancelResult, *admission.Error) {

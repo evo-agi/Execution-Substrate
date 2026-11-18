@@ -1,8 +1,22 @@
 # Submit Idempotency, Correlation, And Recovery Target Contract
 
+The accepted resolved-plan source makes legacy unkeyed `Submit` a consumer of
+private admitted semantic facts. The separate admission-local binding/witness
+producer remains always not-effect-ready. The bounded private codec-3 synthetic
+replay path composes that producer from one actual resolved delivery, seals
+original intent/effective facts/material and verifies it on reload. This is
+runtime-unwired and does not qualify a real image/host, reconcile ambiguous
+provider effects or deduplicate public caller retries.
+The private schema
+`execution-substrate.reliable-submit-request/v1` and nested contract
+`execution-substrate.reliable-submit/v1` are selected; a structural reliable
+body remains rejected by the current public decoder.
+
 ## 1. Status And Purpose
 
-TARGET-ONLY: submit idempotency, correlation, and recovery in this document are target contract direction only.
+TARGET-ONLY: public/operational submit idempotency, correlation, and recovery in
+this document remain target direction. Section 6A is a real bounded private
+synthetic source rule, not public or effect authority.
 
 CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.
 
@@ -27,10 +41,14 @@ rejected, and silent downgrade to current unkeyed submit is forbidden. The
 unavailable contract-adapter foundation also selects the private reliable
 request-family vocabulary, submit-key syntax, caller/key derivation, composite
 `ClaimID` construction through the committed pure-model constructor, and
-ES-neutral outcome semantics. It does not implement source-grounded resolved
-effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
-construction from admitted facts, complete effective-plan witness construction,
-durable replay-envelope custody, or runtime orchestration. No current public
+ES-neutral outcome semantics. Those earlier adapter/store tranches did not
+implement source-grounded plan extraction, canonical binding, a complete
+witness or replay custody. The separate private
+`resolved-execution-plan-extraction-foundation` resolves current legacy Submit
+from admitted facts before effect. The private v1 producer constructs a binding
+and witness from that frozen tuple; the codec-3 private synthetic composer is
+its only new non-test caller and still confers no effect permission. No source
+wires reliable submit. No current public
 request field, public response DTO field, producer field, handler behavior,
 query route, Nomad behavior, runtime configuration, or runtime behavior is
 implemented by this document, the private store tranche, or the unavailable
@@ -82,7 +100,9 @@ Current `run_id` creation happens before execution-package staging. Execution-pa
 
 Current ES has no broad durable run registry and no ES-owned lifecycle store. Status is projected from Nomad. Retained results are ES-owned opaque bundles keyed by `run_id`, not lifecycle truth.
 
-On an in-process non-submitted return after staging, current submit removes the staged root through its current cleanup path. That cleanup behavior is current implementation reality; it is not proof that no external execution-producing effect happened when a Nomad response is uncertain.
+On every post-claim return, current submit closes held descriptors and retains
+the visible staged root. This includes an uncertain Nomad response and is not
+proof that no external execution-producing effect happened.
 
 Current source now also contains the unwired pure internal package
 `es/admission/internal/reliablesubmit`. Current `Submit`, current `Prepare`,
@@ -94,12 +114,78 @@ Current source also contains admission-local private reliable-submit foundation
 helpers in package `admission`. They define the private reliable request-family
 shape and validation, caller/key safe-reference derivation, composite `ClaimID`
 construction through the committed pure-model constructor, and ES-neutral
-submission-outcome projection. They do not implement source-grounded resolved
-effective-plan extraction, canonical effective-plan encoding, `PlanBinding`
-construction from admitted facts, complete effective-plan witness construction,
-durable replay-envelope custody, or runtime orchestration. Those helpers are not
-exported public DTOs, are not wired to handlers, and are not called by current
-submit.
+submission-outcome projection. They remain separate from the source-grounded
+resolved-execution-plan extraction already implemented for current Submit and
+do not canonically encode or bind that plan, construct its complete reliable
+witness, or orchestrate reliable runtime behavior. The later codec-3 private
+synthetic path owns bounded durable replay-envelope custody separately. Those
+helpers are not exported public DTOs, are not wired to
+handlers, and are not called by current submit.
+
+Current legacy Submit now also consumes a separate private
+`resolvedExecutionPlan` extracted from the real shared admission and
+submit-resolution path. `prepareAdmission` borrows the caller request,
+immediately deep-copies mutable members, and applies one private
+Prepare-versus-Submit intent. Its owned working copy is the sole mutable
+authority for mode/default/validation/normalization; successful admission
+returns one frozen authoritative snapshot and may make immutable defensive
+copies. The caller retains ownership until the initial copy completes and must
+keep the request and every reachable
+mutable member race-free through that copy. Concurrent unsynchronized mutation
+while copying is a caller data race, not an ES synchronization guarantee.
+After the owned copy completes, later caller mutation cannot change admitted
+or submitted state, and downstream defensive copies do not create a second
+mutable authority. It also retains the exact workload-zone Vault reference
+used for the successful fetch and auth-plan resolution. Submit snapshots its required
+configuration once, captures payload/runtime-support/mount/trust bytes, parses
+each mount archive exactly once with bounded allocation, resolves the qualified
+platform-state owner as the final variable host observation, and freezes on
+successful resolver return. No run ID, staging write, ownership mutation, or
+Nomad call precedes that freeze.
+
+The current plan owns admitted semantic facts, including a source-grounded
+payload digest distinct from artifact/derivation/output identity, one typed
+runtime command, runtime-identity tmpfs size, and unconditional authority
+inputs. Captured host context contains only normalized qualified values: the
+cleaned absolute staging root, qualified owner, cleaned absolute SPIRE source,
+and trimmed non-empty datacenter. The normalized absolute results root remains
+current ES service/custody placement outside the semantic plan, host context,
+provider-job projection, and B1 binding. After freeze, legacy Submit derives
+owner/run/endpoint environment, host/staged paths, datacenter, endpoint, and other run
+facts from typed plan/host/run projections only, exclusively creates one run
+root, and retains that root on every post-claim return. The payload digest is
+not public or Nomad metadata, and raw payload bytes remain material.
+Current successful Submit always constructs `authority_handoff`; structural
+presence of the current plan authority inputs therefore means applicable.
+
+The current private `buildReliableSubmitAdmissionBinding` producer accepts the
+actual frozen `resolvedExecution` and a validated private reliable-family
+marker. It checks the fourteen category facts and additional material,
+runtime-support, job-envelope and trust facts before constructing the existing
+opaque `PlanBinding`, witness and `BoundPlan`. The result is always
+not-effect-ready; the private synthetic same-delivery composer is its only
+non-test caller and no runtime call path uses it. For each governed mount,
+the resolver now carries both the requested source artifact digest and the
+signature-verified returned artifact and signed payload digests. This is a
+private provenance carry-through only. Legacy mount admission does not
+separately compare requested and returned artifact identity and can still
+accept a discovery for a different signed artifact if its other checks pass.
+The unwired producer requires those artifact identities to match and checks
+captured compressed bytes against the signed payload digest. Live admission
+hardening remains a distinct later decision.
+
+The semantic plan is admitted semantic truth only, while host/run projection
+adds additional execution-shaping facts. Tranche B2 now completes its bounded
+privacy and independent-assurance refinement. The selected public messages are
+exactly `workload-zone vault configuration is invalid`,
+`derive execution host context failed`,
+`stage workload vault trust material failed`,
+`derive execution platform state owner failed`, and
+`execution submission failed`; their routes, HTTP statuses, codes, DTO fields,
+precedence, and successful behavior remain unchanged. This changes no reliable
+submit correlation, replay, recovery, or outcome vocabulary. Reliable
+keyed-submit runtime remains unwired, and native Linux runtime validation remains
+pending.
 
 Current private durable source implements latest-operation same-operation
 replay. The general mutation path derives and compares a complete private
@@ -125,7 +211,9 @@ Reliable keyed submit must close this caller-to-ES ambiguity without making an a
 
 ES may send a Nomad registration request. Nomad may accept it. ES may then receive a transport error, timeout, malformed response, missing response, unreadable response, or another outcome that does not prove rejection.
 
-Current code confirms `submitted` only after a successful Nomad response. If the response is not confirmed, current code may return `submission_failed` and may clean staging because submitted was not confirmed.
+Current code returns `submission_failed` when the Nomad response is not confirmed,
+closes held descriptors best-effort, and retains the complete staging root. It
+does not treat an uncertain response as cleanup authority.
 
 Reliable keyed submit must not equate an uncertain Nomad response with proof that no job was accepted. It must also not automatically send a second Nomad registration merely because the immediate response was uncertain.
 
@@ -343,28 +431,44 @@ Output identity can be explicitly inapplicable only through a future
 execution-kind rule, and authority handoff can be explicitly inapplicable;
 generic inapplicability for required categories fails closed.
 
-No effective-plan contract-adapter implementation is present in this tranche.
-The rejected self-validating plan binder has been removed. This patch does not
-select a canonical effective-plan encoding, effective-plan commitments,
-`PlanBinding` construction from admitted facts, a complete witness constructor
-in package `admission`, durable replay-envelope custody, or runtime
-orchestration.
+The rejected self-validating plan binder remains absent. The implemented
+`resolved-execution-plan-extraction-foundation` derives one private semantic
+plan from actual current ES admission and runtime resolution. That plan is
+authoritative only for admitted semantics; legacy Submit consumes it now, and
+the unwired private v1 `PlanBinding` producer consumes its actual frozen tuple
+rather than re-resolving the same categories. Separate owned material
+contains all primary payload, runtime-support, compressed/parsed mount, Vault
+CA, and combined trust-bundle bytes. The plan and material are package-private,
+deep-copied at mutable boundaries, have private untagged fields, pass only
+through narrow typed projections, and inherit one fixed zero-data formatter
+that emits `<private execution value redacted>` for content-bearing formatting.
 
-The later separately reconnoitered tranche is
-`resolved-execution-plan-extraction-foundation`. Its purpose is to derive one
-authoritative resolved execution plan from the actual current ES admission and
-runtime-resolution path: `prepareAdmission` results, artifact and manifest
-facts, policy/trust resolution, resource/default resolution, runtime-profile
-resolution, network fact, mount and environment semantics, current runtime
-command construction, and authority-handoff behavior. Current legacy `Submit`
-and future reliable `PlanBinding` must consume the same source-grounded resolved
-plan.
+Current successful Submit always constructs `authority_handoff`. Its current
+semantic plan therefore has no applicability flag: structural presence means
+applicable. The optional Codex credential-location subcomponent retains its
+real applicability flag. The unwired reliable witness/model and SQLite masks
+are unchanged. The new producer resolves current authority category 14 as
+applicable. The generic model's allowance for future execution-kind
+inapplicability is not current Submit truth or runtime authority.
 
-That later tranche must not synthesize `PrepareRequest` or `Manifest` proof from
-the proposed plan itself, create a parallel admission engine, silently tighten
-the current empty-environment-allowlist contract, or infer authority-handoff
-inapplicability contrary to current `Submit` behavior. Any future canonical plan
-encoding must normalize semantic names before sorting and duplicate detection.
+The semantic plan is admitted semantic truth only. Semantic-plan equality
+across qualified host contexts proves admitted-semantic equality only.
+Captured host context and run/provider projection add additional
+execution-shaping facts, so plan equality is not provider-job, provider-effect,
+dispatch, replay, restart, or safe-host-substitution identity. The private v1
+binding selects admitted semantic facts and captured material identities; host
+and run facts remain outside it as separately captured future prerequisites.
+
+The earlier extraction foundation by itself selected no canonical binding or
+witness. The separate private v1 producer now selects only an unwired encoding,
+commitment and completeness assessment. It does not supply durable
+material/replay-envelope custody, host-context replay treatment, or reliable
+runtime orchestration. It does not synthesize `PrepareRequest` or `Manifest`
+proof from the plan, create a parallel admission engine, tighten the current
+empty-environment-allowlist contract, or infer authority-handoff
+inapplicability contrary to current Submit. The producer uses source-normalized
+semantic names without a second transformation before ordering and collision
+checks.
 
 Current environment validation remains unchanged: reserved runtime/control keys
 are forbidden; when a manifest declares allowed environment keys, invocation
@@ -373,10 +477,312 @@ enforce explicit allowlist membership. If a future project decision makes an
 empty list mean no environment additions, that requires a separate owning
 admission-contract change and compatibility review.
 
-Current supported `Submit` constructs `authority_handoff`. Any future
-effective-plan representation must derive authority-handoff applicability from
-current source-owned runtime behavior. No authority-handoff inapplicability
-option is selected by this tranche.
+Current supported `Submit` constructs `authority_handoff`. The private v1
+producer derives category 14 as resolved from that current source-owned
+behavior and does not treat generic inapplicability masks as current runtime
+truth. The earlier B1 extraction alone selected no reliable witness or mask
+migration; this producer still changes no model mask or SQLite schema.
+
+### Private admission binding v1: current unwired producer and exact format
+
+Decision `ES-PRIVATE-ADMISSION-BINDING-V1-20261115-01` selects a bounded
+ES-private source rule on the reopened canonical-binding/completeness seam.
+`buildReliableSubmitAdmissionBinding` reads the actual `resolvedExecution`
+returned by `Service.resolveExecutionForSubmit` and a validated private
+reliable-family marker. It checks each source fact before the corresponding
+model category can be resolved. The fourteen-category witness means checked
+input completeness under those producer/source assumptions; it is not
+independent proof that admission ran, that durable custody or current
+authorization exists, or that execution is permitted. The package-private
+assessment always reports not-effect-ready and lists missing later runtime
+prerequisites. Only the named private synthetic same-delivery composer calls
+the builder. No runtime function-value alias, handler, provider, store, or
+config uses it. Current public strict decoding still refuses
+a structural reliable-submit body.
+
+For the current static-script kind, the named validation-to-category map is:
+
+| Model category | Required producer check before `ResolvedCategory` |
+| --- | --- |
+| `RequestSchemaOrVersion` | Validated reliable family/contract and admitted request and invocation schema facts. |
+| `ExecutionMode` | Actual admitted supported mode, consistent with the typed command. |
+| `TimeoutSemantics` | Nonnegative effective timeout in seconds and the matching ordered supervisor timeout argument. |
+| `CPU` | Concrete positive effective CPU. |
+| `Memory` | Concrete positive effective memory in MiB. |
+| `RuntimeProfile` | Selected nonempty profile and image reference, coherent with authority profile. Image reference is not immutable image-content identity. |
+| `ArtifactIdentity` | Valid requested primary artifact and signed payload digests, signed-payload equality with captured primary bytes and its material descriptor. |
+| `DerivationSpecIdentity` | Concrete admitted labeled SHA-256 derivation digest. |
+| `OutputIdentity` | Concrete admitted output ID for current static-script execution; generic future inapplicability is not used. |
+| `CommandAndArgv` | Typed executable and exact ordered arguments, including command/timeout consistency. Empty additions remain concrete. |
+| `EnvironmentAdditions` | Exact effective environment key/value map after current precedence, including required platform/Vault keys coherent with plan and authority; empty caller additions are concrete. No trim/casefold of effective keys. |
+| `Mounts` | Ordered one-to-one mount plan/material pairing, requested/verified signed artifact equality, signed payload digest versus captured compressed bytes, existing bounded parser revalidation and ordered parsed-entry equality. Empty list remains concrete. |
+| `NetworkPosture` | Concrete admitted network-access flag. |
+| `AuthorityHandoffApplicability` | Current unconditional authority plan and coherent profile, Vault reference, optional Codex credential location, and captured trust flags; category is always resolved. |
+
+Runtime-support digest/bytes, runtime-identity tmpfs size, fixed job envelope,
+and trust presence/bytes are mandatory additional effect-shaping checks; they
+do not add model categories or change its masks. The builder applies the
+existing aggregate captured-material budget first. It revalidates each
+already captured compressed mount sequentially with the existing governed
+mount parser and the same per-mount and aggregate body/stream limits, and
+compares ordered parsed names, kinds, full normalized modes, content lengths
+and bytes. It does not refetch, reread signed evidence, write staging, invent
+a signed digest, run a third archive interpreter, or reinterpret a stored name
+after the parser's single normalization. Raw `"./ name"` may legitimately
+produce stored `" name"`; permitted directory repeats and implicit directories
+remain governed by the parser. This adds bounded in-memory work and temporary
+memory for the unwired producer; the legacy runtime peak bound is not a claim
+for the new producer. The current legacy path still lacks an independent
+requested-versus-returned signed mount artifact equality check. A signed
+request-A/discovery-B/payload-P combination may therefore reach legacy staging
+if other current checks pass; this is a residual current-path limitation, not
+a live policy repair by this producer.
+
+The v1 binding is a computational commitment under HMAC-SHA-256 and the
+specified encoder, not mathematical injectivity, encryption, host eligibility,
+storage custody, image content identity, provider-job identity, result
+authenticity, exactly-once delivery, or effect authority. The private key is
+exactly 32 bytes and explicitly supplied. No configured, default, global,
+result-authentication, or raw-submit key is used. The key ID is 1 to 64 ASCII
+bytes matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Let `header` be ASCII
+`ESRS-PB` followed by `00`, `01`, a two-byte unsigned big-endian key-ID byte
+length, and the key-ID bytes. Let `canonical-v1` be the exact binary message
+below. `mac = HMAC-SHA256(K, ASCII("execution-substrate/reliable-effective-plan/v1") || 00 || header || canonical-v1)`.
+`PlanBinding = header || mac`, with exactly 32 MAC bytes. The header and key ID
+are authenticated. The first slice uses only synthetic test keys. A later
+effect consumer must retain the original version/key and fail closed when
+unknown or unavailable; fresh-key rebind is not equality with an old claim.
+
+Every top-level field is present exactly once in ascending ID order. A field
+is `uint16BE(id) | uint8(type-tag) | uint64BE(payload-byte-length) | payload`.
+Nested records are concatenated fields with the same framing and specified
+ascending local IDs. No Go layout, reflection, JSON, generic canonicalizer,
+formatter, or decoder supplies bytes. Type tags are fixed: `1` UTF-8 string
+(payload is its exact bytes), `2` signed 64-bit two's-complement big-endian
+integer, `3` boolean (exactly `00` or `01`), `4` record (nested TLVs), `5`
+sequence, `6` map, `7` raw 32-byte SHA-256 digest, and `8` one-byte state.
+State bytes are `00` absent, `01` present, `02` inapplicable; required facts
+cannot use absent or inapplicable. A sequence payload is `uint64BE(count)`
+then, for every element in source order, `uint64BE(element-byte-length) |
+element-bytes`. String elements are untagged UTF-8 bytes; record elements
+are their nested TLV bytes. A map payload is `uint64BE(count)` then
+`uint64BE(key-byte-length) | key-UTF8 | uint64BE(value-byte-length) |
+value-UTF8` for each entry sorted by unsigned UTF-8 bytes of the exact
+effective key. Map keys are unique after their source-owned normalization;
+the current effective environment keys have no additional trim or casefold.
+Nil and empty collections have the same zero-count concrete encoding; the
+current resolver's effective environment is nonempty because it injects
+required platform/Vault keys, even when caller additions are empty.
+Sequence order, including command arguments, mounts, parsed entries, and
+security options, is retained. Strings reject invalid UTF-8 without invented
+Unicode normalization. Admitted digest strings use exact lowercase
+`sha256:[0-9a-f]{64}`; their normalized source values are encoded as strings,
+while material byte hashes use tag `7`.
+
+A material descriptor is a tag-`4` record with local field `1` state (tag
+`8`); if present it has field `2` byte length (tag `2`, nonnegative) and field
+`3` SHA-256 of the captured bytes (tag `7`). Absent and inapplicable states
+omit fields `2` and `3`. Primary, support, compressed mount and regular-file
+content are present; a present empty regular file has length zero and
+SHA-256(empty). Directory content is inapplicable. Missing optional trust
+bytes are absent, while present trust bytes must agree with the captured
+authority trust flags. There is no independent per-component digest output.
+
+The eighteen top-level fields and complete nested record field IDs are:
+
+| Top ID/type | Exact payload and ascending local IDs |
+| --- | --- |
+| `1` record | `1` reliable family schema `execution-substrate.reliable-submit-request/v1`; `2` reliable contract `execution-substrate.reliable-submit/v1`; `3` admitted request schema; `4` admitted invocation schema (all strings). |
+| `2` string | Admitted execution mode. |
+| `3` integer | Effective timeout in **seconds**; command timeout semantics are checked against field 10. |
+| `4` integer | Exact `resolvedTaskResources.cpu` integer passed unchanged to Nomad task `Resources.CPU` (Nomad CPU resource units; no producer conversion). |
+| `5` integer | Effective memory in **MiB**. |
+| `6` record | `1` runtime profile name; `2` selected image reference string. |
+| `7` record | `1` requested primary artifact digest; `2` signed primary payload digest; `3` captured primary material descriptor. |
+| `8` string | Derivation-spec digest. |
+| `9` string | Admitted output ID. |
+| `10` record | `1` typed executable string; `2` ordered argument sequence of strings. |
+| `11` map | Exact effective semantic environment key/value strings. |
+| `12` sequence of mount records | Each mount: `1` requested artifact digest; `2` signature-verified returned artifact digest; `3` signed payload digest; `4` source-normalized target string; `5` read-only boolean; `6` compressed material descriptor; `7` ordered sequence of parsed-entry records. Each entry: `1` once-normalized name string; `2` kind string (`directory` or `regular`); `3` full normalized mode integer; `4` content material descriptor. |
+| `13` boolean | Admitted network-access flag. |
+| `14` authority record | `1` applicability state (present for current Submit); `2` runtime profile name; `3` Codex credential-location record; `4` workload Vault record; `5` workload-zone Vault config digest; `6` trust-flag record. Codex record: `1` state (present or inapplicable), and only when present `2` CLI path, `3` credential source, `4` Vault secret path, `5` Vault secret field (strings). Vault record: `1` mode, `2` address, `3` auth mount, `4` auth role, `5` JWT audience (strings). Trust-flag record: `1` Vault-CA present and `2` combined-TLS present (booleans). |
+| `15` record | `1` captured runtime-support digest string; `2` captured support material descriptor. |
+| `16` integer | Runtime-identity tmpfs size in **bytes**. |
+| `17` job-envelope record | `1` job type, `2` group name, `3` group count, `4` task name, `5` driver, `6` user (strings except count integer); `7` privileged boolean; `8` ordered security-option sequence of strings; `9` restart record; `10` reschedule record. Restart record: `1` attempts integer, `2` mode string, `3` interval integer in **nanoseconds**, `4` delay integer in **nanoseconds**. Reschedule record: `1` attempts integer, `2` unlimited boolean, `3` delay integer in **nanoseconds**, `4` delay-function string, `5` max-delay integer in **nanoseconds**. |
+| `18` trust record | `1` Vault-CA material descriptor; `2` combined system/workload TLS material descriptor. |
+
+All scalar integer conversions must fit signed 64-bit range. The producer
+checks length/count arithmetic before each sum or multiplication and refuses
+any `canonical-v1` longer than 64 MiB. It first counts and validates the
+entire schema, including source-normalized key uniqueness, before sorting a
+map or allocating a large buffer; it then streams the same framing directly
+to HMAC without retaining a second large canonical preimage. The limit is a
+new producer-only input/work bound, not a legacy admission or retention cap;
+it adds no filename or entry cap to the existing mount parser. Hashing and
+parser revalidation use bounded additional temporary memory, and the private
+assessment holds only detached descriptors and the opaque `BoundPlan`.
+Content-bearing/key-bearing aggregates are unexported, untagged and use the
+fixed private redaction formatter. Raw canonical bytes, keys, environment
+values, private paths, per-component hashes and MAC bytes are never surfaced
+through supported formatting, JSON/text marshaling, errors, public DTOs or
+logs. No secure-erasure or concurrent caller mutation guarantee is made.
+
+Binding equality under one retained key attests the encoded admitted
+semantics and captured material identities only. The captured source tuple
+also contains staging/results paths, owner UID/GID, SPIRE source directory
+and datacenter as separate placement requirements; those are **captured**
+facts, not a retained behavioral topology proof or qualified host-substitution
+identity. No image-content pin is captured merely by a selected mutable image
+reference. Missing image-content, placement, key-custody and replay-envelope
+proof remain explicit runtime prerequisites, not reasons to fail all unwired
+producer success cases. There is no new lifecycle phase algebra.
+
+The selected codec-3 private synthetic exact-retry rule compares canonical
+original intent and field presence separately from PlanBinding. An explicit
+value becoming omitted conflicts even if effective bindings match; an unchanged
+sparse retry reuses winner-original facts, not new defaults. Lookup by the
+caller-scoped key precedes current resolution, material acquisition and active
+key choice. A found legacy or unavailable claim is never absence. The public
+request decoder and unkeyed Submit retain their current behavior.
+
+### 6A. Private synthetic original custody and exact format
+
+The private same-delivery classifier has one nil-by-default test-only barrier
+immediately before claim establishment, used to make concurrent winning and
+losing proposals deterministic in controlled synthetic fixtures. It carries
+no production setting, effect permission or runtime caller.
+
+The first scope is permanently synthetic_nonoperational_v1 (integer 1). The
+admission-owned strict parser retains one typed, key-free original intent and
+the same request delivered to the actual resolver. It rejects invalid raw
+UTF-8, lone surrogate escapes, duplicate decoded object/map names, wrong-case
+schema aliases, unknown members, null, trailing content and numeric overflow
+before lossy JSON decoding. Private JSON depth is at most eight; raw request
+and decoded intent are each at most 262,144 bytes. The raw 43-character
+canonical base64url submit key is decoded transiently to 32 bytes and used
+with the canonical synthetic caller URI to derive PB1 caller-scoped 32-byte
+CallerRef and SubmitKeyRef. Neither raw key nor raw JSON is persisted.
+The synthetic caller URI helper is syntax, not real peer authentication.
+
+Payload is ASCII ESRSPAY1 (8 bytes) | format u16=1 | bodyLength u32 | one
+fixed count-10 object. Its exact ordered IDs are: 1 identity (count-2:
+CallerRef bytes32, SubmitKeyRef bytes32); 2 original intent (count-15);
+3 original effective plan (count-14); 4 captured material (count-5);
+5 PB1 assessment (count-4); 6 image (count-5); 7 placement (count-6);
+8 provenance (count-6); 9 key/format (count-6); 10 scope u8=1.
+Each field is ID:u16 | state:u8 | length:u32 | value, with exact ascending
+IDs. State 0 means absent with zero length; state 1 means present; state 2
+is invalid as a field state. Nested objects begin count:u16. Ordered sequences
+begin count:u16 and repeat elementLength:u32 | element. Canonical maps begin
+count:u16 and repeat keyLength:u16 | decoded UTF-8 key | valueLength:u32 |
+decoded UTF-8 value, sorted by unsigned decoded-key bytes. Integers are
+big-endian; durations are i64 nanoseconds. Unknown, duplicate, trailing or
+length-mismatched data fails.
+
+Original-intent IDs 1–15 respectively hold outer schema, reliable contract,
+required invocation marker u8=1, optional invocation schema, artifact digest,
+derivation digest, output ID, optional mode, optional timeout u32, optional
+resources count-2 CPU/memory u32, optional argv sequence, optional env map,
+optional mount sequence, optional annotations map and optional reserved
+runtime-profile annotation value. Each original mount is count-3: source
+count-1/artifact digest, normalized target and optional read-only bool.
+Absent differs from present-empty, including maps/sequences and profile.
+Mode is absent/empty/async only; sync is refused. The real resolver consumes
+this same parsed delivery. PB1 binding encoding remains unchanged, and only
+the private composer invokes its requested-versus-verified mount refusal.
+
+Effective-plan IDs 1–7 are each count-2 nested objects: (1) request and
+invocation schemas; (2) mode and timeout; (3) CPU and memory; (4) profile name
+and image reference; (5) artifact and payload digests; (6) derivation digest
+and output ID; (7) executable and ordered runtime arguments. ID8 is the
+semantic-environment map; ID9 is ordered mounts, each count-5 with requested
+artifact, verified artifact, signed payload digest, normalized target and
+read-only bool. ID10 is network bool; ID11 authority count-14; ID12 support
+digest; ID13 identity tmpfs u64; ID14 job envelope count-17. Authority
+leaves, in order, are profile, Codex applicability, CLI path, credential
+source, Vault secret path/field, Vault mode/address/auth mount/auth role/JWT
+audience, zone-config digest and CA/TLS applicability. Job leaves, in order,
+are job/group/count/task/driver/user/privileged/security-option sequence,
+restart attempts/mode/interval/delay and reschedule attempts/unlimited/delay/
+function/max-delay. Source-owned fixed policy and applicability checks still
+govern hydration.
+
+Captured material count-5 is exact payload bytes, support bytes, ordered
+mount archives, optional Vault CA and optional TLS bytes. Each archive is
+count-2 (compressed bytes, ordered parsed entries); each entry is count-4
+(validated name, directory bool, full os.FileMode u32, contents). Directory
+contents are state 0/nil; regular contents are state 1, including nonnil
+empty. Entry names are not normalized again. Assessment count-4 is PlanBinding
+(inner u16 length 1..256 plus raw bytes; outer TLV length 2+inner length),
+resolved witness u16, inapplicable witness u16 and material identity count-5
+(primary, support, ordered mount identities, CA, TLS). A material descriptor
+is packed state:u8 | length:u64 | SHA-256:32 (41 bytes); absent/inapplicable
+states have zero length/digest. Each mount identity is count-5 (requested,
+verified, payload digests, compressed descriptor, entry sequence); each
+entry identity is count-4 (name, directory, full mode, content descriptor).
+PB1 remains the one semantic/digest authority.
+
+Image count-5 stores selected reference, synthetic 32-byte content digest,
+issuer, proof-kind u8=1 and topology requirement. Placement count-6 stores
+original staging/results/SPIRE/datacenter strings and UID/GID u32; topology
+must match original datacenter requirement. Provenance count-6 stores exact
+synthetic marker, primary artifact/payload/support digests, ordered count-3
+mount-source identities (IDs 1 requested, 2 verified, 3 payload), and
+count-2 CA/TLS applicability. Key/format count-6 stores binding format
+u16=1, binding key ID, envelope key ID, wrapper format u16=1, payload format
+u16=1 and algorithm u16=1. IDs use 1..64 case-sensitive ASCII bytes, first
+alphanumeric and remaining alphanumeric/period/underscore/hyphen.
+
+Sealed file is a fixed 14-field header plus combined AEAD. Header is ASCII
+ESRSENV1 | wrapper u16=1 | total headerLength u32 | count u16=14, then
+ordered TLVs: algorithm, payload format, scope, binding format (u16/u16/u8/
+u16), two key IDs, independent object ID bytes32, CallerRef bytes32,
+SubmitKeyRef bytes32, raw PlanBinding bytes, intent commitment bytes32,
+context commitment bytes32, plaintext length u32, combined length u32.
+AAD is ASCII ESRSAAD1 followed by the complete raw header. AES-256-GCM
+combined output is Go's random 12-byte nonce | ciphertext | 16-byte tag;
+length is plaintext+28. Header/AAD are frozen before Seal. Intent HMAC domain
+ESRSINT1 covers exact payload field 2 including TLV header; context HMAC
+domain ESRSCTX1 covers exact payload fields 6–8. Neither is copied into
+plaintext. Witness masks are in payload and claim row, not header. Private key
+fingerprints are in registry/claim row, not payload/header. Complete-file
+SHA-256 and actual length are computed only after Seal/publication and stored
+in the immutable claim descriptor; no self-digest enters plaintext/AAD.
+Commitment comparisons use a constant-time primitive.
+
+Plaintext is at most 1 MiB, sealed file 2 MiB, header 4 KiB, captured
+component 256 KiB, individual data string 64 KiB. Binary reader limits are
+object depth five, combined container depth eight, 32,768 TLV nodes and
+8,192 sequence elements. It checks lengths/arithmetic before allocation and
+counts actually retained decoded leaves within the aggregate decoded budget,
+without repeatedly charging enclosing TLV lengths. Source admission's
+narrower field/count limits also apply. No unsupported version or implicit
+default is accepted. Image/placement/provenance are synthetic typed facts,
+not provider image pin or qualified host proof.
+
+Exact new admission files are reliable_submit_replay_intent.go,
+reliable_submit_replay_format.go, reliable_submit_replay_hydration.go and
+reliable_submit_replay_private.go. The latter is the sole direct private
+resolver and PB1 composer call site. Its one reload callback invokes
+verifyPrivateReplayOriginal before returning any redacted verified-original
+outcome. Only the finite internal-package facade in the persistence ADR
+crosses the import edge; no public DTO/raw getter exists.
+
+Original intent, delivery, key bundle/permit, authenticated metadata/payload,
+hydrated plan/material, descriptor and verified-original aggregates use fixed
+redacted formatting, no general JSON/text marshal, public DTO, raw getter,
+payload export or value-bearing log. Bounded private binary custody encoding
+is the selected exception. Resolver/Vault/artifact/SQL/filesystem/crypto errors
+map at the new private boundary to finite fixed classes, not value-bearing
+causes. No secure erasure, hostile-root, arbitrary same-UID isolation,
+universal side-channel or secret-freedom claim is made.
+
+Private envelope publication and fsync precede claim establishment; their
+transaction boundaries remain separate, so an unclaimed object is inert.
+Current authorization, genuine image/host proof, one-run assignment, durable
+effect intent before staging, dispatch-attempt before provider registration
+and uncertainty reconciliation remain future operational gates. No v3 claim
+can be promoted to a run/effect/receipt. Reliable submit remains unavailable.
 
 ## 7. Narrow Durable Correlation Semantics
 
@@ -583,20 +989,48 @@ Public recovery surfaces return only bounded submit correlation and receipt fact
 
 ## 15. Explicit Non-Claims
 
+Current legacy `Service.Submit` already consumes the private source-grounded
+resolved-execution-plan extraction foundation. That implemented foundation is
+the freeze-point input to the current typed plan, material, run, authority, and
+Nomad projections; it is not reliable-submit runtime wiring and does not by
+itself supply canonical encoding, a final `PlanBinding`, a completeness witness,
+durable custody, reliable dispatch, ambiguity reconciliation, public reliable-
+submit DTOs, or a Coordinator adapter.
+
+B1's finite package-local direct-call closure and exact producer, freeze,
+validation, payload-projection, metadata, and source-distinct literal-golden
+inventories are bounded assurance, not whole-program noninterference or a
+general alias, taint, SSA, or semantic analyzer. Tranche B2 now completes the
+bounded privacy and independent-assurance refinement: three governed retention
+logs contain only `es result retention failed run_id=%s` and the validated run
+ID; selected structured Nomad control JSON is bounded to 256 KiB and one
+compatible document; job summaries remain explicitly unbounded but
+one-document because caller-environment aggregates remain unbounded; and
+successful authenticated public Logs remain unbounded opaque workload output.
+Non-success Nomad bodies are not public or ordinary-log diagnostics. B2 does
+not select a universal provider-response or workload-output limit.
+`preparedAdmission` is fixed-redacted under ordinary formatting and remains
+`{}` under ordinary JSON; that bounded defense does not cover reflection,
+`unsafe`, malicious same-package code, arbitrary serialization, or secure
+erasure. Its second source-distinct control-plane-profile golden is ES
+profile-coverage evidence, not current CP request bytes or CP authority. Its
+finite guard is source-bounded and not a general analyzer. Reliable
+keyed-submit runtime remains unwired, and native Linux runtime validation of the
+combined candidate remains pending.
+
 This target contract makes these explicit non-claims:
 
 - no reliable submit runtime integration implemented;
 - no runtime behavior implemented;
 - no producer declaration field implemented;
 - no public request DTO implemented;
-- no handler or decoder implemented;
+- no public/runtime reliable-submit handler or route decoder is wired; the private admission-local `parseValidatedReliableSubmitRequest` and `decodeStrictReliableSubmitJSON` helpers remain unwired;
 - no route implementation;
-- no source-grounded resolved effective-plan extraction implemented;
-- no canonical effective-plan encoding implemented;
-- no `PlanBinding` construction from admitted facts implemented;
-- no complete effective-plan witness construction in package `admission`
-  implemented;
-- no durable replay-envelope custody implemented;
+- private canonical effective-plan encoding, `PlanBinding` construction from
+  admitted facts, and a complete fourteen-category witness exist only in the
+  unwired package-private producer and confer no effect permission;
+- no public or operational durable replay-envelope custody; the private
+  synthetic codec-3 custody in section 6A has no effect permission;
 - no mutation-history store or history-wide replay;
 - no public reliable-submit runtime wiring;
 - no public replay DTO or recovery route;
@@ -631,7 +1065,7 @@ This target contract makes these explicit non-claims:
 
 ## 16. Required-Before-Implementation Gates
 
-Implementation requires these local gates before runtime behavior changes:
+Reliable keyed-submit runtime implementation requires these local gates:
 
 - preserved public opt-in and versioning docs-contract coverage;
 - pure internal reliable-submit model tests;
@@ -639,7 +1073,7 @@ Implementation requires these local gates before runtime behavior changes:
 - `reliable-submit-durable-same-operation-replay-repair`;
 - independent audit and exact-byte commit of the documentation/docs-contract
   ADR tranche that selects latest-operation replay;
-- `resolved-execution-plan-extraction-foundation`;
+- source-grounded resolved-plan extraction (satisfied by the private current-Submit foundation);
 - narrow persistence and concurrency ADR decision;
 - ES-to-Nomad uncertain-outcome reconciliation decision;
 - retention and expiry decision;
@@ -659,9 +1093,11 @@ The following seams remain open:
 - exact public outcome and error vocabulary;
 - exact reliable-submit state-path config key;
 - TTL, tombstone, and garbage collection;
-- source-grounded resolved execution plan extraction;
-- canonical effective-plan encoding and `PlanBinding` construction from
-  admitted facts;
+- runtime consumption of the private v1 binding and witness, with original-key
+  availability and unknown-version refusal;
+- full original explicit-intent/presence capture and key-only exact-retry
+  lookup, separately from effective binding equality;
+- durable material custody and host-context replay treatment;
 - plan snapshot versus immutable references;
 - Nomad reconciliation mechanism;
 - deterministic versus random assigned `run_id`;

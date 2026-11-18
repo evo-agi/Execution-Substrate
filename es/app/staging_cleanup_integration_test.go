@@ -5,14 +5,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"execution-substrate/es/admission"
 )
 
-func TestExecutionStatusCleansSuccessfulStageRootAndLogsStillWork(t *testing.T) {
+func TestExecutionStatusRetainsSuccessfulStageRootAndLogsStillWork(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStack(t)
 	submitted := submitExecution(t, stack, 10, 128)
 	stageRoot := filepath.Join(stack.rootDir, "es-stage", submitted.RunID)
@@ -31,12 +32,13 @@ func TestExecutionStatusCleansSuccessfulStageRootAndLogsStillWork(t *testing.T) 
 		t.Fatalf("expected exit code 0, got %+v", status)
 	}
 
-	waitForPathRemoved(t, stageRoot)
+	requirePathExists(t, stageRoot)
 
 	logs := fetchExecutionLogs(t, stack, submitted.RunID)
 	if !strings.Contains(logs, "START-BANNER") {
-		t.Fatalf("expected logs to remain readable after cleanup, got %q", logs)
+		t.Fatalf("expected logs to remain readable with retained staging, got %q", logs)
 	}
+	requirePathExists(t, stageRoot)
 }
 
 func TestExecutionStatusRetainsFailedStageRootForDebugging(t *testing.T) {
@@ -118,7 +120,102 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	requirePathExists(t, stageRoot)
 }
 
-func TestExecutionLoopScriptSuccessCleansSuccessfulStageRootsAcrossRepeatedRuns(t *testing.T) {
+func TestFailedAndAmbiguousSubmitRetainCreatedStageRoot(t *testing.T) {
+	tests := []struct {
+		name      string
+		ambiguous bool
+	}{
+		{name: "nomad rejection"},
+		{name: "ambiguous nomad registration", ambiguous: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var registrations atomic.Int32
+			stack := startSubmitStackWithNomadHandler(t, submitStackOptions{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs" {
+					t.Fatalf("unexpected Nomad request %s %s", r.Method, r.URL.Path)
+				}
+				registrations.Add(1)
+				if test.ambiguous {
+					panic(http.ErrAbortHandler)
+				}
+				http.Error(w, "registration rejected", http.StatusServiceUnavailable)
+			}))
+
+			response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+			defer response.Body.Close()
+			body := string(mustReadBody(t, response.Body))
+			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"submission_failed"`) {
+				t.Fatalf("expected primary 503 submission_failed response, got status=%d body=%s", response.StatusCode, body)
+			}
+			if strings.Contains(body, "submission failed and staged execution cleanup failed") {
+				t.Fatalf("response exposed deleted cleanup error: %s", body)
+			}
+			if got := registrations.Load(); got != 1 {
+				t.Fatalf("Nomad registration calls = %d, want exactly 1", got)
+			}
+
+			stageRoot := filepath.Join(stack.rootDir, "es-stage")
+			entries, err := os.ReadDir(stageRoot)
+			if err != nil {
+				t.Fatalf("read retained staging root: %v", err)
+			}
+			if len(entries) != 3 {
+				t.Fatalf("retained stage entries = %d, want one run root and one probe directory/symlink pair", len(entries))
+			}
+			runNamePattern := regexp.MustCompile(`^run-[0-9a-f]{16}$`)
+			probeNamePattern := regexp.MustCompile(`^\.execution-substrate-staging-probe-[0-9a-f]{32}$`)
+			var runName, probeName, probeLinkName string
+			for _, entry := range entries {
+				name := entry.Name()
+				if strings.Contains(name, "quarantine") {
+					t.Fatalf("unexpected quarantine name %q", name)
+				}
+				info, err := os.Lstat(filepath.Join(stageRoot, name))
+				if err != nil {
+					t.Fatalf("lstat retained stage entry: %v", err)
+				}
+				switch {
+				case runNamePattern.MatchString(name):
+					if runName != "" || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+						t.Fatalf("invalid retained run root %q", name)
+					}
+					runName = name
+				case probeNamePattern.MatchString(name):
+					if probeName != "" || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+						t.Fatalf("invalid retained staging probe directory %q", name)
+					}
+					probeName = name
+				case strings.HasSuffix(name, "-symlink") && probeNamePattern.MatchString(strings.TrimSuffix(name, "-symlink")):
+					if probeLinkName != "" || info.Mode()&os.ModeSymlink == 0 {
+						t.Fatalf("invalid retained staging probe symlink %q", name)
+					}
+					probeLinkName = name
+				default:
+					t.Fatalf("unexpected retained stage entry %q", name)
+				}
+			}
+			if runName == "" || probeName == "" || probeLinkName != probeName+"-symlink" {
+				t.Fatalf("retained stage inventory lacks one run root and one matching staging probe pair")
+			}
+			linkTarget, err := os.Readlink(filepath.Join(stageRoot, probeLinkName))
+			if err != nil || linkTarget != probeName {
+				t.Fatalf("retained staging probe symlink target mismatch: %v", err)
+			}
+			runRoot := filepath.Join(stageRoot, runName)
+			requirePathExists(t, runRoot)
+			if _, err := os.Stat(filepath.Join(runRoot, ".execution-substrate-stage-claim-v1")); !os.IsNotExist(err) {
+				t.Fatalf("unexpected staging claim marker: %v", err)
+			}
+			runEntries, err := os.ReadDir(runRoot)
+			if err != nil || len(runEntries) == 0 {
+				t.Fatalf("retained run root lacks materialized state: entries=%v err=%v", runEntries, err)
+			}
+		})
+	}
+}
+
+func TestExecutionLoopScriptSuccessRetainsDistinctStageRootsAcrossRepeatedRuns(t *testing.T) {
 	stack := startRuntimeIdentitySubmitStack(t)
 
 	specPath := writeExecutionLoopSpec(
@@ -137,20 +234,25 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	if first.ExitCode != 0 || !first.Summary.OK {
 		t.Fatalf("expected first loop run to succeed, got exit=%d summary=%+v stdout=%s", first.ExitCode, first.Summary, first.Stdout)
 	}
-	waitForPathRemoved(t, filepath.Join(stack.rootDir, "es-stage", first.Summary.RunID))
+	firstStageRoot := filepath.Join(stack.rootDir, "es-stage", first.Summary.RunID)
+	requirePathExists(t, firstStageRoot)
 
 	second := runExecutionLoopScript(t, stack, specPath, t.TempDir())
 	if second.ExitCode != 0 || !second.Summary.OK {
 		t.Fatalf("expected second loop run to succeed, got exit=%d summary=%+v stdout=%s", second.ExitCode, second.Summary, second.Stdout)
 	}
-	waitForPathRemoved(t, filepath.Join(stack.rootDir, "es-stage", second.Summary.RunID))
+	secondStageRoot := filepath.Join(stack.rootDir, "es-stage", second.Summary.RunID)
+	requirePathExists(t, secondStageRoot)
 
 	stageEntries, err := os.ReadDir(filepath.Join(stack.rootDir, "es-stage"))
 	if err != nil {
 		t.Fatalf("read staging root: %v", err)
 	}
-	if len(stageEntries) != 0 {
-		t.Fatalf("expected no successful stage roots to remain, found %d", len(stageEntries))
+	if len(stageEntries) != 2 {
+		t.Fatalf("expected two successful stage roots to remain, found %d", len(stageEntries))
+	}
+	if firstStageRoot == secondStageRoot {
+		t.Fatal("repeated successful runs reused a staging root")
 	}
 }
 
@@ -202,23 +304,5 @@ func requirePathExists(t *testing.T, target string) {
 
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("expected path %s to exist: %v", target, err)
-	}
-}
-
-func waitForPathRemoved(t *testing.T, target string) {
-	t.Helper()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(target); os.IsNotExist(err) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if _, err := os.Stat(target); err == nil {
-		t.Fatalf("expected path %s to be removed", target)
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat %s: %v", target, err)
 	}
 }

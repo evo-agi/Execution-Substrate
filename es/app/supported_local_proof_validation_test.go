@@ -33,6 +33,14 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 	repoRoot := executionPlatformRepoRoot(t)
 	rootDir := newExecutionWorkspaceTempDir(t, "supported-local-setup-")
 	proofDir := filepath.Join(rootDir, "proof")
+	resultAuthDir := filepath.Join(rootDir, "external-result-auth")
+	if err := os.Mkdir(resultAuthDir, 0o700); err != nil {
+		t.Fatalf("create synthetic external result-auth directory: %v", err)
+	}
+	resultAuthKey := filepath.Join(resultAuthDir, "key")
+	if err := os.WriteFile(resultAuthKey, bytes.Repeat([]byte{0x53}, 32), 0o600); err != nil {
+		t.Fatalf("write synthetic external result-auth key: %v", err)
+	}
 	fakeBinDir := filepath.Join(rootDir, "fake-bin")
 	if err := os.MkdirAll(fakeBinDir, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin dir: %v", err)
@@ -48,6 +56,9 @@ func TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget(t *testin
 		"PATH="+fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"SUPPORTED_LOCAL_PROOF_DIR="+proofDir,
 		"SUPPORTED_LOCAL_PROOF_ID=validation-proof",
+		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID=validation_store",
+		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID=validation_key",
+		"SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE="+resultAuthKey,
 		"SUPPORTED_LOCAL_RUNTIME_SUPPORT_BINARY="+filepath.Join(proofDir, "bin", "es-runtime-support"),
 		"SUPPORTED_LOCAL_VAULT_BIND_ADDRESS=127.0.0.1",
 		"SUPPORTED_LOCAL_VAULT_PUBLIC_HOST=127.0.0.1",

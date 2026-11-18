@@ -150,7 +150,7 @@ operator_next_step_for_category() {
       printf '%s\n' "Re-run scripts/01_bringup.sh check, then verify Docker, required runtime-profile images, Nomad leader/client readiness, and ES submit config before retrying ${phase}. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_execution)")
-      printf '%s\n' "Inspect lifecycle status/logs for the run. Non-success runs retain host staging under execution.staging_root_dir/<run_id> for debugging in this slice. ${diagnostics} ${reference}"
+      printf '%s\n' "Inspect lifecycle status/logs for the run. Every post-claim outcome retains host staging under execution.staging_root_dir/<run_id>, including successful, failed, canceled, lost, and ambiguous outcomes. ${diagnostics} ${reference}"
       ;;
     "$(operator_category_input)")
       printf '%s\n' "Check request JSON, env vars, readable file paths, and run_id values before retrying ${phase}. ${diagnostics} ${reference}"

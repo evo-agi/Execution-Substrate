@@ -102,6 +102,194 @@ Out of scope:
 
 The supported-local proof image may provide a deterministic proof-only Codex shim at the configured `EXEC_CODEX_CLI_PATH`. That proves the ES runtime contract for the CP normal-shell path without proving live upstream Codex service behavior.
 
+Configured Submit on this path requires stable non-secret retained-result
+`store_id` and `key_id` values and a guest-local `key_file` reference to an
+already provisioned external HMAC key. Set
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_STORE_ID`,
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_ID`, and
+`SUPPORTED_LOCAL_RETAINED_RESULT_AUTH_KEY_FILE` before the supported-local
+setup or proof wrapper. The path must have a non-root parent and remain outside
+staging/results, replaceable proof workspaces, and guest bootstrap/scratch
+cleanup scopes. This key-file reference is guest-local metadata, not a request
+for the wrapper to copy or inspect the file. Examples show fresh-store placeholders; previously retained
+results require the original stable IDs and key. The helpers pass metadata
+only; ES startup checks the file. No automatic lost-key recovery or rotation
+is selected, and lexical placement checks do not prove deployment isolation.
+Run the setup helper directly or through the proof wrapper's stdin setup
+transport; both execute the requested action. Sourcing it only loads functions.
+For the selected `service-root-v1` supported-local profile, setup requires
+noninteractive privilege before proof-workspace mutation, refuses an existing
+proof root instead of migrating it in place, and creates only the
+two fresh `es-staging`/`es-results` configured roots as service UID:GID `0:0`,
+exact directory mode `0755`. The generated env carries the profile to
+prepare-only bring-up, the ES launcher, and full-profile submit-readiness.
+The shared static preflight and full health check validate proof binding,
+generated config, service image and Dockerfile, root owner/mode/identity, and
+exact same-path read-write mounts before omitting the non-root proof operator's
+write test. The operator needs static inspection access to service-owned roots,
+not write authority. Direct `10_health_check.sh` and the diagnostics checker
+use that same read-only validator; generic no-profile readiness retains its
+caller-writable existing-root test. It is not ES's later
+behavioral capability proof. `BRINGUP_PROFILE=prepare-only` skips submit
+readiness sequencing but retains configured Submit, so ES still loads the
+external key and qualifies execution roots before listening. No key is
+generated, read, or repaired by setup. Offline fixtures do not prove the
+future container-visible identity or live root capability; those gates remain.
+The privileged root helper retains each initialized child's descriptor and
+identity until both fixed names pass final visible pair validation. A changed
+name fails without adoption or cleanup, including replacement of the first
+child while the second is processed. This does not make the `mkdir`/`open`
+acquisition gap atomic under the operator-owned proof parent; concurrent
+replacement before acquisition remains outside this bounded proof claim.
+After setup's descriptor-based check, the fixed
+`execution-roots-setup-safe.json` projection records the selected profile,
+`0:0`/`0755` configured-root expectation, and that only the static check
+passed. The safe collector and complete host manifest retain this path-free
+projection; they do not retain the guest's raw bring-up state or infer a
+container-visible owner or behavioral capability pass.
+The proof wrapper keeps its pre-setup snapshot digest and guest-repo markers
+in bootstrap scratch until setup has exclusively created the fresh proof root;
+it then copies only those fixed nonsecret markers for ordinary setup evidence.
+Configure proof, bootstrap, repository and host evidence locations as clean
+single-leading-slash absolute non-root paths. The wrapper refuses a root or
+overlapping key/scope reference before creating evidence or arming collection;
+the refusal does not inspect or provision the external key.
+
+### Review-10 proof artifact boundary
+
+The canonical `scripts/73_supported_local_proof.sh` host `.out` directory is
+created exclusively as a real `0700` evidence-only directory. Host bootstrap
+scratch is a separate task-owned private directory outside the repository and
+evidence path. It holds the source snapshot, payloads, input specifications,
+runtime-support binary, and SPIRE distribution only for transport. Exact
+identity-bound cleanup removes that scratch at closeout or retains it with a
+safe diagnostic when ownership cannot be proved. The source snapshot selects
+tracked and non-ignored untracked source paths through guarded Git, retains
+tracked `.out/Dockerfile`, and excludes ignored or sensitive local material.
+Only its deterministic source manifest and snapshot digest are host evidence.
+
+Guest collection publishes one exclusive setup, final, or failure generation
+under `guest-evidence/`. Each generation has a deterministic
+`safe-evidence-manifest.json`; the final host manifest covers every other retained
+host evidence file, including host-generated safe metadata and all guest
+generations. Unknown files fail finalization. Raw Nomad/Docker/systemd output,
+service logs, arbitrary execution responses, and raw result bundles never
+enter host evidence. Fixed-schema host readiness and execution projections
+carry only explicitly selected non-secret fields. The normal-shell result is
+validated with bounded exact proof-only members and represented by bundle and
+member sizes, SHA-256 values, and fixed proof assertions. It is not execution,
+result, credential, or lifecycle authority.
+
+The runtime-identity workload's raw logs contain the proof secret value.
+Neither base nor labeled `logs.txt` is collected; fixed boolean log assertions
+retain proof markers without copying the secret. The collector also excludes
+`managed-secrets.conf`, `env.sh`, TLS and SPIRE/Vault private material,
+credential values, guest service state and logs, `ars-storage/`, `es-staging/`,
+`es-results/`, `workdirs/`, `bringup-state/`, `payload/`, `bin/`, PID files,
+sockets, links, special files, and every unclassified path. A missing safe
+file is omitted. A selected symlink, hard link, nonregular file, or oversized
+file fails closed; no broad-copy fallback runs. Failure finalization uses the
+same collector in its exclusive failure generation, finalizes the complete
+host manifest, and preserves the original proof failure. Successful guest
+proof/bootstrap cleanup remains bounded, and the external retained-result key
+remains outside that scope. The live supported-local compatibility proof and
+fresh independent Review-10 audit remain pending after this source repair.
+
+### Review-11 capture lineage and root manifest
+
+A labeled execution capture writes only labeled summary, status, and fixed
+Nomad execution projections; an unlabeled capture alone writes their base
+forms. This prevents mixed base lineage after a partial second capture.
+Runtime-identity and
+normal-shell labeled summaries retain their separate validated public
+`run-[0-9a-f]{16}` IDs. Each labeled fixed Nomad execution projection retains
+that run ID, `exec-<run_id>` job ID, bounded allocation ID, and the two
+observation booleans. Raw Nomad responses and logs remain excluded. The
+node-detail helper admits only a parsed `http` or `https` loopback
+`127.0.0.1` authority with an explicit port, no userinfo, and no query,
+fragment, or non-root path. It enforces per-response and aggregate byte bounds
+and projects counters incrementally.
+
+`host-evidence-manifest.json` is the root evidence record. Its fixed
+`self_excluded: true` field declares that its rows cover every other retained
+host evidence file, not the manifest itself. After writing, the manifest is
+reopened through the held directory descriptor, checked against its exact
+bytes and metadata, and its SHA-256 is reported without a digest file inside
+the proof directory. Unknown files still fail closed. This Review-11 repair
+changes only proof evidence handling; source selection, result-bundle schema,
+ES runtime authority, and reliable-submit availability are unchanged. Live
+supported-local proof and fresh independent Review-11 audit remain pending.
+
+### Review-12 exact-one proof allocation lineage
+
+The independently audited Review-11 allocation-lineage claim is blocked when
+the wrapper selects the first `nomad job allocs -json` entry. The bounded
+supported-local proof expects exactly one allocation for each unique proof job.
+The wrapper accepts only a single object with a bounded lowercase UUID `ID`,
+then observes that allocation before retaining its fixed run/job/allocation
+projection. Zero or multiple entries, a malformed entry, or an invalid ID fail
+closed without that projection, later result validation, or proof success.
+Previously written summary, status, and log assertions remain honest partial
+evidence in the exclusive failure generation. This proof-only rule does not
+alter ES's internal latest-`ModifyIndex` selection and does not define a
+general Nomad retry or reschedule policy. Multiple meaningful allocations
+require an explicit proof-contract redesign. The base staging check and private
+one-writer host-manifest behavior retain their Review-11 posture. Live proof,
+independent Review-12 audit, deployment, and reliable-submit enablement remain
+open.
+
+### Review-13 strict JSON allocation parsing
+
+The independent Review-12 audit blocked acceptance because Python's default
+decoder could accept nonstandard `NaN`, `Infinity`, and `-Infinity` constants
+in the allocation-list response. The bounded proof parser now requires strict
+JSON across the complete response, including unknown and nested fields. A
+nonstandard constant yields only the fixed safe allocation-list error before
+allocation observation, lineage projection, staging check, result validation,
+or proof success. The exact-one allocation rule and ES's internal
+latest-`ModifyIndex` selection remain unchanged. Live proof, fresh independent
+Review-13 audit, deployment, and reliable-submit enablement remain open.
+
+### Review-17 normal-shell result handoff
+
+The execution loop writes a fetched normal-shell bundle to
+`<selected-workdir>/result.tar.gz` and records that private workdir, result
+path, run ID, availability, and byte count in its summary. Normal-shell
+capture verifies that the summary identifies the selected workdir and this
+exact result path, then copies the summary under its labeled proof-root name.
+It retains the matching fixed Nomad run/job/allocation observation. The
+runtime-identity and unlabeled capture rules do not change.
+
+Result-validation reads the captured normal-shell summary and its matching
+Nomad projection. It requires successful terminal exit-zero execution,
+available result, positive byte count no larger than 16 MiB, valid run and
+allocation IDs, and successful Nomad observation. Both captured JSON inputs
+must be strict, with no duplicate object keys or nonstandard constants. The clean absolute workdir
+must be one direct child of this proof's `workdirs/`; the result path must be
+that workdir's `result.tar.gz`. Held no-follow directories and files bind the
+original summary to the captured bytes and read a stable regular single-link
+result of the declared size. The existing exact proof result validator checks
+those same buffered bytes. Only then is the existing fixed-schema
+`control-plane-normal-shell-result-evidence.json` created exclusively.
+
+A missing or rejected bound result fails result-validation and the existing
+failure finalizer. A newer workdir or a proof-root raw-result alias cannot
+substitute. Host collection retains only classified safe projections and
+excludes the raw bundle, workdir, path, logs, and credentials. The Review-16
+live bundle's exact schema acceptance remains unassessed; this source change
+does not claim live proof or cleanup success.
+
+The 2026-11-13 development-source evidence overlay records the accepted
+Review-17 23-phase canonical supported-local compatibility proof only for its
+original source and inputs. The Review-16 bundle limit above remains its
+historical source-stage statement; it is not rewritten as a Review-22 canonical
+run. The historical proof does not establish real upstream Codex behavior,
+actual running-deployment topology or key isolation. Later source/native
+evidence retains its separate identities and limits; there is no automatic
+proof inheritance or default repeat without a concrete unaccepted interaction
+for a selected operational claim. `PLANS.md` and the lifecycle contract own
+the development evidence and environment-bound rollout distinction.
+
 ## 3. Ownership boundaries
 
 ES owns:

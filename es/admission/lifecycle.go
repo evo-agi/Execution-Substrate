@@ -4,13 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 )
@@ -107,7 +105,7 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		if result.Terminal {
 			result.Status = executionLifecycleStatusTerminal
 			if _, retainErr := s.retainTerminalResult(locator); retainErr != nil {
-				log.Printf("es result retention failed run_id=%s err=%v", locator.RunID, retainErr)
+				log.Printf("es result retention failed run_id=%s", locator.RunID)
 			}
 		}
 		result.OutcomeEvidence = statusOutcomeEvidence(outcomeObservationNomadJobProjection, result.LifecycleProjection, result.Terminal)
@@ -139,11 +137,7 @@ func (s *Service) Status(ctx context.Context, runID string) (ExecutionStatusResu
 		result.ExitCode = &exitCode
 	}
 	if result.Terminal {
-		if representsTerminalSuccess(allocation) {
-			s.maybeCleanupSuccessfulStageRoot(locator, allocation)
-		} else {
-			s.maybeRetainTerminalResult(locator, allocation)
-		}
+		s.maybeRetainTerminalResult(locator, allocation)
 	}
 	result.OutcomeEvidence = statusOutcomeEvidence(observation, result.LifecycleProjection, result.Terminal)
 
@@ -225,11 +219,7 @@ func (s *Service) Logs(ctx context.Context, runID string) (ExecutionLogsResult, 
 	}
 	terminalObserved := allocationTerminal(allocation)
 	if terminalObserved {
-		if representsTerminalSuccess(allocation) {
-			s.maybeCleanupSuccessfulStageRoot(locator, allocation)
-		} else {
-			s.maybeRetainTerminalResult(locator, allocation)
-		}
+		s.maybeRetainTerminalResult(locator, allocation)
 	}
 	return ExecutionLogsResult{
 		OutcomeEvidence: logsOutcomeEvidence(terminalObserved),
@@ -278,55 +268,6 @@ func isTerminalAllocationStatus(status string) bool {
 	}
 }
 
-func (s *Service) maybeCleanupSuccessfulStageRoot(locator executionLocator, allocation *nomadAllocationDetail) {
-	if !representsTerminalSuccess(allocation) {
-		return
-	}
-
-	if _, err := s.retainTerminalResult(locator); err != nil {
-		log.Printf("es successful stage cleanup skipped after result retention failure run_id=%s err=%v", locator.RunID, err)
-		return
-	}
-
-	layout := newExecutionPackageLayout(s.cfg, locator)
-	expectations := ownershipNormalizationMarkerExpectations{
-		RunID:         locator.RunID,
-		RequireMarker: false,
-	}
-	if targetOwner, ownerErr := executionPlatformStateOwnerFromPath(s.cfg.Execution.ResultsRootDir); ownerErr == nil {
-		expectations = ownershipExpectationsForRun(locator.RunID, targetOwner, false)
-	}
-	if err := preflightSuccessfulStageCleanup(layout.stageRootDir, layout.platformStageDir, expectations); err != nil {
-		log.Printf("es successful stage cleanup skipped run_id=%s path=%s err=%v", locator.RunID, layout.stageRootDir, err)
-		return
-	}
-	if err := os.RemoveAll(layout.stageRootDir); err != nil {
-		log.Printf("es successful stage cleanup failed run_id=%s path=%s err=%v", locator.RunID, layout.stageRootDir, err)
-	}
-}
-
-func representsTerminalSuccess(allocation *nomadAllocationDetail) bool {
-	if allocation == nil {
-		return false
-	}
-
-	taskState, ok := allocation.TaskStates[nomadTaskName]
-	if !ok {
-		return false
-	}
-
-	taskTerminal := strings.TrimSpace(taskState.State) == "dead" || isTerminalAllocationStatus(strings.TrimSpace(allocation.ClientStatus))
-	if !taskTerminal {
-		return false
-	}
-
-	exitCode, ok := taskState.exitCode()
-	if !ok {
-		return false
-	}
-	return exitCode == 0
-}
-
 func (c *nomadClient) fetchJob(ctx context.Context, jobID string) (nomadJobSummary, *Error) {
 	response, err := c.get(ctx, "/v1/job/"+jobID, nil)
 	if err != nil {
@@ -337,7 +278,7 @@ func (c *nomadClient) fetchJob(ctx context.Context, jobID string) (nomadJobSumma
 	switch response.StatusCode {
 	case http.StatusOK:
 		var payload nomadJobSummary
-		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		if err := decodeCompatibleJSONDocument(response.Body, &payload); err != nil {
 			return nomadJobSummary{}, nomadUnavailableError("execution runtime returned an invalid job response")
 		}
 		return payload, nil
@@ -364,7 +305,7 @@ func (c *nomadClient) fetchProjectedAllocation(ctx context.Context, jobID string
 	}
 
 	var payload []nomadAllocationListEntry
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	if err := decodeBoundedCompatibleJSONDocumentResponse(response, &payload); err != nil {
 		return nil, nomadUnavailableError("execution runtime returned an invalid allocation response")
 	}
 	selected, ok := currentLifecycleProjectionPolicy{}.selectAllocation(payload)
@@ -405,7 +346,7 @@ func (c *nomadClient) fetchAllocation(ctx context.Context, allocationID string) 
 	switch response.StatusCode {
 	case http.StatusOK:
 		var payload nomadAllocationDetail
-		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		if err := decodeBoundedCompatibleJSONDocumentResponse(response, &payload); err != nil {
 			return nomadAllocationDetail{}, nomadUnavailableError("execution runtime returned an invalid allocation response")
 		}
 		return payload, nil
@@ -454,10 +395,15 @@ func (c *nomadClient) fetchTaskLogs(ctx context.Context, allocationID string, ta
 }
 
 func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
-	query := url.Values{}
-	query.Set("purge", "false")
-
-	response, err := c.delete(ctx, "/v1/job/"+jobID, query)
+	requestURL := c.baseURL.ResolveReference(&url.URL{
+		Path:     path.Clean("/v1/job/" + jobID),
+		RawQuery: "purge=false",
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL.String(), nil)
+	if err != nil {
+		return nomadUnavailableError("execution runtime is unavailable")
+	}
+	response, err := c.client.Do(request)
 	if err != nil {
 		return nomadUnavailableError("execution runtime is unavailable")
 	}
@@ -477,43 +423,12 @@ func (c *nomadClient) stopJob(ctx context.Context, jobID string) *Error {
 	}
 }
 
-func (c *nomadClient) purgeJob(ctx context.Context, jobID string) error {
-	query := url.Values{}
-	query.Set("purge", "true")
-
-	response, err := c.delete(ctx, "/v1/job/"+jobID, query)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-
-	switch response.StatusCode {
-	case http.StatusOK, http.StatusNotFound:
-		return nil
-	default:
-		payload, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("purge nomad job: unexpected status %d: %s", response.StatusCode, strings.TrimSpace(string(payload)))
-	}
-}
-
 func (c *nomadClient) get(ctx context.Context, requestPath string, query url.Values) (*http.Response, error) {
 	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean(requestPath)})
 	if query != nil {
 		requestURL.RawQuery = query.Encode()
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.client.Do(request)
-}
-
-func (c *nomadClient) delete(ctx context.Context, requestPath string, query url.Values) (*http.Response, error) {
-	requestURL := c.baseURL.ResolveReference(&url.URL{Path: path.Clean(requestPath)})
-	if query != nil {
-		requestURL.RawQuery = query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, requestURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}

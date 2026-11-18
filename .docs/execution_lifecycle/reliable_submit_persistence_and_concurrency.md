@@ -2,13 +2,14 @@
 
 ## 1. Status And Purpose
 
-Status: accepted architecture decision and first private source implementation
-for the ES-owned reliable-submit persistence and concurrency path.
+Status: accepted architecture decision with bounded private codec-3 synthetic
+replay custody on the reopened reliable-submit seam. Public/runtime reliable
+submit remains unavailable.
 
-This tranche adds private admission-local durable claim source and tests only:
-one backend-neutral claim-store port, one backend-neutral durable semantic
+The historical first tranche added private admission-local durable claim
+source and tests: one backend-neutral claim-store port, one durable semantic
 service, one private durable-record codec, one SQLite implementation using
-`modernc.org/sqlite v1.54.0`, and one shared backend conformance suite. It
+`modernc.org/sqlite v1.54.0`, and a shared backend conformance suite. It
 implements no configuration source, no request or response DTO, no HTTP handler,
 no staging behavior, no Nomad behavior, no producer-contract field, no runtime
 startup wiring, and no public reliable-submit availability. Reliable submit
@@ -18,11 +19,12 @@ This ADR freezes the durable-state boundary and ordering rules that the later
 source implementation must consume from the committed pure model in
 `es/admission/internal/reliablesubmit`.
 
-The source tranche for `reliable-submit-durable-same-operation-replay-repair`
-now implements the section 9A latest-operation replay contract inside the
-private durable source. The private record/codec stores a complete v2
-latest-operation descriptor for new and later-mutated rows, the SQLite schema is
-version 2, valid v1 rows migrate as legacy/unbound codec-1 rows, and the durable
+The historical source tranche for `reliable-submit-durable-same-operation-replay-repair`
+implemented the section 9A latest-operation contract. Codec-1/2 rows retain
+their historical meaning and generic nonempty opaque references. The private
+record/codec stores a complete v2 latest-operation descriptor for historical
+new and later-mutated rows; valid v1 rows migrated as legacy/unbound codec-1
+rows, and the durable
 service performs exact latest-operation replay, mutation-conflict detection,
 CAS-loser reload/replay classification, and COMMIT-unknown full-record equality
 including the descriptor.
@@ -33,12 +35,22 @@ schema `execution-substrate.reliable-submit-request/v1`, reliable contract
 `execution-substrate.reliable-submit/v1`, discriminator `reliable_submit`,
 submit-key syntax, caller/key derivation, composite `ClaimID` construction
 through the committed pure-model constructor, and ES-neutral outcome projection.
-It does not implement source-grounded resolved effective-plan extraction,
-canonical effective-plan encoding, `PlanBinding` construction from admitted
-facts, complete effective-plan witness construction, durable replay-envelope
-custody, or runtime orchestration. Those helpers remain runtime-unwired and do
-not alter this ADR's durable schema, migrations, store port, or SQLite startup
-status.
+Those adapter helpers do not implement source-grounded plan extraction,
+canonical effective-plan encoding, `PlanBinding` construction, a complete
+witness, durable replay-envelope custody, or runtime orchestration. The
+separate private `resolved-execution-plan-extraction-foundation` now extracts
+the current legacy Submit plan from real admission/runtime resolution, but it
+does not import or wire this reliable store, construct a binding, or alter this
+ADR's schema, migrations, store port, or SQLite startup status.
+
+The separate 2026-11-15 private admission binding v1 source selection
+constructs a runtime-unwired `PlanBinding`, exact fourteen-category witness,
+and `BoundPlan` from the actual frozen resolver tuple. It remains an
+always-not-effect-ready assessment. At PB1 it had no production caller; the
+codec-3 synthetic composer is its only selected new non-test caller. The pure
+model's generic opaque/nonempty binding contract, fourteen masks, codec-1/2
+rows, store port and latest-operation semantics remain unchanged.
+Its signed mount provenance carry-through adds no live admission refusal.
 
 ## 2. Current Repository And Deployment Reality
 
@@ -55,11 +67,14 @@ store source: `modernc.org/sqlite v1.54.0`, with the exact expected
 `modernc.org/libc v1.74.1` transitive coupling. No PostgreSQL dependency is
 introduced.
 
-The current durable record and SQLite schema version 2 store the latest
-`lastMutation` reference with a closed private operation kind and versioned
-operation-input binding digest for complete codec-2 rows. Migrated codec-1 rows
-retain only the legacy `lastMutation` reference and mark operation kind and
-input digest unavailable/unbound. No mutation history is stored.
+SQLite schema version 3 adds only private synthetic codec-3 custody and a
+same-database key-use ledger. Historical codec-2 rows still store the latest
+`lastMutation` reference with closed operation kind and input binding; migrated
+codec-1 rows retain their unbound legacy mutation reference. Both retain
+their generic nonempty opaque CallerRef, SubmitKeyRef and PlanBinding domains,
+including values shorter than 32 bytes and bindings longer than 256 bytes.
+Only complete codec-3 rows require CallerRef/SubmitKeyRef of exactly 32 bytes
+and PlanBinding of 1..256 bytes. No mutation history is stored.
 
 The current Remote Alpha ES binary deployment path builds ES through
 `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` for both the Python and shell payload
@@ -288,10 +303,12 @@ Different mutation references remain subject to revision, phase, and transition
 rules.
 
 The caller namespace plus safe submit-key representation is unique. Concurrent
-first deliveries converge on one durable claim. Same caller/key with the same
-private binding loads or replays the existing claim. Same caller/key with a
-different private binding is a conflict before any new effect and discloses no
-existing `RunRef` or receipt.
+first deliveries converge on one durable claim. Historical codec-1/2 loads
+compare the same private binding and different binding conflicts without
+disclosing a `RunRef` or receipt. The private codec-3 synthetic adapter
+instead loads the verified winner by key before current resolution and compares
+canonical winner-original intent and field presence. A changed intent
+conflicts; no codec-3 result confers any effect permission.
 
 `RunRef` assignment is immutable. A claim can move from pre-assignment to
 assigned exactly once. A same-operation replay that observes the already
@@ -430,6 +447,10 @@ provably-not-accepted replay returns the same terminal record, and no new
 mutation or external effect occurs. Older operations after later progression are
 stale or superseded, not historical replay.
 
+The following operation table describes historical codec-1/2 durable service
+semantics. The codec-3 synthetic path has only immutable establishment and
+checked load; it rejects every RunRef, effect, receipt and CAS mutation.
+
 | Operation | Precondition | Expected revision | Idempotent replay | Conflict result | Resulting pure-model phase | Durable effect facts established or changed | Transaction boundary | External-I/O rule |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Establish or load claim | Authenticated and authorized caller namespace, valid safe key representation, valid private binding input | None for first insert; current revision for mutation | Same caller/key/binding loads existing phase and effect facts | Same caller/key/different binding returns conflict with no run or receipt disclosure | Pending before assignment, ambiguous before assignment where permitted by the current durable request/model source, or existing hydrated pure-model phase | No provider-effect fact established | One SQLite transaction for insert-or-load and uniqueness check | No external I/O |
@@ -463,7 +484,8 @@ and public runtime enablement.
 
 ## 9A. Durable Latest-Operation Replay Repair ADR
 
-Status: private source implemented and runtime-unwired. The durable service,
+Status: historical codec-1/2 private source implemented and runtime-unwired;
+section 15A owns the later codec-3 synthetic extension. The durable service,
 durable record, SQLite schema v2 migration, SQLite row scan/write/CAS, store
 tests, and shared conformance tests implement this ADR inside
 `es/admission/internal/reliablesubmit`. No runtime, public API, producer,
@@ -512,9 +534,11 @@ A matching mutation reference with a different operation kind or different input
 binding is a mutation conflict, not stale revision and not exact replay.
 Mutation reference alone is not sufficient proof of same semantic command.
 
-Establish or load remains special. Caller/key uniqueness and private plan
-binding own claim establishment: same caller/key and same binding loads the
-existing claim, while same caller/key and different binding conflicts. Establish
+For historical codec-1/2, establish or load remains special. Caller/key
+uniqueness and private plan binding own claim establishment: same caller/key
+and same binding loads the existing claim, while different binding conflicts.
+Codec-3 synthetic establishment is governed separately by section 15A.
+Establish
 redelivery does not rewrite the current latest-operation descriptor merely to
 bless a new delivery identity. If the initial row stores an establish
 descriptor, that descriptor is only the initial latest-operation descriptor; it
@@ -632,6 +656,9 @@ inactive outcome. Corrupt, unsupported, or unhydratable state fails closed
 before replay and must not mutate.
 
 ### Operation-Specific Replay Matrix
+
+This operation-kind table likewise describes the historical codec-1/2 durable
+service. Codec-3 synthetic rows do not enter these mutation operations.
 
 | Operation kind | Binding inputs | Valid source phases | Committed result | Exact latest-operation replay | Same mutation with different input | Different mutation with stale predecessor | Disclosure allowed |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -856,7 +883,7 @@ and assembled distribution notice remain a later release/packaging gate.
 
 ## 15. First Concrete Source Tranche
 
-The first concrete source tranche is:
+The historical first concrete source tranche was:
 
 - same-package private durable-record codec in
   `es/admission/internal/reliablesubmit`;
@@ -885,10 +912,245 @@ tranche.
 
 The completed latest-operation source repair preserves the private
 establish/load/CAS `claimStore` port shape. Later reliable-submit gates remain
-resolved execution-plan extraction, state/store lifecycle and configuration,
-Nomad reconciliation, and public runtime enablement. Those later gates must not
-reinterpret the source repair as mutation-history support, public replay DTOs,
-PostgreSQL implementation, or end-to-end reliable-submit availability.
+runtime consumption and original-key availability for the now-unwired private
+v1 binding, durable material custody, state/store lifecycle and configuration,
+Nomad reconciliation, and public runtime enablement. Those later
+gates must not reinterpret the source repair as mutation-history support,
+public replay DTOs, PostgreSQL implementation, or end-to-end reliable-submit
+availability.
+
+## 15A. Private codec-3 synthetic custody, SQLite and recovery
+
+This is a Bounded slice rule on the reopened reliable-submit seam, not a
+runtime or effect path. The only codec-3 scope is synthetic_nonoperational_v1.
+The private adapter loads by caller/key before current resolver/default/key
+selection, authenticates the winner's original envelope, compares canonical
+original intent/presence and returns either verified winner-original replay,
+fixed conflict, exact own-commit confirmation or unavailable/unknown. A
+different valid equal-intent winner is not proof this attempt committed. Legacy
+codec-1/2 same-binding durable semantics in sections 7–9A remain intact.
+
+SQLite schema version 3 and per-row codec 3 are separate versions. Append
+migration 3; migration-1/2 SQL literals and ledger hashes remain byte-identical
+(9613ba74cd6573626277b1f04a20b9c3ec5f9edf8b6b7408e94cbb45edc32dcd
+and 9280a62450488dfa54907d268d693f3f7d4f0b78b9a3553a1b659206d2c970e9).
+The existing 32 claim columns and claim_rowid are copied exactly, with
+bidirectional in-transaction rowid/old-column comparison before dropping the
+old table. Migration-3 is one SQL literal: a transient same-transaction
+ordinary CHECK(ok=1) assertion table inserts 1 only if counts and both
+32-column-plus-rowid EXCEPT directions match; a mismatch aborts the migration.
+The final migration-3 literal is 21,829 bytes with SHA-256
+`4dafddbf477fd7f64ad88cf2b1e2b2becb378827e81cd6cc694456798c9a00be`;
+the complete supported schema-3 shape digest is
+`15ab48bde4d53bb252dc954a2aa3b1db12de7295111f23bb0264f74f153dba92`.
+That table is dropped before COMMIT and is not another database or durable
+schema object. Fourteen nullable physical columns are added: replay_scope,
+intent_format, intent_commitment, context_commitment,
+envelope_wrapper_format, envelope_payload_format, envelope_algorithm,
+envelope_ref, envelope_size, envelope_sha256, binding_key_id,
+binding_key_fingerprint, envelope_key_id and envelope_key_fingerprint.
+The inherited 32-column projection, in order, is caller_ref, submit_key_ref,
+plan_binding, witness_resolved_mask, witness_inapplicable_mask, phase_tag,
+run_ref, receipt_ref, revision, created_at_unix_ns, updated_at_unix_ns,
+assigned_at_unix_ns, effect_intent_ref, effect_intent_at_unix_ns, staging_ref,
+staging_at_unix_ns, dispatch_ref, dispatch_at_unix_ns,
+provider_observation_kind, provider_observation_ref,
+provider_observation_at_unix_ns, reconciliation_kind, reconciliation_ref,
+reconciliation_at_unix_ns, expires_at_unix_ns, retention_state,
+unavailable_at_unix_ns, unavailable_reason, last_mutation_ref,
+latest_operation_kind, latest_operation_input_digest and codec_version.
+claim_rowid remains the INTEGER PRIMARY KEY. The inherited witness, phase,
+effect, retention and latest-operation CHECKs remain exact except the codec
+domain widens to 1/2/3 and both 2 and 3 require latest-operation fields.
+For codec 1/2 all fourteen must be NULL, and all inherited generic nonempty
+opaque caller/key/binding, phase, latest-operation, CAS and history semantics
+survive. Only codec 3 requires caller_ref and submit_key_ref BLOB exactly 32,
+plan_binding BLOB 1..256, all fourteen fields complete, scope=1, formats and
+algorithm=1, commitments/fingerprints/file SHA BLOB exactly 32, envelope size
+29..2,097,152, and exact relative-ref/key-ID byte grammar. Codec-3 INSERT is
+initial revision/establish operation, phase PendingBeforeAssignment, retention
+active, no expiry, RunRef, receipt, effect, staging, dispatch, provider or
+reconciliation fact. Every codec-3 UPDATE/DELETE is forbidden. Historical
+codec-1/2 updates still permit only 1→2 or 2→2 with new fields NULL.
+
+On schema 3, codec 3 is the only permitted new claim. Codec-1/2 rows remain
+only as authenticated historical state inherited through supported migration.
+For a legacy establish request, the store may load a same-key valid migrated
+historical row within its existing transaction and return it to the durable
+service for caller/key and plan-binding classification. An absent legacy key
+must be refused without inserting or partially mutating a codec-1/2 row. A
+current codec-3 winner must not be treated as historical state; malformed,
+corrupt, or semantically invalid existing rows fail closed. This narrow
+historical-load rule remains private, admission-local, runtime-unwired, and
+non-effect-capable. It does not enable operational custody or reliable submit.
+
+The envelope_ref TEXT predicate is non-NULL TEXT, instr(x,char(0)) IS 0,
+length(CAST(x AS BLOB))=75, exact BINARY prefix objects/v1/, exactly 64
+remaining bytes and a suffix with no byte outside lowercase [0-9a-f].
+The key-ID predicate for both registry and codec-3 claim fields is non-NULL
+TEXT, no embedded NUL, byte length 1..64, first byte [A-Za-z0-9], remainder
+only [A-Za-z0-9._-]. These predicates are two-valued CASE/ELSE-0 checks and
+are mirrored by the Go reader; SQLite TEXT length alone is not enough.
+
+Two additional STRICT tables live in this SAME SQLite DB:
+reliable_submit_key_registry(key_id TEXT PRIMARY KEY, purpose 1 binding or 2
+envelope, material_fingerprint BLOB exactly 32 UNIQUE across purposes,
+state 1 active/2 retired/3 revoked) and
+reliable_submit_seal_use(envelope_key_id TEXT PRIMARY KEY REFERENCES
+reliable_submit_key_registry(key_id), granted_count INTEGER NOT NULL between
+0 and 4294967296). Claim binding_key_id and envelope_key_id also reference
+the actual reliable_submit_key_registry table. A registry INSERT must be
+new ID/new fingerprint, valid ID/purpose/32-byte fingerprint and ACTIVE.
+Its UPDATE preserves ID/purpose/fingerprint using IS NOT and permits only
+1→2, 1→3 or 2→3. Counter INSERT must be new ID, valid envelope-purpose
+ACTIVE registry row and count zero. Counter UPDATE preserves key ID with
+IS NOT and permits exactly OLD.granted_count+1 at or below the bound while
+registry remains ACTIVE. All three tables have unconditional BEFORE DELETE
+abort triggers; claim codec-3 has unconditional BEFORE UPDATE abort. Registry
+and counter have explicit BEFORE INSERT EXISTS same-ID/fingerprint guards,
+and UPDATE guards are independent of no-delete. Claim INSERT checks both
+ACTIVE registry purpose/fingerprint matches. Normal claim establishment is
+one targeted ON CONFLICT(caller_ref,submit_key_ref) DO NOTHING, followed by
+winner load; other conflicts fail. No generic IGNORE or REPLACE is used.
+The named objects are reliable_submit_claims_no_delete,
+reliable_submit_claims_guard_insert_v3,
+reliable_submit_claims_guard_update and the unique
+reliable_submit_claims_envelope_ref_unique index; each key table has its
+respective _no_delete, _guard_insert and _guard_update trigger. Registry
+INSERT aborts on EXISTS same BINARY key_id OR same fingerprint; counter
+INSERT aborts on EXISTS same BINARY envelope_key_id or NOT EXISTS an ACTIVE
+purpose-2 registry row. Counter UPDATE aborts if NEW.envelope_key_id IS NOT
+OLD.envelope_key_id, NEW.granted_count IS NOT OLD.granted_count+1, count exceeds
+4294967296 or the ACTIVE purpose-2 registry row is absent. Registry UPDATE
+aborts if ID, purpose or fingerprint IS NOT the old value, state is NULL, or
+transition is outside 1→2/3 and 2→3. Claim INSERT requires NOT EXISTS checks
+to be false for both registry rows matching ID/purpose/fingerprint/ACTIVE,
+while deliberately **not** checking caller/key existence before the targeted
+DO NOTHING. All checks have explicit NULL branches; no SQL UNKNOWN authorizes
+a value or transition. The complete final DDL literal and this object manifest
+are compared on open, not accepted merely because a ledger row exists.
+
+Every managed connection, including open/migration, key, claim and reload,
+sets and verifies recursive_triggers=ON before relevant prepare/read/write.
+DSN initialization also requests it; WAL/FULL, foreign_keys=ON and
+trusted_schema=OFF remain required. Unknown/unreadable/zero recursive result
+refuses. REPLACE implicitly deletes a conflicting row and its DELETE
+triggers fire only under recursive triggers, so this is necessary for
+no-replacement. No claim is made against an administrator disabling protections,
+dropping triggers or replacing DB/files.
+
+The key-use owner registers/compares actual 32-byte key material under a
+private fingerprint SHA-256(ASCII ESRSKEY1 | bytes), with a purpose-independent
+domain so aliases and cross-purpose reuse fail. It reserves before every Seal
+under BEGIN IMMEDIATE, checks both keys ACTIVE, checks the actual envelope
+key count <2^32 and checks the sum of committed grants across ALL envelope
+counter rows <32 in the first fixture domain. The counter increments once and
+a known successful COMMIT alone yields one process-local one-use permit.
+Unknown COMMIT yields no permit or Seal; failed Seal, collision, publication
+failure, orphan, loser or claim failure burns capacity without refund.
+For these private claim, grant and key-state write transactions, a COMMIT error
+or pre-COMMIT-close uncertainty discards that specific SQLite driver connection
+before the high-level connection is closed or any claim outcome is reloaded.
+BEGIN dispatch is itself an uncertainty boundary: the pinned driver may execute
+`BEGIN IMMEDIATE` and then return an error. Every non-nil BEGIN result is
+treated as potentially post-execution unless a mechanically verified driver
+contract proves otherwise. From dispatch onward, the exact connection must
+either enter the known-successful transaction cleanup path or be safely rolled
+back or synchronously discarded before ordinary pool return. Cleanup does not
+depend on the request context that produced the BEGIN error. A failed or
+unconfirmed disposal returns a fixed unavailable result and cannot authorize
+claim classification, mutation retry, a Seal grant, or a permit. Grant BEGIN
+uncertainty returns no permit even if later observation sees durable state.
+Claim, grant, and key-state writes share this entry rule; no mutation is retried
+after an ambiguous BEGIN result. The post-COMMIT handling below is unchanged.
+The discard uses the supported `database/sql.Conn.Raw` callback returning
+`driver.ErrBadConn`; the pinned pool removes and physically closes that driver
+connection rather than returning it to circulation. A failed discard cannot
+authorize success or a Seal permit. No rollback follows an attempted COMMIT.
+If an earlier ROLLBACK itself fails, the same discard is required; an
+unconfirmed discard makes the operation unavailable and forbids classification.
+Claim uncertainty is classified only after confirmed discard,
+through a separate freshly opened SQLite connection with current schema and
+connection protections verified without migration. That read compares durable
+state; it never repeats the claim mutation. A genuinely pre-COMMIT failure
+leaves its published-but-unclaimed file inert, while a completed COMMIT whose
+response was lost may be recognized only from the fresh verified durable row.
+Retirement/revocation blocks new grants; if observed before consuming an
+outstanding permit it burns that permit. It cannot instantly cancel an
+already granted use in another process; the claim transaction still requires
+both keys ACTIVE. A retired original may verify/decrypt an existing claim;
+revoked/missing/mismatched originals refuse. The near-2^32 test has a separate
+reservation-only limit profile. No production key loader or global rollback
+protection is selected.
+
+The publisher uses an independent random 32-byte object ID as
+objects/v1/<64 lowercase hex>, never as AEAD nonce. The qualified test root
+and fixed parent are validated at opening/setup. Under held root/parent
+identity it exclusively creates a regular owner-only one-link no-follow file,
+consumes one permit, Seals frozen payload/header/AAD with separate AES-256-GCM
+key and Go NewGCMWithRandomNonce, writes exact bounded bytes, readback-checks
+the held file, fsyncs file and parent, checks close, then reopens no-follow
+under the held parent and compares visible/held identity and full bytes.
+Only a complete verified publication descriptor may enter claim INSERT.
+Unclaimed partial or complete files remain inert; no rewrite/delete/adoption.
+The later reader loads expected associations only from the real claim row,
+checks ref, held/visible file identity, exact complete size/SHA, wrapper/AAD,
+registry/actual original keys, Open, strict payload, layer copies, then invokes
+the admission-owned PB1 verifier as its last internal callback. The preclaim
+writer validates against frozen prospective associations and never fabricates
+an authoritative claim for its own check. SQL cannot authenticate external
+file bytes.
+
+Migration 0→3 applies 1+2+3 in one transaction; 1→3 applies 2+3 together;
+2→3 applies 3. A pre-COMMIT failure with confirmed rollback retains the
+authenticated opening version. A known COMMIT yields complete schema 3,
+subject to postcommit shape check. Unconfirmed COMMIT may leave complete old
+or complete new state; close the uncertain handle and use a fresh NONMIGRATING
+verifier of application_id, user_version, ordered ledger/source hashes,
+tables/columns/STRICT/indexes/FKs/CHECKs/triggers, quick/foreign-key checks
+and legacy row shape/preservation evidence. Classify recovered-old or
+recovered-new, not a known direct COMMIT response. A complete old state may
+undergo a separately initiated ordinary upgrade. Mixed or unverifiable
+state is unavailable, without blind retry, writable_schema or backfill.
+Reservation and claim COMMIT unknown have their distinct rules above and in
+the submit contract; migration recovery never mints a Seal permit or claim.
+
+The exact new internal-package files are replay_custody_format.go,
+replay_custody_structure.go, replay_custody_file.go, replay_key_use_sqlite.go,
+sqlite_replay_claim.go, sqlite_replay_schema.go and sqlite_replay_shape.go.
+The only new source testdata files are public synthetic whole-byte literals
+testdata/replay_payload_v1.hex, testdata/replay_header_v1.hex and
+testdata/replay_aad_v1.hex, independently calculated from the selected field
+tables rather than derived from the Go encoder under test.
+The finite exported-in-internal-package facade is PrivateReplayCustody,
+PrivateReplayKeys, PrivateReplayFrozen, PrivateReplaySealPermit,
+PrivateReplayPublication, PrivateReplayAttempt, PrivateReplayClaimLookup,
+PrivateReplayClaimCommitFault and AuthenticatedClaimMeta. The selected
+constructors and operations are
+OpenPrivateReplayCustody, NewPrivateReplayKeys, NewPrivateReplayFrozen,
+EncodePrivateReplayIdentity, EncodePrivateReplayAssessment,
+LoadSyntheticClaim, Found, OriginalKeyIDs, ReserveSealUse,
+PublishSealedSynthetic, EstablishSyntheticClaim, WithAuthenticatedClaim,
+MatchesAttempt, MatchesClaimAndPlan, Close and the fixed error classifier
+ErrPrivateReplayClaimCommitUnknown. A finite InjectClaimCommitFaultForTesting
+hook can lose the actual claim COMMIT response after applying the transaction,
+or close its connection before COMMIT, only in the explicitly synthetic test
+fixture; it has no runtime caller or configurable production path. Only an
+opaque, one-use permit crosses
+the admission import edge; its authority never does. The lower package owns
+SQL, complete bounded byte framing before the authenticated callback,
+key-use and file custody; admission owns typed original semantics, the only
+direct real resolver/PB1 composition and PB1 recomputation. There is no
+general plaintext/key getter, exported raw store, arbitrary verified flag,
+second database, queue or shared kernel.
+
+Private aggregates and boundary errors use fixed redacted formatting.
+Binary custody encoding is the selected bounded private exception; no raw
+submit key/JSON, generic JSON/text marshaler, private value-bearing errors or
+logs are selected. A known synthetic claim is never effect-ready. Native
+file/VFS qualification, real caller authorization, genuine image pin, host
+qualification, production keys/restore/GC/epoch/TTL, run/effect protocol,
+public recovery and deployment remain separate governed gates.
 
 ## 16. Explicit Non-Claims And Open Decisions
 
@@ -921,9 +1183,9 @@ Open decisions:
 - exact reliable-submit state-path config key;
 - exact TTL, tombstone, garbage-collection, archival, and repair policy;
 - exact caller namespace source wiring at the authenticated request boundary;
-- exact durable replay-envelope persistence, including safe reconstruction or
-  custody of original argv and environment values and selection of any safe
-  immutable references;
+- operational replay-envelope/key custody, including production key epoch,
+  restore/rollback, TTL/GC and residence choices; the bounded codec-3
+  synthetic custody in section 15A does not answer those deployment gates;
 - exact Nomad reconciliation query and evidence rules;
 - exact public receipt, recovery, HTTP status, and error vocabulary;
 - exact runtime submit integration tranche.

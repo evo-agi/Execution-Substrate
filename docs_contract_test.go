@@ -154,6 +154,60 @@ func assertContainsNone(t *testing.T, label string, text string, forbidden ...st
 	}
 }
 
+var trancheB1ForbiddenDocumentationClaims = []string{
+	"semantic plan is complete effect identity",
+	"semantic plan is complete provider-effect identity",
+	"semantic-plan equality implies provider-job equality",
+	"semantic-plan equality implies dispatch equality",
+	"semantic-plan equality implies replay equality",
+	"semantic-plan equality implies restart equality",
+	"semantic-plan equality implies safe-host substitution",
+	"semantic-plan equality implies effect-binding equality",
+	"host context is already canonically bound",
+	"reliable keyed-submit runtime is wired",
+	"reliable dispatch is implemented",
+	"nomad ambiguity reconciliation is implemented",
+	"planbinding exists",
+	"`planbinding` exists",
+	"canonical encoding exists",
+	"coordinator adapter work is complete",
+	"native linux validation is complete",
+	"caller is concurrency-safe during unsynchronized copy",
+	"caller mutation is safe after entry",
+}
+
+func trancheB1DocumentationContradiction(section string) string {
+	normalized := strings.ToLower(compactText(section))
+	for _, forbidden := range trancheB1ForbiddenDocumentationClaims {
+		if strings.Contains(normalized, forbidden) {
+			return forbidden
+		}
+	}
+	return ""
+}
+
+func assertTrancheB1DocumentationSection(t *testing.T, label string, section string) {
+	t.Helper()
+
+	assertContainsAll(t, label, strings.ToLower(compactText(section)),
+		"semantic truth only",
+		"additional execution-shaping",
+		"race-free",
+		"caller data race",
+		"not an es synchronization guarantee",
+		"results root",
+		"outside the semantic plan",
+		"b1 binding",
+		"tranche b2",
+		"now completes",
+		"reliable keyed-submit runtime remains unwired",
+		"native linux runtime validation",
+	)
+	if contradiction := trancheB1DocumentationContradiction(section); contradiction != "" {
+		t.Fatalf("%s contains contradictory B1 claim %q", label, contradiction)
+	}
+}
+
 func assertContainsInOrder(t *testing.T, label string, text string, phrases ...string) {
 	t.Helper()
 
@@ -165,6 +219,637 @@ func assertContainsInOrder(t *testing.T, label string, text string, phrases ...s
 		}
 		offset += index + len(phrase)
 	}
+}
+
+const expectedTreeInventoryClause = "finite source inventories for expected-tree `ReadDir`, custody claim/materialization entry points, synchronized state, rejected A3 topology, and retired operator aliases"
+
+const expectedTreeInventoryStatement = "Its accepted scope remains exactly: correcting the resolved-plan documentation truth and strengthening " + expectedTreeInventoryClause + "."
+
+func hasExpectedTreeInventoryClause(section string) bool {
+	normalized := compactText(section)
+	normalized = strings.ReplaceAll(normalized, "expected- tree", "expected-tree")
+	return strings.Contains(normalized, expectedTreeInventoryStatement)
+}
+
+func assertExpectedTreeInventoryClause(t *testing.T, section string) {
+	t.Helper()
+	if !hasExpectedTreeInventoryClause(section) {
+		t.Fatalf("operator cutoff plan missing governed expected-tree inventory clause %q", expectedTreeInventoryClause)
+	}
+}
+
+func TestExpectedTreeInventoryClauseLineWrapContract(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		section string
+		want    bool
+	}{
+		{
+			name:    "canonical single line",
+			section: expectedTreeInventoryStatement,
+			want:    true,
+		},
+		{
+			name: "ordinary markdown line wrap",
+			section: "Its accepted scope remains exactly: correcting the resolved-plan documentation truth and strengthening finite source inventories for expected-\n" +
+				"tree `ReadDir`, custody claim/materialization entry points, synchronized state, " +
+				"rejected A3 topology, and retired operator aliases.",
+			want: true,
+		},
+		{
+			name:    "required semantic clause removed",
+			section: "Its accepted scope remains exactly: correcting the resolved-plan documentation truth and strengthening custody claim/materialization entry points, synchronized state, rejected A3 topology, and retired operator aliases.",
+			want:    false,
+		},
+		{
+			name:    "materially contrary wording",
+			section: "The remaining core repair excludes expected-tree `ReadDir` from its finite source inventories and covers only custody entry points.",
+			want:    false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasExpectedTreeInventoryClause(test.section); got != test.want {
+				t.Fatalf("hasExpectedTreeInventoryClause() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolvedExecutionPlanExtractionDocsContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
+	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	contracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	admission := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	recoveryRaw := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	recovery := compactText(recoveryRaw)
+	recoveryCurrent := compactDocSection(t, recoveryRaw, "## 2. Current Implementation Reality", "## 3. Dual Ambiguity Model")
+	recoveryNonClaims := compactDocSection(t, recoveryRaw, "## 15. Explicit Non-Claims", "## 16. Required-Before-Implementation Gates")
+	persistence := compactText(mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md"))
+
+	assertContainsAll(t, "resolved-plan tranche in PLANS.md", plans,
+		"one private `resolvedExecutionPlan`",
+		"Successful return from that effectful read resolver is the freeze point",
+		"The private `resolvedExecutionPlan` is admitted semantic truth",
+		"Semantic-plan equality across qualified host contexts proves admitted-semantic equality only",
+		"Every post-claim return closes descriptors and retains the visible run root",
+		"does not select or implement canonical effective-plan encoding, `PlanBinding`, a complete effective-plan witness, durable material or replay-envelope custody",
+	)
+	assertContainsAll(t, "resolved-plan system boundary", boundaries,
+		"Successful resolver return is the freeze point",
+		"current legacy `Submit` may consume only narrow typed plan, material, run-projection, host-materialization, authority-handoff, and Nomad-job inputs",
+		"Semantic-plan equality across qualified host contexts is admitted-semantic equality only",
+		"does not implement or imply a public request/response change",
+	)
+	assertContainsAll(t, "resolved-plan lifecycle design", design,
+		"resolved execution plan from the actual current ES admission and runtime-resolution path",
+		"That plan is authoritative only for admitted semantics",
+		"The semantic plan owns admitted execution semantics",
+		"Plan equality across qualified host contexts proves admitted-semantic equality",
+		"The separate private v1 `PlanBinding` producer consumes this source-grounded plan",
+	)
+	assertContainsAll(t, "resolved-plan implementation", implementation,
+		"`es/admission/resolved_execution_plan.go`",
+		"This successful return is the freeze point: no run ID, filesystem write, ownership mutation, or Nomad registration occurs before it",
+		"Post-freeze mount materialization does not parse gzip or tar",
+		"Once exclusive run-root creation succeeds, all Submit returns retain the visible root",
+	)
+	assertContainsAll(t, "resolved-plan lifecycle contract", contracts,
+		"one private source-grounded semantic plan",
+		"The private `resolvedExecutionPlan` is admitted semantic truth",
+		"Semantic-plan equality across qualified host contexts is not provider-job, dispatch, replay, restart, safe-host-substitution, or provider-effect identity",
+		"Once creation succeeds, every return closes descriptors and retains the visible root",
+	)
+	assertContainsAll(t, "resolved-plan admission model", admission,
+		"Private resolved current-Submit plan",
+		"Semantic-plan equality is not provider-effect/replay identity",
+		"not canonical encoding, `PlanBinding`, a witness, durable custody, host-context binding/replay treatment, reliable runtime wiring, or public grammar",
+	)
+	assertContainsAll(t, "resolved-plan reliable target boundary", recovery,
+		"Current legacy Submit now also consumes a separate private `resolvedExecutionPlan`",
+		"No run ID, staging write, ownership mutation, or Nomad call precedes that freeze",
+		"Current legacy `Service.Submit` already consumes the private source-grounded resolved-execution-plan extraction foundation",
+		"not reliable-submit runtime wiring",
+		"The earlier extraction foundation by itself selected no canonical binding or witness",
+		"The separate private v1 producer now selects only an unwired encoding, commitment and completeness assessment",
+	)
+	assertContainsAll(t, "resolved-plan owning current section", recoveryCurrent,
+		"source-grounded resolved-execution-plan extraction already implemented for current Submit",
+		"Current legacy Submit now also consumes a separate private `resolvedExecutionPlan`",
+		"No run ID, staging write, ownership mutation, or Nomad call precedes that freeze",
+		"The current plan owns admitted semantic facts",
+		"Current successful Submit always constructs `authority_handoff`",
+	)
+	assertContainsNone(t, "resolved-plan reliable target stale denial", recoveryCurrent+" "+recoveryNonClaims,
+		"no source-grounded resolved effective-plan extraction implemented",
+		"do not implement source-grounded resolved effective-plan extraction",
+		"source-grounded resolved-plan extraction is absent",
+		"source-grounded resolved-execution-plan extraction is absent",
+		"source-grounded resolved-plan extraction is unimplemented",
+		"source-grounded resolved-execution-plan extraction is unimplemented",
+		"the resolved-execution-plan extraction foundation is absent",
+		"the resolved-execution-plan extraction foundation is unimplemented",
+	)
+	assertContainsAll(t, "resolved-plan narrower reliable-submit non-claims", recoveryNonClaims,
+		"does not by itself supply canonical encoding, a final `PlanBinding`, a completeness witness",
+		"durable custody, reliable dispatch, ambiguity reconciliation",
+		"or a Coordinator adapter",
+		"private canonical effective-plan encoding, `PlanBinding` construction from admitted facts, and a complete fourteen-category witness exist only in the unwired package-private producer",
+		"no public or operational durable replay-envelope custody",
+		"no public reliable-submit runtime wiring",
+		"no public replay DTO or recovery route",
+		"no public reliable response field names",
+		"no Nomad registration retry decision",
+		"no Coordinator schema",
+	)
+	assertContainsAll(t, "resolved-plan persistence boundary", persistence,
+		"separate private `resolved-execution-plan-extraction-foundation` now extracts the current legacy Submit plan from real admission/runtime resolution",
+		"runtime consumption and original-key availability for the now-unwired private v1 binding",
+		"durable material custody",
+	)
+}
+
+func TestResolvedPlanDocumentationTruthAndFiniteInventoriesContract(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	plans := compactText(plansRaw)
+	admissionRaw := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	admission := compactText(admissionRaw)
+	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	recovery := compactText(mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md"))
+
+	assertExpectedTreeInventoryClause(t, plansRaw)
+	assertContainsAll(t, "resolved-plan finite-inventory completion plan", plans,
+		"The resolved-plan documentation-truth and finite-source-inventory obligation is now complete",
+		"`.docs/execution_lifecycle/es_execution_admission_model.md`",
+		"`.docs/system_overview/remote_supported_host_alpha.md`",
+		"changes no production custody or staging source",
+		"begins no additional Tranche B behavior",
+	)
+	assertContainsAll(t, "resolved-plan truth closure", admission,
+		"Resolved-plan truth and finite source inventories",
+		"authoritative only for admitted semantics",
+		"No other production plan consumer or resolver exists",
+		"not lifecycle truth, scheduler truth, retained-result truth, a replay identity, a witness, a commitment, a `PlanBinding`, or hidden run truth",
+		"`es/admission/staging_custody.go:validateExpectedDirectoryEntries` | `1`",
+		"`es/admission/staging_custody.go:readDirectoryEntries` | `64`",
+		"`es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot` is the sole constructor on a production path",
+		"The path-taking `claimStagingCustody` wrapper is test-only",
+		"`es/admission/executionpackage.go:materializeExecutionInputs` is the only production function",
+		"The remaining direct test-only callers of `claimStagingCustody` are exactly",
+		"`lifecycle_test.go:TestDescriptorCloseRetainsSuccessfulRunRoot`",
+		"`resolved_execution_plan_test.go:TestResolvedExecutionMaterialOwnsBytesBeforeHostMaterialization`",
+		"`resolved_execution_plan_test.go:TestRuntimeSupportMaterialIdentityMatchesCapturedBytes`",
+		"`staging_custody_test.go:TestStagingCustodyRefusesEveryPreExistingObjectWithoutChangingIt`",
+		"`writablestate_readiness_test.go:newSyntheticNormalizedRunFixture`",
+		"The direct test-only callers of `materializeExecutionInputs` are exactly",
+		"`executionpackage_test.go:TestTrancheB2TrustMaterializationCauseUsesFixedPublicError`",
+		"`executionpackage_test.go:(*Service).stageExecutionInputs`",
+		"Synthetic source strings in guardrail mutation tests are validator fixtures, not executable package entry points",
+		"`es/admission.Service.mu sync.RWMutex`",
+		"`es/app.App.mu sync.RWMutex`",
+		"`es/runtimehelper.helperServer.mu sync.RWMutex`",
+		"`.execution-substrate-namespace-lease-v1`",
+		"`namespacelease`",
+		"`mutationpoison`",
+		"does not add an external current-schema package consumer",
+		"resurrect the retired current-schema checker",
+	)
+	assertContainsAll(t, "retired operator finite inventory", remote,
+		"The canonically recognized retirement inventory is finite and exact",
+		"top-level evidence routes are `vault-workload-auth-check`, `runtime-identity-summary`, and `vault-service-user-check`",
+		"there is no nested `recovery-session vault-service-user-check` alias",
+		"`--evidence-check`, `--evidence-dir`, `--strict-known-schema`",
+		"`--vault-workload-auth-summary`, `--runtime-identity-summary`, and `--vault-service-user-summary`",
+		"`--readiness-summary` and `--staging-record`",
+		"`es-writable-state-readiness-check` and `readiness-session`",
+		"`reject_retired_operator_evidence_args` is the only live scanner",
+		"`retired_operator_evidence_compatibility` is its only refusal handler",
+		"`reject_secret_args` runs before either retirement classification",
+	)
+	assertContainsAll(t, "resolved-plan semantic authority qualification", design+" "+recovery,
+		"authoritative only for admitted semantics",
+	)
+	assertContainsNone(t, "stale broad resolved-plan authority language", design+" "+recovery,
+		"private authoritative resolved execution plan",
+		"one authoritative private semantic plan",
+	)
+}
+
+func TestTrancheB1SemanticOwnershipDocsContract(t *testing.T) {
+	sections := []struct {
+		label string
+		path  string
+		start string
+		end   string
+	}{
+		{"PLANS B1 owning section", "PLANS.md", "Tranche B1, `ES-B1-SEMANTIC-OWNERSHIP-COMMAND`", "The opened parent and root identities remain"},
+		{"contracts B1 owning section", ".docs/execution_lifecycle/contracts.md", "### Request contract", "### Tranche A resource and filesystem custody contract"},
+		{"design B1 owning section", ".docs/execution_lifecycle/design.md", "The `resolved-execution-plan-extraction-foundation` now derives", "Header-only reliable-submit opt-in is rejected"},
+		{"admission-model B1 owning section", ".docs/execution_lifecycle/es_execution_admission_model.md", "- The selected `resolved-execution-plan-extraction-foundation`", "- C3 is the focused tests/docs guardrail slice"},
+		{"implementation B1 owning section", ".docs/execution_lifecycle/implementation.md", "1. Reject submission if the Nomad client is unavailable", "Where IDs are created:"},
+		{"recovery B1 owning section", ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md", "Current legacy Submit now also consumes a separate private", "Current private durable source implements"},
+		{"boundaries B1 owning section", ".docs/system_overview/boundaries.md", "- ES now owns the separate", "- The Workstream F F0 runtime-identity handoff ownership decision"},
+	}
+
+	var current []string
+	for _, section := range sections {
+		text := docSection(t, mustRead(t, section.path), section.start, section.end)
+		assertTrancheB1DocumentationSection(t, section.label, text)
+		current = append(current, compactText(text))
+	}
+	combined := strings.Join(current, " ")
+	assertContainsAll(t, "Tranche B1 semantic ownership", combined,
+		"one private Prepare-versus-Submit intent",
+		"distinct artifact/payload/derivation/output identities",
+		"runtime-identity tmpfs size",
+		"absolute SPIRE source",
+		"Nomad datacenter",
+		"one typed runtime command",
+		"Current authority handoff is unconditionally applicable",
+		"unmodified actual job tree",
+		"pointer-owned token/template ledger",
+		"finite package-local direct-call closure",
+	)
+	assertContainsAll(t, "Tranche B1 explicit nonclaims", combined,
+		"canonical encoding",
+		"host-context binding",
+		"not whole-program",
+		"prepared-admission redaction",
+		"provider-body/lifecycle-log privacy work",
+	)
+}
+
+func TestTrancheB1DocumentationNegativeGuardMutants(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		mutant  string
+		failure string
+	}{
+		{"complete effect identity", "The semantic plan is complete effect identity.", "semantic plan is complete effect identity"},
+		{"reliable dispatch complete", "Reliable dispatch is implemented.", "reliable dispatch is implemented"},
+		{"reliable runtime wired", "Reliable keyed-submit runtime is wired.", "reliable keyed-submit runtime is wired"},
+		{"unsafe copy concurrency", "Caller is concurrency-safe during unsynchronized copy.", "caller is concurrency-safe during unsynchronized copy"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trancheB1DocumentationContradiction(test.mutant); got != test.failure {
+				t.Fatalf("contradiction = %q, want %q", got, test.failure)
+			}
+		})
+	}
+}
+
+func trancheB2DocumentationContradiction(section string) string {
+	normalized := strings.ToLower(compactText(section))
+	for _, forbidden := range []string{
+		"fetchjob is bounded to 256 kib",
+		"successful authenticated public logs are bounded to 256 kib",
+		"b2 provides reflection-safe redaction",
+		"the control plane golden is a snapshot of cp",
+		"reliable keyed-submit runtime is wired",
+		"nomad ambiguity reconciliation is implemented",
+	} {
+		if strings.Contains(normalized, forbidden) {
+			return forbidden
+		}
+	}
+	return ""
+}
+
+func TestTrancheB2PrivacyIndependentAssuranceDocsContract(t *testing.T) {
+	paths := []string{
+		"PLANS.md",
+		".docs/system_overview/boundaries.md",
+		".docs/system_overview/contracts.md",
+		".docs/execution_lifecycle/design.md",
+		".docs/execution_lifecycle/contracts.md",
+		".docs/execution_lifecycle/implementation.md",
+		".docs/execution_lifecycle/es_execution_admission_model.md",
+		".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md",
+	}
+
+	var sections []string
+	for _, path := range paths {
+		text := strings.ToLower(compactText(mustRead(t, path)))
+		assertContainsAll(t, path+" B2 authority", text,
+			"b2",
+			"reliable keyed-submit runtime remains unwired",
+			"native linux runtime validation",
+		)
+		assertContainsNone(t, path+" stale B2 state", text,
+			"b2 privacy/public-message work remains pending",
+			"b2 privacy work remains pending",
+			"prepared-admission redaction remains pending",
+			"provider-body/lifecycle-log privacy work remain pending",
+		)
+		if contradiction := trancheB2DocumentationContradiction(text); contradiction != "" {
+			t.Fatalf("%s contains contradictory B2 claim %q", path, contradiction)
+		}
+		sections = append(sections, text)
+	}
+
+	combined := strings.Join(sections, " ")
+	assertContainsAll(t, "Tranche B2 bounded contract", combined,
+		"workload-zone vault configuration is invalid",
+		"derive execution host context failed",
+		"stage workload vault trust material failed",
+		"derive execution platform state owner failed",
+		"execution submission failed",
+		"routes, http statuses, codes, dto fields",
+		"es result retention failed run_id=%s",
+		"validated public run id",
+		"not process-wide log noninterference",
+		"256 kib",
+		"one-document",
+		"unknown provider fields",
+		"non-success",
+		"fetchjob",
+		"caller-environment aggregates",
+		"successful authenticated public logs",
+		"unbounded opaque",
+		"universal provider-response",
+		"workload-output limit",
+		"preparedadmission",
+		"ordinary formatting",
+		"ordinary json",
+		"reflection",
+		"unsafe",
+		"same-package",
+		"secure-erasure",
+		"source-distinct",
+		"es profile-coverage evidence",
+		"not a snapshot",
+		"source-bounded",
+		"not a general analyzer",
+	)
+	assertContainsAll(t, "Tranche B2 explicit nonclaims", combined,
+		"canonical encoding",
+		"planbinding",
+		"host-context binding",
+		"results-root",
+		"durable custody",
+		"reliable dispatch",
+		"ambiguity reconciliation",
+		"coordinator adapter",
+		"staging reclamation",
+	)
+}
+
+func TestTrancheB2DocumentationNegativeGuardMutants(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		mutant  string
+		failure string
+	}{
+		{"bounded fetchJob", "fetchJob is bounded to 256 KiB.", "fetchjob is bounded to 256 kib"},
+		{"bounded public Logs", "Successful authenticated public Logs are bounded to 256 KiB.", "successful authenticated public logs are bounded to 256 kib"},
+		{"reflection-safe private value", "B2 provides reflection-safe redaction.", "b2 provides reflection-safe redaction"},
+		{"CP snapshot golden", "The Control Plane golden is a snapshot of CP.", "the control plane golden is a snapshot of cp"},
+		{"reliable runtime wired", "Reliable keyed-submit runtime is wired.", "reliable keyed-submit runtime is wired"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trancheB2DocumentationContradiction(test.mutant); got != test.failure {
+				t.Fatalf("contradiction = %q, want %q", got, test.failure)
+			}
+		})
+	}
+}
+
+func TestTrancheAFilesystemAndResourceCustodyDocsContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	contracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	runtimeConfig := compactText(mustRead(t, ".docs/system_overview/runtime_config_ownership.md"))
+	publication := compactText(mustRead(t, ".docs/system_overview/artifact_publication_storage.md"))
+	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
+	writableState := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
+	normalization := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md"))
+	linuxQualification := compactDocSection(t, mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md"), "### Tranche A filesystem-custody validation posture", "## 4. Explicit Disqualifiers")
+	runbook := compactText(mustRead(t, ".runbooks/system/v1_bringup.md"))
+
+	assertContainsAll(t, "Tranche A plan limits and retained custody", plans,
+		"The selected Tranche A filesystem/resource-custody refinement",
+		"opens a fresh independent directory description at position zero",
+		"reads entries incrementally one at a time",
+		"stops after at most the expected-child count plus one observed entry",
+		"never materializes or sorts the complete untrusted directory inventory",
+		"complete decompressed tar stream is additionally bounded to 16 MiB per mount and 64 MiB aggregate",
+		"Once exclusive run-root creation succeeds, the visible root is retained on every return",
+		"Automatic whole-run-root reclamation is not implemented",
+		"Native Linux validation was not inherited as a pre-B gate",
+		"fresh targeted independent audit with no repair defect",
+	)
+	assertContainsAll(t, "Tranche A lifecycle contract", contracts,
+		"### Tranche A resource and filesystem custody contract",
+		"reads at most effective-limit-plus-one",
+		"no separate ES entry-count or resolved-name-length limit",
+		"There is no claim marker, cleanup eligibility state, mutation/adoption reopening path",
+		"bounded pre-handoff enumeration above is operation-local completeness validation only",
+		"`openStagingTree` to reopen a retained root read-only",
+		"Regular expected children require link count exactly one",
+		"Expected directories require a positive link count",
+		"A post-claim failure preserves its existing primary public error",
+		"Incomplete exclusive leaves, unpublished result and normalization temporaries, and startup capability-probe fixtures remain when exact effect-time identity for deletion is unproved",
+		"No scan, recursive cleanup, or later residue-reclamation owner is selected",
+		"governed reclamation is an ES-owned `Reopened redesign seam`",
+	)
+	assertContainsAll(t, "Tranche A implementation accounting", implementation,
+		"portable retained variable byte-content ceiling is 168,558,593 bytes",
+		"168,820,737 bytes as the peak accounted content",
+		"Exclusive `mkdirat` of `<staging_root>/<run_id>` is the first filesystem mutation",
+		"Every post-claim return retains the visible run root",
+		"Incomplete exclusive leaves, unpublished result or normalization temporaries, and startup capability-probe fixtures remain retained",
+		"No pathname-based cleanup, scan, or whole-root reclamation is selected",
+		"Result capture never reopens a staging root for deletion and never authorizes staging mutation",
+		"opens a fresh independent no-follow open-file description at `\".\"`",
+		"uses that fresh description directly as the enumeration stream",
+		"unique edge-segment bytes plus expected nodes",
+	)
+	assertContainsAll(t, "Tranche A unconditional design retention", design,
+		"Every post-claim Submit-created host staging root remains retained",
+		"result-publication success, absence, conflict, or failure grant no staging deletion authority",
+		"the current slice attempts no whole-run-root cleanup",
+	)
+	assertContainsAll(t, "Tranche A configuration", configuration,
+		"probes staging for exclusive run-root creation and actual no-follow refusal",
+		"separately probes results for exclusive temporary creation and no-replace publication",
+		"each new run root is created exclusively, held by parent/root descriptors, and never adopted or reopened from a pre-existing path",
+		"failed, partial, ambiguous, accepted, terminal, canceled, lost, unknown, and result-publication outcomes all retain `<staging_root>/<run_id>`",
+		"ES does not quarantine, rename, scan, or recursively delete a run root",
+		"existing final bundle is never owner- or mode-reconciled in place",
+	)
+	assertContainsAll(t, "Tranche A runtime-config consumer bounds", runtimeConfig,
+		"enclosing workload-zone runtime-config JSON response to 256 KiB before strict decode",
+		"combined workload bundle to 524,289 bytes",
+		"168,820,737-byte peak ledger includes one temporary system-CA input and no redundant normalized copies",
+	)
+	assertContainsAll(t, "Tranche A artifact consumer bounds", publication,
+		"explicit compatibility/security bounds without changing ARS ownership",
+		"primary payload is 32 MiB",
+		"governed mount payload transport is 8 MiB per mount and 32 MiB aggregate",
+	)
+	assertContainsAll(t, "Tranche A capability probing", capabilities,
+		"## Example: Execution-root custody",
+		"already qualified staging and results descriptors",
+		"refuse symlink traversal on staging",
+		"refuse the results no-replace publication primitive",
+		"retain the exclusive startup probe fixtures when exact effect-time deletion identity cannot be proved; no pathname cleanup or recursion is selected",
+		"There is no runtime `GOOS` branch, syscall fallback, or request-time probe",
+		"Production run roots are retained after exclusive creation on every return",
+		"Linux cross-compilation is compile evidence only",
+		"linux/amd64 for an operational Remote Alpha claim",
+		"linux/arm64 for an operational supported-local claim",
+	)
+	assertContainsAll(t, "Tranche A writable-state retirement", writableState,
+		"Remote Alpha ES Writable-State Ownership — Retired Existing-Host Edge",
+		"fixed exit-2 tombstones",
+		"There is no root marker, reopening, adoption, cleanup eligibility, quarantine rename, scan, or recursive run-root deletion",
+		"Governed staging reclamation is an ES-owned `Reopened redesign seam`",
+	)
+	assertContainsAll(t, "Tranche A normalization separation", normalization,
+		"Remote Alpha ES Runtime Ownership Normalization — Historical Record",
+		"It does not authorize staging deletion",
+		"Every exclusively created run root is retained after claim",
+		"No v2 schema, validator, fixture, or artifact exists for that retired ES writable-state/service-user migration family",
+		"unrelated current EGS hardening v2 schema remains current",
+	)
+	assertContainsAll(t, "Tranche A operating qualification and local gate", linuxQualification,
+		"### Tranche A filesystem-custody validation posture",
+		"Historical Tranche A sequencing allowed a fresh read-only audit",
+		"while native Linux remained pending",
+		"does not impose a blanket native pre-commit gate on local source preservation or integration",
+		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"governed Ubuntu 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for supported-local",
+		"`openat2` with beneath, no-magic-link, no-symlink, and no-cross-device resolution",
+		"`renameat2(RENAME_NOREPLACE)` collision behavior",
+		"exclusive run-root claim and descriptor-held identity custody",
+		"an actual mount-crossing refusal",
+		"Cross-compilation is compile evidence only and cannot replace those runtime observations",
+		"C's selected native programme remains historical evidence for its exact source and environments",
+		"report that operating claim as pending rather than supported by inference",
+		"Neither the Remote Alpha amd64 nor supported-local arm64 claim is narrowed",
+	)
+	assertContainsNone(t, "obsolete Linux local gate", linuxQualification,
+		"Before final combined ES audit and commit",
+		"Until both claimed-architecture runtime executions pass",
+	)
+	assertContainsAll(t, "Tranche A runbook retained-state truth", runbook,
+		"There is no staging only when failure preceded both run assignment and exclusive run-root creation",
+		"may retain partial or complete staging without returning a receipt or run ID",
+		"retained post-claim state may contain sensitive payload, trust, runtime-support, or mount material",
+		"retained staging is not proof that Nomad accepted the job, and absence of staging is not proof that no provider effect occurred",
+		"no current automatic whole-run-root reclamation path exists",
+	)
+	assertContainsNone(t, "removed whole-root cleanup vocabulary", plans+" "+contracts+" "+implementation+" "+configuration+" "+writableState+" "+normalization,
+		".execution-substrate-stage-claim-v1",
+		"no-replace quarantine rename is the cleanup commit point",
+		"Only marker-bearing roots",
+	)
+	assertContainsNone(t, "removed terminal-success cleanup wording", design,
+		"after ES observes terminal success, the current slice attempts result retention and then cleans that staging best-effort",
+	)
+}
+
+func TestESExecutionAdmissionModelFinalAuditRepairContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
+	design := compactText(mustRead(t, ".docs/execution_lifecycle/design.md"))
+	contracts := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	admissionModel := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	remoteAlpha := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	remoteGate := compactDocSection(t, mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"), "### Current Remote Alpha root-custody observation gate", "It is not the final commercial deployment target.")
+
+	assertContainsAll(t, "current paired-root custody and acceptance scope", plans,
+		"### Current paired-root custody and acceptance scope",
+		"**Superseded CUST-1/CUST-2 gate history.**",
+		"That pre-integration linkage is not a current local commit rule.",
+		"focused changed-interaction assessment and validation plus a separately authorized commit",
+		"C's selected native observations remain historical evidence",
+		"**Current invariant — staging non-mutation and retained-output independence.**",
+		"**Bounded slice rule pending integrated review — paired-root qualification.**",
+		"form one operation-local qualified root set",
+		"Mountinfo record integrity is separate from root-coordinate eligibility.",
+		"An `nsfs` root with the source-grounded namespace-object envelope `<kind>:[<canonical decimal inode>]` is retained as opaque",
+		"`mnt`, `net`, `uts`, `ipc`, `pid`, `user`, `cgroup`, or `time`",
+		"Opaque records still count toward byte/record limits, ID and parent/cycle integrity, stacking, and canonical descendant-mount checks.",
+		"This recognition does not make `nsfs` a supported configured execution-root filesystem.",
+		"Source coordinates derive from the selected record and canonical descriptor presentation, never configured spelling.",
+		"The parser permits one unambiguous `/` top-of-tree self-parent terminal and parents hidden outside the process view",
+		"Two missing roots under the same deepest existing object",
+		"never turn a topology failure into Nomad fallback",
+		"one invocation-local iterative compressed byte-radix ledger",
+		"dependency behavior, not an ES resolved-name or entry-count policy",
+	)
+	assertContainsAll(t, "execution-root configuration contract and pending acceptance", configuration,
+		"lexical separation is only an early non-mutating configuration check, not physical proof",
+		"descriptor-held canonical objects and topology, not configured spelling",
+		"classifies their source-grounded `kind:[decimal-inode]` roots as opaque, never as pathname coordinates",
+		"a descriptor-selected opaque root fails before effects rather than using its mountpoint or configured spelling",
+		"ambiguous dual-missing roots under one deepest existing lookup object fail closed",
+		"a read never provisions a missing results root, and topology refusal never falls through to Nomad",
+		"physical-separation implementation is candidate behavior",
+		"Those gates were deferred until after local implementation; they were not passed or waived.",
+	)
+	assertContainsAll(t, "execution-root capability proof", capabilities,
+		"Build-selected Linux and Darwin implementations qualify staging and results as one operation-local descriptor set",
+		"Linux parses complete records before asking whether a root value can act as a pathname coordinate.",
+		"Every accepted opaque record remains in snapshot count, ID/parent/cycle, stacking, and descendant-mount validation.",
+		"Only canonical pathname roots are proof-eligible",
+		"one unambiguous self-parent terminal at canonical mountpoint `/`",
+		"startup behavior-probes the staging filesystem's exclusive claim/no-follow operations and the results filesystem's temporary/no-replace operations separately",
+		"Local modeled records and ordinary filesystem tests do not prove mounted bind or casefold compatibility.",
+		"deferred but not waived",
+	)
+	assertContainsAll(t, "lifecycle root and radix contract", design+" "+contracts+" "+implementation,
+		"Missing suffixes are absence-checked intent, not canonical objects",
+		"Pair proof does not grant deletion or repair authority",
+		"Record validity is not coordinate eligibility",
+		"Complete source-valid `nsfs` records with opaque namespace-object roots remain in snapshot integrity and descendant checks",
+		"Its tagged root representation distinguishes canonical pathname roots from opaque `nsfs` namespace-object roots.",
+		"A selected opaque root returns a dedicated refusal before device comparison or path arithmetic",
+		"exact 32,768-header EOF boundary",
+		"1-MiB hidden special-file processing limit is inherited dependency behavior",
+		"The path-taking claim wrapper is test-only.",
+	)
+	assertContainsAll(t, "final-audit finite assurance inventory", admissionModel,
+		"### 7.7 Final-audit finite repair inventories",
+		"Its exact direct test call inventory is eight enclosing functions",
+		"Production uses the distinct descriptor-taking constructor, verified by typed object identity rather than source text or a count-only oracle.",
+		"The Linux mountinfo finite inventory also covers the tagged root-value class, filesystem type, and proof-eligibility branch.",
+		"No fixture may drop an opaque record or rewrite its label as a path.",
+		"Source tests use a test-local fail-closed accepted grammar",
+		"Unknown executable syntax, command/arithmetic/process substitutions, redirections, and heredocs are rejected",
+		"not a general Bash parser",
+		"remain pending and are not replaced by local success",
+	)
+	assertContainsAll(t, "running Remote Alpha operational subject and gate", remoteGate,
+		"one concrete currently running in-scope ES process",
+		"process/start identity, mount namespace, configured roots, held descriptor identities",
+		"root-value classification, and descendant-mount result",
+		"retain unrelated valid opaque `nsfs` namespace-object records for complete analysis while refusing an opaque selected root",
+		"must not filter away records or substitute mountpoint or configured spelling for source coordinates",
+		"Real repaired-helper mounted-alias evidence remains required where the operational claim depends on it",
+		"environment-bound operational qualification requirements",
+		"not an independent blanket prerequisite to a separately authorized local",
+		"No current deployment compatibility, supported-host claim, or rollout readiness is inferred here",
+	)
+	assertContainsNone(t, "obsolete Remote Alpha local gate", remoteGate,
+		"The observation and real repaired-helper mounted alias fixtures remain pre-final-acceptance and pre-commit gates",
+	)
+	assertContainsAll(t, "bounded scanner prefix guard", remoteAlpha,
+		"A separate prefix check requires those scanner calls to be the first two nontrivia statements of `parse_args`, in privacy-first order.",
+	)
+	assertContainsNone(t, "final-audit repair docs reject stale acceptance claims", plans+" "+configuration+" "+capabilities+" "+design+" "+contracts+" "+implementation+" "+admissionModel+" "+remoteAlpha,
+		"the running-deployment observation is complete",
+		"local modeled tests prove mounted bind compatibility",
+		"local validation waives native Linux validation",
+		"the repaired candidate is commit-ready",
+	)
 }
 
 func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
@@ -357,7 +1042,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"# Exact Go preflight for local-Go-required proof paths must precede proof/process/workspace mutation.",
 		"preflight_supported_local_proof_go_if_required",
 		"supported_local_proof_repair_test_sentinel",
-		"mkdir -p \"${SUPPORTED_LOCAL_HOST_PROOF_DIR}\"",
+		"create_private_host_proof_dir",
 	)
 
 	operatorScriptTests := mustRead(t, "es/app/operator_scripts_integration_test.go")
@@ -863,7 +1548,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 	openSeams := compactDocSection(t, targetRaw, "## 17. Open Seams", "")
 
 	assertContainsAll(t, "submit recovery target document status", statusPurpose,
-		"TARGET-ONLY: submit idempotency, correlation, and recovery in this document are target contract direction only.",
+		"TARGET-ONLY: public/operational submit idempotency, correlation, and recovery in this document remain target direction.",
 		"CURRENT-UNCHANGED: current unkeyed submit remains the implemented behavior.",
 		"does not implement runtime behavior",
 		"does not select HTTP status mapping or public error strings",
@@ -899,7 +1584,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"status, logs, cancel, and result lookup currently require `run_id`",
 		"no broad durable run registry",
 		"no ES-owned lifecycle store",
-		"On an in-process non-submitted return after staging, current submit removes the staged root",
+		"On every post-claim return, current submit closes held descriptors and retains the visible staged root",
 		"implements latest-operation same-operation replay",
 		"general mutation path derives and compares a complete private latest-operation descriptor",
 		"Same mutation plus same operation kind and input binding replays the committed result without another CAS",
@@ -919,7 +1604,8 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"Nomad may accept it",
 		"transport error, timeout, malformed response, missing response, unreadable response",
 		"does not prove rejection",
-		"may return `submission_failed` and may clean staging because submitted was not confirmed",
+		"returns `submission_failed` when the Nomad response is not confirmed",
+		"retains the complete staging root",
 		"must not equate an uncertain Nomad response with proof that no job was accepted",
 		"must also not automatically send a second Nomad registration",
 		"Both ambiguity windows are ES-owned contract problems",
@@ -1220,7 +1906,7 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"no runtime behavior implemented",
 		"no producer declaration field implemented",
 		"no public request DTO implemented",
-		"no handler or decoder implemented",
+		"no public/runtime reliable-submit handler or route decoder is wired; the private admission-local `parseValidatedReliableSubmitRequest` and `decodeStrictReliableSubmitJSON` helpers remain unwired;",
 		"no route implementation",
 		"no public or runtime persistence integration",
 		"no global state-path configuration or service-startup database construction",
@@ -1254,12 +1940,13 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"- no schema or migration;",
 		"reliable submit is implemented end to end",
 		"Reliable submit is implemented end to end",
+		"no handler or decoder implemented",
 	)
 	assertContainsAll(t, "submit recovery gates", gates,
 		"preserved public opt-in and versioning docs-contract coverage",
 		"reliable request foundation and producer sub-contract target tests",
 		"`reliable-submit-durable-same-operation-replay-repair`",
-		"`resolved-execution-plan-extraction-foundation`",
+		"source-grounded resolved-plan extraction (satisfied by the private current-Submit foundation)",
 		"narrow persistence and concurrency ADR decision",
 		"ES-to-Nomad uncertain-outcome reconciliation decision",
 		"retention and expiry decision",
@@ -1285,7 +1972,10 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 	plansPointer := compactDocSection(t, mustRead(t, "PLANS.md"), "## Cross-Repo Hybrid Integration ADR Pointer", "## Highest-Priority Backlog Entry")
 	contractsSubmitTarget := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/contracts.md"), "### Target reliable keyed-submit contract", "## 7. Status contract")
 	designPressure := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/design.md"), "## 9A. Submit Idempotency And Recovery Pressure", "## 10. Runtime identity and lifecycle interaction")
-	implementationAbsence := compactDocSection(t, mustRead(t, ".docs/execution_lifecycle/implementation.md"), "**Current keyed-recovery absence**", "## 8. Lifecycle projection implementation")
+	implementationAbsenceRaw := markedDocSection(t, "implementation keyed recovery absence",
+		mustRead(t, ".docs/execution_lifecycle/implementation.md"),
+		"**Current keyed-recovery absence**", "## 8. Lifecycle projection implementation")
+	implementationAbsence := compactText(implementationAbsenceRaw)
 	admissionDecision := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
 	boundaries := compactText(mustRead(t, ".docs/system_overview/boundaries.md"))
 	adrRecovery := compactDocSection(t, mustRead(t, ".docs/system_overview/hybrid_integration_architecture_adr.md"), "### Correlation And Recovery", "## Bridge <-> Codex Evidence Boundary")
@@ -1352,15 +2042,157 @@ func TestSubmitIdempotencyCorrelationAndRecoveryDocsContract(t *testing.T) {
 		"`control-plane-normal-shell/v1`",
 		"prohibition on a broad ES lifecycle store",
 	)
+	providerEffectWarning := "Current non-confirmation returns the existing `submission_failed` behavior and retains the complete staging root; that is not a reliable proof that no provider effect was accepted"
 	assertContainsAll(t, "implementation keyed recovery absence", implementationAbsence,
 		"Current `Submit` has no submit idempotency key input",
 		"no durable submit-correlation record",
 		"Current `SubmitResult` has no replay or submit-correlation vocabulary",
 		"Current code can be ambiguous at the caller-to-ES boundary",
 		"Current code can also be ambiguous at the ES-to-Nomad boundary",
-		"not a reliable proof that no provider effect was accepted",
+		providerEffectWarning,
 		"not implemented here",
 	)
+	// Select a top-level list item from raw section text before whitespace
+	// normalization. This narrow selector only accepts the current document's
+	// column-zero list and indented, non-list continuation shape.
+	type keyedRecoveryItem struct {
+		raw  string
+		text string
+	}
+	selectKeyedRecoveryItem := func(section, lead string) (keyedRecoveryItem, bool) {
+		start, end, matches, offset := -1, -1, 0, 0
+		active := false
+		for _, part := range strings.SplitAfter(section, "\n") {
+			line := strings.TrimSuffix(part, "\n")
+			switch {
+			case strings.HasPrefix(line, "- "):
+				if active {
+					end, active = offset, false
+				}
+				if strings.HasPrefix(line[2:], lead) {
+					matches++
+					start, end, active = offset, -1, true
+				}
+			case active && strings.TrimSpace(line) == "":
+				end, active = offset, false
+			case active && strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "  - "):
+				// Wrapped text belongs to the selected item.
+			case active:
+				// An unindented paragraph or malformed continuation is not
+				// silently absorbed into the provider item.
+				return keyedRecoveryItem{}, false
+			}
+			offset += len(part)
+		}
+		if active {
+			end = len(section)
+		}
+		if matches != 1 || start < 0 || end <= start {
+			return keyedRecoveryItem{}, false
+		}
+		raw := section[start:end]
+		return keyedRecoveryItem{raw: raw, text: compactText(raw)}, true
+	}
+	const providerLead = "Current code can also be ambiguous at the ES-to-Nomad boundary"
+	const recipientLead = "Current `SubmitResult`"
+	const callerLead = "Current code can be ambiguous at the caller-to-ES boundary"
+	const providerUncertainty = "when ES sends a Nomad registration request but cannot confirm whether Nomad accepted it"
+	hasProviderEffectWarning := func(section string) bool {
+		provider, ok := selectKeyedRecoveryItem(section, providerLead)
+		if !ok {
+			return false
+		}
+		flat := compactText(section)
+		return strings.Contains(flat, callerLead) && strings.Count(flat, providerEffectWarning) == 1 &&
+			strings.Contains(provider.text, providerUncertainty) && strings.Contains(provider.text, providerEffectWarning)
+	}
+	// Every mutation below starts from the accepted actual raw section.
+	if !hasProviderEffectWarning(implementationAbsenceRaw) {
+		t.Fatal("actual provider bullet lost registration uncertainty or complete non-confirmation warning")
+	}
+	provider, providerOK := selectKeyedRecoveryItem(implementationAbsenceRaw, providerLead)
+	recipient, recipientOK := selectKeyedRecoveryItem(implementationAbsenceRaw, recipientLead)
+	const warningLines = "  Current non-confirmation returns the existing `submission_failed` behavior\n" +
+		"  and retains the complete staging root; that is not a reliable proof that no\n" +
+		"  provider effect was accepted.\n"
+	if !providerOK || !recipientOK || strings.Count(provider.raw, warningLines) != 1 ||
+		strings.Contains(recipient.text, providerEffectWarning) {
+		t.Fatal("actual keyed-recovery item fixture does not match the owning paragraph")
+	}
+	t.Run("actual provider bullet", func(t *testing.T) {
+		if !hasProviderEffectWarning(implementationAbsenceRaw) {
+			t.Fatal("actual provider bullet did not satisfy its local warning predicate")
+		}
+	})
+	t.Run("harmless continuation reflow", func(t *testing.T) {
+		reflowedItem := strings.Replace(provider.raw,
+			"not a reliable proof that no\n  provider effect was accepted.",
+			"not a reliable proof\n    that no provider effect was accepted.", 1)
+		if reflowedItem == provider.raw || compactText(reflowedItem) != provider.text {
+			t.Fatal("continuation reflow fixture changed item meaning or did not change source layout")
+		}
+		reflowedSection := strings.Replace(implementationAbsenceRaw, provider.raw, reflowedItem, 1)
+		if !hasProviderEffectWarning(reflowedSection) {
+			t.Fatal("harmless provider continuation reflow was rejected")
+		}
+	})
+	t.Run("removed provider warning", func(t *testing.T) {
+		removed := strings.Replace(implementationAbsenceRaw, warningLines, "", 1)
+		if removed == implementationAbsenceRaw || hasProviderEffectWarning(removed) {
+			t.Fatal("removed provider warning fixture was unchanged or accepted")
+		}
+	})
+	t.Run("reversed provider warning", func(t *testing.T) {
+		reversed := strings.Replace(implementationAbsenceRaw,
+			"not a reliable proof that no", "a reliable proof that no", 1)
+		if reversed == implementationAbsenceRaw || hasProviderEffectWarning(reversed) {
+			t.Fatal("reversed provider warning fixture was unchanged or accepted")
+		}
+	})
+	providerWithoutWarning := strings.Replace(provider.raw, warningLines, "", 1)
+	relocated := strings.Replace(implementationAbsenceRaw, provider.raw, providerWithoutWarning, 1)
+	relocated = strings.Replace(relocated, recipient.raw, recipient.raw+warningLines, 1)
+	t.Run("warning relocated into SubmitResult bullet", func(t *testing.T) {
+		flat := compactText(relocated)
+		movedProvider, providerFound := selectKeyedRecoveryItem(relocated, providerLead)
+		movedRecipient, recipientFound := selectKeyedRecoveryItem(relocated, recipientLead)
+		withoutWarning := func(section string) string {
+			return compactText(strings.Replace(compactText(section), providerEffectWarning+".", "", 1))
+		}
+		if relocated == implementationAbsenceRaw || !providerFound || !recipientFound ||
+			strings.Count(flat, providerEffectWarning) != 1 ||
+			!strings.Contains(flat, callerLead) || !strings.Contains(flat, providerLead) ||
+			strings.Contains(movedProvider.text, providerEffectWarning) ||
+			!strings.Contains(movedRecipient.text, providerEffectWarning) ||
+			withoutWarning(relocated) != withoutWarning(implementationAbsenceRaw) {
+			t.Fatal("relocation fixture did not move the exact warning while preserving other section text")
+		}
+		if hasProviderEffectWarning(relocated) {
+			t.Fatal("warning in unrelated SubmitResult bullet satisfied provider-bullet guard")
+		}
+	})
+	t.Run("missing provider bullet with warning elsewhere", func(t *testing.T) {
+		missing := strings.Replace(relocated, providerWithoutWarning, "", 1)
+		if missing == relocated || strings.Count(compactText(missing), providerEffectWarning) != 1 ||
+			hasProviderEffectWarning(missing) {
+			t.Fatal("missing provider bullet fixture was unchanged or accepted")
+		}
+	})
+	t.Run("duplicate provider bullet", func(t *testing.T) {
+		duplicate := strings.Replace(implementationAbsenceRaw, provider.raw, provider.raw+providerWithoutWarning, 1)
+		_, selected := selectKeyedRecoveryItem(duplicate, providerLead)
+		if duplicate == implementationAbsenceRaw || strings.Count(compactText(duplicate), providerEffectWarning) != 1 ||
+			strings.Count(duplicate, "- "+providerLead) != 2 || selected || hasProviderEffectWarning(duplicate) {
+			t.Fatal("ambiguous provider bullets with one warning were accepted or fixture construction failed")
+		}
+	})
+	t.Run("malformed provider continuation", func(t *testing.T) {
+		malformed := strings.Replace(implementationAbsenceRaw,
+			"  Current non-confirmation returns", "Current non-confirmation returns", 1)
+		if malformed == implementationAbsenceRaw || hasProviderEffectWarning(malformed) {
+			t.Fatal("malformed provider continuation fixture was unchanged or accepted")
+		}
+	})
 	assertContainsAll(t, "hybrid ADR recovery non-compensation", adrRecovery,
 		"not implemented by this ADR",
 		"Reliable Coordinator-backed dispatch depends on a later implementation",
@@ -1789,10 +2621,10 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 		"additive narrow reliable-submit producer sub-contract",
 		"producer preflight plus structural body discrimination",
 		"submit-specific reliable request family distinct from `PrepareRequest`",
-		"Exact DTO field names",
-		"receipt vocabulary",
-		"error vocabulary",
-		"recovery route remain open",
+		"execution-substrate.reliable-submit-request/v1",
+		"execution-substrate.reliable-submit/v1",
+		"public receipt vocabulary",
+		"error vocabulary and recovery route remain open",
 	)
 	assertContainsAll(t, "reliable submit implementation absence", implementationAbsence,
 		"Current `Submit` has no submit idempotency key input",
@@ -1851,7 +2683,7 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 		"no runtime behavior implemented",
 		"no producer declaration field implemented",
 		"no public request DTO implemented",
-		"no handler or decoder implemented",
+		"no public/runtime reliable-submit handler or route decoder is wired; the private admission-local `parseValidatedReliableSubmitRequest` and `decodeStrictReliableSubmitJSON` helpers remain unwired;",
 		"no route implementation",
 		"no public or runtime persistence integration",
 		"no global state-path configuration or service-startup database construction",
@@ -1873,12 +2705,13 @@ func TestReliableSubmitPublicOptInAndVersioningDocsContract(t *testing.T) {
 		"- no schema or migration;",
 		"reliable submit is implemented end to end",
 		"Reliable submit is implemented end to end",
+		"no handler or decoder implemented",
 	)
 	assertContainsAll(t, "reliable submit required next gates", gates,
 		"preserved public opt-in and versioning docs-contract coverage",
 		"reliable request foundation and producer sub-contract target tests",
 		"`reliable-submit-durable-same-operation-replay-repair`",
-		"`resolved-execution-plan-extraction-foundation`",
+		"source-grounded resolved-plan extraction (satisfied by the private current-Submit foundation)",
 		"narrow persistence and concurrency ADR decision",
 		"ES-to-Nomad uncertain-outcome reconciliation decision",
 		"request, receipt, and error model tests",
@@ -1943,11 +2776,10 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"caller/key derivation",
 		"composite `ClaimID` construction through the committed pure-model constructor",
 		"ES-neutral outcome semantics",
-		"does not implement source-grounded resolved effective-plan extraction",
-		"canonical effective-plan encoding",
-		"`PlanBinding` construction from admitted facts",
-		"complete effective-plan witness construction",
-		"durable replay-envelope custody",
+		"separate private `resolved-execution-plan-extraction-foundation` resolves current legacy Submit from admitted facts before effect",
+		"the codec-3 private synthetic composer is",
+		"only new non-test caller",
+		"still confers no effect permission",
 		"No current public request field, public response DTO field, producer field, handler behavior, query route, Nomad behavior, runtime configuration, or runtime behavior",
 	)
 	assertContainsAll(t, "reliable-submit foundation current reality", currentReality,
@@ -1956,11 +2788,12 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"caller/key safe-reference derivation",
 		"composite `ClaimID` construction through the committed pure-model constructor",
 		"ES-neutral submission-outcome projection",
-		"do not implement source-grounded resolved effective-plan extraction",
-		"canonical effective-plan encoding",
-		"`PlanBinding` construction from admitted facts",
-		"complete effective-plan witness construction",
+		"source-grounded resolved-execution-plan extraction already implemented for current Submit",
+		"Current legacy Submit now also consumes a separate private `resolvedExecutionPlan`",
+		"do not canonically encode or bind that plan",
+		"construct its complete reliable witness",
 		"durable replay-envelope custody",
+		"orchestrate reliable runtime behavior",
 		"not exported public DTOs",
 		"not wired to handlers",
 		"not called by current submit",
@@ -1971,6 +2804,14 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"Migrated legacy/unbound rows preserve only the retained mutation reference",
 		"persists no mutation history",
 		"private store remains runtime-unwired",
+	)
+	assertContainsNone(t, "reliable-submit foundation current reality rejects absolute extraction denial", currentReality,
+		"no source-grounded resolved effective-plan extraction implemented",
+		"do not implement source-grounded resolved effective-plan extraction",
+		"source-grounded resolved-plan extraction is absent",
+		"source-grounded resolved-execution-plan extraction is absent",
+		"source-grounded resolved-plan extraction is unimplemented",
+		"source-grounded resolved-execution-plan extraction is unimplemented",
 	)
 	assertContainsAll(t, "reliable-submit key and caller derivation docs", authorityIdentity,
 		"base64url without padding",
@@ -2008,29 +2849,13 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 		"foundation must not duplicate artifact, derivation, policy, runtime-profile, resource/admission, manifest, or trust validation",
 	)
 	assertContainsAll(t, "reliable-submit future effective-plan seam docs", effectivePlan,
-		"No effective-plan contract-adapter implementation is present in this tranche",
-		"The rejected self-validating plan binder has been removed",
-		"does not select a canonical effective-plan encoding",
-		"effective-plan commitments",
-		"`PlanBinding` construction from admitted facts",
-		"complete witness constructor in package `admission`",
-		"durable replay-envelope custody",
-		"`resolved-execution-plan-extraction-foundation`",
-		"derive one authoritative resolved execution plan from the actual current ES admission and runtime-resolution path",
-		"`prepareAdmission` results",
-		"artifact and manifest facts",
-		"policy/trust resolution",
-		"resource/default resolution",
-		"runtime-profile resolution",
-		"network fact",
-		"mount and environment semantics",
-		"current runtime command construction",
-		"authority-handoff behavior",
-		"Current legacy `Submit` and future reliable `PlanBinding` must consume the same source-grounded resolved plan",
-		"must not synthesize `PrepareRequest` or `Manifest` proof from the proposed plan itself",
-		"create a parallel admission engine",
-		"silently tighten the current empty-environment-allowlist contract",
-		"infer authority-handoff inapplicability contrary to current `Submit` behavior",
+		"The rejected self-validating plan binder remains absent",
+		"implemented `resolved-execution-plan-extraction-foundation` derives one private semantic plan from actual current ES admission and runtime resolution",
+		"That plan is authoritative only for admitted semantics",
+		"the unwired private v1 `PlanBinding` producer consumes its actual frozen tuple rather than re-resolving the same categories",
+		"Separate owned material contains all primary payload, runtime-support, compressed/parsed mount, Vault CA, and combined trust-bundle bytes",
+		"The separate private v1 producer now selects only an unwired encoding, commitment and completeness assessment",
+		"does not synthesize `PrepareRequest` or `Manifest` proof from the plan, create a parallel admission engine, tighten the current empty-environment-allowlist contract, or infer authority-handoff inapplicability contrary to current Submit",
 		"Current environment validation remains unchanged",
 		"when a manifest declares allowed environment keys, invocation keys must stay within that set",
 		"when that list is empty, current source does not enforce explicit allowlist membership",
@@ -2135,6 +2960,112 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 	)
 }
 
+func TestReliableSubmitBindingProducerDocsContract(t *testing.T) {
+	plansRaw := mustRead(t, "PLANS.md")
+	plans := compactDocSection(t, plansRaw,
+		"## Current-remote-base PB1 binding selection (2026-11-17)",
+		"## Current-remote-base H/C/T foundation selection (2026-11-17)")
+	assertContainsAll(t, "private binding selected plan", plans,
+		"ES-PRIVATE-ADMISSION-BINDING-V1-20261115-01",
+		"runtime-unwired",
+		"accepted integration I",
+		"signature-verified returned mount artifact digest",
+		"signed payload digest",
+		"without changing legacy admission rejection",
+		"no production caller at PB1",
+		"Reliable submit remains unavailable",
+	)
+
+	recoveryRaw := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	current := compactDocSection(t, recoveryRaw, "## 2. Current Implementation Reality", "## 3. Dual Ambiguity Model")
+	nonClaims := compactDocSection(t, recoveryRaw, "## 15. Explicit Non-Claims", "## 16. Required-Before-Implementation Gates")
+	assertContainsNone(t, "private binding current absence denial", current+" "+nonClaims,
+		"no canonical effective-plan encoding implemented",
+		"no `PlanBinding` construction from admitted facts implemented",
+		"no complete effective-plan witness construction in package `admission` implemented",
+	)
+	binding := compactDocSection(t, recoveryRaw,
+		"### Private admission binding v1: current unwired producer and exact format",
+		"## 7. Narrow Durable Correlation Semantics")
+	assertContainsAll(t, "private binding current contract", binding,
+		"buildReliableSubmitAdmissionBinding",
+		"actual `resolvedExecution`",
+		"fourteen-category witness",
+		"always reports not-effect-ready",
+		"Only the named private synthetic same-delivery composer calls",
+		"requested/verified signed artifact equality",
+		"existing governed mount parser",
+		"residual current-path limitation",
+		"HMAC-SHA-256",
+		"exactly 32 bytes",
+		"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+		"ESRS-PB",
+		"execution-substrate/reliable-effective-plan/v1",
+		"header || mac",
+		"64 MiB",
+		"before sorting a map",
+		"source-normalized",
+		"present empty regular file",
+		"Directory content is inapplicable",
+		"Effective timeout in **seconds**",
+		"**nanoseconds**",
+		"value becoming omitted conflicts even if effective bindings match",
+		"original intent",
+		"No runtime function-value alias, handler, provider, store, or config uses it",
+	)
+	for _, category := range []string{
+		"RequestSchemaOrVersion", "ExecutionMode", "TimeoutSemantics", "CPU", "Memory",
+		"RuntimeProfile", "ArtifactIdentity", "DerivationSpecIdentity", "OutputIdentity",
+		"CommandAndArgv", "EnvironmentAdditions", "Mounts", "NetworkPosture",
+		"AuthorityHandoffApplicability",
+	} {
+		if strings.Count(binding, "`"+category+"`") != 1 {
+			t.Fatalf("private binding category %s must have exactly one validation row", category)
+		}
+	}
+	for _, tag := range []string{
+		"`1` UTF-8 string", "`2` signed 64-bit", "`3` boolean", "`4` record",
+		"`5` sequence", "`6` map", "`7` raw 32-byte SHA-256 digest", "`8` one-byte state",
+	} {
+		assertContainsAll(t, "private binding exact type tags", binding, tag)
+	}
+	table := docSection(t, recoveryRaw,
+		"The eighteen top-level fields and complete nested record field IDs are:",
+		"All scalar integer conversions must fit signed 64-bit range.")
+	rows := strings.Split(table, "\n")
+	last := -1
+	for id := 1; id <= 18; id++ {
+		marker := fmt.Sprintf("| `%d` ", id)
+		matches := 0
+		position := -1
+		for index, row := range rows {
+			if strings.HasPrefix(row, marker) {
+				matches++
+				position = index
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("private binding top-level field %d is not unique", id)
+		}
+		if position <= last {
+			t.Fatalf("private binding top-level field %d is out of order", id)
+		}
+		last = position
+	}
+	assertContainsAll(t, "private binding nested mount schema", table,
+		"signature-verified returned artifact digest",
+		"signed payload digest",
+		"once-normalized name string",
+		"full normalized mode integer",
+	)
+	producer := mustRead(t, "es/admission/reliable_submit_binding.go") + mustRead(t, "es/admission/reliable_submit_binding_encoding.go")
+	assertContainsAll(t, "private binding producer source", producer,
+		"func buildReliableSubmitAdmissionBinding",
+		"type admissionBindingAssessment struct",
+		"type privateBindingKey struct",
+	)
+}
+
 func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	adrPath := ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md"
 	adrRaw := mustRead(t, adrPath)
@@ -2157,17 +3088,30 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	deployment := compactDocSection(t, adrRaw, "## 13. Initial Deployment Topology", "## 14. Required Dependency-Selection Gate")
 	dependencyGate := compactDocSection(t, adrRaw, "## 14. Required Dependency-Selection Gate", "## 15. First Concrete Source Tranche")
 	nextTranche := compactDocSection(t, adrRaw, "## 15. First Concrete Source Tranche", "## 16. Explicit Non-Claims And Open Decisions")
+	privateCustody := compactDocSection(t, adrRaw, "## 15A. Private codec-3 synthetic custody, SQLite and recovery", "## 16. Explicit Non-Claims And Open Decisions")
 	nonClaimsOpen := compactDocSection(t, adrRaw, "## 16. Explicit Non-Claims And Open Decisions", "")
+	assertContainsAll(t, "private codec-3 custody ADR", privateCustody,
+		"synthetic_nonoperational_v1",
+		"Only codec 3 requires caller_ref and submit_key_ref BLOB exactly 32",
+		"For codec 1/2 all fourteen must be NULL",
+		"4dafddbf477fd7f64ad88cf2b1e2b2becb378827e81cd6cc694456798c9a00be",
+		"15ab48bde4d53bb252dc954a2aa3b1db12de7295111f23bb0264f74f153dba92",
+		"sets and verifies recursive_triggers=ON",
+		"a known successful COMMIT alone yields one process-local one-use permit",
+		"fresh NONMIGRATING",
+		"No production key loader or global rollback",
+		"Binary custody encoding is the selected bounded private exception",
+	)
 
 	assertContainsAll(t, "reliable-submit persistence ADR status", statusPurpose,
-		"accepted architecture decision and first private source implementation",
-		"private admission-local durable claim source and tests only",
+		"accepted architecture decision with bounded private codec-3 synthetic replay custody",
+		"historical first tranche added private admission-local durable claim source and tests",
 		"one backend-neutral claim-store port",
-		"one backend-neutral durable semantic service",
+		"one durable semantic service",
 		"one private durable-record codec",
 		"one SQLite implementation using",
 		"`modernc.org/sqlite v1.54.0`",
-		"one shared backend conformance suite",
+		"a shared backend conformance suite",
 		"no configuration source",
 		"no request or response DTO",
 		"no HTTP handler",
@@ -2178,9 +3122,9 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"Reliable submit remains unimplemented end to end",
 		"`es/admission/internal/reliablesubmit`",
 		"`reliable-submit-durable-same-operation-replay-repair`",
-		"implements the section 9A latest-operation replay contract inside the",
-		"SQLite schema is version 2",
-		"valid v1 rows migrate as legacy/unbound codec-1 rows",
+		"implemented the section 9A latest-operation contract",
+		"Codec-1/2 rows retain their historical meaning",
+		"valid v1 rows migrated as legacy/unbound codec-1 rows",
 	)
 	assertContainsAll(t, "reliable-submit persistence ADR current reality", currentReality,
 		"admission-local and private",
@@ -2204,11 +3148,11 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"`es:es`",
 		"in-process mutexes",
 		"not a cross-process durable CAS substrate",
-		"SQLite schema version 2",
-		"store the latest `lastMutation` reference with a closed private operation kind",
-		"versioned operation-input binding digest",
-		"complete codec-2 rows",
-		"Migrated codec-1 rows",
+		"SQLite schema version 3 adds only private synthetic codec-3 custody",
+		"Historical codec-2 rows still store the latest `lastMutation` reference",
+		"migrated codec-1 rows retain",
+		"generic nonempty opaque CallerRef, SubmitKeyRef and PlanBinding domains",
+		"Only complete codec-3 rows require CallerRef/SubmitKeyRef of exactly 32 bytes",
 		"No mutation history is stored",
 	)
 	assertContainsAll(t, "reliable-submit persistence ADR authority boundary", authorityBoundary,
@@ -2346,8 +3290,9 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"Different mutation references remain subject to revision, phase, and transition rules",
 		"caller namespace plus safe submit-key representation is unique",
 		"Concurrent first deliveries converge on one durable claim",
-		"Same caller/key with the same private binding loads or replays",
-		"Same caller/key with a different private binding is a conflict before any new effect",
+		"Historical codec-1/2 loads compare the same private binding",
+		"private codec-3 synthetic adapter instead loads the verified winner by key",
+		"compares canonical winner-original intent and field presence",
 		"`RunRef` assignment is immutable",
 		"assigned exactly once",
 		"already assigned same `RunRef` is idempotent",
@@ -2507,8 +3452,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"versioned safe operation-input binding digest",
 		"The three descriptor facts update atomically",
 		"Mutation reference alone is not sufficient proof of same semantic command",
-		"Establish or load remains special",
-		"Establish redelivery does not rewrite the current latest-operation descriptor",
+		"historical codec-1/2 durable service",
+		"Same caller/key/binding loads existing claim without descriptor rewrite",
 		"`establish_claim`",
 		"`assign_run`",
 		"`record_provider_effect_intent`",
@@ -2731,7 +3676,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"completed latest-operation source repair preserves the private",
 		"establish/load/CAS `claimStore` port shape",
 		"Later reliable-submit gates remain",
-		"resolved execution-plan extraction",
+		"runtime consumption and original-key availability for the now-unwired private v1 binding",
 		"state/store lifecycle and configuration",
 		"Nomad reconciliation",
 		"public runtime enablement",
@@ -2757,7 +3702,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"exact reliable-submit state-path config key",
 		"exact TTL, tombstone, garbage-collection, archival, and repair policy",
 		"exact caller namespace source wiring at the authenticated request boundary",
-		"exact durable replay-envelope persistence, including safe reconstruction or custody of original argv and environment values",
+		"operational replay-envelope/key custody, including production key epoch",
+		"bounded codec-3 synthetic custody in section 15A does not answer those deployment gates",
 		"exact Nomad reconciliation query and evidence rules",
 		"exact public receipt, recovery, HTTP status, and error vocabulary",
 		"exact runtime submit integration tranche",
@@ -2767,7 +3713,22 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	targetRaw := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
 	targetStatus := compactDocSection(t, targetRaw, "## 1. Status And Purpose", "## 2. Current Implementation Reality")
+	targetPrivate := compactDocSection(t, targetRaw, "### 6A. Private synthetic original custody and exact format", "## 7. Narrow Durable Correlation Semantics")
 	targetNarrowRecord := compactDocSection(t, targetRaw, "## 7. Narrow Durable Correlation Semantics", "## 8. Ordering And Concurrency Invariants")
+	assertContainsAll(t, "private synthetic original contract", targetPrivate,
+		"synthetic_nonoperational_v1",
+		"actual resolver",
+		"raw 43-character",
+		"Neither raw key nor raw JSON is persisted",
+		"Payload is ASCII ESRSPAY1",
+		"Sealed file is a fixed 14-field header",
+		"AAD is ASCII ESRSAAD1",
+		"Commitment comparisons use a constant-time primitive",
+		"Original intent, delivery, key bundle/permit",
+		"fixed redacted formatting",
+		"Private envelope publication and fsync precede claim establishment",
+		"Reliable submit remains unavailable",
+	)
 	assertContainsAll(t, "reliable-submit target doc ADR pointer", targetStatus,
 		"persistence and concurrency ADR",
 		"selects local embedded SQLite as the first storage backend",
@@ -2841,10 +3802,10 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"same mutation reference with different operation kind or input binding is a mutation conflict",
 		"older operation arriving after a later committed mutation is stale or superseded",
 		"no historical mutation-result log is selected",
-		"Current source uses SQLite schema v2",
+		"Current source uses SQLite schema v3 for bounded synthetic codec-3 custody",
 		"complete codec-2 descriptors",
 		"codec-1 legacy/unbound rows",
-		"without inventing operation semantics",
+		"without inventing old operation or original-intent semantics",
 		"implements no config, production runtime wiring, public DTO, HTTP handler, producer declaration field, staging behavior, Nomad behavior, or runtime behavior",
 	)
 
@@ -2863,9 +3824,9 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"versioned safe input-binding digest",
 		"same mutation reference with different kind or binding is mutation conflict",
 		"older operation after later progression is stale or superseded",
-		"private SQLite schema v2 latest-operation descriptor",
+		"versioned safe input-binding digest for codec-2 rows",
 		"historical v1 migration source and metadata remain retained and verified",
-		"valid v1 databases migrate forward to v2",
+		"valid v1 databases migrate through v2 to v3 in one grouped transaction",
 		"Migrated codec-1 rows remain legacy/unbound",
 		"migrated rows remain codec-1 legacy/unbound",
 		"not reliable-submit config/store lifecycle wiring",
@@ -2892,12 +3853,12 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"durable provider-effect intent",
 		"tombstone/no-reuse retention",
 		"fail-closed corruption behavior",
-		"current latest-operation replay descriptor implemented by SQLite schema v2",
+		"historical latest-operation replay descriptor from SQLite schema v2",
 		"Complete codec-2 rows persist `lastMutation`, closed private operation kind, and",
 		"input-binding digest",
 		"migrated codec-1 rows preserve only legacy",
 		"without invented operation semantics",
-		"adds private store source only",
+		"adds private source only",
 		"does not add global config or runtime wiring",
 		"reuse staging or retained results as the database path",
 		"import Coordinator writer-session authority",
@@ -2932,11 +3893,16 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	serviceSource := mustRead(t, "es/admission/service.go")
 	serviceStartup := docSection(t, serviceSource, "if cfg.SubmitConfigured() {", "nomadClient, err = newNomadClient(cfg.Nomad)")
-	assertContainsAll(t, "current startup creates only existing execution roots", serviceStartup,
-		"os.MkdirAll(cfg.Execution.StagingRootDir, 0o755)",
-		"os.MkdirAll(cfg.Execution.ResultsRootDir, 0o755)",
+	assertContainsAll(t, "current startup provisions, qualifies, and probes the execution root pair", serviceStartup,
+		"provisionExecutionRoots(cfg.Execution.StagingRootDir, cfg.Execution.ResultsRootDir, nil)",
+		"owner, err := roots.owner()",
+		"roots.probeCapabilities(owner)",
+		"roots.reobserve()",
+		"roots.close()",
 	)
-	assertContainsNone(t, "current startup has no reliable-submit database creation", serviceStartup,
+	assertContainsNone(t, "current startup omits stale single-root and reliable-submit behavior", serviceStartup,
+		"probeStagingCustodyCapabilities",
+		"openQualifiedDirectory",
 		"ReliableSubmit",
 		"SQLite",
 		"database",
@@ -3035,7 +4001,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	sqliteMigrationSource := mustRead(t, "es/admission/internal/reliablesubmit/sqlite_migrations.go")
 	assertContainsAll(t, "current reliable-submit SQLite schema version", sqliteMigrationSource,
-		"sqliteClaimStoreSchemaVersion = 2",
+		"sqliteClaimStoreSchemaVersion = 3",
 	)
 	assertContainsAll(t, "current SQLite schema persists latest operation descriptor", sqliteMigrationSource,
 		"revision INTEGER NOT NULL CHECK (revision > 0)",
@@ -3074,8 +4040,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 16; got != want {
-		t.Fatalf("reliable-submit package should contain the pure model plus the private store tranche; got %d files: %v", got, reliableSubmitFiles)
+	if got, want := len(reliableSubmitFiles), 30; got != want {
+		t.Fatalf("reliable-submit package should contain the exact pure model, store and synthetic custody inventory; got %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
 		"es/admission/internal/reliablesubmit/model.go",
@@ -3094,6 +4060,20 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/store_conformance_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_store_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_physical_test.go",
+		"es/admission/internal/reliablesubmit/replay_custody_file.go",
+		"es/admission/internal/reliablesubmit/replay_custody_file_test.go",
+		"es/admission/internal/reliablesubmit/replay_custody_format.go",
+		"es/admission/internal/reliablesubmit/replay_custody_format_test.go",
+		"es/admission/internal/reliablesubmit/replay_custody_structure.go",
+		"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go",
+		"es/admission/internal/reliablesubmit/replay_key_use_sqlite_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_claim.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_claim_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_migration_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_schema.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_schema_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_shape.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_shape_test.go",
 	)
 
 	submitSource := mustRead(t, "es/admission/submit.go")
@@ -5043,7 +6023,7 @@ func TestWorkstreamC6AdmissionPolicyLayerV0ContractIsDocumented(t *testing.T) {
 		"It still creates no run object, staging root, scheduler handoff, or proto-execution state.",
 		"`POST /v1/executions:submit` reuses the full prepare path",
 		"Submit cannot bypass the admission policy path used by prepare",
-		"policy denial occurs before payload staging or Nomad submission.",
+		"Policy denial occurs before payload staging or Nomad submission.",
 	)
 	assertContainsAll(t, "lifecycle contracts C6 prepare and submit path", lifecycleContracts,
 		"`:prepare` evaluates ES Admission Policy Layer v0 before success.",
@@ -6881,195 +7861,150 @@ func TestRemoteSupportedHostAlphaDirectBoundaryIsDocumented(t *testing.T) {
 }
 
 func TestDocsRemoteAlphaOperatorFacadeBoundaries(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
+	plansRaw := mustRead(t, "PLANS.md")
+	plans := compactText(plansRaw)
+	planCutoffSection := docSection(t, plansRaw,
+		"### Current Remote Alpha operator evidence-compatibility cutoff",
+		"### Historical P0g evidence ingestion — superseded and non-authoritative",
+	)
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "## Direct Remote Requirements")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 
-	assertContainsAll(t, "Remote Alpha operator facade PLANS backlog", plans,
-		"P0: ES Remote Alpha operator-helper consolidation and manual recovery minimization.",
-		"Implementation must be split into small audited slices",
-		"docs/static-test prep",
-		"help/inventory/print-command ergonomics",
-		"staged helpers",
-		"secret-sensitive reset/unseal routing",
-		"must not widen ES public contracts, CP orchestration semantics, IM authority, Nomad task-user semantics, SPIRE exposure boundaries, or Vault token brokerage",
-		"preserve existing IM-consumed artifact filenames",
-		"The objective is one repo-supported ES operator facade/workflow/script",
-		"minimizes manual stitching, copying, and recovery sequencing",
-		"Operator involvement is expected and allowed",
-		"success does not mean eliminating every prompt",
-		"Explicit interactive modes are valid when they are named, bounded to a mode or subcommand, visible to the operator, and secret-safe.",
-		"Default noninteractive sudo remains an ergonomic optimization",
-		"not a universal success criterion",
+	assertContainsAll(t, "Remote Alpha operator cutoff plan", plans,
+		"ES product architecture leads",
+		"an implemented Remote Alpha operator compatibility surface is not thereby an ES product invariant",
+		"The former P0g evidence-ingestion surface and the P0n/P0r facade staging and aggregation routes are superseded compatibility history",
+		"optional owner-local proof emitters under their separately documented contracts",
+		"Their facade compatibility is not a Tranche B prerequisite",
+		"introduces no replacement schema, adapter, projection, registry, v2 protocol, or Infrastructure Manager reader",
+	)
+	assertExpectedTreeInventoryClause(t, planCutoffSection)
+	assertContainsAll(t, "Remote Alpha operator cutoff current status", statusSection,
+		"ES product architecture leads this boundary",
+		"Operator-facade compatibility is not a product invariant merely because it was implemented",
+		"compatibility for the retired runtime-identity, Vault workload-auth, and Vault service-user artifact families is not a Tranche B prerequisite",
+		"optional owner-local proof emitters for this tranche",
+		"does not retire or change the underlying ES runtime-identity, SPIRE, admission-handoff, or workload-side Vault product boundaries",
+		"P0g's former local evidence-ingestion mode is retired",
+		"provides no generic evidence parser, schema interpretation, automatic discovery, aggregation, or projection adapter",
+		"P0n's former Mac-side workload-auth checker staging route is retired",
+		"P0r's former Mac-side runtime-identity summary staging route is retired",
+		"operator-compatibility surface has exactly four refusal classes",
+		"These classes do not promise identical stderr",
+		"global privacy prefilter",
+		"adds no replacement schema, parser, adapter, registry, v2 protocol, or Infrastructure Manager dependency",
+		"P0i adds exactly one secret-sensitive recovery-session route",
+		"P0q implements exactly that secret-sensitive workload-auth bootstrap helper",
+		"P0s/P0t retain only the bounded interactive `es-service-tls-status` and",
+		"Both renewal names refuse before host contact",
+		"P0u adds exactly one bounded Remote Alpha host-local operator healthcheck client TLS status/renew helper pair",
+		"P0v implements the ES-owned noninteractive read-only operator-healthcheck TLS status route",
+	)
+	assertContainsNone(t, "Remote Alpha current status excludes retired compatibility", statusSection,
+		"P0g implements one safe/local recovery workflow skeleton",
+		"P0n adds one separate Mac-side post-reset workload-auth evidence route",
+		"P0r implements exactly one Mac-side runtime identity evidence route",
+		"`recovery-session --evidence-check` is current-only",
+		"current-only local evidence-check mode",
+		"automatic filename discovery is current",
+		"The readiness session remains available for current follow-up use.",
 	)
 
-	assertContainsAll(t, "Remote Alpha operator facade docs", operatorSection,
-		"`Bounded slice rule`",
-		"bounded MVP proof/support helper plus evidence/projection outputs only",
-		"`scripts/remote_alpha_operator.sh`",
-		"Current implementation/design status through P0u:",
-		"P0e aligned help, inventory, and route wording with the operator involvement model",
-		"P0d implements exactly one staged-helper delegation route",
-		"`es-writable-state-readiness-check`",
-		"P0f implements exactly one bounded readiness workflow command",
-		"`readiness-session`",
-		"P0g implements one safe/local recovery workflow skeleton",
-		"`recovery-session`",
-		"P0h extends only `recovery-session --evidence-check` with known-schema interpretation",
-		"`--strict-known-schema`",
-		"non-recursive `--evidence-dir` discovery",
-		"P0i adds exactly one secret-sensitive recovery-session route",
-		"`recovery-session vault-unseal-existing --host-local`",
-		"P0j preserves that host-local fallback and adds one Mac-side secret-sensitive",
-		"`recovery-session vault-unseal-existing --ssh-target <target> --interactive-tty`",
-		"P0k adds one Mac-side dry-run-only disposable reset planning route",
-		"`recovery-session vault-reset-disposable --ssh-target <target> --dry-run`",
-		"P0l is design/static-test prep only",
-		"`recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`",
-		"at P0l it did not implement `--execute-reset`",
-		"that route remained future until later implementation, audit, and live-validation slices",
-		"P0m implements exactly that Mac-side destructive disposable reset operator route",
-		"static and fake SSH/SCP validation only",
-		"does not run live SSH, sudo, Vault, reset, unseal, execute-reset",
-		"P0n adds one separate Mac-side post-reset workload-auth evidence route",
-		"`recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty`",
-		"stages only `scripts/remote_alpha_vault_workload_auth_check.sh` and `scripts/internal/remote_alpha_vault_workload_auth_check.sh`",
-		"keeps the canonical summary on the remote host at `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`",
-		"does not copy the summary back to Mac `.out`",
-		"keeps IM refresh, support-bundle collection, CP proof, runtime identity generation, and reset/unseal separate",
-		"P0o adds one safe local/print-only post-reset Vault workload-auth bootstrap planning surface",
-		"`recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]`",
-		"performs no live bootstrap, no SSH, no sudo, no Vault command, no root-token prompt, no proof secret creation, no workload-auth check, no reset/unseal, no IM execution, no support-bundle collection, no CP proof, and no runtime identity generation",
-		"P0p is design/static-test prep only for the future secret-sensitive execution route",
-		"`recovery-session vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty`",
-		"defines the helper, prompt, summary, flag, boundary, and fake/static-test contract",
-		"implements no helper, no staging, no Vault writes, no root-token or proof-secret prompt",
-		"P0q implements exactly that secret-sensitive workload-auth bootstrap helper",
-		"`recovery-session vault-workload-auth-bootstrap --ssh-target <target> --prepare-summary-path --interactive-tty`",
-		"bounded remote filesystem preparation",
-		"stages only `scripts/remote_alpha_vault_workload_auth_bootstrap.sh` and `scripts/internal/remote_alpha_vault_workload_auth_bootstrap.sh`",
-		"uses an in-process Vault API client rather than `VAULT_TOKEN` or `vault login`",
-		"writes only the remote non-secret summary at `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-bootstrap-summary.json`",
-		"copies no summary back to Mac `.out`",
-		"keeps workload-auth checks, reset/unseal, IM refresh, support bundles, CP proof, and runtime identity work separate",
-		"P0r implements exactly one Mac-side runtime identity evidence route",
-		"`recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty`",
-		"stages only `scripts/remote_alpha_runtime_identity_helper_summary.sh`",
-		"keeps the canonical summary on the remote host at `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`",
-		"keeps workload-auth bootstrap/check, reset/unseal, IM refresh, support bundles, CP proof, runtime identity generation, runtime-profile readiness, submit readiness, and retained-result readiness separate",
-		"P0u adds exactly one bounded Remote Alpha host-local operator healthcheck client TLS status/renew helper pair",
-		"`recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"stages only `scripts/remote_alpha_operator_healthcheck_tls_renew.sh` and `scripts/internal/remote_alpha_operator_healthcheck_tls_renew.sh`",
-		"`spiffe://execution.internal/operator/local`",
-		"`/var/tmp/execution-substrate-remote-alpha/operator-healthcheck-tls-renew-summary.json`",
-		"does not restart ES",
-		"stages only",
-		"`scripts/remote_alpha_reset_disposable_vault.sh`",
-		"invokes only the staged helper's `--unseal-only` mode over an interactive SSH TTY",
-		"invokes only the staged helper's `--dry-run` mode",
-		"delegates only to the public reset helper's `--unseal-only` mode",
-		"delegates only to the public staged wrapper",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"delegates only through the existing readiness route/helper path",
-		"prints only non-secret local metadata after scanning the artifacts for secret-like content",
-		"local evidence-check mode over operator-supplied existing JSON evidence files",
-		"accepts only its own allowlisted safe/local flags plus the explicit host-local and Mac-side interactive TTY `vault-unseal-existing`",
-		"P0n Mac-side interactive TTY `vault-workload-auth-check` submode",
-		"P0r Mac-side interactive TTY `runtime-identity-summary` evidence submode",
-		"P0u Mac-side interactive TTY `operator-healthcheck-tls-status` and `operator-healthcheck-tls-renew` submodes",
-		"safe modes do not use SSH or remote staging",
-		"dispatch generic helpers",
-		"destructive or authority-bearing work",
-		"`vault-unseal-existing --ssh-target <target> --interactive-tty` route",
-		"requires a visible local terminal before staging",
-		"attempts staged-helper cleanup by default",
-		"writes no `.out`, transcript, log, support bundle, report, generated JSON, or operator summary",
-		"`vault-reset-disposable --ssh-target <target> --dry-run` route",
-		"Mac-side topology for disposable Vault reset planning only",
-		"does not require an interactive TTY",
-		"invokes only `--dry-run`",
-		"non-destructive: it does not stop Vault, move raft storage, init or unseal Vault, run post-unseal checks, run workload-auth checks, run Infrastructure Manager, or collect support bundles",
-		"The `vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty` route is the P0m Mac-side destructive disposable reset operator route",
-		"requires a visible local terminal before staging",
-		"allocates an interactive SSH TTY",
-		"requires the existing exact confirmation phrase",
-		"`RESET DISPOSABLE REMOTE ALPHA VAULT`",
-		"invokes only `--execute-reset`",
-		"writes no `.out` summary or operator summary",
-		"captures no transcript",
-		"handles no secrets",
-		"post-reset evidence checks as separate later steps",
-		"P0m validation is static and fake SSH/SCP only; it is not live execute-reset validation.",
-		"The `vault-workload-auth-check --ssh-target <target> --interactive-tty` route is the P0n Mac-side post-reset workload-auth evidence route.",
-		"stages exactly the public workload-auth helper and its internal implementation helper",
-		"invokes only the staged public helper with no helper override flags",
-		"does not print full summary JSON",
-		"The route is evidence/projection only: it is not workload-auth bootstrap, not ES token brokerage",
-		"The `vault-workload-auth-bootstrap [--help|--plan|--inventory]` submode is the P0o safe local/print-only planning surface",
-		"The `vault-workload-auth-bootstrap --ssh-target <target> --execute-bootstrap --interactive-tty` route is the P0q Mac-side secret-sensitive bootstrap route",
-		"The `runtime-identity-summary --ssh-target <target> --interactive-tty` route is the P0r Mac-side runtime identity evidence route.",
-		"The `operator-healthcheck-tls-status --ssh-target <target> --interactive-tty` route is the P0u Mac-side host-local operator healthcheck client TLS evidence route.",
-		"The `operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew` route is the P0u Mac-side host-local operator healthcheck client TLS recovery route.",
-		"not generic TLS deployment",
-		"`--prepare-summary-path`",
-		"OS/filesystem",
-		"stages exactly the dedicated workload-auth bootstrap public/internal helper pair",
-		"writes only a remote non-secret summary",
-		"With no mode, the submode defaults to printing the plan/help and exiting zero.",
-		"accepts only `--help`, `--plan`, and `--inventory`",
-		"writes no `.out`, JSON, support bundle, report, generated artifact, operator summary, retained bundle, or CP artifact",
-		"secret-sensitive but non-destructive",
-		"visible delegated helper/Vault CLI prompt",
-		"The facade does not prompt for, read, type, log, relay, persist, summarize, or accept secret material",
-		"creates no summary file, writes no `.out`",
-		"does not wrap the P0i/P0j unseal delegation, the P0k reset dry-run delegation, or the P0m execute-reset delegation in transcript capture",
-		"follow-up evidence/provenance actions only",
-		"operator ergonomics over existing bounded helpers",
-		"Mac-side only: inventory, print IM commands, staged-wrapper delegation for existing repo-side staged helpers, P0j",
-		"`recovery-session vault-reset-disposable --ssh-target <target> --dry-run`",
-		"`recovery-session vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`",
-		"`recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty`",
-		"`recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty`",
-		"`recovery-session operator-healthcheck-tls-status --ssh-target <target> --interactive-tty`",
-		"`recovery-session operator-healthcheck-tls-renew --ssh-target <target> --interactive-tty --execute-renew`",
-		"Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`, and Vault service-user check.",
-		"The host-local runtime identity helper remains available as a direct helper, but P0r adds the Mac-side operator topology for that evidence route.",
-		"The host-local operator healthcheck TLS helper remains available as a direct helper, but P0u adds the Mac-side operator topology for that bounded host-local client identity status/renew route.",
-		"P0m does not add a host-local execute-reset route through the operator facade",
-		"post-unseal/service-user/IM/support-bundle/CP-proof bundling",
-		"docs/static-test prep",
-		"help/inventory/print-command skeleton",
-		"staged-helper delegation after sudo-model review",
-		"host-local Vault unseal-existing after reset-helper tests and audit",
-		"destructive reset kept for a later exact-phrase slice",
-		"Mac-side disposable Vault reset dry-run planning over the existing reset helper",
-		"without destructive reset, init, unseal, post-unseal checks, IM, support-bundle collection, generic helper dispatch, transcripts, or generated evidence",
-		"Mac-side disposable Vault reset execute-reset contract prep as docs/static-test only",
-		"with the P0k dry-run route as prerequisite",
-		"no post-unseal/workload-auth/IM/support-bundle/CP-proof bundling",
-		"Mac-side disposable Vault reset execute-reset implementation with static and fake SSH/SCP validation only",
-		"Mac-side post-reset Vault workload-auth evidence route over the fixed public/internal workload-auth helper pair",
-		"no summary copy-back, no bootstrap, no token brokerage",
-		"later separate audit/live-validation and post-reset evidence slices before any live destructive execute-reset validation or post-reset authority claim",
-		"safe local/print-only workload-auth bootstrap planning surface after the post-reset evidence route reported a conservative Vault JWT login failure",
-		"secret-sensitive workload-auth bootstrap execution contract prep as docs/static-test only",
-		"secret-sensitive workload-auth bootstrap implementation with static and fake validation only",
-		"Mac-side runtime identity summary evidence route over only the fixed public runtime identity helper summary script",
-		"prefer one explicit interactive sudo validation followed by `sudo -n` where supported",
-		"noninteractive default for staged wrappers that support it",
-		"config/TLS staged wrapper is currently a sudo-model gap unless fixed",
-		"not IM automation or reconciliation",
-		"not CP authority",
-		"not Vault production lifecycle",
-		"not ES token brokerage",
-		"not deployment architecture",
-		"The facade must not make IM a remote reconciler, CP a Vault/runtime recovery authority, ES a Vault token broker, or Remote Alpha a production/general deployment architecture.",
-		"The facade must not rename, replace, aggregate, or obscure existing IM-consumed artifact filenames.",
-		"Any optional operator summary is non-secret evidence/projection only, not an IM input in v1.",
-		"Live validation remains blocked/reopened for a later audited slice.",
-		"Root tokens must never be accepted as CLI arguments, environment variables, files, `.out`, reports, support bundles, retained bundles, or Codex output.",
-		"Bootstrap must not claim workload-auth success",
+	for _, heading := range []string{
+		"### Historical P0g Evidence Ingestion — Superseded and Non-Authoritative",
+		"### Historical P0n Mac-Side Vault Workload-Auth Check — Superseded and Non-Authoritative",
+		"### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative",
+	} {
+		if !strings.Contains(remoteRaw, heading) {
+			t.Fatalf("Remote Alpha doc lacks explicit historical heading %q", heading)
+		}
+	}
+	assertContainsAll(t, "standalone producer contracts remain documented", remoteRaw+"\n"+configuration,
+		"## Runtime Identity Helper Proof Slice",
+		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
+		"sudo scripts/remote_alpha_vault_workload_auth_check.sh",
+		"execution-substrate.remote-alpha.vault-workload-auth-summary.v1",
+		"scripts/remote_alpha_migrate_vault_service_user.sh",
+		"execution-substrate.remote-alpha.vault-service-user-migration-summary.v1",
+	)
+	assertContainsAll(t, "operator compatibility is not a Tranche B gate", compactText(planCutoffSection)+"\n"+statusSection,
+		"Their facade compatibility is not a Tranche B prerequisite and must not block core ES work.",
+		"compatibility for the retired runtime-identity, Vault workload-auth, and Vault service-user artifact families is not a Tranche B prerequisite.",
+	)
+	assertContainsNone(t, "operator compatibility is not a Tranche B gate", compactText(planCutoffSection)+"\n"+statusSection,
+		"operator compatibility is a Tranche B prerequisite",
+		"operator compatibility must be preserved before Tranche B",
+		"Tranche B requires operator evidence ingestion",
+		"Preserving operator compatibility is mandatory before the second tranche can begin.",
+	)
+}
+
+func TestRemoteAlphaOperatorRefusalTaxonomyDocsContract(t *testing.T) {
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+
+	assertContainsAll(t, "Remote Alpha current refusal taxonomy", statusSection,
+		"Current effect-free evidence-refusal taxonomy",
+		"operator-compatibility surface has exactly four refusal classes",
+		"These classes do not promise identical stderr",
+		"Canonically recognized retired routes, aliases, and evidence flags receive the exact two-line operator-compatibility retirement refusal",
+		"remote alpha operator evidence ingestion, staging, aggregation, and projection compatibility is retired; no artifact inspection, helper execution, staging, or evidence projection occurred",
+		"use the owning producer directly only under its separately documented contract; this operator facade provides no compatibility adapter",
+		"The historical P0h options `--readiness-summary` and `--staging-record` receive the fixed one-line historical-option refusal",
+		"error: retired historical ES evidence options are unavailable",
+		"Prefixed, malformed, or otherwise unrecognized stale forms receive the fixed generic refusal",
+		"error: unknown operator subcommand",
+		"No helper execution routing occurred.",
+		"no raw argument, option, path, or value is echoed",
+		"Secret-like forms receive the fixed privacy refusal",
+		"error: secret material must never be passed by CLI args/env/logs/reports/artifacts",
+		"The common safety invariant across all four classes is",
+		"exit `2`",
+		"zero stdout",
+		"no supplied-value echo",
+		"no file access",
+		"no helper or subprocess",
+		"no host inspection",
+		"no staging, discovery, mutation, or projection",
+		"Every class completes before script-directory canonicalization or helper-path initialization",
+		"The retired grammar is not widened merely to make prefixed or malformed stale forms enter the exact two-line retirement handler",
+		"P0f's former `readiness-session` workflow is retired",
+		"produces no current readiness projection or artifact refresh",
+		"the retired readiness session now prints no follow-up commands",
+		"the retired readiness session is not available for follow-up use and currently stages, creates, refreshes, and owns no artifact",
+	)
+	assertContainsNone(t, "Remote Alpha current refusal taxonomy rejects broad or current-use contradictions", statusSection,
+		"For every retired operator evidence route, alias, and flag, every non-secret argument shape produces the exact two-line retirement tombstone",
+		"Every stale invocation receives the same tombstone.",
+		"Every stale invocation receives the exact two-line retirement tombstone.",
+		"The readiness session remains available for current follow-up use.",
+	)
+}
+
+func TestRemoteAlphaOperatorByteStablePrivacyScannerDocsContract(t *testing.T) {
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	assertContainsAll(t, "Remote Alpha byte-stable global privacy scanner", statusSection,
+		"`Current invariant` — secret-like option recognition is byte-deterministic",
+		"independent of the caller's locale",
+		"ASCII uppercase letters",
+		"ASCII underscore to hyphen",
+		"`root-token`, `unseal-key`, `client-token`, `vault-token`, `api-key`, `jwt-svid`",
+		"`private-key`, `password`, `secret`, `token-file`, and `secret-value`",
+		"any raw token occurrence of `--<secret-family>`",
+		"end-of-token or outside ASCII `[A-Za-z0-9_-]`",
+		"non-ASCII following byte is",
+		"fail-closed delimiter",
+		"ASCII alphanumeric, underscore, or hyphen",
+		"`--api-keyboard`, `--token-filed`",
+		"`--passwordless`, `--secretary`, and `--private-keyboard`",
+		"`--<prefix>-<secret-family>` option",
+		"`Temporary compatibility edge`",
+		"work bounded linearly by token length",
+		"Repeated shrinking-token copies",
+		"locale-sensitive",
+		"The global privacy prefilter remains the first argument-sensitive operation.",
 	)
 }
 
@@ -7078,7 +8013,7 @@ func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	operatorSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "## Direct Remote Requirements")
 	involvementSection := compactDocSection(t, remoteRaw, "### Operator Involvement Model", "Purpose:")
-	evidenceSection := compactDocSection(t, remoteRaw, "### P0d Interactive Validation Evidence", "## Direct Remote Requirements")
+	evidenceSection := compactDocSection(t, remoteRaw, "### Historical P0d interactive validation evidence — superseded and non-authoritative", "## Direct Remote Requirements")
 
 	assertContainsAll(t, "Remote Alpha operator objective", plans,
 		"one repo-supported ES operator facade/workflow/script",
@@ -7108,6 +8043,9 @@ func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T
 	)
 
 	assertContainsAll(t, "Remote Alpha P0d interactive evidence", evidenceSection,
+		"Historical P0d interactive validation evidence — superseded and non-authoritative",
+		"This is a superseded historical record, not a current-status section or an invocable helper contract.",
+		"It grants no current readiness, migration, apply, cleanup, or reclamation authority.",
 		"operator-workstation-to-remote interactive-sudo validation evidence only",
 		"generated output, not tracked source, not design authority",
 		"validated the P0d operator route handoff to the staged writable-state readiness helper",
@@ -7153,286 +8091,266 @@ func TestRemoteAlphaOperatorDocsInvolvementAndP0dEvidenceBoundaries(t *testing.T
 	)
 }
 
-func TestRemoteAlphaOperatorP0dDocsFirstDelegationBoundary(t *testing.T) {
+func TestRemoteAlphaOperatorDocsRetireExistingHostESRoutes(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0d First Staged-Helper Delegation Implementation", "### P0f Readiness Session Workflow")
+	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+	writableState := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
+	implementationFacts := compactMarkedDocSection(t, "test-backed implementation facts", implementation, "## 13. Test-backed implementation facts", "## 14. Current simplifications")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	p0dSection := compactDocSection(t, remoteRaw, "### Historical P0d Staged-Helper Delegation Implementation — Retired", "### Historical P0f Readiness Session Workflow — Retired")
+	p0fSection := compactDocSection(t, remoteRaw, "### Historical P0f Readiness Session Workflow — Retired", "### Historical P0g Evidence Ingestion — Superseded and Non-Authoritative")
 
-	assertContainsAll(t, "Remote Alpha operator P0d PLANS boundary", plans,
-		"The P0d implementation slice is limited to exactly that one check-only route",
-		"`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`",
-		"require an explicit `--ssh-target`",
-		"accept only the P0c allowlisted helper flags",
-		"reject `--apply`, `--dry-run`, unknown flags, unknown positional arguments, duplicate route flags, and secret-like arguments before helper execution",
-		"delegate only to the public staged wrapper",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"must not source helpers",
-		"invoke `scripts/internal/*`",
-		"add generic staging or helper routing",
-		"call Infrastructure Manager",
-		"create an operator-owned summary",
-		"rename helper artifacts",
+	assertContainsAll(t, "Remote Alpha retirement PLANS boundary", plans,
+		"P0c, P0d, and P0f are now retired compatibility history.",
+		"no longer inspect or contact a host and no longer produce or refresh evidence",
+		"underlying six public wrappers remain only as compatibility delegators to fixed exit-2 tombstones",
+		"Selecting a future diagnostic or existing-host migration contract is a separately governed decision",
+		"privacy prefilter is the first argument-sensitive operation",
+		"before script-directory canonicalization or helper-path initialization",
+		"public names are preserved only as fixed effect-free compatibility tombstones, not as helper or readiness workflows",
 	)
+	assertContainsAll(t, "Remote Alpha retirement current status", statusSection,
+		"P0d's former staged-helper delegation route",
+		"Every non-secret argument shape now reaches a fixed two-line exit-2 refusal with no host inspection, staging, mutation, or evidence production.",
+		"secret-like argument shapes receive its fixed one-line privacy refusal instead",
+		"P0f's former `readiness-session` workflow is retired under the same fixed precedence",
+		"produces no current readiness projection or artifact refresh",
+		"privacy prefilter is the first argument-sensitive operation",
+		"before script-directory canonicalization or helper-path initialization",
+	)
+	assertContainsAll(t, "Remote Alpha P0d historical boundary", p0dSection,
+		"historical v1 implementation context only",
+		"Non-secret operator-facade argument shapes reach the fixed two-line tombstone",
+		"secret-like shapes are rejected first by the fixed one-line privacy prefilter",
+	)
+	assertContainsAll(t, "Remote Alpha P0f historical boundary", p0fSection,
+		"historical v1 context only",
+		"readiness session no longer stages, invokes, discovers, refreshes, or projects current readiness evidence",
+	)
+	assertContainsNone(t, "Remote Alpha current retired-route status", statusSection,
+		"P0d implements exactly one staged-helper delegation route",
+		"P0f implements exactly one bounded readiness workflow command",
+	)
+	assertContainsAll(t, "retired existing-host ownership route in implementation facts", implementationFacts,
+		"`scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh` is a fixed, effect-free exit-2 tombstone",
+		"no current host or artifact inspection, mutation, repair, quarantine, or evidence production",
+		"six retired internal routes and their unchanged public-wrapper delegators",
+		"no v2 replacement or current existing-host migration authority",
+		"Historical ownership-normalization artifacts and old helper tests grant no current operational permission",
+		"ES still validates existing result objects and normalization evidence without in-place metadata repair",
+		"may initialize owner and mode on newly created unpublished result temporaries, records, and normalization evidence",
+		"Existing-object repair and deletion based on an uncertain pathname are unsupported",
+	)
+	assertContainsNone(t, "superseded ownership helper repair claim", implementationFacts,
+		"The bounded writable-state ownership helper may now repair only direct retained-result artifacts",
+		"may quarantine incompatible legacy retained run directories",
+	)
+	assertContainsAll(t, "owning existing-host retirement decision", writableState,
+		"six internal implementations are fixed exit-2 tombstones",
+		"six public wrappers remain unchanged delegators",
+		"inspect no host or artifact, contact no service, create no temporary or evidence file, and perform no mutation",
+		"No read-only current-readiness mode, apply simulation, structured unsupported artifact, or v2 replacement exists",
+		"ES still qualifies configured staging and result roots",
+		"No v2 replacement exists for this retired family",
+	)
+}
 
-	assertContainsAll(t, "Remote Alpha operator P0d docs boundary", operatorSection,
-		"`Bounded slice rule`: P0d implements exactly one Remote Alpha operator route",
-		"`scripts/remote_alpha_operator.sh es-writable-state-readiness-check`",
-		"The implemented route delegates only to:",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"does not source helper scripts",
-		"does not invoke `scripts/internal/*`",
-		"does not construct helper paths from user input",
-		"does not introduce generic staging or generic helper routing",
-		"Host-local execution is intentionally not enabled through the operator facade in P0d.",
-		"The route may pass only these helper flags:",
-		"`--ssh-target <user@host>`",
-		"`--mode <alpha-compat|future-non-root-required>`",
-		"`--run-id <timestamp-or-id>`",
-		"`--output-dir </path/to/output-dir>`",
-		"`--readiness-output </path/to/es-writable-state-readiness.json>`",
-		"`--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
-		"`--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
-		"`--interactive-sudo`",
-		"`--keep-staging-on-failure`",
-		"`--help`",
-		"The route rejects before helper execution:",
-		"`--apply`",
-		"`--dry-run`",
-		"unknown positional arguments",
-		"duplicate route flags",
-		"does not rely on helper last-one-wins parsing",
-		"secret-like arguments",
-		"The operator facade itself does not call `sudo`, `ssh`, `scp`, Vault, Nomad, Docker, SPIRE, `systemctl`, Infrastructure Manager refresh, support-bundle collection, reset/unseal flows, workload-auth bootstrap or checks, runtime-identity summaries, service-user migration helpers, config/TLS helpers, binary deployment helpers, or writable-state ownership helpers.",
-		"only run when an operator intentionally invokes this route with an explicit `--ssh-target`",
+func TestBoundedRepairRemoteAlphaCurrentAndHistoricalDocBoundaries(t *testing.T) {
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	assertContainsAll(t, "Remote Alpha repaired current status", statusSection,
+		"operator-compatibility surface has exactly four refusal classes",
+		"Canonically recognized retired routes, aliases, and evidence flags receive the exact two-line operator-compatibility retirement refusal",
+		"The historical P0h options `--readiness-summary` and `--staging-record` receive the fixed one-line historical-option refusal",
+		"Prefixed, malformed, or otherwise unrecognized stale forms receive the fixed generic refusal",
+		"Secret-like forms receive the fixed privacy refusal",
+		"The common safety invariant across all four classes is",
+		"former current-schema evidence checker, automatic filename discovery, schema maps, and safe-field projections are absent from the live facade",
+		"No schema, validator, fixture, producer, artifact, or protocol v2 replacement exists for the retired ES writable-state/service-user migration family",
+		"unrelated current EGS hardening v2 schema remains current",
+	)
+	assertContainsNone(t, "Remote Alpha repaired current status excludes retired behavior", statusSection,
+		"P0d implements exactly one staged-helper delegation route",
+		"P0f implements exactly one bounded readiness workflow command",
+		"delegates writable-state readiness to `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
 		"preserves the exact existing Infrastructure Manager-consumed local artifact filenames",
-		"`es-writable-state-readiness.json`",
-		"`es-writable-state-readiness-helper-staging-record.json`",
-		"writes no aggregate operator summary and does not call Infrastructure Manager",
-		"the facade may continue to print the Mac-side IM refresh and support-bundle commands only",
+		"For every retired operator evidence route, alias, and flag, every non-secret argument shape produces the exact two-line retirement tombstone",
 	)
+
+	historicalParser := compactDocSection(t, remoteRaw, "### Historical P0g Evidence Ingestion — Superseded and Non-Authoritative", "### P0i Host-Local Vault Unseal Existing Recovery Session")
+	assertContainsAll(t, "Remote Alpha parser rationale is historical only", historicalParser,
+		"This entire subsection is design history only",
+		"grants no current evidence-check flag, parser, schema interpretation, discovery, aggregation, or projection behavior",
+		"The local Python runtime must expose `O_NOFOLLOW`; capability absence fails closed rather than substituting zero",
+		"performs `lstat` before open",
+		"opens no-follow",
+		"revalidates the descriptor",
+		"`lstat`s the visible path again",
+		"same regular object with the same size",
+		"strict duplicate-aware decoder",
+		"explicit bounded stack rather than recursive calls",
+		"before the complete output is published",
+	)
+
+	for _, path := range []string{
+		".docs/system_overview/remote_alpha_beta_es_privilege_boundary_assessment.md",
+		".docs/system_overview/remote_alpha_beta_es_privileged_operation_matrix.md",
+		".docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md",
+	} {
+		doc := compactText(mustRead(t, path))
+		assertContainsAll(t, "preserved superseded historical design "+path, doc,
+			"## Historical design record — superseded and non-authoritative",
+			"**superseded** and **non-authoritative**",
+			"**not an available operator route**",
+			"**not migration, cleanup, or reclamation authority**",
+		)
+	}
 }
 
-func TestRemoteAlphaOperatorP0fDocsReadinessSessionBoundary(t *testing.T) {
+func TestCurrentLifecycleAndRemoteDocsRejectBoundedContradictionClasses(t *testing.T) {
+	contractsRaw := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	resultSection := strings.ToLower(compactDocSection(t, contractsRaw, "## 9. Result contract", "## 10. Cancel contract"))
+	cancelSection := strings.ToLower(compactDocSection(t, contractsRaw, "## 10. Cancel contract", "## 11. Run-ID and scheduler lookup contract"))
+	submitSection := strings.ToLower(compactDocSection(t, contractsRaw, "## 6. Submit contract", "## 7. Status contract"))
+	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	remoteCurrent := strings.ToLower(compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model"))
+
+	checks := []struct {
+		label    string
+		text     string
+		patterns []string
+	}{
+		{
+			label: "terminal or result-triggered staging deletion",
+			text:  resultSection,
+			patterns: []string{
+				`(?:terminal (?:success|failure|loss|cancellation|state)|result(?: publication| packaging| success| availability)).{0,120}\b(?:may|must|will|can|triggers?|authorizes?|permits?)\b.{0,60}\b(?:delete|remove|clean up|cleanup|reclaim|quarantine)\b.{0,80}\b(?:staging|run root|run-root)\b`,
+				`(?:terminal (?:success|failure|loss|cancellation|state)|result(?: publication| packaging| success| availability)).{0,120}\b(?:may|must|will|can|triggers?|authorizes?|permits?)\b.{0,60}\b(?:staging|run root|run-root)\b.{0,30}\b(?:deletion|removal|cleanup|reclamation|quarantine)\b`,
+				`\b(?:staging|run root|run-root)\b.{0,80}\b(?:may|must|will|can|is)\b.{0,30}\b(?:deleted|removed|cleaned up|reclaimed|quarantined)\b.{0,100}(?:terminal|result)`,
+			},
+		},
+		{
+			label: "cancellation-authorized quarantine or reclamation",
+			text:  cancelSection,
+			patterns: []string{
+				`cancel(?:lation|led|ed)?.{0,100}\b(?:authorizes?|permits?|triggers?|may|must|will|can)\b.{0,60}\b(?:quarantine|reclamation|reclaim|delete|remove)\b`,
+				`\b(?:quarantine|reclamation|reclaim)\b.{0,80}\b(?:is|becomes?)\b.{0,30}\b(?:authorized|permitted)\b.{0,60}cancel`,
+			},
+		},
+		{
+			label: "no-receipt-implies-no-claim wording",
+			text:  submitSection,
+			patterns: []string{
+				`(?:no|absent|missing) (?:submit )?receipt.{0,50}(?:means|proves|implies|establishes).{0,40}(?:no|absent|missing).{0,30}(?:claim|staging)`,
+				`without (?:a )?receipt.{0,60}(?:no|never).{0,30}(?:claim|staging)`,
+			},
+		},
+		{
+			label: "current readiness-session or helper inspection",
+			text:  remoteCurrent,
+			patterns: []string{
+				`readiness-session.{0,40}(?:is|remains) (?:active|available|current|implemented)`,
+				`(?:readiness-session|writable-state readiness route).{0,60}\b(?:inspects the|contacts the|stages the|invokes the|refreshes current|produces current)\b`,
+				`(?:readiness helper|writable-state helper).{0,40}(?:is|remains) (?:active|available|current)`,
+			},
+		},
+		{
+			label: "archived readiness becoming current authority",
+			text:  remoteCurrent,
+			patterns: []string{
+				`(?:archived|historical).{0,100}(?:apply_ready|readiness).{0,100}(?:is|becomes?|remains?|provides?) (?:current )?(?:authority|authoritative)`,
+				`(?:apply_ready|readiness).{0,100}(?:from )?(?:archived|historical).{0,80}(?:authorizes?|permits?)`,
+			},
+		},
+		{
+			label: "retired route described as active",
+			text:  remoteCurrent,
+			patterns: []string{
+				`retired route.{0,60}(?:is active|remains available|delegates to|invokes)`,
+				`(?:es-writable-state-readiness-check|readiness-session).{0,80}(?:remains available|delegates to|invokes the readiness)`,
+			},
+		},
+	}
+
+	for _, check := range checks {
+		for _, expression := range check.patterns {
+			if match := regexp.MustCompile(expression).FindString(check.text); match != "" {
+				t.Fatalf("%s contradiction matched %q", check.label, match)
+			}
+		}
+	}
+
+	headingPattern := regexp.MustCompile(`(?im)^#{2,4}\s+[^\n]*p0d[^\n]*validation evidence[^\n]*$`)
+	headings := headingPattern.FindAllString(remoteRaw, -1)
+	if len(headings) != 1 {
+		t.Fatalf("P0d validation-evidence heading count = %d, want 1", len(headings))
+	}
+	heading := strings.ToLower(headings[0])
+	for _, required := range []string{"historical", "superseded", "non-authoritative"} {
+		if !strings.Contains(heading, required) {
+			t.Fatalf("historical P0d evidence heading lacks %q: %q", required, headings[0])
+		}
+	}
+}
+
+func TestRemoteAlphaOperatorDocsRetireAllSelectedEvidenceCompatibility(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0f Readiness Session Workflow", "### P0g Recovery Session Safe Skeleton")
+	statusSection := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	operatorModel := compactDocSection(t, remoteRaw, "### Operator Involvement Model", "### Historical P0c Staged-Helper Delegation Plan — Retired")
+	recoverySection := compactDocSection(t, remoteRaw, "### Historical P0g Evidence Ingestion — Superseded and Non-Authoritative", "### P0h Historical-v1 Evidence Interpretation")
+	historicalSection := compactDocSection(t, remoteRaw, "### P0h Historical-v1 Evidence Interpretation", "### P0i Host-Local Vault Unseal Existing Recovery Session")
 
-	assertContainsAll(t, "Remote Alpha operator P0f PLANS boundary", plans,
-		"The P0f combined slice may fold in the P0e help/inventory wording alignment",
-		"`scripts/remote_alpha_operator.sh readiness-session`",
-		"operator-workflow consolidation over the already approved writable-state readiness route",
-		"not a live validation slice and not a new authority source",
-		"the human remains the operator",
-		"noninteractive sudo remains an ergonomic optimization rather than a universal success criterion",
-		"require an explicit `--ssh-target` for execution",
-		"delegate only through the existing `es-writable-state-readiness-check` route/helper path",
-		"use a fresh run-specific output directory by default unless `--output-dir` is supplied",
-		"scan those artifacts for secret-like content before reading JSON fields",
-		"print only non-secret metadata",
-		"print IM refresh and support-bundle commands as follow-up evidence/provenance instructions only",
-		"write no operator summary file",
-		"add no generic helper dispatch",
+	assertContainsAll(t, "Remote Alpha evidence compatibility cutoff PLANS boundary", plans,
+		"The former P0g evidence-ingestion surface and the P0n/P0r facade staging and aggregation routes are superseded compatibility history",
+		"no longer parses, validates, interprets, aggregates, discovers, stages, or projects",
+		"P0h's historical-v1 display is retired",
+		"no longer accepts `--readiness-summary` or `--staging-record`",
+		"Archived v1 fixture and artifact bytes remain evidence only outside live operator behavior",
+		"The former current-schema checker, its automatic evidence-directory discovery, and its safe-field projections are retired with P0g",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0f docs boundary", operatorSection,
-		"`Bounded slice rule`: P0f implements exactly one Remote Alpha operator",
-		"`scripts/remote_alpha_operator.sh readiness-session`",
-		"bounded workflow consolidation over the already implemented",
-		"`es-writable-state-readiness-check`",
-		"not a live validation slice by itself",
-		"not a new authority source",
-		"not a new helper-dispatch framework",
-		"not an Infrastructure Manager runner",
-		"The session requires:",
-		"`--ssh-target <user@host>`",
-		"The session may accept only these flags:",
-		"`--mode <alpha-compat|future-non-root-required>`",
-		"`--output-dir </path/to/output-dir>`",
-		"`--interactive-sudo`",
-		"`--ssh-alias <alias>` for printed IM commands only",
-		"`--im-profile-dir </path/to/profile-dir>` for printed IM commands only",
-		"`--support-output-root </path/to/support-bundles>` for printed IM commands",
-		"The session rejects before route execution:",
-		"`--apply`",
-		"`--dry-run`",
-		"equals-form options",
-		"positional arguments",
-		"duplicate workflow flags",
-		"secret-like arguments",
-		"generate a fresh run-specific directory",
-		"must refuse to proceed if the selected directory already contains either expected artifact",
-		"`es-writable-state-readiness.json`",
-		"`es-writable-state-readiness-helper-staging-record.json`",
-		"both artifacts pass a secret-like content scan before any JSON fields are read",
-		"`execution-substrate.remote-alpha.es-writable-state-readiness.v1`",
-		"`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`",
-		"readiness `operation_mode` is `check_only`",
-		"readiness `non_mutating` is `true`",
-		"readiness `checker_mode` matches the requested mode",
-		"`checker_ran=true`",
-		"may print only non-secret metadata",
-		"must not print full JSON contents",
-		"must not write an operator summary file",
-		"printed commands remain IM evidence/provenance/diagnostics actions only",
-		"does not execute them",
-		"not authority",
-		"does not add Vault reset/unseal, Vault workload-auth, runtime identity, service-user migration, config/TLS, binary deployment, writable-state ownership, generic remote staging, arbitrary shell passthrough, live IM execution, CP proof, support-bundle collection, or Remote Alpha deployment architecture",
+	assertContainsNone(t, "Remote Alpha facade compatibility is not a Tranche B gate", plans+" "+compactText(remoteRaw),
+		"operator compatibility is a Tranche B prerequisite",
+		"facade compatibility is required before Tranche B",
+		"Tranche B requires preservation of operator compatibility",
+	)
+	assertContainsAll(t, "Remote Alpha recovery parser is explicit history", recoverySection,
+		"This entire subsection is design history only",
+		"grants no current evidence-check flag, parser, schema interpretation, discovery, aggregation, or projection behavior",
+		"strict duplicate-aware decoder",
+	)
+	assertContainsAll(t, "Remote Alpha historical-v1 docs boundary", historicalSection,
+		"P0h's former local historical-v1 display is retired",
+		"no live operator route parses, validates, or projects those schemas",
+		"fixed non-echoing stale-input refusal before file access",
+		"former local-only evidence-directory mode discovered four direct filenames",
+		"current facade does not accept that control and performs no artifact discovery",
+		"execution-substrate.remote-alpha.vault-workload-auth-summary.v1",
+		"execution-substrate.remote-runtime-identity-helper-summary.v1alpha1",
+		"execution-substrate.remote-alpha.vault-service-user-migration-summary.v1",
+	)
+	assertContainsNone(t, "Remote Alpha current status has no live evidence compatibility", statusSection,
+		"`recovery-session --evidence-check` is current-only",
+		"Known current schemas are interpreted through explicit safe-field allowlists",
+		"P0n adds one separate Mac-side post-reset workload-auth evidence route",
+		"P0r implements exactly one Mac-side runtime identity evidence route",
+		"stages only `scripts/remote_alpha_runtime_identity_helper_summary.sh`",
+		"stages exactly the public workload-auth helper and its internal implementation helper",
+	)
+	assertContainsAll(t, "Remote Alpha current operator model records the cutoff", operatorModel,
+		"The former P0n workload-auth evidence facade is retired",
+		"The former P0r runtime-identity summary facade is retired",
+		"The former P0n and P0r evidence compatibility routes are retired and are not Mac-side execution contexts",
+		"The operator facade provides no route or compatibility adapter for those three evidence families",
+	)
+	assertContainsNone(t, "Remote Alpha current operator model has no live retired route", operatorModel,
+		"P0n adds the Mac-side",
+		"P0r adds the Mac-side",
+		"P0n workload-auth evidence route",
+		"P0r runtime identity summary evidence route",
 	)
 }
-
-func TestRemoteAlphaOperatorP0gDocsRecoverySessionBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
-	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0g Recovery Session Safe Skeleton", "### P0h Schema-Aware Recovery Evidence Interpretation")
-
-	assertContainsAll(t, "Remote Alpha operator P0g PLANS boundary", plans,
-		"The P0g combined slice may add one bounded safe/local recovery workflow surface",
-		"`scripts/remote_alpha_operator.sh recovery-session`",
-		"recovery sequencing skeleton plus local evidence-check only",
-		"`--help`, `--plan`, `--inventory`, `--next-steps`, and `--evidence-check`",
-		"default no-mode behavior must print the plan/help and exit zero without running live tools",
-		"`--plan`, `--inventory`, and `--next-steps` are print-only",
-		"IM refresh and support-bundle commands may be printed as separate evidence/provenance instructions only",
-		"never executed by ES and never described as authority",
-		"`--evidence-check` may read only operator-supplied local JSON evidence paths",
-		"scan for secret-like content before JSON parsing",
-		"compute byte counts and SHA-256 digests",
-		"print only non-secret metadata",
-		"must not print full JSON, create a session summary, write `.out`, inspect live host state, dispatch helpers",
-		"must reject `--ssh-target`, `--interactive-sudo`, `--apply`, `--dry-run`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--governed-smoke-command`",
-		"Unseal-existing, disposable reset, workload-auth check execution, runtime identity summary generation, and Vault service-user check/apply remain separate audited future slices",
-		"P0g must not add Vault token brokerage, IM authority, CP recovery authority, or Remote Alpha deployment/provisioning/reconciliation architecture",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0g docs boundary", operatorSection,
-		"`Bounded slice rule`: P0g implements one safe/local Remote Alpha operator workflow command",
-		"`scripts/remote_alpha_operator.sh recovery-session`",
-		"recovery sequencing skeleton and local evidence-check only",
-		"not a live validation slice",
-		"not a new authority source",
-		"not a helper-dispatch framework",
-		"not an Infrastructure Manager runner",
-		"not Vault token brokerage",
-		"not Remote Alpha deployment/provisioning/reconciliation architecture",
-		"The supported modes are:",
-		"`--plan`",
-		"`--inventory`",
-		"`--next-steps`",
-		"`--evidence-check`",
-		"Calling `recovery-session` with no mode prints the plan/help and exits zero",
-		"must not run live tools",
-		"`--ssh-alias <alias>` for printed IM commands only",
-		"`--im-profile-dir </path/to/profile-dir>` for printed IM commands only",
-		"`--support-output-root </path/to/support-bundles>` for printed IM commands",
-		"`--vault-workload-auth-summary <path>`",
-		"`--runtime-identity-summary <path>`",
-		"`--vault-service-user-summary <path>`",
-		"`--readiness-summary <path>`",
-		"`--staging-record <path>`",
-		"The session rejects:",
-		"`--ssh-target`",
-		"`--interactive-sudo`",
-		"`--apply`",
-		"`--dry-run`",
-		"`--execute-reset`",
-		"`--unseal-only`",
-		"`--post-unseal-check`",
-		"`--governed-smoke-command`",
-		"helper path overrides",
-		"duplicate operational flags",
-		"equals-form options",
-		"secret-like arguments",
-		"`--plan` prints the bounded recovery sequence only",
-		"unseal-existing is a future explicit secret-sensitive mode",
-		"disposable reset dry-run planning is implemented later in P0k as an explicit Mac-side dry-run submode",
-		"disposable reset execute-reset remains a future destructive exact-phrase mode",
-		"workload-auth check execution is a future audited live check",
-		"runtime identity summary generation is a future audited evidence route",
-		"Vault service-user check/apply remains separate",
-		"`--inventory` prints static helper inventory only",
-		"must not inspect live host state and must not run any helper",
-		"`--next-steps` prints command text only",
-		"not ES execution and not authority",
-		"`--evidence-check` is local-only",
-		"require that the file exists",
-		"compute byte count and SHA-256 digest",
-		"scan for secret-like content before JSON parsing",
-		"print only non-secret metadata",
-		"must not print full JSON, create a session summary file, write `.out`, run helpers, run IM, or treat evidence as authority",
-		"If secret-like content is detected or JSON is malformed, it must fail with the path classification only",
-		"must not print file contents",
-		"does not add Vault reset/unseal execution, Vault workload-auth check execution, runtime identity summary generation, Vault service-user check/apply execution",
-	)
-}
-
-func TestRemoteAlphaOperatorP0hDocsSchemaAwareRecoveryEvidenceBoundary(t *testing.T) {
-	plans := compactText(mustRead(t, "PLANS.md"))
-	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0h Schema-Aware Recovery Evidence Interpretation", "### P0i Host-Local Vault Unseal Existing Recovery Session")
-
-	assertContainsAll(t, "Remote Alpha operator P0h PLANS boundary", plans,
-		"The P0h combined slice may extend only",
-		"`scripts/remote_alpha_operator.sh recovery-session --evidence-check`",
-		"schema-aware interpretation of known local evidence summaries",
-		"remains local-only",
-		"readiness summary, readiness staging record, Vault workload-auth summary, runtime identity helper summary, and Vault service-user migration summary schemas",
-		"explicit safe-field allowlists",
-		"print only non-secret status, classification, boolean, count, schema, byte-count, and SHA-256 metadata",
-		"Unknown schemas are allowed by default with `schema_interpretation=unknown`",
-		"`--strict-known-schema` may fail unknown schemas",
-		"`--evidence-dir <path>` may inspect only direct expected filenames",
-		"report missing expected filenames as `not_supplied`",
-		"must not recurse or write into the directory",
-		"must not print full JSON, create a session summary, write `.out`, run live tools, dispatch helpers",
-		"Schema interpretation is evidence/projection only",
-		"must not add IM authority, CP recovery authority, ES Vault token brokerage, or Remote Alpha deployment/provisioning/reconciliation architecture",
-	)
-
-	assertContainsAll(t, "Remote Alpha operator P0h docs boundary", operatorSection,
-		"`Bounded slice rule`: P0h extends only the local",
-		"`scripts/remote_alpha_operator.sh recovery-session --evidence-check`",
-		"local-only evidence interpretation",
-		"does not add live helper execution",
-		"Infrastructure Manager execution",
-		"support-bundle collection",
-		"CP proof",
-		"reset/unseal behavior",
-		"workload-auth live checks",
-		"runtime identity summary generation",
-		"Vault service-user apply",
-		"generic helper dispatch",
-		"generated session summaries",
-		"`.out` writes",
-		"The known schemas are:",
-		"`execution-substrate.remote-alpha.es-writable-state-readiness.v1`",
-		"`execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`",
-		"`execution-substrate.remote-alpha.vault-workload-auth-summary.v1`",
-		"`execution-substrate.remote-runtime-identity-helper-summary.v1alpha1`",
-		"`execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`",
-		"explicit safe-field allowlists",
-		"selected status/classification fields",
-		"booleans, and counts",
-		"must not print full JSON, JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys, passwords, proof secret values",
-		"raw identity payloads, arbitrary smoke-command output, or secret-bearing paths",
-		"Unknown schemas are allowed by default",
-		"`schema_interpretation=unknown`",
-		"With `--strict-known-schema`, unknown schemas must fail without printing file contents",
-		"`--evidence-dir <path>` is local-only",
-		"`es-writable-state-readiness.json`",
-		"`es-writable-state-readiness-helper-staging-record.json`",
-		"`vault-workload-auth-summary.json`",
-		"`runtime-identity-helper-summary.json`",
-		"`vault-service-user-migration-check-only.json`",
-		"`vault-service-user-migration-apply-summary.json`",
-		"must not recurse",
-		"must inspect only files that exist",
-		"must report missing expected filenames as `not_supplied`",
-		"must never write into the directory",
-		"Schema-aware interpretation remains evidence/projection/diagnostics only",
-		"not IM authority, CP recovery authority, ES Vault token brokerage",
-	)
-}
-
 func TestRemoteAlphaOperatorP0iDocsHostLocalUnsealBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
@@ -7851,7 +8769,7 @@ func TestRemoteAlphaOperatorP0lDocsMacSideResetExecuteContractPrep(t *testing.T)
 func TestRemoteAlphaOperatorP0mDocsMacSideResetExecuteImplementationBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0m Mac-Side Disposable Vault Reset Execute-Reset Recovery Session", "### P0d Interactive Validation Evidence")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0m Mac-Side Disposable Vault Reset Execute-Reset Recovery Session", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `vault-reset-disposable` in P0m are:", "P0m must reject:")
 
 	assertContainsAll(t, "Remote Alpha operator P0m PLANS boundary", plans,
@@ -7860,7 +8778,8 @@ func TestRemoteAlphaOperatorP0mDocsMacSideResetExecuteImplementationBoundary(t *
 		"P0m may validate only with static and fake SSH/SCP tests",
 		"must not run live SSH, sudo, Vault, reset, unseal, execute-reset, Infrastructure Manager refresh, support-bundle collection, CP proof, workload-auth live checks, runtime identity generation, or network-dependent integration tests",
 		"The P0k dry-run route remains the prerequisite/planning route",
-		"P0m must preserve the existing P0k dry-run, P0i/P0j unseal-existing, recovery-session evidence/plan/inventory, readiness session, and writable-state readiness routes",
+		"P0m must preserve the existing P0k dry-run, P0i/P0j unseal-existing, and recovery-session evidence/plan/inventory behavior.",
+		"The `readiness-session` and `es-writable-state-readiness-check` public names are preserved only as fixed effect-free compatibility tombstones",
 		"P0m's execute-reset route must require `--ssh-target` and `--interactive-tty`",
 		"`--execute-reset` without either must fail before staging",
 		"`--dry-run` and `--execute-reset` are mutually exclusive",
@@ -7979,140 +8898,41 @@ func TestRemoteAlphaOperatorP0mDocsMacSideResetExecuteImplementationBoundary(t *
 	)
 }
 
-func TestRemoteAlphaOperatorP0nDocsMacSideWorkloadAuthCheckBoundary(t *testing.T) {
+func TestRemoteAlphaOperatorP0nDocsAreSupersededHistory(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0n Mac-Side Vault Workload-Auth Check Recovery Session", "### P0d Interactive Validation Evidence")
-	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `vault-workload-auth-check` in P0n are:", "P0n must reject:")
-
-	assertContainsAll(t, "Remote Alpha operator P0n PLANS boundary", plans,
-		"The P0n implementation/self-audit slice may add exactly one Mac-side post-reset evidence route",
-		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty`",
-		"operator runs the ES operator facade from the Mac",
-		"stages bounded helper files to the Remote Alpha host",
-		"secrets never pass through args, env, logs, artifacts, or Codex",
-		"P0n may validate only with static and fake SSH/SCP tests",
-		"must not run live SSH, sudo, Vault, workload-auth checks, reset/unseal, Infrastructure Manager refresh, support-bundle collection, CP proof, runtime identity generation, or network-dependent integration tests",
-		"stage only:",
-		"`scripts/remote_alpha_vault_workload_auth_check.sh`",
-		"`scripts/internal/remote_alpha_vault_workload_auth_check.sh`",
-		"preserve that public/internal relative layout",
-		"invoke only the staged public workload-auth helper",
-		"using `ssh -tt` only because `--interactive-tty` is mandatory",
-		"must not stage `scripts/remote_alpha_operator.sh`, reset/unseal helpers, runtime identity helpers, service-user helpers, config/TLS helpers, binary deployment helpers, bundles, unrelated helpers, or a generic helper dispatcher",
-		"Allowed flags for P0n are only `--help`, `--ssh-target <target>`, and `--interactive-tty`",
-		"must reject `--host-local`, `--dry-run`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--apply`, `--interactive-sudo`, `--governed-smoke-command`",
-		"workload-auth helper override flags",
-		"summary path overrides",
-		"all secret-like arguments",
-		"`/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`",
-		"must not copy that summary back to Mac `.out`",
-		"print full summary JSON",
-		"create an operator summary",
-		"create generated artifacts",
-		"tee, run `script`, capture transcripts",
-		"After remote success it may print only non-secret next steps",
-		"recommendation to use `recovery-session --evidence-check` after separately collecting IM/local evidence",
-		"The workload-auth summary remains evidence/projection only, not readiness authority",
-		"not ES Vault token brokerage",
-		"not CP recovery authority",
-		"safe Vault JWT login failure classification",
-		"`auth_smoke.vault_login_raw_error_recorded=false`",
-		"raw Vault login response body, raw HTTP headers, Authorization header",
+	history := compactDocSection(t, remoteRaw,
+		"### Historical P0n Mac-Side Vault Workload-Auth Check — Superseded and Non-Authoritative",
+		"### P0o Vault Workload-Auth Bootstrap Planning Surface",
 	)
+	status := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
 
-	assertContainsAll(t, "Remote Alpha operator P0n docs boundary", operatorSection,
-		"`Bounded slice rule`: P0n implements exactly one Mac-side post-reset workload-auth evidence route",
-		"`scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check --ssh-target <target> --interactive-tty`",
-		"P0n is implementation/self-audit with static and fake SSH/SCP validation only.",
-		"It does not run live SSH, sudo, Vault, workload-auth checks, reset, unseal, Infrastructure Manager refresh, support-bundle collection, CP proof, runtime identity generation, or network-dependent integration tests during validation.",
-		"The route is separate from reset/unseal.",
-		"not workload-auth bootstrap",
-		"not ES token brokerage",
-		"Topology rules:",
-		"`--ssh-target <target>` is required",
-		"`--interactive-tty` is required",
-		"local stdin and stdout must both be visible terminals before staging or SSH",
-		"`--host-local` is not accepted for this Mac-side route",
-		"bare `vault-workload-auth-check` execution must fail",
-		"Allowed flags for `vault-workload-auth-check` in P0n are:",
-		"P0n must reject:",
-		"workload-auth helper override flags",
-		"Vault address, role, audience, path, or proof-path overrides",
-		"SPIFFE ID overrides",
-		"config path overrides",
-		"summary path overrides",
-		"container probe image overrides",
-		"SPIRE socket overrides",
-		"Secret model:",
-		"must not accept, parse, print, log, relay, persist, summarize, or copy JWT-SVIDs, Vault client tokens, proof secret payloads, root tokens, unseal keys, API keys, private keys, passwords, or secret payloads",
-		"when the helper reaches Vault JWT login and `auth_smoke.vault_login=fail`",
-		"`auth_smoke.vault_login_failure_class`",
-		"`auth_smoke.vault_login_raw_error_recorded=false`",
-		"`invalid_issuer_or_validation_key`",
-		"the raw Vault login response body, raw HTTP headers, Authorization header, full Vault login JSON",
-		"must not print full summary JSON",
-		"stage only `scripts/remote_alpha_vault_workload_auth_check.sh`",
-		"`scripts/internal/remote_alpha_vault_workload_auth_check.sh`",
-		"preserve the remote `scripts/` and `scripts/internal/` relative layout",
-		"do not stage `scripts/remote_alpha_operator.sh`",
-		"do not stage reset/unseal helpers",
-		"do not stage runtime identity helpers",
-		"do not stage service-user helpers",
-		"do not stage config/TLS helpers",
-		"do not stage binary deployment helpers",
-		"do not stage bundles or unrelated helpers",
-		"do not introduce generic helper dispatch",
-		"allocate an interactive SSH TTY with `ssh -tt`",
-		"invoke only the staged public helper as `remote_alpha_vault_workload_auth_check.sh`",
-		"pass no workload-auth helper override flags",
-		"never combine workload-auth evidence with reset, unseal, post-unseal checks, runtime identity summary, Infrastructure Manager refresh, support-bundle collection, CP proof",
-		"do not capture stdout or stderr to files",
-		"do not use `tee`",
-		"do not run `script`",
-		"cleanup of the staged workload-auth helper files/root must be attempted by default",
-		"the canonical summary remains remote at `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`",
-		"no summary is copied back to Mac `.out` in this route",
-		"no operator summary file",
-		"after remote success, the operator facade may print only non-secret next steps",
-		"Stop conditions for P0n:",
-		"staging the workload-auth route requires more files than the public wrapper and internal helper",
-		"helper override flags are accepted",
-		"copies the summary back to Mac `.out`",
-		"prints full summary JSON",
-		"creates operator summaries or generated artifacts",
-		"runs Infrastructure Manager refresh, support-bundle collection, CP proof, reset/unseal, runtime identity generation, or workload-auth bootstrap",
-		"combines workload-auth evidence with reset/unseal",
-		"a generic helper dispatcher is introduced",
-		"P0n remains bounded ES Remote Alpha proof/support workflow glue only.",
-		"not workload-auth bootstrap",
-		"not ES Vault token brokerage",
-		"not governed execution proof",
-		"not Remote Alpha production, deployment, provisioning, or reconciliation architecture",
+	assertContainsAll(t, "P0n superseded plan history", plans,
+		"### Historical P0n workload-auth facade route — superseded and non-authoritative",
+		"grants no current operator route, staging authority, evidence compatibility, or Tranche B prerequisite",
+		"P0n formerly added one Mac-side post-reset evidence route",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0n allowed flags", allowedFlags,
-		"`--help`",
-		"`--ssh-target <target>`",
-		"`--interactive-tty`",
+	assertContainsAll(t, "P0n superseded design history", history,
+		"This entire subsection records superseded compatibility design",
+		"grants no current operator route, alias, helper staging, artifact ingestion, discovery, aggregation, projection, or Tranche B prerequisite",
+		"direct producer contract described later remains independent of this history",
+		"Historical bounded-slice record: P0n implemented one Mac-side post-reset workload-auth evidence route",
 	)
-	assertContainsNone(t, "Remote Alpha operator P0n allowed flags", allowedFlags,
-		"`--host-local`",
-		"`--dry-run`",
-		"`--execute-reset`",
-		"`--post-unseal-check`",
-		"`--summary-path`",
-		"`--vault-role`",
-		"root tokens",
-		"unseal keys",
-		"JWT-SVID",
+	assertContainsAll(t, "P0n direct producer remains documented", remoteRaw,
+		"`sudo scripts/remote_alpha_vault_workload_auth_check.sh`",
+		"`execution-substrate.remote-alpha.vault-workload-auth-summary.v1`",
+		"bounded host-local audit record, not an ES lifecycle or readiness surface",
+	)
+	assertContainsNone(t, "P0n route is absent from current status", status,
+		"P0n adds one separate Mac-side post-reset workload-auth evidence route",
+		"stages only `scripts/remote_alpha_vault_workload_auth_check.sh`",
 	)
 }
 
 func TestRemoteAlphaOperatorP0oDocsVaultWorkloadAuthBootstrapPlanningBoundary(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0o Vault Workload-Auth Bootstrap Planning Surface", "### P0d Interactive Validation Evidence")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0o Vault Workload-Auth Bootstrap Planning Surface", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `vault-workload-auth-bootstrap` in P0o are:", "With no mode")
 
 	assertContainsAll(t, "Remote Alpha operator P0o PLANS boundary", plans,
@@ -8239,7 +9059,7 @@ func TestRemoteAlphaOperatorP0oDocsVaultWorkloadAuthBootstrapPlanningBoundary(t 
 func TestRemoteAlphaOperatorP0pDocsVaultWorkloadAuthBootstrapExecutionContractPrep(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0p Vault Workload-Auth Bootstrap Execution Contract Prep", "### P0d Interactive Validation Evidence")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0p Vault Workload-Auth Bootstrap Execution Contract Prep", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 
 	assertContainsAll(t, "Remote Alpha operator P0p PLANS boundary", plans,
 		"The P0p design/static-test prep slice may define, but must not implement, the future secret-sensitive workload-auth bootstrap execution route",
@@ -8361,7 +9181,7 @@ func TestRemoteAlphaOperatorP0pDocsVaultWorkloadAuthBootstrapExecutionContractPr
 func TestRemoteAlphaOperatorP0qDocsVaultWorkloadAuthBootstrapExecutionRoute(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0q Vault Workload-Auth Bootstrap Execution Route", "### P0r Mac-Side Runtime Identity Summary Recovery Session")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0q Vault Workload-Auth Bootstrap Execution Route", "### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative")
 
 	assertContainsAll(t, "Remote Alpha operator P0q PLANS boundary", plans,
 		"The P0q implementation/self-audit/merge-readiness slice may implement exactly one dedicated secret-sensitive workload-auth bootstrap helper, exactly one Mac-side recovery-session execution route, one bounded preparation form for the bootstrap summary path, and one bounded preparation form for fixed workload-zone config readability, and one bounded preparation form for fixed SPIRE server bundle-read access",
@@ -8565,135 +9385,35 @@ func TestRemoteAlphaOperatorP0qDocsVaultWorkloadAuthBootstrapExecutionRoute(t *t
 	)
 }
 
-func TestRemoteAlphaOperatorP0rDocsRuntimeIdentitySummaryRoute(t *testing.T) {
+func TestRemoteAlphaOperatorP0rDocsAreSupersededHistory(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0r Mac-Side Runtime Identity Summary Recovery Session", "### P0s/P0t Dedicated ES TLS Status-Only Collector")
-	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for `runtime-identity-summary` in P0r are:", "P0r must reject:")
-	source := mustRead(t, remoteAlphaOperatorScriptPath())
-	sourceSection := docSection(t, source, "recovery_session_runtime_identity_summary_require_command() {", "\nrecovery_session_evidence_check() {")
+	history := compactDocSection(t, remoteRaw,
+		"### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative",
+		"### P0s/P0t Dedicated ES TLS Status-Only Collector",
+	)
+	status := compactDocSection(t, remoteRaw, "## Future ES-Owned Remote Alpha Operator Facade", "### Operator Involvement Model")
+	directProducer := compactDocSection(t, remoteRaw, "## Runtime Identity Helper Proof Slice", "## Remote Normal-Shell Runtime Image Slice")
 
-	assertContainsAll(t, "Remote Alpha operator P0r PLANS boundary", plans,
-		"The P0r implementation/self-audit/merge-readiness slice may add exactly one Mac-side recovery-session runtime identity evidence route",
-		"`scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty`",
-		"evidence/projection only over the existing host-local runtime identity helper summary script",
-		"does not settle the reopened runtime-identity handoff seam",
-		"does not claim runtime-profile readiness, submit readiness, retained-result readiness, governed execution proof, CP proof, or production readiness",
-		"stage only:",
-		"`scripts/remote_alpha_runtime_identity_helper_summary.sh`",
-		"resolve that helper from `BASH_SOURCE[0]`",
-		"invoke only the staged helper over `ssh -tt`",
-		"must not stage `scripts/remote_alpha_operator.sh`, `scripts/internal/*`, reset/unseal helpers, workload-auth helpers, workload-auth bootstrap helpers, service-user helpers",
-		"must not source helper scripts",
-		"must not print full summary JSON",
-		"`/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`",
-		"`--help`, `--ssh-target <target>`, and `--interactive-tty`",
-		"`--host-local`, `--dry-run`, `--check-only`, `--apply`, `--execute-reset`, `--unseal-only`, `--post-unseal-check`, `--execute-bootstrap`, `--prepare-summary-path`",
-		"`--output`, `--runtime-support-path`, `--spire-agent-socket-path`, `--spire-server-socket-path`, `--workload-spiffe-id`, and `--audience`",
-		"all secret-like arguments including root tokens, unseal keys, client tokens, Vault tokens, JWT-SVID payloads, API keys, private keys, passwords, proof secrets, raw identity payloads, and secret payloads",
-		"P0r validation remains fake/static only",
-		"fake SSH/SCP staging of exactly the one public runtime identity helper",
-		"no transcript/`tee`/`script`",
-		"no `.out`, operator summary, support bundle, IM, CP proof, reset/unseal, workload-auth bootstrap/check, runtime identity generation, generic helper dispatch, or `scripts/internal/*`",
+	assertContainsAll(t, "P0r superseded plan history", plans,
+		"### Historical P0r runtime-identity facade route — superseded and non-authoritative",
+		"grants no current operator route, staging authority, evidence compatibility, or Tranche B prerequisite",
+		"P0r formerly added one Mac-side recovery-session runtime identity evidence route",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0r docs boundary", operatorSection,
-		"`Bounded slice rule`: P0r implements exactly one Mac-side runtime identity evidence route",
-		"`scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary --ssh-target <target> --interactive-tty`",
-		"static and fake SSH/SCP validation only",
-		"It does not run live SSH, sudo, SPIRE commands, Vault, workload-auth bootstrap/check, reset, unseal, Infrastructure Manager refresh, support-bundle collection, CP proof, runtime identity summary live, runtime identity generation, or network-dependent integration tests during validation.",
-		"The route is separate from workload-auth bootstrap/check and reset/unseal.",
-		"evidence/projection only over the existing host-local runtime identity helper summary script",
-		"does not settle the reopened runtime-identity handoff seam",
-		"Topology rules:",
-		"`--ssh-target <target>` is required",
-		"`--interactive-tty` is required",
-		"local stdin and stdout must both be visible terminals before staging or SSH",
-		"`--host-local` is not accepted for this Mac-side route",
-		"bare `runtime-identity-summary` execution must fail",
-		"Allowed flags for `runtime-identity-summary` in P0r are:",
-		"P0r must reject:",
-		"runtime identity helper override flags",
-		"output or summary path overrides",
-		"runtime-support path overrides",
-		"SPIRE socket overrides",
-		"workload SPIFFE ID overrides",
-		"audience overrides",
-		"Secret model:",
-		"must not accept, parse, print, log, relay, persist, summarize, or copy JWT-SVIDs, Vault tokens, root tokens, unseal keys, API keys, private keys, passwords, proof secrets, raw identity payloads, or secret material",
-		"must not print full summary JSON",
-		"stage only `scripts/remote_alpha_runtime_identity_helper_summary.sh`",
-		"do not stage `scripts/remote_alpha_operator.sh`",
-		"do not stage `scripts/internal/*`",
-		"do not stage reset/unseal helpers",
-		"do not stage workload-auth helpers",
-		"do not stage workload-auth bootstrap helpers",
-		"do not stage service-user helpers",
-		"do not stage config/TLS helpers",
-		"do not stage binary deployment helpers",
-		"do not stage bundles or unrelated helpers",
-		"do not introduce generic helper dispatch",
-		"allocate an interactive SSH TTY with `ssh -tt`",
-		"invoke only the staged runtime identity helper summary script",
-		"pass no runtime identity helper override flags",
-		"never combine runtime identity evidence with workload-auth bootstrap/check, reset, unseal, post-unseal checks, Infrastructure Manager refresh, support-bundle collection, CP proof, runtime identity generation, runtime profile readiness, submit readiness, or retained-result readiness",
-		"do not capture stdout or stderr to files",
-		"do not use `tee`",
-		"do not run `script`",
-		"cleanup of the staged helper file/root must be attempted by default",
-		"`/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`",
-		"no summary is copied back to Mac `.out` in this route",
-		"no operator summary file is created",
-		"after remote success, the operator facade may print only the canonical remote summary path",
-		"`recovery-session --evidence-check --runtime-identity-summary <local-path>`",
-		"Stop conditions for P0r:",
-		"staging the route requires more files than the public runtime identity helper summary script",
-		"helper override flags are accepted",
-		"copies the summary back to Mac `.out`",
-		"prints full summary JSON",
-		"creates operator summaries or generated artifacts",
-		"runs Infrastructure Manager refresh, support-bundle collection, CP proof, reset/unseal, workload-auth bootstrap/check, runtime identity generation, or readiness proof",
-		"a generic helper dispatcher is introduced",
-		"not runtime-profile readiness",
-		"not submit readiness",
-		"not retained-result readiness",
-		"not governed execution proof",
-		"not CP proof",
-		"not production readiness",
+	assertContainsAll(t, "P0r superseded design history", history,
+		"This entire subsection records superseded compatibility design",
+		"grants no current operator route, alias, helper staging, artifact ingestion, discovery, aggregation, projection, or Tranche B prerequisite",
+		"direct producer proof section remains independent of this history",
+		"Historical bounded-slice record: P0r implemented one Mac-side runtime identity evidence route",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0r allowed flags", allowedFlags,
-		"`--help`",
-		"`--ssh-target <target>`",
-		"`--interactive-tty`",
+	assertContainsAll(t, "P0r direct producer remains documented", directProducer,
+		"scripts/remote_alpha_runtime_identity_helper_summary.sh",
+		"runtime identity helper proof slice",
+		"narrower than a live remote governed-execution proof",
 	)
-	assertContainsNone(t, "Remote Alpha operator P0r allowed flags", allowedFlags,
-		"`--host-local`",
-		"`--dry-run`",
-		"`--check-only`",
-		"`--output`",
-		"`--audience`",
-		"root tokens",
-		"JWT-SVID",
-	)
-	assertContainsAll(t, "Remote Alpha operator P0r source", sourceSection,
-		"REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER",
-		"REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_STAGE_ROOT",
-		"REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_REMOTE_SUMMARY",
-		`scp "${REMOTE_ALPHA_RUNTIME_IDENTITY_SUMMARY_HELPER}" "${ssh_target}:${remote_helper_path}"`,
-		`ssh -tt "${ssh_target}"`,
-		`"${helper_path}"`,
-	)
-	assertContainsNone(t, "Remote Alpha operator P0r source forbidden bundle", sourceSection,
-		"scripts/internal/",
-		"remote_alpha_vault_workload_auth_check.sh",
-		"remote_alpha_vault_workload_auth_bootstrap.sh",
-		"remote_alpha_reset_disposable_vault.sh",
-		"remote-alpha-live-refresh",
-		"remote-alpha-live-support-bundle",
-		`"${helper_path}" --dry-run`,
-		`"${helper_path}" --check-only`,
-		"tee ",
+	assertContainsNone(t, "P0r route is absent from current status", status,
+		"P0r implements exactly one Mac-side runtime identity evidence route",
+		"stages only `scripts/remote_alpha_runtime_identity_helper_summary.sh`",
 	)
 }
 
@@ -9058,7 +9778,7 @@ func TestRemoteAlphaProtectedEvidencePathsV1Contract(t *testing.T) {
 func TestRemoteAlphaOperatorP0uDocsOperatorHealthcheckTLSRenewRoute(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session", "### P0d Interactive Validation Evidence")
+	operatorSection := compactDocSection(t, remoteRaw, "### P0u Mac-Side Operator Healthcheck TLS Status/Renew Recovery Session", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	allowedFlags := compactDocSection(t, remoteRaw, "Allowed flags for P0u are:", "P0u must reject:")
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 	source := mustRead(t, remoteAlphaOperatorScriptPath())
@@ -10831,7 +11551,7 @@ func TestRemoteAlphaExternalTLSOneTimeIncidentClosureAndSunset(t *testing.T) {
 func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	monitorSection := compactDocSection(t, remoteRaw, "### Remote Alpha Maintenance Monitor Boundary", "### P0d Interactive Validation Evidence")
+	monitorSection := compactDocSection(t, remoteRaw, "### Remote Alpha Maintenance Monitor Boundary", "### Historical P0d interactive validation evidence — superseded and non-authoritative")
 	monitor := compactText(monitorSection)
 	artifact := compactText(mustRead(t, ".docs/system_overview/artifact_hygiene.md"))
 
@@ -10873,59 +11593,22 @@ func TestRemoteAlphaMaintenanceMonitorBoundaryAndRouteMatrix(t *testing.T) {
 	)
 }
 
-func TestDocsRemoteAlphaOperatorP0cFirstDelegationBoundary(t *testing.T) {
+func TestDocsRemoteAlphaOperatorP0cIsHistoricalRetiredContext(t *testing.T) {
 	plans := compactText(mustRead(t, "PLANS.md"))
 	remoteRaw := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
-	operatorSection := compactDocSection(t, remoteRaw, "### P0c First Staged-Helper Delegation Plan", "## Direct Remote Requirements")
+	operatorSection := compactDocSection(t, remoteRaw, "### Historical P0c Staged-Helper Delegation Plan — Retired", "### Historical P0d Staged-Helper Delegation Implementation — Retired")
 
-	assertContainsAll(t, "Remote Alpha operator P0c PLANS boundary", plans,
-		"The P0c design/static-test prep slice is also docs/static-test only.",
-		"The selected first future delegation target is the existing ES writable-state readiness staged wrapper",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"proposed operator subcommand `es-writable-state-readiness-check`",
-		"`--apply` is forbidden in the first delegation slice",
-		"no reset/unseal, Vault workload-auth, runtime-identity, service-user migration, config/TLS apply, binary deployment apply, generic remote staging, arbitrary shell passthrough, or new aggregate operator summary is allowed",
-		"`es-writable-state-readiness.json`",
-		"`es-writable-state-readiness-helper-staging-record.json`",
-		"noninteractive `sudo -n` preflight by default",
-		"it must not call IM",
+	assertContainsAll(t, "Remote Alpha P0c retirement plan", plans,
+		"P0c, P0d, and P0f are now retired compatibility history",
+		"no longer inspect or contact a host and no longer produce or refresh evidence",
+		"fixed exit-2 tombstones",
 	)
-
-	assertContainsAll(t, "Remote Alpha operator P0c docs boundary", operatorSection,
-		"`Bounded slice rule`: P0c is design/static-test prep only.",
-		"does not implement helper delegation",
-		"proposed operator subcommand: `es-writable-state-readiness-check`",
-		"exact helper to delegate later:",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"`scripts/internal/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"The later route may pass only these helper flags:",
-		"`--ssh-target <user@host>`",
-		"`--mode <alpha-compat|future-non-root-required>`",
-		"`--run-id <timestamp-or-id>`",
-		"`--output-dir </path/to/output-dir>`",
-		"`--readiness-output </path/to/es-writable-state-readiness.json>`",
-		"`--helper-staging-record-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
-		"`--provenance-output </path/to/es-writable-state-readiness-helper-staging-record.json>`",
-		"`--interactive-sudo`",
-		"`--keep-staging-on-failure`",
-		"The later route must forbid:",
-		"`--apply`",
-		"arbitrary shell or command strings",
-		"secret-like CLI arguments, environment values, logs, reports, summaries, or artifacts",
-		"any new aggregate operator summary in the first delegation slice",
-		"The first delegation slice must stay check-only/non-mutating.",
-		"the operator facade itself must not introduce a generic remote staging framework",
-		"Default sudo behavior must remain the helper's noninteractive `sudo -n` preflight",
-		"must preserve the exact existing Infrastructure Manager-consumed local artifact filenames",
-		"must not call Infrastructure Manager",
-		"the facade may continue to print the Mac-side IM refresh and support-bundle commands only",
-		"the route allows only the flags listed above and rejects `--apply`, unknown flags, arbitrary command strings, and secret-like arguments before routing",
-		"writes no aggregate operator summary and does not call Infrastructure Manager",
-		"This target is safer than the other staged candidates because it has no `--apply` mode",
-		"The config/TLS staged wrapper is already called out above as a sudo-model gap unless fixed",
+	assertContainsAll(t, "Remote Alpha P0c historical docs boundary", operatorSection,
+		"historical design context only",
+		"does not authorize a current route, helper execution, readiness claim, staging action, or evidence refresh",
+		"selected in that historical plan",
 	)
 }
-
 func TestRemoteSupportedHostAlphaDoctorVocabularyIsDocumented(t *testing.T) {
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 
@@ -10988,6 +11671,8 @@ func TestRemoteSupportedHostAlphaVaultWorkloadAuthSummarySchemaIsDocumented(t *t
 	for _, required := range []string{
 		"`execution-substrate.remote-alpha.vault-workload-auth-summary.v1`",
 		"`sudo scripts/remote_alpha_vault_workload_auth_check.sh`",
+		"optional owner-local host check under its own contract",
+		"operator facade does not stage or invoke it and does not ingest, discover, aggregate, or project its summary",
 		"bounded host-local audit record",
 		"not an ES lifecycle or readiness surface",
 		"`vault_workload_auth_smoke`",
@@ -11189,11 +11874,12 @@ func TestRemoteSupportedHostAlphaAGSServiceHardeningSliceIsDocumented(t *testing
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 
 	for _, required := range []string{
-		"`AGS sealed + ARS de-root + EGS de-root + ES config/TLS prep applied + ES stable writable-state prep applied + long-lived es.service de-root applied`",
+		"`AGS sealed + ARS de-root + EGS de-root`",
 		"AGS is already de-rooted and sealed",
 		"ARS is already de-rooted",
 		"EGS is already de-rooted",
-		"The current live long-lived `es.service` now runs as `User=es`, `Group=es`, `UMask=0027`",
+		"Archived v1 evidence recorded this earlier bounded ES state",
+		"the observed long-lived `es.service` ran as `User=es`, `Group=es`, `UMask=0027`",
 		"does not claim full ES/runtime de-root",
 		"must not change ES public contracts",
 		"Old root-era staging/results roots remain preserved as rollback/debug/evidence state",
@@ -11668,103 +12354,47 @@ func TestRemoteSupportedHostAlphaESConfigTLSPrepOperatorStagingFlowIsDocumented(
 	}
 }
 
-func TestRemoteSupportedHostAlphaESWritableStateReadinessOperatorFlowIsDocumented(t *testing.T) {
+func TestRemoteSupportedHostAlphaExistingHostESRoutesAreDocumentedAsRetired(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
 	ownership := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_writable_state_ownership.md"))
 	normalization := compactText(mustRead(t, ".docs/system_overview/remote_alpha_beta_es_runtime_ownership_normalization.md"))
 
-	for _, required := range []string{
-		"Remote ES Writable-State Readiness Evidence Flow",
-		"`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`",
-		"`scripts/remote_alpha_check_es_writable_state_readiness.sh`",
-		"`scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`",
-		"`/var/tmp/execution-substrate-remote-alpha/helper-staging/<run-id>/scripts/remote_alpha_check_es_writable_state_readiness.sh`",
-		"The remote host does not need a full Execution Substrate repo checkout for this evidence flow.",
-		"At minimum, the operator must stage only:",
-		"Execution must run from that root-owned staged tree, not from a user-writable upload path.",
-		"transient helper staging from the operator repo into a root-owned staging tree under `/var/tmp/execution-substrate-remote-alpha/helper-staging/`",
-		"The wrapper must default to `--mode alpha-compat`.",
-		"Operators must request explicit `--mode future-non-root-required` when they want a non-mutating future-readiness gate.",
-		"Those blocker findings were expected before the now-applied long-lived service-user migration",
-		"`es-writable-state-readiness.json`",
-		"`es-writable-state-readiness-helper-staging-record.json`",
-		"the requested checker mode",
-		"the sudo mode used for staged execution",
-		"whether staging occurred",
-		"whether the checker ran",
-		"whether transient staging was removed",
-		"whether `sudo_unavailable` blocked noninteractive root-owned staging",
-		"whether `wrapper_tooling_error` blocked execution before checker evidence was accepted",
-		"any sudo or preflight blocker if staging could not proceed",
-		"The default wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
-		"An explicit `--interactive-sudo` mode may be used only from a visible terminal when a bounded password handoff is authorized.",
-		"must not rely on a forced-PTY heredoc path",
-		"`overall_classification=blocker` is still valid measurement evidence",
-		"Collection must fail closed only when the staged helper tree is not root-owned, staged files are group-writable or world-writable, checker output is malformed, checker output claims mutation, or checker output does not match the requested mode.",
-		"`--keep-staging-on-failure` may retain it for diagnostics.",
-		"Do not run governed proof as part of this staged operator flow.",
-		"This operator-staged flow is readiness evidence only. It is not proof. It is not approval to de-root ES.",
-		"That wrapper is non-mutating except for temporary checker staging.",
-		"Valid `overall_classification=blocker` output from `--mode future-non-root-required` must still be preserved as honest measurement evidence",
-	} {
-		if !strings.Contains(remote, required) && !strings.Contains(ownership, required) && !strings.Contains(normalization, required) {
-			t.Fatalf("remote ES writable-state readiness operator docs missing %q", required)
-		}
-	}
+	assertContainsAll(t, "Remote Alpha retirement plan", plans,
+		"retires the six existing-host ES writable-state, ES service-user, ownership, staging, rollback-generation, and old-root-planning helper implementations",
+		"fixed fail-closed tombstones produce no evidence",
+		"no live operator route parses or projects them",
+		"no v2 replacement exists for that retired family",
+		"unrelated current EGS hardening v2 schema also remains current",
+	)
+	assertContainsAll(t, "Remote Alpha retired helper configuration", configuration,
+		"### Retired Remote Alpha existing-host ES helpers",
+		"public wrappers remain compatibility delegators to fixed exit-2 tombstones",
+		"No check-only, apply, discovery, inspection, staging, backup, JSON, Markdown, or migration simulation remains",
+		"a complete supported fresh-host ES provisioner is not currently implemented",
+	)
+	assertContainsAll(t, "Remote Alpha retired historical sections", remote,
+		"## Historical Remote ES Writable-State Readiness Evidence Flow — Retired",
+		"wrapper now reaches a fixed tombstone for every argument",
+		"## Historical Remote ES Writable-State Ownership Surface — Retired",
+		"current wrapper delegates to a fixed tombstone",
+		"## Historical Remote ES Service-User Migration Surface — Retired",
+		"service-user, readiness, rollback-generation, and old-root-planning wrappers now delegate to fixed tombstones",
+		"Archived v1 files have no readiness, migration, drain, reclamation, or mutation authority",
+	)
+	assertContainsAll(t, "Remote Alpha current writable-state contract", ownership,
+		"fixed exit-2 tombstones",
+		"routes inspect no host or artifact, contact no service, create no temporary or evidence file, and perform no mutation",
+		"No read-only current-readiness mode, apply simulation, structured unsupported artifact, or v2 replacement exists",
+		"Once run-root creation succeeds, the visible root is retained on every return",
+	)
+	assertContainsAll(t, "Remote Alpha historical normalization contract", normalization,
+		"historical evidence only",
+		"public wrappers now delegate to fixed fail-closed tombstones",
+		"No v2 schema, validator, fixture, or artifact exists for that retired ES writable-state/service-user migration family",
+	)
 }
-
-func TestRemoteSupportedHostAlphaESServiceUserMigrationOperatorFlowIsDocumented(t *testing.T) {
-	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
-	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
-
-	for _, required := range []string{
-		"Remote ES Service-User Migration Surface",
-		"`scripts/remote_alpha_migrate_es_service_user.sh`",
-		"`scripts/internal/remote_alpha_migrate_es_service_user.sh`",
-		"`<upload-root>/scripts/remote_alpha_migrate_es_service_user.sh`",
-		"`<upload-root>/scripts/internal/remote_alpha_migrate_es_service_user.sh`",
-		"`<upload-root>/scripts/remote_alpha_check_es_writable_state_readiness.sh`",
-		"`<upload-root>/scripts/internal/remote_alpha_check_es_writable_state_readiness.sh`",
-		"`es-service-user-migration-check-only.json`",
-		"`es-service-user-migration-helper-staging-record.json`",
-		"`es-service-user-migration-apply-summary.json`",
-		"`es-service-user-migration-apply-stdout.txt`",
-		"The current live bounded state after that later helper apply is now:",
-		"the long-lived `es.service` runs as `User=es`, `Group=es`, `UMask=0027`",
-		"future writable-state readiness passed",
-		"old root-era staging/results roots remain preserved as rollback/debug/evidence state",
-		"The default staged-wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
-		"`--interactive-sudo` may be used only from a visible terminal when a bounded password handoff is explicitly authorized",
-		"must still use bounded remote commands rather than a forced-PTY heredoc path",
-		"The helper staging record must distinguish `sudo_unavailable` from `wrapper_tooling_error`",
-		"record whether staging occurred, whether the check-only helper ran, and whether transient staging was removed",
-	} {
-		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
-			t.Fatalf("remote ES service-user migration docs missing %q", required)
-		}
-	}
-}
-
-func TestRemoteSupportedHostAlphaESServiceUserRollbackRehearsalIsDocumented(t *testing.T) {
-	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
-	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
-
-	for _, required := range []string{
-		"`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`",
-		"`.out/remote-alpha-m75q`",
-		"`es-service-user-rollback-rehearsal.json`",
-		"`es-service-user-rollback-rehearsal.md`",
-		"It must not SSH, use `sudo`, mutate the live host, execute rollback, run ES apply, run governed proof, or do PR/merge prep.",
-		"classify findings as `pass`, `warning`, or `blocker`",
-		"the bounded drop-in remains limited to `User=es`, `Group=es`, and `UMask=0027`",
-		"no recorded rollback instruction requires recursive chown or broad deletion",
-	} {
-		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
-			t.Fatalf("remote ES service-user rollback rehearsal docs missing %q", required)
-		}
-	}
-}
-
 func TestRemoteSupportedHostAlphaESBinaryDeploymentOperatorFlowIsDocumented(t *testing.T) {
 	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
 	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
@@ -11799,28 +12429,858 @@ func TestRemoteSupportedHostAlphaESBinaryDeploymentOperatorFlowIsDocumented(t *t
 	}
 }
 
-func TestRemoteSupportedHostAlphaESWritableStateOwnershipOperatorFlowIsDocumented(t *testing.T) {
-	remote := compactText(mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md"))
-	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+func TestIntegratedResultCustodyDocumentationMatchesSelectedEffects(t *testing.T) {
+	plans := mustRead(t, "PLANS.md")
+	design := mustRead(t, ".docs/execution_lifecycle/design.md")
+	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	systemContracts := mustRead(t, ".docs/system_overview/contracts.md")
+	boundaries := mustRead(t, ".docs/system_overview/boundaries.md")
 
+	planCustody := compactDocSection(t, plans, "**Current invariant — staging non-mutation and retained-output independence.**", "The mount-archive namespace validator")
+	assertContainsAll(t, "current plan result custody", planCustody,
+		"**Bounded slice rule pending integrated review — paired-root qualification.**",
+		"Pair proof is a prerequisite, not deletion or repair authority.",
+		"Existing result directories, finals, and normalization evidence are validated without metadata repair or adoption.",
+		"New unpublished result temporaries/records and newly created normalization evidence may receive their selected owner and mode through `Fchown`/`Fchmod`.",
+		"No result pathname cleanup or whole-root reclamation is selected.",
+	)
+	assertContainsNone(t, "obsolete current plan effect claims", planCustody,
+		"retained-result directory reconciliation, creation, cleanup",
+		"Result mutations reobserve at each named directory, metadata, temporary, publication, sidecar, and cleanup boundary",
+		"Failed cleanup revalidation retains the exact temporary",
+	)
+
+	designCustody := compactDocSection(t, design, "## 14. Current root-custody refinement", "")
+	assertContainsAll(t, "current lifecycle design custody", designCustody,
+		"An existing bundle becomes eligible only after authenticated final/record checks",
+		"an unmarked or invalid pair is refused, not adopted",
+		"initialization of newly created unpublished records and normalization evidence",
+		"Existing directories, finals, and normalization evidence are validated without metadata repair or adoption",
+		"Pair proof does not grant deletion or repair authority",
+		"incomplete leaves, uncertain temporaries, and startup probe fixtures remain retained",
+		"The owning eligibility and retention contract is `.docs/execution_lifecycle/contracts.md`",
+	)
+	assertContainsNone(t, "obsolete current lifecycle design effects", designCustody,
+		"Every result-side create, metadata reconciliation, temporary, publication, sidecar, and cleanup effect",
+		"Loss of custody before cleanup retains the exact temporary object",
+	)
+
+	currentImplementation := compactDocSection(t, implementation, "Result paths open one pair", "The current stable-service-namespace/trusted-operator assumption")
+	assertContainsAll(t, "current result implementation effects", currentImplementation,
+		"new-object initialization, no-replace final/record publication, and authenticated read/check",
+		"`Fchown` and `Fchmod` initialize newly created unpublished result temporaries/records",
+		"they do not repair existing directories, finals, or evidence",
+		"No result pathname cleanup or existing-object reconciliation is selected",
+		"incomplete leaves and uncertain temporaries remain",
+		"An existing final is publicly eligible only with its authenticated completion record",
+	)
+	assertContainsNone(t, "obsolete current implementation effects", currentImplementation,
+		"metadata reconciliation, temporary creation, no-replace final or sidecar publication, and exact cleanup",
+		"A cleanup whose pair proof fails retains its exact temporary",
+	)
+
+	currentContract := compactDocSection(t, contracts, "Exclusive descriptor-held claim refuses every pre-existing run-root object.", "The following Review-20/21/22 source-stage fixture requirements")
+	assertContainsAll(t, "owning lifecycle result contract", currentContract,
+		"Every successfully claimed root is retained",
+		"Current capability-probe fixtures also remain",
+		"Existing result directories and normalization evidence are validated without chown, chmod or adoption",
+		"Fresh pair/topology qualification is a prerequisite for named result operations",
+		"New unpublished result temporaries/records and newly created normalization evidence receive their selected owner/mode on creation",
+		"private authenticated completion record before public result bytes are eligible",
+		"A pre-existing unmarked final is never signed or adopted on retry",
+	)
+	systemResult := compactDocSection(t, systemContracts, "- ES result retention is independent of staging retention.", "- B2 preserves every public route")
+	assertContainsAll(t, "system result ownership", systemResult,
+		"Publication success, absence, conflict, or failure never authorizes staging mutation",
+		"`.docs/execution_lifecycle/contracts.md`",
+		"Pair proof is a prerequisite for permitted result operations, not existing-object repair or deletion authority",
+		"New unpublished result objects may receive initial owner/mode",
+		"existing directories, finals, and normalization evidence are checked without repair or adoption",
+		"no whole-root reclamation authority is selected",
+	)
+	boundary := compactDocSection(t, boundaries, "The authoritative Workstream C classification of ES public execution surfaces", "**Current ownership**")
+	assertContainsAll(t, "ES ownership boundary", boundary,
+		"paired-root custody and authenticated final/record eligibility contract",
+		"`.docs/execution_lifecycle/contracts.md`",
+		"pair proof gates permitted ES result operations but grants no existing-object repair, pathname deletion, or cross-service reclamation authority",
+	)
+}
+
+func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
+	plans := mustRead(t, "PLANS.md")
+	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	design := mustRead(t, ".docs/execution_lifecycle/design.md")
+	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
+	capabilities := mustRead(t, ".docs/system_overview/capability_probing.md")
+	remoteAlpha := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
+	linuxQualification := mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md")
+
+	currentStatus := compactDocSection(t, plans, "## Current-remote-base private synthetic replay custody selection (2026-11-17)", "This document is the authoritative planning document")
+	assertContainsAll(t, "integration status", currentStatus,
+		"synthetic_nonoperational_v1", "runtime-unwired", "effect-ineligible",
+		"unavailable as public reliable submit", "official `trunk_dev`",
+		"effect-free existing-host route retirements",
+		"Development acceptance, a later commit, operational rollout, and publication are distinct decisions",
+	)
+	foundation := compactDocSection(t, plans, "**Acceptance boundaries selected on 2026-11-13:**", "The `reliable-submit-durable-same-operation-replay-repair` source tranche")
+	assertContainsAll(t, "C foundation acceptance scope", foundation,
+		"exact authenticated implementation and selected observations",
+		"A local source-preservation commit is a separate, explicitly authorized effect",
+		"Environment-bound operational/rollout acceptance remains open",
+	)
+	currentGate := compactDocSection(t, plans, "### Current paired-root custody and acceptance scope", "**Current invariant — staging non-mutation and retained-output independence.**")
+	assertContainsAll(t, "current integrated gate", currentGate,
+		"**Superseded CUST-1/CUST-2 gate history.**",
+		"That pre-integration linkage is not a current local commit rule",
+		"current-base candidate, which remains uncommitted and pending independent",
+		"focused changed-interaction assessment and validation plus a separately authorized commit",
+		"C's selected native observations remain historical evidence for exact C source and command identities, not executions of this tree",
+		"Any new bounded witness must be selected for a concrete changed interaction rather than inferred from merge ancestry",
+		"Operational topology, key exposure, capacity, residence, reclamation, and publication gates remain open for their operational scope",
+		"one-time WIP checkpoint exception is consumed",
+	)
+	assertContainsNone(t, "old current blanket gate", currentGate,
+		"The running-deployment observation and mounted fixtures remain pre-final-acceptance and pre-commit gates",
+		"Until all of those gates are complete, these bytes are an implementation candidate",
+	)
+	classification := compactDocSection(t, plans, "**Current invariant — staging non-mutation and retained-output independence.**", "Linux binds each held descriptor")
+	assertContainsAll(t, "safety and bounded-rule classification", classification,
+		"Result retention, publication, and read do not mutate a claimed staging root",
+		"**Bounded slice rule pending integrated review — paired-root qualification.**",
+	)
+	fixtureGate := compactDocSection(t, plans, "**App-fixture migration and local revalidation scope.**", "**CUST-2 nsfs assurance continuation.**")
+	assertContainsAll(t, "fixture evidence scope", fixtureGate,
+		"does not qualify an operational deployment",
+		"do not collectively become a blanket local pre-commit requirement",
+	)
+	assertContainsNone(t, "obsolete fixture blanket gate", fixtureGate, "all remain pre-final-acceptance and pre-commit gates")
+
+	lifecycleStatus := compactDocSection(t, contracts, "## H/C/T integration candidate status and exact boundary", "## 1. Purpose and status")
+	assertContainsAll(t, "owning lifecycle status", lifecycleStatus,
+		"This uncommitted source is unaccepted",
+		"C's dated exact-source development acceptance",
+		"T is a preservation-only WIP",
+		"requires changed-interaction review",
+		"paired-root topology contract is a **Bounded slice rule pending integrated review**",
+		"operational key/topology/capacity/residence/reclamation gates",
+	)
+	designGate := compactDocSection(t, design, "Local implementation and modeled tests do not establish mounted or deployment", "")
+	assertContainsAll(t, "design evidence scope", designGate,
+		"C's selected native observations remain historical exact-C evidence, not executions of this unaccepted integrated tree",
+		"Focused independent changed-interaction assessment may select a new bounded witness for a concrete need",
+		"Running-deployment topology, key isolation, capacity, residence, reclamation, publication, and native qualification for claimed architectures remain gates for their operational scope",
+		"not blanket local pre-commit conditions",
+	)
+	assertContainsNone(t, "obsolete design gate", designGate, "remain pre-final gates; their timing was deferred")
+	implementationGate := compactDocSection(t, implementation, "The current stable-service-namespace/trusted-operator assumption is explicit:", "")
+	assertContainsAll(t, "implementation evidence scope", implementationGate,
+		"C's selected native observations remain historical exact-source evidence",
+		"Focused changed-interaction review/validation and a separately authorized commit remain pending",
+		"remain operational gates for claimed environments",
+		"not a blanket local source-preservation or integration commit gate",
+	)
+	assertContainsNone(t, "obsolete implementation gate", implementationGate, "remain pending acceptance gates")
+	capabilityGate := compactDocSection(t, capabilities, "Local modeled records and ordinary filesystem tests do not prove mounted bind", "## Example: Execution-root custody")
+	assertContainsAll(t, "capability evidence scope", capabilityGate,
+		"C's selected native observations remain historical exact-source evidence, not integrated-source execution",
+		"operational qualification gates for claimed environments",
+		"A new integrated-source bounded witness requires a concrete changed-interaction selection",
+	)
+	capabilityCommit := compactDocSection(t, capabilities, "Darwin syscall tests are current local runtime evidence.", "## Test Harness Use")
+	assertContainsAll(t, "capability commit scope", capabilityCommit,
+		"not an automatic local source-preservation or integration pre-commit gate",
+		"no integrated native qualification or narrower architecture claim is inferred",
+	)
+	assertContainsNone(t, "obsolete capability blanket gate", capabilityCommit, "before final combined audit and commit")
+
+	remoteGate := compactDocSection(t, remoteAlpha, "### Current Remote Alpha root-custody observation gate", "It is not the final commercial deployment target.")
+	assertContainsAll(t, "current Remote Alpha operating gate", remoteGate,
+		"one concrete currently running in-scope ES process",
+		"process/start identity, mount namespace, configured roots, held descriptor identities",
+		"selected mount records, source coordinates, root-value classification, and descendant-mount result",
+		"Historical `es.service` prose, launcher source, and modeled mountinfo are not observations",
+		"retain unrelated valid opaque `nsfs` namespace-object records for complete analysis",
+		"refusing an opaque selected root as a pathname-coordinate source",
+		"must not filter away records or substitute mountpoint or configured spelling for source coordinates",
+		"Real repaired-helper mounted-alias evidence remains required where the operational claim depends on it",
+		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"not an independent blanket prerequisite to a separately authorized local",
+		"This H/C/T integrated source remains unaccepted",
+		"focused changed-interaction assessment and explicit commit authority",
+		"merge ancestry alone does not create a blanket native campaign",
+		"No current deployment compatibility, supported-host claim, or rollout readiness is inferred here",
+	)
+	assertContainsNone(t, "superseded Remote Alpha blanket local gate", remoteGate,
+		"The observation and real repaired-helper mounted alias fixtures remain pre-final-acceptance and pre-commit gates",
+	)
+
+	linuxGate := compactDocSection(t, linuxQualification, "### Tranche A filesystem-custody validation posture", "## 4. Explicit Disqualifiers")
+	assertContainsAll(t, "current Linux operating gate", linuxGate,
+		"Historical Tranche A sequencing allowed a fresh read-only audit",
+		"does not impose a blanket native pre-commit gate on local source preservation or integration",
+		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
+		"governed Ubuntu 24.04 linux/amd64 for Remote Alpha and governed Ubuntu 24.04 linux/arm64 for supported-local",
+		"`openat2` with beneath, no-magic-link, no-symlink, and no-cross-device resolution",
+		"`renameat2(RENAME_NOREPLACE)` collision behavior",
+		"exclusive run-root claim and descriptor-held identity custody",
+		"an actual mount-crossing refusal",
+		"Cross-compilation is compile evidence only and cannot replace those runtime observations",
+		"Darwin behavior, a fake filesystem, containers running a different kernel or architecture, and an OS label cannot replace them either",
+		"C's selected native programme remains historical evidence for its exact source and environments, not an execution of this unaccepted H/C/T integrated tree",
+		"Evidence reuse or a new bounded witness depends on the concrete changed interaction and operating claim",
+		"report that operating claim as pending rather than supported by inference",
+		"Neither the Remote Alpha amd64 nor supported-local arm64 claim is narrowed",
+		"not an automatic prerequisite to a separately authorized local source-preservation or integration commit",
+	)
+	assertContainsNone(t, "superseded Linux blanket local gate", linuxGate,
+		"Before final combined ES audit and commit",
+		"Until both claimed-architecture runtime executions pass",
+	)
+
+	archiveAndRoots := compactMarkedDocSection(t, "final-audit archive and execution-root contract", contracts, "## 19. Final-audit archive and execution-root contract refinements", "")
+	assertContainsAll(t, "section 19 retained custody and archive requirements", archiveAndRoots,
+		"one invocation-local iterative compressed byte-radix namespace ledger",
+		"File ancestry is recognized only across a `/` boundary",
+		"one operation-local qualified root set",
+		"Canonical descriptor identity and platform topology must reject equality and either-direction ancestry",
+		"Complete source-valid `nsfs` records with opaque namespace-object roots remain in snapshot integrity and descendant checks",
+		"an opaque selected root refuses before coordinate arithmetic or effects",
+		"Ambiguous dual-missing roots fail closed",
+		"topology failure does not fall through to Nomad",
+	)
+	assertContainsAll(t, "section 19 local and operational acceptance split", archiveAndRoots,
+		"Modeled topology tests do not claim an actual bind or casefold mount",
+		"historical evidence for exact C source and its environments, not executions of this unaccepted integrated tree",
+		"T and this candidate do not inherit C's development acceptance",
+		"Local source or integration acceptance of this candidate requires focused candidate-specific changed-interaction assessment and validation",
+		"A local source-preservation or integration commit then requires separate explicit authorization",
+		"Running-deployment topology observation for a claimed Remote Alpha environment",
+		"real repaired-helper mounted-alias fixtures where the operational claim depends on them",
+		"native syscall and mount-crossing evidence for each claimed Linux operating architecture",
+		"not an independent blanket prerequisite to a separately authorized local commit",
+		"A concrete uncovered changed interaction or operating claim may require a separately selected bounded witness",
+		"merge ancestry alone does not create a blanket native campaign",
+		"No integrated native observation, supported-host qualification, or rollout readiness is inferred here",
+		"Operational topology, key exposure, capacity, sensitive-material residence, reclamation, and publication gates remain open",
+		"`PLANS.md` under \"Current paired-root custody and acceptance scope\"",
+	)
+	assertContainsNone(t, "superseded section 19 blanket commit linkage", archiveAndRoots,
+		"and independent audit remain required before final acceptance or commit",
+	)
+}
+
+func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
+	plans := mustRead(t, "PLANS.md")
+	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
+	section := func(body, heading string) string {
+		t.Helper()
+		at := strings.Index(body, heading)
+		if at < 0 {
+			t.Fatalf("missing owning heading %q", heading)
+		}
+		body = body[at+len(heading):]
+		if end := strings.Index(body, "\n## "); end >= 0 {
+			body = body[:end]
+		}
+		return body
+	}
+	current := section(plans, "## Current-remote-base H/C/T foundation selection (2026-11-17)")
+	contract := section(contracts, "## H/C/T integration candidate status and exact boundary")
 	for _, required := range []string{
-		"Remote ES Writable-State Ownership Surface",
-		"`scripts/remote_alpha_prepare_es_writable_state_ownership.sh`",
-		"`scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`",
-		"`<upload-root>/scripts/remote_alpha_prepare_es_writable_state_ownership.sh`",
-		"`<upload-root>/scripts/internal/remote_alpha_prepare_es_writable_state_ownership.sh`",
-		"`es-writable-state-ownership-check-only.json`",
-		"`es-writable-state-ownership-helper-staging-record.json`",
-		"`es-writable-state-ownership-apply-summary.json`",
-		"target owner `es:es` mode `0750` for both stable roots",
-		"block by default when either stable root is non-empty",
-		"must not recursively re-owner retained run/debug trees",
-		"must not restart `es.service`",
-		"The default staged-wrapper path must perform a noninteractive `sudo -n` preflight and fail cleanly with structured `sudo_unavailable` evidence",
-		"An explicit `--interactive-sudo` mode may be used only from a visible terminal when a bounded password handoff is authorized.",
+		"reviewed H/C/T foundation tree", "preservation-only T commit",
+		"effect-free existing-host route retirements", "one-time checkpoint exception is consumed",
+		"Development acceptance, a later commit, operational rollout, and publication are distinct decisions",
+		"Reliable submit remains unavailable and runtime-unwired",
 	} {
-		if !strings.Contains(remote, required) && !strings.Contains(configuration, required) {
-			t.Fatalf("remote ES writable-state ownership docs missing %q", required)
+		if !strings.Contains(current, required) {
+			t.Errorf("candidate plan status missing %q", required)
+		}
+	}
+	if !strings.Contains(plans, "**Acceptance boundaries selected on 2026-11-13:**") {
+		t.Error("dated C acceptance boundary was lost")
+	}
+	for _, required := range []string{
+		"This uncommitted source is unaccepted", "C's dated exact-source development acceptance",
+		"T is a preservation-only WIP", "consumed one-time checkpoint exception",
+		"requires changed-interaction review", "operational key/topology/capacity/residence/reclamation gates",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Errorf("lifecycle contract status missing %q", required)
+		}
+	}
+}
+
+func TestResolvedPlanCustodyCandidateDocumentation(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	model := compactText(mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md"))
+	for _, required := range []string{
+		"resolved-execution-plan-extraction-foundation",
+		"one owned execution/placement configuration snapshot",
+		"not an atomic snapshot of earlier admission",
+		"Duplicate regular destinations",
+		"GNU sparse file representations are unsupported",
+		"component whitespace exposed by cleaning is significant",
+		"private custody-placement value",
+		"results root is outside the semantic plan",
+		"Review-19 A2/material-capture and focused composition source acceptance",
+		"linux/amd64 and linux/arm64",
+		"test-owned installed-mount witness",
+		"Acceptance boundaries selected on 2026-11-13",
+		"reclamation gap",
+		"Two missing roots under the same deepest existing lookup context reject",
+		"No result pathname cleanup or whole-root reclamation is selected",
+		"private authenticated completion record",
+	} {
+		if !strings.Contains(plans, required) {
+			t.Fatalf("PLANS missing candidate rule %q", required)
+		}
+	}
+	for _, required := range []string{
+		"32 MiB for primary Submit payload",
+		"64 MiB aggregate",
+		"524,289 bytes",
+		"one Nomad registration",
+		"no-replace publication",
+		"fstat/statx mount ID",
+		"Current capability-probe fixtures also remain",
+		"Structural `reliable_submit` bodies remain strictly rejected",
+		"one effective",
+		"16 MiB",
+		"additional compressed gzip member/bytes",
+		"GNU sparse representations are outside the current static-script archive contract",
+		"without re-trimming it",
+		"execution-substrate.reliable-submit-request/v1",
+		"execution-substrate.reliable-submit/v1",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("Submit contract missing %q", required)
+		}
+	}
+	if !strings.Contains(implementation, "After admission succeeds") ||
+		!strings.Contains(implementation, "does not atomically capture earlier admission") ||
+		!strings.Contains(model, "duplicate canonical regular destinations") {
+		t.Fatal("admission interpretation or snapshot ordering documentation missing")
+	}
+	if !strings.Contains(model, "every returned header with a `GNU.sparse.*` PAX") ||
+		!strings.Contains(model, "passed unchanged to the runtime path resolver") {
+		t.Fatal("sparse or once-only destination contract missing")
+	}
+	if !strings.Contains(capabilities, "Configured Submit startup validates the staging/results root pair") ||
+		!strings.Contains(configuration, "one normalized pair from one configuration snapshot") ||
+		!strings.Contains(model, "temporary compatibility edge") {
+		t.Fatal("capability, configuration, or admission-model candidate classification missing")
+	}
+}
+
+func TestFoundationAcceptanceBoundaryDocumentation(t *testing.T) {
+	section := func(path, start, end string) string {
+		t.Helper()
+		content := mustRead(t, path)
+		begin := strings.Index(content, start)
+		if begin < 0 {
+			t.Fatalf("%s missing section start %q", path, start)
+		}
+		remaining := content[begin+len(start):]
+		finish := strings.Index(remaining, end)
+		if finish < 0 {
+			t.Fatalf("%s missing section end %q", path, end)
+		}
+		return compactText(content[begin : begin+len(start)+finish])
+	}
+	require := func(label, content string, phrases ...string) {
+		t.Helper()
+		for _, phrase := range phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing foundation boundary %q", label, phrase)
+			}
+		}
+	}
+
+	status := section("PLANS.md", "**2026-11-13 Review-22 development-source disposition:**", "**Bounded material and custody rules:**")
+	require("dated development status", status,
+		"DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED",
+		"3e89fa9e0b7cc788e2b6c829ea25af00ea6a37b57f249e84d2b98c918511ad65",
+		"d108e59ed5a9708bfd38c08f0d9202263fb5207e1d6522772181421ddd4b718d",
+		"documentation-only successor retains those implementation bytes",
+		"original source and command identities",
+		"r22-20261113-arm64-n5-71ce04a8",
+		"Review-17's accepted 23-phase supported-local compatibility proof applies only to its original source and inputs",
+		"Process status remains PARTIAL",
+		"post-N5 recursive allocation was intentionally unmeasured")
+	boundaries := section("PLANS.md", "**Acceptance boundaries selected on 2026-11-13:**", "The `reliable-submit-durable-same-operation-replay-repair` source tranche")
+	require("plan acceptance boundaries", boundaries,
+		"not final product acceptance",
+		"It grants no staging, cleanup, Git, integration, publication or deployment effect",
+		"A local source-preservation commit is a separate, explicitly authorized effect",
+		"exact candidate, index and intended commit contents are reauthenticated",
+		"Integration into another checkout or branch, merge, remote publication and rollout require separate authority",
+		"origin/trunk_dev` tracking ref is not current remote truth",
+		"Environment-bound operational/rollout acceptance remains open",
+		"named environment and architecture",
+		"actual service/operator/workload trust and permission relationships",
+		"running mount/source paths and backing-object observations",
+		"actual key exposure and isolation",
+		"selected and enforced accumulated-root/result/probe capacity",
+		"explicit reclamation owner",
+		"temporary qualification scratch limits are not an ES product retention policy",
+		"Before expanded or unattended workload operation",
+		"reliable-submit-unavailable guards remain in force")
+	contract := section(".docs/execution_lifecycle/contracts.md", "### Development-source foundation and acceptance boundaries", "Selected Submit-path fixed operational messages")
+	require("lifecycle acceptance contract", contract,
+		"DEVELOPMENT_SOURCE_FOUNDATION_ACCEPTED",
+		"not a historical native execution identity",
+		"no standing workload or feature/producer enablement",
+		"reliable-submit availability",
+		"A local source-preservation commit is a separate, explicitly authorized effect",
+		"Development evidence alone grants no Git effect",
+		"Environment-bound operational/rollout acceptance remains open",
+		"actual running mount/source paths and backing objects",
+		"key exposure and isolation, including physical aliases and relevant same-UID contexts",
+		"selected and enforced accumulated-root/result/probe capacity",
+		"explicit reclamation owner",
+		"4 GiB task cap and 8 GiB free-space gate, are not an ES product retention policy",
+		"No target, trust model, TTL, numeric product cap, cleanup authority or successful deployment-key-isolation result is selected here")
+	keyGate := section(".docs/execution_lifecycle/contracts.md", "Static file checks", "Key exclusion uses")
+	require("environment-bound key gate", keyGate,
+		"Actual key isolation and exposure remain environment-bound",
+		"Development-source acceptance does not establish deployment isolation")
+	history := section(".docs/execution_lifecycle/contracts.md", "The following Review-20/21/22 source-stage fixture requirements", "### Development-source foundation and acceptance boundaries")
+	require("historical fixture status", history,
+		"historical",
+		"N5 and arm64 did not run",
+		"no v2 identity record")
+	capability := section(".docs/system_overview/capability_probing.md", "The 2026-11-13 current evidence overlay", "The selected R1 record protocol")
+	require("capability evidence scope", capability,
+		"selected linux/amd64 and linux/arm64 N1-N5 native programme",
+		"historical Review-21 report",
+		"test-owned witness does not observe the running deployment",
+		"old resource refusal's first offending entry remains unknown")
+	implementation := section(".docs/execution_lifecycle/implementation.md", "This candidate has no whole-root", "## 2. How to read this document")
+	require("implementation evidence scope", implementation,
+		"Selected native Linux and test-owned installed-source evidence is accepted",
+		"actual running-deployment topology, key exposure and operating capacity/residence remain unqualified")
+	model := section(".docs/execution_lifecycle/es_execution_admission_model.md", "### Isolated candidate classification", "### 4E. Reopened seams")
+	require("admission model boundary", model,
+		"All-claimed-root retention is a temporary compatibility edge",
+		"Actual running-deployment topology, key exposure and capacity/residence enforcement remain environment-bound",
+		"no admission or Submit authority changes here")
+	configuration := section(".docs/system_overview/configuration.md", "- `execution.staging_root_dir`", "- the runtime identity contract no longer")
+	require("configuration operating scope", configuration,
+		"before environment-bound operational/rollout acceptance",
+		"capacity and residence bounds must be selected and enforced",
+		"actual deployment isolation/exposure, key loss and rotation remain environment-bound operational/rollout acceptance gates",
+		"no recovery or rotation behavior is selected here")
+	runbook := section(".docs/supported_local_cp_consumer_runbook.md", "The 2026-11-13 development-source evidence overlay", "## 3. Ownership boundaries")
+	require("historical supported-local proof", runbook,
+		"Review-17 23-phase canonical supported-local compatibility proof only for its original source and inputs",
+		"Review-16 bundle limit above remains its historical source-stage statement",
+		"not rewritten as a Review-22 canonical run",
+		"there is no automatic proof inheritance or default repeat")
+}
+
+func TestRetainedResultAuthProtocolDocsContract(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	capabilities := compactText(mustRead(t, ".docs/system_overview/capability_probing.md"))
+	for _, required := range []string{
+		"R1 is selected for a candidate-only refinement",
+		"private authenticated completion record",
+		"pre-existing unmarked final",
+		"not a migration policy",
+		"Reliable submit remains unavailable",
+	} {
+		if !strings.Contains(plans, required) {
+			t.Fatalf("PLANS missing retained result rule %q", required)
+		}
+	}
+	for _, required := range []string{
+		"execution.retained_result_auth.store_id",
+		"exactly 32 raw bytes",
+		"es-retained-result-commit-v1",
+		"result.commit.v1",
+		"at most 512 bytes",
+		"crypto/hmac.Equal",
+		"buffered response bytes",
+		"never signed or adopted",
+		"409 result_unavailable",
+		"404 result_not_found",
+		"not anti-rollback",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("result contract missing %q", required)
+		}
+	}
+	if !strings.Contains(implementation, "hashes the compressed writer output") ||
+		!strings.Contains(configuration, "execution.retained_result_auth") ||
+		!strings.Contains(capabilities, "behavior rather than OS label") {
+		t.Fatal("implementation, configuration, or capability protocol rule missing")
+	}
+}
+
+func TestRetainedResultAuditF2CurrentClaimedRootRetentionDocs(t *testing.T) {
+	section := func(path, start, end string) string {
+		t.Helper()
+		content := mustRead(t, path)
+		first := strings.Index(content, start)
+		if first < 0 {
+			t.Fatalf("%s missing section start", path)
+		}
+		last := strings.Index(content[first:], end)
+		if last < 0 {
+			t.Fatalf("%s missing section end", path)
+		}
+		return compactText(content[first : first+last])
+	}
+	contract := section(".docs/system_overview/contracts.md", "- ES result retention is independent of staging retention.", "- Lifecycle is Nomad-backed only:")
+	for _, required := range []string{"every post-claim outcome retains that visible root", "materialization error", "registration failure or ambiguity", "terminal success/failure/cancel/loss", "result-publication failure", "Closing held descriptors does not delete it", "sensitive-material residence"} {
+		if !strings.Contains(contract, required) {
+			t.Fatalf("system contract missing retained-root rule %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Failed submit staging is cleaned immediately", "only while the workload may still depend"} {
+		if strings.Contains(contract, forbidden) {
+			t.Fatalf("system contract retains contradictory current rule %q", forbidden)
+		}
+	}
+	recovery := section(".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md", "### B. ES-To-Nomad Ambiguity", "## 4. Authority And Identity Ownership")
+	if !strings.Contains(recovery, "retains the complete staging root") ||
+		strings.Contains(recovery, "may clean staging because submitted was not confirmed") {
+		t.Fatal("recovery contract misstates current unkeyed retention")
+	}
+	runbook := section(".runbooks/system/v1_bringup.md", "| Failure class |", "The collector accepts")
+	for _, required := range []string{"every successfully claimed", "terminal success", "descriptor close does not delete"} {
+		if !strings.Contains(runbook, required) {
+			t.Fatalf("bring-up runbook missing retention rule %q", required)
+		}
+	}
+	for _, forbidden := range []string{"terminal success may remove", "only useful after a successful", "best-effort removes that staging root"} {
+		if strings.Contains(runbook, forbidden) {
+			t.Fatalf("bring-up runbook retains contradictory rule %q", forbidden)
+		}
+	}
+	loop := section(".runbooks/system/v1_bringup.md", "Because that helper waits for terminal status", "Keep host qualification and smoke proof distinct:")
+	if !strings.Contains(loop, "retains every successfully claimed staging root") ||
+		strings.Contains(loop, "best-effort removes that staging root") {
+		t.Fatal("bring-up execution-loop passage misstates current retention")
+	}
+}
+
+func TestRetainedResultAuditF1F3OperatorReferenceAndPlacementDocs(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	config := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	for _, phrase := range []string{"returned BLOCK", "configured-consumer compatibility", "key-placement validation", "requires new independent assessment"} {
+		if !strings.Contains(plans, phrase) {
+			t.Fatalf("PLANS missing audit status %q", phrase)
+		}
+	}
+	for _, content := range []string{config, contract, runbook} {
+		for _, phrase := range []string{"non-root parent", "guest-local", "key-file reference"} {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("operator/key contract missing %q", phrase)
+			}
+		}
+	}
+}
+
+func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T) {
+	plans := compactText(mustRead(t, "PLANS.md"))
+	configuration := compactText(mustRead(t, ".docs/system_overview/configuration.md"))
+	contract := compactText(mustRead(t, ".docs/execution_lifecycle/contracts.md"))
+	implementation := compactText(mustRead(t, ".docs/execution_lifecycle/implementation.md"))
+	runbook := compactText(mustRead(t, ".docs/supported_local_cp_consumer_runbook.md"))
+	for _, phrase := range []string{"F1", "bash -s -- setup", "clean single-leading-slash", "F2 retention and F3 key-parent fixes remain in force", "independent assessment"} {
+		if !strings.Contains(plans, phrase) {
+			t.Fatalf("Review-04 follow-up plan missing %q", phrase)
+		}
+	}
+	for _, document := range []string{configuration, contract, implementation, runbook} {
+		for _, phrase := range []string{"single-leading-slash", "non-root", "sourcing"} {
+			if !strings.Contains(strings.ToLower(document), phrase) {
+				t.Fatalf("supported-local boundary document missing %q", phrase)
+			}
+		}
+	}
+}
+
+func TestRetainedResultReviewDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"before staging traversal or candidate creation", "natural `0750` result run-directory creation"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"even if retained staging later", "only an absent final and record", "derived parent are opened exactly", "held final descriptor must itself satisfy"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"before traversing staging", "full metadata policy before response buffering", "active process mask"}},
+		{".docs/system_overview/configuration.md", []string{"effective `Clean(TrimSpace(root))`", "space in a parent component"}},
+		{".docs/system_overview/capability_probing.md", []string{"natural owner and exact `0750` mode", "restrictive process mask or owner mismatch"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing targeted result repair contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview06GovernedRuntimeMountReadabilityContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-06 MOUNT-READ-01 bounded slice refinement", "normalized `0755` directories, `0644` non-executable regular files, and `0755` executable regular files", "The claimed run root remains `0750`", "The Nomad/Docker governed bind remains read-only", "does not qualify actual Docker/Nomad mount topology"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"distinct normalized workload-visibility rule", "`0755` directories, `0644` non-executable regular files, and `0755` executable regular files", "generic private payload, runtime-support, platform, trust, result-auth, and non-mount modes do not change", "complete-tree pre-dispatch validation", "mount stays read-only"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"mount-specific mode normalizer retains only executable intent", "mount directories are `0755`, ordinary files `0644`, and executable files `0755`", "narrow custody file writer uses mount-directory mode", "The claimed run root remains `0750`", "does not observe or qualify the later Docker/Nomad mount topology", "failed-allocation assertion includes bounded test-owned stdout and stderr when available"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing governed mount readability contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview20InstalledMountIdentityFixtureContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-19 A2/composition source disposition", "A2_AND_COMPOSITION_SOURCE_ACCEPTED_RUNTIME_GATES_OPEN", "Review-20 bounded qualification-fixture refinement", "Review-21 bounded qualification-fixture correction", "test-mounted-source-identity/v2", "common host/container backing-filesystem identity domain", "native fixture remains unexecuted", "running-deployment observation"}},
+		{".docs/system_overview/capability_probing.md", []string{"bounded native single-host qualification witness", "offline modeled comparison tests", "held staged directory and file anchors before provider registration", "same Linux backing-filesystem domain", "missing observation, or skip leaves topology unqualified", "Review-21 bounded fixture correction", "Running allocation/container state alone does not prove readiness"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"test-owned governed-mount fixture", "held pre-registration source anchor", "Offline modeled comparisons", "running-deployment topology observation", "Review-21 test-only repair orders fixed workload readiness", "observer cannot release before readiness"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-20 qualification boundary %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview22TaskLabelFixtureContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-22 test-owned task-label prerequisite correction", "extra_labels = [\"task_name\"]", "N4 refusal", "no native v2 installed-identity", "N5 and linux/arm64 did not run", "Default harness and capability-probe agents retain"}},
+		{".docs/system_overview/capability_probing.md", []string{"Review-22 test-owned task-label prerequisite correction", "fresh Nomad Docker plugin profile", "Ordinary harness and capability-probe agents retain", "before readiness and installed-object observation", "N5 and arm64 not run", "future native witness"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"Review-22 test-owned task-label prerequisite correction", "exactly", "Bounded slice rule", "not an unconditional Nomad label guarantee", "before adoption or any Docker effect", "no v2 identity record", "fixture-agent configuration only"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-22 task-label contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview07CustodyRecordedModeContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-07 CUSTODY-MODE-01 bounded custody refinement", "Review-06 source/evidence audit returned `BLOCK`", "Unix file type, ordinary permissions, and all three special mode bits exactly", "fresh independent Review-07 re-audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"Review-07 CUSTODY-MODE-01 repair", "Unix file type, ordinary `0777` permissions, setuid, setgid, and sticky bits exactly", "mismatch fails before provider submission"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"Review-07 repairs the independently found CUSTODY-MODE-01", "`S_IFMT | 07777`", "object-identity predicate remains separate", "does not repair or remove the retained object"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing custody recorded-mode contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview08RegistrationModeContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-08 REGISTRATION-MODE-01 bounded custody refinement", "post-creation descriptor stat must match the intended Unix file type", "all `07777` mode bits exactly", "fresh independent Review-08 audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"Review-08 REGISTRATION-MODE-01 repair", "before its identity enters the expected tree", "unregistered child and claimed root without metadata repair or deletion", "Later complete-tree handoff still validates the exact recorded state"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"Review-08 closes the registration-time REGISTRATION-MODE-01 gap", "content write and `Fsync`, before recording the descriptor stat", "A later handoff sees the retained child as unexpected"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing registration-mode contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview10ProofArtifactBoundaryContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-10 PROOF-RAW-OBS-01", "host proof directory is evidence-only", "tracked `.out/Dockerfile`", "independent Review-10 audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"host `.out` proof directory is evidence-only", "bootstrap/transport scratch is separate", "Raw", "opaque result bundles are not retained", "final host manifest is the root evidence record"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-10 proof artifact boundary", "guest-evidence/", "tracked `.out/Dockerfile`", "Raw Nomad/Docker/systemd output", "normal-shell result is", "fresh independent Review-10 audit"}},
+		{"scripts/73_supported_local_proof.sh", []string{"create_private_host_proof_dir", "create_private_host_bootstrap_dir", "collect_guest_workspace()", "finalize_host_evidence_manifest", "cleanup_host_bootstrap_scratch"}},
+		{"scripts/internal/supported_local_proof_evidence.sh", []string{"supported-local-proof-safe-evidence-v1", "MAX_FILE_BYTES", "MAX_TOTAL_BYTES", "O_NOFOLLOW", "safe-evidence-manifest.json", "collect-safe", "receive-safe"}},
+		{"scripts/internal/supported_local_proof_source_snapshot.py", []string{"host-repo-snapshot.tar.gz", "source-manifest.json", "GIT_OPTIONAL_LOCKS", "Dockerfile"}},
+		{"scripts/internal/supported_local_proof_projection.py", []string{"nomad-agent-safe.json", "control-plane-normal-shell-result-evidence.json", "docker-info-safe.json"}},
+		{"scripts/internal/supported_local_proof_host_manifest.py", []string{"host-evidence-manifest.json", "guest-evidence", "classification"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing proof evidence contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview11ProofCaptureAndManifestContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-11 PROOF-EXEC-STATUS-01", "A labeled capture writes only its", "self-exclusion field", "independent Review-11 audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"A labeled capture writes only its own summary, status, and fixed", "Node-detail admission parses a loopback-only URL", "self_excluded", "every other retained"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-11 capture lineage and root manifest", "A labeled execution capture writes only labeled summary, status, and fixed", "127.0.0.1", "self_excluded: true", "fresh independent Review-11 audit"}},
+		{"scripts/73_supported_local_proof.sh", []string{"capture_execution_evidence()", "validate_control_plane_normal_shell_result_bundle"}},
+		{"scripts/internal/supported_local_proof_projection.py", []string{"fetch_node_details", "execution-status"}},
+		{"scripts/internal/supported_local_proof_evidence.sh", []string{"supported-local-proof-summary-v1", "nomad-execution-safe.json"}},
+		{"scripts/internal/supported_local_proof_host_manifest.py", []string{"self_excluded", "host-evidence-manifest.json"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-11 proof contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview12ProofAllocationExactOneContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-12 PROOF-RUN-LINEAGE-01 exact-one allocation repair", "exactly one", "internal allocation-selection policy", "independent Review-12 audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"exactly one", "Zero or multiple allocations", "latest-`ModifyIndex`", "explicit redesign"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-12 exact-one proof allocation lineage", "Zero or multiple entries", "latest-`ModifyIndex`", "independent Review-12 audit"}},
+		{"scripts/73_supported_local_proof.sh", []string{"proof allocation count must be exactly one", "proof allocation entry invalid", "proof allocation id invalid"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-12 allocation contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview13ProofAllocationStrictJSONContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-13 PROOF-RUN-LINEAGE-01 strict-JSON allocation refinement", "complete allocation list", "fixed safe allocation-list error", "fresh independent Review-13 audit"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"complete allocation-list response must be strict JSON", "inside unknown or nested fields", "before allocation selection or observation"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-13 strict JSON allocation parsing", "including unknown and nested fields", "independent Review-13 audit"}},
+		{"scripts/73_supported_local_proof.sh", []string{"parse_constant=reject_nonstandard_constant", "proof allocation list invalid"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-13 strict JSON proof contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview14SupportedLocalRootOwnerIntegrationContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "fresh proof root", "0:0", "0755", "static owner/mode contract", "fixed safe setup projection", "key loading and root capability qualification before listening"}},
+		{".docs/system_overview/configuration.md", []string{"service-root-v1", "exclusively provisions the two fresh configured roots", "0:0", "0755", "Config.SubmitConfigured()", "before ES listens"}},
+		{".docs/system_overview/capability_probing.md", []string{"service-root-v1", "static preflight", "0:0", "0755", "behavioral capability", "before HTTP listening"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"service-root-v1", "sole creator", "0:0", "0755", "ordinary operator's own write access", "Generic callers without that profile"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"root-service profile", "two fresh configured roots", "0:0", "0755", "natural `0750`", "future container view"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"service-root-v1", "noninteractive privilege", "refuses an existing proof root", "0:0", "0755", "shared static preflight", "execution-roots-setup-safe.json", "external key", "bootstrap scratch"}},
+		{"scripts/72_supported_local_setup.sh", []string{"preflight_supported_local_setup_execution_roots", "provision_supported_local_execution_roots", "sudo -n python3", "SUPPORTED_LOCAL_ES_ROOTS_PROFILE", "write_supported_local_execution_root_evidence", "execution-roots-setup-safe.json", "supported-local execution roots invalid"}},
+		{"scripts/internal/control_plane.sh", []string{"service-root-v1", "supported_local_execution_roots.py", "configured_root_mode", "operator_write_access_required", "container_identity_or_behavioral_capability_proved"}},
+		{"scripts/internal/supported_local_proof_evidence.sh", []string{"execution-roots-setup-safe.json", "supported-local-execution-roots-setup-safe-v1", "container_identity_or_behavioral_capability_proved"}},
+		{"scripts/internal/supported_local_proof_host_manifest.py", []string{"execution-roots-setup-safe.json", "proof_assertions"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-14 root-owner contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview16SupportedLocalFullReadinessRootOwnerContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"SUPPORTED-LOCAL-ROOT-OWNER-01", "full-profile submit-readiness", "ordinary operator needs static inspection access", "Generic callers without this explicit profile", "first failed subcheck"}},
+		{".docs/system_overview/capability_probing.md", []string{"read-only validator", "full-profile submit-readiness", "operator's root-write", "Generic readiness"}},
+		{".docs/system_overview/configuration.md", []string{"full-profile submit-readiness share a read-only", "caller writability", "does not create missing roots"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"one static, no-repair read-only validator", "direct health", "diagnostics consumer", "unknown profiles refuse", "Readiness does not create roots"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"Full-profile submit-readiness and diagnostics consume the same read-only", "generic", "creates none"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"full-profile submit-readiness", "Direct `10_health_check.sh`", "diagnostics checker", "not write authority"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-16 full-readiness contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
+func TestReview17ProofResultHandoffContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"Review-17 PROOF-RESULT-HANDOFF-01", "already captured normal-shell", "no legacy alias", "historical live bundle was not inspected"}},
+		{".docs/execution_lifecycle/contracts.md", []string{"selected private workdir", "Result-validation uses that captured summary", "rejecting duplicate object keys and nonstandard constants", "Held no-follow", "Raw bytes and workdir paths remain private"}},
+		{".docs/supported_local_cp_consumer_runbook.md", []string{"Review-17 normal-shell result handoff", "<selected-workdir>/result.tar.gz", "no duplicate object keys or nonstandard constants", "newer workdir", "exact proof result validator"}},
+		{"scripts/60_execute_loop.sh", []string{"RESULT_PATH=\"${WORKDIR}/result.tar.gz\"", "\"result_path\": sys.argv[21]", "\"result_available\": sys.argv[22]", "\"result_bytes\": int(sys.argv[23])"}},
+		{"scripts/73_supported_local_proof.sh", []string{"summary.get(\"workdir\")", "summary.get(\"result_path\")", "captured-result", "run_phase result-validation"}},
+		{"scripts/internal/supported_local_proof_projection.py", []string{"captured-result", "control-plane-normal-shell-summary.json", "control-plane-normal-shell-nomad-execution-safe.json", "result_projection"}},
+		{"es/app/supported_local_proof_evidence_test.go", []string{"proofExecutionLoopSummary", "TestSupportedLocalProofCapturedResultBinding", "TestSupportedLocalProofResultValidationFinalizerContinuation"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing Review-17 result handoff contract %q", check.path, phrase)
+			}
 		}
 	}
 }

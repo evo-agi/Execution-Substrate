@@ -112,13 +112,20 @@ type NomadConfig struct {
 }
 
 type ExecutionConfig struct {
-	StagingRootDir             string                `json:"staging_root_dir"`
-	ResultsRootDir             string                `json:"results_root_dir"`
-	BaseImage                  string                `json:"base_image"`
-	RuntimeIdentityTmpfsSize   int64                 `json:"runtime_identity_tmpfs_size,omitempty"`
-	RuntimeSupportBinary       string                `json:"runtime_support_binary,omitempty"`
-	SPIREWorkloadAPISocketPath string                `json:"spire_workload_api_socket_path,omitempty"`
-	RuntimeProfiles            RuntimeProfilesConfig `json:"runtime_profiles,omitempty"`
+	StagingRootDir             string                   `json:"staging_root_dir"`
+	ResultsRootDir             string                   `json:"results_root_dir"`
+	RetainedResultAuth         RetainedResultAuthConfig `json:"retained_result_auth"`
+	BaseImage                  string                   `json:"base_image"`
+	RuntimeIdentityTmpfsSize   int64                    `json:"runtime_identity_tmpfs_size,omitempty"`
+	RuntimeSupportBinary       string                   `json:"runtime_support_binary,omitempty"`
+	SPIREWorkloadAPISocketPath string                   `json:"spire_workload_api_socket_path,omitempty"`
+	RuntimeProfiles            RuntimeProfilesConfig    `json:"runtime_profiles,omitempty"`
+}
+
+type RetainedResultAuthConfig struct {
+	StoreID string `json:"store_id"`
+	KeyID   string `json:"key_id"`
+	KeyFile string `json:"key_file"`
 }
 
 type RuntimeProfilesConfig struct {
@@ -504,7 +511,44 @@ func (c ExecutionConfig) Validate(field string) error {
 	if err := c.RuntimeProfiles.Validate(field + ".runtime_profiles"); err != nil {
 		return err
 	}
+	if err := c.RetainedResultAuth.Validate(field+".retained_result_auth", c.StagingRootDir, c.ResultsRootDir); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c RetainedResultAuthConfig) Validate(field string, stagingRoot string, resultsRoot string) error {
+	if !validRetainedResultAuthIdentifier(c.StoreID) {
+		return fmt.Errorf("%s.store_id must be a canonical 1-32 byte identifier", field)
+	}
+	if !validRetainedResultAuthIdentifier(c.KeyID) {
+		return fmt.Errorf("%s.key_id must be a canonical 1-32 byte identifier", field)
+	}
+	if c.KeyFile == "" || !filepath.IsAbs(c.KeyFile) || filepath.Clean(c.KeyFile) != c.KeyFile ||
+		strings.TrimSpace(c.KeyFile) != c.KeyFile || strings.ContainsRune(c.KeyFile, 0) {
+		return fmt.Errorf("%s.key_file must be a clean absolute path", field)
+	}
+	if filepath.Dir(c.KeyFile) == string(os.PathSeparator) {
+		return fmt.Errorf("%s.key_file must have a non-root parent directory", field)
+	}
+	if pathsOverlap(c.KeyFile, filepath.Clean(strings.TrimSpace(stagingRoot))) ||
+		pathsOverlap(c.KeyFile, filepath.Clean(strings.TrimSpace(resultsRoot))) {
+		return fmt.Errorf("%s.key_file must be outside staging and results storage", field)
+	}
+	return nil
+}
+
+func validRetainedResultAuthIdentifier(value string) bool {
+	if len(value) < 1 || len(value) > 32 || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		c := value[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c RuntimeProfilesConfig) Validate(field string) error {

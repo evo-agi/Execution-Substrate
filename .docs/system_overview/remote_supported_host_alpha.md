@@ -4,6 +4,51 @@
 
 Remote Supported-Host Alpha 0.3 is an intermediate alpha for a Control Plane consumer running on a Mac against one remote Linux Execution Substrate host. It extends Alpha 0.2 with a fixture-driven readiness report that combines Control Plane profile diagnostics and Infrastructure Manager remote-doctor output; it does not change ES runtime semantics.
 
+`Temporary compatibility edge`: the v1 readiness/migration portions of this
+document are now historical evidence only. Remote Alpha existing-host ES
+writable-state readiness, readiness staging, ES service-user migration,
+ownership preparation, generated rollback rehearsal, and old-root planning are
+retired through fixed fail-closed tombstones. They perform no inspection,
+staging, mutation, or evidence production. Archived v1 bytes remain historical
+evidence only and no live operator route parses or projects their retired
+schemas. No v2 replacement exists for that retired ES writable-state/
+service-user migration family. Unrelated Vault, TLS, runtime-identity,
+governance, operator-healthcheck, recovery, and Vault service-user routes
+remain separately bounded and are not retired by this decision. The unrelated
+current EGS hardening v2 schema also remains current.
+
+Fresh-host provisioning is the required direction for future infrastructure
+recovery, but no complete supported fresh-host ES provisioner currently exists.
+Reuse of an old or nonempty host remains blocked without a separately governed
+migration contract. Archived v1 artifacts cannot authorize deployment,
+migration, drain, reclamation, or mutation.
+
+### Current Remote Alpha root-custody observation gate
+
+For a claimed running Remote Alpha environment, a specifically authorized task
+must identify one concrete currently running in-scope ES process and
+authenticate its process/start identity, mount namespace, configured roots,
+held descriptor identities, canonical presentation, selected mount records,
+source coordinates, root-value classification, and descendant-mount result.
+Historical `es.service` prose, launcher source, and modeled mountinfo are not
+observations. The observation must retain unrelated valid opaque `nsfs`
+namespace-object records for complete analysis while refusing an opaque
+selected root as a pathname-coordinate source; it must not filter away records
+or substitute mountpoint or configured spelling for source coordinates. Real
+repaired-helper mounted-alias evidence remains required where the operational
+claim depends on it.
+
+These are environment-bound operational qualification requirements under
+`PLANS.md` and `.docs/execution_lifecycle/contracts.md`. They are not an
+independent blanket prerequisite to a separately authorized local source-
+preservation or integration commit. This H/C/T integrated source remains
+unaccepted and requires focused changed-interaction assessment and explicit
+commit authority. A concrete changed interaction may require a separately
+selected bounded witness; merge ancestry alone does not create a blanket
+native campaign. C's selected observations remain historical exact-C evidence,
+not executions of this integrated tree. No current deployment compatibility,
+supported-host claim, or rollout readiness is inferred here.
+
 It is not the final commercial deployment target. Full remote Control Plane plus remote Execution Substrate with the operator's Mac browser as the human surface, remote Temporal, HA, object storage, and source/workspace sync models remain out of scope for this alpha.
 
 Status classification:
@@ -11,6 +56,10 @@ Status classification:
 - The direct CP-to-AGS/ES HTTPS+mTLS boundary is a bounded alpha acceptance posture.
 - Bridge or tunnel mode is a temporary compatibility edge for supported-local and troubleshooting lineage, not product posture.
 - The current `execution_substrate.runtime_profile` annotation, `control-plane-normal-shell/v1`, producer contract version, outcome evidence, lifecycle projection, retained-result behavior, and authority handoff remain unchanged.
+- ES retains every post-claim staging root. Lifecycle and result-publication
+  observations never authorize automatic whole-root reclamation; that future
+  capability is an ES-owned reopened seam with disk, capacity,
+  sensitive-material-residence, and operator costs.
 - The combined readiness report is pre-live fixture reporting, not ES service health, submit readiness, retained-result proof, lifecycle truth, runtime authority, or run authority.
 
 ## Remote Alpha Access Contract v1 Boundary
@@ -44,11 +93,9 @@ runtime, IM readiness, sudo readiness, TLS correctness, or governed execution.
 Remote Supported-Host Alpha is the current host/operator reading of
 Milestone 1: Least-Privilege Runtime/Security Boundary Closeout.
 
-`Current invariant`: the landed long-lived `es.service` posture is already on
-the least-privilege side of this milestone baseline: `User=es`, `Group=es`,
-`UMask=0027`, with post-apply `/health`,
-`GET /v1/executions:contract`, the current lowest-cost existing happy path,
-and future writable-state readiness all passing.
+Archived v1 evidence records an earlier `es.service` posture of `User=es`,
+`Group=es`, `UMask=0027` and bounded checks from that exercise. It is not a
+current invariant or current host-readiness assertion.
 
 Do not call this milestone `rootless everything` or full ES/runtime de-root.
 
@@ -100,7 +147,7 @@ Milestone 1 boundary posture matrix:
 | Surface | Posture | Rationale | Current evidence | Removal condition | Explicit non-claim |
 | --- | --- | --- | --- | --- | --- |
 | Nomad host client/server substrate | `blocker` | Remote Alpha still depends on a pre-managed non-dev Linux Nomad client/server. Upstream least-privilege guidance is to keep Nomad servers as narrow as feasible, but the Linux Nomad client remains a root-managed isolation boundary today and a rootless client is not the current supported/well-tested repo posture. | Remote Alpha doctor vocabulary still treats `nomad_ready` as an environment gate, the supported-path docs still require a pre-managed Nomad baseline, and the landed ES happy paths still hand lifecycle authority to Nomad. | Revisit only if a later separately documented substrate decision proves a supported client posture that does not depend on an unsupported rootless-client assumption while preserving Nomad as lifecycle authority. | Milestone 1 does not claim a rootless Nomad client or full Nomad least-privilege closeout. |
-| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | The runtime-identity helper proof slice, runtime-helper tests that keep the raw SPIRE path out of workload env, and the service-user migration check-only gate all preserve this helper-private boundary. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
+| SPIRE raw-socket traversal and selector posture | `accepted MVP compatibility edge` | The workload-visible contract is already narrowed to `EXEC_WORKLOAD_IDENTITY_ENDPOINT`, but the helper-private raw SPIRE path and the broad root selector scope remain explicit compatibility edges rather than a finished least-privilege identity model. | The runtime-identity helper proof slice and runtime-helper tests keep the raw SPIRE path out of workload env; the retired ES service-user route provides no current evidence. | Revisit only through the later runtime-boundary redesign seam after a narrower helper principal or equivalent traversal model is documented and re-proved. | Workloads do not receive the raw SPIRE Workload API socket, and this milestone does not claim final SPIRE selector least privilege. |
 | Vault workload-side auth / workload-zone handoff | `accepted MVP compatibility edge` | The least-privilege direction is workload-side credential acquisition without ES token brokerage. Remote Alpha preserves that handoff boundary; where Vault host posture is operator-owned, the intended direction is a dedicated unprivileged Vault service account rather than root, but Milestone 1 does not widen ES contracts into full remote Vault lifecycle authority. | Useful credential flow completion is already landed, `sudo scripts/remote_alpha_vault_workload_auth_check.sh` records bounded host-local evidence, and the current `authority_handoff` plus `readiness_not_claimed.*` vocabulary preserve non-brokering, workload-side auth. | Revisit only if a later documented boundary change keeps workload-side auth intact and preserves the no-token-brokerage rule. | ES does not broker Vault tokens, and Vault/readiness summaries do not by themselves prove runtime-profile readiness or governed execution proof. |
 | ES runtime helper | `accepted MVP compatibility edge` | The current helper isolates privileged runtime bootstrap from the long-lived ES service path, but it still starts from root and therefore remains a bounded compatibility edge rather than a full runtime de-root result. | The runtime-identity helper proof slice, helper-death/task-fatal behavior, and the remote helper summary all prove the current fail-closed helper boundary. | Revisit only if a later redesign re-proves equivalent runtime identity delivery, workload launch, and result-path guarantees with a narrower startup privilege model. | Milestone 1 does not claim rootless helper startup or full ES/runtime de-root. |
 | Nomad task user | `accepted MVP compatibility edge` | The current runtime companion still needs task-start `0:0` so it can create the helper-private SPIRE boundary and exec the workload as fixed non-root `10000:10000`. | The current remote/runtime helper proof and the landed ES happy path still rely on the present task-start contract, and the docs keep `User: "0:0"` explicit rather than implied. | Revisit only as part of a broader runtime-boundary redesign that re-derives helper launch, workload launch, and SPIRE/Vault handoff together. | The current posture is not non-root task launch and not rootless workload orchestration. |
@@ -283,27 +330,45 @@ Classification:
 
 - bounded MVP proof/support helper plus evidence/projection outputs only
 
+ES product architecture leads this boundary. Operator-facade compatibility is
+not a product invariant merely because it was implemented, and compatibility
+for the retired runtime-identity, Vault workload-auth, and Vault service-user
+artifact families is not a Tranche B prerequisite. Their producer scripts are
+optional owner-local proof emitters for this tranche, not operator contracts or
+permanent architecture. The cutoff does not retire or change the underlying ES
+runtime-identity, SPIRE, admission-handoff, or workload-side Vault product
+boundaries.
+
 Proposed path:
 
 - `scripts/remote_alpha_operator.sh`
 
-Current implementation/design status through P0u:
+Current implementation/design status through P0v and the accepted retirement:
 
 - P0b implemented the help, inventory, and print-command skeleton.
 - P0e aligned help, inventory, and route wording with the operator
   involvement model: the human remains the operator, the script is a bounded
   ES Remote Alpha operator facade/workflow, and the goal is minimizing manual
   stitching rather than eliminating prompts.
-- P0d implements exactly one staged-helper delegation route,
-  `es-writable-state-readiness-check`.
-- P0f implements exactly one bounded readiness workflow command,
-  `readiness-session`, over that existing route.
-- P0g implements one safe/local recovery workflow skeleton,
-  `recovery-session`, with print-only plan, inventory, next-step guidance, and a
-  local evidence-check mode over operator-supplied existing JSON evidence files.
-- P0h extends only `recovery-session --evidence-check` with known-schema
-  interpretation, `--strict-known-schema`, and non-recursive `--evidence-dir`
-  discovery of expected local evidence filenames.
+- P0d's former staged-helper delegation route,
+  `es-writable-state-readiness-check`, is retired. Every non-secret argument
+  shape now reaches a fixed two-line exit-2 refusal with no host inspection,
+  staging, mutation, or evidence production. The global privacy prefilter is
+  the first argument-sensitive operation and remains earlier in dispatch, so
+  secret-like argument shapes receive its fixed one-line privacy refusal
+  instead.
+- P0f's former `readiness-session` workflow is retired under the same fixed
+  precedence and produces no current readiness projection or artifact refresh.
+- P0g's former local evidence-ingestion mode is retired. The current
+  `recovery-session` retains its unrelated print-only and individually bounded
+  recovery routes, but it provides no generic evidence parser, schema
+  interpretation, automatic discovery, aggregation, or projection adapter.
+- P0h's historical-v1 display is retired. The live operator no longer accepts
+  the historical readiness/staging flags, discovers the historical filenames,
+  recognizes the retired ES schemas, or publishes their metadata. Archived v1
+  bytes remain historical evidence only. Recognized historical P0h option forms
+  receive their fixed one-line historical-option refusal; they do not enter the
+  operator-compatibility retirement handler.
 - P0i adds exactly one secret-sensitive recovery-session route,
   `recovery-session vault-unseal-existing --host-local`, which delegates only to
   the public reset helper's `--unseal-only` mode from a fixed script-relative
@@ -331,19 +396,10 @@ Current implementation/design status through P0u:
   Infrastructure Manager refresh, support-bundle collection, CP proof,
   workload-auth live checks, runtime identity generation, or network-dependent
   integration tests.
-- P0n adds one separate Mac-side post-reset workload-auth evidence route,
-  `recovery-session vault-workload-auth-check --ssh-target <target>
-  --interactive-tty`, with static and fake SSH/SCP validation only. P0n stages
-  only `scripts/remote_alpha_vault_workload_auth_check.sh` and
-  `scripts/internal/remote_alpha_vault_workload_auth_check.sh`, preserves their
-  public/internal relative layout on the remote host, invokes only the staged
-  public workload-auth helper over `ssh -tt`, keeps the canonical summary on
-  the remote host at
-  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`,
-  does not copy the summary back to Mac `.out`, creates no operator summary,
-  captures no transcript, handles no secrets, and keeps IM refresh,
-  support-bundle collection, CP proof, runtime identity generation, and
-  reset/unseal separate.
+- P0n's former Mac-side workload-auth checker staging route is retired. The
+  direct owner-local workload-auth producer and its independent consumers are
+  unchanged, but the operator facade no longer initializes, stages, invokes,
+  ingests, discovers, aggregates, or projects that artifact family.
 - P0o adds one safe local/print-only post-reset Vault workload-auth bootstrap
   planning surface, `recovery-session vault-workload-auth-bootstrap
   [--help|--plan|--inventory]`. It performs no live bootstrap, no SSH, no sudo,
@@ -379,24 +435,20 @@ Current implementation/design status through P0u:
   OS/filesystem preparation only: it prepares the remote summary directory,
   bootstrap summary file ownership/mode when needed, and same-directory temp
   writability before any helper staging or Vault/root/proof prompt.
-- P0r implements exactly one Mac-side runtime identity evidence route,
-  `recovery-session runtime-identity-summary --ssh-target <target>
-  --interactive-tty`, with static and fake SSH/SCP validation only. P0r stages
-  only `scripts/remote_alpha_runtime_identity_helper_summary.sh`, invokes only
-  that staged helper over `ssh -tt`, keeps the canonical summary on the remote
-  host at
-  `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`,
-  does not copy the summary back to Mac `.out`, creates no operator summary,
-  captures no transcript, handles no secrets, and keeps workload-auth
-  bootstrap/check, reset/unseal, IM refresh, support bundles, CP proof,
-  runtime identity generation, runtime-profile readiness, submit readiness, and
-  retained-result readiness separate.
-- P0s/P0t now share only one dedicated fixed-scope status collector. The
-  Mac-side `es-service-tls-status` and `es-governance-tls-status` compatibility
-  routes stage that one status file, retain visible interactive sudo, and leave
-  separate protected status-only summaries on the host. The two renewal names
-  and direct public renewal wrapper are held before contact. No P0s/P0t
-  backup, install, restart, service probe, or renewal authority is added.
+- P0r's former Mac-side runtime-identity summary staging route is retired. The
+  direct owner-local runtime-identity proof producer remains separately
+  documented and unchanged, but the operator facade no longer initializes,
+  stages, invokes, ingests, discovers, aggregates, or projects that artifact
+  family.
+- P0s/P0t retain only the bounded interactive `es-service-tls-status` and
+  `es-governance-tls-status` facade names over the dedicated status-only TLS
+  collector. Status stages only `scripts/internal/remote_alpha_es_tls_status.py`
+  and a fixed, source-controlled root bootstrap. It publishes protected remote
+  status summaries without Mac `.out` copy-back or transcript capture. Both
+  renewal names refuse before host contact; the former public renewal wrapper
+  fails locally and the old internal renewal helper is undispatched. The
+  complete bounded status, failure-witness, OpenSSL 3, diagnostic, and
+  nonpublication contract is specified in the current P0s/P0t section below.
 - P0u adds exactly one bounded Remote Alpha host-local operator healthcheck
   client TLS status/renew helper pair and two Mac-side recovery-session routes,
   `recovery-session operator-healthcheck-tls-status --ssh-target <target>
@@ -424,48 +476,154 @@ Current implementation/design status through P0u:
   uses a dedicated local Python runtime and a streamed fixed remote collector,
   changes no MA route metadata, allows no scheduled execution, and performs no
   renewal or mutation.
-- Implemented subcommands are `help`, `inventory`, `print-refresh-command`,
-  `print-support-bundle-command`, `print-im-commands`,
-  `es-writable-state-readiness-check`, `readiness-session`, and
-  `recovery-session`.
-- The writable-state readiness route delegates only to the public staged wrapper
-  `scripts/remote_alpha_stage_es_writable_state_readiness_check.sh`.
-- The route is check-only/non-mutating by construction: it has no `--apply`
-  path, rejects `--dry-run`, and requires an explicit `--ssh-target` before the
-  helper may run. Host-local execution through the operator facade is not
-  enabled in P0d.
-- The route accepts only the P0c allowlisted helper flags and rejects unknown
-  flags, unknown positional arguments, duplicate route flags, and secret-like
-  arguments before helper execution.
-- The readiness session accepts only its own allowlisted workflow flags,
-  delegates only through the existing readiness route/helper path, preserves
-  the two IM-consumed artifact filenames, and prints only non-secret local
-  metadata after scanning the artifacts for secret-like content.
-- The recovery session accepts only its own allowlisted safe/local flags plus
-  the explicit host-local and Mac-side interactive TTY `vault-unseal-existing`
-  submodes, the P0k dry-run `vault-reset-disposable` submode, the P0m
-  interactive TTY `vault-reset-disposable --execute-reset` submode, the P0n
-  Mac-side interactive TTY `vault-workload-auth-check` submode, the P0o safe
-  local/print-only `vault-workload-auth-bootstrap` planning submode, and the
-  P0q Mac-side interactive TTY `vault-workload-auth-bootstrap
-  --execute-bootstrap` submode and bounded
-  `vault-workload-auth-bootstrap --prepare-summary-path` preparation submode,
-  plus the P0r Mac-side interactive TTY `runtime-identity-summary` evidence
-  submode, plus the P0s/P0t Mac-side interactive TTY
-  `es-service-tls-status` and `es-governance-tls-status` compatibility
-  submodes with both renewal names held before contact, plus the
-  P0u Mac-side interactive TTY `operator-healthcheck-tls-status` and
-  `operator-healthcheck-tls-renew` submodes.
-  Its safe modes
-  do not use SSH or remote staging, inspect live host state, dispatch generic
-  helpers, or execute destructive or authority-bearing work. Its execution
-  submodes remain individually allowlisted and route-specific. Its
-  `--evidence-check` mode reads only supplied local JSON evidence paths, scans
-  for secret-like content before parsing, and prints only path, byte count,
-  SHA-256 digest, schema, and selected safe status/count metadata. Known schemas
-  are interpreted through explicit safe-field allowlists; unknown schemas are
-  allowed by default and classified as `schema_interpretation=unknown` unless
-  `--strict-known-schema` is set.
+- Current operator-facade names still include `help`, `inventory`, the bounded
+  print commands, `es-writable-state-readiness-check`, `readiness-session`, and
+  `recovery-session`, but the two existing-host ES names are compatibility
+  tombstones rather than live helper workflows.
+- All six existing-host ES readiness/migration helpers are effect-free
+  tombstones: writable-state readiness, readiness staging, ownership
+  preparation, ES service-user migration, generated rollback rehearsal, and
+  old-root planning. They perform no SSH, refresh, staging, current readiness
+  artifact creation, mutation plan, migration evidence, backup, cleanup, or
+  host/service inspection.
+
+#### Current effect-free evidence-refusal taxonomy
+
+The retired runtime-identity, Vault workload-auth, and Vault service-user
+operator-compatibility surface has exactly four refusal classes. These classes
+do not promise identical stderr:
+
+1. Canonically recognized retired routes, aliases, and evidence flags receive
+   the exact two-line operator-compatibility retirement refusal:
+
+   ```text
+   remote alpha operator evidence ingestion, staging, aggregation, and projection compatibility is retired; no artifact inspection, helper execution, staging, or evidence projection occurred
+   use the owning producer directly only under its separately documented contract; this operator facade provides no compatibility adapter
+   ```
+
+2. The historical P0h options `--readiness-summary` and `--staging-record`
+   receive the fixed one-line historical-option refusal:
+   `error: retired historical ES evidence options are unavailable`.
+3. Prefixed, malformed, or otherwise unrecognized stale forms receive the fixed
+   generic refusal. The demonstrated prefixed aliases receive
+   `error: unknown operator subcommand` followed by
+   `No helper execution routing occurred.`; no raw argument, option, path, or
+   value is echoed.
+4. Secret-like forms receive the fixed privacy refusal
+   `error: secret material must never be passed by CLI args/env/logs/reports/artifacts`.
+   The global privacy prefilter remains the first argument-sensitive operation.
+
+`Current invariant` — secret-like option recognition is byte-deterministic and
+independent of the caller's locale. For matching only, ASCII uppercase letters
+normalize to lowercase and ASCII underscore to hyphen. The fixed family set is
+`root-token`, `unseal-key`, `client-token`, `vault-token`, `api-key`, `jwt-svid`,
+`private-key`, `password`, `secret`, `token-file`, and `secret-value`. A recognized
+form is any raw token occurrence of `--<secret-family>` whose following byte is
+end-of-token or outside ASCII `[A-Za-z0-9_-]`. A non-ASCII following byte is
+therefore a fail-closed delimiter. ASCII alphanumeric, underscore, or hyphen
+continuations keep near-names such as `--api-keyboard`, `--token-filed`,
+`--passwordless`, `--secretary`, and `--private-keyboard` outside that family
+match. Arbitrary words such as `api`, `key`, `token`, `secret`, and `password`
+are not secret-like options. The existing `--<prefix>-<secret-family>` option
+alias, such as `--operator-api-key=`, remains a `Temporary compatibility edge`:
+its ASCII prefix must end at a hyphen, and the family still requires the same
+following-byte rule. It is retained solely for the existing ASCII privacy
+refusal; it grants no new accepted option or route. The one global prefilter
+scans each complete token in work bounded linearly by token length for the
+fixed eleven families. Repeated shrinking-token copies and locale-sensitive
+POSIX character classes must not define this security boundary.
+
+The common safety invariant across all four classes is:
+
+- exit `2`;
+- zero stdout;
+- no supplied-value echo;
+- no file access;
+- no helper or subprocess;
+- no host inspection;
+- no staging, discovery, mutation, or projection.
+
+Every class completes before script-directory canonicalization or helper-path
+initialization.
+
+The canonically recognized retirement inventory is finite and exact:
+
+- top-level evidence routes are `vault-workload-auth-check`,
+  `runtime-identity-summary`, and `vault-service-user-check`;
+- nested `recovery-session` evidence aliases are
+  `vault-workload-auth-check` and `runtime-identity-summary`; there is no nested
+  `recovery-session vault-service-user-check` alias;
+- evidence flags, in split and equals form where a value form is possible, are
+  `--evidence-check`, `--evidence-dir`, `--strict-known-schema`,
+  `--vault-workload-auth-summary`, `--runtime-identity-summary`, and
+  `--vault-service-user-summary`;
+- historical P0h flags, in split and equals form, are `--readiness-summary`
+  and `--staging-record`;
+- the separate existing-host ES tombstone routes are
+  `es-writable-state-readiness-check` and `readiness-session`.
+
+`reject_retired_operator_evidence_args` is the only live scanner for the
+evidence-route/alias/flag inventory and
+`retired_operator_evidence_compatibility` is its only refusal handler.
+`route_es_writable_state_readiness_check` and `readiness_session` delegate only
+to `retired_es_existing_host_route`. The privacy prefilter
+`reject_secret_args` runs before either retirement classification. Exact source
+tests freeze these handlers, scanner entries, dispatch occurrences, symbol
+counts, privacy order, and the absence of the retired spellings outside the
+reviewed inventories. Prefixed, malformed, or newly invented near-aliases stay
+outside the recognized inventory and receive the generic refusal; they do not
+silently widen compatibility.
+
+Source tests use a test-local fail-closed accepted grammar for
+`reject_secret_args` and `reject_retired_operator_evidence_args`. It consumes
+every protected-body token and admits only the reviewed local declarations and
+assignments, predicates, `if`/`for`/`case` structure, `continue`, exact
+`nocasematch` query/enable/restore operations, and exact privacy or retirement-
+handler calls. Unknown executable syntax, command/arithmetic/process
+substitutions, redirections, and heredocs are rejected, including in
+assignments or double-quoted words. A separate prefix check requires those
+scanner calls to be the first two nontrivia statements of `parse_args`, in
+privacy-first order. Formatting, comments, and unreferenced fresh locals
+initialized only from inert literals remain tolerated. This is bounded static
+assurance for the two scanners and entry prefix, not a general Bash parser,
+whole-script effect analysis, or comparison of complete handler or scanner raw
+text.
+
+This classification-specific behavior is intentional. The retired grammar is
+not widened merely to make prefixed or malformed stale forms enter the exact
+two-line retirement handler.
+
+- The former current-schema evidence checker, automatic filename discovery,
+  schema maps, and safe-field projections are absent from the live facade. The
+  cutoff adds no replacement schema, parser, adapter, registry, v2 protocol, or
+  Infrastructure Manager dependency.
+- No schema, validator, fixture, producer, artifact, or protocol v2 replacement
+  exists for the retired ES writable-state/service-user migration family. The
+  unrelated current EGS hardening v2 schema remains current.
+- Unrelated recovery, Vault bootstrap, TLS, runtime-identity runtime,
+  governance,
+  operator-healthcheck, and Vault service-user routes remain current only where the operator source
+  still implements their individually bounded behavior. Retirement of the six
+  existing-host ES helpers does not retire those unrelated routes.
+
+#### Historical pre-retirement design record — superseded and non-authoritative
+
+This paragraph is superseded, non-authoritative history. It is not an available
+operator workflow and grants no readiness, migration, cleanup, or reclamation
+authority. P0d formerly delegated writable-state readiness to
+`scripts/remote_alpha_stage_es_writable_state_readiness_check.sh` after
+allowlisted argument checks and an explicit SSH target. P0f formerly composed a
+readiness session that preserved two Infrastructure Manager-consumed artifact
+filenames and displayed redacted metadata. Those delegation, SSH, refresh,
+artifact-production, and current-readiness behaviors are retired and must not
+be inferred from the retained narrative.
+
+- The current recovery session accepts its separately allowlisted safe/local
+  flags plus the source-implemented, route-specific Vault bootstrap, TLS,
+  governance, and operator-healthcheck submodes described below. Its safe modes
+  do not inspect live host state, dispatch generic helpers, or execute
+  destructive or authority-bearing work. The former evidence checker and the
+  two producer-staging routes are retired.
 - The `vault-unseal-existing --host-local` route is secret-sensitive but
   non-destructive. It must be run on the Remote Alpha host where Vault is
   installed and reachable, and the human operator enters any unseal key directly
@@ -498,20 +656,10 @@ Current implementation/design status through P0u:
   or operator summary, captures no transcript, handles no secrets, and keeps
   post-reset evidence checks as separate later steps. P0m validation is static
   and fake SSH/SCP only; it is not live execute-reset validation.
-- The `vault-workload-auth-check --ssh-target <target> --interactive-tty`
-  route is the P0n Mac-side post-reset workload-auth evidence route. It
-  requires a visible local terminal before staging, allocates an interactive
-  SSH TTY, stages exactly the public workload-auth helper and its internal
-  implementation helper, invokes only the staged public helper with no helper
-  override flags, attempts staged-helper cleanup by default, writes no `.out`
-  summary or operator summary, captures no transcript, handles no secrets, does
-  not print full summary JSON, and leaves the canonical summary on the remote
-  host at
-  `/var/tmp/execution-substrate-remote-alpha/vault-workload-auth-summary.json`.
-  The route is evidence/projection only: it is not workload-auth bootstrap, not
-  ES token brokerage, not Vault production readiness, not governed execution
-  proof, not IM refresh/support-bundle collection, not CP proof, not runtime
-  identity generation, and not reset/unseal.
+- The former P0n `vault-workload-auth-check` facade route is retired. Every
+  non-secret invocation reaches the fixed evidence-compatibility retirement
+  refusal before file access, discovery, helper initialization, staging, or
+  projection. The direct owner-local workload-auth producer remains separate.
 - The `vault-workload-auth-bootstrap [--help|--plan|--inventory]` submode is the
   P0o safe local/print-only planning surface for the P0q bootstrap route. With
   no mode, the submode defaults to printing the plan/help and exiting zero. It accepts only
@@ -547,28 +695,21 @@ Current implementation/design status through P0u:
   fixed-path user ACLs when needed, prints no config contents, does not stage
   helpers, and does not run Vault, workload-auth checks, reset/unseal, IM,
   support bundles, CP proof, or runtime identity generation.
-- The `runtime-identity-summary --ssh-target <target> --interactive-tty` route
-  is the P0r Mac-side runtime identity evidence route. It requires a visible
-  local terminal before staging, allocates an interactive SSH TTY, stages only
-  `scripts/remote_alpha_runtime_identity_helper_summary.sh`, invokes only the
-  staged helper with no helper override flags, attempts staged-helper cleanup by
-  default, writes no `.out` summary or operator summary, captures no
-  transcript, handles no secrets, does not print full summary JSON, and leaves
-  the canonical summary on the remote host at
-  `/var/tmp/execution-substrate-remote-alpha/runtime-identity-helper-summary.json`.
-  The route is evidence/projection only: it is not workload-auth
-  bootstrap/check, not reset/unseal, not ES token brokerage, not runtime
-  identity generation, not runtime-profile readiness, not submit readiness, not
-  retained-result readiness, not governed execution proof, not IM
-  refresh/support-bundle collection, not CP proof, and not production readiness.
+- The former P0r `runtime-identity-summary` facade route is retired. Every
+  non-secret invocation reaches the same fixed evidence-compatibility
+  retirement refusal before file access, discovery, helper initialization,
+  staging, or projection. The direct owner-local runtime-identity proof
+  producer remains separate.
 - The `es-service-tls-status --ssh-target <target> --interactive-tty` and
   `es-governance-tls-status --ssh-target <target> --interactive-tty` routes
-  stage only the dedicated status collector with fixed P0s/P0t scope. Stage
-  self-clean precedes status work. Completed evidence remains under the
-  protected status root in separate status-only canonical files; no summary
-  is copied to Mac `.out` and TTY output is not machine evidence.
-- The `es-service-tls-renew` and `es-governance-tls-renew` names are held and
-  refuse before staging, SSH, SCP, sudo, or host contact.
+  retain bounded visible-TTY operator forms over the dedicated status-only
+  collector. They stage the fixed Python collector with no-follow custody and
+  invoke the fixed root bootstrap; the canonical status summaries stay on the
+  remote host. Status performs no renewal, service restart, IM refresh, CP
+  proof, Vault/SPIRE/Nomad mutation, workload-auth, runtime-identity, or
+  production-readiness work. The `es-service-tls-renew` and
+  `es-governance-tls-renew` route names are held before SSH, SCP, sudo,
+  staging, or host contact. They do not dispatch the old renewal helper.
 - The `operator-healthcheck-tls-status --ssh-target <target>
   --interactive-tty` route is the P0u Mac-side host-local operator healthcheck
   client TLS evidence route. It requires a visible local terminal before
@@ -623,18 +764,20 @@ Current implementation/design status through P0u:
   --interactive-tty` route runs summary preparation and then config readability
   preparation before helper staging, helper preflights, any Vault bootstrap
   authority prompt, any proof secret prompt, and any Vault write.
-- The script prints Mac-side Infrastructure Manager refresh and support-bundle
-  commands only. It does not invoke Infrastructure Manager refresh or
-  support-bundle collection; the readiness session prints those commands as
-  follow-up evidence/provenance actions only, and the recovery session may print
-  those commands as next-step text only.
+- Before retirement, the facade printed Mac-side Infrastructure Manager refresh
+  and support-bundle commands without invoking either action, and the former
+  readiness session printed them as follow-up evidence/provenance actions. That
+  readiness-session behavior is superseded history, not current availability:
+  the retired readiness session now prints no follow-up commands. The unrelated
+  current bounded print commands and recovery-session next-step text remain
+  governed by their separately documented routes.
 - P0q implements the safe local/print-only workload-auth bootstrap modes and
   the Mac-side secret-sensitive bootstrap execution route described here, in
-  addition to the previously landed reset/unseal, readiness, and workload-auth
-  evidence routes. P0r adds the separate Mac-side runtime identity summary
-  evidence route. P0s/P0t retain only dedicated status routes for
-  ARS/AGS/ES artifact-registry and ES -> EGS trust-model mTLS; their renewal
-  names are held. P0u adds
+  addition to the retained reset/unseal routes. The former P0n workload-auth
+  evidence and P0r runtime-identity summary facade routes are retired.
+  P0s/P0t retain only the bounded dedicated ES TLS status routes; both renewal
+  names are pre-contact holds. Their current status-only collector and
+  diagnostic contracts are specified below. P0u adds
   the separate bounded operator healthcheck TLS status/renew route for the
   host-local operator client identity. P0v adds the implemented read-only
   noninteractive operator-healthcheck TLS status contract, but scheduled
@@ -644,14 +787,16 @@ Current implementation/design status through P0u:
   workload-auth bootstrap validation, preinstalled helper bundles, generic
   helper dispatch, and all other staged `es-*` helper delegation remain not
   implemented and require later audited slices.
-- Operator facade output is deterministic operator guidance and
-  evidence/projection only. The facade itself writes no operator-owned summary,
-  support bundle, report, or new authority artifact; the delegated helper
-  remains the owner of its existing readiness/provenance artifacts when the
-  route or readiness session is intentionally invoked. The recovery session
-  creates no summary file, writes no `.out`, and does not wrap the P0i/P0j
-  unseal delegation, the P0k reset dry-run delegation, or the P0m execute-reset
-  delegation in transcript capture.
+- Before retirement, operator-facade output was deterministic guidance and
+  evidence/projection only, and an invoked delegated helper remained owner of
+  its own readiness/provenance artifacts. That former readiness-session
+  invocation and artifact-ownership statement is superseded history: the
+  retired readiness session is not available for follow-up use and currently
+  stages, creates, refreshes, and owns no artifact. Unrelated current recovery
+  routes preserve their separately documented owner-local helper contracts. The
+  current recovery session creates no summary file, writes no `.out`, and does
+  not wrap the P0i/P0j unseal delegation, the P0k reset dry-run delegation, or
+  the P0m execute-reset delegation in transcript capture.
 
 ### Operator Involvement Model
 
@@ -676,25 +821,23 @@ TTY because it does not run reset, init, unseal, or secret-producing flows. P0l
 fixed the destructive Mac-side
 `vault-reset-disposable --ssh-target <target> --execute-reset --interactive-tty`
 contract as an explicit visible-terminal mode, and P0m implements that bounded
-operator route without live execute-reset validation. P0n adds the Mac-side
-`vault-workload-auth-check --ssh-target <target> --interactive-tty` evidence
-route over only the workload-auth public/internal helper pair; it is not
-workload-auth bootstrap and not a token broker. P0o adds only the safe
+operator route without live execute-reset validation. The former P0n
+workload-auth evidence facade is retired; its direct owner-local producer is
+not a facade compatibility contract. P0o adds only the safe
 local/print-only `vault-workload-auth-bootstrap` planning surface; it has no
 root-token prompt and no live bootstrap execution. P0p defines only the future
 prompt-only, TTY-bound execution contract; it still has no implemented
 root-token or proof-secret prompt and no live bootstrap execution. P0q
 implements the prompt-only, TTY-bound workload-auth bootstrap route over the
 dedicated bootstrap public/internal helper pair, with no live validation in
-this slice and no ES Vault token brokerage. P0r adds the Mac-side
-`runtime-identity-summary --ssh-target <target> --interactive-tty` evidence
-route over only the public runtime identity helper summary script; it is not
-runtime identity generation, not runtime-profile readiness, and not submit
-readiness. P0s/P0t retain the two Mac-side status facade names as temporary
-compatibility edges over one dedicated status-only collector. The corresponding
-renewal names are held before contact. Neither route grants generic TLS
-repair, IM/CP authority, production readiness, or EGS trust-model redesign.
-P0u adds the
+this slice and no ES Vault token brokerage. The former P0r runtime-identity
+summary facade is retired; its direct owner-local proof producer remains
+separate from the facade. P0s/P0t retain only the two bounded Mac-side ES TLS status names over
+one dedicated status-only collector. Both renewal names refuse before host
+contact. Status is evidence only; it grants no generic TLS deployment,
+IM reconciliation, CP proof, Vault/SPIRE/Nomad change, workload-auth, runtime
+identity, EGS trust-model redesign, or production readiness. The current
+collector contract is specified below. P0u adds the
 Mac-side `operator-healthcheck-tls-status --ssh-target <target>
 --interactive-tty` and `operator-healthcheck-tls-renew --ssh-target <target>
 --interactive-tty --execute-renew` routes over only the fixed operator
@@ -742,9 +885,7 @@ Execution-context split:
   `recovery-session vault-reset-disposable --ssh-target <target> --dry-run`,
   and P0m
   `recovery-session vault-reset-disposable --ssh-target <target>
-  --execute-reset --interactive-tty`, and P0n
-  `recovery-session vault-workload-auth-check --ssh-target <target>
-  --interactive-tty`, while P0o
+  --execute-reset --interactive-tty`, while P0o
   `recovery-session vault-workload-auth-bootstrap [--help|--plan|--inventory]`
   remains safe local/print-only and does not use SSH or staging. P0p defined
   the future Mac-side
@@ -754,14 +895,14 @@ Execution-context split:
   validation only. P0q also implements the bounded
   `recovery-session vault-workload-auth-bootstrap --ssh-target <target>
   --prepare-summary-path --interactive-tty` preparation form for summary-path
-  writability only. P0r adds the Mac-side
-  `recovery-session runtime-identity-summary --ssh-target <target>
-  --interactive-tty` evidence route over only
-  `scripts/remote_alpha_runtime_identity_helper_summary.sh`, with fake/static
-  validation only and no summary copy-back. P0s/P0t retain only the
-  `es-service-tls-status` and `es-governance-tls-status` compatibility routes
-  over one fixed-scope dedicated collector with separate protected status
-  evidence. Both corresponding renew names are held before host contact.
+  writability only. The former P0n and P0r evidence compatibility routes are
+  retired and are not Mac-side execution contexts. P0s/P0t retain only
+  `recovery-session es-service-tls-status --ssh-target <target>
+  --interactive-tty` and `recovery-session es-governance-tls-status
+  --ssh-target <target> --interactive-tty` as bounded status-only routes.
+  Both corresponding renewal names refuse before contact. The status facade
+  stages the dedicated fixed collector and retains protected summaries on the
+  remote host without Mac `.out` copy-back.
   P0u adds the Mac-side
   `recovery-session operator-healthcheck-tls-status --ssh-target <target>
   --interactive-tty` and `recovery-session operator-healthcheck-tls-renew
@@ -771,29 +912,29 @@ Execution-context split:
   fake/static validation only, no summary copy-back, no helper overrides, and
   no ES restart.
 - Remote-host only: P0i `recovery-session vault-unseal-existing --host-local`,
-  and Vault service-user check. The host-local runtime identity helper remains
-  available as a direct helper, but P0r adds the Mac-side operator topology for
-  that evidence route. The old host-local ES service TLS renewal public wrapper now refuses
-  locally, and its internal helper is undispatched. P0s/P0t status uses only
-  the dedicated collector. The host-local operator healthcheck TLS helper remains
+  and the independent owner-local Vault service-user, runtime-identity, and
+  workload-auth proof producers. The operator facade provides no route or
+  compatibility adapter for those three evidence families. The former ES service TLS renewal public wrapper refuses locally, its old
+  internal helper remains undispatched, and P0s/P0t use only the dedicated
+  status-only collector. The host-local operator healthcheck TLS helper remains
   available as a direct helper, but P0u adds the Mac-side operator topology for
-  that bounded host-local client identity status/renew route. The host-local workload-auth helper remains available as
-  a direct helper, but P0n adds the Mac-side operator topology for that evidence
-  route. P0m does not add a
+  that bounded host-local client identity status/renew route. P0m does not add a
   host-local execute-reset route through the operator facade; the reset
   helper's direct host-local capability remains outside the P0m
   operator-facade route.
 - Not v1 except the P0j unseal-existing route, the P0k reset dry-run planning
-  route, the P0m explicit execute-reset operator route, the P0n workload-auth
-  evidence route, the P0o safe bootstrap planning surface, and the P0q
-  workload-auth bootstrap execution route, the P0r runtime identity summary
-  evidence route, the P0s/P0t dedicated TLS status routes with held renewal,
-  and the P0u operator healthcheck TLS
+  route, the P0m explicit execute-reset operator route, the P0o safe bootstrap
+  planning surface, the P0q workload-auth bootstrap execution route, the P0s/P0t dedicated ES TLS status routes with held renewal, and the P0u operator healthcheck TLS
   status/renew route: generic remote staging, arbitrary shell passthrough,
   post-unseal/service-user/IM/support-bundle/CP-proof bundling, live execute-reset
   validation, or live Vault workload-auth bootstrap validation.
 
-Proposed v1/v2 slice sequence:
+Historical v1/v2 slice sequence — superseded and non-authoritative:
+
+The numbered record below preserves how the facade evolved. It grants no
+current route, alias, ingestion, staging, discovery, aggregation, projection,
+or Tranche B prerequisite for the retired P0g, P0n, or P0r compatibility
+surfaces.
 
 1. docs/static-test prep
 2. help/inventory/print-command skeleton
@@ -876,7 +1017,12 @@ later audited slice. P0q does not implement root-token automation, ES token
 brokerage, workload-auth success proof, live validation, or
 production/deployment/reconciliation architecture.
 
-### P0c First Staged-Helper Delegation Plan
+### Historical P0c Staged-Helper Delegation Plan — Retired
+
+This subsection is historical design context only. It does not authorize a
+current route, helper execution, readiness claim, staging action, or evidence
+refresh. The readiness staging route is now a fixed tombstone and must not
+contact a host or produce evidence.
 
 `Bounded slice rule`: P0c is design/static-test prep only. It does not
 implement helper delegation, does not change `scripts/remote_alpha_operator.sh`
@@ -884,8 +1030,7 @@ behavior beyond existing refusal coverage, and does not route to SSH, sudo,
 Infrastructure Manager, Vault, Nomad, Docker, SPIRE, `systemctl`, support
 bundle collection, reset/unseal flows, or ES helper execution.
 
-The recommended first staged-helper delegation target for the next
-implementation slice is:
+The target selected in that historical plan was:
 
 - proposed operator subcommand: `es-writable-state-readiness-check`
 - exact helper to delegate later:
@@ -968,9 +1113,15 @@ mutation-capable `--apply` paths. The config/TLS staged wrapper is already
 called out above as a sudo-model gap unless fixed and also fronts a helper
 whose host-local default is apply.
 
-### P0d First Staged-Helper Delegation Implementation
+### Historical P0d Staged-Helper Delegation Implementation — Retired
 
-`Bounded slice rule`: P0d implements exactly one Remote Alpha operator route:
+This subsection is historical v1 implementation context only. The live route
+described below is retired. Non-secret operator-facade argument shapes reach
+the fixed two-line tombstone; secret-like shapes are rejected first by the
+fixed one-line privacy prefilter. Direct compatibility wrappers still delegate
+argument-agnostically to their fixed tombstones.
+
+Historical bounded-slice record: P0d implemented exactly one Remote Alpha operator route:
 `scripts/remote_alpha_operator.sh es-writable-state-readiness-check`.
 
 The implemented route delegates only to:
@@ -1034,9 +1185,12 @@ It does not rename, replace, aggregate, or obscure those files. It writes no
 aggregate operator summary and does not call Infrastructure Manager; the facade
 may continue to print the Mac-side IM refresh and support-bundle commands only.
 
-### P0f Readiness Session Workflow
+### Historical P0f Readiness Session Workflow — Retired
 
-`Bounded slice rule`: P0f implements exactly one Remote Alpha operator
+This subsection is historical v1 context only. The readiness session no longer
+stages, invokes, discovers, refreshes, or projects current readiness evidence.
+
+Historical bounded-slice record: P0f implemented exactly one Remote Alpha operator
 workflow command:
 `scripts/remote_alpha_operator.sh readiness-session`.
 
@@ -1118,7 +1272,12 @@ ownership, generic remote staging, arbitrary shell passthrough, live IM
 execution, CP proof, support-bundle collection, or Remote Alpha deployment
 architecture.
 
-### P0g Recovery Session Safe Skeleton
+### Historical P0g Evidence Ingestion — Superseded and Non-Authoritative
+
+This entire subsection is design history only. It grants no current
+evidence-check flag, parser, schema interpretation, discovery, aggregation, or
+projection behavior. The former defenses remain useful rationale for any separately
+governed future local-file reader, but no such replacement is selected here.
 
 `Bounded slice rule`: P0g implements one safe/local Remote Alpha operator
 workflow command:
@@ -1157,8 +1316,10 @@ The session may accept these evidence path flags only with `--evidence-check`:
 - `--vault-workload-auth-summary <path>`
 - `--runtime-identity-summary <path>`
 - `--vault-service-user-summary <path>`
-- `--readiness-summary <path>`
-- `--staging-record <path>`
+
+The retired `--readiness-summary` and `--staging-record` spellings are handled
+as explicit stale inputs. Each receives one fixed non-echoing refusal before
+the supplied value is inspected or any file is opened.
 
 The session rejects:
 
@@ -1200,21 +1361,31 @@ safe/local, check-only, secret-sensitive, destructive, future, and
 blocked/reopened. It must not inspect live host state and must not run any
 helper.
 
-`--next-steps` prints command text only. It may include an existing
-`readiness-session` example plus the Mac-side Infrastructure Manager refresh and
+`--next-steps` prints command text only. It identifies `readiness-session` as
+retired and may print the Mac-side Infrastructure Manager refresh and
 support-bundle command texts. Those printed IM commands remain separate
 IM-owned evidence/provenance actions, not ES execution and not authority.
 
-`--evidence-check` is local-only. If no evidence path flags are supplied, it
-prints a non-error message that no evidence paths were supplied. For each
-supplied path, it must require that the file exists, compute byte count and
-SHA-256 digest, scan for secret-like content before JSON parsing, parse JSON,
-and print only non-secret metadata: path, byte count, SHA-256 digest,
-`schema_version` when present, and selected safe status/count fields when
-present. It must not print full JSON, create a session summary file, write
-`.out`, run helpers, run IM, or treat evidence as authority. If secret-like
-content is detected or JSON is malformed, it must fail with the path
-classification only and must not print file contents.
+`--evidence-check` is local-only and current-only. If no evidence path flags are
+supplied, it prints a non-error message that no evidence paths were supplied.
+For each supplied current path, it requires a bounded no-follow regular file,
+computes byte count and SHA-256, scans for secret-like content before JSON
+parsing, and uses a strict duplicate-aware decoder that rejects non-finite
+numbers and requires an exact scalar schema identifier.
+The local Python runtime must expose `O_NOFOLLOW`; capability absence fails
+closed rather than substituting zero. The reader performs `lstat` before open,
+opens no-follow, validates the descriptor, reads within the fixed bound,
+revalidates the descriptor, and then `lstat`s the visible path again to require
+that it still names the same regular object with the same size. Decoded-key
+privacy inspection uses an explicit bounded stack rather than recursive calls.
+Every selected input is validated completely and projected into a private
+buffer before the complete output is published, so a later failure produces no
+partial banner or earlier projection. It never prints the supplied path. The
+three selected current schemas use explicit safe-field allowlists. It must not
+print full JSON, create a session summary file, write `.out`, run helpers, run
+IM, or treat evidence as authority. Symlink, nonregular, oversized, malformed,
+duplicate-member, non-finite, secret-like, non-scalar-schema, and unknown-schema
+inputs fail closed without file contents or supplied paths.
 
 P0g does not add Vault reset/unseal execution, Vault workload-auth check
 execution, runtime identity summary generation, Vault service-user check/apply
@@ -1222,55 +1393,48 @@ execution, config/TLS, binary deployment, writable-state ownership, generic
 remote staging, arbitrary shell passthrough, live IM execution, CP proof,
 support-bundle collection, or Remote Alpha deployment architecture.
 
-### P0h Schema-Aware Recovery Evidence Interpretation
+### P0h Historical-v1 Evidence Interpretation — Retired
 
-`Bounded slice rule`: P0h extends only the local
-`scripts/remote_alpha_operator.sh recovery-session --evidence-check` mode.
+`Temporary compatibility edge`: P0h's former local historical-v1 display is
+retired. Archived readiness, readiness-staging, and ES service-user migration
+v1 fixture and artifact bytes remain historical evidence only, but no live
+operator route parses, validates, or projects those schemas. The former
+`--readiness-summary` and `--staging-record` flags are absent from current help
+and ordinary dispatch and receive a fixed non-echoing stale-input refusal
+before file access. `--evidence-dir` does not discover their former filenames.
 
-This slice remains local-only evidence interpretation. It does not add live
-helper execution, Infrastructure Manager execution, support-bundle collection,
-CP proof, reset/unseal behavior, workload-auth live checks, runtime identity
-summary generation, Vault service-user apply, generic helper dispatch, generated
-session summaries, `.out` writes, or authority-bearing behavior.
+The unrelated producer schemas remained separately bounded at the time of this
+historical design, and their owner-local producer contracts remain documented;
+they no longer have operator-facade interpretation:
 
-The known schemas are:
-
-- `execution-substrate.remote-alpha.es-writable-state-readiness.v1`
-- `execution-substrate.remote-alpha.es-writable-state-readiness-stage-provenance.v1`
 - `execution-substrate.remote-alpha.vault-workload-auth-summary.v1`
 - `execution-substrate.remote-runtime-identity-helper-summary.v1alpha1`
 - `execution-substrate.remote-alpha.vault-service-user-migration-summary.v1`
 
-Known schemas must be interpreted through explicit safe-field allowlists. The
-operator facade may print only non-secret metadata: path, byte count, SHA-256
-digest, schema, schema interpretation, selected status/classification fields,
-booleans, and counts. It must not print full JSON, JWT-SVIDs, Vault tokens,
-root tokens, unseal keys, API keys, private keys, passwords, proof secret values,
-raw identity payloads, arbitrary smoke-command output, or secret-bearing paths.
+The former facade interpreted those schemas through explicit safe-field
+allowlists. That parser and those projections are now absent.
 
-Unknown schemas are allowed by default. For unknown schemas, the facade may print
-only path, byte count, SHA-256 digest, `schema_version` when present, and
-`schema_interpretation=unknown`. With `--strict-known-schema`, unknown schemas
-must fail without printing file contents.
+Missing no-follow capability, FIFO, socket, directory, symlink, oversized,
+removed/replaced/unstable path, malformed, secret-like, and unknown-schema
+inputs fail closed without printing file contents or supplied paths.
 
-`--evidence-dir <path>` is local-only. It may discover these direct filenames
-under the supplied directory:
+The former local-only evidence-directory mode discovered four direct filenames
+under a supplied directory. This list is superseded history, not current
+discovery authority:
 
-- `es-writable-state-readiness.json`
-- `es-writable-state-readiness-helper-staging-record.json`
 - `vault-workload-auth-summary.json`
 - `runtime-identity-helper-summary.json`
 - `vault-service-user-migration-check-only.json`
 - `vault-service-user-migration-apply-summary.json`
 
-The directory mode must not recurse, must inspect only files that exist, must
-report missing expected filenames as `not_supplied`, and must never write into
-the directory.
+The historical directory mode was non-recursive and read-only. The current
+facade does not accept that control and performs no artifact discovery.
 
-Schema-aware interpretation remains evidence/projection/diagnostics only. It is
+The historical interpretation was evidence/projection/diagnostics only. It was
 not IM authority, CP recovery authority, ES Vault token brokerage, Vault
 production lifecycle, or Remote Alpha deployment/provisioning/reconciliation
-architecture.
+architecture. The historical bytes grant no readiness, migration, rollback,
+cleanup, reclamation, scheduler, or mutation authority.
 
 ### P0i Host-Local Vault Unseal Existing Recovery Session
 
@@ -1904,9 +2068,14 @@ not CP recovery authority, not Nomad/SPIRE boundary redesign, not governed
 execution proof, and not Remote Alpha production, deployment, provisioning, or
 reconciliation architecture.
 
-### P0n Mac-Side Vault Workload-Auth Check Recovery Session
+### Historical P0n Mac-Side Vault Workload-Auth Check — Superseded and Non-Authoritative
 
-`Bounded slice rule`: P0n implements exactly one Mac-side post-reset
+This entire subsection records superseded compatibility design. It grants no
+current operator route, alias, helper staging, artifact ingestion, discovery,
+aggregation, projection, or Tranche B prerequisite. The direct producer
+contract described later remains independent of this history.
+
+Historical bounded-slice record: P0n implemented one Mac-side post-reset
 workload-auth evidence route:
 
 - `scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
@@ -2836,9 +3005,14 @@ P0q tests:
   invoked, cleanup is attempted, no transcript/`tee`/`script` is used, and no
   Mac `.out` copy-back occurs
 
-### P0r Mac-Side Runtime Identity Summary Recovery Session
+### Historical P0r Mac-Side Runtime Identity Summary — Superseded and Non-Authoritative
 
-`Bounded slice rule`: P0r implements exactly one Mac-side runtime identity
+This entire subsection records superseded compatibility design. It grants no
+current operator route, alias, helper staging, artifact ingestion, discovery,
+aggregation, projection, or Tranche B prerequisite. The direct producer proof
+section remains independent of this history.
+
+Historical bounded-slice record: P0r implemented one Mac-side runtime identity
 evidence route:
 
 - `scripts/remote_alpha_operator.sh recovery-session runtime-identity-summary
@@ -4062,9 +4236,11 @@ Stop conditions for the future monitor:
 - operator healthcheck renewal proceeds before CA custody/signing topology is
   documented
 
-### P0d Interactive Validation Evidence
+### Historical P0d interactive validation evidence — superseded and non-authoritative
 
-The P0d interactive validation artifact directory
+This is a superseded historical record, not a current-status section or an
+invocable helper contract. It grants no current readiness, migration, apply,
+cleanup, or reclamation authority. The P0d interactive validation artifact directory
 `.out/remote-alpha-m75q-p0d-alpha-compat-interactive-20260524T033740Z` is
 operator-workstation-to-remote interactive-sudo validation evidence only. It is
 generated output, not tracked source, not design authority, and not an ES, CP,
@@ -4960,25 +5136,25 @@ The active repo-derived EGS service inputs for that EGS step remain:
 Remote Supported-Host Alpha may also apply one separate ES config/TLS
 ownership prep slice without changing the live ES service user.
 
-Current live bounded ES state on Remote Alpha is now:
+Archived v1 evidence recorded this earlier bounded ES state:
 
 - ES config/TLS prep is applied.
 - ES stable writable-state roots are prepared.
-- the current live long-lived `es.service` now runs as `User=es`,
+- the observed long-lived `es.service` ran as `User=es`,
   `Group=es`, `UMask=0027`.
 - post-apply `/health`, `GET /v1/executions:contract`, the retained-result
   fetch/materialization flow, and the current lowest-cost existing happy path
   all passed.
-- future writable-state readiness passed with the long-lived service already at
+- the then-current future-mode writable-state check passed with the long-lived service at
   `es:es`.
-- Infrastructure Manager readiness is accepted.
+- Infrastructure Manager readiness was accepted for that historical exercise.
 - this does not claim full ES/runtime de-root.
 - the root-start runtime helper, Nomad task `User: "0:0"`, helper-private
   SPIRE traversal, broad selector posture, and Vault/workload-zone handoff
   remain bounded compatibility edges.
-- old root-era staging/results roots remain preserved as rollback/debug/evidence
-  state until a later explicit cleanup/archive action after the rollback window
-  expires; they must not be recursively re-owned or deleted by the migration.
+- old root-era staging/results roots were recorded as preserved
+  rollback/debug/evidence state. That record does not authorize current cleanup,
+  archive, recursive ownership change, or deletion.
 
 The config/TLS, binary-deployment, and writable-state subsections below still
 describe earlier bounded slices whose own apply summaries intentionally record
@@ -5118,7 +5294,12 @@ The required first step before any live apply is:
 
 - `sudo /var/tmp/execution-substrate-remote-alpha/helper-staging/scripts/remote_alpha_prepare_es_config_tls.sh --check-only`
 
-## Remote ES Writable-State Readiness Evidence Flow
+## Historical Remote ES Writable-State Readiness Evidence Flow — Retired
+
+Everything in this subsection records the superseded v1 route and artifact
+shape for archival interpretation only. It is not current operator guidance.
+The wrapper now reaches a fixed tombstone for every argument and performs no
+host contact, inspection, staging, temporary creation, or evidence production.
 
 Remote Supported-Host Alpha may also record one separate ES writable-state
 readiness evidence flow without mutating the live ES host state.
@@ -5392,7 +5573,11 @@ must preserve the accepted `User=es`, `Group=es`, `UMask=0027` service
 identity instead of treating it as drift. Those artifacts still do not by
 themselves authorize writable-state or service-user mutation.
 
-## Remote ES Writable-State Ownership Surface
+## Historical Remote ES Writable-State Ownership Surface — Retired
+
+Everything in this subsection records superseded v1 design history only. The
+current wrapper delegates to a fixed tombstone and performs no discovery,
+ownership change, rotation, backup, staging, or artifact production.
 
 Remote Supported-Host Alpha may now carry one bounded repo-side operator
 surface for preparing only the stable staging/results roots required before the
@@ -5553,7 +5738,14 @@ governed proof, they preserve the earlier slice-specific fact that
 `es.service` still ran as `root(default)` at that step, and they did not by
 themselves authorize or prove the later `es.service` user flip.
 
-## Remote ES Service-User Migration Surface
+## Historical Remote ES Service-User Migration Surface — Retired
+
+Everything in this subsection through the next top-level section is superseded
+v1 design/evidence history, not current operator guidance. The service-user,
+readiness, rollback-generation, and old-root-planning wrappers now delegate to
+fixed tombstones. They perform no host or artifact inspection, staging,
+mutation, backup, plan, JSON, Markdown, or evidence production. Archived v1
+files have no readiness, migration, drain, reclamation, or mutation authority.
 
 Remote Supported-Host Alpha may now carry one bounded repo-side operator
 migration surface for the long-lived `es.service` user flip.
@@ -5672,16 +5864,17 @@ not SSH, must not use `sudo`, must not mutate the live host, and must not
 archive or delete anything. While the rollback window remains active, its
 default recommendation must stay `retain`.
 
-The current branch does not yet implement a live preserved-root
-cleanup/archive executor. Any later operator helper for that action must stay
+The historical planner did not implement a live preserved-root cleanup/archive
+executor, and the current planner is a fixed tombstone. Any later operator
+helper for that action must stay
 separate from this planner, must require explicit `check-only` and `apply`
 modes, must run only after the rollback window is explicitly closed and
 preserved old-root evidence is archived elsewhere or explicitly deemed
 unnecessary, must require operator signoff, must not recursively `chown` old
 roots, and must not delete by default.
 
-The current bounded live state after that later apply is now the converse of
-the earlier check-only posture: the long-lived `es.service` is already running
+The archived bounded state recorded after that later apply was the converse of
+the earlier check-only posture: the observed long-lived `es.service` ran
 as `User=es`, `Group=es`, `UMask=0027`; ES config/TLS prep is applied; stable
 writable-state roots are prepared; post-apply `/health`,
 `GET /v1/executions:contract`, the current lowest-cost existing happy path, and
@@ -5689,15 +5882,15 @@ future writable-state readiness all passed; and the old root-era staging/results
 roots remain preserved as rollback/debug/evidence state. This still does not
 claim full ES/runtime de-root.
 
-For bounded rollback rehearsal after that completed service-user change, the
-repo now carries the local-only checker
-`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`. Its default
-input is `.out/remote-alpha-m75q`, and it emits:
+For historical bounded rollback rehearsal after that completed service-user
+change, the earlier tranche carried the local-only checker
+`scripts/remote_alpha_es_service_user_rollback_rehearsal.sh`. Its archived
+default input was `.out/remote-alpha-m75q`, and it emitted:
 
 - `es-service-user-rollback-rehearsal.json`
 - `es-service-user-rollback-rehearsal.md`
 
-That rehearsal is non-mutating and local-evidence-only. It must not SSH, use
+That historical rehearsal was non-mutating and local-evidence-only. It did not SSH, use
 `sudo`, mutate the live host, execute rollback, run ES apply, run governed
 proof, or do PR/merge prep. It must classify findings as `pass`, `warning`, or
 `blocker` while verifying that the service-user backup path is recorded, the
@@ -5708,9 +5901,9 @@ referenced, old root-era staging/results roots remain preserved as
 rollback/debug/evidence state, and no recorded rollback instruction requires
 recursive chown or broad deletion.
 
-The current branch does not require or implement a live rollback executor
-while the current `User=es`, `Group=es`, `UMask=0027` service posture remains
-healthy. Any later rollback execution helper must remain recovery-only, must
+The current repository does not implement a live rollback executor, and the
+rollback-generation wrapper is a fixed tombstone. Any later rollback execution
+helper must remain recovery-only, must
 stay bounded with explicit `check-only` and `apply` modes, and must not be run
 live unless operationally necessary.
 
@@ -5966,26 +6159,19 @@ The repo-owned direct host-local check path for this slice is:
 
 - `sudo scripts/remote_alpha_vault_workload_auth_check.sh`
 
-That command is a host-local root check. The P0n Mac-side operator facade route
-may stage only the public wrapper and its internal helper to the Remote Alpha
-host and invoke only the staged public helper through:
-
-- `scripts/remote_alpha_operator.sh recovery-session vault-workload-auth-check
-  --ssh-target <target> --interactive-tty`
-
-The Mac-side route does not copy the summary back to Mac `.out`, does not print
-full summary JSON, and does not create an operator summary. Both the direct
-helper path and the Mac-side staged route are evidence/projection only. They do
-not install ES, AGS, ARS, or EGS, do not build the normal-shell image, do not
-call ES `:prepare` or `:submit`, do not change ES public contracts, do not
-bootstrap workload auth, and do not make ES a Vault token broker.
+That command is an optional owner-local host check under its own contract. The
+operator facade does not stage or invoke it and does not ingest, discover,
+aggregate, or project its summary. The direct helper is evidence only: it does
+not install ES, AGS, ARS, or EGS, build the normal-shell image, call ES
+`:prepare` or `:submit`, change ES public contracts, bootstrap workload auth,
+or make ES a Vault token broker.
 
 The summary schema for that host-local record is:
 
 - `execution-substrate.remote-alpha.vault-workload-auth-summary.v1`
 
-It is a bounded host-local audit record, not an ES lifecycle or readiness
-surface. It must not be treated as:
+It is a bounded host-local audit record, not an ES lifecycle or readiness surface.
+It must not be treated as:
 
 - ES `/health`
 - ES submit readiness

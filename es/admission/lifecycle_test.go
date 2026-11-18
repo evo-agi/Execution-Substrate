@@ -10,85 +10,63 @@ import (
 	esconfig "execution-substrate/es/config"
 )
 
-func TestRepresentsTerminalSuccessRequiresZeroExitCode(t *testing.T) {
-	successful := &nomadAllocationDetail{
-		ClientStatus: "complete",
-		TaskStates: map[string]nomadTaskState{
-			nomadTaskName: {
-				State: "dead",
-				Events: []nomadTaskEvent{
-					{Type: "Started"},
-					{Type: "Terminated", ExitCode: 0},
-				},
-			},
-		},
-	}
-	if !representsTerminalSuccess(successful) {
-		t.Fatalf("expected dead task with zero exit code to be treated as terminal success")
-	}
-
-	failed := &nomadAllocationDetail{
-		ClientStatus: "failed",
-		TaskStates: map[string]nomadTaskState{
-			nomadTaskName: {
-				State: "dead",
-				Events: []nomadTaskEvent{
-					{Type: "Terminated", ExitCode: 1},
-				},
-			},
-		},
-	}
-	if representsTerminalSuccess(failed) {
-		t.Fatalf("did not expect nonzero exit code to be treated as terminal success")
-	}
-}
-
-func TestMaybeCleanupSuccessfulStageRootRemovesOnlySuccessfulRuns(t *testing.T) {
-	stagingRoot := t.TempDir()
+func TestStatusRetainsSuccessfulStageRoot(t *testing.T) {
+	stagingRoot := physicalTestTempDir(t)
+	resultsRoot := t.TempDir()
 	service := Service{
-		cfg: esconfig.Config{
-			Execution: esconfig.ExecutionConfig{
-				StagingRootDir: stagingRoot,
-				ResultsRootDir: t.TempDir(),
-			},
-		},
-	}
-	if err := os.MkdirAll(service.cfg.Execution.ResultsRootDir, 0o700); err != nil {
-		t.Fatalf("mkdir results root: %v", err)
+		cfg: esconfig.Config{Execution: esconfig.ExecutionConfig{StagingRootDir: stagingRoot, ResultsRootDir: resultsRoot}},
+		nomadClient: newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/job/exec-run-0123456789abcdef":
+				_, _ = w.Write([]byte(`{"ID":"exec-run-0123456789abcdef","Status":"dead","ModifyIndex":10}`))
+			case "/v1/job/exec-run-0123456789abcdef/allocations":
+				_, _ = w.Write([]byte(`[{"ID":"alloc-success","ModifyIndex":20}]`))
+			case "/v1/allocation/alloc-success":
+				_, _ = w.Write([]byte(`{"ID":"alloc-success","ClientStatus":"complete","ModifyIndex":25,"TaskStates":{"task":{"State":"dead","Events":[{"Type":"Terminated","ExitCode":0}]}}}`))
+			default:
+				t.Fatalf("unexpected path %q", r.URL.Path)
+			}
+		})),
 	}
 	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
 	layout := newExecutionPackageLayout(service.cfg, locator)
+	if err := os.MkdirAll(layout.stageRootDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.stageRootDir, "sentinel"), []byte("retained"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Status(context.Background(), locator.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != executionLifecycleStatusTerminal || !result.Terminal {
+		t.Fatalf("unexpected status: %+v", result)
+	}
+	content, readErr := os.ReadFile(filepath.Join(layout.stageRootDir, "sentinel"))
+	if readErr != nil || string(content) != "retained" {
+		t.Fatalf("successful observation changed staging: %q %v", content, readErr)
+	}
+}
 
-	if err := os.MkdirAll(layout.stageRootDir, 0o755); err != nil {
-		t.Fatalf("mkdir stage root: %v", err)
-	}
-	service.maybeCleanupSuccessfulStageRoot(locator, &nomadAllocationDetail{
-		ClientStatus: "failed",
-		TaskStates: map[string]nomadTaskState{
-			nomadTaskName: {
-				State:  "dead",
-				Events: []nomadTaskEvent{{Type: "Terminated", ExitCode: 1}},
-			},
-		},
-	})
-	if _, err := os.Stat(layout.stageRootDir); err != nil {
-		t.Fatalf("expected failed allocation stage root to remain for debugging, got %v", err)
-	}
+func TestDescriptorCloseRetainsSuccessfulRunRoot(t *testing.T) {
+	stagingRoot := physicalTestTempDir(t)
+	service := Service{cfg: esconfig.Config{Execution: esconfig.ExecutionConfig{StagingRootDir: stagingRoot, ResultsRootDir: t.TempDir()}}}
+	locator := newExecutionLocatorFromRunID("run-0123456789abcdef")
+	layout := newExecutionPackageLayout(service.cfg, locator)
 
-	if err := os.WriteFile(filepath.Join(layout.stageRootDir, "marker"), []byte("keep me until success"), 0o600); err != nil {
-		t.Fatalf("write stage marker: %v", err)
+	custody, err := claimStagingCustody(stagingRoot, locator.RunID, executionPlatformStateOwner{UID: os.Getuid(), GID: os.Getgid()})
+	if err != nil {
+		t.Fatalf("claim stage root: %v", err)
 	}
-	service.maybeCleanupSuccessfulStageRoot(locator, &nomadAllocationDetail{
-		ClientStatus: "complete",
-		TaskStates: map[string]nomadTaskState{
-			nomadTaskName: {
-				State:  "dead",
-				Events: []nomadTaskEvent{{Type: "Terminated", ExitCode: 0}},
-			},
-		},
-	})
-	if _, err := os.Stat(layout.stageRootDir); !os.IsNotExist(err) {
-		t.Fatalf("expected successful allocation stage root to be removed, got %v", err)
+	if err := custody.writeFile("sentinel", []byte("retained"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := custody.close(); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(filepath.Join(layout.stageRootDir, "sentinel")); err != nil || string(content) != "retained" {
+		t.Fatalf("close changed retained stage root: %q %v", content, err)
 	}
 }
 

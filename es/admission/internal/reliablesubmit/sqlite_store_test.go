@@ -21,13 +21,43 @@ func mustOpenSQLiteClaimStore(t *testing.T, path string) *sqliteClaimStore {
 	return store
 }
 
+// Historical codec-2 establish/CAS conformance is exercised on an authentic
+// schema-2 fixture. Reopen in the conformance handle migrates that exact row
+// to schema 3, where new rows require complete synthetic codec 3.
+func mustOpenLegacyV2ClaimStore(t *testing.T, path string) *sqliteClaimStore {
+	t.Helper()
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", sqliteClaimStoreDSN(path, sqliteDefaultBusyTimeoutMS))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA application_id=1163088467`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range sqliteClaimStoreMigrations[:2] {
+		if _, err := db.ExecContext(ctx, migration.sql); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO reliable_submit_migrations(version,name,applied_at_unix_ns,source_sha256) VALUES (?,?,?,?)`, migration.version, migration.name, int64(1720000000000000000), sqliteMigrationSHA256(migration.sql)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version=2`); err != nil {
+		t.Fatal(err)
+	}
+	return &sqliteClaimStore{db: db, path: path, legacyV2Fixture: true}
+}
+
 func TestSQLiteClaimStoreConformance(t *testing.T) {
 	runClaimStoreConformance(t, claimStoreConformanceFactory{
 		name: "sqlite",
 		open: func(t *testing.T) claimStoreConformanceHandle {
 			t.Helper()
 			path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
-			store := mustOpenSQLiteClaimStore(t, path)
+			store := mustOpenLegacyV2ClaimStore(t, path)
 			return sqliteClaimStoreConformanceHandle(t, path, store)
 		},
 	})
@@ -71,54 +101,152 @@ func TestSQLiteClaimStoreEstablishInsertTargetsCallerKeyConflictOnly(t *testing.
 }
 
 func TestSQLiteClaimStoreTargetedCallerKeyConflictLoadsExistingClaim(t *testing.T) {
-	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
+	for _, codec := range []uint16{durableClaimCodecVersionLegacy, durableClaimCodecVersion} {
+		t.Run(strconv.Itoa(int(codec)), func(t *testing.T) {
+			path := sqliteTestPath(t, "reliable-submit.sqlite3")
+			f := newDurableFixture(t)
+			var expected durableClaimRecord
+			if codec == durableClaimCodecVersionLegacy {
+				// This row is inserted under schema 1, then migrated through 2 to 3.
+				f.caller = mustPrivateCallerRef(t, []byte("c"))
+				f.submitKey = mustPrivateSubmitKeyRef(t, []byte("k"))
+				f.claim = mustPrivateClaimID(t, f.caller, f.submitKey)
+				f.binding = mustPrivatePlanBinding(t, bytes.Repeat([]byte("b"), 257))
+				f.plan = mustPrivateBoundPlan(t, f.binding, f.witness)
+				fixtureSchemaVersion(t, path, 1)
+			} else {
+				legacy := mustOpenLegacyV2ClaimStore(t, path)
+				service := mustDurableService(t, legacy, fixedClaimClock{now: f.now})
+				created := mustServiceEstablish(t, service, f)
+				if created.kind != durableClaimOutcomeEstablished || !created.hasRecord {
+					t.Fatalf("schema-2 created outcome = %+v", created)
+				}
+				expected = created.record
+				if err := legacy.close(); err != nil {
+					t.Fatalf("close schema-2 fixture: %v", err)
+				}
+			}
+			store := mustOpenSQLiteClaimStore(t, path)
+			defer store.close()
+			if codec == durableClaimCodecVersionLegacy {
+				var err error
+				expected, err = store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
+				if err != nil {
+					t.Fatalf("load migrated codec-1 row: %v", err)
+				}
+			}
+			if expected.codecVersion != codec {
+				t.Fatalf("migrated codec = %d, want %d", expected.codecVersion, codec)
+			}
+			service := mustDurableService(t, store, fixedClaimClock{now: f.now})
+			existing, err := store.establishClaim(context.Background(), establishClaimCommand{record: expected})
+			if err != nil {
+				t.Fatalf("direct duplicate establish: %v", err)
+			}
+			if existing.created || !existing.record.equal(expected) {
+				t.Fatalf("duplicate caller/key did not load the existing row")
+			}
+			assertSQLiteClaimUnchanged(t, store, expected)
+			assertSQLiteClaimRowCount(t, store.db, 1)
+
+			replayed, err := service.establishOrLoadClaim(context.Background(), establishClaimRequest{
+				claim: f.claim, plan: f.plan, mutation: f.nextMut,
+			})
+			if err != nil {
+				t.Fatalf("service replay after duplicate: %v", err)
+			}
+			if replayed.kind != durableClaimOutcomeExactReplay || replayed.underlyingReplayKind != KindPendingBeforeAssignment {
+				t.Fatalf("service replay outcome = %+v", replayed)
+			}
+			conflictPlan := mustPrivateBoundPlan(t, f.otherBind, f.witness)
+			conflict, err := service.establishOrLoadClaim(context.Background(), establishClaimRequest{
+				claim: f.claim, plan: conflictPlan,
+				mutation: mustPrivateMutationRef(t, []byte("private-conflict-mutation")),
+			})
+			if err != nil {
+				t.Fatalf("service conflict after duplicate: %v", err)
+			}
+			if conflict.kind != durableClaimOutcomeConflict || conflict.hasRecord {
+				t.Fatalf("service conflict outcome = %+v", conflict)
+			}
+			assertSQLiteClaimUnchanged(t, store, expected)
+			assertSQLiteClaimRowCount(t, store.db, 1)
+		})
+	}
+}
+
+func TestSQLiteClaimStoreV3LegacyEstablishAbsentAndCurrentWinnerFailClosed(t *testing.T) {
+	t.Run("absent legacy key", func(t *testing.T) {
+		store := mustOpenSQLiteClaimStore(t, sqliteTestPath(t, "state", "absent.sqlite3"))
+		defer store.close()
+		f := newDurableFixture(t)
+		candidate := mustPrivateRecord(t, mustPrivatePendingBefore(t, f), f)
+		result, err := store.establishClaim(context.Background(), establishClaimCommand{record: candidate})
+		if !errors.Is(err, errClaimStoreUnsupported) || result.created || result.record.claim.Valid() {
+			t.Fatalf("absent legacy establish did not fail closed: %v", err)
+		}
+		assertSQLiteClaimRowCount(t, store.db, 0)
+	})
+
+	t.Run("current codec-3 winner", func(t *testing.T) {
+		store := mustOpenSQLiteClaimStore(t, sqliteTestPath(t, "state", "current.sqlite3"))
+		defer store.close()
+		current, descriptor := syntheticReplayRecordFixture(t)
+		registerSyntheticRecordKeys(t, store, descriptor)
+		created, err := store.establishClaim(context.Background(), establishClaimCommand{record: current})
+		if err != nil || !created.created {
+			t.Fatalf("establish current claim: %v", err)
+		}
+		legacyCandidate := current.clone()
+		legacyCandidate.codecVersion = durableClaimCodecVersion
+		legacyCandidate.replay = replayClaimDescriptor{}
+		if err := legacyCandidate.validate(); err != nil {
+			t.Fatalf("construct legacy candidate: %v", err)
+		}
+		result, err := store.establishClaim(context.Background(), establishClaimCommand{record: legacyCandidate})
+		if !errors.Is(err, errClaimStoreUnsupported) || result.created || result.record.claim.Valid() {
+			t.Fatalf("current winner was treated as historical: %v", err)
+		}
+		assertSQLiteClaimUnchanged(t, store, current)
+		assertSQLiteClaimRowCount(t, store.db, 1)
+	})
+}
+
+func TestSQLiteClaimStoreV3CorruptMigratedHistoricalRowFailsClosed(t *testing.T) {
+	path := sqliteTestPath(t, "state", "corrupt-historical.sqlite3")
+	legacy := mustOpenLegacyV2ClaimStore(t, path)
+	f := newDurableFixture(t)
+	service := mustDurableService(t, legacy, fixedClaimClock{now: f.now})
+	created := mustServiceEstablish(t, service, f)
+	if err := legacy.close(); err != nil {
+		t.Fatalf("close schema-2 fixture: %v", err)
+	}
 	store := mustOpenSQLiteClaimStore(t, path)
 	defer store.close()
-	f := newDurableFixture(t)
-	service := mustDurableService(t, store, fixedClaimClock{now: f.now})
-	created := mustServiceEstablish(t, service, f)
-	if created.kind != durableClaimOutcomeEstablished || !created.hasRecord {
-		t.Fatalf("created outcome = %+v", created)
+	// After migration, bypass only this temporary database's update guard and
+	// CHECK to model a corrupted historical row on an already open handle.
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_update`); err != nil {
+		t.Fatalf("drop update guard for corruption seed: %v", err)
 	}
-
-	existing, err := store.establishClaim(context.Background(), establishClaimCommand{record: created.record})
-	if err != nil {
-		t.Fatalf("direct duplicate establish: %v", err)
+	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
+		t.Fatalf("enable constraint bypass: %v", err)
 	}
-	if existing.created {
-		t.Fatalf("duplicate caller/key was reported as a new claim")
+	if _, err := store.db.Exec(`UPDATE reliable_submit_claims SET plan_binding=x'' WHERE caller_ref=? AND submit_key_ref=?`,
+		opaqueRefBytes(f.claim.caller.ref), opaqueRefBytes(f.claim.submitKey.ref)); err != nil {
+		t.Fatalf("corrupt migrated row: %v", err)
 	}
-	if !existing.record.equal(created.record) {
-		t.Fatalf("duplicate caller/key did not load the existing record")
+	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=OFF`); err != nil {
+		t.Fatalf("restore constraints: %v", err)
 	}
-	assertSQLiteClaimUnchanged(t, store, created.record)
+	result, err := store.establishClaim(context.Background(), establishClaimCommand{record: created.record})
+	if !errors.Is(err, errClaimStoreCorrupt) || result.created || result.record.claim.Valid() {
+		t.Fatalf("corrupt historical row did not fail closed: %v", err)
+	}
 	assertSQLiteClaimRowCount(t, store.db, 1)
-
-	replayed, err := service.establishOrLoadClaim(context.Background(), establishClaimRequest{
-		claim:    f.claim,
-		plan:     f.plan,
-		mutation: f.nextMut,
-	})
-	if err != nil {
-		t.Fatalf("service replay after duplicate: %v", err)
+	var bindingLength int
+	if err := store.db.QueryRow(`SELECT length(plan_binding) FROM reliable_submit_claims`).Scan(&bindingLength); err != nil || bindingLength != 0 {
+		t.Fatalf("corrupt historical row was mutated: length=%d err=%v", bindingLength, err)
 	}
-	if replayed.kind != durableClaimOutcomeExactReplay || replayed.underlyingReplayKind != KindPendingBeforeAssignment {
-		t.Fatalf("service replay outcome = %+v", replayed)
-	}
-	conflictPlan := mustPrivateBoundPlan(t, f.otherBind, f.witness)
-	conflict, err := service.establishOrLoadClaim(context.Background(), establishClaimRequest{
-		claim:    f.claim,
-		plan:     conflictPlan,
-		mutation: mustPrivateMutationRef(t, []byte("private-conflict-mutation")),
-	})
-	if err != nil {
-		t.Fatalf("service conflict after duplicate: %v", err)
-	}
-	if conflict.kind != durableClaimOutcomeConflict || conflict.hasRecord {
-		t.Fatalf("service conflict outcome = %+v", conflict)
-	}
-	assertSQLiteClaimUnchanged(t, store, created.record)
-	assertSQLiteClaimRowCount(t, store.db, 1)
 }
 
 func TestSQLiteClaimStoreEmptyDBMigratesToCurrentSchemaAndReopenIsIdempotent(t *testing.T) {
@@ -145,6 +273,12 @@ func TestSQLiteClaimStoreEmptyDBMigratesToCurrentSchemaAndReopenIsIdempotent(t *
 func TestSQLiteClaimStoreMigratesValidV1RowsToLegacyUnboundV2(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit-v1.sqlite3")
 	f := newDurableFixture(t)
+	// Codec-1/2 keep the inherited nonempty opaque domains. These values are
+	// deliberately outside codec-3's 32/32/1..256 storage bounds.
+	f.caller = mustPrivateCallerRef(t, []byte("c"))
+	f.submitKey = mustPrivateSubmitKeyRef(t, []byte("k"))
+	f.claim = mustPrivateClaimID(t, f.caller, f.submitKey)
+	f.binding = mustPrivatePlanBinding(t, bytes.Repeat([]byte("b"), 257))
 	db := mustRawSQLiteDB(t, path)
 	if _, err := db.Exec(`PRAGMA application_id = 1163088467`); err != nil {
 		t.Fatalf("set application id: %v", err)
@@ -212,8 +346,8 @@ INSERT INTO reliable_submit_claims (
 	if err := store.db.QueryRow(`SELECT count(*) FROM reliable_submit_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("query migration count: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("migration count = %d, want 2", migrationCount)
+	if migrationCount != sqliteClaimStoreSchemaVersion {
+		t.Fatalf("migration count = %d, want %d", migrationCount, sqliteClaimStoreSchemaVersion)
 	}
 	loaded, err := store.loadClaim(context.Background(), loadClaimQuery{claim: f.claim})
 	if err != nil {
@@ -368,7 +502,7 @@ func TestSQLiteClaimStoreRejectsWrongApplicationIDFutureVersionAndMigrationDrift
 
 func TestSQLiteClaimStoreTargetedConflictDoesNotSuppressInvalidCandidateConstraints(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
-	store := mustOpenSQLiteClaimStore(t, path)
+	store := mustOpenLegacyV2ClaimStore(t, path)
 	defer store.close()
 	f := newDurableFixture(t)
 	service := mustDurableService(t, store, fixedClaimClock{now: f.now})
@@ -408,7 +542,7 @@ func TestSQLiteClaimStoreTargetedConflictDoesNotSuppressInvalidCandidateConstrai
 		{
 			name: "codec version",
 			mutate: func(args []any) {
-				args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersion + 1)
+				args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionSynthetic + 1)
 			},
 		},
 		{
@@ -475,12 +609,15 @@ func TestSQLiteClaimStoreEstablishRejectsInvalidDurableCandidateBeforeSQL(t *tes
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 	store := mustOpenSQLiteClaimStore(t, path)
 	defer store.close()
-	f := newDurableFixture(t)
-	service := mustDurableService(t, store, fixedClaimClock{now: f.now})
-	created := mustServiceEstablish(t, service, f)
+	record, descriptor := syntheticReplayRecordFixture(t)
+	registerSyntheticRecordKeys(t, store, descriptor)
+	created, err := store.establishClaim(context.Background(), establishClaimCommand{record: record})
+	if err != nil || !created.created {
+		t.Fatalf("establish valid codec-3 claim: %v", err)
+	}
 
 	invalid := created.record.clone()
-	invalid.codecVersion = durableClaimCodecVersion + 1
+	invalid.codecVersion = durableClaimCodecVersionSynthetic + 1
 	result, err := store.establishClaim(context.Background(), establishClaimCommand{record: invalid})
 	if !errors.Is(err, errClaimStoreCorrupt) {
 		t.Fatalf("invalid durable candidate did not fail closed")
@@ -497,20 +634,27 @@ func TestSQLiteClaimStoreZeroRowConflictFailsClosedWhenExistingRowIsInvalid(t *t
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
 	store := mustOpenSQLiteClaimStore(t, path)
 	defer store.close()
-	f := newDurableFixture(t)
-	original := mustPrivateRecord(t, mustPrivatePendingBefore(t, f), f)
-	args, err := sqliteRecordArgs(original)
+	original, descriptor := syntheticReplayRecordFixture(t)
+	registerSyntheticRecordKeys(t, store, descriptor)
+	seedDescriptor := descriptor
+	seedDescriptor.ref = "objects/v1/" + strings.Repeat("b", 64)
+	seed, err := newReplayDurableClaimRecord(original.claim, original.plan, seedDescriptor, original.createdAt)
+	if err != nil {
+		t.Fatalf("construct corruption seed: %v", err)
+	}
+	args, err := sqliteRecordArgs(seed)
 	if err != nil {
 		t.Fatalf("sqliteRecordArgs: %v", err)
 	}
-	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersion + 1)
-	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionSynthetic + 1)
+	// Only the corruption seed bypasses the current guard and codec CHECK.
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
 		t.Fatalf("drop insert guard for corruption seed: %v", err)
 	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
 		t.Fatalf("enable constraint bypass: %v", err)
 	}
-	if _, err := store.db.Exec(sqliteInsertClaimSQL, args...); err != nil {
+	if _, err := store.db.Exec(sqliteInsertReplayClaimSQL, args...); err != nil {
 		t.Fatalf("seed invalid existing row: %v", err)
 	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=OFF`); err != nil {
@@ -608,7 +752,8 @@ func TestSQLiteClaimStoreHydrationRejectsCodec1NonNullEmptyDigest(t *testing.T) 
 	args[sqliteClaimArgLatestOperationKind] = nil
 	args[sqliteClaimArgLatestOperationDigest] = []byte{}
 	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionLegacy)
-	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v2`); err != nil {
+	// The deliberately malformed codec-1 row cannot be created by schema 3.
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
 		t.Fatalf("drop insert guard for malformed hydration seed: %v", err)
 	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
@@ -630,7 +775,7 @@ func TestSQLiteClaimStoreHydrationRejectsCodec1NonNullEmptyDigest(t *testing.T) 
 
 func TestSQLiteClaimStoreDirectSQLConstraintsAndTriggers(t *testing.T) {
 	path := sqliteTestPath(t, "state", "reliable-submit.sqlite3")
-	store := mustOpenSQLiteClaimStore(t, path)
+	store := mustOpenLegacyV2ClaimStore(t, path)
 	defer store.close()
 	f := newDurableFixture(t)
 	service := mustDurableService(t, store, fixedClaimClock{now: f.now})

@@ -3,20 +3,20 @@ package admission
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"path"
-	"strings"
 	"unicode/utf8"
+
+	"execution-substrate/es/internal/staticarchive"
 )
 
 const (
 	maxAdmissionPolicyPayloadBytes          = 256 * 1024
 	maxAdmissionPolicyStaticScriptTextBytes = 64 * 1024
 	maxAdmissionPolicyStaticScriptEntries   = 64
+	maxAdmissionPolicyDecodedArchiveBytes   = 16 * 1024 * 1024
 	staticScriptEntrypointName              = "entrypoint"
 )
 
@@ -85,11 +85,8 @@ func (s *Service) fetchAdmissionPolicyPayloadBytes(ctx context.Context, payloadD
 		return nil, admissionPolicyInputUnavailableError()
 	}
 
-	payload, readErr := io.ReadAll(io.LimitReader(response.Body, maxAdmissionPolicyPayloadBytes+1))
+	payload, readErr := readBoundedResponseBody(response, maxAdmissionPolicyPayloadBytes)
 	if readErr != nil {
-		return nil, admissionPolicyInputUnavailableError()
-	}
-	if len(payload) > maxAdmissionPolicyPayloadBytes {
 		return nil, admissionPolicyInputUnavailableError()
 	}
 	return payload, nil
@@ -108,16 +105,18 @@ func extractStaticScriptEntrypointText(payload []byte) (string, error) {
 		return "", fmt.Errorf("static-script payload is outside policy inspection bounds")
 	}
 
-	gzipReader, err := gzip.NewReader(bytes.NewReader(payload))
+	archive, err := staticarchive.Open(bytes.NewReader(payload), maxAdmissionPolicyDecodedArchiveBytes)
 	if err != nil {
 		return "", fmt.Errorf("static-script payload is not a supported archive")
 	}
-	defer gzipReader.Close()
+	defer archive.Close()
 
-	tarReader := tar.NewReader(gzipReader)
+	var namespace staticarchive.Namespace
 	entries := 0
+	var entrypointText string
+	var foundEntrypoint bool
 	for {
-		header, err := tarReader.Next()
+		header, err := archive.Next()
 		if err == io.EOF {
 			break
 		}
@@ -129,21 +128,27 @@ func extractStaticScriptEntrypointText(payload []byte) (string, error) {
 			return "", fmt.Errorf("static-script archive exceeds policy entry bound")
 		}
 
-		name, err := cleanStaticScriptPolicyArchiveName(header.Name)
+		name, err := namespace.Add(header)
 		if err != nil {
 			return "", err
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			continue
-		case tar.TypeReg, tar.TypeRegA:
+		default:
 			if name != staticScriptEntrypointName {
+				if _, err := io.Copy(io.Discard, archive); err != nil {
+					return "", fmt.Errorf("read static-script archive body")
+				}
 				continue
+			}
+			if foundEntrypoint {
+				return "", fmt.Errorf("static-script entrypoint is duplicated")
 			}
 			if header.Size < 0 || header.Size > maxAdmissionPolicyStaticScriptTextBytes {
 				return "", fmt.Errorf("static-script text is outside policy inspection bounds")
 			}
-			textBytes, err := io.ReadAll(io.LimitReader(tarReader, maxAdmissionPolicyStaticScriptTextBytes+1))
+			textBytes, err := io.ReadAll(io.LimitReader(archive, maxAdmissionPolicyStaticScriptTextBytes+1))
 			if err != nil {
 				return "", fmt.Errorf("read static-script text")
 			}
@@ -153,22 +158,15 @@ func extractStaticScriptEntrypointText(payload []byte) (string, error) {
 			if !utf8.Valid(textBytes) || bytes.ContainsRune(textBytes, '\x00') {
 				return "", fmt.Errorf("static-script text is not safe UTF-8 text")
 			}
-			return string(textBytes), nil
-		default:
-			return "", fmt.Errorf("static-script archive contains unsupported entry type")
+			entrypointText = string(textBytes)
+			foundEntrypoint = true
 		}
 	}
-	return "", fmt.Errorf("static-script entrypoint text unavailable")
-}
-
-func cleanStaticScriptPolicyArchiveName(headerName string) (string, error) {
-	trimmed := strings.TrimSpace(headerName)
-	if trimmed == "" {
-		return "", fmt.Errorf("static-script archive entry has an empty path")
+	if err := archive.Finish(); err != nil {
+		return "", fmt.Errorf("finish static-script archive: %w", err)
 	}
-	cleanName := path.Clean(trimmed)
-	if cleanName == "." || strings.HasPrefix(cleanName, "/") || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
-		return "", fmt.Errorf("static-script archive entry path is outside policy bounds")
+	if !foundEntrypoint {
+		return "", fmt.Errorf("static-script entrypoint text unavailable")
 	}
-	return cleanName, nil
+	return entrypointText, nil
 }

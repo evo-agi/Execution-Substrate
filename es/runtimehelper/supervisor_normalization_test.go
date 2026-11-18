@@ -246,8 +246,12 @@ func newPostWorkloadNormalizationFixture(t *testing.T, runID string) (supervisor
 	if err := os.MkdirAll(filepath.Join(resultDir, "nested"), 0o755); err != nil {
 		t.Fatalf("mkdir result dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(platformDir, "es-runtime-support"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	runtimeSupportPath := filepath.Join(platformDir, "es-runtime-support")
+	if err := os.WriteFile(runtimeSupportPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write platform binary: %v", err)
+	}
+	if err := os.Chmod(runtimeSupportPath, 0o755); err != nil {
+		t.Fatalf("set exact mode on test-owned runtime support binary: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(platformDir, "workload-vault-ca.pem"), []byte("vault\n"), 0o644); err != nil {
 		t.Fatalf("write workload vault ca file: %v", err)

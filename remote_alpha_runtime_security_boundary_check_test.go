@@ -63,6 +63,207 @@ func writeRuntimeSecurityBoundaryWorkloadZoneConfig(t *testing.T, path string) {
 	writeJSONFile(t, path, payload)
 }
 
+type runtimeSecuritySpireFixtureTest interface {
+	Helper()
+	Cleanup(func())
+	Fatalf(string, ...any)
+	Errorf(string, ...any)
+}
+
+type runtimeSecuritySpireFixture struct {
+	dir        string
+	socketPath string
+}
+
+func newRuntimeSecuritySpireFixture(t runtimeSecuritySpireFixtureTest) runtimeSecuritySpireFixture {
+	t.Helper()
+
+	fixtureDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
+	if err != nil {
+		t.Fatalf("mkdir temp spire dir: %v", err)
+		return runtimeSecuritySpireFixture{}
+	}
+	fixture := runtimeSecuritySpireFixture{
+		dir:        fixtureDir,
+		socketPath: filepath.Join(fixtureDir, "agent.sock"),
+	}
+
+	// Cleanup callbacks run last-in, first-out. Register directory removal
+	// immediately, then listener closure below, so the listener always closes
+	// and unlinks its socket before the exact invocation-owned directory is
+	// removed.
+	t.Cleanup(func() {
+		removeRuntimeSecuritySpireFixtureDirectory(t, fixture.dir)
+	})
+
+	listener, err := net.Listen("unix", fixture.socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+		return runtimeSecuritySpireFixture{}
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close runtime-security SPIRE fixture listener: %v", err)
+		}
+		if _, err := os.Lstat(fixture.socketPath); err == nil {
+			t.Errorf("runtime-security SPIRE fixture socket still exists after listener close: %q", fixture.socketPath)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("verify runtime-security SPIRE fixture socket removal %q: %v", fixture.socketPath, err)
+		}
+	})
+
+	return fixture
+}
+
+func removeRuntimeSecuritySpireFixtureDirectory(t runtimeSecuritySpireFixtureTest, fixtureDir string) {
+	t.Helper()
+
+	info, err := os.Lstat(fixtureDir)
+	if err != nil {
+		t.Errorf("lstat runtime-security SPIRE fixture directory %q: %v", fixtureDir, err)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		t.Errorf("runtime-security SPIRE fixture path is not a real directory: %q mode=%s", fixtureDir, info.Mode())
+		return
+	}
+	// The path is a verified directory, so os.Remove uses directory-only
+	// semantics and fails rather than deleting unexpected children.
+	if err := os.Remove(fixtureDir); err != nil {
+		t.Errorf("remove empty runtime-security SPIRE fixture directory %q: %v", fixtureDir, err)
+		return
+	}
+	if _, err := os.Lstat(fixtureDir); err == nil {
+		t.Errorf("runtime-security SPIRE fixture directory still exists after cleanup: %q", fixtureDir)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("verify runtime-security SPIRE fixture directory removal %q: %v", fixtureDir, err)
+	}
+}
+
+type runtimeSecuritySpireFixtureTestRecorder struct {
+	cleanups []func()
+	failures []string
+}
+
+func (r *runtimeSecuritySpireFixtureTestRecorder) Helper() {}
+
+func (r *runtimeSecuritySpireFixtureTestRecorder) Cleanup(cleanup func()) {
+	r.cleanups = append(r.cleanups, cleanup)
+}
+
+func (r *runtimeSecuritySpireFixtureTestRecorder) Fatalf(format string, args ...any) {
+	for len(r.cleanups) > 0 {
+		last := len(r.cleanups) - 1
+		cleanup := r.cleanups[last]
+		r.cleanups = r.cleanups[:last]
+		cleanup()
+	}
+	panic(fmt.Sprintf(format, args...))
+}
+
+func (r *runtimeSecuritySpireFixtureTestRecorder) Errorf(format string, args ...any) {
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+func (r *runtimeSecuritySpireFixtureTestRecorder) runLastCleanup(t *testing.T) {
+	t.Helper()
+
+	if len(r.cleanups) == 0 {
+		t.Fatal("runtime-security SPIRE fixture has no remaining cleanup callback")
+	}
+	last := len(r.cleanups) - 1
+	cleanup := r.cleanups[last]
+	r.cleanups = r.cleanups[:last]
+	cleanup()
+}
+
+func TestRemoteAlphaRuntimeSecuritySpireFixtureCleanup(t *testing.T) {
+	t.Run("listener closes before directory removal", func(t *testing.T) {
+		recorder := &runtimeSecuritySpireFixtureTestRecorder{}
+		fixture := newRuntimeSecuritySpireFixture(recorder)
+		if len(recorder.cleanups) != 2 {
+			t.Fatalf("cleanup callback count = %d, want 2", len(recorder.cleanups))
+		}
+		if !strings.HasPrefix(fixture.dir, "/tmp/es-runtime-security-spire-") {
+			t.Fatalf("fixture directory %q does not use the exact short prefix", fixture.dir)
+		}
+
+		recorder.runLastCleanup(t)
+		if len(recorder.failures) != 0 {
+			t.Fatalf("listener cleanup failures: %v", recorder.failures)
+		}
+		if _, err := os.Lstat(fixture.socketPath); !os.IsNotExist(err) {
+			t.Fatalf("fixture socket still exists after listener cleanup: %q err=%v", fixture.socketPath, err)
+		}
+		if info, err := os.Lstat(fixture.dir); err != nil || !info.IsDir() {
+			t.Fatalf("fixture directory was removed before directory cleanup: %q info=%v err=%v", fixture.dir, info, err)
+		}
+
+		recorder.runLastCleanup(t)
+		if len(recorder.failures) != 0 {
+			t.Fatalf("directory cleanup failures: %v", recorder.failures)
+		}
+		if _, err := os.Lstat(fixture.dir); !os.IsNotExist(err) {
+			t.Fatalf("fixture directory still exists after cleanup: %q err=%v", fixture.dir, err)
+		}
+	})
+
+	for iteration := 0; iteration < 3; iteration++ {
+		var fixture runtimeSecuritySpireFixture
+		if ok := t.Run(fmt.Sprintf("repeated cleanup %d", iteration+1), func(t *testing.T) {
+			fixture = newRuntimeSecuritySpireFixture(t)
+			if _, err := os.Lstat(fixture.socketPath); err != nil {
+				t.Fatalf("lstat live fixture socket: %v", err)
+			}
+		}); !ok {
+			continue
+		}
+		if _, err := os.Lstat(fixture.dir); !os.IsNotExist(err) {
+			t.Fatalf("repeated fixture directory still exists after subtest cleanup: %q err=%v", fixture.dir, err)
+		}
+	}
+
+	t.Run("cleanup failure reaches the test reporter", func(t *testing.T) {
+		fixtureDir := filepath.Join(t.TempDir(), "nonempty-fixture")
+		if err := os.Mkdir(fixtureDir, 0o700); err != nil {
+			t.Fatalf("mkdir nonempty fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(fixtureDir, "unexpected-child"), []byte("synthetic\n"), 0o600); err != nil {
+			t.Fatalf("write unexpected fixture child: %v", err)
+		}
+		recorder := &runtimeSecuritySpireFixtureTestRecorder{}
+		removeRuntimeSecuritySpireFixtureDirectory(recorder, fixtureDir)
+		if len(recorder.failures) != 1 || !strings.Contains(recorder.failures[0], "remove empty runtime-security SPIRE fixture directory") {
+			t.Fatalf("cleanup failure was not reported through Errorf: %v", recorder.failures)
+		}
+		if _, err := os.Lstat(fixtureDir); err != nil {
+			t.Fatalf("failed cleanup should leave the nonempty directory for owner-directed handling: %v", err)
+		}
+	})
+
+	t.Run("single helper-owned creation expression", func(t *testing.T) {
+		sourcePath := filepath.Join(executionSubstrateRepoRoot, "remote_alpha_runtime_security_boundary_check_test.go")
+		sourceBytes, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("read runtime-security fixture source: %v", err)
+		}
+		source := string(sourceBytes)
+		creation := `os.MkdirTemp("/tmp", ` + `"es-runtime-security-spire-")`
+		if got := strings.Count(source, creation); got != 1 {
+			t.Fatalf("direct runtime-security SPIRE fixture creation expressions = %d, want 1", got)
+		}
+		helperStart := strings.Index(source, "func newRuntimeSecuritySpireFixture")
+		if helperStart < 0 {
+			t.Fatal("newRuntimeSecuritySpireFixture is missing")
+		}
+		helperEndOffset := strings.Index(source[helperStart:], "\nfunc removeRuntimeSecuritySpireFixtureDirectory")
+		creationIndex := strings.Index(source, creation)
+		if helperEndOffset < 0 || creationIndex < helperStart || creationIndex >= helperStart+helperEndOffset {
+			t.Fatalf("the sole direct creation expression is not owned by newRuntimeSecuritySpireFixture")
+		}
+	})
+}
+
 func writeRuntimeSecurityBoundaryNomadRoleConfig(t *testing.T, path string, serverEnabled, clientEnabled bool) {
 	t.Helper()
 
@@ -241,18 +442,8 @@ func runRuntimeSecurityBoundaryCVEFixture(
 		t.Fatalf("write runtime support binary: %v", err)
 	}
 
-	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
-	if err != nil {
-		t.Fatalf("mkdir temp spire dir: %v", err)
-	}
-	spireSocketPath := filepath.Join(spireDir, "agent.sock")
-	listener, err := net.Listen("unix", spireSocketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
+	spireFixture := newRuntimeSecuritySpireFixture(t)
+	spireSocketPath := spireFixture.socketPath
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
@@ -398,18 +589,8 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckDefaultsToNonMutating(t *testing
 		t.Fatalf("write runtime support binary: %v", err)
 	}
 
-	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
-	if err != nil {
-		t.Fatalf("mkdir temp spire dir: %v", err)
-	}
-	spireSocketPath := filepath.Join(spireDir, "agent.sock")
-	listener, err := net.Listen("unix", spireSocketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
+	spireFixture := newRuntimeSecuritySpireFixture(t)
+	spireSocketPath := spireFixture.socketPath
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
@@ -451,18 +632,8 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckSchemaAndClassificationsAreStabl
 		t.Fatalf("write runtime support binary: %v", err)
 	}
 
-	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
-	if err != nil {
-		t.Fatalf("mkdir temp spire dir: %v", err)
-	}
-	spireSocketPath := filepath.Join(spireDir, "agent.sock")
-	listener, err := net.Listen("unix", spireSocketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
+	spireFixture := newRuntimeSecuritySpireFixture(t)
+	spireSocketPath := spireFixture.socketPath
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
@@ -764,18 +935,8 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckCombinedSingleNodeNomadIsHonest(
 		t.Fatalf("write runtime support binary: %v", err)
 	}
 
-	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
-	if err != nil {
-		t.Fatalf("mkdir temp spire dir: %v", err)
-	}
-	spireSocketPath := filepath.Join(spireDir, "agent.sock")
-	listener, err := net.Listen("unix", spireSocketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
+	spireFixture := newRuntimeSecuritySpireFixture(t)
+	spireSocketPath := spireFixture.socketPath
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")
@@ -854,18 +1015,8 @@ func TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest(t *testin
 	if err := os.WriteFile(runtimeSupportPath, []byte("runtime-support\n"), 0o755); err != nil {
 		t.Fatalf("write runtime support binary: %v", err)
 	}
-	spireDir, err := os.MkdirTemp("/tmp", "es-runtime-security-spire-")
-	if err != nil {
-		t.Fatalf("mkdir temp spire dir: %v", err)
-	}
-	spireSocketPath := filepath.Join(spireDir, "agent.sock")
-	listener, err := net.Listen("unix", spireSocketPath)
-	if err != nil {
-		t.Fatalf("listen on unix socket: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-	})
+	spireFixture := newRuntimeSecuritySpireFixture(t)
+	spireSocketPath := spireFixture.socketPath
 
 	configPath := filepath.Join(tmpDir, "es.json")
 	workloadZoneConfigPath := filepath.Join(tmpDir, "workload-zone-vault-config.json")

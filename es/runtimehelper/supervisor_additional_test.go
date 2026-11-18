@@ -53,15 +53,27 @@ func TestArchiveDestinationPathRejectsAbsoluteAndEscapingPaths(t *testing.T) {
 	if validPath != filepath.Join(root, "bin", "entrypoint") {
 		t.Fatalf("unexpected resolved workload path %q", validPath)
 	}
+	spacePath, err := archiveDestinationPath(root, "./ entrypoint")
+	if err != nil || spacePath != filepath.Join(root, " entrypoint") {
+		t.Fatalf("raw name did not keep whitespace exposed by cleaning: %q %v", spacePath, err)
+	}
+	canonicalPath, err := canonicalArchiveDestinationPath(root, " entrypoint")
+	if err != nil || canonicalPath != filepath.Join(root, " entrypoint") {
+		t.Fatalf("canonical name was re-trimmed: %q %v", canonicalPath, err)
+	}
 
 	_, err = archiveDestinationPath(root, "/etc/passwd")
-	if err == nil || !strings.Contains(err.Error(), "must be relative") {
+	if err == nil || !strings.Contains(err.Error(), "outside the work tree") {
 		t.Fatalf("expected absolute path rejection, got %v", err)
 	}
 
 	_, err = archiveDestinationPath(root, "../escape")
-	if err == nil || !strings.Contains(err.Error(), "escapes the work tree") {
+	if err == nil || !strings.Contains(err.Error(), "outside the work tree") {
 		t.Fatalf("expected escape rejection, got %v", err)
+	}
+	_, err = canonicalArchiveDestinationPath(root, "../escape")
+	if err == nil {
+		t.Fatal("canonical destination containment accepted traversal")
 	}
 }
 

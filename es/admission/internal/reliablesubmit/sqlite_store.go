@@ -3,6 +3,7 @@ package reliablesubmit
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net/url"
@@ -17,16 +18,29 @@ import (
 )
 
 type sqliteClaimStore struct {
-	db   *sql.DB
-	path string
+	db                      *sql.DB
+	path                    string
+	dsn                     string
+	legacyV2Fixture         bool // Set only by the historical schema-2 conformance fixture.
+	migrationOpeningVersion int
+	migrationRecoveredNew   bool
+	migrationCommit         func(context.Context, *sql.Conn) error
+	beforeMigrationCommit   func(context.Context, *sql.Conn) error
+	claimCommit             func(context.Context, *sql.Conn) error
+	sealGrantCommit         func(context.Context, *sql.Conn) error
+	beginImmediateAttempt   func(context.Context, *sql.Conn) error // Test-only execute-then-error seam; never configured by the opener.
 }
 
 type sqliteClaimStoreOptions struct {
-	path            string
-	disallowedRoots []string
-	busyTimeout     time.Duration
-	maxOpenConns    int
-	clock           claimClock
+	path                  string
+	disallowedRoots       []string
+	busyTimeout           time.Duration
+	maxOpenConns          int
+	clock                 claimClock
+	migrationCommit       func(context.Context, *sql.Conn) error
+	beforeMigrationCommit func(context.Context, *sql.Conn) error
+	claimCommit           func(context.Context, *sql.Conn) error
+	sealGrantCommit       func(context.Context, *sql.Conn) error
 }
 
 func openSQLiteClaimStore(ctx context.Context, opts sqliteClaimStoreOptions) (*sqliteClaimStore, error) {
@@ -56,20 +70,41 @@ func openSQLiteClaimStore(ctx context.Context, opts sqliteClaimStoreOptions) (*s
 	if maxOpenConns <= 0 {
 		maxOpenConns = sqliteDefaultMaxOpenConns
 	}
-	db, err := sql.Open("sqlite", sqliteClaimStoreDSN(cleanPath, busyTimeoutMS))
+	dsn := sqliteClaimStoreDSN(cleanPath, busyTimeoutMS)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, errClaimStoreUnavailable
 	}
 	db.SetMaxOpenConns(maxOpenConns)
 	db.SetMaxIdleConns(maxOpenConns)
 
-	store := &sqliteClaimStore{db: db, path: cleanPath}
+	store := &sqliteClaimStore{db: db, path: cleanPath, dsn: dsn,
+		migrationCommit: opts.migrationCommit, beforeMigrationCommit: opts.beforeMigrationCommit,
+		claimCommit: opts.claimCommit, sealGrantCommit: opts.sealGrantCommit}
 	if err := store.openGate(ctx, opts.clock); err != nil {
-		_ = db.Close()
-		return nil, err
+		if !errors.Is(err, errClaimStoreCommitUnknown) {
+			_ = db.Close()
+			return nil, err
+		}
+		// The COMMIT response did not prove an outcome. Drop the uncertain
+		// pool before a fresh, strictly nonmigrating open classifies the file.
+		if db.Close() != nil {
+			return nil, errClaimStoreUnavailable
+		}
+		fresh, openErr := sql.Open("sqlite", dsn)
+		if openErr != nil {
+			return nil, errClaimStoreUnavailable
+		}
+		fresh.SetMaxOpenConns(maxOpenConns)
+		fresh.SetMaxIdleConns(maxOpenConns)
+		store.db = fresh
+		if verifyErr := store.verifyMigrationRecovery(ctx); verifyErr != nil {
+			_ = fresh.Close()
+			return nil, verifyErr
+		}
 	}
 	if err := chmodSQLiteStoreFiles(cleanPath); err != nil {
-		_ = db.Close()
+		_ = store.db.Close()
 		return nil, err
 	}
 	return store, nil
@@ -82,26 +117,111 @@ func (s *sqliteClaimStore) close() error {
 	return s.db.Close()
 }
 
-func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClaimCommand) (establishClaimStoreResult, error) {
+// checkedConn is the only pool acquisition path. SQLite PRAGMAs are per
+// connection, so a check made by the opener cannot authorize later work.
+func (s *sqliteClaimStore) checkedConn(ctx context.Context) (*sql.Conn, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, mapSQLiteError(err)
+	}
+	if err := applyAndVerifySQLiteConnectionPragmas(ctx, conn); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// Returning ErrBadConn from Raw makes database/sql discard and physically
+// close this driver connection before the high-level Conn can reach the pool.
+// Raw does not retry the preceding COMMIT or ROLLBACK operation.
+func discardUncertainSQLiteConn(conn *sql.Conn) error {
+	if conn == nil || !errors.Is(conn.Raw(func(any) error { return driver.ErrBadConn }), driver.ErrBadConn) {
+		return errClaimStoreUnavailable
+	}
+	return nil
+}
+
+func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClaimCommand) (out establishClaimStoreResult, outErr error) {
 	if err := cmd.record.validate(); err != nil {
 		return establishClaimStoreResult{}, errClaimStoreCorrupt
 	}
-	conn, err := s.db.Conn(ctx)
+	conn, err := s.checkedConn(ctx)
 	if err != nil {
-		return establishClaimStoreResult{}, mapSQLiteError(err)
-	}
-	defer conn.Close()
-	if err := beginImmediate(ctx, conn); err != nil {
 		return establishClaimStoreResult{}, err
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
+	defer conn.Close()
+	if err := s.beginImmediate(ctx, conn); err != nil {
+		return establishClaimStoreResult{}, err
+	}
+	commitAttempted := false
+	defer func() {
+		if !commitAttempted {
+			if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+				if discardUncertainSQLiteConn(conn) != nil {
+					out, outErr = establishClaimStoreResult{}, errClaimStoreUnavailable
+				} else {
+					out, outErr = establishClaimStoreResult{}, errClaimStoreCommitUnknown
+				}
+			}
+		}
+	}()
+	if cmd.record.codecVersion != durableClaimCodecVersionSynthetic {
+		version, err := pragmaInt(ctx, conn, "user_version")
+		if err != nil {
+			return establishClaimStoreResult{}, err
+		}
+		if version == sqliteClaimStoreSchemaVersion {
+			// Schema 3 permits legacy rows only through migration. A same-key
+			// historical row can be classified by the service, but no new
+			// codec-1/2 row may be inserted.
+			loaded, err := s.selectSQLiteClaim(ctx, conn, cmd.record.claim)
+			if isClaimStoreError(err, claimStoreErrorNotFound) {
+				return establishClaimStoreResult{}, errClaimStoreUnsupported
+			}
+			if err != nil {
+				return establishClaimStoreResult{}, err
+			}
+			if loaded.codecVersion == durableClaimCodecVersionSynthetic {
+				return establishClaimStoreResult{}, errClaimStoreUnsupported
+			}
+			commitAttempted = true
+			if err := s.commitClaim(ctx, conn); err != nil {
+				if discardUncertainSQLiteConn(conn) != nil {
+					return establishClaimStoreResult{}, errClaimStoreUnavailable
+				}
+				return establishClaimStoreResult{}, err
+			}
+			_ = chmodSQLiteStoreFiles(s.path)
+			return establishClaimStoreResult{record: loaded}, nil
+		}
+	}
 
 	args, err := sqliteRecordArgs(cmd.record)
 	if err != nil {
 		return establishClaimStoreResult{}, err
 	}
-	result, err := conn.ExecContext(ctx, sqliteInsertClaimSQL, args...)
+	if cmd.record.codecVersion == durableClaimCodecVersionSynthetic {
+		var count int
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM reliable_submit_claims WHERE codec_version=3`).Scan(&count); err != nil {
+			return establishClaimStoreResult{}, mapSQLiteError(err)
+		}
+		if count >= 4 {
+			var existing int
+			err := conn.QueryRowContext(ctx, `SELECT 1 FROM reliable_submit_claims WHERE caller_ref=? AND submit_key_ref=?`,
+				opaqueRefBytes(cmd.record.claim.caller.ref), opaqueRefBytes(cmd.record.claim.submitKey.ref)).Scan(&existing)
+			if errors.Is(err, sql.ErrNoRows) {
+				return establishClaimStoreResult{}, errClaimStoreUnsupported
+			}
+			if err != nil {
+				return establishClaimStoreResult{}, mapSQLiteError(err)
+			}
+		}
+	}
+	insertSQL := sqliteInsertClaimSQL
+	if cmd.record.codecVersion == durableClaimCodecVersionSynthetic {
+		insertSQL = sqliteInsertReplayClaimSQL
+	}
+	result, err := conn.ExecContext(ctx, insertSQL, args...)
 	if err != nil {
 		return establishClaimStoreResult{}, mapSQLiteError(err)
 	}
@@ -112,14 +232,17 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	if rows < 0 || rows > 1 {
 		return establishClaimStoreResult{}, errClaimStoreInternal
 	}
-	loaded, err := selectSQLiteClaim(ctx, conn, cmd.record.claim)
+	loaded, err := s.selectSQLiteClaim(ctx, conn, cmd.record.claim)
 	if err != nil {
 		return establishClaimStoreResult{}, err
 	}
-	if err := commit(ctx, conn); err != nil {
+	commitAttempted = true
+	if err := s.commitClaim(ctx, conn); err != nil {
+		if discardUncertainSQLiteConn(conn) != nil {
+			return establishClaimStoreResult{}, errClaimStoreUnavailable
+		}
 		return establishClaimStoreResult{}, err
 	}
-	committed = true
 	_ = chmodSQLiteStoreFiles(s.path)
 	return establishClaimStoreResult{record: loaded, created: rows == 1}, nil
 }
@@ -128,9 +251,9 @@ func (s *sqliteClaimStore) loadClaim(ctx context.Context, query loadClaimQuery) 
 	if !query.claim.Valid() {
 		return durableClaimRecord{}, errClaimStoreInternal
 	}
-	conn, err := s.db.Conn(ctx)
+	conn, err := s.checkedConn(ctx)
 	if err != nil {
-		return durableClaimRecord{}, mapSQLiteError(err)
+		return durableClaimRecord{}, err
 	}
 	defer conn.Close()
 	if err := beginRead(ctx, conn); err != nil {
@@ -138,7 +261,47 @@ func (s *sqliteClaimStore) loadClaim(ctx context.Context, query loadClaimQuery) 
 	}
 	committed := false
 	defer rollbackIfOpen(ctx, conn, &committed)
-	record, err := selectSQLiteClaim(ctx, conn, query.claim)
+	record, err := s.selectSQLiteClaim(ctx, conn, query.claim)
+	if err != nil {
+		return durableClaimRecord{}, err
+	}
+	if err := commit(ctx, conn); err != nil {
+		return durableClaimRecord{}, err
+	}
+	committed = true
+	return record, nil
+}
+
+// Private codec-3 classification uses an independent pool, including after
+// claim COMMIT uncertainty. It verifies current state without running openGate
+// or migrations and cannot reuse the discarded driver connection.
+func (s *sqliteClaimStore) loadClaimFresh(ctx context.Context, query loadClaimQuery) (durableClaimRecord, error) {
+	dsn := s.dsn
+	if dsn == "" {
+		dsn = sqliteClaimStoreDSN(s.path, sqliteDefaultBusyTimeoutMS)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+	fresh := &sqliteClaimStore{db: db, path: s.path}
+	conn, err := fresh.checkedConn(ctx)
+	if err != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	defer conn.Close()
+	if err := verifySQLiteStoreCurrent(ctx, conn); err != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	if err := beginRead(ctx, conn); err != nil {
+		return durableClaimRecord{}, err
+	}
+	committed := false
+	defer rollbackIfOpen(ctx, conn, &committed)
+	record, err := s.selectSQLiteClaim(ctx, conn, query.claim)
 	if err != nil {
 		return durableClaimRecord{}, err
 	}
@@ -159,9 +322,12 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 	if !cmd.next.claim.Equal(cmd.claim) || cmd.next.revision != cmd.expectedRevision+1 {
 		return compareAndSwapClaimStoreResult{}, errClaimStoreCorrupt
 	}
-	conn, err := s.db.Conn(ctx)
+	if cmd.next.codecVersion == durableClaimCodecVersionSynthetic {
+		return compareAndSwapClaimStoreResult{}, errClaimStoreUnsupported
+	}
+	conn, err := s.checkedConn(ctx)
 	if err != nil {
-		return compareAndSwapClaimStoreResult{}, mapSQLiteError(err)
+		return compareAndSwapClaimStoreResult{}, err
 	}
 	defer conn.Close()
 	if err := beginImmediate(ctx, conn); err != nil {
@@ -184,7 +350,7 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		return compareAndSwapClaimStoreResult{}, errClaimStoreInternal
 	}
 	if rows == 1 {
-		loaded, err := selectSQLiteClaim(ctx, conn, cmd.claim)
+		loaded, err := s.selectSQLiteClaim(ctx, conn, cmd.claim)
 		if err != nil {
 			return compareAndSwapClaimStoreResult{}, err
 		}
@@ -195,7 +361,7 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		_ = chmodSQLiteStoreFiles(s.path)
 		return compareAndSwapClaimStoreResult{record: loaded, applied: true, found: true}, nil
 	}
-	current, err := selectSQLiteClaim(ctx, conn, cmd.claim)
+	current, err := s.selectSQLiteClaim(ctx, conn, cmd.claim)
 	if err != nil {
 		if isClaimStoreError(err, claimStoreErrorNotFound) {
 			return compareAndSwapClaimStoreResult{found: false}, nil
@@ -210,14 +376,11 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 }
 
 func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error {
-	conn, err := s.db.Conn(ctx)
+	conn, err := s.checkedConn(ctx)
 	if err != nil {
-		return mapSQLiteError(err)
-	}
-	defer conn.Close()
-	if err := applyAndVerifySQLiteConnectionPragmas(ctx, conn); err != nil {
 		return err
 	}
+	defer conn.Close()
 	if err := sqliteQuickCheck(ctx, conn); err != nil {
 		return err
 	}
@@ -245,7 +408,11 @@ func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error
 		if err := requireEmptySQLiteBootstrap(ctx, conn); err != nil {
 			return err
 		}
-		return s.applyInitialMigration(ctx, conn, clock)
+		s.migrationOpeningVersion = 0
+		if err := s.applyInitialMigration(ctx, conn, clock); err != nil {
+			return err
+		}
+		return verifySQLiteStoreCurrent(ctx, conn)
 	}
 	if applicationID != sqliteClaimStoreApplicationID {
 		return errClaimStoreUnsupported
@@ -254,14 +421,83 @@ func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error
 		if err := verifySQLiteMigrationsUpTo(ctx, conn, userVersion); err != nil {
 			return err
 		}
+		if err := verifySQLiteSchemaShape(ctx, conn, userVersion); err != nil {
+			return err
+		}
+		s.migrationOpeningVersion = userVersion
 		if err := s.applyMigrationsAfter(ctx, conn, clock, userVersion); err != nil {
 			return err
 		}
 	}
-	return verifySQLiteMigrations(ctx, conn)
+	return verifySQLiteStoreCurrent(ctx, conn)
 }
 
-func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.Conn, clock claimClock) error {
+func verifySQLiteStoreCurrent(ctx context.Context, conn *sql.Conn) error {
+	if err := sqliteQuickCheck(ctx, conn); err != nil {
+		return err
+	}
+	appID, err := pragmaInt(ctx, conn, "application_id")
+	if err != nil {
+		return err
+	}
+	version, err := pragmaInt(ctx, conn, "user_version")
+	if err != nil {
+		return err
+	}
+	if appID != sqliteClaimStoreApplicationID || version != sqliteClaimStoreSchemaVersion {
+		return errClaimStoreUnsupported
+	}
+	if err := verifySQLiteMigrations(ctx, conn); err != nil {
+		return err
+	}
+	return verifySQLiteSchemaShape(ctx, conn, sqliteClaimStoreSchemaVersion)
+}
+
+// verifyMigrationRecovery never applies a migration. It observes either the
+// authenticated opening version or the complete new version after a lost
+// COMMIT response; intermediate versions cannot result from the grouped tx.
+func (s *sqliteClaimStore) verifyMigrationRecovery(ctx context.Context) error {
+	conn, err := s.checkedConn(ctx)
+	if err != nil {
+		return errClaimStoreUnavailable
+	}
+	defer conn.Close()
+	if err := sqliteQuickCheck(ctx, conn); err != nil {
+		return errClaimStoreUnavailable
+	}
+	appID, err := pragmaInt(ctx, conn, "application_id")
+	if err != nil {
+		return errClaimStoreUnavailable
+	}
+	version, err := pragmaInt(ctx, conn, "user_version")
+	if err != nil {
+		return errClaimStoreUnavailable
+	}
+	if appID == sqliteClaimStoreApplicationID && version == sqliteClaimStoreSchemaVersion {
+		if verifySQLiteStoreCurrent(ctx, conn) != nil {
+			return errClaimStoreUnavailable
+		}
+		s.migrationRecoveredNew = true
+		return nil
+	}
+	if version != s.migrationOpeningVersion {
+		return errClaimStoreUnavailable
+	}
+	if version == 0 {
+		if appID != 0 || requireEmptySQLiteBootstrap(ctx, conn) != nil {
+			return errClaimStoreUnavailable
+		}
+		return errClaimStoreMigrationRecoveredOld
+	}
+	if appID != sqliteClaimStoreApplicationID ||
+		verifySQLiteMigrationsUpTo(ctx, conn, version) != nil ||
+		verifySQLiteSchemaShape(ctx, conn, version) != nil {
+		return errClaimStoreUnavailable
+	}
+	return errClaimStoreMigrationRecoveredOld
+}
+
+func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.Conn, clock claimClock) (out error) {
 	if clock == nil {
 		clock = systemClaimClock{}
 	}
@@ -269,8 +505,14 @@ func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.
 	if err := beginImmediate(ctx, conn); err != nil {
 		return err
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
+	commitAttempted := false
+	defer func() {
+		if !commitAttempted {
+			if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+				out = errClaimStoreCommitUnknown
+			}
+		}
+	}()
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", sqliteClaimStoreApplicationID)); err != nil {
 		return mapSQLiteError(err)
 	}
@@ -288,14 +530,22 @@ func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", sqliteClaimStoreSchemaVersion)); err != nil {
 		return mapSQLiteError(err)
 	}
-	if err := commit(ctx, conn); err != nil {
+	if err := verifySQLiteStoreCurrent(ctx, conn); err != nil {
 		return err
 	}
-	committed = true
+	if s.beforeMigrationCommit != nil {
+		if err := s.beforeMigrationCommit(ctx, conn); err != nil {
+			return errClaimStoreUnavailable
+		}
+	}
+	commitAttempted = true
+	if err := s.commitMigration(ctx, conn); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.Conn, clock claimClock, currentVersion int) error {
+func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.Conn, clock claimClock, currentVersion int) (out error) {
 	if currentVersion < 0 || currentVersion >= sqliteClaimStoreSchemaVersion {
 		return errClaimStoreUnsupported
 	}
@@ -306,8 +556,14 @@ func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.C
 	if err := beginImmediate(ctx, conn); err != nil {
 		return err
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
+	commitAttempted := false
+	defer func() {
+		if !commitAttempted {
+			if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+				out = errClaimStoreCommitUnknown
+			}
+		}
+	}()
 	for _, migration := range sqliteClaimStoreMigrations[currentVersion:] {
 		if migration.version != currentVersion+1 {
 			return errClaimStoreUnsupported
@@ -326,10 +582,18 @@ func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.C
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", sqliteClaimStoreSchemaVersion)); err != nil {
 		return mapSQLiteError(err)
 	}
-	if err := commit(ctx, conn); err != nil {
+	if err := verifySQLiteStoreCurrent(ctx, conn); err != nil {
 		return err
 	}
-	committed = true
+	if s.beforeMigrationCommit != nil {
+		if err := s.beforeMigrationCommit(ctx, conn); err != nil {
+			return errClaimStoreUnavailable
+		}
+	}
+	commitAttempted = true
+	if err := s.commitMigration(ctx, conn); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -426,6 +690,7 @@ func sqliteClaimStoreDSN(path string, busyTimeoutMS int) string {
 	query := uri.Query()
 	query.Add("_pragma", "busy_timeout("+strconv.Itoa(busyTimeoutMS)+")")
 	query.Add("_pragma", "foreign_keys(ON)")
+	query.Add("_pragma", "recursive_triggers(ON)")
 	query.Add("_pragma", "trusted_schema(OFF)")
 	query.Add("_pragma", "synchronous(FULL)")
 	query.Add("_pragma", "journal_mode(WAL)")
@@ -448,6 +713,9 @@ func applyAndVerifySQLiteConnectionPragmas(ctx context.Context, conn *sql.Conn) 
 	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
 		return mapSQLiteError(err)
 	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA recursive_triggers=ON"); err != nil {
+		return errClaimStoreUnsupported
+	}
 	if _, err := conn.ExecContext(ctx, "PRAGMA trusted_schema=OFF"); err != nil {
 		return mapSQLiteError(err)
 	}
@@ -456,6 +724,10 @@ func applyAndVerifySQLiteConnectionPragmas(ctx context.Context, conn *sql.Conn) 
 		return err
 	}
 	if foreignKeys != 1 {
+		return errClaimStoreUnsupported
+	}
+	recursiveTriggers, err := pragmaInt(ctx, conn, "recursive_triggers")
+	if err != nil || recursiveTriggers != 1 {
 		return errClaimStoreUnsupported
 	}
 	trustedSchema, err := pragmaInt(ctx, conn, "trusted_schema")
@@ -527,9 +799,42 @@ func pragmaInt(ctx context.Context, conn *sql.Conn, name string) (int, error) {
 }
 
 func beginImmediate(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return mapSQLiteError(err)
+	return guardedBeginImmediate(ctx, conn, nil)
+}
+
+func (s *sqliteClaimStore) beginImmediate(ctx context.Context, conn *sql.Conn) error {
+	return guardedBeginImmediate(ctx, conn, s.beginImmediateAttempt)
+}
+
+// Own the exact connection before dispatch: a returned BEGIN error may follow
+// a successful SQLite step. Only a known-successful result transfers cleanup
+// to the caller's transaction lifecycle. The fault hook is used only by tests.
+func guardedBeginImmediate(ctx context.Context, conn *sql.Conn, attempt func(context.Context, *sql.Conn) error) (out error) {
+	knownBegun := false
+	defer func() {
+		if !knownBegun {
+			// Raw uses no request context and synchronously removes the driver
+			// connection from the pool. Error classification is retained only
+			// after disposal; it never proves that BEGIN did not execute.
+			if discardUncertainSQLiteConn(conn) != nil {
+				out = errClaimStoreUnavailable
+			}
+		}
+	}()
+	if attempt == nil {
+		attempt = func(ctx context.Context, conn *sql.Conn) error {
+			_, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+			return err
+		}
 	}
+	if err := attempt(ctx, conn); err != nil {
+		mapped := mapSQLiteError(err)
+		if errors.Is(mapped, errClaimStoreInternal) {
+			return errClaimStoreUnavailable
+		}
+		return mapped
+	}
+	knownBegun = true
 	return nil
 }
 
@@ -545,6 +850,20 @@ func commit(ctx context.Context, conn *sql.Conn) error {
 		return errClaimStoreCommitUnknown
 	}
 	return nil
+}
+
+func (s *sqliteClaimStore) commitMigration(ctx context.Context, conn *sql.Conn) error {
+	if s.migrationCommit != nil {
+		return s.migrationCommit(ctx, conn)
+	}
+	return commit(ctx, conn)
+}
+
+func (s *sqliteClaimStore) commitClaim(ctx context.Context, conn *sql.Conn) error {
+	if s.claimCommit != nil {
+		return s.claimCommit(ctx, conn)
+	}
+	return commit(ctx, conn)
 }
 
 func rollbackIfOpen(ctx context.Context, conn *sql.Conn, committed *bool) {
@@ -643,10 +962,31 @@ latest_operation_kind,
 latest_operation_input_digest,
 codec_version`
 
+const sqliteReplayColumns = `
+replay_scope,
+intent_format,
+intent_commitment,
+context_commitment,
+envelope_wrapper_format,
+envelope_payload_format,
+envelope_algorithm,
+envelope_ref,
+envelope_size,
+envelope_sha256,
+binding_key_id,
+binding_key_fingerprint,
+envelope_key_id,
+envelope_key_fingerprint`
+
 const sqliteInsertClaimSQL = `
 INSERT INTO reliable_submit_claims (` + sqliteClaimColumns + `)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(caller_ref, submit_key_ref) DO NOTHING`
+
+var sqliteInsertReplayClaimSQL = `INSERT INTO reliable_submit_claims (` +
+	sqliteClaimColumns + `, ` + sqliteReplayColumns + `) VALUES (` +
+	strings.TrimSuffix(strings.Repeat("?,", 46), ",") +
+	`) ON CONFLICT(caller_ref, submit_key_ref) DO NOTHING`
 
 const sqliteUpdateClaimSQL = `
 UPDATE reliable_submit_claims
@@ -684,12 +1024,18 @@ SET caller_ref = ?,
     codec_version = ?
 WHERE caller_ref = ? AND submit_key_ref = ? AND revision = ? AND retention_state = ?`
 
-func selectSQLiteClaim(ctx context.Context, conn *sql.Conn, claim ClaimID) (durableClaimRecord, error) {
+func (s *sqliteClaimStore) selectSQLiteClaim(ctx context.Context, conn *sql.Conn, claim ClaimID) (durableClaimRecord, error) {
 	if !claim.Valid() {
 		return durableClaimRecord{}, errClaimStoreInternal
 	}
+	projection := sqliteClaimColumns + `, ` + sqliteReplayColumns
+	if s.legacyV2Fixture {
+		// The authentic schema-2 test fixture has no custody columns. Its
+		// unchanged legacy row decoder receives fourteen absent values.
+		projection = sqliteClaimColumns + `, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL`
+	}
 	row := conn.QueryRowContext(ctx,
-		`SELECT `+sqliteClaimColumns+` FROM reliable_submit_claims WHERE caller_ref = ? AND submit_key_ref = ?`,
+		`SELECT `+projection+` FROM reliable_submit_claims WHERE caller_ref = ? AND submit_key_ref = ?`,
 		opaqueRefBytes(claim.caller.ref), opaqueRefBytes(claim.submitKey.ref),
 	)
 	record, err := scanSQLiteClaim(row)
@@ -738,6 +1084,20 @@ func scanSQLiteClaim(row sqliteScanner) (durableClaimRecord, error) {
 		&data.latestOperationKind,
 		&data.latestOperationInputDigest,
 		&data.codecVersion,
+		&data.replayScope,
+		&data.intentFormat,
+		&data.intentCommitment,
+		&data.contextCommitment,
+		&data.wrapperFormat,
+		&data.payloadFormat,
+		&data.envelopeAlgorithm,
+		&data.envelopeRef,
+		&data.envelopeSize,
+		&data.envelopeSHA,
+		&data.bindingKeyID,
+		&data.bindingKeyFP,
+		&data.envelopeKeyID,
+		&data.envelopeKeyFP,
 	); err != nil {
 		if errors.Is(err, errInvalidDurableRecord) {
 			return durableClaimRecord{}, errClaimStoreCorrupt
@@ -784,6 +1144,20 @@ type sqliteClaimRow struct {
 	latestOperationKind         sql.NullInt64
 	latestOperationInputDigest  sqliteNullableBlob
 	codecVersion                int64
+	replayScope                 sql.NullInt64
+	intentFormat                sql.NullInt64
+	intentCommitment            sqliteNullableBlob
+	contextCommitment           sqliteNullableBlob
+	wrapperFormat               sql.NullInt64
+	payloadFormat               sql.NullInt64
+	envelopeAlgorithm           sql.NullInt64
+	envelopeRef                 sql.NullString
+	envelopeSize                sql.NullInt64
+	envelopeSHA                 sqliteNullableBlob
+	bindingKeyID                sql.NullString
+	bindingKeyFP                sqliteNullableBlob
+	envelopeKeyID               sql.NullString
+	envelopeKeyFP               sqliteNullableBlob
 }
 
 type sqliteNullableBlob struct {
@@ -809,6 +1183,10 @@ func (b *sqliteNullableBlob) Scan(value any) error {
 }
 
 func (r sqliteClaimRow) record() (durableClaimRecord, error) {
+	replay, err := r.replayDescriptor()
+	if err != nil {
+		return durableClaimRecord{}, err
+	}
 	caller, err := NewCallerRef(r.callerRef)
 	if err != nil {
 		return durableClaimRecord{}, err
@@ -867,11 +1245,56 @@ func (r sqliteClaimRow) record() (durableClaimRecord, error) {
 			reason:        r.unavailableReason,
 		},
 		lastMutation: mutation,
+		replay:       replay,
 	}
 	if err := record.validate(); err != nil {
 		return durableClaimRecord{}, err
 	}
 	return record, nil
+}
+
+func (r sqliteClaimRow) replayDescriptor() (replayClaimDescriptor, error) {
+	values := []bool{r.replayScope.Valid, r.intentFormat.Valid,
+		r.intentCommitment.valid, r.contextCommitment.valid,
+		r.wrapperFormat.Valid, r.payloadFormat.Valid, r.envelopeAlgorithm.Valid,
+		r.envelopeRef.Valid, r.envelopeSize.Valid, r.envelopeSHA.valid,
+		r.bindingKeyID.Valid, r.bindingKeyFP.valid, r.envelopeKeyID.Valid,
+		r.envelopeKeyFP.valid}
+	if r.codecVersion != int64(durableClaimCodecVersionSynthetic) {
+		for _, present := range values {
+			if present {
+				return replayClaimDescriptor{}, errInvalidDurableRecord
+			}
+		}
+		return replayClaimDescriptor{}, nil
+	}
+	for _, present := range values {
+		if !present {
+			return replayClaimDescriptor{}, errInvalidDurableRecord
+		}
+	}
+	for _, raw := range [][]byte{r.intentCommitment.bytes, r.contextCommitment.bytes,
+		r.envelopeSHA.bytes, r.bindingKeyFP.bytes, r.envelopeKeyFP.bytes} {
+		if len(raw) != 32 {
+			return replayClaimDescriptor{}, errInvalidDurableRecord
+		}
+	}
+	d := replayClaimDescriptor{
+		scope: r.replayScope.Int64, intentFormat: r.intentFormat.Int64,
+		wrapperFormat: r.wrapperFormat.Int64, payloadFormat: r.payloadFormat.Int64,
+		algorithm: r.envelopeAlgorithm.Int64, ref: r.envelopeRef.String,
+		size: r.envelopeSize.Int64, bindingKeyID: r.bindingKeyID.String,
+		envelopeKeyID: r.envelopeKeyID.String,
+	}
+	copy(d.intentMAC[:], r.intentCommitment.bytes)
+	copy(d.contextMAC[:], r.contextCommitment.bytes)
+	copy(d.fileSHA[:], r.envelopeSHA.bytes)
+	copy(d.bindingKeyFP[:], r.bindingKeyFP.bytes)
+	copy(d.envelopeKeyFP[:], r.envelopeKeyFP.bytes)
+	if !d.valid() {
+		return replayClaimDescriptor{}, errInvalidDurableRecord
+	}
+	return d, nil
 }
 
 func sqliteLatestOperationDescriptor(codecVersion uint16, mutation durableMutationRef, kind sql.NullInt64, digest sqliteNullableBlob) (durableLatestOperationDescriptor, error) {
@@ -881,7 +1304,7 @@ func sqliteLatestOperationDescriptor(codecVersion uint16, mutation durableMutati
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}
 		return newLegacyDurableLatestOperationDescriptor(mutation)
-	case durableClaimCodecVersion:
+	case durableClaimCodecVersion, durableClaimCodecVersionSynthetic:
 		if !kind.Valid || !digest.valid {
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}
@@ -1015,6 +1438,15 @@ func sqliteRecordArgs(record durableClaimRecord) ([]any, error) {
 		operationKindSQL(record.latestOperation),
 		operationInputBindingSQL(record.latestOperation),
 		int64(record.codecVersion),
+	}
+	if record.codecVersion == durableClaimCodecVersionSynthetic {
+		d := record.replay
+		args = append(args, d.scope, d.intentFormat,
+			append([]byte(nil), d.intentMAC[:]...), append([]byte(nil), d.contextMAC[:]...),
+			d.wrapperFormat, d.payloadFormat, d.algorithm, d.ref, d.size,
+			append([]byte(nil), d.fileSHA[:]...), d.bindingKeyID,
+			append([]byte(nil), d.bindingKeyFP[:]...), d.envelopeKeyID,
+			append([]byte(nil), d.envelopeKeyFP[:]...))
 	}
 	return args, nil
 }
