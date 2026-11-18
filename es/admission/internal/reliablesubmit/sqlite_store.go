@@ -29,6 +29,10 @@ type sqliteClaimStore struct {
 	claimCommit             func(context.Context, *sql.Conn) error
 	sealGrantCommit         func(context.Context, *sql.Conn) error
 	beginImmediateAttempt   func(context.Context, *sql.Conn) error // Test-only execute-then-error seam; never configured by the opener.
+	casAfterBegin           func(context.Context, *sql.Conn) error // O2 test-only CAS phase seam; nil in production.
+	casCommitAttempt        func(context.Context, *sql.Conn) error // O2 test-only CAS COMMIT response seam.
+	casRollbackAttempt      func(context.Context, *sql.Conn) error // O2 test-only CAS ROLLBACK response seam.
+	casDiscardAttempt       func(*sql.Conn) error                  // O2 test-only exact-discard response seam.
 }
 
 type sqliteClaimStoreOptions struct {
@@ -312,7 +316,7 @@ func (s *sqliteClaimStore) loadClaimFresh(ctx context.Context, query loadClaimQu
 	return record, nil
 }
 
-func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareAndSwapClaimCommand) (compareAndSwapClaimStoreResult, error) {
+func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareAndSwapClaimCommand) (out compareAndSwapClaimStoreResult, outErr error) {
 	if !cmd.claim.Valid() || cmd.expectedRevision < initialClaimRevision {
 		return compareAndSwapClaimStoreResult{}, errClaimStoreInternal
 	}
@@ -329,12 +333,33 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 	if err != nil {
 		return compareAndSwapClaimStoreResult{}, err
 	}
-	defer conn.Close()
+	returnToPool := true
+	defer func() {
+		if returnToPool {
+			_ = conn.Close()
+		}
+	}()
 	if err := beginImmediate(ctx, conn); err != nil {
 		return compareAndSwapClaimStoreResult{}, err
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
+	commitAttempted := false
+	defer func() {
+		if commitAttempted {
+			return
+		}
+		// This cleanup is deliberately independent of the caller's context.
+		// A failed rollback overrides even a CAS-miss nil result.
+		if err := s.rollbackLegacyCAS(context.Background(), conn); err != nil {
+			returnToPool = false // Never return an unconfirmed transaction ordinarily.
+			_ = s.discardLegacyCAS(conn)
+			out, outErr = compareAndSwapClaimStoreResult{}, errClaimStoreUnavailable
+		}
+	}()
+	if s.casAfterBegin != nil {
+		if err := s.casAfterBegin(ctx, conn); err != nil {
+			return compareAndSwapClaimStoreResult{}, err
+		}
+	}
 
 	args, err := sqliteRecordArgs(cmd.next)
 	if err != nil {
@@ -354,10 +379,14 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		if err != nil {
 			return compareAndSwapClaimStoreResult{}, err
 		}
-		if err := commit(ctx, conn); err != nil {
-			return compareAndSwapClaimStoreResult{}, err
+		commitAttempted = true
+		if err := s.commitLegacyCAS(ctx, conn); err != nil {
+			returnToPool = false
+			if s.discardLegacyCAS(conn) != nil {
+				return compareAndSwapClaimStoreResult{}, errClaimStoreUnavailable
+			}
+			return compareAndSwapClaimStoreResult{}, errClaimStoreCommitUnknown
 		}
-		committed = true
 		_ = chmodSQLiteStoreFiles(s.path)
 		return compareAndSwapClaimStoreResult{record: loaded, applied: true, found: true}, nil
 	}
@@ -368,11 +397,46 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		}
 		return compareAndSwapClaimStoreResult{}, err
 	}
-	if err := commit(ctx, conn); err != nil {
-		return compareAndSwapClaimStoreResult{}, err
+	commitAttempted = true
+	if err := s.commitLegacyCAS(ctx, conn); err != nil {
+		returnToPool = false
+		if s.discardLegacyCAS(conn) != nil {
+			return compareAndSwapClaimStoreResult{}, errClaimStoreUnavailable
+		}
+		return compareAndSwapClaimStoreResult{}, errClaimStoreCommitUnknown
 	}
-	committed = true
 	return compareAndSwapClaimStoreResult{record: current, applied: false, found: true}, nil
+}
+
+// These finite seams belong only to historical CAS. Nil production paths
+// execute the existing pinned SQLite operations and exact-connection discard.
+func (s *sqliteClaimStore) rollbackLegacyCAS(ctx context.Context, conn *sql.Conn) error {
+	if s.casRollbackAttempt != nil {
+		return s.casRollbackAttempt(ctx, conn)
+	}
+	_, err := conn.ExecContext(ctx, "ROLLBACK")
+	return err
+}
+
+func (s *sqliteClaimStore) commitLegacyCAS(ctx context.Context, conn *sql.Conn) error {
+	if s.casCommitAttempt != nil {
+		return s.casCommitAttempt(ctx, conn)
+	}
+	return commit(ctx, conn)
+}
+
+func (s *sqliteClaimStore) discardLegacyCAS(conn *sql.Conn) error {
+	attempt := discardUncertainSQLiteConn
+	if s.casDiscardAttempt != nil {
+		attempt = s.casDiscardAttempt
+	}
+	if err := attempt(conn); err != nil {
+		// The test seam can lose the disposal response before performing Raw.
+		// A direct rescue still fails the operation; never grant success from it.
+		_ = discardUncertainSQLiteConn(conn)
+		return err
+	}
+	return nil
 }
 
 func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error {

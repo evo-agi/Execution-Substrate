@@ -327,6 +327,26 @@ effect facts through full expected-record equality. Uncertainty is not
 permission to create a second claim, assign a second run, or repeat an external
 provider effect.
 
+**O2 historical codec-1/2 CAS cleanup — Bounded slice rule refinement.**
+After a known successful `BEGIN IMMEDIATE`, every `compareAndSwapClaim`
+pre-COMMIT exit, including cancellation, SQL/read failure, CAS miss, and
+missing-row return, must confirm ROLLBACK with a context independent of the
+request. Confirmed rollback preserves the ordinary result/error. Failed
+rollback requires synchronous discard of that exact driver connection and a
+fixed unavailable result with no `record`, `applied`, or `found` success claim;
+cleanup failure overrides even a would-be nil-error return. Before dispatching
+COMMIT or a test-only COMMIT fault seam, the operation records the attempted
+boundary. No rollback follows an attempted COMMIT. Any non-nil COMMIT result
+requires exact-connection disposal before returning COMMIT-unknown or allowing
+a durable reload; unconfirmed disposal returns unavailable and forbids
+classification. Known successful COMMIT retains the existing applied/winner
+record and revision semantics. A canceled caller may remain unavailable:
+request-independent cleanup does not detach semantic work from cancellation.
+A high-level `sql.Conn.Close()` alone is not disposal proof, and no uncertain
+transaction may return to the usable pool. This rule changes neither codec-3
+claim/grant/key guards nor A1 original-key read cleanup, which remains a
+separate before-runtime concern.
+
 ## 8. Provider-Effect Intent And Ordering
 
 The durable contract distinguishes committed pure-model claim phase from
@@ -1082,6 +1102,19 @@ both keys ACTIVE. A retired original may verify/decrypt an existing claim;
 revoked/missing/mismatched originals refuse. The near-2^32 test has a separate
 reservation-only limit profile. No production key loader or global rollback
 protection is selected.
+
+For the distinct historical codec-1/2 CAS path, O2 requires a real pinned
+SQLite fault matrix over authentic migrated schema-1/2 rows. It must prove
+pre-COMMIT rollback or exact driver disposal, independent writer-lock release,
+no reuse after discard, complete durable row/revision/latest-operation facts,
+no false success under cancellation or unconfirmed cleanup, and later healthy
+operation on the same store. A real COMMIT followed by a lost response must
+advance at most once, dispose the uncertain connection before classification,
+and use the durable service's full expected-record equality. A pre-dispatch
+COMMIT error must not be turned into a rollback shortcut after the attempted
+boundary. Legacy codec-1/2 compatibility and migration literals remain;
+codec-3 CAS stays refused. This evidence does not qualify runtime wiring,
+public Submit, native installed-source behavior, or A1's read path.
 
 The publisher uses an independent random 32-byte object ID as
 objects/v1/<64 lowercase hex>, never as AEAD nonce. The qualified test root

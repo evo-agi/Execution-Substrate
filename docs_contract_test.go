@@ -768,7 +768,7 @@ func TestESExecutionAdmissionModelFinalAuditRepairContract(t *testing.T) {
 		"### Current paired-root custody and acceptance scope",
 		"**Superseded CUST-1/CUST-2 gate history.**",
 		"That pre-integration linkage is not a current local commit rule.",
-		"focused changed-interaction assessment and validation plus a separately authorized commit",
+		"Focused changed-interaction assessment, validation, and separately authorized commit were required there",
 		"C's selected native observations remain historical evidence",
 		"**Current invariant — staging non-mutation and retained-output independence.**",
 		"**Bounded slice rule pending integrated review — paired-root qualification.**",
@@ -2963,8 +2963,8 @@ func TestReliableSubmitContractAdapterFoundationDocsAndSourceContract(t *testing
 func TestReliableSubmitBindingProducerDocsContract(t *testing.T) {
 	plansRaw := mustRead(t, "PLANS.md")
 	plans := compactDocSection(t, plansRaw,
-		"## Current-remote-base PB1 binding selection (2026-11-17)",
-		"## Current-remote-base H/C/T foundation selection (2026-11-17)")
+		"## Historical current-remote-base PB1 binding selection (2026-11-17)",
+		"## Historical current-remote-base H/C/T foundation selection (2026-11-17)")
 	assertContainsAll(t, "private binding selected plan", plans,
 		"ES-PRIVATE-ADMISSION-BINDING-V1-20261115-01",
 		"runtime-unwired",
@@ -3103,6 +3103,13 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"Binary custody encoding is the selected bounded private exception",
 	)
 
+	assertContainsAll(t, "O2 historical CAS physical proof", privateCustody,
+		"historical codec-1/2 CAS path",
+		"independent writer-lock release",
+		"no reuse after discard",
+		"A pre-dispatch COMMIT error must not be turned into a rollback shortcut",
+		"codec-3 CAS stays refused",
+	)
 	assertContainsAll(t, "reliable-submit persistence ADR status", statusPurpose,
 		"accepted architecture decision with bounded private codec-3 synthetic replay custody",
 		"historical first tranche added private admission-local durable claim source and tests",
@@ -3304,6 +3311,16 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"full latest-operation descriptor when present",
 		"full expected-record equality",
 		"not permission to create a second claim, assign a second run, or repeat an external provider effect",
+	)
+	assertContainsAll(t, "O2 historical CAS cleanup contract", revisionCAS,
+		"O2 historical codec-1/2 CAS cleanup",
+		"every `compareAndSwapClaim` pre-COMMIT exit",
+		"context independent of the request",
+		"cleanup failure overrides even a would-be nil-error return",
+		"No rollback follows an attempted COMMIT",
+		"before returning COMMIT-unknown or allowing a durable reload",
+		"A high-level `sql.Conn.Close()` alone is not disposal proof",
+		"A1 original-key read cleanup",
 	)
 	assertContainsAll(t, "reliable-submit persistence ADR effect intent", effectIntent,
 		"committed pure-model claim phase from orthogonal provider-effect facts",
@@ -12516,12 +12533,18 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	remoteAlpha := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	linuxQualification := mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md")
 
-	currentStatus := compactDocSection(t, plans, "## Current-remote-base private synthetic replay custody selection (2026-11-17)", "This document is the authoritative planning document")
+	currentStatus := compactDocSection(t, plans, "## Post-PR #8 merged source and O2 hardening selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
 	assertContainsAll(t, "integration status", currentStatus,
+		"2478a24a18852f1abd7d474c0525c46bd2c05e5e",
+		"e7defd3a0df278ad70762f17f0f2a5b1c14a795b",
+		"source publication", "O2", "A1",
 		"synthetic_nonoperational_v1", "runtime-unwired", "effect-ineligible",
-		"unavailable as public reliable submit", "official `trunk_dev`",
+		"unavailable as public reliable Submit", "official `trunk_dev`",
+	)
+	historicalStatus := compactDocSection(t, plans, "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)", "This document is the authoritative planning document")
+	assertContainsAll(t, "historical integration selection", historicalStatus,
 		"effect-free existing-host route retirements",
-		"Development acceptance, a later commit, operational rollout, and publication are distinct decisions",
+		"At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions",
 	)
 	foundation := compactDocSection(t, plans, "**Acceptance boundaries selected on 2026-11-13:**", "The `reliable-submit-durable-same-operation-replay-repair` source tranche")
 	assertContainsAll(t, "C foundation acceptance scope", foundation,
@@ -12533,8 +12556,8 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	assertContainsAll(t, "current integrated gate", currentGate,
 		"**Superseded CUST-1/CUST-2 gate history.**",
 		"That pre-integration linkage is not a current local commit rule",
-		"current-base candidate, which remains uncommitted and pending independent",
-		"focused changed-interaction assessment and validation plus a separately authorized commit",
+		"then-current-base candidate, which at that gate remained uncommitted and",
+		"Focused changed-interaction assessment, validation, and separately authorized commit were required there",
 		"C's selected native observations remain historical evidence for exact C source and command identities, not executions of this tree",
 		"Any new bounded witness must be selected for a concrete changed interaction rather than inferred from merge ancestry",
 		"Operational topology, key exposure, capacity, residence, reclamation, and publication gates remain open for their operational scope",
@@ -12567,8 +12590,8 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	)
 	designGate := compactDocSection(t, design, "Local implementation and modeled tests do not establish mounted or deployment", "")
 	assertContainsAll(t, "design evidence scope", designGate,
-		"C's selected native observations remain historical exact-C evidence, not executions of this unaccepted integrated tree",
-		"Focused independent changed-interaction assessment may select a new bounded witness for a concrete need",
+		"C's selected native observations were historical exact-C evidence, not executions of the then-unaccepted integrated tree",
+		"focused independent changed-interaction assessment may still select a new bounded witness for a concrete operating claim",
 		"Running-deployment topology, key isolation, capacity, residence, reclamation, publication, and native qualification for claimed architectures remain gates for their operational scope",
 		"not blanket local pre-commit conditions",
 	)
@@ -12576,7 +12599,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	implementationGate := compactDocSection(t, implementation, "The current stable-service-namespace/trusted-operator assumption is explicit:", "")
 	assertContainsAll(t, "implementation evidence scope", implementationGate,
 		"C's selected native observations remain historical exact-source evidence",
-		"Focused changed-interaction review/validation and a separately authorized commit remain pending",
+		"Focused changed-interaction review/validation and a separately authorized commit were pending at that gate",
 		"remain operational gates for claimed environments",
 		"not a blanket local source-preservation or integration commit gate",
 	)
@@ -12606,7 +12629,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"Real repaired-helper mounted-alias evidence remains required where the operational claim depends on it",
 		"`PLANS.md` and `.docs/execution_lifecycle/contracts.md`",
 		"not an independent blanket prerequisite to a separately authorized local",
-		"This H/C/T integrated source remains unaccepted",
+		"the H/C/T integrated source was unaccepted",
 		"focused changed-interaction assessment and explicit commit authority",
 		"merge ancestry alone does not create a blanket native campaign",
 		"No current deployment compatibility, supported-host claim, or rollout readiness is inferred here",
@@ -12627,7 +12650,7 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 		"an actual mount-crossing refusal",
 		"Cross-compilation is compile evidence only and cannot replace those runtime observations",
 		"Darwin behavior, a fake filesystem, containers running a different kernel or architecture, and an OS label cannot replace them either",
-		"C's selected native programme remains historical evidence for its exact source and environments, not an execution of this unaccepted H/C/T integrated tree",
+		"C's selected native programme remains historical evidence for its exact source and environments, not an execution of the then-unaccepted H/C/T integrated tree",
 		"Evidence reuse or a new bounded witness depends on the concrete changed interaction and operating claim",
 		"report that operating claim as pending rather than supported by inference",
 		"Neither the Remote Alpha amd64 nor supported-local arm64 claim is narrowed",
@@ -12651,10 +12674,10 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	)
 	assertContainsAll(t, "section 19 local and operational acceptance split", archiveAndRoots,
 		"Modeled topology tests do not claim an actual bind or casefold mount",
-		"historical evidence for exact C source and its environments, not executions of this unaccepted integrated tree",
-		"T and this candidate do not inherit C's development acceptance",
-		"Local source or integration acceptance of this candidate requires focused candidate-specific changed-interaction assessment and validation",
-		"A local source-preservation or integration commit then requires separate explicit authorization",
+		"historical evidence for exact C source and its environments, not executions of the then-unaccepted integrated tree",
+		"T and that candidate did not inherit C's development acceptance",
+		"At that gate, local source or integration acceptance required focused candidate-specific changed-interaction assessment and validation",
+		"followed by separate explicit commit authority",
 		"Running-deployment topology observation for a claimed Remote Alpha environment",
 		"real repaired-helper mounted-alias fixtures where the operational claim depends on them",
 		"native syscall and mount-crossing evidence for each claimed Linux operating architecture",
@@ -12685,12 +12708,12 @@ func TestIntegratedCandidateStatusSeparatesCAndT(t *testing.T) {
 		}
 		return body
 	}
-	current := section(plans, "## Current-remote-base H/C/T foundation selection (2026-11-17)")
+	current := section(plans, "## Historical current-remote-base H/C/T foundation selection (2026-11-17)")
 	contract := section(contracts, "## H/C/T integration candidate status and exact boundary")
 	for _, required := range []string{
 		"reviewed H/C/T foundation tree", "preservation-only T commit",
 		"effect-free existing-host route retirements", "one-time checkpoint exception is consumed",
-		"Development acceptance, a later commit, operational rollout, and publication are distinct decisions",
+		"At that point, development acceptance, a later commit, operational rollout, and publication were distinct decisions",
 		"Reliable submit remains unavailable and runtime-unwired",
 	} {
 		if !strings.Contains(current, required) {
