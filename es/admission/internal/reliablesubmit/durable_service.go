@@ -3,6 +3,7 @@ package reliablesubmit
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -42,6 +43,7 @@ const (
 )
 
 type durableClaimOutcome struct {
+	fixtureDisposition         FixtureProgressDisposition
 	kind                       durableClaimOutcomeKind
 	record                     durableClaimRecord
 	hasRecord                  bool
@@ -65,6 +67,7 @@ type exactReplayRequest struct {
 }
 
 type assignRunRequest struct {
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -73,6 +76,7 @@ type assignRunRequest struct {
 }
 
 type recordProviderEffectIntentRequest struct {
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -81,6 +85,7 @@ type recordProviderEffectIntentRequest struct {
 }
 
 type recordStagingEvidenceRequest struct {
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -89,6 +94,8 @@ type recordStagingEvidenceRequest struct {
 }
 
 type recordProviderDispatchAttemptRequest struct {
+	run              RunRef
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -97,6 +104,7 @@ type recordProviderDispatchAttemptRequest struct {
 }
 
 type recordProviderCallObservationRequest struct {
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -107,6 +115,8 @@ type recordProviderCallObservationRequest struct {
 }
 
 type recordReconciliationEvidenceRequest struct {
+	evidence         FixtureTerminalEvidence
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -117,6 +127,8 @@ type recordReconciliationEvidenceRequest struct {
 }
 
 type acceptWithReceiptRequest struct {
+	evidence         FixtureTerminalEvidence
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -126,6 +138,8 @@ type acceptWithReceiptRequest struct {
 }
 
 type recordProvablyNotAcceptedRequest struct {
+	evidence         FixtureTerminalEvidence
+	progress         *progressAccessState
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -197,6 +211,7 @@ func (s *durableClaimService) exactReplayOrLoad(ctx context.Context, req exactRe
 
 func (s *durableClaimService) assignRun(ctx context.Context, req assignRunRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -232,6 +247,7 @@ func (s *durableClaimService) assignRun(ctx context.Context, req assignRunReques
 
 func (s *durableClaimService) recordProviderEffectIntent(ctx context.Context, req recordProviderEffectIntentRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -264,6 +280,7 @@ func (s *durableClaimService) recordProviderEffectIntent(ctx context.Context, re
 
 func (s *durableClaimService) recordStagingEvidence(ctx context.Context, req recordStagingEvidenceRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -296,17 +313,24 @@ func (s *durableClaimService) recordStagingEvidence(ctx context.Context, req rec
 
 func (s *durableClaimService) recordProviderDispatchAttempt(ctx context.Context, req recordProviderDispatchAttemptRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
 		mutation:         req.mutation,
 		operationKind:    durableOperationRecordProviderDispatchAttempt,
 		operationInput: func() []durableOperationInputPart {
+			if req.progress != nil {
+				return []durableOperationInputPart{operationPartRunRef(req.run), operationPartFactRef(req.dispatch)}
+			}
 			return []durableOperationInputPart{operationPartFactRef(req.dispatch)}
 		},
 		successKind: durableClaimOutcomeDispatchAttemptRecorded,
 		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
 			if !record.effects.intent.present() {
+				return durableClaimRecord{}, errInvalidDurableRecord
+			}
+			if req.progress != nil && (!progressCurrentNoMarker(record) || validateRecordRunRef(record, req.run) != nil) {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
 			if record.effects.dispatch.present() {
@@ -328,6 +352,7 @@ func (s *durableClaimService) recordProviderDispatchAttempt(ctx context.Context,
 
 func (s *durableClaimService) recordProviderCallObservation(ctx context.Context, req recordProviderCallObservationRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -376,6 +401,7 @@ func (s *durableClaimService) recordProviderCallObservation(ctx context.Context,
 
 func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, req recordReconciliationEvidenceRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -387,6 +413,10 @@ func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, 
 				operationPartUint16(durableOperationPartReconciliationKind, uint16(req.kind)),
 				operationPartFactRef(req.reconciliation),
 			}
+		},
+		authorize: func(record durableClaimRecord) bool {
+			return req.progress == nil || req.kind != durableReconciliationNotAccepted ||
+				req.evidence.matches(record, fixtureTerminalNotAccepted, req.reconciliation, ReceiptRef{})
 		},
 		successKind: durableClaimOutcomeReconciliationRecorded,
 		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
@@ -400,6 +430,9 @@ func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, 
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
 			if !req.reconciliation.valid() {
+				return durableClaimRecord{}, errInvalidDurableRecord
+			}
+			if req.progress != nil && !currentFixtureReconciliation(record, req.kind) {
 				return durableClaimRecord{}, errInvalidDurableRecord
 			}
 			if record.effects.reconciliation.present() {
@@ -421,6 +454,7 @@ func (s *durableClaimService) recordReconciliationEvidence(ctx context.Context, 
 
 func (s *durableClaimService) acceptWithReceipt(ctx context.Context, req acceptWithReceiptRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -431,6 +465,9 @@ func (s *durableClaimService) acceptWithReceipt(ctx context.Context, req acceptW
 				operationPartReceiptRef(req.receipt),
 				operationPartFactRef(req.accepted),
 			}
+		},
+		authorize: func(record durableClaimRecord) bool {
+			return req.progress == nil || req.evidence.matches(record, fixtureTerminalAccepted, req.accepted, req.receipt)
 		},
 		successKind: durableClaimOutcomeAccepted,
 		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
@@ -461,6 +498,7 @@ func (s *durableClaimService) acceptWithReceipt(ctx context.Context, req acceptW
 
 func (s *durableClaimService) recordProvablyNotAccepted(ctx context.Context, req recordProvablyNotAcceptedRequest) (durableClaimOutcome, error) {
 	return s.mutate(ctx, mutationRequest{
+		progress:         req.progress,
 		claim:            req.claim,
 		binding:          req.binding,
 		expectedRevision: req.expectedRevision,
@@ -468,6 +506,9 @@ func (s *durableClaimService) recordProvablyNotAccepted(ctx context.Context, req
 		operationKind:    durableOperationRecordProvablyNotAccepted,
 		operationInput: func() []durableOperationInputPart {
 			return []durableOperationInputPart{operationPartFactRef(req.notAccepted)}
+		},
+		authorize: func(record durableClaimRecord) bool {
+			return req.progress == nil || req.evidence.matches(record, fixtureTerminalNotAccepted, req.notAccepted, ReceiptRef{})
 		},
 		successKind: durableClaimOutcomeProvablyNotAccepted,
 		apply: func(record durableClaimRecord, nowUTC time.Time, operation durableLatestOperationDescriptor) (durableClaimRecord, error) {
@@ -530,6 +571,8 @@ func (s *durableClaimService) tombstoneOrExpire(ctx context.Context, req tombsto
 }
 
 type mutationRequest struct {
+	progress         *progressAccessState
+	authorize        func(durableClaimRecord) bool
 	claim            ClaimID
 	binding          PlanBinding
 	expectedRevision claimRevision
@@ -541,6 +584,9 @@ type mutationRequest struct {
 }
 
 func (s *durableClaimService) mutate(ctx context.Context, req mutationRequest) (durableClaimOutcome, error) {
+	if req.progress != nil {
+		return s.mutateFixtureProgress(ctx, req)
+	}
 	now := s.now()
 	record, err := s.store.loadClaim(ctx, loadClaimQuery{claim: req.claim})
 	if err != nil {
@@ -662,7 +708,7 @@ func (s *durableClaimService) validateLoadedRecordBinding(record durableClaimRec
 	if err := record.validate(); err != nil {
 		return nil, durableClaimOutcome{}, false, err
 	}
-	if record.codecVersion == durableClaimCodecVersionSynthetic {
+	if record.codecVersion >= durableClaimCodecVersionSynthetic {
 		return nil, durableClaimOutcome{}, false, errClaimStoreUnsupported
 	}
 	phase, err := record.hydratePhase()
@@ -782,6 +828,34 @@ func phaseForProviderObservation(record durableClaimRecord, kind durableProvider
 	}
 }
 
+// A historical tuple can remain valid after this current recording
+// predicate ceases to hold. Only fresh fixture commands reach this check.
+func currentFixtureReconciliation(record durableClaimRecord, kind durableReconciliationKind) bool {
+	if kind == durableReconciliationNoDispatch {
+		return progressCurrentNoMarker(record)
+	}
+	if !record.effects.dispatch.present() {
+		return false
+	}
+	phase := record.phase.tag
+	candidate := phase >= durablePhaseEffectCapableAssigned && phase <= durablePhaseAmbiguousAfterAssignment
+	provider := record.effects.provider.kind
+	absent := !record.effects.provider.present()
+	switch kind {
+	case durableReconciliationPending:
+		return candidate && (absent || provider == durableProviderObservationPending)
+	case durableReconciliationAmbiguous, durableReconciliationInconsistent:
+		return candidate && (absent || provider == durableProviderObservationAmbiguous || provider == durableProviderObservationCallUncertain)
+	case durableReconciliationAccepted:
+		return phase == durablePhaseAccepted && provider == durableProviderObservationAccepted && record.phase.receipt.Valid()
+	case durableReconciliationNotAccepted:
+		return (candidate && absent) ||
+			(phase == durablePhaseProvablyNotAcceptedAfterAssignment && provider == durableProviderObservationNotAccepted)
+	default:
+		return false
+	}
+}
+
 func phaseForReconciliation(record durableClaimRecord, kind durableReconciliationKind) (ClaimPhase, error) {
 	current, err := record.hydratePhase()
 	if err != nil {
@@ -868,6 +942,24 @@ func (r durableClaimRecord) withPhaseAndOperation(phase ClaimPhase, operation du
 	if !operation.complete() {
 		return durableClaimRecord{}, errInvalidDurableLatestOperation
 	}
+	if r.codecVersion == durableClaimCodecVersionProgress {
+		claim, plan, snapshot, err := durablePhaseSnapshotFromPhase(phase)
+		if err != nil || !claim.Equal(r.claim) || !plan.EqualBinding(r.plan.Binding()) ||
+			!witnessEqual(plan.Witness(), r.plan.Witness()) || r.revision == math.MaxInt64 ||
+			!retention.equal(r.retention) {
+			return durableClaimRecord{}, errInvalidDurableRecord
+		}
+		next := r.clone()
+		next.phase, next.effects, next.assignedAt = snapshot, effects.clone(), assignedAt
+		next.updatedAt = normalizeClaimTime(updatedAt)
+		next.revision++
+		next.latestOperation = operation.clone()
+		next.lastMutation = operation.mutation.clone()
+		if err := next.validate(); err != nil {
+			return durableClaimRecord{}, err
+		}
+		return next, nil
+	}
 	return newDurableClaimRecord(newDurableClaimRecordInput{
 		phase:           phase,
 		revision:        r.revision + 1,
@@ -879,4 +971,387 @@ func (r durableClaimRecord) withPhaseAndOperation(phase ClaimPhase, operation du
 		retention:       retention,
 		latestOperation: operation,
 	})
+}
+
+// Fixture-facing values do not carry the operational RunRef, ReceiptRef or a
+// provider action. The only underlying durable references exist inside this
+// package and can be produced only by applying the closed fixture commands.
+type FixtureProgressPhase uint8
+
+const (
+	FixturePendingBeforeAssignment FixtureProgressPhase = iota + 1
+	FixtureAmbiguousBeforeAssignment
+	FixtureAssigned
+	FixturePendingAfterAssignment
+	FixtureAmbiguousAfterAssignment
+	FixtureAccepted
+	FixtureProvablyNotAccepted
+)
+
+type FixtureProgressDisposition uint8
+
+const (
+	FixtureProgressRefused FixtureProgressDisposition = iota
+	FixtureProgressCurrent
+	FixtureProgressOccupied
+	FixtureProgressCommitted
+	FixtureProgressNoChange
+	FixtureProgressExactReplay
+	FixtureProgressConflict
+	FixtureProgressStale
+	FixtureProgressWriteUnknown
+	FixtureProgressOwnCommitConfirmed
+)
+
+type FixtureRunRef struct {
+	privateReplayRedacted
+	value RunRef
+}
+type FixtureReceiptRef struct {
+	privateReplayRedacted
+	value ReceiptRef
+}
+type FixtureFactRef struct {
+	privateReplayRedacted
+	value durableFactRef
+}
+type FixtureMutationRef struct {
+	privateReplayRedacted
+	value durableMutationRef
+}
+
+func NewFixtureRunRef(raw [32]byte) FixtureRunRef {
+	v, _ := NewRunRef(raw[:])
+	return FixtureRunRef{value: v}
+}
+func NewFixtureReceiptRef(raw [32]byte) FixtureReceiptRef {
+	v, _ := NewReceiptRef(raw[:])
+	return FixtureReceiptRef{value: v}
+}
+func NewFixtureFactRef(raw [32]byte) FixtureFactRef {
+	v, _ := newDurableFactRef(raw[:])
+	return FixtureFactRef{value: v}
+}
+func NewFixtureMutationRef(raw [32]byte) FixtureMutationRef {
+	v, _ := newDurableMutationRef(raw[:])
+	return FixtureMutationRef{value: v}
+}
+func (r FixtureRunRef) Equal(other FixtureRunRef) bool { return r.value.Equal(other.value) }
+func (r FixtureReceiptRef) Equal(other FixtureReceiptRef) bool {
+	return r.value.ref.equal(other.value.ref)
+}
+
+type FixtureProgress struct {
+	privateReplayRedacted
+	phase    FixtureProgressPhase
+	revision int64
+	run      FixtureRunRef
+	receipt  FixtureReceiptRef
+}
+
+func (p FixtureProgress) Phase() FixtureProgressPhase { return p.phase }
+func (p FixtureProgress) Revision() int64             { return p.revision }
+func (p FixtureProgress) Run() (FixtureRunRef, bool)  { return p.run, p.run.value.Valid() }
+func (p FixtureProgress) Receipt() (FixtureReceiptRef, bool) {
+	return p.receipt, p.phase == FixtureAccepted && p.receipt.value.Valid()
+}
+
+func fixtureProgressProjection(r durableClaimRecord) FixtureProgress {
+	if r.codecVersion != durableClaimCodecVersionProgress || r.progressRowID == 0 {
+		return FixtureProgress{}
+	}
+	return FixtureProgress{phase: FixtureProgressPhase(r.phase.tag), revision: int64(r.revision),
+		run: FixtureRunRef{value: r.phase.run.clone()}, receipt: FixtureReceiptRef{value: r.phase.receipt.clone()}}
+}
+
+type FixtureProgressCommand interface{ fixtureProgressCommand() }
+type fixtureProgressCommandTag struct{ privateReplayRedacted }
+
+func (fixtureProgressCommandTag) fixtureProgressCommand() {}
+
+type FixtureAssignRun struct {
+	fixtureProgressCommandTag
+	Run FixtureRunRef
+}
+type FixtureRecordIntent struct {
+	fixtureProgressCommandTag
+	Fact FixtureFactRef
+}
+type FixtureRecordStaging struct {
+	fixtureProgressCommandTag
+	Fact FixtureFactRef
+}
+type FixtureRecordMarker struct {
+	fixtureProgressCommandTag
+	Run    FixtureRunRef
+	Marker FixtureFactRef
+}
+type FixtureRecordProvider struct {
+	fixtureProgressCommandTag
+	Run  FixtureRunRef
+	Kind FixtureProviderKind
+	Fact FixtureFactRef
+}
+type FixtureRecordReconciliation struct {
+	fixtureProgressCommandTag
+	Run      FixtureRunRef
+	Kind     FixtureReconciliationKind
+	Fact     FixtureFactRef
+	Negative FixtureTerminalEvidence
+}
+type FixtureAccept struct {
+	fixtureProgressCommandTag
+	Evidence FixtureTerminalEvidence
+	Receipt  FixtureReceiptRef
+}
+type FixtureReject struct {
+	fixtureProgressCommandTag
+	Evidence FixtureTerminalEvidence
+}
+
+type FixtureProviderKind uint8
+
+const (
+	FixtureProviderPending       FixtureProviderKind = 1
+	FixtureProviderAmbiguous     FixtureProviderKind = 2
+	FixtureProviderCallUncertain FixtureProviderKind = 5
+)
+
+type FixtureReconciliationKind uint8
+
+const (
+	FixtureNoMarker FixtureReconciliationKind = iota + 1
+	FixtureReconciledPending
+	FixtureReconciledAmbiguous
+	FixtureReconciledAccepted
+	FixtureReconciledNotAccepted
+	FixtureReconciledInconsistent
+)
+
+type fixtureTerminalOutcome uint8
+
+const (
+	fixtureTerminalAccepted fixtureTerminalOutcome = iota + 1
+	fixtureTerminalNotAccepted
+)
+
+// FixtureTerminalEvidence asserts a synthetic outcome within one fixture attempt.
+type FixtureTerminalEvidence struct {
+	privateReplayRedacted
+	claim   ClaimID
+	run     FixtureRunRef
+	marker  FixtureFactRef
+	fact    FixtureFactRef
+	outcome fixtureTerminalOutcome
+	receipt FixtureReceiptRef
+}
+
+func NewFixtureAcceptedEvidence(claim ClaimID, run FixtureRunRef, marker FixtureFactRef, fact FixtureFactRef,
+	receipt FixtureReceiptRef) (FixtureTerminalEvidence, error) {
+	evidence := FixtureTerminalEvidence{claim: claim.clone(), run: run, marker: marker, fact: fact,
+		outcome: fixtureTerminalAccepted, receipt: receipt}
+	if !evidence.valid() {
+		return FixtureTerminalEvidence{}, errClaimStoreUnavailable
+	}
+	return evidence, nil
+}
+
+func NewFixtureNotAcceptedEvidence(claim ClaimID, run FixtureRunRef, marker FixtureFactRef, fact FixtureFactRef) (FixtureTerminalEvidence, error) {
+	evidence := FixtureTerminalEvidence{claim: claim.clone(), run: run, marker: marker, fact: fact, outcome: fixtureTerminalNotAccepted}
+	if !evidence.valid() {
+		return FixtureTerminalEvidence{}, errClaimStoreUnavailable
+	}
+	return evidence, nil
+}
+
+func (v FixtureTerminalEvidence) valid() bool {
+	if !v.claim.Valid() || !v.run.value.Valid() || !v.marker.value.valid() || !v.fact.value.valid() {
+		return false
+	}
+	switch v.outcome {
+	case fixtureTerminalAccepted:
+		return v.receipt.value.Valid()
+	case fixtureTerminalNotAccepted:
+		return len(v.receipt.value.ref.value) == 0
+	default:
+		return false
+	}
+}
+
+func (v FixtureTerminalEvidence) matches(r durableClaimRecord, outcome fixtureTerminalOutcome, fact durableFactRef, receipt ReceiptRef) bool {
+	return v.outcome == outcome && v.valid() && v.claim.Equal(r.claim) && v.run.value.Equal(r.phase.run) &&
+		v.marker.value.equal(r.effects.dispatch.ref) && v.fact.value.equal(fact) &&
+		(outcome != fixtureTerminalAccepted || v.receipt.value.Equal(receipt))
+}
+
+func progressCurrentNoMarker(r durableClaimRecord) bool {
+	return r.codecVersion == durableClaimCodecVersionProgress && r.phase.tag == durablePhaseEffectCapableAssigned &&
+		r.activeAt(r.updatedAt) && r.effects.intent.present() && !r.effects.provider.present() && !r.effects.dispatch.present()
+}
+
+func (c *PrivateReplayProgressCustody) ApplyFixtureProgress(ctx context.Context, access *ProgressAccess,
+	expected int64, mutation FixtureMutationRef, command FixtureProgressCommand) (FixtureProgressDisposition, FixtureProgress, error) {
+	state, err := c.consumeProgressAccess(ctx, access)
+	if err != nil || expected < 1 || !mutation.value.valid() || state.confirmed.progressRowID != 0 {
+		return FixtureProgressRefused, FixtureProgress{}, errClaimStoreUnavailable
+	}
+	c.mu.RLock()
+	if !c.qualified(ctx) {
+		c.mu.RUnlock()
+		return FixtureProgressRefused, FixtureProgress{}, errClaimStoreUnavailable
+	}
+	service, err := newDurableClaimService(c.custody.store, nil)
+	c.mu.RUnlock()
+	if err != nil {
+		return FixtureProgressRefused, FixtureProgress{}, err
+	}
+	out, err := service.dispatchFixtureCommand(ctx, state, claimRevision(expected), mutation.value, command)
+	if !out.hasRecord {
+		return out.fixtureDisposition, FixtureProgress{}, err
+	}
+	return out.fixtureDisposition, fixtureProgressProjection(out.record), err
+}
+
+func (s *durableClaimService) dispatchFixtureCommand(ctx context.Context, state *progressAccessState,
+	expected claimRevision, mutation durableMutationRef, command FixtureProgressCommand) (durableClaimOutcome, error) {
+	claim, binding := state.original.claim, state.original.plan.Binding()
+	switch v := command.(type) {
+	case FixtureAssignRun:
+		if v.Run.value.Valid() {
+			return s.assignRun(ctx, assignRunRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, run: v.Run.value})
+		}
+	case FixtureRecordIntent:
+		if v.Fact.value.valid() {
+			return s.recordProviderEffectIntent(ctx, recordProviderEffectIntentRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, intent: v.Fact.value})
+		}
+	case FixtureRecordStaging:
+		if v.Fact.value.valid() {
+			return s.recordStagingEvidence(ctx, recordStagingEvidenceRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, staging: v.Fact.value})
+		}
+	case FixtureRecordMarker:
+		if v.Run.value.Valid() && v.Marker.value.valid() {
+			return s.recordProviderDispatchAttempt(ctx, recordProviderDispatchAttemptRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, run: v.Run.value, dispatch: v.Marker.value})
+		}
+	case FixtureRecordProvider:
+		if (v.Kind == FixtureProviderPending || v.Kind == FixtureProviderAmbiguous || v.Kind == FixtureProviderCallUncertain) && v.Run.value.Valid() && v.Fact.value.valid() {
+			return s.recordProviderCallObservation(ctx, recordProviderCallObservationRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, run: v.Run.value, kind: durableProviderObservationKind(v.Kind), observation: v.Fact.value})
+		}
+	case FixtureRecordReconciliation:
+		if v.Kind >= FixtureNoMarker && v.Kind <= FixtureReconciledInconsistent && v.Run.value.Valid() && v.Fact.value.valid() {
+			return s.recordReconciliationEvidence(ctx, recordReconciliationEvidenceRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, run: v.Run.value, kind: durableReconciliationKind(v.Kind), reconciliation: v.Fact.value, evidence: v.Negative})
+		}
+	case FixtureAccept:
+		if v.Evidence.fact.value.valid() && v.Receipt.value.Valid() {
+			return s.acceptWithReceipt(ctx, acceptWithReceiptRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, receipt: v.Receipt.value, accepted: v.Evidence.fact.value, evidence: v.Evidence})
+		}
+	case FixtureReject:
+		if v.Evidence.fact.value.valid() {
+			return s.recordProvablyNotAccepted(ctx, recordProvablyNotAcceptedRequest{progress: state, claim: claim, binding: binding, expectedRevision: expected, mutation: mutation, notAccepted: v.Evidence.fact.value, evidence: v.Evidence})
+		}
+	}
+	return durableClaimOutcome{}, errClaimStoreUnavailable
+}
+
+func fixtureMutationResult(state FixtureProgressDisposition, r durableClaimRecord) durableClaimOutcome {
+	return durableClaimOutcome{fixtureDisposition: state, record: r, hasRecord: r.progressRowID != 0}
+}
+
+func (s *durableClaimService) mutateFixtureProgress(ctx context.Context, req mutationRequest) (durableClaimOutcome, error) {
+	state := req.progress
+	record, err := state.reload(ctx)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	if req.authorize != nil && !req.authorize(record) {
+		return durableClaimOutcome{}, errClaimStoreUnavailable
+	}
+	op, err := deriveDurableOperationDescriptor(req.mutation, req.operationKind, req.expectedRevision, req.operationInput()...)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	classify := func(r durableClaimRecord) (durableClaimOutcome, bool) {
+		switch compareDurableLatestOperation(r.latestOperation, op) {
+		case durableOperationReplayExact:
+			return fixtureMutationResult(FixtureProgressExactReplay, r), true
+		case durableOperationReplayConflict:
+			return fixtureMutationResult(FixtureProgressConflict, durableClaimRecord{}), true
+		}
+		if r.revision != req.expectedRevision {
+			return fixtureMutationResult(FixtureProgressStale, durableClaimRecord{}), true
+		}
+		return durableClaimOutcome{}, false
+	}
+	if out, done := classify(record); done {
+		return out, nil
+	}
+	next, err := req.apply(record, s.now(), op)
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	if next.equal(record) {
+		return fixtureMutationResult(FixtureProgressNoChange, record), nil
+	}
+	if store, ok := s.store.(*sqliteClaimStore); ok && store.progressBeforeCASTest != nil {
+		store.progressBeforeCASTest()
+	}
+	c := state.issuer
+	c.mu.RLock()
+	if !state.life.live() || !c.qualified(ctx) || s.store != c.custody.store {
+		c.mu.RUnlock()
+		return durableClaimOutcome{}, errClaimStoreUnavailable
+	}
+	reply, err := c.custody.store.compareAndSwapProgress(ctx, record, next, state.keys)
+	c.mu.RUnlock()
+	if reply.unknown {
+		out := fixtureMutationResult(FixtureProgressWriteUnknown, durableClaimRecord{})
+		if !reply.recoverable {
+			return out, errClaimStoreCommitUnknown
+		}
+		if checked := state.authenticateMutationResult(ctx, reply.record, true); checked != nil {
+			return out, errClaimStoreCommitUnknown
+		}
+		return fixtureMutationResult(FixtureProgressOwnCommitConfirmed, reply.record), nil
+	}
+	if err != nil {
+		return durableClaimOutcome{}, err
+	}
+	if reply.occupied {
+		observed, err := state.reload(ctx)
+		if err != nil {
+			return fixtureMutationResult(FixtureProgressStale, durableClaimRecord{}), err
+		}
+		if req.authorize != nil && !req.authorize(observed) {
+			return durableClaimOutcome{}, errClaimStoreUnavailable
+		}
+		if out, done := classify(observed); done {
+			return out, nil
+		}
+		return fixtureMutationResult(FixtureProgressStale, durableClaimRecord{}), nil
+	}
+	if !reply.applied {
+		return durableClaimOutcome{}, errClaimStoreUnavailable
+	}
+	if err := state.authenticateMutationResult(ctx, reply.record, false); err != nil {
+		return fixtureMutationResult(FixtureProgressCommitted, durableClaimRecord{}), err
+	}
+	return fixtureMutationResult(FixtureProgressCommitted, reply.record), nil
+}
+
+func (s *progressAccessState) authenticateMutationResult(ctx context.Context, expected durableClaimRecord, exact bool) error {
+	if !s.life.live() {
+		return errClaimStoreUnavailable
+	}
+	current, raw, err := s.issuer.loadOriginal(ctx, expected.claim, s.keys, expected, exact)
+	if err != nil {
+		return err
+	}
+	if _, err := verifyProgressOriginalMatch(ctx, raw, current, s.verify); err != nil {
+		return err
+	}
+	s.issuer.mu.RLock()
+	defer s.issuer.mu.RUnlock()
+	if !s.life.live() || !s.issuer.qualified(ctx) {
+		return errClaimStoreUnavailable
+	}
+	return nil
 }

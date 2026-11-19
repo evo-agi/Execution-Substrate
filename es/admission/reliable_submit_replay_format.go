@@ -389,7 +389,7 @@ func (e *privateReplayEncoder) placement(resolved resolvedExecution) []byte {
 		e.field(5, replayUint32(uint32(host.owner.UID))), e.field(6, replayUint32(uint32(host.owner.GID))))
 }
 
-func (e *privateReplayEncoder) provenance(resolved resolvedExecution) []byte {
+func (e *privateReplayEncoder) provenance(resolved resolvedExecution, scope byte) []byte {
 	plan := resolved.plan
 	mounts := make([][]byte, 0, len(plan.mounts))
 	for _, mount := range plan.mounts {
@@ -399,17 +399,21 @@ func (e *privateReplayEncoder) provenance(resolved resolvedExecution) []byte {
 	}
 	flags := e.object(e.field(1, replayBool(plan.authority.trustMaterial.vaultCACert)),
 		e.field(2, replayBool(plan.authority.trustMaterial.workloadTLSBundle)))
-	return e.object(e.field(1, []byte("synthetic_signed_dependencies_v1")),
+	label := "synthetic_signed_dependencies_v1"
+	if scope == 2 {
+		label = "synthetic_progress_nonoperational_v1"
+	}
+	return e.object(e.field(1, []byte(label)),
 		e.field(2, e.string(plan.artifactDigest, 256)), e.field(3, e.string(plan.payloadDigest, 256)),
 		e.field(4, e.string(plan.runtimeSupportDigest, 256)), e.field(5, e.sequence(mounts, 8)), e.field(6, flags))
 }
 
-func (e *privateReplayEncoder) keys(bindingID, envelopeID string) []byte {
+func (e *privateReplayEncoder) keys(bindingID, envelopeID string, scope byte) []byte {
 	return e.object(e.field(1, replayUint16(1)), e.field(2, e.string(bindingID, 64)), e.field(3, e.string(envelopeID, 64)),
-		e.field(4, replayUint16(1)), e.field(5, replayUint16(1)), e.field(6, replayUint16(1)))
+		e.field(4, replayUint16(uint16(scope))), e.field(5, replayUint16(uint16(scope))), e.field(6, replayUint16(1)))
 }
 
-func encodePrivateReplayPayload(delivery privateReplayDelivery, resolved resolvedExecution, assessment admissionBindingAssessment, image privateSyntheticImagePlacement, bindingID, envelopeID string) ([]byte, error) {
+func encodePrivateReplayPayload(delivery privateReplayDelivery, resolved resolvedExecution, assessment admissionBindingAssessment, image privateSyntheticImagePlacement, bindingID, envelopeID string, scope byte) ([]byte, error) {
 	e := privateReplayEncoder{}
 	identity, err := reliablesubmit.EncodePrivateReplayIdentity(delivery.refs.claimID)
 	if err != nil {
@@ -424,15 +428,34 @@ func encodePrivateReplayPayload(delivery privateReplayDelivery, resolved resolve
 		e.field(1, identity), e.field(2, e.original(delivery.originalIntent)),
 		e.field(3, e.plan(resolved.plan)), e.field(4, e.material(resolved.material)),
 		e.field(5, assessmentBytes), e.field(6, e.image(resolved.plan, resolved.host, image)),
-		e.field(7, e.placement(resolved)), e.field(8, e.provenance(resolved)),
-		e.field(9, e.keys(bindingID, envelopeID)), e.field(10, []byte{1}),
+		e.field(7, e.placement(resolved)), e.field(8, e.provenance(resolved, scope)),
+		e.field(9, e.keys(bindingID, envelopeID, scope)), e.field(10, []byte{scope}),
 	)
 	if e.err != nil || len(body)+14 > 1<<20 {
 		return nil, errPrivateReplayInvalidDelivery
 	}
+	return framePrivateReplayPayload(body, scope)
+}
+
+func privateReplayPayloadMagic(scope byte) string {
+	switch scope {
+	case 1:
+		return "ESRSPAY1"
+	case 2:
+		return "ESRSPAY2"
+	default:
+		return ""
+	}
+}
+
+func framePrivateReplayPayload(body []byte, scope byte) ([]byte, error) {
+	magic := privateReplayPayloadMagic(scope)
+	if magic == "" || len(body) < 2 || len(body) > 1<<20-14 {
+		return nil, errPrivateReplayInvalidDelivery
+	}
 	out := make([]byte, 14+len(body))
-	copy(out, "ESRSPAY1")
-	binary.BigEndian.PutUint16(out[8:10], 1)
+	copy(out, magic)
+	binary.BigEndian.PutUint16(out[8:10], uint16(scope))
 	binary.BigEndian.PutUint32(out[10:14], uint32(len(body)))
 	copy(out[14:], body)
 	return out, nil

@@ -330,7 +330,11 @@ func (r *privateReplayReader) original(raw []byte) (privateReplayOriginalIntent,
 }
 
 func (r *privateReplayReader) payload(raw []byte) ([]privateReplayField, error) {
-	if len(raw) < 16 || len(raw) > 1<<20 || string(raw[:8]) != "ESRSPAY1" || binary.BigEndian.Uint16(raw[8:10]) != 1 || binary.BigEndian.Uint32(raw[10:14]) != uint32(len(raw)-14) {
+	return r.scopedPayload(raw, 1)
+}
+
+func (r *privateReplayReader) scopedPayload(raw []byte, scope byte) ([]privateReplayField, error) {
+	if len(raw) < 16 || len(raw) > 1<<20 || string(raw[:8]) != privateReplayPayloadMagic(scope) || binary.BigEndian.Uint16(raw[8:10]) != uint16(scope) || binary.BigEndian.Uint32(raw[10:14]) != uint32(len(raw)-14) {
 		return nil, errPrivateReplayUnavailable
 	}
 	f, err := r.object(raw[14:], 10, 1, 1)
@@ -834,9 +838,9 @@ func (r *privateReplayReader) identity(raw []byte) (reliableSubmitClaimRefs, err
 	return reliableSubmitClaimRefs{callerRef: caller, submitKeyRef: submit, claimID: claim}, nil
 }
 
-func decodePrivateReplayOriginal(plaintext []byte, keys privateSyntheticKeyBundle) (privateVerifiedOriginal, error) {
+func decodePrivateReplayOriginal(plaintext []byte, keys privateSyntheticKeyBundle, scope byte) (privateVerifiedOriginal, error) {
 	r := privateReplayReader{}
-	f, err := r.payload(plaintext)
+	f, err := r.scopedPayload(plaintext, scope)
 	if err != nil {
 		return privateVerifiedOriginal{}, errPrivateReplayUnavailable
 	}
@@ -904,7 +908,7 @@ func decodePrivateReplayOriginal(plaintext []byte, keys privateSyntheticKeyBundl
 		return privateVerifiedOriginal{}, errPrivateReplayUnavailable
 	}
 	delivery := privateReplayDelivery{originalIntent: intent, refs: refs, family: family}
-	reencoded, err := encodePrivateReplayPayload(delivery, resolved, assessment, image, keys.bindingID, keys.envelopeID)
+	reencoded, err := encodePrivateReplayPayload(delivery, resolved, assessment, image, keys.bindingID, keys.envelopeID, scope)
 	if err != nil || !hmac.Equal(reencoded, plaintext) {
 		return privateVerifiedOriginal{}, errPrivateReplayUnavailable
 	}
@@ -917,7 +921,7 @@ func decodePrivateReplayOriginal(plaintext []byte, keys privateSyntheticKeyBundl
 }
 
 func verifyPrivateReplayOriginal(meta reliablesubmit.AuthenticatedClaimMeta, plaintext []byte, keys privateSyntheticKeyBundle) (privateVerifiedOriginal, error) {
-	verified, err := decodePrivateReplayOriginal(plaintext, keys)
+	verified, err := decodePrivateReplayOriginal(plaintext, keys, 1)
 	if err != nil || !meta.MatchesClaimAndPlan(verified.claim, verified.assessment.boundPlan) {
 		return privateVerifiedOriginal{}, errPrivateReplayUnavailable
 	}

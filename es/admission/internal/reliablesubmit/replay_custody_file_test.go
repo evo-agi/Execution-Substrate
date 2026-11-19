@@ -1,6 +1,7 @@
 package reliablesubmit
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/aes"
@@ -48,13 +49,28 @@ func a1ReadAssertPreSealSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	var publish *ast.FuncDecl
+	wrappers := map[string]int{"PublishSealedSynthetic": 0, "PublishProgressOriginal": 0}
 	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "PublishSealedSynthetic" {
-			publish = fn
-			break
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
 		}
+		if fn.Name.Name == "publishReplayOriginal" {
+			publish = fn
+		}
+		if _, isWrapper := wrappers[fn.Name.Name]; !isWrapper {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				if target, ok := call.Fun.(*ast.SelectorExpr); ok && target.Sel.Name == "publishReplayOriginal" {
+					wrappers[fn.Name.Name]++
+				}
+			}
+			return true
+		})
 	}
-	if publish == nil {
+	if publish == nil || wrappers["PublishSealedSynthetic"] != 1 || wrappers["PublishProgressOriginal"] != 1 {
 		t.Fatal("publication source function missing")
 	}
 	var checkPos, sealPos token.Pos
@@ -937,12 +953,8 @@ func TestReplayPublicationFaultAndIdentity(t *testing.T) {
 		assertCount(custodyA, 1)
 		objectDir := filepath.Join(rootB, "objects", "v1")
 		entries, err := os.ReadDir(objectDir)
-		if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(replayObjectRef(frozen.objectID)) {
-			t.Fatalf("B refusal object inventory: entries=%v error=%v", entries, err)
-		}
-		object, err := os.Lstat(filepath.Join(objectDir, entries[0].Name()))
-		if err != nil || !object.Mode().IsRegular() || object.Mode().Perm() != 0o600 || object.Size() != 0 {
-			t.Fatalf("B refusal did not leave exactly one empty inert object: %v", err)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("foreign issuer was supposed to refuse before allocation: names=%d error=%v", len(entries), err)
 		}
 		lookup, err := custodyB.LoadSyntheticClaim(ctx, record.claim)
 		if err != nil || lookup.Found() {
@@ -1432,8 +1444,11 @@ func TestReplayReadOnlyCandidateOpenContract(t *testing.T) {
 			`unix.Openat(rootFD,"objects",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
 			`unix.Openat(objectsFD,"v1",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
 		}},
-		{"PublishSealedSynthetic", []string{`openReplayReadOnlyCandidate(c.parentFD,visibleName)`}, []string{
-			`unix.Openat(c.parentFD,basename,unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC,0o600)`,
+		{"PublishSealedSynthetic", nil, nil},
+		{"PublishProgressOriginal", nil, nil},
+		{"publishReplayOriginal", []string{`openReplayReadOnlyCandidate(c.parentFD,visibleName)`}, nil},
+		{"allocateReplayObject", nil, []string{
+			`unix.Openat(c.parentFD,name,unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC,0o600)`,
 		}},
 		{"checkPublishedRef", []string{
 			`openReplayReadOnlyCandidate(c.parentFD,basename)`,
@@ -1462,5 +1477,433 @@ func TestReplayReadOnlyCandidateOpenContract(t *testing.T) {
 		if !slices.Equal(helperCalls, want.helper) || !slices.Equal(directCalls, want.direct) {
 			t.Fatalf("custody open inventory changed in %s: helper=%v direct=%v", want.name, helperCalls, directCalls)
 		}
+	}
+}
+
+func allocatorFrozenFixture(t *testing.T, scope byte) PrivateReplayFrozen {
+	t.Helper()
+	record, _ := syntheticReplayRecordFixture(t)
+	keys := fixtureReplayKeys(t, 17)
+	format, _ := replayFormatForScope(int64(scope))
+	raw := fixtureReplayPayload(t, record, keys)
+	if scope == 2 {
+		raw = progressFixturePayload(t, record, keys)
+	}
+	frozen, err := freezeReplayOriginal(format, record.claim, record.plan, keys, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frozen
+}
+
+func allocatorPublisher(t *testing.T, ctx context.Context, c *PrivateReplayCustody, scope byte) func() error {
+	t.Helper()
+	frozen := allocatorFrozenFixture(t, scope)
+	var publish func() (PrivateReplayPublication, error)
+	if scope == 1 {
+		permit, err := c.ReserveSealUse(ctx, frozen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publish = func() (PrivateReplayPublication, error) { return c.PublishSealedSynthetic(ctx, frozen, permit) }
+	} else {
+		progress := &PrivateReplayProgressCustody{custody: c}
+		progress.self = progress
+		l, err := progress.LookupProgressOriginal(ctx, frozen.claim)
+		if err != nil || !l.Absent() {
+			t.Fatalf("scope-2 allocator fixture lookup: %v", err)
+		}
+		input, err := NewProgressOriginalInput(frozen.plaintext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := progress.FreezeProgressOriginal(ctx, l, FixturePendingBeforeAssignment, frozen.plan, frozen.keys, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frozen = f.frozen
+		permit, err := progress.ReserveProgressSealUse(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publish = func() (PrivateReplayPublication, error) {
+			p, err := progress.PublishProgressOriginal(ctx, f, permit)
+			return p.sealed, err
+		}
+	}
+	return func() error {
+		p, err := publish()
+		if err == nil {
+			if _, err := c.checkPublishedRef(ctx, frozen.claim, frozen.plan, frozen.keys, p.descriptor); err != nil {
+				return fmt.Errorf("publication verification: %w", err)
+			}
+			if p.descriptor.scope != int64(scope) {
+				t.Error("publication scope differs from selected wire")
+			}
+		}
+		return err
+	}
+}
+
+func TestPrivateReplaySharedObjectAllocation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		process bool
+	}{
+		{"CrossSelectorFinalSlotTwoHandles", false},
+		{"CrossSelectorFinalSlotHelperProcess", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+			defer stop()
+			root := fixtureReplayRoot(t)
+			for i := 0; i < 31; i++ {
+				path := filepath.Join(root, "objects", "v1", fmt.Sprintf("inert-%d", i))
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a, err := OpenPrivateReplayCustody(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			first := allocatorPublisher(t, ctx, a, 1)
+			outcomes := make(chan error, 2)
+			if tc.process {
+				program, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.CommandContext(ctx, program, "-test.run=^TestPrivateReplayObjectAllocatorHelperProcess$", "-test.v")
+				cmd.Env = append(os.Environ(), "ES_SHARED_ALLOCATOR_FIXTURE="+root)
+				childIn, err := cmd.StdinPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				childOut, err := cmd.StdoutPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				scanner := bufio.NewScanner(childOut)
+				ready := false
+				for scanner.Scan() {
+					if scanner.Text() == "SHARED_ALLOCATOR_READY" {
+						ready = true
+						break
+					}
+				}
+				if !ready {
+					_ = childIn.Close()
+					_ = cmd.Wait()
+					t.Fatal("independent publisher did not reach the contention barrier")
+				}
+				go func() { outcomes <- first() }()
+				_, writeErr := fmt.Fprintln(childIn, "go")
+				_ = childIn.Close()
+				found := ""
+				for scanner.Scan() {
+					switch scanner.Text() {
+					case "SHARED_ALLOCATOR_WON", "SHARED_ALLOCATOR_FULL":
+						found = scanner.Text()
+					}
+				}
+				if err := cmd.Wait(); err != nil || writeErr != nil || scanner.Err() != nil || found == "" {
+					t.Fatalf("independent allocator result: witness=%q process=%v barrier=%v", found, err, writeErr)
+				}
+				t.Log("independent process reached SHARED_ALLOCATOR_READY and " + found)
+				if found == "SHARED_ALLOCATOR_FULL" {
+					outcomes <- errClaimStoreUnsupported
+				} else {
+					outcomes <- nil
+				}
+			} else {
+				b, err := OpenPrivateReplayCustody(ctx, root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer b.Close()
+				second := allocatorPublisher(t, ctx, b, 2)
+				gate := make(chan struct{})
+				for _, publish := range []func() error{first, second} {
+					go func() { <-gate; outcomes <- publish() }()
+				}
+				close(gate)
+			}
+			var won, full int
+			for i := 0; i < 2; i++ {
+				err := <-outcomes
+				switch {
+				case err == nil:
+					won++
+				case errors.Is(err, errClaimStoreUnsupported):
+					full++
+				default:
+					t.Errorf("shared publication: %v", err)
+				}
+			}
+			files, err := os.ReadDir(filepath.Join(root, "objects", "v1"))
+			if err != nil || won != 1 || full != 1 || len(files) != 32 {
+				t.Fatalf("shared bound won=%d refused=%d names=%d: %v", won, full, len(files), err)
+			}
+			var reserved, claims int
+			if err := a.store.db.QueryRow("SELECT sum(granted_count) FROM reliable_submit_seal_use").Scan(&reserved); err != nil || reserved != 2 {
+				t.Fatalf("durable reservations changed: %d, %v", reserved, err)
+			}
+			if err := a.store.db.QueryRow("SELECT count(*) FROM reliable_submit_claims").Scan(&claims); err != nil || claims != 0 {
+				t.Fatalf("publication made a claim: %d, %v", claims, err)
+			}
+		})
+	}
+	for _, fault := range []string{"CancelAfterExclusiveCreate", "AmbiguousBegin", "AmbiguousRollbackAfterExclusiveCreate", "ExpiredRollbackNilResponse", "DiscardRescue", "DoubleDiscardWithholds"} {
+		t.Run(fault, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+			defer stop()
+			root := fixtureReplayRoot(t)
+			c, err := OpenPrivateReplayCustody(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			frozen := allocatorFrozenFixture(t, 1)
+			grant, err := c.ReserveSealUse(ctx, frozen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("modeled allocator response failure")
+			createFD := -1
+			var original uintptr
+			var calls, rescue, release int
+			expired := false
+			c.allocatorTest = &replayAllocatorTestHooks{
+				begin: func(ctx context.Context, conn *sql.Conn) error {
+					original = d1DriverConnIdentity(t, conn)
+					if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+						return err
+					}
+					if fault == "AmbiguousBegin" {
+						return injected
+					}
+					return nil
+				},
+				afterCreate: func(fd int) {
+					createFD = fd
+					if fault == "CancelAfterExclusiveCreate" {
+						stop()
+					}
+				},
+				rollback: func(ctx context.Context, conn *sql.Conn) error {
+					if ctx.Err() != nil {
+						t.Error("rollback inherited cancellation")
+					}
+					if fault == "AmbiguousRollbackAfterExclusiveCreate" || fault == "DiscardRescue" || fault == "DoubleDiscardWithholds" {
+						return injected
+					}
+					if fault == "ExpiredRollbackNilResponse" {
+						<-ctx.Done()
+						expired = errors.Is(ctx.Err(), context.DeadlineExceeded)
+						ctx = context.Background()
+					}
+					_, err := conn.ExecContext(ctx, "ROLLBACK")
+					return err
+				},
+				firstDiscard: func(conn *sql.Conn) error {
+					calls++
+					if d1DriverConnIdentity(t, conn) != original {
+						t.Error("discard driver mismatch")
+					}
+					if fault == "DiscardRescue" || fault == "DoubleDiscardWithholds" {
+						return injected
+					}
+					return discardUncertainSQLiteConn(conn)
+				},
+				rescueResponse: func(err error) error {
+					rescue++
+					if err != nil {
+						t.Error(err)
+					}
+					if fault == "DoubleDiscardWithholds" {
+						return injected
+					}
+					return err
+				},
+				beforePoolReturn: func() { release++ },
+			}
+			p, err := c.PublishSealedSynthetic(ctx, frozen, grant)
+			c.allocatorTest = nil
+			if !errors.Is(err, errClaimStoreUnavailable) || p.descriptor.ref != "" || !grant.permit.used {
+				t.Fatalf("failed allocation returned authority: %v", err)
+			}
+			name := filepath.Join(root, replayObjectRef(frozen.objectID))
+			info, err := os.Lstat(name)
+			if fault == "AmbiguousBegin" {
+				if !errors.Is(err, os.ErrNotExist) || createFD != -1 {
+					t.Error("uncertain BEGIN reached create")
+				}
+			} else {
+				if err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
+					t.Fatalf("expected retained empty object: %v", err)
+				}
+				var closed unix.Stat_t
+				if !errors.Is(unix.Fstat(createFD, &closed), unix.EBADF) {
+					t.Error("owned allocation descriptor was not closed")
+				}
+			}
+			if fault == "ExpiredRollbackNilResponse" && !expired {
+				t.Error("did not observe real deadline")
+			}
+			wantDiscard := 1
+			if fault == "CancelAfterExclusiveCreate" {
+				wantDiscard = 0
+			}
+			wantRescue := 0
+			if fault == "DiscardRescue" || fault == "DoubleDiscardWithholds" {
+				wantRescue = 1
+			}
+			wantRelease := 1
+			if fault == "DoubleDiscardWithholds" {
+				wantRelease = 0
+			}
+			if calls != wantDiscard || rescue != wantRescue || release != wantRelease {
+				t.Errorf("discard/rescue/release %d/%d/%d", calls, rescue, release)
+			}
+			if fault != "DoubleDiscardWithholds" {
+				assertLegacyCASIndependentWriter(t, c.store.path)
+				var reserved, claims int
+				err := c.store.db.QueryRow("SELECT sum(granted_count), (SELECT count(*) FROM reliable_submit_claims) FROM reliable_submit_seal_use").Scan(&reserved, &claims)
+				if err != nil || reserved != 1 || claims != 0 {
+					t.Fatalf("failed allocation durable state %d/%d: %v", reserved, claims, err)
+				}
+			}
+		})
+	}
+	t.Run("NormalPublishersVerify", func(t *testing.T) {
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		c, err := OpenPrivateReplayCustody(ctx, fixtureReplayRoot(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		for _, scope := range []byte{1, 2} {
+			if err := allocatorPublisher(t, ctx, c, scope)(); err != nil {
+				t.Fatalf("scope %d: %v", scope, err)
+			}
+		}
+	})
+}
+
+func TestPrivateReplayObjectAllocatorHelperProcess(t *testing.T) {
+	root := os.Getenv("ES_SHARED_ALLOCATOR_FIXTURE")
+	if root == "" {
+		t.Skip("allocator helper control, executed by TestPrivateReplaySharedObjectAllocation")
+	}
+	ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
+	defer stop()
+	c, err := OpenPrivateReplayCustody(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	publish := allocatorPublisher(t, ctx, c, 2)
+	fmt.Println("SHARED_ALLOCATOR_READY")
+	if line, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil || line != "go\n" {
+		t.Fatal("missing parent barrier")
+	}
+	switch err := publish(); {
+	case err == nil:
+		fmt.Println("SHARED_ALLOCATOR_WON")
+	case errors.Is(err, errClaimStoreUnsupported):
+		fmt.Println("SHARED_ALLOCATOR_FULL")
+	default:
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateReplayScope1PublicationPreflight(t *testing.T) {
+	for _, path := range []string{"ClosedCustody", "InvalidFrozen", "NoPermit", "WrongScope", "QualifiedForeignIssuer", "AllocationCollision"} {
+		t.Run(path, func(t *testing.T) {
+			ctx := context.Background()
+			record, _ := syntheticReplayRecordFixture(t)
+			keys := fixtureReplayKeys(t, 25)
+			frozen, err := NewPrivateReplayFrozen(record.claim, record.plan, keys, fixtureReplayPayload(t, record, keys))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := fixtureReplayRoot(t)
+			issuer, err := OpenPrivateReplayCustody(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer issuer.Close()
+			grant, err := issuer.ReserveSealUse(ctx, frozen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			caller, supplied, permit := issuer, frozen, grant
+			callerRoot := root
+			var orphan string
+			switch path {
+			case "ClosedCustody", "QualifiedForeignIssuer":
+				callerRoot = fixtureReplayRoot(t)
+				caller, err = OpenPrivateReplayCustody(ctx, callerRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer caller.Close()
+				if path == "ClosedCustody" {
+					if err := caller.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "InvalidFrozen":
+				supplied.digest[0] ^= 1
+			case "NoPermit":
+				permit = PrivateReplaySealPermit{}
+			case "WrongScope":
+				supplied.format = progressReplayFormat
+			case "AllocationCollision":
+				orphan = filepath.Join(root, replayObjectRef(frozen.objectID))
+				if err := os.WriteFile(orphan, []byte("retained"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rejected, err := caller.PublishSealedSynthetic(ctx, supplied, permit)
+			if err == nil || rejected.descriptor.valid() {
+				t.Fatal("ineligible publication reached Seal or returned a descriptor")
+			}
+			names, err := os.ReadDir(filepath.Join(callerRoot, "objects", "v1"))
+			wantNames := 0
+			if orphan != "" {
+				wantNames = 1
+				if contents, err := os.ReadFile(orphan); err != nil || string(contents) != "retained" {
+					t.Fatal("allocation collision adopted or rewrote an existing object")
+				}
+			}
+			if err != nil || len(names) != wantNames {
+				t.Fatalf("refused publication allocated a name: %d %v", len(names), err)
+			}
+			burned := path == "QualifiedForeignIssuer" || path == "AllocationCollision"
+			if grant.permit.used != burned {
+				t.Errorf("refusal permit burn=%t want %t", grant.permit.used, burned)
+			}
+			publication, err := issuer.PublishSealedSynthetic(ctx, frozen, grant)
+			if burned {
+				if err == nil || publication.descriptor.valid() {
+					t.Fatal("qualified failure refunded its permit")
+				}
+			} else if err != nil || !publication.descriptor.valid() {
+				t.Errorf("issuer lost its eligible first publication: %v", err)
+			} else if again, err := issuer.PublishSealedSynthetic(ctx, frozen, grant); err == nil || again.descriptor.valid() {
+				t.Fatal("a consumed permit published twice")
+			}
+			var reserved int
+			if err := issuer.store.db.QueryRow("SELECT sum(granted_count) FROM reliable_submit_seal_use").Scan(&reserved); err != nil || reserved != 1 {
+				t.Fatalf("permit trial altered durable reservations: %d %v", reserved, err)
+			}
+		})
 	}
 }

@@ -11,6 +11,7 @@ const (
 	durableClaimCodecVersionLegacy    uint16 = 1
 	durableClaimCodecVersion          uint16 = 2
 	durableClaimCodecVersionSynthetic uint16 = 3
+	durableClaimCodecVersionProgress  uint16 = 4
 )
 
 var (
@@ -349,6 +350,10 @@ func (f durableEffectFacts) clone() durableEffectFacts {
 }
 
 func (f durableEffectFacts) validForPhase(tag durablePhaseTag) bool {
+	return f.validForCodecPhase(tag, false)
+}
+
+func (f durableEffectFacts) validForCodecPhase(tag durablePhaseTag, progress bool) bool {
 	if !f.intent.valid() || !f.staging.valid() || !f.dispatch.valid() ||
 		!f.provider.valid() || !f.reconciliation.valid() {
 		return false
@@ -376,9 +381,14 @@ func (f durableEffectFacts) validForPhase(tag durablePhaseTag) bool {
 	if f.reconciliation.present() && !f.intent.present() {
 		return false
 	}
-	if f.reconciliation.present() &&
-		!reconciliationCompatibleWithPhaseAndFacts(f.reconciliation.kind, tag, f.dispatch.present(), f.provider.present()) {
-		return false
+	if f.reconciliation.present() {
+		if progress {
+			if !f.progressReconciliationCompatible(tag) {
+				return false
+			}
+		} else if !reconciliationCompatibleWithPhaseAndFacts(f.reconciliation.kind, tag, f.dispatch.present(), f.provider.present()) {
+			return false
+		}
 	}
 	if tag == durablePhaseProvablyNotAcceptedAfterAssignment &&
 		f.provider.kind != durableProviderObservationNotAccepted &&
@@ -386,6 +396,32 @@ func (f durableEffectFacts) validForPhase(tag durablePhaseTag) bool {
 		return false
 	}
 	return true
+}
+
+func (f durableEffectFacts) progressReconciliationCompatible(tag durablePhaseTag) bool {
+	at := f.reconciliation.fact.at.value
+	if !f.intent.present() || at.Before(f.intent.at.value) {
+		return false
+	}
+	if f.reconciliation.kind == durableReconciliationNoDispatch {
+		if f.dispatch.present() {
+			return !at.After(f.dispatch.at.value) && tag >= durablePhaseEffectCapableAssigned
+		}
+		return !f.provider.present() && tag == durablePhaseEffectCapableAssigned
+	}
+	if !f.dispatch.present() || at.Before(f.dispatch.at.value) {
+		return false
+	}
+	switch f.reconciliation.kind {
+	case durableReconciliationPending, durableReconciliationAmbiguous, durableReconciliationInconsistent:
+		return tag >= durablePhasePendingAfterAssignment
+	case durableReconciliationAccepted:
+		return tag == durablePhaseAccepted
+	case durableReconciliationNotAccepted:
+		return tag == durablePhaseProvablyNotAcceptedAfterAssignment
+	default:
+		return false
+	}
 }
 
 func durablePhaseTagHasAssignedRun(tag durablePhaseTag) bool {
@@ -475,6 +511,7 @@ func (r durableRetentionFact) equal(other durableRetentionFact) bool {
 }
 
 type durableClaimRecord struct {
+	progressRowID   int64 // Only codec 4 retains the physical identity after insertion.
 	codecVersion    uint16
 	claim           ClaimID
 	plan            BoundPlan
@@ -533,7 +570,7 @@ func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord
 }
 
 func (r durableClaimRecord) validate() error {
-	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy && r.codecVersion != durableClaimCodecVersionSynthetic) ||
+	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy && r.codecVersion != durableClaimCodecVersionSynthetic && r.codecVersion != durableClaimCodecVersionProgress) ||
 		!r.claim.Valid() ||
 		!r.plan.Valid() ||
 		!r.phase.valid() ||
@@ -557,7 +594,13 @@ func (r durableClaimRecord) validate() error {
 	if r.phase.run.Valid() && !r.assignedAt.valid {
 		return errInvalidDurableRecord
 	}
-	if !r.effects.validForPhase(r.phase.tag) {
+	if !r.effects.validForCodecPhase(r.phase.tag, r.codecVersion == durableClaimCodecVersionProgress) {
+		return errInvalidDurableRecord
+	}
+	if r.codecVersion == durableClaimCodecVersionProgress {
+		return r.validateFixtureProgress()
+	}
+	if r.progressRowID != 0 {
 		return errInvalidDurableRecord
 	}
 	if r.codecVersion == durableClaimCodecVersionSynthetic {
@@ -575,6 +618,49 @@ func (r durableClaimRecord) validate() error {
 	return nil
 }
 
+func (r durableClaimRecord) validateFixtureProgress() error {
+	if !r.replay.validForScope(2) || len(r.claim.caller.ref.value) != 32 ||
+		len(r.claim.submitKey.ref.value) != 32 || len(r.plan.binding.ref.value) > 256 ||
+		len(r.lastMutation.ref.value) != 32 || r.expiresAt.valid ||
+		r.retention.state != durableRetentionActive || r.createdAt.UnixNano() <= 0 ||
+		!time.Unix(0, r.createdAt.UnixNano()).Equal(r.createdAt) ||
+		!time.Unix(0, r.updatedAt.UnixNano()).Equal(r.updatedAt) {
+		return errInvalidDurableRecord
+	}
+	if r.revision == initialClaimRevision {
+		if r.phase.tag > durablePhaseAmbiguousBeforeAssignment ||
+			r.latestOperation.kind != durableOperationEstablishClaim || !r.updatedAt.Equal(r.createdAt) {
+			return errInvalidDurableRecord
+		}
+	} else if r.progressRowID == 0 || r.latestOperation.kind == durableOperationEstablishClaim {
+		return errInvalidDurableRecord
+	}
+	for _, ref := range []opaqueRef{r.phase.run.ref, r.phase.receipt.ref, r.effects.intent.ref.ref,
+		r.effects.staging.ref.ref, r.effects.dispatch.ref.ref, r.effects.provider.fact.ref.ref,
+		r.effects.reconciliation.fact.ref.ref} {
+		if ref.valid() && len(ref.value) != 32 {
+			return errInvalidDurableRecord
+		}
+	}
+	for _, at := range []optionalClaimTime{r.assignedAt, r.effects.intent.at, r.effects.staging.at,
+		r.effects.dispatch.at, r.effects.provider.fact.at, r.effects.reconciliation.fact.at} {
+		if at.valid && (at.value.Before(r.createdAt) || at.value.After(r.updatedAt)) {
+			return errInvalidDurableRecord
+		}
+	}
+	if r.effects.provider.present() && r.effects.provider.fact.at.value.Before(r.effects.dispatch.at.value) {
+		return errInvalidDurableRecord
+	}
+	return nil
+}
+
+func (r durableClaimRecord) sameProgressOriginal(other durableClaimRecord) bool {
+	return r.codecVersion == durableClaimCodecVersionProgress && other.codecVersion == r.codecVersion &&
+		r.progressRowID != 0 && r.progressRowID == other.progressRowID && r.claim.Equal(other.claim) &&
+		r.plan.EqualBinding(other.plan.Binding()) && witnessEqual(r.plan.Witness(), other.plan.Witness()) &&
+		r.createdAt.Equal(other.createdAt) && r.replay.equal(other.replay)
+}
+
 func (r durableClaimRecord) hydratePhase() (ClaimPhase, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
@@ -584,6 +670,7 @@ func (r durableClaimRecord) hydratePhase() (ClaimPhase, error) {
 
 func (r durableClaimRecord) clone() durableClaimRecord {
 	return durableClaimRecord{
+		progressRowID:   r.progressRowID,
 		codecVersion:    r.codecVersion,
 		claim:           r.claim.clone(),
 		plan:            r.plan.clone(),
@@ -612,7 +699,7 @@ func (r durableClaimRecord) activeAt(now time.Time) bool {
 }
 
 func (r durableClaimRecord) equal(other durableClaimRecord) bool {
-	return r.codecVersion == other.codecVersion &&
+	return r.progressRowID == other.progressRowID && r.codecVersion == other.codecVersion &&
 		r.claim.Equal(other.claim) &&
 		r.plan.EqualBinding(other.plan.Binding()) &&
 		witnessEqual(r.plan.Witness(), other.plan.Witness()) &&

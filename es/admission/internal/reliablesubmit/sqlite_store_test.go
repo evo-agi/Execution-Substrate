@@ -542,7 +542,7 @@ func TestSQLiteClaimStoreTargetedConflictDoesNotSuppressInvalidCandidateConstrai
 		{
 			name: "codec version",
 			mutate: func(args []any) {
-				args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionSynthetic + 1)
+				args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionProgress + 1)
 			},
 		},
 		{
@@ -617,7 +617,7 @@ func TestSQLiteClaimStoreEstablishRejectsInvalidDurableCandidateBeforeSQL(t *tes
 	}
 
 	invalid := created.record.clone()
-	invalid.codecVersion = durableClaimCodecVersionSynthetic + 1
+	invalid.codecVersion = durableClaimCodecVersionProgress + 1
 	result, err := store.establishClaim(context.Background(), establishClaimCommand{record: invalid})
 	if !errors.Is(err, errClaimStoreCorrupt) {
 		t.Fatalf("invalid durable candidate did not fail closed")
@@ -646,9 +646,9 @@ func TestSQLiteClaimStoreZeroRowConflictFailsClosedWhenExistingRowIsInvalid(t *t
 	if err != nil {
 		t.Fatalf("sqliteRecordArgs: %v", err)
 	}
-	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionSynthetic + 1)
+	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionProgress + 1)
 	// Only the corruption seed bypasses the current guard and codec CHECK.
-	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v4`); err != nil {
 		t.Fatalf("drop insert guard for corruption seed: %v", err)
 	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
@@ -753,7 +753,7 @@ func TestSQLiteClaimStoreHydrationRejectsCodec1NonNullEmptyDigest(t *testing.T) 
 	args[sqliteClaimArgLatestOperationDigest] = []byte{}
 	args[sqliteClaimArgCodecVersion] = int64(durableClaimCodecVersionLegacy)
 	// The deliberately malformed codec-1 row cannot be created by schema 3.
-	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
+	if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v4`); err != nil {
 		t.Fatalf("drop insert guard for malformed hydration seed: %v", err)
 	}
 	if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {

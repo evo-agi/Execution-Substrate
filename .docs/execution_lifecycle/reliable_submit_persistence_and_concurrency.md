@@ -1153,12 +1153,16 @@ uncertainty returns no permit even if later observation sees durable state.
 Claim, grant, and key-state writes share this entry rule; no mutation is retried
 after an ambiguous BEGIN result. The post-COMMIT handling below is unchanged.
 The discard uses the supported `database/sql.Conn.Raw` callback returning
-`driver.ErrBadConn`; the pinned pool removes and physically closes that driver
-connection rather than returning it to circulation. A failed discard cannot
-authorize success or a Seal permit. No rollback follows an attempted COMMIT.
+`driver.ErrBadConn`. Confirmed disposal removes that driver connection from
+circulation under the pinned pool implementation and takes its close path.
+The local disposal evidence does not independently prove physical close
+success or a universal close deadline. A failed discard cannot authorize
+success or a Seal permit. No rollback follows an attempted COMMIT.
 If an earlier ROLLBACK itself fails, the same discard is required; an
 unconfirmed discard makes the operation unavailable and forbids classification.
-Claim uncertainty is classified only after confirmed discard,
+These are the existing codec-3 claim/grant/key rules. The proposed codec-4
+caller preserves its prior write uncertainty when classification cannot run.
+Codec-3 claim uncertainty is classified only after confirmed discard,
 through a separate freshly opened SQLite connection with current schema and
 connection protections verified without migration. That read compares durable
 state; it never repeats the claim mutation. A genuinely pre-COMMIT failure
@@ -1271,6 +1275,695 @@ logs are selected. A known synthetic claim is never effect-ready. Native
 file/VFS qualification, real caller authorization, genuine image pin, host
 qualification, production keys/restore/GC/epoch/TTL, run/effect protocol,
 public recovery and deployment remain separate governed gates.
+
+## 15B. Proposed private original replay and durable claim progress
+
+This **Bounded slice rule extension** on the reopened reliable-submit seam
+is implemented in the source candidate. Schema 4 carries historical codecs
+1/2 and the initial-only codec 3 described in section 15A. Section 6B of the
+[submit contract](submit_idempotency_correlation_and_recovery.md#6b-proposed-private-original-replay-and-durable-claim-progress)
+owns the codec-4 wire grammar and finite admission/custody boundary.
+A schema version authenticates the store shape. A codec version selects a
+record grammar. Use one ES SQLite domain and one occupied
+`(caller_ref,submit_key_ref)` across all codecs. One row holds one original
+and one attempt. There is no promotion, reset, second run, claim/key reuse,
+replay-object discovery or change to Nomad's lifecycle authority.
+
+Architectural review selected the K1-corrected contract for bounded
+implementation. The phase map below records the dependency order and freezes
+the scope of source validation and independent acceptance.
+
+### 15B.1 Pooled loadClaim prerequisite and exit precedence
+
+The pinned diagnostic showed pooled `loadClaim` returning a connection with
+an open transaction after cancellation following real BEGIN, cancellation
+after successful SELECT and a modeled error after real BEGIN. Subsequent
+same-store reads/CAS failed and a direct nested-BEGIN probe saw the retained
+transaction. No stale successful read or unsafe durable mutation was
+observed. Diagnostic exit zero meant the observation assertions held.
+`loadClaimFresh` closed its zero-idle function-owned pool in the tested cases,
+ran zero failed authentication callbacks and allowed later codec-3 discovery
+and verification. Universal physical-close and latency properties remain
+unproved. Before phase 1 both readers used a write-shaped COMMIT error that
+supplies no evidence of a write. The function-owned reader's error shape
+remains unchanged.
+
+Phase 1 implements the pooled `loadClaim` cleanup below. The source-bound
+targeted regression passed on the repaired reader after correcting the
+test's trigger restoration. Its seam-only pinned reader counterfactual
+retained the old operation ordering and failed later same-store reads and
+CAS. This evidence is local engineering validation. The change uses local
+test boundaries and the existing exact-discard primitive. Set release ownership before BEGIN
+dispatch. BEGIN, SELECT and read COMMIT keep the caller context. Disposition
+of a previously attempted write is handled by that write's owner.
+
+| Pooled read exit, in precedence order | Disposition |
+| --- | --- |
+| Invalid lookup/input | Zero record, existing invalid classification. No connection acquired. |
+| Valid input, canceled before acquire or before dispatch | Zero record, fixed read unavailable. Normally release an acquired connection with no dispatched transaction. |
+| Acquisition fails with a live request | Zero record, safe existing acquisition classification. If cancellation is observed, read unavailable. |
+| BEGIN dispatched, response fails or is unconfirmed | Zero record, read unavailable. Disable ordinary release first and dispose the exact connection. No semantic retry or rollback. |
+| Known BEGIN, no COMMIT attempted | Roll back on the same connection using a private request-independent context with a five-second deadline. Read both rollback response and `cleanupCtx.Err()` immediately after the response, before self-cancel. Always release the cancel function. |
+| Rollback error, observed expiry even with nil response, or unconfirmed rollback | Overrides SELECT result, not-found and corruption with zero record/read unavailable. Disable ordinary release and dispose the exact connection. |
+| Confirmed rollback with request cancellation observed before returning | Zero record/read unavailable. Normal wrapper close is permitted. |
+| Confirmed rollback and live request | Preserve safe original classifications, including not-found and corrupt. Always return a zero record on error. |
+| COMMIT attempted, nonnil or unconfirmed response | Zero record/read unavailable. Dispose on that exact connection before any ordinary return. No post-attempt rollback or semantic read retry. |
+| Successful read COMMIT | Transaction end known and wrapper may close. Return the validated record only if the final caller-context observation is live, otherwise zero record/read unavailable. |
+
+Do not dispatch COMMIT after observed cancellation. On uncertain transaction
+end, use the existing exact disposal primitive with one bounded A1-equivalent
+rescue on uncertain disposal response, using the same connection. If neither
+attempt confirms quarantine, withhold the wrapper from ordinary close/pool
+return. Discard confirmation carries the existing bounded database/sql
+quarantine meaning. Physical close failure, universal unblock time and
+cancellation after the last observation remain outside that proof. No poison
+registry, background disposer, semantic retry or whole-store restart.
+`loadClaimFresh`, its callers/lifetime, shared rollback/COMMIT/error
+mapping and A1/O2/C1/D1 remain outside this correction. Fresh-reader
+normalization and operational qualification are separate decisions. Scope2
+has no fresh-reader consumer. When the schema head advances, the fresh
+reader's existing generic exact-schema check recognizes the new store head.
+
+### 15B.2 Complete logical row and original fields
+
+This table inventories all 47 physical fields. INTEGER means SQLite signed
+64-bit INTEGER and strict storage type; timestamp means positive normalized
+UTC Unix nanoseconds in that representation. B32 is BLOB exactly 32 bytes,
+with SQL NULL only where marked. Go verifies exact pre-narrowed enum ranges,
+storage class and NULL versus empty, byte widths, cloned safe typed refs,
+and existing time/phase/fact validators. The physical rowid is separately
+projected privately for scope2, including from the insert transaction before
+COMMIT, and never disclosed. The table is specific to codec 4. The earlier
+branches retain their narrower or broader historical field rules as defined
+in section 15A. Here “fixed” means immutable at every successor.
+
+| Logical field and physical column | SQL type, initial and mutation | Evidence owner and Go validation |
+| --- | --- | --- |
+| Creation row identity `claim_rowid` | INTEGER PRIMARY KEY, SQLite-generated, fixed | SQLite, exact physical row identity on reads/CAS/recovery |
+| Safe caller `caller_ref`, safe submitted key `submit_key_ref` | B32 each, initialized from authenticated synthetic caller and canonical key, fixed, pair UNIQUE | Admission, typed ClaimID and header/payload equality |
+| Original binding `plan_binding` | BLOB 1–256, complete raw PB1 binding, fixed | Admission, recompute and constant-time compare |
+| Complete witness `witness_resolved_mask`, `witness_inapplicable_mask` | INTEGER each 0–16383, initialized from PB1, fixed, disjoint, union 16383, latter disjoint from 7935 | Admission, complete ordered fourteen-category witness, exact equality to payload |
+| Creation time `created_at_unix_ns` | Timestamp set by durable service once, fixed | Durable service clock and normalized round-trip |
+| Codec `codec_version` and scope `replay_scope` | INTEGER 4 and 2, fixed | Custody/codec strict joint dispatch |
+| Intent grammar `intent_format` | INTEGER 1, fixed | Admission strict typed intent parser |
+| Original intent/context commitments `intent_commitment`, `context_commitment` | B32 each, fixed | Custody recomputes exact domain and compares row/header |
+| Formats `envelope_wrapper_format`, `envelope_payload_format`, `envelope_algorithm` | INTEGER values 2,2,1, fixed | Custody exact tuple including header/payload |
+| Object locator `envelope_ref` | TEXT, 75 bytes per section 15A path predicate, initialized by exclusive publication, fixed, UNIQUE when non-NULL | Custody validates syntax, decoded object ID, held descriptor and same file |
+| Sealed size/digest `envelope_size`, `envelope_sha256` | INTEGER 29–2,097,152 and B32, fixed after publication | Custody checks actual full file length, exact header/combined relationship and SHA-256 |
+| Original keys `binding_key_id`, `envelope_key_id` | TEXT 1–64 each per section 15A byte grammar, distinct, each FK to registry, fixed | Custody checks exact original IDs, purpose, registry state and header/payload |
+| Key identities `binding_key_fingerprint`, `envelope_key_fingerprint` | Distinct B32, fixed, exact registry match | Custody recomputes under shared fingerprint namespace and compares |
+| Phase `phase_tag` | INTEGER 1–7, initialized to 1 or 2 by typed fixture input, legal transition below only | Durable service hydrates existing phase algebra, tagged fixture projection |
+| Run `run_ref` and assignment time `assigned_at_unix_ns` | B32 and timestamp, initially NULL, both required in phases 3–7, fixed once assigned | Durable service binds one typed fixture run, validates presence and assignment |
+| Receipt `receipt_ref` | B32 or NULL, initially NULL, present only at phase 6 and then fixed | Durable service accepts exact typed fixture receipt in op8 |
+| Revision `revision` and update time `updated_at_unix_ns` | INTEGER initial 1, increments one without overflow, timestamp initially equal to creation, nondecreasing | Durable service uses expected revision and existing clock validation |
+| Latest mutation `last_mutation_ref`, `latest_operation_kind`, `latest_operation_input_digest` | B32, INTEGER 1–9, B32, initialized to random mutation/op1/derived digest. Replace together on committed successor, with a different mutation ref. | Durable service compares full latest descriptor, predecessor supplied to digest |
+| Intent `effect_intent_ref`, `effect_intent_at_unix_ns` | B32 and timestamp or both NULL initially, set once in op3 after assignment | Durable service validates assigned attempt and fixture fact type |
+| Staging `staging_ref`, `staging_at_unix_ns` | B32 and timestamp or both NULL initially, set once in op4 after intent | Durable service validates fixture evidence only |
+| Dispatch `dispatch_ref`, `dispatch_at_unix_ns` | B32 and timestamp or both NULL initially, set once in op5 after current-row validation of an explicit command | Durable service validates same-run fixture marker, no provider call |
+| Provider observation `provider_observation_kind`, `provider_observation_ref`, `provider_observation_at_unix_ns` | INTEGER 0–5 and B32/timestamp pair. Initial 0/NULL/NULL. Set by op6, op8 or op9 after dispatch. Only terminal ops 8/9 may replace an existing nonterminal observation. | Durable service validates exact assigned run where carried, enum/fact pair and resulting phase |
+| Reconciliation `reconciliation_kind`, `reconciliation_ref`, `reconciliation_at_unix_ns` | INTEGER 0–6 and B32/timestamp pair. Initial 0/NULL/NULL. Set once by op7. Kinds 1/2/3/6 remain earlier observations after advancement. | Durable service validates run, when-recorded facts and current row compatibility |
+| Retention `expires_at_unix_ns`, `retention_state`, `unavailable_at_unix_ns`, `unavailable_reason` | NULL, INTEGER 1, NULL, TEXT empty respectively, fixed | Durable service rejects expiry/tombstone operation 10 for scope2, no automatic/manual claim expiry or GC |
+
+Within the sealed original, payload ID 2 owns intent/presence, 3 owns the
+resolved original plan, 4 captured material, 5 the PB1 assessment including
+material identities, 6 synthetic image, 7 original placement, 8 provenance,
+9 format/key IDs and 10 scope. Their exact typed sizes, nullable leaves and
+initial sources are the closed section 6B grammar and its 6A references.
+Every sealed field is fixed at establishment. Admission verifies semantic
+source facts and PB1. Custody verifies structure, commitments and header
+associations. SQL stores only the fields listed above, including assessment's
+binding/witness projections, and enforces their widths, association and
+immutability. There is no new plaintext table or copy of intent, plan values
+or material. Payload ID 1 duplicates the safe row identity; header reference
+and key/format overlaps must match. Creation identity is governed by SQLite
+and full-record equality; current mutable facts never enter the sealed
+original. Legacy TTL/retention and existing registry key retirement/revocation
+continue under their own rules. The fixture claims themselves stay occupied.
+
+### 15B.3 Existing transition model and exact operation identity
+
+The phase number denotes an existing model variant within the fixture. Tags 1 and 2
+are pending/ambiguous before assignment, 3 assigned, 4 and 5 pending/
+ambiguous after assignment, 6 accepted and 7 provably not accepted after
+assignment. `FixtureProgressCommand` is a closed union with the following
+eight cases. All refs are distinct typed fixture roles backed by 32 bytes,
+bound to the authorized claim and assigned run where required. There is
+no provider, stage or runtime method on these values.
+
+| Op and ordered request part IDs | Predecessor, recorded change and postcondition |
+| --- | --- |
+| 1 Establish, part 10 | Under occupied-key check, true miss only. Revision 1, phase 1 or 2, no assignment, receipt or effect fact, active retention. |
+| 2 Assign, part 3 (run) | Phase 1 or 2 to 3. Assign one run and timestamp. Same-run equivalence is a no-op after exact/stale checks. Different run refuses. |
+| 3 Intent, part 4 (intent) | Assigned run required. Set intent tuple once, phase unchanged. |
+| 4 Staging evidence, part 4 (staging) | Intent required. Set fixture staging tuple once, phase unchanged. |
+| 5 Dispatch marker, parts 3 (run), 4 (dispatch) | Explicit command with the current-row predicate below. Set first fixture marker at phase 3, preserving reconciliation. Staging fact optional. No subsequent marker. |
+| 6 Provider observation, parts 3, 5 (kind), 4 (fact) | Assigned candidate 3/4/5, exact run, intent and dispatch. Set previously absent provider tuple. Kind 1 to phase 4, kinds 2/5 to phase 5. Terminals are separate operations. |
+| 7 Reconciliation, parts 3, 6 (kind), 4 (fact) | Record once per the kind table below, or validate an exact replay/no-op. Kind 1 is a fixture no-marker observation. No tuple replacement. |
+| 8 Accept with receipt, parts 7 (receipt), 4 (fact) | Candidate 3/4/5, marker and independently validated positive same-run acceptance evidence. Atomically set phase 6, provider kind 3 and receipt. Preserve reconciliation. |
+| 9 Provably not accepted, part 4 (fact) | Candidate 3/4/5, marker and independently validated positive same-run negative evidence. Atomically set phase 7 and provider kind 4. Preserve reconciliation. Receipt stays NULL. |
+
+Reuse `SHA256("es/reliable-submit/durable-operation-input/v1\0" ||
+u16(kind) || i64(expected predecessor) || parts)`, where each ordered part
+is `u16(tag) || u32(length) || bytes`, big endian. Observation kinds in
+parts 5/6 are u16. Each ref part is exactly 32 bytes. The separate mutation
+ref participates in replay equality and is not hashed into the digest.
+For op1 the predecessor is 0. Part 10 begins with ASCII `ESRSEST2`, then
+caller-ref32, key-ref32, u32 binding length and binding bytes, resolved
+and inapplicable mask u16 each, initial phase u8, creation time i64,
+codec u16=4, scope u8=2, intent format u16=1, intent/context MAC32 each,
+wrapper/payload/algorithm u16 each, 75 ASCII object-ref bytes, sealed size
+u32, file SHA32, u16 binding key-ID length and bytes and its FP32, u16
+envelope key-ID length and bytes and its FP32. No delimiter other than
+the specified lengths. Generated rowid is compared in full expected
+record equality, outside the digest. Later digests concern only the
+specified request inputs and predecessor. The codec-4 marker binds the
+assigned fixture run before its marker reference. Service-generated successor
+times and assigned context on terminal operations are checked through
+record equality, outside the later operation digest. Do not change the
+legacy digest or codec-3 establishment encoding.
+
+The successor path clones the complete original, preserves codec 4 and
+scope 2, and uses the existing durable transition authority. It never emits
+the legacy codec-2/no-replay constructor shape. CAS uses a dedicated
+mutable-only SQL argument list, conditioned on codec 4, row identity,
+expected revision and active row, after full-original comparison and
+registry recheck in the same checked `BEGIN IMMEDIATE` transaction.
+Compare raw persisted enum domains before narrowing to Go widths, including
+raw codec (e.g. 65540) and u8 enum aliases (e.g. 257). Generic legacy
+service loads/establish/CAS deny scope2 and cannot enter the fixture branch.
+Codec 3 continues using its own facade and initial-only behavior.
+
+#### Codec-4 reconciliation records an observation of this attempt
+
+The inherited contract and source differ in two places. Section 8 permits
+a first same-run dispatch after complete Validated No-Dispatch Evidence,
+fresh CAS and known marker COMMIT. The pinned `durable_record.go:351–430`
+and migration 1–3 CHECKs require reconciliation NoDispatch to coexist only
+with phase 3 and no marker/provider. The pinned `durable_service.go:377–417`
+sets reconciliation once, and ops 8/9 at lines 422–499 clone that tuple.
+Pending, Ambiguous and Inconsistent then fail the inherited current-phase
+check on a terminal successor. The baseline tests exercise recording and
+these shape constraints. This is a static owner/source mismatch on the
+reopened seam. Codec 4 gets a bounded extension. Codec-1/2 checks and
+transitions, codec-3 initial-only rows, and migrations 1–3 keep their
+existing meanings.
+
+Use the existing single kind/ref/time tuple as the first reconciliation
+observation of one attempt. No new fields, supersession or history table.
+Kinds 1/2/3/6 describe the state when recorded. Current phase, marker,
+provider and receipt give the current decision. Ops 5, 6, 8 and 9 preserve
+every byte of the prior reconciliation tuple including kind and timestamp.
+Op 7 can fill an empty tuple only. An identical fact at current revision
+may return a validated no-op only if the kind's current evidence predicates
+still hold, with no new evidence of COMMIT. The current predicate applies
+to all kinds after latest-replay and stale classification. After a marker,
+kind 1 cannot return that no-op. A differing tuple is refused. Replaying an older reconciliation command never refreshes
+the observation or claims history-wide write proof.
+
+| Reconciliation kind | Op 7 conditions and phase when recorded | Legal phase and relation on later reads |
+| --- | --- | --- |
+| 0 Absent | Initial tuple is `0/NULL/NULL`. Op 7 never writes kind 0. | May stay absent in any phase. Terminal phase still needs its positive decision fact. |
+| 1 NoDispatch (fixture no-marker observation) | Authenticated active phase-3 row, exact run and predecessor, committed intent and no marker/provider. Stays at 3. | Without marker, phase 3 and provider absent. With marker, phase 3 or 4–7. The observation time is no later than marker time. The old absence supplies no operational authority or evidence of a past write disposition. |
+| 2 Pending | Candidate 3/4/5, marker present. Provider absent or kind 1. Record at resulting phase 4. | Phases 4–7 with marker. Retain the original tuple, including on transition to stronger evidence. |
+| 3 Ambiguous | Candidate 3/4/5, marker present. Provider absent or kind 2/5. Record at resulting phase 5. | Phases 4–7 with marker, same tuple. |
+| 4 Accepted | Add to existing phase 6 with marker, provider kind 3 and receipt. No new terminal decision. | Phase 6 only, same marker, provider and receipt. |
+| 5 NotAccepted | With marker and positive same-attempt negative evidence, move candidate 3/4/5 with absent provider to 7, or corroborate existing 7 with provider kind 4. No receipt. | Phase 7 only, same marker, provider absent or kind 4. |
+| 6 Inconsistent | Candidate 3/4/5, marker present. Provider absent or kind 2/5. Record at resulting phase 5. | Phases 4–7 with marker, same tuple. |
+
+Every nonzero tuple needs assigned run and committed intent, with
+reconciliation time no earlier than intent time. Kinds 2–6 also require
+the observation time to be no earlier than the marker time. Provider
+kind 1 requires phase 4, kinds 2/5 require phase 5, kind 3 requires
+phase 6 and kind 4 requires phase 7. Nonzero provider needs the immutable
+marker and fact time at or after that marker. Op 6 only fills an empty
+provider tuple. With no provider yet, op 6 can advance either nonterminal
+reconciled phase to the newly observed phase. If a provider is present,
+an identical observation is a valid no-op at current revision and a
+different nonterminal provider tuple refuses. Only ops 8/9 may replace a
+nonterminal provider tuple with a terminal tuple. Phase 6 always requires
+provider kind 3 and a receipt. Phase 7 requires provider kind 4 or
+kind-5 reconciliation. A present provider in phase 7 must be kind 4.
+Terminal phases and receipts remain immutable.
+
+#### First fixture marker and terminal evidence
+
+A new explicit op 5 is a storage-model transition. Require a supported
+checked schema/codec, the same authenticated immutable original, an active
+retained row with the matching claim, plan and assigned RunRef, hydrated
+phase 3, committed intent, absent marker/provider and the exact expected
+revision. Recheck this predicate against the current row in the CAS writer
+transaction. The predicate uses the current row and command. It applies
+whether or not a kind-1 observation is present. Kind 1 keeps its existing
+tag and records a bounded fixture no-marker observation at that snapshot.
+It supplies no operational permission or proof about earlier responses.
+
+A stored marker is immutable. Exact latest-operation replay can describe
+the committed marker. A fresh marker command refuses when one is present,
+even with the same marker ref. Every fixture outcome is effect-ineligible.
+The complete operational [Validated No-Dispatch Evidence](#validated-no-dispatch-evidence)
+requirement in §8 remains unchanged. See §15B.4 for the three distinct
+invocation, later fixture and operational guarantees.
+
+Ops 8/9 and negative reconciliation require a bounded synthetic terminal
+assertion checked independently of command selection by the durable service.
+`FixtureTerminalEvidence` is redacted and has private claim, run, marker, fact,
+outcome and receipt fields. The two explicit outcomes are Accepted and
+NotAccepted. Only Accepted associates a receipt.
+
+`NewFixtureAcceptedEvidence(claim ClaimID, run FixtureRunRef, marker FixtureFactRef,
+fact FixtureFactRef, receipt FixtureReceiptRef) (FixtureTerminalEvidence, error)`
+and `NewFixtureNotAcceptedEvidence(claim ClaimID, run FixtureRunRef, marker
+FixtureFactRef, fact FixtureFactRef) (FixtureTerminalEvidence, error)` are the
+only added constructors. Invalid inputs and zero assertions refuse. These
+constructors describe fixture assertions, with no external event or provider
+authority. For an authenticated original, the durable service checks claim,
+run, marker, valid fact and explicit outcome. Accept also compares the
+command receipt to the separately constructed evidence receipt. Reject and
+negative reconciliation require no receipt and exact fact association. The
+check precedes reliance on the assertion for replay or no-op. Candidate
+phase checks still follow latest replay classification. Corroborative
+kind 4 checks the existing accepted row and adds only the observation.
+The operation digest, schema and original encoding remain unchanged.
+Earlier Pending, Ambiguous or Inconsistent observations remain visible
+as historical facts and cannot prove the terminal decision. An opposite
+terminal decision, wrong evidence, different run or missing marker refuses.
+A candidate with occupied nonterminal reconciliation can resolve through
+op 8 or op 9 without replacing its reconciliation. A separately supplied mutation
+leaves any prior unknown disposition unchanged.
+
+#### Complete example states and refusals
+
+| History | Before restart | Retained state after restart | Same later explicit fixture command |
+| --- | --- | --- | --- |
+| A | Intent and reconciliation are known committed at revision 4. No marker invocation occurred. | The active phase-3 predecessor at revision 4, with intent and kind 1 and no marker/provider. | With fresh authentication, a new live one-use borrow and the same explicit marker command at revision 4, the first synthetic marker may commit. |
+| B | The same predecessor. An earlier marker transaction did not commit, but its response was classified unknown, recovery was unavailable and cleanup of the uncertain connection was confirmed. | The same complete predecessor as A. The returned unknown response is not a stored row fact. | The same eligibility and possible first synthetic marker. The earlier invocation remains historically unknown. |
+
+Nothing in the 47-field row or synchronous borrow distinguishes A from B
+after restart. A diagnostic driver can label the histories for testing, but
+its memory supplies no command input or authority. The later fixture command
+is counted separately. In both histories the selected result is a storage
+transition and supplies zero provider-I/O permission. If a prior marker
+actually committed, the current stored marker blocks a new marker command.
+
+Each row below shares the same complete immutable original descriptor,
+codec 4 and scope 2, caller/key and physical rowid within its example.
+Creation time is 10. Retention is always active with expiry and unavailable
+time NULL and reason empty. A dash in an optional field is SQL NULL.
+Other tuple values are symbolic typed refs with times in nanoseconds.
+`op/predecessor/ref` denotes the complete latest descriptor with that
+operation's exact digest over the listed typed input. All immutable
+columns and the sealed file stay byte-identical through each sequence.
+
+| Example state | Phase / revision / update time | Latest op/predecessor/ref and digest inputs | Assigned run/time | Intent | Staging | Marker | Provider (kind/ref/time) | Reconciliation (kind/ref/time) | Receipt |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A/B before reconciliation | 3 / 3 / 13 | 3/2/m3 `[I]` | R/12 | I/13 | — | — | 0/—/— | 0/—/— | — |
+| A/B retained predecessor after restart | 3 / 4 / 14 | 7/3/m4 `[R,1,N]` | R/12 | I/13 | — | — | 0/—/— | 1/N/14 | — |
+| A/B after later explicit first marker | 3 / 5 / 15 | 5/4/m5 `[R,D]` | R/12 | I/13 | — | D/15 | 0/—/— | 1/N/14 | — |
+| C pending provider, before reconciliation | 4 / 5 / 15 | 6/4/m5 `[R,1,P]` | R/12 | I/13 | — | D/14 | 1/P/15 | 0/—/— | — |
+| C after Pending, then restart | 4 / 6 / 16 | 7/5/m6 `[R,2,Q]` | R/12 | I/13 | — | D/14 | 1/P/15 | 2/Q/16 | — |
+| C accepted on one branch | 6 / 7 / 17 | 8/6/m7a `[C,A]` | R/12 | I/13 | — | D/14 | 3/A/17 | 2/Q/16 | C |
+| C positively not accepted on an independent branch | 7 / 7 / 17 | 9/6/m7n `[X]` | R/12 | I/13 | — | D/14 | 4/X/17 | 2/Q/16 | — |
+
+The C alternatives use independent copies of the fixture, never successive
+terminal choices on one row. Ambiguous and Inconsistent work the same way
+from phase 5 with their original kind 3 or 6 tuple and provider absent
+or kind 2/5. All example states remain effect-ineligible.
+
+| Negative or replay case | Required result |
+| --- | --- |
+| A marker COMMIT is unknown and bounded readback is missing, failed or advanced | Keep write unknown and withhold projection in that invocation. No replacement mutation, second write or rebase. A separately supplied later fixture command uses its own current-row check and leaves the old result unknown. |
+| Stale predecessor after an intervening revision, with no exact latest match | Stale. No rebase or write. |
+| Existing marker and a fresh marker command | Refuse, even if the marker ref is equal. An exact latest read replay only reflects the recorded result. An earlier uncertain call is not confirmed by exact latest read replay. |
+| Changed original | Fixed original conflict before any progress disclosure or write. |
+| Wrong RunRef or marker association | Refuse before state change. |
+| Opposite terminal evidence or alternate receipt after a terminal decision | Refuse without changing the terminal row or creating another attempt. |
+| Old reconciliation mutation replayed after an A/B marker or C terminal decision | Old predecessor is stale. The retained tuple is not proof of that old operation. While op 7 is still latest, exact input replays and changed input under the same mutation conflicts. |
+
+### 15B.4 Replay, contention and uncertainty decisions
+
+A validated original access binds issuer, caller/key, physical rowid,
+codec/scope, raw PB1 binding, witness, creation time and all 14 original
+descriptor fields. Reload before any projection or mutation and match all
+of that identity again. It can observe a later revision of that same
+original. A mutation uses the caller's exact expected revision, never an
+automatically rebased one. Reject an invalid capability, malformed command
+or canceled invocation before useful work. Authenticate the original and
+match incoming intent before comparing/disclosing current progress. After
+authentication, compare latest mutation, kind, predecessor-derived input
+digest before stale-revision and transition checks. Repeat classification
+on a known CAS loss. Never loop into a replacement claim or operation.
+
+| Case | Selected result and disclosure |
+| --- | --- |
+| Current replay with authenticated same original, including after restart or advancement during authentication | Current validated fixture projection, with same assigned run and receipt only at phase 6. No dependency resolution or new Seal. |
+| Valid observed row with changed incoming original | Fixed original conflict, no prior run/receipt or progress. |
+| Latest mutation, kind and predecessor-bound input all match | Exact latest replay, even if caller's expected predecessor now appears stale. Only authenticated current projection. |
+| Latest mutation ref matches, kind or input differs | Fixed mutation conflict, no prior progress or refs. |
+| Expected revision differs and no latest match | Stale, with no run/receipt. No rebase or write. |
+| Definite occupied-key loser or known CAS loss | Reread through repaired pooled reader. Established same-intent winner may return winner-original projection. A definite establishment loser retains Occupied with zero projection if the winner cannot be authenticated. CAS winner with exact latest op returns exact replay, not own-commit proof. Advanced unrelated mutation returns stale. Proved changed intent or mutation input conflicts as above. |
+| Missing, unsupported, wrong scope, corrupt, invalid immutable/key match | Only validated absence at initial lookup permits first proposal. All others fixed refused, zero prior state and no replacement or adoption. |
+| Evidenced not-applied or refused | Preserve the observed disposition, such as refusal before dispatch or a known CAS loss. A failed recovery read after write uncertainty cannot establish this disposition. |
+| Read unavailable before a write | Fixed unavailable, zero record and no write. |
+| Known successful write COMMIT | Known committed disposition from the write. Before projecting success, prove authorized same original and return the committed snapshot. If post-commit authentication or its read fails or is canceled, retain known commit and withhold projection. |
+| Actual write attempted and COMMIT unconfirmed | Preserve write unknown after exact write-connection quarantine under existing bounded policy. Use one independent checked connection from the existing pool with repaired reader and reauthenticate the recovered original. Only exact full expected record confirms own commit. No second write, replacement mutation, rebase or automatic retry within the invocation. |
+| Equivalent but different original/winner, advanced row or changed result during unknown recovery | No own-commit confirmation. Preserve write unknown, with no projection. This includes lost evidence of an earlier applied mutation after another revision. |
+| Recovery read unavailable, canceled, missing, wrong-scope, corrupt or authentication refused | The earlier write remains unknown. A read-COMMIT error reports read unavailability only. Withhold projection in the invocation and issue no further semantic write. |
+
+Exact own-commit confirmation compares every persisted field, the
+physical rowid, codec/scope, immutable descriptor, revision, full latest
+descriptor and all progress timestamps and facts. It follows successful
+authentication and constant-time comparisons where required. Recovery starts
+only after the uncertain transaction cannot reenter the pool, using existing
+bounded write disposal. If no safe read is possible, preserve unknown.
+Exact latest-operation replay is a separate query about the current
+descriptor. Full own-COMMIT proof belongs to the invocation and its
+bounded recovery. No history-wide write proof is selected.
+
+#### K1 invocation scopes and operational gate
+
+| Scope | Guarantee |
+| --- | --- |
+| One write invocation and its recovery | Preserve known commit, evidenced not-applied/refused, or unknown. Only an authenticated full expected record can confirm its own COMMIT during recovery. Unknown recovery performs no second semantic write, automatic fresh mutation, rebase or retry loop. A failed recovery withholds projection. Failed post-commit authentication withholds projection and preserves known commit. |
+| Later explicit fixture command | A separately supplied command requires fresh original authentication, a new live one-use borrow and the caller's exact current expected revision and mutation input. Evaluate a new marker against the current persisted row. An absent marker does not resolve a prior unknown write. The fixture predicate does not establish the complete operational no-dispatch predicate. |
+| Later authenticated fixture read | Current replay may project authenticated current fixture state. It does not resolve a prior unknown write or rewrite a known disposition. Exact latest replay describes the current descriptor, without confirming ownership of an earlier uncertain transaction. |
+| Operational dispatch or restart recovery | The full operational Validated No-Dispatch Evidence requirement in §8 remains unchanged. A later explicit fixture command grants no operational permission. Before provider wiring, a separately reviewed operating model must identify durable ES-owned evidence or other explicitly governed authoritative input for the relevant write dispositions, or explicitly re-derive that requirement with adequate safety proof. |
+
+The fixture facade has no retained response history, extra knowledge
+ledger or second attempt. Neither local memory, traces, reports, tests,
+chat history nor a caller verified flag supplies operational authority.
+No staged execution or provider-I/O path consumes a fixture result.
+
+### 15B.5 Migration 4, physical constraints and compatibility
+
+Append one literal named `private original replay and fixture claim progress`
+in `sqlite_replay_progress_schema.go`. Migration source SHA-256 is
+`879b24ac563d37ccdd1bdb5ec13c923b93213f2caea69a1110281796e20e667e`.
+The pinned driver's exact schema-4 shape SHA-256 is
+`2ae4721c8526ed9b8de35fd3acdfa31448eae9b547ba8662a22ed130035f7c15`.
+Preserve literal bytes and ledger hashes 1–3, exact
+shape hashes 1–3, the application ID 1163088467, and the existing checked
+connection requirements: WAL, synchronous FULL, foreign keys and recursive
+triggers ON, and trusted schema OFF. No disabled checking, writable
+schema, ALTER in place for constraints, or new durable table.
+
+| Schema 4 object | Exact compatibility or selected change |
+| --- | --- |
+| `reliable_submit_migrations` | Unchanged STRICT table, INTEGER version PK, unique non-NULL name, positive applied time, 64-character source SHA. Add ledger row 4 only after full copy proof. |
+| `reliable_submit_claims` plus automatic pair index | Rebuild STRICT table under its exact name, all 47 existing columns in projection order, INTEGER PK rowid and global UNIQUE caller/key. Keep existing witness, phase/run/receipt, paired fact, retention and latest-operation constraints. Preserve the inherited reconciliation phase predicate for codecs 1–3, with a separate codec-4 historical tuple compatibility rule from §15B.3. Extend the joint codec/descriptor CHECK and active-only rule for codec 4. Keep codecs 1/2 all descriptor NULL, 3 exact initial shape. Both registry FKs retained. |
+| `reliable_submit_claims_envelope_ref_unique` | Same nonpartial unique index on envelope_ref. Legacy NULLs coexist, any non-NULL ref is unique across scopes. |
+| `reliable_submit_claims_no_delete` | Unconditional BEFORE DELETE abort, including managed INSERT/UPDATE OR REPLACE implicit deletes with recursive triggers. |
+| `reliable_submit_claims_guard_insert_v4` | Replace v3 insert trigger. Only 3 and 4, each exact initial shape, and active distinct correct-purpose original key IDs and fingerprints in registry. Codec4 revision 1, initial phase 1/2, matching initial timestamps, all progress facts absent, op1. Preserve targeted caller/key DO NOTHING and validate the occupied winner. |
+| `reliable_submit_claims_guard_update` | Keep legacy 1→2 and 2→2 branch and current protections; always reject codec3. Codec4 allows only 4→4. NULL-safe `IS NOT` immutable comparison including rowid and every original field. Check one revision increment, changed mutation ref, nondecreasing update, matching allowed operation footprint and all row checks. Require exact registry identities with active/retired state. No caller/key, terminal or receipt rewrite, owner reset or cross-codec update. |
+| `reliable_submit_key_registry` | Unchanged STRICT table. ID PK with exact byte grammar, purpose 1/2, unique B32 fingerprint across purposes, state 1/2/3; preserve automatic indexes and all rows. |
+| `reliable_submit_key_registry_no_delete`, `reliable_submit_key_registry_guard_insert`, `reliable_submit_key_registry_guard_update` | Exact existing definitions. No deletion, no duplicate ID/material or nonactive registration, immutable identity/purpose/fingerprint, retirement/revocation only along 1→2, 1→3, 2→3. |
+| `reliable_submit_seal_use` | Unchanged STRICT table. Envelope key ID PK/FK to registry, count INTEGER 0–4,294,967,296. Preserve all rows/indexes. |
+| `reliable_submit_seal_use_no_delete`, `reliable_submit_seal_use_guard_insert`, `reliable_submit_seal_use_guard_update` | Exact existing definitions. No deletion or refund, register counter at zero with active purpose-2 key, increment one only while active. |
+
+| Authority | Checks for the codec-4 transition |
+| --- | --- |
+| Admission/custody | Match authenticated original/PB1 and cryptographic envelope, registry/key identity and issuer-bound access. These checks supply no progress or effect authority. |
+| Go durable service | Sole semantic transition writer. Validates typed command, exact operation digest, the current fixture row for kind 1 and the first synthetic marker, same original/run and terminal evidence provenance, when-recorded observation and current full row coherence. Classifies only the invocation and its own recovery, using its own write evidence. Applies the existing phase model. |
+| SQLite | Guard row/PK/descriptor immutability, revision CAS, terminal phase and receipt locks, typed storage and current row-shape relations. Protect the reconciliation tuple once present and the marker once present. Allow the codec-4 historical kind/phase/time combinations in §15B.3 while retaining the old branch for codecs 1–3. No SQL digest validation, evidence authentication, prior-response history or independent transition authority. |
+
+Storage delta rules allow revision, update time and latest descriptor plus
+only these columns per op: assignment and phase (2), intent pair (3),
+staging pair (4), absent-to-present marker pair with phase unchanged (5),
+provider tuple and phase (6), first reconciliation tuple and phase (7),
+provider tuple/phase/receipt (8), provider tuple and phase (9). One-time
+facts go only from absent to present. SQL checks row shape, nondecreasing
+time and non-null fact times within creation/update, and bounded presence
+and kind/phase relations. Use null-safe predicates so NULL cannot bypass a
+guard. Go owns the semantic sequencing and when-recorded evidence checks.
+Managed REPLACE and UPSERT cannot replace an original or bypass these
+constraints. Occupied incompatible rows stay occupied at capacity.
+
+Pristine bootstrap and ordered schema digest omit only the literal internal
+seven-character `sqlite_` prefix with the pinned engine's ASCII case
+comparison. Other schema objects participate in pristine and exact shape
+checks. Existing digest encoding and authentic hashes remain unchanged.
+
+Under the existing checked `BEGIN IMMEDIATE`, authenticate the actual
+opening application ID, version, complete schema and ledger, or the literal
+pristine state, before changing data. Preflight can refuse early. It grants
+no migration authority. The validated lock-held version supplies the
+recovery baseline and selects the remaining route if a competing opener
+has advanced the file. An authenticated current head reached after preflight
+ends the lock-only transaction with known cleanup and zero migration writes.
+After known BEGIN, a pre-COMMIT exit uses a request-independent bounded
+ROLLBACK. Observe the cleanup context immediately after the response and before
+self-cancel. A timely successful rollback preserves the ordinary refusal. After
+migration writes have begun against an authenticated lock-held baseline, an
+unconfirmed rollback can reach the unpublished opener's recovery boundary if
+the exact connection was discarded or ROLLBACK reports that its wrapper is
+already closed. The closed-wrapper response establishes only where cleanup
+ownership passes. The migration function finishes its connection ownership and
+the opener checks the close result of the original unpublished pool before one
+fresh checked nonmigrating observation on the caller context. That observation
+alone classifies the old or current state. Withhold recovery when the borrowed
+connection may still own the transaction and safe transfer is unconfirmed.
+This pre-COMMIT route records zero COMMIT attempts. The same observation
+boundary handles a lost response after COMMIT dispatch. A pristine empty schema
+0 takes 1→2→3→4. Authentic 1 takes 2→3→4, 2 takes 3→4, 3 takes 4.
+These are single atomic transactions through the selected head, including
+ledger/version updates. Preserve the literal migrations' earlier
+proofs. Before step 4, snapshot registry `rowid,key_id,purpose,
+material_fingerprint,state`, seal-use `rowid,envelope_key_id,granted_count`
+and ledger `version,name,applied_at_unix_ns,source_sha256` of rows 1–3
+in transaction-local temporary tables. Drop only the three claims triggers.
+Rename the old claims table to `reliable_submit_claims_v3` as in migration
+3. Neither registry nor seal-use depends on claims, and no retained trigger
+reads that table. Create the target under the canonical name. Copy explicit
+`claim_rowid` and all 46 named columns in the 15A projection order, with
+the 14 descriptor columns following the inherited 32. Prove counts and
+both full-row EXCEPT directions for claims, using binary collation on text
+and exact storage types. Prove the same for all captured registry, counter
+and ledger rows, including actual row identities and per-key/aggregate
+counts. An in-transaction CHECK assertion with 0/1 and ABORT makes any
+mismatch fatal. Do not reapply active-key eligibility to carried rows or
+touch sealed files. Drop old table and assertion objects, recreate the
+claims index and three triggers, record ledger 4 and user_version 4.
+Before COMMIT verify exact shape digest, ledger and application ID, zero
+foreign_key_check rows and no scratch object. No intermediate shape is
+published. Preserve private file/database authority and size checks.
+
+| Migration/open case | Result |
+| --- | --- |
+| Authentic pristine 0 or authentic 1/2/3 | Selected atomic path above, prove full old state carried except required new schema/ledger rows. Authentic 4 opens without migration. |
+| Unsupported app/version/shape/ledger, downgrade, nonempty version 0, or corrupt/foreign state | Refuse before writes. No automatic repair/adoption. |
+| Pre-COMMIT failure and confirmed rollback | Preserve exact opening schema/data, no handle or authority. |
+| Known COMMIT | Accept exact new head after all checks. |
+| Lost COMMIT response or unconfirmed pre-COMMIT rollback eligible for pool disposition | Check closure of the original unpublished pool, then classify one fresh checked nonmigrating open. Exact authenticated current shape/ledger/app/FKs with quick check accepts the observed current head. Exact authenticated recorded old shape (or pristine empty 0) returns recovered-old refusal and closes the observation pool. Intermediate, unreadable, malformed, canceled, close failure, or any other version returns unavailable. Recovery issues no migration retry. |
+
+Older binaries' refusals remain distinct. The historical PB1/schema-2
+`TestSQLiteV3OldBinaryRefusesWithoutMutation` keeps its purpose and uses
+an authentic schema-3 target fixed independently of the current opener.
+The repo contains its invocation. Preserve the retained authenticated
+historical PB1 binary, its bound harness/source provenance and authentic
+schema-3 fixture. This slice does not rebuild or relabel either artifact.
+Phase 4 adds a distinct schema-3 binary probe built from official
+`f1aa8b934cc26c16a966a110c7b408abdaeadce7` and full tree
+`8dd27f9acba98ed70d93736bdef8300ef1aba53f` plus an enumerated one-test
+harness. Build only from the complete pinned external `SCHEMA3_SOURCE`
+export and a one-entry overlay, as specified in §15B.7. Qualify the fully
+populated schema-4 target before invoking the old opener. Compare full
+logical before/after plus version, ledger, shape, key/grant data and object
+files via nonmigrating reads. Fixture upgrade requires prior-version
+handles to be closed. Mixed old/new binary operation on one root is outside this selection.
+A schema-2 binary result cannot qualify this schema-3 binary. Physical
+file byte equality and physical-close behavior are distinct from logical
+row preservation. No binary is built in the contract turn.
+
+### 15B.5A Shared fixture object allocator and budget boundaries
+
+At the pinned base `PublishSealedSynthetic` checks object count and then
+does its exclusive create outside a SQLite transaction
+(`replay_custody_file.go:399–435`). The count/create protocol below is a
+new cross-scope custody boundary. Both `PublishSealedSynthetic` (scope 1)
+and `PublishProgressOriginal` (scope 2) call the same unexported
+`allocateReplayObject` in `replay_custody_file.go` on the same qualified
+fixture root, its fixed object namespace and its checked SQLite domain.
+A custody handle owns the filesystem checks and allocated descriptor.
+The existing checked store connection supplies the writer lock. No raw
+transaction or descriptor crosses the facade. The prior-version handle
+exclusion applies. The protocol qualifies cooperating handles and
+processes on the same unchanged database/root. It does not extend to
+mixed old binaries, unmanaged filesystem writers or undetected
+out-of-band database replacement.
+
+| Allocation boundary | Required action and disposition |
+| --- | --- |
+| Publisher entry | Check custody/permit/frozen identity and request before allocation. Scope 1 first qualifies custody/parents, the frozen value and permit presence. Then arrange irreversible burn before checking permit ownership or allocation. Scope 2 retains its wrapper burn rules. The allocator itself neither consumes a permit nor changes a grant. |
+| Acquire and establish release ownership | Acquire one exact connection via `c.store.checkedConn(ctx)`. Install an allocator-local release guard before BEGIN dispatch. If canceled before dispatch, normally release any unused connection and refuse. An acquisition or qualification error also refuses. |
+| BEGIN dispatched | On the caller context issue exactly one raw `BEGIN IMMEDIATE` on that connection. A nil response enters the known-open critical section. An uncertain response forbids ordinary release and goes to exact discard, with no ROLLBACK or second BEGIN. |
+| Count and exclusive create | In the known transaction, validate the held and visible root/objects/v1 identity chain. Count every name other than dot entries on a fresh no-follow descriptor for that same directory, reading at most 33 names. Inert and orphan names count. At 32 or more, refuse. Below that bound, use only the preselected validated basename and one descriptor-relative `Openat(O_CREAT\|O_EXCL\|O_RDWR\|O_NOFOLLOW\|O_CLOEXEC, 0600)`. Collision, I/O failure, suspected drift or observed cancellation refuses, without retry or adopting the name. |
+| Record descriptor ownership | Own any created FD immediately, before checks or cancellation branches. Normalize mode only on that freshly owned FD. Require a regular empty owner/group-matching file with mode 0600 and link count 1. Compare held FD and no-follow visible name by device/inode, owner/group, type, mode and link count. Verify the directory identity chain. Close the count descriptor on every path. |
+| End known-open transaction | The allocator performs no DML and never issues COMMIT. On every known-BEGIN exit, use a request-independent private five-second `ROLLBACK` on that connection. Observe the return and `cleanupCtx.Err()` immediately before self-cancel. Nil response with no observed expiry/cancellation proves transaction end. Confirm ordinary wrapper return. A canceled request or failed wrapper return still refuses publication. |
+| Uncertain BEGIN or end | Disable ordinary release. Use the existing exact-connection discard primitive. Permit one real synchronous rescue on that same connection if first response unconfirmed. If both unconfirmed, withhold ordinary `Conn.Close`. Read/transaction disposition for allocation is fixed unavailable, including nil rollback response after observed expiry. Confirmed quarantine does not rescue this allocation. |
+| Refusal after create | Close every owned FD once, clearing ownership before close. Do not remove the name. An entry left by exclusive create is an inert counted orphan even if SQLite rolled back or its end was unconfirmed. No descriptor handoff, usable publication, Seal, claim, adoption, reuse or refund. A close error refuses and supplies no physical-close proof. |
+| Successful handoff | Only after confirmed rollback and ordinary wrapper return, recheck live request and same held/visible file and directory identities. Transfer the sole unpublished FD to the existing publisher, which owns every remaining close. Then run the existing permit consumption, active key check and Seal/write/fsync/checked close/reopen/verify path outside the lock. |
+
+Only count, exclusive create and their local identity checks are inside the
+critical section. No external callbacks, material acquisition, encryption,
+file write/fsync, grant transaction, claim establishment or CAS runs there.
+The cleanup deadline bounds the context observation. It does not guarantee
+OS close or a universal unblock time. No new lock file, retry loop, disposer
+or registry is selected. The scope-1 implementation is limited to this
+shared allocation and its call-site lifecycle. Keep codec-3 format, immutable
+rows, key/grant rules and `loadClaimFresh` callers and lifetime. Keep A1/O2/C1/D1
+and shared SQLite helpers. Failing behavior or missing required resource
+qualification refuses at the boundary without OS-label fallback.
+
+| Shared bound | Enforcement and exact claim |
+| --- | --- |
+| Four custody-bearing claim slots | The existing establish writer transaction classifies caller/key occupation first, counts all codec-3/4 rows, and inserts a new unique claim only below four. All progress phases count. At capacity, existing keys still receive their usual occupied/same-intent/conflict handling. |
+| 32 object names | `allocateReplayObject` serializes count plus exclusive create across compliant same-domain publishers. The bound counts all existing directory names including orphans during a qualified operation. It is not proof of orphan persistence through an unsynced crash or of a cap under unmanaged insertion or replacement. |
+| 32 aggregate durable reservations | Existing `reserveReplaySealUse` checked writer transaction applies the aggregate limit across both selectors using the fixture profile. Only known COMMIT issues a permit. Migration or failed allocation never refunds or resets an issued reservation. |
+| 2^32 reservations per envelope key | Same reservation transaction and shared registry identity/fingerprint and counter constraints. No fresh namespace or reset on scope change, retirement or failure. |
+| 16 MiB database/sidecar budget | Existing `checkReplayDBFiles` checks the sum of the DB, -wal, -shm and -journal at fixture validation boundaries and refuses on unsafe metadata or observed overrun. This is a detection check, not a hard real-time ceiling. A later budget refusal cannot rewrite the known or unknown status of an earlier write. |
+
+### 15B.6 Prospective source and test map
+
+Phase 0 reviews this contract. Phase 1 repairs the local pooled reader and
+binds its regression. Phase 2 implements codec/scope, format and schema.
+Phase 3 implements durable successors and the private composition. Phase 4
+validates restart, concurrency, unknown outcomes and no-effect boundaries.
+Phase 5 is one fresh independent acceptance audit of the integrated exact
+source. These phases select one source acceptance target. Prefix `I/`
+denotes `es/admission/internal/reliablesubmit/`,
+and `A/` denotes `es/admission/`. New paths are explicit.
+
+| Phase and path (owner) | Edit class, constraint and validation |
+| --- | --- |
+| 1, 2, 3 `I/sqlite_store.go` (SQLite) | Scope cleanup to pooled `loadClaim` first, add local fault points and keep current `loadClaimFresh`, O2 and shared helper behavior. Later add exact codec4 scan/rowid, head gates, targeted insert/claim budget and dedicated protected CAS. Tests P, M, T, U below. |
+| 2/3 `I/durable_record.go`, `I/durable_operation.go` (durable model) | Strict v4 codec/descriptor and clone/equality, codec-specific historical reconciliation compatibility, v4 establishment/marker input binding and same-authority successor path. Keep codec1/2 and codec3 encodings, exact legacy predicates and golden digests. T, F. |
+| 2 `I/sqlite_replay_claim.go` (SQLite record) | Add explicit tuple/initial op and exact descriptor validation. Keep old constructor, object/key syntax and codec3 establishment digest. M, T, F. |
+| 2 `I/sqlite_migrations.go`, new `I/sqlite_replay_progress_schema.go`, `I/sqlite_replay_shape.go` (SQLite) | Append literal, exact shape 4 and codec-4-only SQL storage/tuple compatibility. Preserve `I/sqlite_replay_schema.go`, inherited branch and literal/shape hashes 1–3. M, T. |
+| 2/3 `I/replay_custody_format.go`, `I/replay_custody_structure.go` (custody format) | Closed version dispatch and bounded typed structural projection. Preserve codec3 wire data and strict sizes. F. |
+| 2/3 `I/replay_custody_file.go` (custody) | Add finite fixture facade, scope selection and shared `allocateReplayObject` called by both publishers, with allocator-local transaction and FD ownership. Preserve verification, lifetime and fresh-reader use outside this allocation change. F, R, U, N, L. |
+| 3 `I/durable_service.go` (durable progress) | Add original-bound codec4 path, current-row fixture marker and terminal checks, historical observation preservation and exact per-invocation write recovery. Preserve legacy caller policies and codec3 refusal. T, U. |
+| 2/3 `A/reliable_submit_replay_format.go`, `A/reliable_submit_replay_hydration.go`, `A/reliable_submit_replay_private.go` (admission) | Produce/interpret scope2 typed original and exact PB1 from same delivery, add one private composition path. Preserve codec3 and leave `A/reliable_submit_replay_intent.go`, PB1 binding sources and `I/model.go` / `I/store.go` byte-identical. R, F, N. |
+| 1 new `I/sqlite_pooled_claim_read_cleanup_test.go` (SQLite tests) | Bind real transactions and old/new same-regression instrument, assert safe same-store follow-ups. P. |
+| 2/3/4 new `I/replay_progress_test.go` (custody/storage tests) | Independent vectors, all v4 transitions/facts and corruption matrix, restart, unknown write and original preservation. F, T, U. |
+| 3/4 `I/replay_custody_file_test.go` (custody and SQLite boundary) | Add shared allocator tests and a local child helper for independent process contention. Preserve existing fault, identity and normal publisher regression tests. L. |
+| 2 `I/sqlite_store_test.go`, `I/sqlite_physical_test.go` (storage tests) | Codec3+1 at store lines 545, 620, 649 and physical line 128 currently means unknown codec 4. Select literal unsupported 5 there and add malformed 4 separately. Update intentional current insert-trigger drops at store lines 651 and 756 and physical line 130 to v4 name. Keep v2 invalid NULL/empty and schema 99 cases, old CAS test and targeted conflicts. M, T. |
+| 2 `I/sqlite_replay_migration_test.go` (migration tests) | Target head-dependent bootstrap/from-1/from-2/precommit/known-response-loss cases at explicit 4, add opening 3 and 47-field/full key/counter/ledger witnesses. Preserve existing legacy fixture projection width 33 for authentic seeds and old-or-new rollback assertions. M. |
+| 2/4 `I/sqlite_replay_shape_test.go` (shape/probe tests) | Split explicit 1–3 from fourth exact shape digest, no three-entry array indexed by migration4. Retain historical PB1 test identity and fix its target/readback to exact schema3 using historical literal fixtures. Add independent schema3 probe invocation and schema4 logical witness. M. |
+| 3/4 `I/guardrails_test.go`, `A/reliable_submit_guardrails_test.go` (private reachability) | Extend finite exports, typed semantic caller/source graph inventories and rejection mutants. Keep sensitive payload, no-runtime, no-config and no-public guards. N. |
+| 3/4 conditional `A/workstream_c_guardrails_test.go` (existing exact inventories) | Preserve resolver, semantic plan/material hydration and aggregate caller counts. Update the synchronized-field inventory for the per-custody close lock and invocation-local view, attempt and access lifetime flags. Bind exact references to the shared publisher and the two permit wrappers. Keep package-state, namespace registry and runtime exclusion unchanged. N. |
+| 3/4 `A/reliable_submit_replay_private_test.go` (composition tests) | Exercise genuine same parsed delivery and replay/refusal on real storage; preserve the old scope tests. R, N. |
+| 2–4 `PLANS.md`, the three owning lifecycle docs of this contract and `docs_contract_test.go` (owner/status) | Report verified source phase and retain owner tables. Update the root test's current schema-3 source literal expectation at line 4043 to head 4 only when implementation lands. Preserve current codec3 and public refusal assertions and historical ledger/shape checks. |
+
+Appendix A's suggested `I/replay_key_use_sqlite.go` change is unnecessary.
+Reuse its exact existing permit issuer/consumption, key lifecycle/checks and
+grant counters with the new frozen digest and distinct opaque wrappers.
+Its A1 read body remains unchanged. Appendix A omits the legacy corruption,
+migration/shape/old-probe, admission typed guard and root doc test impact
+listed above. `I/store_conformance_test.go`'s codec2+1 is still deliberately
+malformed codec3, never an unsupported-4 fixture. `I/sqlite_replay_schema_test.go`
+continues proving the codec3 shape and replacement guards against head 4;
+new v4 cases live in the named progress test. Keep the existing
+`I/durable_record_test.go`, `I/durable_operation_test.go`,
+`I/durable_service_test.go`, `I/sqlite_replay_claim_test.go`,
+`I/replay_key_use_sqlite_test.go` and `I/replay_custody_format_test.go`
+as regression evidence. Preserve existing tests in
+`I/replay_custody_file_test.go` alongside the named new cases. Existing v1 golden
+testdata and historical production-source probes are preserved.
+
+#### Consolidated repair path map
+
+| Path | Selected refinement |
+| --- | --- |
+| `I/sqlite_store.go`, `I/sqlite_replay_shape.go` | One lock-held migration decision and literal internal namespace. Preserve all migration literals, digests and shared reader/disposal helpers. |
+| `I/replay_custody_file.go` | Revalidate confirmation keys and borrow lifetime at projection. Restore scope-1 preflight before burn while preserving both allocator call sites. |
+| `I/durable_service.go` | Check current predicates for fresh reconciliation, and bound explicit terminal assertions in the existing semantic service. |
+| `A/reliable_submit_replay_private.go` | Map failed winner disclosure to the already known occupied outcome in the definite-loser branch. |
+| `I/sqlite_replay_migration_test.go`, `I/sqlite_replay_shape_test.go`, `I/replay_custody_file_test.go`, `I/replay_progress_test.go`, `A/reliable_submit_replay_private_test.go` | Maintained regression parents for lock-held opening, literal namespace, scope-1 preflight, confirmation, reconciliation, terminal evidence, and occupied disposition. |
+| `I/guardrails_test.go`, `A/reliable_submit_guardrails_test.go`, `A/workstream_c_guardrails_test.go` (conditional inventory only) | Bind the two terminal evidence constructors, their finite aggregate and caller sites, and exact permit reference changes at the publication preflight. Preserve existing negative mutants and package-state, routing and effect exclusions. |
+
+The admission lost-response witness adds two test-only sources in a private
+external view of the authenticated candidate. Its internal bridge attaches
+and restores the exact fixture store's existing COMMIT-response seam. It
+executes real COMMIT, reports the modeled response failure and can cancel
+recovery. It adds no product interface or production bytes. The admission
+parent `TestPrivateReplayProgressAdmissionUnknownNoEffects` observes
+establishment and mutation, unavailable and exact authenticated readback,
+and a later current read. It requires one write per faulted invocation and
+zero effect contacts under the admission counters. The ordinary suite
+uses the checkout without the bridge.
+
+### 15B.7 Acceptance by test identity
+
+Tests below use isolated owner-only fixture roots, real SQLite and sealed
+files where indicated. Faults are private test controls, nil by default.
+Exclude production config, dependencies that contact live services and
+process-wide FD-count assertions.
+
+| ID and exact new test parent | Fixtures and required assertions |
+| --- | --- |
+| P `TestSQLitePooledClaimReadCleanup` | Real single pooled connection with `CancelAfterRealBegin`, `CancelAfterRealSelect`, `AmbiguousRealBegin`, `AmbiguousReadCommit`, `RollbackError`, `ExpiredRollbackNilResponse`, `TimelyRollback`, `DoubleDiscardWithholds`, `PreDispatchCancellation`, `OrdinaryNotFound`, `OrdinaryCorrupt`. Drive actual deadlines including nil-response-after-expiry, first discard failure/rescue and double-uncertain bounded scope. Confirm zero record on cleanup uncertainty, fixed tables and no post-COMMIT rollback or retry. Disconnect injections then prove fresh-context same-store read and CAS before teardown whenever quarantine was confirmed or no transaction dispatched. In the withholding case prove no ordinary close, with no same-store availability assumption. Preserve complete row equality around reads. Run identical test and instrumentation bytes on pinned old reader and repaired reader in separate fixtures, retaining old observation/failure and new pass. |
+| F `TestPrivateReplayProgressFormatVectors` | Independently construct fixed bytes for both payload/header/AAD shapes, HMACs, permit/establishment digests and deterministic external AEAD ciphertext for validation only. Reject format/codecs/scope mix, ref swap, key/fingerprint mix, invalid marker, widths/presence/order/depth/node/allocation/corruption and trailing bytes. Compare exact domains and parser limits, preserve codec3 golden inputs and PB1. |
+| R `TestPrivateReplayProgressAdmissionReplay` | Real SQLite/files. Same original after restart with deliberately changed defaults, material and active key plus retained original keys. Zero resolver/material/current-key/new-seal calls on hit. Changed intent discloses no refs. Cross-scope occupation refuses, deterministic initial winner under barrier, genuine negative and occupied/cap cases. |
+| T `TestPrivateReplayProgressTransitions` | Independent fixtures for all allowed initial phases, transition and enum branches, incompatible joint facts, `FixtureNoMarkerThenFirstMarkerAfterRestart`, `NonterminalReconciliationThenPositiveAcceptedAfterRestart`, `NonterminalReconciliationThenPositiveNotAcceptedAfterRestart`, `HistoricalReconciliationProviderProgress` and `TerminalReconciliationAndContradictions`, terminal receipt stability, one RunRef, no op10. Compare physical rowid/all immutable fields and envelope bytes after each success and failure. Validate malformed4, unknown5, raw alias, wrong scope/format, NULL/empty, copied/foreign/closed bearer and attempted legacy use. Shared cap and no slot reuse. |
+| U `TestPrivateReplayProgressConcurrencyAndCommitOutcome` | Advance between authentication and progress read/CAS with two handles. Exercise exact latest replay, same mutation changed kind/input, stale/advanced, distinct authenticated equivalent winner, full own COMMIT confirmation and restart. Inject precommit failure, actual commit with lost reply and unavailable/corrupt/canceled/missing/wrong-scope recovery reads. Compare full durable record and operation count. Include `UnknownMarkerCommitDoesNotRetryWithinInvocation`, `IndistinguishableRestartHistoriesHaveSameFixtureEligibility`, `ExplicitLaterFixtureCommandDoesNotConfirmPriorUnknown`, `CurrentReplayDoesNotConfirmPriorUnknown`, `StaleMarkerAndLateReconciliationReplay`, `ExistingMarkerExactReplayOnly` and `WrongOriginalOrRunCannotAdvance`. Count an explicitly supplied later fixture command separately. Assert equal A/B retained rows and eligibility, preserved prior dispositions and zero effects. The unresolved invocation issues no second write or projection, including on an advanced winner. |
+| L `TestPrivateReplaySharedObjectAllocation` | `CrossSelectorFinalSlotTwoHandles` and `CrossSelectorFinalSlotHelperProcess` seed 31 inert names, reserve two real permits and contend through both selectors for the last slot. Exactly one verified object, no 33rd name. `CancelAfterExclusiveCreate`, `AmbiguousBegin`, `AmbiguousRollbackAfterExclusiveCreate`, `ExpiredRollbackNilResponse`, `DiscardRescue` and `DoubleDiscardWithholds` assert exact connection/FD disposition, inert counted orphan where created, burned permit, unchanged already-issued counts, no Seal/claim/refund on refusal and subsequent work after confirmed release/quarantine. `NormalPublishersVerify` checks existing verified custody behavior with both normal publishers. The sole child control is `TestPrivateReplayObjectAllocatorHelperProcess`, selected only by the parent test across an independent process. Keep `TestReplayPublicationFaultAndIdentity`. |
+| M `TestSQLiteV4MigrationPreservesFullState` | Authentic 0/1/2/3 seeds, historical 1/2 and codec3 rows, populated active/retired/revoked keys and usage counts. Compare complete typed physical/logical row sets and ledger hashes before/after. Inject rollback, failure after actual COMMIT, bad/intermediate/recovery failures. Assert forbidden downgrade, replace/UPSERT/deletion/reinsert/immutable rewrites, legitimate historical CAS, codec3 construction/initial-only and grant continuity. |
+| M `TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation` | Build exact schema3 tree plus external test-only overlay `previous_schema3_probe_test.go` with sole `TestPreviousSchema3OpenerProbe`. It invokes actual old opener on `ES_REPLAY_SCHEMA3_TARGET`, asserts unsupported and prints `SCHEMA3_REFUSED_SCHEMA4`. Bind binary via `ES_REPLAY_SCHEMA3_PROBE`. Compare complete nonmigrating logical witnesses pre/post with populated rows of each codec and original objects. Separately run original PB1 historical probe on schema3 target. |
+| N `TestPrivateReplayProgressHasNoEffectPaths` | Existing guard files and finite allowlists plus negative mutants for direct/transitive runtime/provider/staging/startup/public projection. In fixture behavior use counter-backed fail-on-contact provider/runtime/staging/live credential boundaries. Immutable fixture status cannot provide a nominal or structural operational handle. Include matched, mismatched, accepted, unknown, cancellation and incompatible cases. Run authentic baseline App/API refusal and existing unkeyed compatibility tests. |
+
+Prospective validation uses pinned Go and readonly cached modules. After
+phase 1, run the pooled test alone, retain targeted old/new source and
+instrumentation hashes. At integration, the exact focused commands (with
+private fixture paths for authenticated probes) are:
+
+```sh
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=180s -run '^TestSQLitePooledClaimReadCleanup$' ./es/admission/internal/reliablesubmit
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=180s -run '^(TestPrivateReplaySharedObjectAllocation|TestReplayPublicationFaultAndIdentity|TestPrivateReplayProgressFormatVectors|TestPrivateReplayProgressTransitions|TestPrivateReplayProgressConcurrencyAndCommitOutcome|TestSQLiteV4MigrationPreservesFullState|TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation|TestSQLiteV3OldBinaryRefusesWithoutMutation|TestSQLiteLegacyCASConnectionCleanup|TestReplayOriginalKeyReadCleanup|TestReplayGrantC1PreCommitConnectionQuarantine|TestReplayGrantD1BeginResponseLossQuarantine|TestReplayKeyStateD1BeginResponseLossQuarantine)$' ./es/admission/internal/reliablesubmit
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=180s -run '^(TestPrivateReplayProgressAdmissionReplay|TestPrivateReplayProgressHasNoEffectPaths|TestReliableSubmitFoundationHasNoRuntimeWiring|TestReliableSubmitBindingProducerHasNoProductionCaller|TestPrepareRequestShapeRemainsLegacyAndUnkeyed|TestResolvedSubmitLegacyEquivalenceOneNomadRegistrationAndAuthorityRecovery)$' ./es/admission
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=180s -run '^(TestWorkstreamCContractPrepareAndSubmitRemainSeparatedAtAPIBoundary|TestSubmitPublicRouteRejectsStructuralReliableBody)$' ./es/api ./es/app
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=600s ./es/admission/internal/reliablesubmit ./es/admission ./es/api ./es/app
+"$GO" test -mod=readonly -count=1 -p=1 -json -timeout=600s ./...
+```
+
+The previous-schema-3 build uses `SCHEMA3_SOURCE`, a complete external
+source export of the pinned PR #10 commit and tree. Verify all 427 leaves
+by committed path, mode, blob, byte count and SHA-256. Use one external
+Go overlay JSON whose sole Replace entry maps the absent
+`es/admission/internal/reliablesubmit/previous_schema3_probe_test.go`
+under that export to the absolute external harness source. Bind that JSON
+and harness, toolchain, argv, workspace-off cached module graph and every
+actual compiled source, module metadata and embed input by path and bytes.
+Include compiler and resolved paths/environment in the evidence. Path
+or environment differences affect binary reproducibility separately from
+source identity. No product inputs come from the schema-4 candidate.
+
+```sh
+(
+  cd "$SCHEMA3_SOURCE" || exit
+  "$GO" test -mod=readonly -overlay "$SCHEMA3_OVERLAY" -c -o "$SCHEMA3_PROBE" ./es/admission/internal/reliablesubmit
+)
+ES_REPLAY_SCHEMA3_TARGET="$SCHEMA4_TARGET" "$SCHEMA3_PROBE" '-test.run=^TestPreviousSchema3OpenerProbe$' -test.v
+```
+
+`SCHEMA3_SOURCE`, `SCHEMA3_OVERLAY`, `SCHEMA3_PROBE` and `SCHEMA4_TARGET`
+are absolute independent paths. Bind the binary before use. The separately
+constructed schema4 target exists and has its full nonmigrating witness
+recorded before the old opener runs. The schema4 test verifies afterward
+with a nonmigrating reader. Bind both witness records.
+Retain the historical PB1 binary/harness provenance and selection
+`-test.run=^TestOldPB1OpenerProbe$ -test.v` separately. Run all selected
+go test parents and required subtests, record JSON outcomes/skips by
+identity, require no skip for the new bounded paths, and explain all changed
+skips against baseline. Package and full-tree runs protect neighboring
+contracts; historical native/host evidence has its original authority and
+does not qualify this source's runtime. Use capability-based validation at
+the established file/open boundaries. No OS-label fallback. Command results
+belong to a separately bound source generation and evidence record.
+
+Operational ingress, authenticated SPIFFE choice, state-path and key loader,
+production image/host and first-effect authorization, creation-only provider
+registration, correlated recovery, public responses, backup/restore and
+deployment remain later decisions. Neither compatible fixture keys nor a
+fixture accepted/receipt result qualifies any of them.
 
 ## 16. Explicit Non-Claims And Open Decisions
 

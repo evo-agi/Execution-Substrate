@@ -2,14 +2,29 @@ package reliablesubmit
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
 // replayStructure validates every nested format-1 field before a checked
 // reader can hand authenticated plaintext to admission. Admission alone owns
 // source meaning, original intent and PB1 recomputation.
-type replayStructure struct{ budget replayDecodeBudget }
+type replayStructure struct {
+	budget  replayDecodeBudget
+	element *progressOriginalNode
+}
+
+func (v *replayStructure) capture(f replayField) *progressOriginalNode {
+	if f.progressNode != nil {
+		return f.progressNode
+	}
+	if f.id == 0 {
+		return v.element
+	}
+	return nil
+}
 
 func (v *replayStructure) scalar(f replayField, kind byte, max int, optional bool) error {
 	if f.state == 0 && optional {
@@ -54,7 +69,27 @@ func (v *replayStructure) scalar(f replayField, kind byte, max int, optional boo
 	default:
 		return errReplayFormat
 	}
-	return v.budget.addLeaf(len(f.value))
+	if err := v.budget.addLeaf(len(f.value)); err != nil {
+		return err
+	}
+	if node := v.capture(f); node != nil {
+		node.kind = kind
+		switch kind {
+		case 's':
+			node.text = string(f.value)
+		case 'x':
+			node.blob = bytes.Clone(f.value)
+		case 'd':
+			node.number = binary.BigEndian.Uint64(f.value[1:9])
+			node.descriptorState = f.value[0]
+			copy(node.digest[:], f.value[9:])
+		default:
+			for _, b := range f.value {
+				node.number = node.number<<8 | uint64(b)
+			}
+		}
+	}
+	return nil
 }
 
 func (v *replayStructure) object(f replayField, count, depth int, optional bool, visit func([]replayField) error) error {
@@ -68,6 +103,13 @@ func (v *replayStructure) object(f replayField, count, depth int, optional bool,
 	if err != nil {
 		return err
 	}
+	if node := v.capture(f); node != nil {
+		node.kind = 'o'
+		node.children = make([]progressOriginalNode, len(fields))
+		for i := range fields {
+			fields[i].progressNode = &node.children[i]
+		}
+	}
 	return visit(fields)
 }
 
@@ -78,7 +120,19 @@ func (v *replayStructure) sequence(f replayField, max, depth int, optional bool,
 	if f.state != 1 {
 		return errReplayFormat
 	}
-	return parseReplaySequence(f.value, max, &v.budget, depth, visit)
+	node := v.capture(f)
+	if node == nil {
+		return parseReplaySequence(f.value, max, &v.budget, depth, visit)
+	}
+	node.kind = 'q'
+	return parseReplaySequence(f.value, max, &v.budget, depth, func(raw []byte) error {
+		node.children = append(node.children, progressOriginalNode{})
+		previous := v.element
+		v.element = &node.children[len(node.children)-1]
+		err := visit(raw)
+		v.element = previous
+		return err
+	})
 }
 
 func (v *replayStructure) stringSequence(f replayField, maxCount, maxLength, depth int, optional bool) error {
@@ -97,6 +151,11 @@ func (v *replayStructure) stringMap(f replayField, maxCount int, optional bool) 
 	count := int(binary.BigEndian.Uint16(f.value[:2]))
 	if count > maxCount || v.budget.addElements(count) != nil {
 		return errReplayFormat
+	}
+	node := v.capture(f)
+	if node != nil {
+		node.kind = 'm'
+		node.entries = make([]progressOriginalEntry, 0, count)
 	}
 	offset := 2
 	var previous []byte
@@ -127,6 +186,9 @@ func (v *replayStructure) stringMap(f replayField, maxCount int, optional bool) 
 		offset += int(valueLength)
 		if !utf8.Valid(value) || v.budget.addLeaf(len(value)) != nil {
 			return errReplayFormat
+		}
+		if node != nil {
+			node.entries = append(node.entries, progressOriginalEntry{key: string(key), value: string(value)})
 		}
 	}
 	if offset != len(f.value) {
@@ -390,8 +452,11 @@ func (v *replayStructure) assessment(f replayField) error {
 	})
 }
 
-func (v *replayStructure) provenance(f replayField) error {
+func (v *replayStructure) provenance(f replayField, scope byte) error {
 	return v.object(f, 6, 2, false, func(a []replayField) error {
+		if scope == 2 && string(a[0].value) != "synthetic_progress_nonoperational_v1" {
+			return errReplayFormat
+		}
 		for i := 0; i < 4; i++ {
 			if err := v.scalar(a[i], 's', 256, false); err != nil {
 				return err
@@ -421,6 +486,10 @@ func (v *replayStructure) provenance(f replayField) error {
 }
 
 func validateReplayPayloadStructure(fields []replayField) error {
+	return validateReplayPayloadStructureForScope(fields, 1)
+}
+
+func validateReplayPayloadStructureForScope(fields []replayField, scope byte) error {
 	if len(fields) != 10 {
 		return errReplayFormat
 	}
@@ -478,7 +547,7 @@ func validateReplayPayloadStructure(fields []replayField) error {
 	}); err != nil {
 		return err
 	}
-	if err := v.provenance(fields[7]); err != nil {
+	if err := v.provenance(fields[7], scope); err != nil {
 		return err
 	}
 	if err := v.object(fields[8], 6, 2, false, func(keys []replayField) error {
@@ -496,8 +565,133 @@ func validateReplayPayloadStructure(fields []replayField) error {
 	}); err != nil {
 		return err
 	}
-	if err := v.scalar(fields[9], '1', 1, false); err != nil || fields[9].value[0] != 1 {
+	if err := v.scalar(fields[9], '1', 1, false); err != nil || fields[9].value[0] != scope {
 		return errReplayFormat
 	}
 	return nil
+}
+
+// A progress view is a projection of typed fields from a structurally checked
+// original. Neither the entire plaintext nor a serialized subtree crosses
+// this boundary. Admission consumes the typed data and owns PB1 semantics.
+type progressOriginalNode struct {
+	kind            byte
+	text            string
+	blob            []byte
+	number          uint64
+	descriptorState byte
+	digest          [32]byte
+	children        []progressOriginalNode
+	entries         []progressOriginalEntry
+}
+
+type progressOriginalEntry struct{ key, value string }
+
+type progressOriginalLifetime struct {
+	ctx    context.Context
+	closed atomic.Bool
+}
+
+func (l *progressOriginalLifetime) live() bool {
+	return l != nil && !l.closed.Load() && l.ctx.Err() == nil
+}
+
+type ProgressOriginalView struct {
+	privateReplayRedacted
+	life  *progressOriginalLifetime
+	nodes [10]progressOriginalNode
+}
+
+type ProgressOriginalField struct {
+	privateReplayRedacted
+	life *progressOriginalLifetime
+	node *progressOriginalNode
+}
+
+func progressView(ctx context.Context, plaintext []byte) (*ProgressOriginalView, error) {
+	fields, err := progressReplayFormat.parsePayload(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	view := &ProgressOriginalView{life: &progressOriginalLifetime{ctx: ctx}}
+	for i := range fields {
+		fields[i].progressNode = &view.nodes[i]
+	}
+	if err := validateReplayPayloadStructureForScope(fields, 2); err != nil {
+		return nil, err
+	}
+	return view, nil
+}
+
+func (v *ProgressOriginalView) Fields() ([]ProgressOriginalField, error) {
+	if v == nil || !v.life.live() {
+		return nil, errClaimStoreUnavailable
+	}
+	return progressFields(v.life, v.nodes[:]), nil
+}
+
+func progressFields(life *progressOriginalLifetime, nodes []progressOriginalNode) []ProgressOriginalField {
+	fields := make([]ProgressOriginalField, len(nodes))
+	for i := range fields {
+		fields[i] = ProgressOriginalField{life: life, node: &nodes[i]}
+	}
+	return fields
+}
+
+func (f ProgressOriginalField) Kind() (byte, error) {
+	if !f.life.live() || f.node == nil {
+		return 0, errClaimStoreUnavailable
+	}
+	return f.node.kind, nil
+}
+
+func (f ProgressOriginalField) Children() []ProgressOriginalField {
+	if !f.life.live() || f.node == nil || (f.node.kind != 'o' && f.node.kind != 'q') {
+		return nil
+	}
+	return progressFields(f.life, f.node.children)
+}
+
+func (f ProgressOriginalField) Strings() map[string]string {
+	if !f.life.live() || f.node == nil || f.node.kind != 'm' {
+		return nil
+	}
+	result := make(map[string]string, len(f.node.entries))
+	for _, entry := range f.node.entries {
+		result[entry.key] = entry.value
+	}
+	return result
+}
+
+func (f ProgressOriginalField) Text() string {
+	if !f.life.live() || f.node == nil || f.node.kind != 's' {
+		return ""
+	}
+	return f.node.text
+}
+
+func (f ProgressOriginalField) Number() uint64 {
+	if !f.life.live() || f.node == nil {
+		return 0
+	}
+	switch f.node.kind {
+	case '1', '2', '4', '8', 'b':
+		return f.node.number
+	default:
+		return 0
+	}
+}
+
+func (f ProgressOriginalField) Bytes() []byte {
+	if !f.life.live() || f.node == nil || f.node.kind != 'x' {
+		return nil
+	}
+	return bytes.Clone(f.node.blob)
+}
+
+func (f ProgressOriginalField) MaterialDescriptor() (byte, uint64, [32]byte) {
+	if !f.life.live() || f.node == nil || f.node.kind != 'd' {
+		return 0, 0, [32]byte{}
+	}
+	return f.node.descriptorState, f.node.number, f.node.digest
 }

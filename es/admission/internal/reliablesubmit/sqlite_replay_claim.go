@@ -3,6 +3,7 @@ package reliablesubmit
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/binary"
 	"strings"
 	"time"
 )
@@ -31,9 +32,11 @@ type replayClaimDescriptor struct {
 func (d replayClaimDescriptor) zero() bool                   { return d == (replayClaimDescriptor{}) }
 func (d replayClaimDescriptor) clone() replayClaimDescriptor { return d }
 
-func (d replayClaimDescriptor) valid() bool {
-	return d.scope == 1 && d.intentFormat == 1 && d.wrapperFormat == 1 &&
-		d.payloadFormat == 1 && d.algorithm == 1 &&
+func (d replayClaimDescriptor) valid() bool { return d.validForScope(1) }
+
+func (d replayClaimDescriptor) validForScope(scope int64) bool {
+	return (scope == 1 || scope == 2) && d.scope == scope && d.intentFormat == 1 &&
+		d.wrapperFormat == scope && d.payloadFormat == scope && d.algorithm == 1 &&
 		replayObjectRefValid(d.ref) && d.size >= 29 && d.size <= replaySealedLimit &&
 		replayKeyIDValid(d.bindingKeyID) && replayKeyIDValid(d.envelopeKeyID) &&
 		d.bindingKeyID != d.envelopeKeyID && d.bindingKeyFP != d.envelopeKeyFP
@@ -141,6 +144,68 @@ func newReplayDurableClaimRecord(claim ClaimID, plan BoundPlan, descriptor repla
 	}
 	record.codecVersion = durableClaimCodecVersionSynthetic
 	record.replay = descriptor
+	if err := record.validate(); err != nil {
+		return durableClaimRecord{}, err
+	}
+	return record, nil
+}
+
+func newProgressInitialClaim(claim ClaimID, plan BoundPlan, tag durablePhaseTag, d replayClaimDescriptor, now time.Time) (durableClaimRecord, error) {
+	if !claim.Valid() || !plan.Valid() || !d.validForScope(2) ||
+		len(claim.caller.ref.value) != 32 || len(claim.submitKey.ref.value) != 32 ||
+		len(plan.binding.ref.value) > 256 ||
+		(tag != durablePhasePendingBeforeAssignment && tag != durablePhaseAmbiguousBeforeAssignment) {
+		return durableClaimRecord{}, errInvalidDurableRecord
+	}
+	resolved, inapplicable, err := sqliteWitnessMasks(plan.Witness())
+	if err != nil {
+		return durableClaimRecord{}, errInvalidDurableRecord
+	}
+	var randomMutation [32]byte
+	if _, err := rand.Read(randomMutation[:]); err != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	mutation, err := newDurableMutationRef(randomMutation[:])
+	if err != nil {
+		return durableClaimRecord{}, err
+	}
+	now = normalizeClaimTime(now)
+	wire := append([]byte("ESRSEST2"), claim.caller.ref.value...)
+	wire = append(wire, claim.submitKey.ref.value...)
+	wire = binary.BigEndian.AppendUint32(wire, uint32(len(plan.binding.ref.value)))
+	wire = append(wire, plan.binding.ref.value...)
+	wire = binary.BigEndian.AppendUint16(wire, uint16(resolved))
+	wire = binary.BigEndian.AppendUint16(wire, uint16(inapplicable))
+	wire = append(wire, byte(tag))
+	wire = binary.BigEndian.AppendUint64(wire, uint64(now.UnixNano()))
+	wire = binary.BigEndian.AppendUint16(wire, durableClaimCodecVersionProgress)
+	wire = append(wire, 2)
+	wire = binary.BigEndian.AppendUint16(wire, 1)
+	wire = append(wire, d.intentMAC[:]...)
+	wire = append(wire, d.contextMAC[:]...)
+	wire = binary.BigEndian.AppendUint16(wire, 2)
+	wire = binary.BigEndian.AppendUint16(wire, 2)
+	wire = binary.BigEndian.AppendUint16(wire, 1)
+	wire = append(wire, d.ref...)
+	wire = binary.BigEndian.AppendUint32(wire, uint32(d.size))
+	wire = append(wire, d.fileSHA[:]...)
+	wire = binary.BigEndian.AppendUint16(wire, uint16(len(d.bindingKeyID)))
+	wire = append(wire, d.bindingKeyID...)
+	wire = append(wire, d.bindingKeyFP[:]...)
+	wire = binary.BigEndian.AppendUint16(wire, uint16(len(d.envelopeKeyID)))
+	wire = append(wire, d.envelopeKeyID...)
+	wire = append(wire, d.envelopeKeyFP[:]...)
+	op, err := deriveDurableOperationDescriptor(mutation, durableOperationEstablishClaim, 0,
+		durableOperationInputPart{tag: durableOperationPartSyntheticDescriptor, value: wire})
+	if err != nil {
+		return durableClaimRecord{}, err
+	}
+	record := durableClaimRecord{
+		codecVersion: durableClaimCodecVersionProgress, claim: claim.clone(), plan: plan.clone(),
+		phase: durablePhaseSnapshot{tag: tag}, revision: initialClaimRevision, replay: d,
+		createdAt: now, updatedAt: now, retention: activeDurableRetention(),
+		lastMutation: mutation, latestOperation: op,
+	}
 	if err := record.validate(); err != nil {
 		return durableClaimRecord{}, err
 	}

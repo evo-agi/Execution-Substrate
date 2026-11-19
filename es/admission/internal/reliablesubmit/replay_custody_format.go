@@ -30,6 +30,7 @@ func (privateReplayRedacted) Format(state fmt.State, _ rune) {
 }
 
 type replayField struct {
+	progressNode *progressOriginalNode
 	privateReplayRedacted
 	id    uint16
 	state byte
@@ -180,8 +181,29 @@ func parseReplaySequence(raw []byte, maxCount int, budget *replayDecodeBudget, c
 	return nil
 }
 
+type replayFormat struct {
+	scope                                     byte
+	payloadMagic, headerMagic, aadDomain      string
+	intentDomain, contextDomain, frozenDomain string
+}
+
+var syntheticReplayFormat = replayFormat{1, "ESRSPAY1", "ESRSENV1", "ESRSAAD1", "ESRSINT1", "ESRSCTX1", "ESRSFRZ1"}
+var progressReplayFormat = replayFormat{2, "ESRSPAY2", "ESRSENV2", "ESRSAAD2", "ESRSINT2", "ESRSCTX2", "ESRSFRZ2"}
+
+func replayFormatForScope(scope int64) (replayFormat, bool) {
+	switch scope {
+	case 1:
+		return syntheticReplayFormat, true
+	case 2:
+		return progressReplayFormat, true
+	default:
+		return replayFormat{}, false
+	}
+}
+
 type PrivateReplayFrozen struct {
 	privateReplayRedacted
+	format     replayFormat
 	claim      ClaimID
 	plan       BoundPlan
 	keys       PrivateReplayKeys
@@ -195,16 +217,20 @@ type PrivateReplayFrozen struct {
 }
 
 func NewPrivateReplayFrozen(claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, plaintext []byte) (PrivateReplayFrozen, error) {
+	return freezeReplayOriginal(syntheticReplayFormat, claim, plan, keys, plaintext)
+}
+
+func freezeReplayOriginal(format replayFormat, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, plaintext []byte) (PrivateReplayFrozen, error) {
 	if !claim.Valid() || !plan.Valid() || !keys.valid || len(plaintext) < 14 || len(plaintext) > replayPayloadLimit ||
 		len(claim.caller.ref.value) != 32 || len(claim.submitKey.ref.value) != 32 ||
 		len(plan.binding.ref.value) < 1 || len(plan.binding.ref.value) > 256 {
 		return PrivateReplayFrozen{}, errReplayFormat
 	}
-	fields, err := parsePrivateReplayPayload(plaintext)
+	fields, err := format.parsePayload(plaintext)
 	if err != nil {
 		return PrivateReplayFrozen{}, err
 	}
-	if err := checkReplayPayloadAssociations(fields, claim, plan, keys); err != nil {
+	if err := format.checkPayloadAssociations(fields, claim, plan, keys); err != nil {
 		return PrivateReplayFrozen{}, err
 	}
 	intentWire, _ := encodeReplayField(fields[1])
@@ -213,29 +239,33 @@ func NewPrivateReplayFrozen(claim ClaimID, plan BoundPlan, keys PrivateReplayKey
 		encoded, _ := encodeReplayField(field)
 		contextWire = append(contextWire, encoded...)
 	}
-	intentMAC := replayHMAC(keys.binding, "ESRSINT1", intentWire)
-	contextMAC := replayHMAC(keys.binding, "ESRSCTX1", contextWire)
+	intentMAC := replayHMAC(keys.binding, format.intentDomain, intentWire)
+	contextMAC := replayHMAC(keys.binding, format.contextDomain, contextWire)
 	var objectID [32]byte
 	if _, err := rand.Read(objectID[:]); err != nil {
 		return PrivateReplayFrozen{}, errClaimStoreUnavailable
 	}
-	header, err := encodePrivateReplayHeader(claim, plan, keys, objectID, intentMAC, contextMAC, len(plaintext))
+	header, err := format.encodeHeader(claim, plan, keys, objectID, intentMAC, contextMAC, len(plaintext))
 	if err != nil {
 		return PrivateReplayFrozen{}, err
 	}
-	aad := append([]byte("ESRSAAD1"), header...)
+	aad := append([]byte(format.aadDomain), header...)
 	frozen := PrivateReplayFrozen{
-		claim: claim.clone(), plan: plan.clone(), keys: keys,
+		format: format, claim: claim.clone(), plan: plan.clone(), keys: keys,
 		plaintext: append([]byte(nil), plaintext...), header: header, aad: aad,
 		objectID: objectID, intentMAC: intentMAC, contextMAC: contextMAC,
 	}
-	frozen.digest = replayFrozenDigest(keys, frozen.header, frozen.plaintext)
+	frozen.digest = format.frozenDigest(keys, frozen.header, frozen.plaintext)
 	return frozen, nil
 }
 
 func replayFrozenDigest(keys PrivateReplayKeys, header, plaintext []byte) [32]byte {
+	return syntheticReplayFormat.frozenDigest(keys, header, plaintext)
+}
+
+func (format replayFormat) frozenDigest(keys PrivateReplayKeys, header, plaintext []byte) [32]byte {
 	h := sha256.New()
-	_, _ = h.Write([]byte("ESRSFRZ1"))
+	_, _ = h.Write([]byte(format.frozenDomain))
 	_, _ = h.Write(keys.bindingFP[:])
 	_, _ = h.Write(keys.envelopeFP[:])
 	_, _ = h.Write(header)
@@ -255,8 +285,12 @@ func replayHMAC(key [32]byte, domain string, raw []byte) [32]byte {
 }
 
 func parsePrivateReplayPayload(raw []byte) ([]replayField, error) {
-	if len(raw) < 16 || len(raw) > replayPayloadLimit || string(raw[:8]) != "ESRSPAY1" ||
-		binary.BigEndian.Uint16(raw[8:10]) != 1 ||
+	return syntheticReplayFormat.parsePayload(raw)
+}
+
+func (format replayFormat) parsePayload(raw []byte) ([]replayField, error) {
+	if len(raw) < 16 || len(raw) > replayPayloadLimit || string(raw[:8]) != format.payloadMagic ||
+		binary.BigEndian.Uint16(raw[8:10]) != uint16(format.scope) ||
 		binary.BigEndian.Uint32(raw[10:14]) != uint32(len(raw)-14) {
 		return nil, errReplayFormat
 	}
@@ -270,13 +304,20 @@ func parsePrivateReplayPayload(raw []byte) ([]replayField, error) {
 			return nil, errReplayFormat
 		}
 	}
-	if err := validateReplayPayloadStructure(fields); err != nil {
+	if err := validateReplayPayloadStructureForScope(fields, format.scope); err != nil {
 		return nil, err
 	}
 	return fields, nil
 }
 
 func checkReplayPayloadAssociations(fields []replayField, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys) error {
+	return syntheticReplayFormat.checkPayloadAssociations(fields, claim, plan, keys)
+}
+
+func (format replayFormat) checkPayloadAssociations(fields []replayField, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys) error {
+	if len(fields) != 10 {
+		return errReplayFormat
+	}
 	budget := &replayDecodeBudget{}
 	identity, err := parseReplayObject(fields[0].value, 2, budget, 2, 2)
 	if err != nil {
@@ -325,7 +366,11 @@ func checkReplayPayloadAssociations(fields []replayField, claim ClaimID, plan Bo
 	}
 	for _, id := range []int{1, 4, 5, 6} {
 		value, err := replayRequirePresent(keyFormats, id, 2)
-		if err != nil || binary.BigEndian.Uint16(value) != 1 {
+		want := uint16(1)
+		if id == 4 || id == 5 {
+			want = uint16(format.scope)
+		}
+		if err != nil || binary.BigEndian.Uint16(value) != want {
 			return errReplayFormat
 		}
 	}
@@ -338,7 +383,7 @@ func checkReplayPayloadAssociations(fields []replayField, claim ClaimID, plan Bo
 		return errReplayFormat
 	}
 	scope, err := replayRequirePresent(fields, 10, 1)
-	if err != nil || scope[0] != 1 {
+	if err != nil || scope[0] != format.scope {
 		return errReplayFormat
 	}
 	return nil
@@ -356,11 +401,15 @@ func replayU32(value uint32) []byte {
 }
 
 func encodePrivateReplayHeader(claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, objectID [32]byte, intentMAC [32]byte, contextMAC [32]byte, plaintextSize int) ([]byte, error) {
+	return syntheticReplayFormat.encodeHeader(claim, plan, keys, objectID, intentMAC, contextMAC, plaintextSize)
+}
+
+func (format replayFormat) encodeHeader(claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, objectID [32]byte, intentMAC [32]byte, contextMAC [32]byte, plaintextSize int) ([]byte, error) {
 	if plaintextSize < 14 || plaintextSize > replayPayloadLimit {
 		return nil, errReplayFormat
 	}
 	values := [][]byte{
-		replayU16(1), replayU16(1), {1}, replayU16(1), []byte(keys.bindingID),
+		replayU16(1), replayU16(uint16(format.scope)), {format.scope}, replayU16(1), []byte(keys.bindingID),
 		[]byte(keys.envelopeID), objectID[:], claim.caller.ref.value,
 		claim.submitKey.ref.value, plan.binding.ref.value, intentMAC[:], contextMAC[:],
 		replayU32(uint32(plaintextSize)), replayU32(uint32(plaintextSize + 28)),
@@ -374,16 +423,20 @@ func encodePrivateReplayHeader(claim ClaimID, plan BoundPlan, keys PrivateReplay
 		return nil, errReplayFormat
 	}
 	header := make([]byte, 14+len(body))
-	copy(header, "ESRSENV1")
-	binary.BigEndian.PutUint16(header[8:10], 1)
+	copy(header, format.headerMagic)
+	binary.BigEndian.PutUint16(header[8:10], uint16(format.scope))
 	binary.BigEndian.PutUint32(header[10:14], uint32(len(header)))
 	copy(header[14:], body)
 	return header, nil
 }
 
 func parsePrivateReplayHeader(file []byte) ([]replayField, []byte, error) {
-	if len(file) < 16 || len(file) > replaySealedLimit || string(file[:8]) != "ESRSENV1" ||
-		binary.BigEndian.Uint16(file[8:10]) != 1 {
+	return syntheticReplayFormat.parseHeader(file)
+}
+
+func (format replayFormat) parseHeader(file []byte) ([]replayField, []byte, error) {
+	if len(file) < 16 || len(file) > replaySealedLimit || string(file[:8]) != format.headerMagic ||
+		binary.BigEndian.Uint16(file[8:10]) != uint16(format.scope) {
 		return nil, nil, errReplayFormat
 	}
 	length := binary.BigEndian.Uint32(file[10:14])

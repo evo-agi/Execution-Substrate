@@ -600,6 +600,47 @@ capacity/residence enforcement remain environment-bound operational/rollout
 gates. `PLANS.md` and the lifecycle contract own the development-source and
 local-preservation distinction; no admission or Submit authority changes here.
 
+### Private replay progress candidate classification
+
+Private original replay with durable claim progress is a **Bounded
+slice rule extension** on the reliable-submit **Reopened redesign seam**.
+The current codec-3 custody scope remains an immutable private original.
+The candidate's codec-4 scope `synthetic_progress_nonoperational_v1` is
+fixture-only and effect-ineligible at every phase, including accepted with a
+fixture receipt. One authenticated original and one claim row retain the
+existing caller/key occupation across codecs. Admission owns typed original
+interpretation, intent presence and PB1 verification. Custody owns sealed
+bytes, key/grant evidence and the shared scope-1/scope-2 object allocator.
+SQLite enforces persisted shape, CAS and storage deltas. The existing
+durable service owns semantic transition checks. Codec-4 reconciliation
+retains one earlier observation of the same attempt. An explicit new
+fixture marker uses fresh authentication and the exact current-row CAS
+predicate. Independent positive same-run evidence is required for terminal
+resolution. A later current-state read or explicit command leaves the
+earlier invocation's write disposition unchanged. The operational
+Validated No-Dispatch Evidence requirement remains unchanged and its
+cross-restart authority lies outside this fixture slice.
+
+The private composer may consume the typed original and staged-in-model
+facts defined by the submit contract §6B and persistence ADR §15B.
+The two internal fixture terminal constructors explicitly associate
+outcome and, for Accepted, the receipt with the same attempt. The
+durable service validates that association. The constructor sites belong
+to fixture tests and confer no provider authority. The known disposition of
+a losing establishment survives failed winner disclosure. The external
+admission lost-response witness uses a test-only bridge and the same
+no-effect observation boundary. Those
+facts confer zero staging, provider, runtime, publication or lifecycle
+authority. Static guards restrict the composer and its internal imports to
+the selected private call graph. Public structural reliable-request refusal,
+unkeyed Submit, authentication-before-existence-disclosure, conflict privacy
+and bounded CP compatibility remain current invariants. ES owns admission and
+runtime facts and Nomad owns the current accepted-execution lifecycle.
+Coordinator durable programme progression is a separate strategic
+responsibility. IM and MA are supplementary. Bridge does not establish run
+truth. Operational startup, public ingress and first-effect authorization
+remain outside this candidate.
+
 ### 4E. Reopened seams
 
 | Surface | Class | What remains open |
@@ -868,30 +909,72 @@ whole run-root reclamation, adoption, or alternate claim path is selected.
 
 ### 7.4 Exact synchronized mutable-state inventory
 
-Production ES and `cmd/es` contain exactly five structurally
-synchronization-bearing fields: four lock fields and one wrapper pointer to an
-operation-local lock-bearing permit. There is no production atomic field:
+The non-test production source under `./es/...` and `./cmd/es/...` contains
+32 structurally synchronization-bearing fields: five direct lock fields,
+three `atomic.Bool` fields, and 24 transitive reference, request or wrapper
+fields. The private fixture code is included in this source inventory. The
+private replay path remains runtime-unwired.
 
-| Owner and lock | Protected facts | Writers | Readers | Lifetime |
-| --- | --- | --- | --- | --- |
-| `es/admission.Service.mu sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy` | `Service.Initialize` | `Service.Health`, `Service.currentTrustModel` | admission service instance |
-| `es/app.App.mu sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both; `App.Shutdown` writes `started` | `App.Started` reads `started`; `App.Addr` reads `listener` | app instance |
-| `es/runtimehelper.helperServer.mu sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | runtime-helper process |
-| `es/admission/internal/reliablesubmit.PrivateReplaySealPermit.permit *privateSealPermit` | Pointer to one permit and its burn latch; no separate authority | `PrivateReplayCustody.ReserveSealUse` creates the wrapper | `PrivateReplayCustody.PublishSealedSynthetic` consumes the wrapper | one operation-local permit |
-| `es/admission/internal/reliablesubmit.privateSealPermit.mu sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume` | one operation-local permit |
+| Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
+| --- | --- | --- | --- | --- | --- |
+| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy` | `Service.Initialize` | `Service.Health`, `Service.currentTrustModel` | Admission service instance |
+| Lock | `es/app:App.mu:sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both. `App.Shutdown` writes `started`. | `App.Started` reads `started`. `App.Addr` reads `listener`. | App instance |
+| Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |
+| Lock | `es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` | One reservation and publication attempt |
+| Lock | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.mu:sync.RWMutex` | Scope-2 custody handle, its closed state and coordination with issuer qualification | `OpenPrivateReplayProgressCustody` initializes before publication. `PrivateReplayProgressCustody.Close` clears custody under the write lock. | The read-locked lookup, freeze, reserve, publish, establish, original load, confirmation, progress read and mutation paths qualify through `PrivateReplayProgressCustody.qualified` before using the handle. | One issuing custody handle |
+| Atomic | `es/admission/internal/reliablesubmit:progressAccessState.used:atomic.Bool` | One authenticated access consumption | `PrivateReplayProgressCustody.consumeProgressAccess` atomically checks and sets | The same compare-and-swap | One callback borrow |
+| Atomic | `es/admission/internal/reliablesubmit:progressAttemptState.used:atomic.Bool` | One establishment confirmation attempt | `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` atomically checks and sets | The same compare-and-swap | One establishment invocation |
+| Atomic | `es/admission/internal/reliablesubmit:progressOriginalLifetime.closed:atomic.Bool` | Expiration of one original view or access borrow | Deferred stores in `verifyProgressOriginalMatch` and `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` | `progressOriginalLifetime.live` for typed fields and progress use, together with caller-context checks | One verifier or authenticated-use callback |
 
-`currentTrustModel` and `currentToken` return request-local copies; those copies
-do not become current authority. The sole package map,
-`reservedRuntimeEnvKeys`, is static lookup vocabulary rather than synchronized
-mutable authority. There is no map field beside a lock and no package-level
-lock, registry, or atomic authority. Committed private replay claim, key, and
-grant/use state belongs to SQLite through its transaction boundary, not to a
-process-local lock. `PrivateReplaySealPermit.permit` is a wrapper pointer to one
-operation-local `privateSealPermit`; its mutex protects only that permit's
-one-use/burn latch. It is not a process-wide registry, lease authority, poison
-design, staging/results-root authority, or durable state. The private path
-remains runtime-unwired. Exact object-reference inventories freeze every lock,
-wrapper pointer, and protected-fact reader/writer listed above.
+| Category | Exact field and type | Reference target, creation and use |
+| --- | --- | --- |
+| Reference | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody` | The issuer sets its own identity once at open. Close, lookup and qualification check it for that handle's lifetime. |
+| Reference | `es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit` | Carries the same operation-local burn latch through either scope. See the permit roles below. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` | Authentication issues the access state. Progress consumption checks it during that callback. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressAttempt.token:*reliablesubmit.progressAttemptState` | Establishment issues the attempt state. Original authentication consumes it within that invocation. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressFrozen.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Freeze binds the issuer. Reserve, publish and establish check it within the opening lookup's invocation. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressLookup.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Lookup binds the issuer. Lookup accessors, freeze and authentication check it within the lookup invocation. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressOriginalField.life:*reliablesubmit.progressOriginalLifetime` | Typed field construction carries the original view's lifetime. Field readers check it on each use in the verifier callback. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressOriginalView.life:*reliablesubmit.progressOriginalLifetime` | Original view construction attaches the verifier callback's lifetime. View readers check it or pass it to typed fields. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressPublication.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Publication binds the issuer. Establishment checks it for the same publication attempt. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressSealPermit.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Scope-2 reservation binds the issuer. Scope-2 publication checks it for the same permit attempt. |
+| Reference | `es/admission/internal/reliablesubmit:ProgressSealPermit.permit:reliablesubmit.PrivateReplaySealPermit` | Carries the inner permit wrapper during the scope-2 attempt. See the permit roles below. |
+| Reference | `es/admission/internal/reliablesubmit:progressAccessState.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Authentication binds the issuer. Consumption, reload, mutation and recovery check or use it during the access callback. |
+| Reference | `es/admission/internal/reliablesubmit:progressAccessState.life:*reliablesubmit.progressOriginalLifetime` | Authentication attaches the callback lifetime. Consumption, reload, mutation and recovery check it. |
+| Reference | `es/admission/internal/reliablesubmit:progressAccessState.self:*reliablesubmit.ProgressAccess` | Authentication binds the exact access instance. Consumption checks identity during that access callback. |
+| Reference | `es/admission/internal/reliablesubmit:progressAttemptState.issuer:*reliablesubmit.PrivateReplayProgressCustody` | Establishment binds the issuer. Original authentication checks it within the establishment invocation. |
+| Reference | `es/admission/internal/reliablesubmit:acceptWithReceiptRequest.progress:*reliablesubmit.progressAccessState` | Acceptance request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:assignRunRequest.progress:*reliablesubmit.progressAccessState` | Run-assignment request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:mutationRequest.progress:*reliablesubmit.progressAccessState` | Each semantic operation forwards its request's access. The mutation service uses it for reload, validation, CAS and recovery during that command. |
+| Reference | `es/admission/internal/reliablesubmit:recordProvablyNotAcceptedRequest.progress:*reliablesubmit.progressAccessState` | Not-accepted request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:recordProviderCallObservationRequest.progress:*reliablesubmit.progressAccessState` | Provider-observation request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:recordProviderDispatchAttemptRequest.progress:*reliablesubmit.progressAccessState` | Fixture marker request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:recordProviderEffectIntentRequest.progress:*reliablesubmit.progressAccessState` | Effect-intent request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:recordReconciliationEvidenceRequest.progress:*reliablesubmit.progressAccessState` | Reconciliation request carries access to the common mutation request during one fixture command. |
+| Reference | `es/admission/internal/reliablesubmit:recordStagingEvidenceRequest.progress:*reliablesubmit.progressAccessState` | Staging-evidence request carries access to the common mutation request during one fixture command. |
+
+| Permit field | Writes or construction | Reads |
+| --- | --- | --- |
+| `PrivateReplaySealPermit.permit` | `PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal` |
+| `ProgressSealPermit.permit` | `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayProgressCustody.PublishProgressOriginal` |
+| `privateSealPermit.used` | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` |
+
+Scope 1 enters shared publication through `PrivateReplayCustody.PublishSealedSynthetic`.
+Scope 2 forwards the inner wrapper through `PrivateReplayProgressCustody.PublishProgressOriginal`
+and burns it on scope-2 precondition refusal. The shared publisher uses
+`privateSealPermit.matchesAllocation` during allocation preflight and applies
+the existing consume and burn rules. Persistence ADR §15B.5A owns the shared
+allocator and permit preflight ordering.
+
+`currentTrustModel` and `currentToken` return request-local copies. The sole
+package map, `reservedRuntimeEnvKeys`, is static lookup vocabulary. There is
+no map field beside synchronization and no package-level synchronization
+authority. SQLite owns committed claim, progress, key and grant/use state.
+The private primitives protect handle and invocation lifetimes and one-use
+consumption. Reference carriers convey those same protections without
+independent authority. These fields confer no durable run truth, process-global
+state, lease, registry, poison subsystem, worker, or staging/results-root
+authority. The rejected A3 topology in §7.5 remains excluded.
 
 ### 7.5 Rejected A3 topology inventory
 

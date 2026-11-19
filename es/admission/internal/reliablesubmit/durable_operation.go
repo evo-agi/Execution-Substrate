@@ -117,6 +117,8 @@ func (d durableLatestOperationDescriptor) validForCodec(codecVersion uint16, las
 		return d.complete()
 	case durableClaimCodecVersionSynthetic:
 		return d.complete() && d.kind == durableOperationEstablishClaim
+	case durableClaimCodecVersionProgress:
+		return d.complete() && d.kind >= durableOperationEstablishClaim && d.kind < durableOperationTombstoneOrExpire
 	default:
 		return false
 	}

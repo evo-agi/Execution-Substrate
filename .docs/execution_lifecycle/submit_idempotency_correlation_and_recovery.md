@@ -784,6 +784,182 @@ effect intent before staging, dispatch-attempt before provider registration
 and uncertainty reconciliation remain future operational gates. No v3 claim
 can be promoted to a run/effect/receipt. Reliable submit remains unavailable.
 
+### 6B. Proposed private original replay and durable claim progress
+
+This section governs the fixture-only source candidate. Section 6A describes
+current codec 3, whose original remains permanently non-progressing. The
+[persistence ADR section 15B](reliable_submit_persistence_and_concurrency.md#15b-proposed-private-original-replay-and-durable-claim-progress)
+owns the row, reader, transition and migration rules. The sole new non-test
+cross-package consumer is `es/admission/reliable_submit_replay_private.go`.
+Its unexported fixture entry points require an injected synthetic caller,
+image, key catalog and local fixture dependencies. The producer uses the same
+strict parsed delivery for incoming intent and existing resolver/PB1 assessment
+on a genuine miss. Dependencies may read fixture material only. A hit requires
+no current resolver, defaults, material, image or active-key selection. An
+occupied incompatible row refuses before resolution.
+
+#### Dispatch and cryptographic domains
+
+Dispatch on the complete tuple. SQL schema and per-row codec are separate
+version axes. Schema 4 privately accepts both custody tuples.
+
+| Row | Admitting schema | Codec / semantic scope / encoded scope | Intent / PB1 / wrapper / payload / algorithm | Payload / header / AAD | Intent / context / permit domains |
+| --- | --- | --- | --- | --- | --- |
+| Legacy | Historical per ADR, carried through 4 | 1 or 2 / none / NULL | All replay format columns NULL, legacy generic binding | None | Existing durable operation digest only |
+| Immutable original | 3 or 4 | 3 / `synthetic_nonoperational_v1` / 1 | 1 / 1 / 1 / 1 / 1 | `ESRSPAY1` / `ESRSENV1` / `ESRSAAD1` | `ESRSINT1` / `ESRSCTX1` / `ESRSFRZ1` |
+| Fixture progress | 4 | 4 / `synthetic_progress_nonoperational_v1` / 2 | 1 / 1 / 2 / 2 / 1 | `ESRSPAY2` / `ESRSENV2` / `ESRSAAD2` | `ESRSINT2` / `ESRSCTX2` / `ESRSFRZ2` |
+| All other tuples or mixed components | Refuse | Refuse | Refuse | Refuse | No alternate decoder or key search |
+
+Algorithm 1 is AES-256-GCM with random 12-byte nonce and 16-byte tag. PB1 v1,
+key-purpose/fingerprint namespace `ESRSKEY1`, safe references and strict
+original-intent grammar stay byte-identical. Binding and envelope keys
+remain separate purposes. Cryptographic labels here are literal ASCII with
+no terminator. Integers are big endian. Each TLV is `u16(ID) || u8(state) ||
+u32(value length) || value`. Absent TLVs have state 0 and zero-length value.
+Present TLVs have state 1. Reject other states, repeated, reordered, missing
+required, unknown and trailing fields. Every nested ID, count, presence,
+width, sequence/map order, normalization and semantic restriction in section
+6A is normative with exactly the substitutions below.
+
+| ESRSPAY2 top-level ID | Present value |
+| --- | --- |
+| 1 | Identity count 2, caller then submit-key reference, each 32 bytes |
+| 2 | Original intent count 15 per 6A, including absent versus present-empty values, collections and mount flags |
+| 3 | Original effective plan count 14 per 6A, including authority count 14 and job count 17 |
+| 4 | Captured material count 5 per 6A, including ordered archives and entries |
+| 5 | PB1 assessment count 4 per 6A, including binding length and two u16 witness masks, material identities and descriptors |
+| 6 | Image count 5 per 6A, proof-kind 1 remains synthetic |
+| 7 | Placement count 6 per 6A, with matching synthetic topology |
+| 8 | Provenance count 6 per 6A, except leaf 1 is exactly `synthetic_progress_nonoperational_v1` (36 ASCII bytes). Codec 3 retains `synthetic_signed_dependencies_v1`. |
+| 9 | Key/format count 6 per 6A. IDs 1 through 6 are u16=1, binding key ID, envelope key ID, u16=2, u16=2, u16=1. |
+| 10 | Scope u8=2 |
+
+Payload framing is `ESRSPAY2 || u16(2) || u32(body length) || body`.
+Body is `u16(10)` followed by those TLVs. Header framing is
+`ESRSENV2 || u16(2) || u32(complete header length) || u16(14)` and the
+fourteen present TLVs below.
+
+| ESRSENV2 header ID | Exact value |
+| --- | --- |
+| 1–4 | Algorithm u16=1, payload u16=2, scope u8=2, PB1 binding format u16=1 |
+| 5–6 | Binding and envelope key IDs, separately 1–64 case-sensitive ASCII bytes, first alphanumeric, rest alphanumeric or period, underscore or hyphen |
+| 7–9 | Random object ID, caller and submit-key references, each 32 bytes |
+| 10 | Raw PB1 plan binding, 1–256 bytes, no inner length prefix |
+| 11–12 | Intent and context commitments, each exactly 32 bytes |
+| 13–14 | Plaintext and combined lengths, each u32, combined equals plaintext plus 28 |
+
+Header length is 289 plus both key-ID lengths and raw PB1 binding length
+(292–673). The file is that header, then nonce, ciphertext and tag. AAD is
+`ESRSAAD2 || complete raw header`. Intent commitment is HMAC-SHA-256 under
+the binding key over `ESRSINT2 || complete TLV 2`. Context commitment is
+the same algorithm/key over `ESRSCTX2 || complete TLV 6 || complete TLV 7
+|| complete TLV 8`. Permit binding is `SHA256(ESRSFRZ2 || bindingFP32 ||
+envelopeFP32 || complete header || plaintext)`. Complete-file SHA-256 is
+unprefixed and calculated after Seal. Share the nonce budget by actual
+envelope key across scopes. Use existing constant-time comparisons for
+commitments, fingerprints, digests and protected references.
+
+Limits are 262,144 bytes each for raw JSON and decoded intent, eight JSON
+levels, 1,048,576 plaintext bytes and aggregate retained binary leaf bytes
+each, 2,097,152 sealed bytes, 4,096 header bytes, 262,144 bytes per captured
+component, 65,536 bytes per data string, object depth 5, container depth 8,
+32,768 TLV nodes, 8,192 sequence elements and the narrower 6A source domain
+limits. Check lengths, arithmetic and allocation/count budgets before
+allocation or descent. Reject mixed headers/payloads, substituted objects,
+unknown fields/formats, wrong lengths/digests/keys/scopes, wrong PB1 or
+provenance and noncanonical intent. Row, header and typed original must
+agree. Creation identity is verified through the durable record. Revision,
+phase, operation, assignment, facts and receipt remain SQLite progress.
+None enters the original AEAD or requires resealing. AEAD authenticates
+only the immutable original.
+
+The explicit fixture opener uses the existing owner-only root,
+`synthetic-replay-v1.marker` with exact `synthetic_nonoperational_v1\n`
+bytes, and `objects/v1/` plus 64 lowercase hex digits matching the header's
+32-byte object ID. The marker identifies the shared fixture root. The row,
+header and payload select scope. Preserve the existing codec-3 root/caller
+semantics and both selectors' no-follow, descriptor identity, mode, exclusive
+create, fsync and no-adoption rules. The old opener cannot expose codec 4.
+A marker, synthetic caller, fixture key or image never qualifies startup.
+Both fixture publishers use the shared `allocateReplayObject`
+boundary in persistence ADR §15B.5A. Scope 1 participates in serialized
+count/exclusive-create. Codec-3 format, immutable rows, key/grant semantics,
+and the function-owned `loadClaimFresh` callers and lifetime are preserved.
+Confirmed allocation release precedes permit consumption and Seal. A failed
+handoff preserves any created inert name and grants no usable publication.
+
+#### Finite internal fixture interface
+
+These symbols are exported only across Go's admission internal import
+boundary. The private admission composer and named fixture tests are their
+sole consumers. Opaque values are zero/foreign-issuer invalid, fixed-redacted
+and nonserializable. Semantic aggregates also redact.
+
+| Method and inputs | Output and required authority check |
+| --- | --- |
+| `OpenPrivateReplayProgressCustody(ctx, root)` | Opaque `PrivateReplayProgressCustody` using existing fixture root, file and schema checks. Closed or canceled custody refuses. |
+| `LookupProgressOriginal(ctx, claimID)` | Opaque `ProgressLookup` of validated absent, compatible locator or occupied/refused. Issuer-bound locator permits only exact original key IDs to the injected catalog. Identity and strict parsed delivery precede lookup. No phase/ref/dependency disclosure. |
+| `FreezeProgressOriginal(ctx, miss, initialPhase, boundPlan, keys, ProgressOriginalInput)` | Opaque `ProgressFrozen` after checking same issuer/claim, absent lookup, initial fixture phase 1 or 2, bounded typed fields, full witness and scope. The admission input comes from the resolver/assessment on the same parsed fixture delivery. |
+| `ReserveProgressSealUse(ctx, frozen)` | Opaque `ProgressSealPermit` only after known durable reservation COMMIT for the exact active purpose/fingerprint pair and frozen digest. Uncertain COMMIT grants no permit. |
+| `PublishProgressOriginal(ctx, frozen, permit)` | Opaque `ProgressPublication` for one exclusive, identity-checked and synced file. Verify issuer, frozen digest, object association and active eligibility, consume permit before Seal and retain any orphan. No refund. |
+| `EstablishProgress(ctx, frozen, publication)` | Opaque `ProgressAttempt` and created, occupied or write-unknown disposition. Validate full issued binding, exact active registry pair in write transaction and existing caller/key occupation. Retain the expected full record and generated rowid inside the owning establishment invocation for its bounded recovery. |
+| `WithAuthenticatedProgressOriginal(ctx, locator, retainedKeys, incomingIntent, purpose, verify, use)` | Repaired pooled read matches the locator's full immutable identity. Check both retained keys in one snapshot, then securely open exact file, verify descriptor/AEAD/commitments and decode fixed `ProgressOriginalView` (identity, typed intent with presence, plan, material, PB1 assessment, image, placement, provenance, formats). The sole admission verifier validates semantic domains, recanonicalizes and recomputes PB1. Custody compares its returned `ProgressOriginalMatch` (claim, recomputed bound plan/witness and reconstructed canonical typed intent) with authenticated data and compares incoming canonical intent in constant time. Mismatch refuses before `use`. Match grants a synchronous opaque `ProgressAccess` to the sole admission continuation. |
+| `ReadFixtureProgress(ctx, access)` | `FixtureProgress` with revision, fixture phase and phase-appropriate fixture run/receipt. Check live issuer-bound borrow, keys and context, reread through repaired pooled reader, match complete immutable identity. Current projection leaves any earlier write disposition unchanged. |
+| `ApplyFixtureProgress(ctx, access, expectedRevision, fixtureMutation, FixtureProgressCommand)` | Finite ADR outcome and eligible fixture projection. Same live access, key and identity checks and one existing durable-service conditional transition and CAS. The command union and historical reconciliation are defined in ADR §15B.3. A separately supplied command uses a new live one-use borrow and its exact revision and mutation input. The service rechecks the current-row fixture predicate for a new same-run marker in CAS and separately validates positive terminal fixture evidence. Kind 1 records a bounded fixture no-marker observation and supplies no operational permission. |
+| `NewFixtureAcceptedEvidence(claim, run, marker, fact, receipt)` | Redacted bounded synthetic assertion of Accepted with exact receipt association. Invalid input refuses. |
+| `NewFixtureNotAcceptedEvidence(claim, run, marker, fact)` | Redacted bounded synthetic assertion of NotAccepted with no receipt. Invalid input refuses. |
+| `Close()` | Closes only the issuing custody. Outstanding borrows become invalid. |
+
+The closed authentication purpose is current replay or establishment
+confirmation with the issued `ProgressAttempt` within the owning
+establishment invocation. The attempt expires when that invocation returns
+or is canceled and supplies no restart input. Confirmation checks the
+attempt issuer/claim before reading and compares the opaque expected full
+initial record to the authenticated row. It returns only the comparison's
+finite disposition, invoking `use` for progress only when the ADR permits
+disclosure. Known created, definite occupied and write-unknown cases retain
+their distinct dispositions. The known losing establishment still reports
+Occupied if its subsequent winner lookup, key selection or authentication
+cannot disclose progress. Proved changed incoming intent still reports Conflict.
+Ordinary unauthenticated lookups do not gain this disposition. An uncertain attempt never discloses a
+different winner. A known successful insert's committed snapshot is
+eligible only after authenticating the same immutable original.
+
+Each borrow allows one progress read or mutation, including its bounded
+recovery. Its lifetime ends on return or cancellation. Capabilities never
+authorize another row, scope or issuer. The boundary has no full plaintext
+buffer, raw store, full-record getter or verified boolean. The typed view
+carries only bounded admission input. The single invocation cannot export a
+plaintext buffer, extend its lifetime or turn fixture evidence into a
+provider or staging capability. Recheck exact active or retired
+original keys on operation entry and recheck them in the write transaction
+before CAS. Revoked, missing, changed fingerprint and wrong-purpose keys
+refuse. Confirmation checks the original paired keys under the issuer lock
+before projecting the committed snapshot. It checks the borrow after taking
+the lock and again after qualification. Failure preserves known COMMIT or
+unresolved unknown and withholds the projection. There is no instantaneous
+cross-process revocation guarantee.
+
+K1 limits an invocation's recovery to authenticating an exact full expected
+record to confirm its own write. Failed recovery preserves unknown, withholds
+its projection and starts no second write, new mutation or rebase. Failed
+post-commit authentication preserves known commit and withholds projection.
+A later explicit command or authenticated current-state read uses fresh
+authentication and its own live borrow. It cannot change the earlier
+disposition. A fixture marker is a current-state transition only. No
+marker, read, exact latest replay or fixture outcome supplies operational
+permission. The full operational Validated No-Dispatch Evidence requirement
+in the persistence ADR §8 remains unchanged. Its cross-restart evidence
+and authority are outside this fixture operating model.
+
+Malformed delivery refuses before lookup. Incompatible, unsupported,
+missing-after-occupancy, corrupted, wrong-key and unavailable outcomes are
+fixed and disclose no stored state, bytes or causes. Changed intent, stale
+and current fixture results follow the ADR. Write uncertainty has a separate
+fixed result. Fixture references cannot convert to operational RunRefs or
+public receipts. Public structural reliable-request refusal and unkeyed
+Submit stay in force.
+
 ## 7. Narrow Durable Correlation Semantics
 
 Reliable keyed submit requires ES-owned durable recovery evidence sufficient to survive ES restart.
