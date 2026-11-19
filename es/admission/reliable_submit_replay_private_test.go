@@ -3,19 +3,24 @@ package admission
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"execution-substrate/es/admission/internal/reliablesubmit"
 	"golang.org/x/sys/unix"
@@ -146,7 +151,7 @@ func TestPrivateReplaySameDeliveryPB1Verification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("strict parse: %v", err)
 	}
-	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image)
+	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image, 1)
 	if err != nil {
 		t.Fatalf("same-delivery resolver and PB1 composer: %v", err)
 	}
@@ -565,7 +570,7 @@ func TestPrivateReplayRedactionAndNonwiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image)
+	proposal, err := service.composePrivateSyntheticReplay(context.Background(), delivery, keys, image, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,5 +667,483 @@ func TestPrivateReplayFiniteCallerAndNoRuntimeWiring(t *testing.T) {
 	}
 	if err := bindingValidateOtherProductionSource("es/admission/reliable_submit_replay_private.go", file); err == nil {
 		t.Fatal("function-value escape passed private guard")
+	}
+}
+
+func TestPrivateReplayProgressAdmissionReplay(t *testing.T) {
+	t.Run("RetainedOriginalAfterRestartAndDrift", func(t *testing.T) {
+		ctx := context.Background()
+		service, raw, caller, keys, image := privateReplayServiceFixture(t)
+		root := privateReplayTestRoot(t)
+		open := func() *reliablesubmit.PrivateReplayProgressCustody {
+			c, err := reliablesubmit.OpenPrivateReplayProgressCustody(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Close() })
+			return c
+		}
+		c := open()
+		catalog, err := newPrivateSyntheticKeyCatalog(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, p, err := service.admitPrivateProgressReplay(ctx, c, raw, caller, catalog, image, reliablesubmit.FixtureAmbiguousBeforeAssignment)
+		if err != nil || state != reliablesubmit.FixtureProgressCommitted || p.Revision() != 1 || p.Phase() != reliablesubmit.FixtureAmbiguousBeforeAssignment {
+			t.Fatalf("establish: state=%d revision=%d phase=%d err=%v", state, p.Revision(), p.Phase(), err)
+		}
+		run := reliablesubmit.NewFixtureRunRef([32]byte{1})
+		state, p, err = service.applyPrivateProgressReplay(ctx, c, raw, caller, catalog, 1,
+			reliablesubmit.NewFixtureMutationRef([32]byte{2}), reliablesubmit.FixtureAssignRun{Run: run})
+		if err != nil || state != reliablesubmit.FixtureProgressCommitted || p.Revision() != 2 {
+			t.Fatalf("assign: state=%d revision=%d err=%v", state, p.Revision(), err)
+		}
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+		c = open()
+		active, err := newPrivateSyntheticKeyBundle("Binding-New", bytes.Repeat([]byte{0x61}, 32), "Envelope-New", bytes.Repeat([]byte{0x62}, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		drifted, err := newPrivateSyntheticKeyCatalog(active, keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inertService := &Service{}
+		before, err := os.ReadDir(filepath.Join(root, "objects", "v1"))
+		if err != nil || len(before) != 1 {
+			t.Fatalf("before: objects=%d err=%v", len(before), err)
+		}
+		state, p, err = inertService.admitPrivateProgressReplay(ctx, c, raw, caller, drifted, privateSyntheticImagePlacement{}, 0)
+		sameRun, hasRun := p.Run()
+		if err != nil || state != reliablesubmit.FixtureProgressCurrent || p.Revision() != 2 || !hasRun || !sameRun.Equal(run) {
+			t.Fatalf("current: state=%d revision=%d err=%v", state, p.Revision(), err)
+		}
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Fatal(err)
+		}
+		request["invocation"].(map[string]any)["argv"] = []string{"changed"}
+		changed, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, p, err = inertService.admitPrivateProgressReplay(ctx, c, changed, caller, drifted, privateSyntheticImagePlacement{}, 0)
+		if !errors.Is(err, errPrivateReplayConflict) || state != reliablesubmit.FixtureProgressConflict || p.Revision() != 0 {
+			t.Fatalf("conflict: state=%d revision=%d err=%v", state, p.Revision(), err)
+		}
+		missing, err := newPrivateSyntheticKeyCatalog(active)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, p, err = inertService.admitPrivateProgressReplay(ctx, c, raw, caller, missing, privateSyntheticImagePlacement{}, 0)
+		if !errors.Is(err, errPrivateReplayUnavailable) || state != reliablesubmit.FixtureProgressRefused || p.Revision() != 0 {
+			t.Fatalf("missing original: state=%d revision=%d err=%v", state, p.Revision(), err)
+		}
+		after, err := os.ReadDir(filepath.Join(root, "objects", "v1"))
+		if err != nil || len(after) != 1 || before[0].Name() != after[0].Name() {
+			t.Fatalf("occupied replay changed objects: %v", err)
+		}
+	})
+	t.Run("ScopeOneOccupiesSameKey", func(t *testing.T) {
+		ctx := context.Background()
+		service, raw, caller, keys, image := privateReplayServiceFixture(t)
+		catalog, err := newPrivateSyntheticKeyCatalog(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old, root := openPrivateReplayTestCustody(t)
+		defer old.Close()
+		if _, err := service.admitPrivateSyntheticReplay(ctx, old, raw, caller, catalog, image); err != nil {
+			t.Fatal(err)
+		}
+		progress, err := reliablesubmit.OpenPrivateReplayProgressCustody(ctx, root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer progress.Close()
+		state, p, err := (&Service{}).admitPrivateProgressReplay(ctx, progress, raw, caller, catalog, privateSyntheticImagePlacement{}, 0)
+		if !errors.Is(err, errPrivateReplayUnavailable) || state != reliablesubmit.FixtureProgressRefused || p.Revision() != 0 {
+			t.Fatalf("opposite scope: state=%d revision=%d err=%v", state, p.Revision(), err)
+		}
+	})
+	t.Run("ConcurrentInitialWinner", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		service, raw, caller, keys, image := privateReplayServiceFixture(t)
+		catalog, err := newPrivateSyntheticKeyCatalog(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := privateReplayTestRoot(t)
+		custodies := make([]*reliablesubmit.PrivateReplayProgressCustody, 2)
+		for i := range custodies {
+			custodies[i], err = reliablesubmit.OpenPrivateReplayProgressCustody(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer custodies[i].Close()
+		}
+		arrived, release := make(chan struct{}, 2), make(chan struct{})
+		beforePrivateReplayClaimForTest = func() { arrived <- struct{}{}; <-release }
+		type result struct {
+			state reliablesubmit.FixtureProgressDisposition
+			view  reliablesubmit.FixtureProgress
+			error error
+		}
+		results := make(chan result, len(custodies))
+		var workers sync.WaitGroup
+		defer func() {
+			workers.Wait()
+			beforePrivateReplayClaimForTest = nil
+		}()
+		for _, c := range custodies {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				state, view, err := service.admitPrivateProgressReplay(ctx, c, raw, caller, catalog, image, reliablesubmit.FixturePendingBeforeAssignment)
+				results <- result{state, view, err}
+			}()
+		}
+		reached := 0
+		for reached < len(custodies) && ctx.Err() == nil {
+			select {
+			case <-arrived:
+				reached++
+			case <-ctx.Done():
+			}
+		}
+		close(release)
+		if reached != len(custodies) {
+			t.Fatal("both contenders must publish before establishment")
+		}
+		counts := make(map[reliablesubmit.FixtureProgressDisposition]int)
+		for range custodies {
+			out := <-results
+			if out.error != nil || out.view.Revision() != 1 {
+				t.Fatalf("concurrent result: %d %d %v", out.state, out.view.Revision(), out.error)
+			}
+			counts[out.state]++
+		}
+		if counts[reliablesubmit.FixtureProgressCommitted] != 1 || counts[reliablesubmit.FixtureProgressOccupied] != 1 {
+			t.Fatalf("initial winner classification: %v", counts)
+		}
+	})
+	t.Run("OccupiedAtCapacityAndValidMissRefusal", func(t *testing.T) {
+		ctx := context.Background()
+		service, raw, caller, keys, image := privateReplayServiceFixture(t)
+		catalog, err := newPrivateSyntheticKeyCatalog(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := reliablesubmit.OpenPrivateReplayProgressCustody(ctx, privateReplayTestRoot(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		var request map[string]any
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Fatal(err)
+		}
+		for i := 1; i <= 5; i++ {
+			request["reliable_submit"].(map[string]any)["submit_key"] = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{byte(i)}, 32))
+			input, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, p, err := service.admitPrivateProgressReplay(ctx, c, input, caller, catalog, image, reliablesubmit.FixturePendingBeforeAssignment)
+			if i == 5 {
+				if err == nil || state != reliablesubmit.FixtureProgressRefused || p.Revision() != 0 {
+					t.Fatalf("fifth claim exceeded capacity: %d %d %v", state, p.Revision(), err)
+				}
+				continue
+			}
+			if err != nil || state != reliablesubmit.FixtureProgressCommitted || p.Revision() != 1 {
+				t.Fatalf("claim %d: %d %d %v", i, state, p.Revision(), err)
+			}
+			if i == 1 {
+				raw = input
+			}
+		}
+		state, p, err := (&Service{}).admitPrivateProgressReplay(ctx, c, raw, caller, catalog, privateSyntheticImagePlacement{}, 0)
+		if err != nil || state != reliablesubmit.FixtureProgressCurrent || p.Revision() != 1 {
+			t.Fatalf("existing claim at capacity: %d %d %v", state, p.Revision(), err)
+		}
+	})
+}
+
+func TestPrivateReplayProgressHasNoEffectPaths(t *testing.T) {
+	assertPrivateReplayProgressCallers(t)
+	ctx := context.Background()
+	s, raw, caller, keys, image := privateReplayServiceFixture(t)
+	var providerCalls, stagingCalls, liveDependencyCalls atomic.Int64
+	s.nomadClient = newResolvedPlanNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	s.egsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveDependencyCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	beforeStagingChildRegistrationStatForTest = func(string, int, bool) { stagingCalls.Add(1) }
+	beforeStagingHandoffValidationForTest = func(*stagingCustody) { stagingCalls.Add(1) }
+	defer func() {
+		beforeStagingChildRegistrationStatForTest = nil
+		beforeStagingHandoffValidationForTest = nil
+	}()
+	catalog, err := newPrivateSyntheticKeyCatalog(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := privateReplayTestRoot(t)
+	c, err := reliablesubmit.OpenPrivateReplayProgressCustody(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, p, err := s.admitPrivateProgressReplay(ctx, c, raw, caller, catalog, image, reliablesubmit.FixturePendingBeforeAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := parsePrivateReplayDelivery(raw, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := reliablesubmit.NewFixtureRunRef([32]byte{1})
+	marker := reliablesubmit.NewFixtureFactRef([32]byte{2})
+	receipt := reliablesubmit.NewFixtureReceiptRef([32]byte{3})
+	accepted, err := reliablesubmit.NewFixtureAcceptedEvidence(delivery.refs.claimID, run, marker,
+		reliablesubmit.NewFixtureFactRef([32]byte{6}), receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, command := range []reliablesubmit.FixtureProgressCommand{
+		reliablesubmit.FixtureAssignRun{Run: run},
+		reliablesubmit.FixtureRecordIntent{Fact: reliablesubmit.NewFixtureFactRef([32]byte{4})},
+		reliablesubmit.FixtureRecordStaging{Fact: reliablesubmit.NewFixtureFactRef([32]byte{5})},
+		reliablesubmit.FixtureRecordMarker{Run: run, Marker: marker},
+		reliablesubmit.FixtureAccept{Evidence: accepted, Receipt: receipt},
+	} {
+		var state reliablesubmit.FixtureProgressDisposition
+		state, p, err = s.applyPrivateProgressReplay(ctx, c, raw, caller, catalog, p.Revision(),
+			reliablesubmit.NewFixtureMutationRef([32]byte{byte(i + 10)}), command)
+		if err != nil || state != reliablesubmit.FixtureProgressCommitted || p.Revision() != int64(i+2) {
+			t.Fatalf("fixture step %d: state=%d revision=%d err=%v", i, state, p.Revision(), err)
+		}
+	}
+	gotReceipt, ok := p.Receipt()
+	if p.Phase() != reliablesubmit.FixtureAccepted || !ok || !gotReceipt.Equal(receipt) {
+		t.Fatal("fixture terminal projection lost its receipt")
+	}
+	if _, operational := any(gotReceipt).(reliablesubmit.ReceiptRef); operational {
+		t.Fatal("fixture projected an operational receipt")
+	}
+	var request map[string]any
+	if err := json.Unmarshal(raw, &request); err != nil {
+		t.Fatal(err)
+	}
+	request["invocation"].(map[string]any)["argv"] = []string{"changed original"}
+	changed, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, projected, err := s.admitPrivateProgressReplay(ctx, c, changed, caller, catalog, image, reliablesubmit.FixturePendingBeforeAssignment)
+	if state != reliablesubmit.FixtureProgressConflict || !errors.Is(err, errPrivateReplayConflict) || projected.Revision() != 0 {
+		t.Fatal("changed original disclosed terminal progress")
+	}
+	incompatible, err := reliablesubmit.OpenPrivateReplayCustody(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer incompatible.Close()
+	if _, err := s.admitPrivateSyntheticReplay(ctx, incompatible, raw, caller, catalog, image); !errors.Is(err, errPrivateReplayUnavailable) {
+		t.Fatalf("incompatible scope entered the old selector: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	state, p, err = s.admitPrivateProgressReplay(canceled, c, raw, caller, catalog, image, reliablesubmit.FixturePendingBeforeAssignment)
+	if err == nil || state != reliablesubmit.FixtureProgressRefused || p.Revision() != 0 {
+		t.Fatal("canceled entry disclosed progress")
+	}
+	if providerCalls.Load() != 0 || stagingCalls.Load() != 0 || liveDependencyCalls.Load() != 0 {
+		t.Fatalf("fixture crossed an effect boundary: provider=%d staging=%d live=%d", providerCalls.Load(), stagingCalls.Load(), liveDependencyCalls.Load())
+	}
+	for _, effectRoot := range []string{s.cfg.Execution.StagingRootDir, s.cfg.Execution.ResultsRootDir} {
+		entries, err := os.ReadDir(effectRoot)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("fixture touched an operational root: %v", err)
+		}
+	}
+}
+
+func TestPrivateReplayProgressOccupiedDisposition(t *testing.T) {
+	for _, trial := range []string{"DisjointCatalog", "EquivalentWinner", "ChangedIntent", "UnavailableWinner"} {
+		t.Run(trial, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 8*time.Second)
+			defer stop()
+			service, raw, caller, firstKey, image := privateReplayServiceFixture(t)
+			secondKey, err := newPrivateSyntheticKeyBundle("Binding-Loser", bytes.Repeat([]byte{0x61}, 32),
+				"Envelope-Loser", bytes.Repeat([]byte{0x62}, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := newPrivateSyntheticKeyCatalog(firstKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retained []privateSyntheticKeyBundle
+			if trial != "DisjointCatalog" {
+				retained = append(retained, firstKey)
+			}
+			second, err := newPrivateSyntheticKeyCatalog(secondKey, retained...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			loserRaw := raw
+			if trial == "ChangedIntent" {
+				var request map[string]any
+				if err := json.Unmarshal(raw, &request); err != nil {
+					t.Fatal(err)
+				}
+				request["invocation"].(map[string]any)["argv"] = []string{"changed fixture"}
+				loserRaw, err = json.Marshal(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := privateReplayTestRoot(t)
+			open := func() *reliablesubmit.PrivateReplayProgressCustody {
+				t.Helper()
+				c, err := reliablesubmit.OpenPrivateReplayProgressCustody(ctx, root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = c.Close() })
+				return c
+			}
+			winner, loser := open(), open()
+			objectDir := filepath.Join(root, "objects", "v1")
+			objects := func() map[string][32]byte {
+				t.Helper()
+				entries, err := os.ReadDir(objectDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := make(map[string][32]byte, len(entries))
+				for _, entry := range entries {
+					b, err := os.ReadFile(filepath.Join(objectDir, entry.Name()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					got[entry.Name()] = sha256.Sum256(b)
+				}
+				return got
+			}
+			arrived := make(chan chan struct{}, 2)
+			var edgeCount atomic.Int64
+			beforePrivateReplayClaimForTest = func() {
+				edgeCount.Add(1)
+				gate := make(chan struct{})
+				select {
+				case arrived <- gate:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case <-gate:
+				case <-ctx.Done():
+				}
+			}
+			var workers sync.WaitGroup
+			defer func() {
+				stop()
+				workers.Wait()
+				beforePrivateReplayClaimForTest = nil
+			}()
+			type outcome struct {
+				state reliablesubmit.FixtureProgressDisposition
+				p     reliablesubmit.FixtureProgress
+				err   error
+			}
+			start := func(c *reliablesubmit.PrivateReplayProgressCustody, request []byte, keys privateSyntheticKeyCatalog) <-chan outcome {
+				result := make(chan outcome, 1)
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					state, p, err := service.admitPrivateProgressReplay(ctx, c, request, caller, keys, image,
+						reliablesubmit.FixturePendingBeforeAssignment)
+					result <- outcome{state, p, err}
+				}()
+				return result
+			}
+			awaitPublication := func() chan struct{} {
+				t.Helper()
+				select {
+				case gate := <-arrived:
+					return gate
+				case <-ctx.Done():
+					t.Fatal("initial contender did not reach the post-publication barrier")
+					return nil
+				}
+			}
+			won := start(winner, raw, first)
+			firstGate := awaitPublication()
+			winnerObjects := objects()
+			if len(winnerObjects) != 1 {
+				t.Fatal("winner did not publish exactly one object")
+			}
+			lost := start(loser, loserRaw, second)
+			secondGate := awaitPublication()
+			before := objects()
+			if len(before) != 2 {
+				t.Fatal("both initial proposals must seal before the first establishment")
+			}
+			close(firstGate)
+			if out := <-won; out.state != reliablesubmit.FixtureProgressCommitted || out.p.Revision() != 1 || out.err != nil {
+				t.Fatalf("controlled first writer did not win: %d %d %v", out.state, out.p.Revision(), out.err)
+			}
+			if trial == "UnavailableWinner" {
+				for name := range winnerObjects {
+					path := filepath.Join(objectDir, name)
+					if err := os.Chmod(path, 0o644); err != nil {
+						t.Fatal(err)
+					}
+					defer os.Chmod(path, 0o600)
+				}
+			}
+			close(secondGate)
+			out := <-lost
+			wantState, wantRevision, wantErr := reliablesubmit.FixtureProgressOccupied, int64(0), errPrivateReplayUnavailable
+			switch trial {
+			case "EquivalentWinner":
+				wantRevision, wantErr = 1, nil
+			case "ChangedIntent":
+				wantState, wantErr = reliablesubmit.FixtureProgressConflict, errPrivateReplayConflict
+			case "UnavailableWinner":
+				for name := range winnerObjects {
+					if err := os.Chmod(filepath.Join(objectDir, name), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if out.state != wantState || out.p.Revision() != wantRevision || !errors.Is(out.err, wantErr) {
+				t.Errorf("loser outcome: disposition=%d revision=%d err=%v", out.state, out.p.Revision(), out.err)
+			}
+			if _, hasRun := out.p.Run(); hasRun {
+				t.Error("loser disclosed an unassigned run")
+			}
+			if _, hasReceipt := out.p.Receipt(); hasReceipt {
+				t.Error("loser disclosed a receipt")
+			}
+			state, current, err := (&Service{}).admitPrivateProgressReplay(ctx, winner, raw, caller, first, privateSyntheticImagePlacement{}, 0)
+			if err != nil || state != reliablesubmit.FixtureProgressCurrent || current.Revision() != 1 {
+				t.Fatalf("winner changed or lost its original: %d %d %v", state, current.Revision(), err)
+			}
+			if !maps.Equal(before, objects()) || edgeCount.Load() != 2 {
+				t.Fatal("winner disclosure retried or changed the winner or losing sealed orphan")
+			}
+			t.Log("two legitimate seals, one established revision, both objects preserved after disclosure")
+		})
 	}
 }

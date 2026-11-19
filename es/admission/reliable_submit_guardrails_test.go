@@ -13,6 +13,116 @@ import (
 	"testing"
 )
 
+func assertPrivateReplayProgressCallers(t *testing.T) {
+	t.Helper()
+	const internal = "execution-substrate/es/admission/internal/reliablesubmit"
+	const admissionPackage = "execution-substrate/es/admission"
+	const owner = "es/admission/reliable_submit_replay_private.go:"
+	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
+	for _, view := range views {
+		pkg := requireTypedProductionPackage(t, view.packages, admissionPackage)
+		for _, name := range []string{"admitPrivateProgressReplay", "applyPrivateProgressReplay"} {
+			method := requirePackageMethod(t, pkg, "Service", name)
+			if err := validateTypedReferenceInventory(name, pkg.referencesTo(method), map[string]int{}, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, inventory := range []struct {
+			name string
+			want map[string]int
+		}{
+			{"OpenPrivateReplayProgressCustody", map[string]int{}},
+			{"NewFixtureAcceptedEvidence", map[string]int{}},
+			{"NewFixtureNotAcceptedEvidence", map[string]int{}},
+			{"NewProgressOriginalInput", map[string]int{owner + "Service.composePrivateSyntheticReplay": 1}},
+			{"NewProgressOriginalMatch", map[string]int{owner + "verifyPrivateProgressOriginal": 1}},
+			{"LookupProgressOriginal", map[string]int{owner + "Service.admitPrivateProgressReplay": 2, owner + "Service.applyPrivateProgressReplay": 1}},
+			{"FreezeProgressOriginal", map[string]int{owner + "Service.admitPrivateProgressReplay": 1}},
+			{"ReserveProgressSealUse", map[string]int{owner + "Service.admitPrivateProgressReplay": 1}},
+			{"PublishProgressOriginal", map[string]int{owner + "Service.admitPrivateProgressReplay": 1}},
+			{"EstablishProgress", map[string]int{owner + "Service.admitPrivateProgressReplay": 1}},
+			{"WithAuthenticatedProgressOriginal", map[string]int{owner + "readPrivateProgressReplay": 1, owner + "Service.applyPrivateProgressReplay": 1}},
+			{"ReadFixtureProgress", map[string]int{owner + "readPrivateProgressReplay": 1}},
+			{"ApplyFixtureProgress", map[string]int{owner + "Service.applyPrivateProgressReplay": 1}},
+		} {
+			var refs []typedReference
+			for _, consumer := range view.packages {
+				if consumer.importPath != internal || inventory.name == "NewFixtureAcceptedEvidence" || inventory.name == "NewFixtureNotAcceptedEvidence" {
+					refs = append(refs, consumer.referencesToPackageFunction(internal, inventory.name)...)
+				}
+			}
+			if err := validateTypedReferenceInventory(inventory.name, refs, inventory.want, false); err != nil {
+				t.Fatalf("%s: %v", view.target, err)
+			}
+		}
+	}
+	const rel = "reliable_submit_replay_private.go"
+	source := mustReadAdmissionSource(t, rel)
+	check := func(source string) error {
+		file, err := parser.ParseFile(token.NewFileSet(), rel, source, 0)
+		if err != nil {
+			return err
+		}
+		return validatePrivateProgressEffects(file)
+	}
+	if err := check(source); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutant := range []struct {
+		name string
+		code string
+	}{
+		{"Provider", "s.nomadClient.submitJob(ctx)"},
+		{"Staging", "s.stageRun(ctx)"},
+		{"Runtime", "s.Submit(ctx)"},
+		{"Startup", "s.Start(ctx)"},
+		{"LiveCredential", "s.loadLiveCredentials(ctx)"},
+		{"PublicProjection", "_ = reliablesubmit.NewReceiptRef"},
+		{"TerminalAssertionConstructor", "_ = reliablesubmit.NewFixtureAcceptedEvidence"},
+		{"TransitiveMethod", "s.unreviewedHelper(ctx)"},
+		{"AsynchronousBorrow", "go use(nil)"},
+	} {
+		t.Run("Reject"+mutant.name, func(t *testing.T) {
+			anchor := "ctx, cancel := context.WithCancel(ctx)"
+			changed := strings.Replace(source, anchor, mutant.code+"\n\t"+anchor, 1)
+			if changed == source || check(changed) == nil {
+				t.Fatal("private progress effect guard accepted mutant")
+			}
+		})
+	}
+}
+
+func validatePrivateProgressEffects(file *ast.File) error {
+	allowedImports := map[string]bool{"context": true, "crypto/hmac": true, "crypto/sha256": true,
+		"encoding/binary": true, "errors": true, "execution-substrate/es/admission/internal/reliablesubmit": true}
+	for _, imported := range file.Imports {
+		path, err := strconv.Unquote(imported.Path.Value)
+		if err != nil || !allowedImports[path] || imported.Name != nil {
+			return fmt.Errorf("unreviewed private replay import %s", imported.Path.Value)
+		}
+	}
+	var violation error
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.GoStmt:
+			violation = fmt.Errorf("asynchronous private replay authority")
+		case *ast.SelectorExpr:
+			receiver, ok := value.X.(*ast.Ident)
+			if ok && receiver.Name == "s" && value.Sel.Name != "composePrivateSyntheticReplay" && value.Sel.Name != "resolveExecutionForSubmit" {
+				violation = fmt.Errorf("unreviewed Service edge %s", value.Sel.Name)
+			}
+			if ok && receiver.Name == "reliablesubmit" && (value.Sel.Name == "NewReceiptRef" || value.Sel.Name == "ReceiptRef" || value.Sel.Name == "RunRef") {
+				violation = fmt.Errorf("operational projection %s", value.Sel.Name)
+			}
+			if ok && receiver.Name == "reliablesubmit" && (value.Sel.Name == "NewFixtureAcceptedEvidence" || value.Sel.Name == "NewFixtureNotAcceptedEvidence") {
+				violation = fmt.Errorf("fixture terminal constructor in production %s", value.Sel.Name)
+			}
+		}
+		return violation == nil
+	})
+	return violation
+}
+
 func TestReliableSubmitFoundationHasNoRuntimeWiring(t *testing.T) {
 	repoRoot := admissionRepoRoot(t)
 	for _, rel := range []string{

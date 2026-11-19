@@ -39,6 +39,8 @@ type sqliteClaimStore struct {
 	a1ReadCommitAttempt     func(context.Context, *sql.Conn) error // A1 test-only read COMMIT response seam.
 	a1ReadRollbackAttempt   func(context.Context, *sql.Conn) error // A1 test-only read ROLLBACK response seam.
 	a1ReadDiscardAttempt    func(*sql.Conn) error                  // A1 test-only first-discard response seam.
+	pooledReadTest          *sqlitePooledReadTestHooks             // Nil outside pooled-reader tests.
+	progressBeforeCASTest   func()                                 // Nil outside progress concurrency tests.
 }
 
 type sqliteClaimStoreOptions struct {
@@ -52,6 +54,9 @@ type sqliteClaimStoreOptions struct {
 	claimCommit           func(context.Context, *sql.Conn) error
 	sealGrantCommit       func(context.Context, *sql.Conn) error
 }
+
+// errSQLiteMigrationNeedsReadback transfers recovery to the unpublished opener.
+var errSQLiteMigrationNeedsReadback = errors.New("SQLite migration requires readback")
 
 func openSQLiteClaimStore(ctx context.Context, opts sqliteClaimStoreOptions) (*sqliteClaimStore, error) {
 	cleanPath, err := validateSQLiteStorePath(opts.path, opts.disallowedRoots)
@@ -92,12 +97,12 @@ func openSQLiteClaimStore(ctx context.Context, opts sqliteClaimStoreOptions) (*s
 		migrationCommit: opts.migrationCommit, beforeMigrationCommit: opts.beforeMigrationCommit,
 		claimCommit: opts.claimCommit, sealGrantCommit: opts.sealGrantCommit}
 	if err := store.openGate(ctx, opts.clock); err != nil {
-		if !errors.Is(err, errClaimStoreCommitUnknown) {
+		if !errors.Is(err, errSQLiteMigrationNeedsReadback) {
 			_ = db.Close()
 			return nil, err
 		}
-		// The COMMIT response did not prove an outcome. Drop the uncertain
-		// pool before a fresh, strictly nonmigrating open classifies the file.
+		// openGate has finished with its connection. Check closure of the
+		// unpublished pool before observing the file through a fresh pool.
 		if db.Close() != nil {
 			return nil, errClaimStoreUnavailable
 		}
@@ -108,7 +113,11 @@ func openSQLiteClaimStore(ctx context.Context, opts sqliteClaimStoreOptions) (*s
 		fresh.SetMaxOpenConns(maxOpenConns)
 		fresh.SetMaxIdleConns(maxOpenConns)
 		store.db = fresh
-		if verifyErr := store.verifyMigrationRecovery(ctx); verifyErr != nil {
+		verifyErr := store.verifyMigrationRecovery(ctx)
+		if ctx.Err() != nil {
+			verifyErr = errClaimStoreUnavailable
+		}
+		if verifyErr != nil {
 			_ = fresh.Close()
 			return nil, verifyErr
 		}
@@ -155,6 +164,9 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	if err := cmd.record.validate(); err != nil {
 		return establishClaimStoreResult{}, errClaimStoreCorrupt
 	}
+	if cmd.record.codecVersion == durableClaimCodecVersionProgress {
+		return establishClaimStoreResult{}, errClaimStoreUnsupported
+	}
 	conn, err := s.checkedConn(ctx)
 	if err != nil {
 		return establishClaimStoreResult{}, err
@@ -181,7 +193,7 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 			return establishClaimStoreResult{}, err
 		}
 		if version == sqliteClaimStoreSchemaVersion {
-			// Schema 3 permits legacy rows only through migration. A same-key
+			// The current schema permits legacy rows only through migration. A same-key
 			// historical row can be classified by the service, but no new
 			// codec-1/2 row may be inserted.
 			loaded, err := s.selectSQLiteClaim(ctx, conn, cmd.record.claim)
@@ -191,7 +203,7 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 			if err != nil {
 				return establishClaimStoreResult{}, err
 			}
-			if loaded.codecVersion == durableClaimCodecVersionSynthetic {
+			if loaded.codecVersion >= durableClaimCodecVersionSynthetic {
 				return establishClaimStoreResult{}, errClaimStoreUnsupported
 			}
 			commitAttempted = true
@@ -212,7 +224,7 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	}
 	if cmd.record.codecVersion == durableClaimCodecVersionSynthetic {
 		var count int
-		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM reliable_submit_claims WHERE codec_version=3`).Scan(&count); err != nil {
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM reliable_submit_claims WHERE codec_version IN (3,4)`).Scan(&count); err != nil {
 			return establishClaimStoreResult{}, mapSQLiteError(err)
 		}
 		if count >= 4 {
@@ -246,6 +258,9 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	if err != nil {
 		return establishClaimStoreResult{}, err
 	}
+	if loaded.codecVersion == durableClaimCodecVersionProgress {
+		return establishClaimStoreResult{}, errClaimStoreUnsupported
+	}
 	commitAttempted = true
 	if err := s.commitClaim(ctx, conn); err != nil {
 		if discardUncertainSQLiteConn(conn) != nil {
@@ -257,28 +272,119 @@ func (s *sqliteClaimStore) establishClaim(ctx context.Context, cmd establishClai
 	return establishClaimStoreResult{record: loaded, created: rows == 1}, nil
 }
 
-func (s *sqliteClaimStore) loadClaim(ctx context.Context, query loadClaimQuery) (durableClaimRecord, error) {
+// These seams are local to the pooled reader. A rescue is always attempted
+// through the real discard primitive before its response can be modeled.
+type sqlitePooledReadTestHooks struct {
+	begin, commit, rollback func(context.Context, *sql.Conn) error
+	afterBegin, afterSelect func()
+	firstDiscard            func(*sql.Conn) error
+	rescueResponse          func(error) error
+	beforePoolReturn        func()
+}
+
+func (s *sqliteClaimStore) loadClaim(ctx context.Context, query loadClaimQuery) (record durableClaimRecord, out error) {
 	if !query.claim.Valid() {
 		return durableClaimRecord{}, errClaimStoreInternal
 	}
+	if ctx.Err() != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
 	conn, err := s.checkedConn(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return durableClaimRecord{}, errClaimStoreUnavailable
+		}
 		return durableClaimRecord{}, err
 	}
-	defer conn.Close()
-	if err := beginRead(ctx, conn); err != nil {
-		return durableClaimRecord{}, err
+
+	hooks := s.pooledReadTest
+	mayReturn := true
+	defer func() {
+		if mayReturn {
+			if hooks != nil && hooks.beforePoolReturn != nil {
+				hooks.beforePoolReturn()
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	begin, end := beginRead, commit
+	rollback := func(ctx context.Context, conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, "ROLLBACK")
+		return err
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
-	record, err := s.selectSQLiteClaim(ctx, conn, query.claim)
+	firstDiscard := discardUncertainSQLiteConn
+	if hooks != nil {
+		if hooks.begin != nil {
+			begin = hooks.begin
+		}
+		if hooks.commit != nil {
+			end = hooks.commit
+		}
+		if hooks.rollback != nil {
+			rollback = hooks.rollback
+		}
+		if hooks.firstDiscard != nil {
+			firstDiscard = hooks.firstDiscard
+		}
+	}
+	discard := func() {
+		mayReturn = false
+		if firstDiscard(conn) == nil {
+			mayReturn = true
+			return
+		}
+		rescue := discardUncertainSQLiteConn(conn)
+		if hooks != nil && hooks.rescueResponse != nil {
+			rescue = hooks.rescueResponse(rescue)
+		}
+		mayReturn = rescue == nil
+	}
+
+	if ctx.Err() != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	if err := begin(ctx, conn); err != nil {
+		discard()
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	commitAttempted := false
+	defer func() {
+		if commitAttempted {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rollbackErr := rollback(cleanupCtx, conn)
+		contextErr := cleanupCtx.Err()
+		cancel()
+		if rollbackErr != nil || contextErr != nil {
+			discard()
+			record, out = durableClaimRecord{}, errClaimStoreUnavailable
+		} else if ctx.Err() != nil {
+			record, out = durableClaimRecord{}, errClaimStoreUnavailable
+		}
+	}()
+	if hooks != nil && hooks.afterBegin != nil {
+		hooks.afterBegin()
+	}
+	record, err = s.selectSQLiteClaim(ctx, conn, query.claim)
 	if err != nil {
 		return durableClaimRecord{}, err
 	}
-	if err := commit(ctx, conn); err != nil {
-		return durableClaimRecord{}, err
+	if hooks != nil && hooks.afterSelect != nil {
+		hooks.afterSelect()
 	}
-	committed = true
+	if ctx.Err() != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	commitAttempted = true
+	if err := end(ctx, conn); err != nil {
+		discard()
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
+	if ctx.Err() != nil {
+		return durableClaimRecord{}, errClaimStoreUnavailable
+	}
 	return record, nil
 }
 
@@ -332,7 +438,7 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 	if !cmd.next.claim.Equal(cmd.claim) || cmd.next.revision != cmd.expectedRevision+1 {
 		return compareAndSwapClaimStoreResult{}, errClaimStoreCorrupt
 	}
-	if cmd.next.codecVersion == durableClaimCodecVersionSynthetic {
+	if cmd.next.codecVersion >= durableClaimCodecVersionSynthetic {
 		return compareAndSwapClaimStoreResult{}, errClaimStoreUnsupported
 	}
 	conn, err := s.checkedConn(ctx)
@@ -403,6 +509,9 @@ func (s *sqliteClaimStore) compareAndSwapClaim(ctx context.Context, cmd compareA
 		}
 		return compareAndSwapClaimStoreResult{}, err
 	}
+	if current.codecVersion == durableClaimCodecVersionProgress {
+		return compareAndSwapClaimStoreResult{}, errClaimStoreUnsupported
+	}
 	commitAttempted = true
 	if err := s.commitLegacyCAS(ctx, conn); err != nil {
 		returnToPool = false
@@ -451,55 +560,45 @@ func (s *sqliteClaimStore) openGate(ctx context.Context, clock claimClock) error
 		return err
 	}
 	defer conn.Close()
-	if err := sqliteQuickCheck(ctx, conn); err != nil {
+	version, err := verifySQLiteOpening(ctx, conn)
+	if err != nil || version == sqliteClaimStoreSchemaVersion {
 		return err
+	}
+	return s.migrateSQLite(ctx, conn, clock)
+}
+
+func verifySQLiteOpening(ctx context.Context, conn *sql.Conn) (int, error) {
+	if err := sqliteQuickCheck(ctx, conn); err != nil {
+		return 0, err
 	}
 	applicationID, err := pragmaInt(ctx, conn, "application_id")
 	if err != nil {
-		return err
+		return 0, err
 	}
-	userVersion, err := pragmaInt(ctx, conn, "user_version")
+	version, err := pragmaInt(ctx, conn, "user_version")
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if applicationID != 0 && applicationID != sqliteClaimStoreApplicationID {
-		return errClaimStoreUnsupported
+	if (applicationID != 0 && applicationID != sqliteClaimStoreApplicationID) ||
+		version < 0 || version > sqliteClaimStoreSchemaVersion {
+		return 0, errClaimStoreUnsupported
 	}
-	if userVersion > sqliteClaimStoreSchemaVersion {
-		return errClaimStoreUnsupported
-	}
-	if applicationID == 0 && userVersion != 0 {
-		return errClaimStoreCorrupt
-	}
-	if userVersion == 0 {
+	if version == 0 {
 		if applicationID != 0 {
-			return errClaimStoreCorrupt
+			return 0, errClaimStoreCorrupt
 		}
-		if err := requireEmptySQLiteBootstrap(ctx, conn); err != nil {
-			return err
-		}
-		s.migrationOpeningVersion = 0
-		if err := s.applyInitialMigration(ctx, conn, clock); err != nil {
-			return err
-		}
-		return verifySQLiteStoreCurrent(ctx, conn)
+		return 0, requireEmptySQLiteBootstrap(ctx, conn)
 	}
-	if applicationID != sqliteClaimStoreApplicationID {
-		return errClaimStoreUnsupported
+	if applicationID == 0 {
+		return 0, errClaimStoreCorrupt
 	}
-	if userVersion < sqliteClaimStoreSchemaVersion {
-		if err := verifySQLiteMigrationsUpTo(ctx, conn, userVersion); err != nil {
-			return err
-		}
-		if err := verifySQLiteSchemaShape(ctx, conn, userVersion); err != nil {
-			return err
-		}
-		s.migrationOpeningVersion = userVersion
-		if err := s.applyMigrationsAfter(ctx, conn, clock, userVersion); err != nil {
-			return err
-		}
+	if err := verifySQLiteMigrationsUpTo(ctx, conn, version); err != nil {
+		return 0, err
 	}
-	return verifySQLiteStoreCurrent(ctx, conn)
+	if err := verifySQLiteSchemaShape(ctx, conn, version); err != nil {
+		return 0, err
+	}
+	return version, nil
 }
 
 func verifySQLiteStoreCurrent(ctx context.Context, conn *sql.Conn) error {
@@ -523,9 +622,9 @@ func verifySQLiteStoreCurrent(ctx context.Context, conn *sql.Conn) error {
 	return verifySQLiteSchemaShape(ctx, conn, sqliteClaimStoreSchemaVersion)
 }
 
-// verifyMigrationRecovery never applies a migration. It observes either the
-// authenticated opening version or the complete new version after a lost
-// COMMIT response; intermediate versions cannot result from the grouped tx.
+// verifyMigrationRecovery classifies the authenticated opening or current
+// schema without migrating. A current observation supplies no attribution
+// to the transaction whose cleanup or COMMIT response was unconfirmed.
 func (s *sqliteClaimStore) verifyMigrationRecovery(ctx context.Context) error {
 	conn, err := s.checkedConn(ctx)
 	if err != nil {
@@ -567,7 +666,7 @@ func (s *sqliteClaimStore) verifyMigrationRecovery(ctx context.Context) error {
 	return errClaimStoreMigrationRecoveredOld
 }
 
-func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.Conn, clock claimClock) (out error) {
+func (s *sqliteClaimStore) migrateSQLite(ctx context.Context, conn *sql.Conn, clock claimClock) (out error) {
 	if clock == nil {
 		clock = systemClaimClock{}
 	}
@@ -576,64 +675,43 @@ func (s *sqliteClaimStore) applyInitialMigration(ctx context.Context, conn *sql.
 		return err
 	}
 	commitAttempted := false
+	migrationStarted := false
 	defer func() {
-		if !commitAttempted {
-			if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
-				out = errClaimStoreCommitUnknown
+		if commitAttempted {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := conn.ExecContext(cleanup, "ROLLBACK")
+		cleanupErr := cleanup.Err()
+		cancel()
+		if err != nil || cleanupErr != nil {
+			out = errClaimStoreUnavailable
+			// A closed wrapper can hand off to its unpublished pool, which
+			// still owns disposition. A live wrapper needs confirmed discard.
+			if returned := errors.Is(err, sql.ErrConnDone) || discardUncertainSQLiteConn(conn) == nil; returned && migrationStarted {
+				out = errSQLiteMigrationNeedsReadback
 			}
+		} else if out == nil && ctx.Err() != nil {
+			out = errClaimStoreUnavailable
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", sqliteClaimStoreApplicationID)); err != nil {
-		return mapSQLiteError(err)
-	}
-	for _, migration := range sqliteClaimStoreMigrations {
-		if _, err := conn.ExecContext(ctx, migration.sql); err != nil {
-			return mapSQLiteError(err)
-		}
-		if _, err := conn.ExecContext(ctx,
-			`INSERT INTO reliable_submit_migrations(version, name, applied_at_unix_ns, source_sha256) VALUES (?, ?, ?, ?)`,
-			migration.version, migration.name, now.UnixNano(), sqliteMigrationSHA256(migration.sql),
-		); err != nil {
-			return mapSQLiteError(err)
-		}
-	}
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", sqliteClaimStoreSchemaVersion)); err != nil {
-		return mapSQLiteError(err)
-	}
-	if err := verifySQLiteStoreCurrent(ctx, conn); err != nil {
-		return err
-	}
-	if s.beforeMigrationCommit != nil {
-		if err := s.beforeMigrationCommit(ctx, conn); err != nil {
-			return errClaimStoreUnavailable
-		}
-	}
-	commitAttempted = true
-	if err := s.commitMigration(ctx, conn); err != nil {
-		return err
-	}
-	return nil
-}
 
-func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.Conn, clock claimClock, currentVersion int) (out error) {
-	if currentVersion < 0 || currentVersion >= sqliteClaimStoreSchemaVersion {
-		return errClaimStoreUnsupported
-	}
-	if clock == nil {
-		clock = systemClaimClock{}
-	}
-	now := normalizeClaimTime(clock.Now())
-	if err := beginImmediate(ctx, conn); err != nil {
+	// Only this lock-held observation can authorize migration or identify
+	// its opening state for a later nonmigrating recovery read.
+	currentVersion, err := verifySQLiteOpening(ctx, conn)
+	if err != nil || currentVersion == sqliteClaimStoreSchemaVersion {
 		return err
 	}
-	commitAttempted := false
-	defer func() {
-		if !commitAttempted {
-			if _, err := conn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
-				out = errClaimStoreCommitUnknown
-			}
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
+	}
+	s.migrationOpeningVersion = currentVersion
+	migrationStarted = true
+	if currentVersion == 0 {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA application_id = %d", sqliteClaimStoreApplicationID)); err != nil {
+			return mapSQLiteError(err)
 		}
-	}()
+	}
 	for _, migration := range sqliteClaimStoreMigrations[currentVersion:] {
 		if migration.version != currentVersion+1 {
 			return errClaimStoreUnsupported
@@ -660,9 +738,14 @@ func (s *sqliteClaimStore) applyMigrationsAfter(ctx context.Context, conn *sql.C
 			return errClaimStoreUnavailable
 		}
 	}
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
+	}
 	commitAttempted = true
 	if err := s.commitMigration(ctx, conn); err != nil {
-		return err
+		// The opener closes the whole unpublished pool before recovery.
+		// The response hook can already have returned this wrapper.
+		return errSQLiteMigrationNeedsReadback
 	}
 	return nil
 }
@@ -672,8 +755,7 @@ func requireEmptySQLiteBootstrap(ctx context.Context, conn *sql.Conn) error {
 	if err := conn.QueryRowContext(ctx, `
 SELECT count(*)
 FROM sqlite_schema
-WHERE name NOT LIKE 'sqlite_%'
-`).Scan(&count); err != nil {
+WHERE `+sqliteUserSchemaPredicate).Scan(&count); err != nil {
 		return mapSQLiteError(err)
 	}
 	if count != 0 {
@@ -1092,7 +1174,7 @@ SET caller_ref = ?,
     latest_operation_kind = ?,
     latest_operation_input_digest = ?,
     codec_version = ?
-WHERE caller_ref = ? AND submit_key_ref = ? AND revision = ? AND retention_state = ?`
+WHERE caller_ref = ? AND submit_key_ref = ? AND revision = ? AND retention_state = ? AND codec_version != 4`
 
 func (s *sqliteClaimStore) selectSQLiteClaim(ctx context.Context, conn *sql.Conn, claim ClaimID) (durableClaimRecord, error) {
 	if !claim.Valid() {
@@ -1105,7 +1187,7 @@ func (s *sqliteClaimStore) selectSQLiteClaim(ctx context.Context, conn *sql.Conn
 		projection = sqliteClaimColumns + `, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL`
 	}
 	row := conn.QueryRowContext(ctx,
-		`SELECT `+projection+` FROM reliable_submit_claims WHERE caller_ref = ? AND submit_key_ref = ?`,
+		`SELECT claim_rowid, `+projection+` FROM reliable_submit_claims WHERE caller_ref = ? AND submit_key_ref = ?`,
 		opaqueRefBytes(claim.caller.ref), opaqueRefBytes(claim.submitKey.ref),
 	)
 	record, err := scanSQLiteClaim(row)
@@ -1122,51 +1204,52 @@ type sqliteScanner interface {
 func scanSQLiteClaim(row sqliteScanner) (durableClaimRecord, error) {
 	var data sqliteClaimRow
 	if err := row.Scan(
-		&data.callerRef,
-		&data.submitKeyRef,
-		&data.planBinding,
-		&data.witnessResolvedMask,
-		&data.witnessInapplicableMask,
-		&data.phaseTag,
-		&data.runRef,
-		&data.receiptRef,
-		&data.revision,
-		&data.createdAtUnixNS,
-		&data.updatedAtUnixNS,
-		&data.assignedAtUnixNS,
-		&data.effectIntentRef,
-		&data.effectIntentAtUnixNS,
-		&data.stagingRef,
-		&data.stagingAtUnixNS,
-		&data.dispatchRef,
-		&data.dispatchAtUnixNS,
-		&data.providerObservationKind,
-		&data.providerObservationRef,
-		&data.providerObservationAtUnixNS,
-		&data.reconciliationKind,
-		&data.reconciliationRef,
-		&data.reconciliationAtUnixNS,
-		&data.expiresAtUnixNS,
-		&data.retentionState,
-		&data.unavailableAtUnixNS,
-		&data.unavailableReason,
-		&data.lastMutationRef,
-		&data.latestOperationKind,
+		sqliteInteger{&data.rowID},
+		sqliteBlob{&data.callerRef},
+		sqliteBlob{&data.submitKeyRef},
+		sqliteBlob{&data.planBinding},
+		sqliteInteger{&data.witnessResolvedMask},
+		sqliteInteger{&data.witnessInapplicableMask},
+		sqliteInteger{&data.phaseTag},
+		sqliteBlob{&data.runRef},
+		sqliteBlob{&data.receiptRef},
+		sqliteInteger{&data.revision},
+		sqliteInteger{&data.createdAtUnixNS},
+		sqliteInteger{&data.updatedAtUnixNS},
+		sqliteOptionalInteger{&data.assignedAtUnixNS},
+		sqliteBlob{&data.effectIntentRef},
+		sqliteOptionalInteger{&data.effectIntentAtUnixNS},
+		sqliteBlob{&data.stagingRef},
+		sqliteOptionalInteger{&data.stagingAtUnixNS},
+		sqliteBlob{&data.dispatchRef},
+		sqliteOptionalInteger{&data.dispatchAtUnixNS},
+		sqliteInteger{&data.providerObservationKind},
+		sqliteBlob{&data.providerObservationRef},
+		sqliteOptionalInteger{&data.providerObservationAtUnixNS},
+		sqliteInteger{&data.reconciliationKind},
+		sqliteBlob{&data.reconciliationRef},
+		sqliteOptionalInteger{&data.reconciliationAtUnixNS},
+		sqliteOptionalInteger{&data.expiresAtUnixNS},
+		sqliteInteger{&data.retentionState},
+		sqliteOptionalInteger{&data.unavailableAtUnixNS},
+		sqliteText{&data.unavailableReason},
+		sqliteBlob{&data.lastMutationRef},
+		sqliteOptionalInteger{&data.latestOperationKind},
 		&data.latestOperationInputDigest,
-		&data.codecVersion,
-		&data.replayScope,
-		&data.intentFormat,
+		sqliteInteger{&data.codecVersion},
+		sqliteOptionalInteger{&data.replayScope},
+		sqliteOptionalInteger{&data.intentFormat},
 		&data.intentCommitment,
 		&data.contextCommitment,
-		&data.wrapperFormat,
-		&data.payloadFormat,
-		&data.envelopeAlgorithm,
-		&data.envelopeRef,
-		&data.envelopeSize,
+		sqliteOptionalInteger{&data.wrapperFormat},
+		sqliteOptionalInteger{&data.payloadFormat},
+		sqliteOptionalInteger{&data.envelopeAlgorithm},
+		sqliteOptionalText{&data.envelopeRef},
+		sqliteOptionalInteger{&data.envelopeSize},
 		&data.envelopeSHA,
-		&data.bindingKeyID,
+		sqliteOptionalText{&data.bindingKeyID},
 		&data.bindingKeyFP,
-		&data.envelopeKeyID,
+		sqliteOptionalText{&data.envelopeKeyID},
 		&data.envelopeKeyFP,
 	); err != nil {
 		if errors.Is(err, errInvalidDurableRecord) {
@@ -1182,6 +1265,7 @@ func scanSQLiteClaim(row sqliteScanner) (durableClaimRecord, error) {
 }
 
 type sqliteClaimRow struct {
+	rowID                       int64
 	callerRef                   []byte
 	submitKeyRef                []byte
 	planBinding                 []byte
@@ -1230,6 +1314,69 @@ type sqliteClaimRow struct {
 	envelopeKeyFP               sqliteNullableBlob
 }
 
+type sqliteInteger struct{ value *int64 }
+type sqliteOptionalInteger struct{ value *sql.NullInt64 }
+type sqliteText struct{ value *string }
+type sqliteOptionalText struct{ value *sql.NullString }
+type sqliteBlob struct{ value *[]byte }
+
+func (s sqliteInteger) Scan(raw any) error {
+	value, ok := raw.(int64)
+	if !ok {
+		return errInvalidDurableRecord
+	}
+	*s.value = value
+	return nil
+}
+
+func (s sqliteOptionalInteger) Scan(raw any) error {
+	if raw == nil {
+		*s.value = sql.NullInt64{}
+		return nil
+	}
+	value, ok := raw.(int64)
+	if !ok {
+		return errInvalidDurableRecord
+	}
+	*s.value = sql.NullInt64{Int64: value, Valid: true}
+	return nil
+}
+
+func (s sqliteText) Scan(raw any) error {
+	value, ok := raw.(string)
+	if !ok {
+		return errInvalidDurableRecord
+	}
+	*s.value = value
+	return nil
+}
+
+func (s sqliteOptionalText) Scan(raw any) error {
+	if raw == nil {
+		*s.value = sql.NullString{}
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return errInvalidDurableRecord
+	}
+	*s.value = sql.NullString{String: value, Valid: true}
+	return nil
+}
+
+func (s sqliteBlob) Scan(raw any) error {
+	if raw == nil {
+		*s.value = nil
+		return nil
+	}
+	value, ok := raw.([]byte)
+	if !ok {
+		return errInvalidDurableRecord
+	}
+	*s.value = append([]byte{}, value...)
+	return nil
+}
+
 type sqliteNullableBlob struct {
 	valid bool
 	bytes []byte
@@ -1253,6 +1400,26 @@ func (b *sqliteNullableBlob) Scan(value any) error {
 }
 
 func (r sqliteClaimRow) record() (durableClaimRecord, error) {
+	if r.codecVersion < 1 || r.codecVersion > int64(durableClaimCodecVersionProgress) ||
+		r.phaseTag < 1 || r.phaseTag > int64(durablePhaseProvablyNotAcceptedAfterAssignment) ||
+		r.retentionState < 1 || r.retentionState > int64(durableRetentionTombstoned) ||
+		r.providerObservationKind < 0 || r.providerObservationKind > int64(durableProviderObservationCallUncertain) ||
+		r.reconciliationKind < 0 || r.reconciliationKind > int64(durableReconciliationInconsistent) {
+		return durableClaimRecord{}, errInvalidDurableRecord
+	}
+	var rowID int64
+	if r.codecVersion == int64(durableClaimCodecVersionProgress) {
+		if r.rowID <= 0 {
+			return durableClaimRecord{}, errInvalidDurableRecord
+		}
+		rowID = r.rowID
+		for _, value := range [][]byte{r.runRef, r.receiptRef, r.effectIntentRef, r.stagingRef,
+			r.dispatchRef, r.providerObservationRef, r.reconciliationRef} {
+			if value != nil && len(value) != 32 {
+				return durableClaimRecord{}, errInvalidDurableRecord
+			}
+		}
+	}
 	replay, err := r.replayDescriptor()
 	if err != nil {
 		return durableClaimRecord{}, err
@@ -1298,6 +1465,7 @@ func (r sqliteClaimRow) record() (durableClaimRecord, error) {
 		return durableClaimRecord{}, err
 	}
 	record := durableClaimRecord{
+		progressRowID:   rowID,
 		codecVersion:    uint16(r.codecVersion),
 		claim:           claim,
 		plan:            plan,
@@ -1330,7 +1498,7 @@ func (r sqliteClaimRow) replayDescriptor() (replayClaimDescriptor, error) {
 		r.envelopeRef.Valid, r.envelopeSize.Valid, r.envelopeSHA.valid,
 		r.bindingKeyID.Valid, r.bindingKeyFP.valid, r.envelopeKeyID.Valid,
 		r.envelopeKeyFP.valid}
-	if r.codecVersion != int64(durableClaimCodecVersionSynthetic) {
+	if r.codecVersion < int64(durableClaimCodecVersionSynthetic) {
 		for _, present := range values {
 			if present {
 				return replayClaimDescriptor{}, errInvalidDurableRecord
@@ -1361,7 +1529,7 @@ func (r sqliteClaimRow) replayDescriptor() (replayClaimDescriptor, error) {
 	copy(d.fileSHA[:], r.envelopeSHA.bytes)
 	copy(d.bindingKeyFP[:], r.bindingKeyFP.bytes)
 	copy(d.envelopeKeyFP[:], r.envelopeKeyFP.bytes)
-	if !d.valid() {
+	if !d.validForScope(r.codecVersion - 2) {
 		return replayClaimDescriptor{}, errInvalidDurableRecord
 	}
 	return d, nil
@@ -1374,8 +1542,8 @@ func sqliteLatestOperationDescriptor(codecVersion uint16, mutation durableMutati
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}
 		return newLegacyDurableLatestOperationDescriptor(mutation)
-	case durableClaimCodecVersion, durableClaimCodecVersionSynthetic:
-		if !kind.Valid || !digest.valid {
+	case durableClaimCodecVersion, durableClaimCodecVersionSynthetic, durableClaimCodecVersionProgress:
+		if !kind.Valid || !digest.valid || kind.Int64 < 1 || kind.Int64 > int64(durableOperationTombstoneOrExpire) {
 			return durableLatestOperationDescriptor{}, errInvalidDurableRecord
 		}
 		binding, err := newDurableOperationInputBinding(digest.bytes)
@@ -1509,7 +1677,7 @@ func sqliteRecordArgs(record durableClaimRecord) ([]any, error) {
 		operationInputBindingSQL(record.latestOperation),
 		int64(record.codecVersion),
 	}
-	if record.codecVersion == durableClaimCodecVersionSynthetic {
+	if record.codecVersion >= durableClaimCodecVersionSynthetic {
 		d := record.replay
 		args = append(args, d.scope, d.intentFormat,
 			append([]byte(nil), d.intentMAC[:]...), append([]byte(nil), d.contextMAC[:]...),
@@ -1610,4 +1778,180 @@ func witnessFromSQLiteMasks(resolved int64, inapplicable int64) (EffectivePlanWi
 		}
 	}
 	return NewEffectivePlanWitness(entries...)
+}
+
+// progressWriteReply retains the actual SQL outcome independently of whether
+// the authenticated user of the result can still project its record.
+type progressWriteReply struct {
+	record      durableClaimRecord
+	applied     bool
+	occupied    bool
+	unknown     bool
+	recoverable bool
+}
+
+func (s *sqliteClaimStore) progressWrite(ctx context.Context,
+	step func(*sql.Conn) (progressWriteReply, error)) (out progressWriteReply, outErr error) {
+	if ctx.Err() != nil {
+		return out, errClaimStoreUnavailable
+	}
+	conn, err := s.checkedConn(ctx)
+	if err != nil {
+		return out, errClaimStoreUnavailable
+	}
+	mayReturn := true
+	defer func() {
+		if mayReturn {
+			_ = conn.Close()
+		}
+	}()
+	discard := func() bool {
+		mayReturn = false
+		if discardUncertainSQLiteConn(conn) == nil || discardUncertainSQLiteConn(conn) == nil {
+			mayReturn = true
+		}
+		return mayReturn
+	}
+	if ctx.Err() != nil {
+		return out, errClaimStoreUnavailable
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		discard()
+		return out, errClaimStoreUnavailable
+	}
+	commitAttempted := false
+	defer func() {
+		if commitAttempted {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := conn.ExecContext(cleanup, "ROLLBACK")
+		cleanupErr := cleanup.Err()
+		cancel()
+		if err != nil || cleanupErr != nil {
+			discard()
+			out, outErr = progressWriteReply{}, errClaimStoreUnavailable
+		}
+	}()
+	out, err = step(conn)
+	if err != nil || !out.applied {
+		return out, err
+	}
+	if ctx.Err() != nil {
+		return progressWriteReply{}, errClaimStoreUnavailable
+	}
+	commitAttempted = true
+	if err := s.commitClaim(ctx, conn); err != nil {
+		out.applied = false
+		out.unknown = true
+		out.recoverable = discard()
+		return out, errClaimStoreCommitUnknown
+	}
+	_ = chmodSQLiteStoreFiles(s.path)
+	return out, nil
+}
+
+func (s *sqliteClaimStore) establishProgressRow(ctx context.Context, record durableClaimRecord) (progressWriteReply, error) {
+	if record.codecVersion != durableClaimCodecVersionProgress || record.revision != initialClaimRevision ||
+		record.progressRowID != 0 || record.validate() != nil {
+		return progressWriteReply{}, errClaimStoreUnsupported
+	}
+	return s.progressWrite(ctx, func(conn *sql.Conn) (progressWriteReply, error) {
+		found, err := s.selectSQLiteClaim(ctx, conn, record.claim)
+		if err == nil {
+			if found.codecVersion != durableClaimCodecVersionProgress {
+				return progressWriteReply{}, errClaimStoreUnsupported
+			}
+			return progressWriteReply{record: found, occupied: true}, nil
+		}
+		if !errors.Is(err, errClaimStoreNotFound) {
+			return progressWriteReply{}, err
+		}
+		var count int
+		if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM reliable_submit_claims WHERE codec_version IN (3,4)").Scan(&count); err != nil {
+			return progressWriteReply{}, mapSQLiteError(err)
+		}
+		if count >= 4 {
+			return progressWriteReply{}, errClaimStoreUnsupported
+		}
+		args, err := sqliteRecordArgs(record)
+		if err != nil {
+			return progressWriteReply{}, err
+		}
+		res, err := conn.ExecContext(ctx, sqliteInsertReplayClaimSQL, args...)
+		if err != nil {
+			return progressWriteReply{}, mapSQLiteError(err)
+		}
+		changed, err := res.RowsAffected()
+		if err != nil || changed != 1 {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		id, err := res.LastInsertId()
+		if err != nil || id <= 0 {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		record.progressRowID = id
+		observed, err := s.selectSQLiteClaim(ctx, conn, record.claim)
+		if err != nil || !observed.equal(record) {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		return progressWriteReply{record: record, applied: true}, nil
+	})
+}
+
+const sqliteUpdateProgressSQL = `
+UPDATE reliable_submit_claims
+SET phase_tag=?, run_ref=?, receipt_ref=?, revision=?, updated_at_unix_ns=?,
+    assigned_at_unix_ns=?, effect_intent_ref=?, effect_intent_at_unix_ns=?,
+    staging_ref=?, staging_at_unix_ns=?, dispatch_ref=?, dispatch_at_unix_ns=?,
+    provider_observation_kind=?, provider_observation_ref=?, provider_observation_at_unix_ns=?,
+    reconciliation_kind=?, reconciliation_ref=?, reconciliation_at_unix_ns=?,
+    last_mutation_ref=?, latest_operation_kind=?, latest_operation_input_digest=?
+WHERE claim_rowid=? AND codec_version=4 AND revision=? AND retention_state=1`
+
+func (s *sqliteClaimStore) compareAndSwapProgress(ctx context.Context, before, next durableClaimRecord, keys PrivateReplayKeys) (progressWriteReply, error) {
+	if !next.sameProgressOriginal(before) || next.validate() != nil || next.revision <= before.revision ||
+		next.revision-1 != before.revision || !progressKeysMatch(before.replay, keys) {
+		return progressWriteReply{}, errClaimStoreUnsupported
+	}
+	return s.progressWrite(ctx, func(conn *sql.Conn) (progressWriteReply, error) {
+		current, err := s.selectSQLiteClaim(ctx, conn, before.claim)
+		if err != nil || !before.sameProgressOriginal(current) {
+			return progressWriteReply{}, errClaimStoreUnavailable
+		}
+		if err := s.registerOrCompareReplayKey(ctx, conn, keys.bindingID, 1, keys.bindingFP, false); err != nil {
+			return progressWriteReply{}, err
+		}
+		if err := s.registerOrCompareReplayKey(ctx, conn, keys.envelopeID, 2, keys.envelopeFP, false); err != nil {
+			return progressWriteReply{}, err
+		}
+		if current.revision != before.revision {
+			return progressWriteReply{record: current, occupied: true}, nil
+		}
+		if !current.equal(before) {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		f := next.effects
+		res, err := conn.ExecContext(ctx, sqliteUpdateProgressSQL,
+			int64(next.phase.tag), optionalOpaqueSQL(next.phase.run.ref), optionalOpaqueSQL(next.phase.receipt.ref),
+			int64(next.revision), next.updatedAt.UnixNano(), optionalTimeSQL(next.assignedAt),
+			optionalFactSQL(f.intent.ref), optionalTimeSQL(f.intent.at), optionalFactSQL(f.staging.ref), optionalTimeSQL(f.staging.at),
+			optionalFactSQL(f.dispatch.ref), optionalTimeSQL(f.dispatch.at),
+			int64(f.provider.kind), optionalFactSQL(f.provider.fact.ref), optionalTimeSQL(f.provider.fact.at),
+			int64(f.reconciliation.kind), optionalFactSQL(f.reconciliation.fact.ref), optionalTimeSQL(f.reconciliation.fact.at),
+			mutationRefBytes(next.lastMutation), operationKindSQL(next.latestOperation), operationInputBindingSQL(next.latestOperation),
+			before.progressRowID, int64(before.revision))
+		if err != nil {
+			return progressWriteReply{}, mapSQLiteError(err)
+		}
+		changed, err := res.RowsAffected()
+		if err != nil || changed != 1 {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		actual, err := s.selectSQLiteClaim(ctx, conn, before.claim)
+		if err != nil || !actual.equal(next) {
+			return progressWriteReply{}, errClaimStoreCorrupt
+		}
+		return progressWriteReply{record: next, applied: true}, nil
+	})
 }

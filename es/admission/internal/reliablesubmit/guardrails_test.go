@@ -42,10 +42,11 @@ func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 		"store.go",
 	}
 	sqliteSpecific := map[string]bool{
-		"replay_custody_file.go":   true,
-		"replay_key_use_sqlite.go": true,
-		"sqlite_migrations.go":     true,
-		"sqlite_store.go":          true,
+		"replay_custody_file.go":           true,
+		"replay_key_use_sqlite.go":         true,
+		"sqlite_migrations.go":             true,
+		"sqlite_replay_progress_schema.go": true,
+		"sqlite_store.go":                  true,
 	}
 
 	for _, path := range backendNeutral {
@@ -54,6 +55,9 @@ func TestReliableSubmitPrivatePersistenceStaticGuardrails(t *testing.T) {
 		assertBackendNeutralPersistenceImports(t, path, file)
 		assertNoPublicStorageSurface(t, path, file)
 		assertNoForbiddenPersistenceSource(t, path, source)
+		if path == "durable_service.go" {
+			assertFixtureTerminalEvidenceFields(t, file)
+		}
 	}
 	for path := range sqliteSpecific {
 		file, source := mustParseReliableSubmitSource(t, path)
@@ -564,6 +568,49 @@ func assertSQLiteSpecificImports(t *testing.T, path string, file *ast.File) {
 	}
 }
 
+func assertFixtureTerminalEvidenceFields(t *testing.T, file *ast.File) {
+	t.Helper()
+	want := map[string]string{
+		"":        "privateReplayRedacted",
+		"claim":   "ClaimID",
+		"run":     "FixtureRunRef",
+		"marker":  "FixtureFactRef",
+		"fact":    "FixtureFactRef",
+		"outcome": "fixtureTerminalOutcome",
+		"receipt": "FixtureReceiptRef",
+	}
+	found := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.TypeSpec)
+		if !ok || spec.Name.Name != "FixtureTerminalEvidence" {
+			return true
+		}
+		found = true
+		aggregate, ok := spec.Type.(*ast.StructType)
+		if !ok || len(aggregate.Fields.List) != len(want) {
+			t.Fatal("fixture terminal evidence aggregate changed")
+		}
+		for _, field := range aggregate.Fields.List {
+			if len(field.Names) > 1 {
+				t.Fatal("fixture terminal evidence fields must be individually bound")
+			}
+			name := ""
+			if len(field.Names) == 1 {
+				name = field.Names[0].Name
+			}
+			typ, ok := field.Type.(*ast.Ident)
+			if !ok || want[name] != typ.Name {
+				t.Fatalf("unexpected fixture terminal assertion field %q", name)
+			}
+			delete(want, name)
+		}
+		return false
+	})
+	if !found || len(want) != 0 {
+		t.Fatal("complete private terminal evidence field inventory not found")
+	}
+}
+
 func assertNoPublicStorageSurface(t *testing.T, path string, file *ast.File) {
 	t.Helper()
 	for _, decl := range file.Decls {
@@ -575,6 +622,10 @@ func assertNoPublicStorageSurface(t *testing.T, path string, file *ast.File) {
 					continue
 				}
 				name := typeSpec.Name.Name
+				if path == "durable_service.go" && (name == "FixtureRecordIntent" || name == "FixtureRecordStaging" ||
+					name == "FixtureRecordMarker" || name == "FixtureRecordProvider" || name == "FixtureRecordReconciliation") {
+					continue
+				}
 				if strings.Contains(name, "Store") ||
 					strings.Contains(name, "Repository") ||
 					strings.Contains(name, "Persistence") ||

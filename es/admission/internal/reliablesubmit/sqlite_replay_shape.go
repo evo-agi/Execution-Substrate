@@ -8,7 +8,7 @@ import (
 )
 
 // These hashes bind the complete non-internal sqlite_schema rows created by
-// the three literal migrations under the pinned SQLite driver. A schema row
+// the four literal migrations under the pinned SQLite driver. A schema row
 // includes the table definition (including STRICT, CHECK, and FK clauses),
 // named indexes, and the complete trigger body. They are deliberately not
 // learned from an existing database during open.
@@ -16,11 +16,15 @@ const (
 	sqliteSchema1SHA256 = "031abaada34a63834d3466081ed04afef6b7c9f55103cd2b57fe3033b8c45ef0"
 	sqliteSchema2SHA256 = "944094f4e5fae102ea2882a076f580c69494678f41acedf9eaa971fe836eb280"
 	sqliteSchema3SHA256 = "15ab48bde4d53bb252dc954a2aa3b1db12de7295111f23bb0264f74f153dba92"
+	sqliteSchema4SHA256 = "2ae4721c8526ed9b8de35fd3acdfa31448eae9b547ba8662a22ed130035f7c15"
 )
+
+// SQLite reserves the literal ASCII prefix sqlite_ for internal objects.
+const sqliteUserSchemaPredicate = `substr(name, 1, 7) COLLATE NOCASE <> 'sqlite_'`
 
 func sqliteSchemaDigest(ctx context.Context, conn *sql.Conn) (string, error) {
 	rows, err := conn.QueryContext(ctx, `SELECT type, name, tbl_name, sql
-FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name COLLATE BINARY`)
+FROM sqlite_schema WHERE `+sqliteUserSchemaPredicate+` ORDER BY name COLLATE BINARY`)
 	if err != nil {
 		return "", mapSQLiteError(err)
 	}
@@ -62,6 +66,8 @@ func verifySQLiteSchemaShape(ctx context.Context, conn *sql.Conn, version int) e
 		expected = sqliteSchema2SHA256
 	case 3:
 		expected = sqliteSchema3SHA256
+	case 4:
+		expected = sqliteSchema4SHA256
 	default:
 		return errClaimStoreUnsupported
 	}

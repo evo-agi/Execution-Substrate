@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -407,9 +411,9 @@ func TestResolvedPlanDocumentationTruthAndFiniteInventoriesContract(t *testing.T
 		"`executionpackage_test.go:TestTrancheB2TrustMaterializationCauseUsesFixedPublicError`",
 		"`executionpackage_test.go:(*Service).stageExecutionInputs`",
 		"Synthetic source strings in guardrail mutation tests are validator fixtures, not executable package entry points",
-		"`es/admission.Service.mu sync.RWMutex`",
-		"`es/app.App.mu sync.RWMutex`",
-		"`es/runtimehelper.helperServer.mu sync.RWMutex`",
+		"`es/admission:Service.mu:sync.RWMutex`",
+		"`es/app:App.mu:sync.RWMutex`",
+		"`es/runtimehelper:helperServer.mu:sync.RWMutex`",
 		"`.execution-substrate-namespace-lease-v1`",
 		"`namespacelease`",
 		"`mutationpoison`",
@@ -3088,7 +3092,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	deployment := compactDocSection(t, adrRaw, "## 13. Initial Deployment Topology", "## 14. Required Dependency-Selection Gate")
 	dependencyGate := compactDocSection(t, adrRaw, "## 14. Required Dependency-Selection Gate", "## 15. First Concrete Source Tranche")
 	nextTranche := compactDocSection(t, adrRaw, "## 15. First Concrete Source Tranche", "## 16. Explicit Non-Claims And Open Decisions")
-	privateCustody := compactDocSection(t, adrRaw, "## 15A. Private codec-3 synthetic custody, SQLite and recovery", "## 16. Explicit Non-Claims And Open Decisions")
+	privateCustody := compactDocSection(t, adrRaw, "## 15A. Private codec-3 synthetic custody, SQLite and recovery", "## 15B. Proposed private original replay and durable claim progress")
 	nonClaimsOpen := compactDocSection(t, adrRaw, "## 16. Explicit Non-Claims And Open Decisions", "")
 	assertContainsAll(t, "private codec-3 custody ADR", privateCustody,
 		"synthetic_nonoperational_v1",
@@ -3752,7 +3756,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	targetRaw := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
 	targetStatus := compactDocSection(t, targetRaw, "## 1. Status And Purpose", "## 2. Current Implementation Reality")
-	targetPrivate := compactDocSection(t, targetRaw, "### 6A. Private synthetic original custody and exact format", "## 7. Narrow Durable Correlation Semantics")
+	targetPrivate := compactDocSection(t, targetRaw, "### 6A. Private synthetic original custody and exact format", "### 6B. Proposed private original replay and durable claim progress")
 	targetNarrowRecord := compactDocSection(t, targetRaw, "## 7. Narrow Durable Correlation Semantics", "## 8. Ordering And Concurrency Invariants")
 	assertContainsAll(t, "private synthetic original contract", targetPrivate,
 		"synthetic_nonoperational_v1",
@@ -4040,7 +4044,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	sqliteMigrationSource := mustRead(t, "es/admission/internal/reliablesubmit/sqlite_migrations.go")
 	assertContainsAll(t, "current reliable-submit SQLite schema version", sqliteMigrationSource,
-		"sqliteClaimStoreSchemaVersion = 3",
+		"sqliteClaimStoreSchemaVersion = 4",
 	)
 	assertContainsAll(t, "current SQLite schema persists latest operation descriptor", sqliteMigrationSource,
 		"revision INTEGER NOT NULL CHECK (revision > 0)",
@@ -4079,8 +4083,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 30; got != want {
-		t.Fatalf("reliable-submit package should contain the exact pure model, store and synthetic custody inventory; got %d files: %v", got, reliableSubmitFiles)
+	if got, want := len(reliableSubmitFiles), 33; got != want {
+		t.Fatalf("reliable-submit package should contain the exact model, persistence and fixture custody inventory; got %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
 		"es/admission/internal/reliablesubmit/model.go",
@@ -4106,9 +4110,12 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/replay_custody_structure.go",
 		"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go",
 		"es/admission/internal/reliablesubmit/replay_key_use_sqlite_test.go",
+		"es/admission/internal/reliablesubmit/replay_progress_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_pooled_claim_read_cleanup_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_claim.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_claim_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_migration_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_replay_progress_schema.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_schema.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_schema_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_replay_shape.go",
@@ -12546,6 +12553,395 @@ func TestIntegratedResultCustodyDocumentationMatchesSelectedEffects(t *testing.T
 	)
 }
 
+func TestPrivateReplayProgressSynchronizationInventoryDocsContract(t *testing.T) {
+	t.Parallel()
+	const guardPath = "es/admission/workstream_c_guardrails_test.go"
+	const guardName = "TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign"
+	file, err := parser.ParseFile(token.NewFileSet(), guardPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make(map[string]string)
+	for _, declaration := range file.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != guardName {
+			continue
+		}
+		for _, statement := range fn.Body.List {
+			assign, ok := statement.(*ast.AssignStmt)
+			if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+				continue
+			}
+			name, ok := assign.Lhs[0].(*ast.Ident)
+			if !ok || name.Name != "wantSynchronizationFields" {
+				continue
+			}
+			list, ok := assign.Rhs[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatal("expected the frozen synchronization inventory literal")
+			}
+			for _, item := range list.Elts {
+				literal, ok := item.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					t.Fatal("expected an exact typed field string")
+				}
+				field, err := strconv.Unquote(literal.Value)
+				if err != nil || !strings.HasPrefix(field, "execution-substrate/es/") {
+					t.Fatalf("invalid frozen typed field %q: %v", field, err)
+				}
+				field = strings.TrimPrefix(field, "execution-substrate/")
+				category := "Reference"
+				switch field[strings.LastIndexByte(field, ':')+1:] {
+				case "sync.RWMutex", "sync.Mutex":
+					category = "Lock"
+				case "atomic.Bool":
+					category = "Atomic"
+				}
+				if _, exists := want[field]; exists {
+					t.Fatalf("duplicate frozen typed field %s", field)
+				}
+				want[field] = category
+			}
+		}
+	}
+	if len(want) != 32 {
+		t.Fatalf("expected 32 frozen structural fields, got %d", len(want))
+	}
+	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	section := docSection(t, admission, "### 7.4 Exact synchronized mutable-state inventory", "### 7.5 Rejected A3 topology inventory")
+	if err := checkPrivateReplayProgressSynchronizationInventory(section, want); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, before, after, reason string
+	}{
+		{"MissingAtomic", "| Atomic | `es/admission/internal/reliablesubmit:progressAccessState.used:atomic.Bool` |", "", "missing exact field"},
+		{"OmittedScope2Wrapper", "| Reference | `es/admission/internal/reliablesubmit:ProgressSealPermit.permit:reliablesubmit.PrivateReplaySealPermit` |", "", "missing exact field"},
+		{"OmittedSharedPermitReader", "`PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal`", "`PrivateReplayProgressCustody.PublishProgressOriginal`", "permit roles"},
+		{"ReferenceClaimedAsPrimitive", "| Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` |", "| Lock | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` |", "wrong category"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(section, tc.before) != 1 {
+				t.Fatalf("expected one document mutation target %q", tc.before)
+			}
+			target := tc.before
+			if tc.after == "" {
+				row := section[strings.Index(section, target):]
+				target = row[:strings.IndexByte(row, '\n')+1]
+			}
+			err := checkPrivateReplayProgressSynchronizationInventory(strings.Replace(section, target, tc.after, 1), want)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("expected %q rejection, got %v", tc.reason, err)
+			}
+		})
+	}
+}
+
+func checkPrivateReplayProgressSynchronizationInventory(section string, want map[string]string) error {
+	fields := make(map[string]string)
+	counts := make(map[string]int)
+	permits := make(map[string][2]string)
+	permitRoles := map[string][2]string{
+		"`PrivateReplaySealPermit.permit`": {
+			"`PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse`",
+			"`PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal`",
+		},
+		"`ProgressSealPermit.permit`": {
+			"`PrivateReplayProgressCustody.ReserveProgressSealUse`",
+			"`PrivateReplayProgressCustody.PublishProgressOriginal`",
+		},
+		"`privateSealPermit.used`": {
+			"`privateSealPermit.consume`, `privateSealPermit.burn`",
+			"`privateSealPermit.consume`, `privateSealPermit.matchesAllocation`",
+		},
+	}
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "| ") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		category := strings.TrimSpace(cells[1])
+		switch category {
+		case "Lock", "Atomic", "Reference":
+			if len(cells) < 3 {
+				return fmt.Errorf("malformed synchronization row %q", line)
+			}
+			field := strings.Trim(strings.TrimSpace(cells[2]), "`")
+			if want[field] != category {
+				return fmt.Errorf("unexpected exact field or wrong category for %q: %s", field, category)
+			}
+			if (category == "Reference" && len(cells) != 5) || (category != "Reference" && len(cells) != 8) {
+				return fmt.Errorf("malformed synchronization row %q", line)
+			}
+			if _, exists := fields[field]; exists {
+				return fmt.Errorf("duplicate exact field %q", field)
+			}
+			fields[field] = category
+			counts[category]++
+		default:
+			if _, expected := permitRoles[category]; !expected {
+				continue
+			}
+			if _, exists := permits[category]; exists || len(cells) != 5 {
+				return fmt.Errorf("duplicate or malformed permit roles for %q", category)
+			}
+			permits[category] = [2]string{strings.TrimSpace(cells[2]), strings.TrimSpace(cells[3])}
+		}
+	}
+	for field := range want {
+		if _, exists := fields[field]; !exists {
+			return fmt.Errorf("missing exact field %q", field)
+		}
+	}
+	if counts["Lock"] != 5 || counts["Atomic"] != 3 || counts["Reference"] != 24 {
+		return fmt.Errorf("synchronization category counts differ: %v", counts)
+	}
+	for field, roles := range permitRoles {
+		if permits[field] != roles {
+			return fmt.Errorf("permit roles differ for %s", field)
+		}
+	}
+	text := compactText(section)
+	for _, rule := range []string{
+		"non-test production source under `./es/...` and `./cmd/es/...`",
+		"32 structurally synchronization-bearing fields: five direct lock fields, three `atomic.Bool` fields, and 24 transitive reference, request or wrapper fields",
+		"private replay path remains runtime-unwired",
+		"SQLite owns committed claim, progress, key and grant/use state",
+		"no package-level synchronization authority",
+		"Reference carriers convey those same protections without independent authority",
+		"confer no durable run truth, process-global state, lease, registry, poison subsystem, worker, or staging/results-root authority",
+		"rejected A3 topology in §7.5 remains excluded",
+	} {
+		if !strings.Contains(text, rule) {
+			return fmt.Errorf("missing synchronization boundary %q", rule)
+		}
+	}
+	return nil
+}
+
+func TestPrivateOriginalReplayProgressContractSelection(t *testing.T) {
+	plans := mustRead(t, "PLANS.md")
+	adr := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
+	submit := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+
+	selection := compactDocSection(t, plans,
+		"## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)",
+		"## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)")
+	assertContainsAll(t, "proposed integrated selection", selection,
+		"advances the SQLite head to schema 4", "immutable private codec 3",
+		"independently versioned migration 4", "same ES SQLite authority",
+		"Phase 1 is the local pooled `loadClaim` cleanup repair",
+		"one fresh independent audit", "contains the pooled repair, schema 4, codec 4", "reader-only PR",
+		"historical evidence", "allocator serves both fixture publishers",
+		"K1 limits fixture proof to the current row and each invocation's own write disposition",
+		"The full operational Validated No-Dispatch Evidence requirement remains unchanged",
+	)
+
+	prerequisite := compactDocSection(t, adr, "### 15B.1 Pooled loadClaim prerequisite and exit precedence",
+		"### 15B.2 Complete logical row and original fields")
+	assertContainsAll(t, "read prerequisite", prerequisite,
+		"five-second deadline", "before self-cancel",
+		"observed expiry even with nil response", "one bounded A1-equivalent rescue",
+		"withhold the wrapper", "No post-attempt rollback or semantic read retry",
+		"`loadClaimFresh`, its callers/lifetime", "Scope2 has no fresh-reader consumer",
+	)
+	row := compactDocSection(t, adr, "### 15B.2 Complete logical row and original fields",
+		"### 15B.3 Existing transition model and exact operation identity")
+	assertContainsAll(t, "immutable original and evolving row", row,
+		"all 47 physical fields", "`claim_rowid`", "`plan_binding`",
+		"`witness_resolved_mask`, `witness_inapplicable_mask`", "`replay_scope`",
+		"`intent_commitment`, `context_commitment`", "`envelope_sha256`",
+		"`run_ref` and assignment time", "`receipt_ref`", "`revision`",
+		"`effect_intent_ref`", "`staging_ref`", "`dispatch_ref`",
+		"`provider_observation_kind`", "`reconciliation_kind`",
+		"Every sealed field is fixed at establishment", "current mutable facts never enter the sealed original",
+	)
+	decisions := compactDocSection(t, adr, "### 15B.3 Existing transition model and exact operation identity",
+		"### 15B.5 Migration 4, physical constraints and compatibility")
+	assertContainsAll(t, "authenticated progress and write uncertainty", decisions,
+		"preserves codec 4 and scope 2", "dedicated mutable-only SQL",
+		"before stale-revision", "Only exact full expected record confirms own commit",
+		"The earlier write remains unknown", "Exact latest-operation replay is a separate query",
+		"Evidenced not-applied or refused", "retain known commit and withhold projection",
+	)
+	reconciliation := compactDocSection(t, adr, "#### Codec-4 reconciliation records an observation of this attempt",
+		"### 15B.4 Replay, contention and uncertainty decisions")
+	assertContainsAll(t, "codec-specific reconciliation and first marker", reconciliation,
+		"static owner/source mismatch", "Codec-1/2 checks and transitions",
+		"preserve every byte of the prior reconciliation tuple", "phase 3 or 4–7",
+		"NoDispatch (fixture no-marker observation)", "A new explicit op 5 is a storage-model transition",
+		"Recheck this predicate against the current row in the CAS writer transaction",
+		"`FixtureTerminalEvidence` is redacted and has private claim, run, marker, fact, outcome and receipt fields",
+		"`NewFixtureAcceptedEvidence", "`NewFixtureNotAcceptedEvidence",
+		"the separately constructed evidence receipt", "Candidate phase checks still follow latest replay classification",
+		"The same complete predecessor as A", "A/B after later explicit first marker", "C accepted on one branch",
+		"Old reconciliation mutation replayed", "Keep write unknown and withhold projection in that invocation",
+	)
+	k1 := docSection(t, adr, "#### K1 invocation scopes and operational gate", "### 15B.5 Migration 4, physical constraints and compatibility")
+	scopeRules := []struct {
+		name string
+		rule string
+	}{
+		{
+			"One write invocation and its recovery",
+			"Preserve known commit, evidenced not-applied/refused, or unknown. Only an authenticated full expected record can confirm its own COMMIT during recovery. Unknown recovery performs no second semantic write, automatic fresh mutation, rebase or retry loop. A failed recovery withholds projection. Failed post-commit authentication withholds projection and preserves known commit.",
+		},
+		{
+			"Later explicit fixture command",
+			"A separately supplied command requires fresh original authentication, a new live one-use borrow and the caller's exact current expected revision and mutation input. Evaluate a new marker against the current persisted row. An absent marker does not resolve a prior unknown write. The fixture predicate does not establish the complete operational no-dispatch predicate.",
+		},
+		{
+			"Later authenticated fixture read",
+			"Current replay may project authenticated current fixture state. It does not resolve a prior unknown write or rewrite a known disposition. Exact latest replay describes the current descriptor, without confirming ownership of an earlier uncertain transaction.",
+		},
+		{
+			"Operational dispatch or restart recovery",
+			"The full operational Validated No-Dispatch Evidence requirement in §8 remains unchanged. A later explicit fixture command grants no operational permission. Before provider wiring, a separately reviewed operating model must identify durable ES-owned evidence or other explicitly governed authoritative input for the relevant write dispositions, or explicitly re-derive that requirement with adequate safety proof.",
+		},
+	}
+	checkScopeRules := func(section string) string {
+		rows := make(map[string]string, len(scopeRules))
+		for _, line := range strings.Split(section, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "|") || line == "| Scope | Guarantee |" || line == "| --- | --- |" {
+				continue
+			}
+			cells := strings.Split(line, "|")
+			if len(cells) != 4 || cells[3] != "" {
+				return "malformed scope row"
+			}
+			name := strings.TrimSpace(cells[1])
+			if _, exists := rows[name]; exists {
+				return name
+			}
+			rows[name] = compactText(cells[2])
+		}
+		for _, expected := range scopeRules {
+			if rows[expected.name] != expected.rule {
+				return expected.name
+			}
+		}
+		if len(rows) != len(scopeRules) {
+			return "unexpected scope row"
+		}
+		return ""
+	}
+	if issue := checkScopeRules(k1); issue != "" {
+		t.Fatalf("K1 invocation boundary differs at %q", issue)
+	}
+	for _, tc := range []struct {
+		name        string
+		before      string
+		replacement string
+		wantIssue   string
+	}{
+		{
+			"K1FixtureClaimsOperationalPredicate",
+			"The fixture predicate does not establish the complete operational no-dispatch predicate.",
+			"The fixture predicate establishes the complete operational no-dispatch predicate.",
+			"Later explicit fixture command",
+		},
+		{
+			"K1CurrentReplayResolvesPriorUnknown",
+			"It does not resolve a prior unknown write or rewrite a known disposition.",
+			"It resolves a prior unknown write.",
+			"Later authenticated fixture read",
+		},
+		{
+			"K1AbsentMarkerResolvesPriorUnknown",
+			"An absent marker does not resolve a prior unknown write.",
+			"An absent marker resolves a prior unknown write.",
+			"Later explicit fixture command",
+		},
+		{
+			"K1AllowsAutomaticFreshMutationOrRebase",
+			"Unknown recovery performs no second semantic write, automatic fresh mutation, rebase or retry loop.",
+			"Unknown recovery may rebase and issue an automatic fresh mutation.",
+			"One write invocation and its recovery",
+		},
+		{
+			"K1OmitsFixtureAndOperationalDistinction",
+			"A later explicit fixture command grants no operational permission. ",
+			"",
+			"Operational dispatch or restart recovery",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(k1, tc.before) != 1 {
+				t.Fatalf("expected one K1 mutation target %q", tc.before)
+			}
+			mutant := strings.Replace(k1, tc.before, tc.replacement, 1)
+			if got := checkScopeRules(mutant); got != tc.wantIssue {
+				t.Fatalf("K1 mutant issue = %q, want %q", got, tc.wantIssue)
+			}
+		})
+	}
+
+	migration := compactDocSection(t, adr, "### 15B.5 Migration 4, physical constraints and compatibility",
+		"### 15B.5A Shared fixture object allocator and budget boundaries")
+	assertContainsAll(t, "append-only migration and compatibility", migration,
+		"Preserve literal bytes and ledger hashes 1–3", "both full-row EXCEPT directions",
+		"seven-character `sqlite_` prefix", "The validated lock-held version supplies the recovery baseline",
+		"exact initial shape", "always reject codec3", "Exact authenticated recorded old shape",
+		"TestSQLiteV3OldBinaryRefusesWithoutMutation", "A schema-2 binary result cannot qualify this schema-3 binary",
+		"separate codec-4 historical tuple compatibility rule", "Sole semantic transition writer",
+		"Classifies only the invocation and its own recovery",
+		"No SQL digest validation, evidence authentication, prior-response history",
+	)
+	assertContainsAll(t, "migration pre-COMMIT recovery", migration,
+		"against an authenticated lock-held baseline", "before self-cancel",
+		"ROLLBACK reports that its wrapper is already closed",
+		"checks the close result of the original unpublished pool before one fresh checked nonmigrating observation on the caller context",
+		"That observation alone classifies the old or current state",
+		"This pre-COMMIT route records zero COMMIT attempts",
+		"returns recovered-old refusal and closes the observation pool", "Recovery issues no migration retry",
+	)
+
+	allocator := compactDocSection(t, adr, "### 15B.5A Shared fixture object allocator and budget boundaries",
+		"### 15B.6 Prospective source and test map")
+	assertContainsAll(t, "count/create ownership and cleanup", allocator,
+		"`PublishSealedSynthetic` (scope 1)", "`PublishProgressOriginal` (scope 2)", "`allocateReplayObject`",
+		"before BEGIN dispatch", "request-independent private five-second", "immediately before self-cancel",
+		"withhold ordinary `Conn.Close`", "inert counted orphan", "Then run the existing permit consumption",
+		"Four custody-bearing claim slots", "32 object names", "32 aggregate durable reservations",
+		"2^32 reservations per envelope key", "16 MiB database/sidecar budget",
+	)
+	format := compactDocSection(t, submit, "### 6B. Proposed private original replay and durable claim progress",
+		"## 7. Narrow Durable Correlation Semantics")
+	assertContainsAll(t, "format, private interface and nonclaims", format,
+		"SQL schema and per-row codec are separate version axes",
+		"`synthetic_nonoperational_v1` / 1", "`synthetic_progress_nonoperational_v1` / 2",
+		"`ESRSPAY2`", "`ESRSENV2`", "`ESRSAAD2`", "`ESRSINT2`", "`ESRSCTX2`", "`ESRSFRZ2`",
+		"AEAD authenticates only the immutable original", "`ProgressOriginalView`",
+		"`WithAuthenticatedProgressOriginal", "`ApplyFixtureProgress", "full-record getter or verified boolean",
+		"Scope 1 participates in serialized", "bounded fixture no-marker observation and supplies no operational permission",
+		"The attempt expires when that invocation returns", "It cannot change the earlier disposition",
+		"Public structural reliable-request refusal and unkeyed Submit stay in force",
+	)
+	authority := compactDocSection(t, admission, "### Private replay progress candidate classification", "### 4E. Reopened seams")
+	assertContainsAll(t, "admission ownership and effect ceiling", authority,
+		"fixture-only and effect-ineligible at every phase", "Admission owns typed original",
+		"Custody owns sealed bytes", "existing durable service owns semantic transition checks",
+		"SQLite enforces persisted shape, CAS and storage deltas",
+		"earlier invocation's write disposition unchanged", "cross-restart authority lies outside this fixture slice",
+		"authentication-before-existence-disclosure", "Nomad owns the current accepted-execution lifecycle",
+	)
+	acceptance := compactDocSection(t, adr, "### 15B.6 Prospective source and test map", "## 16. Explicit Non-Claims And Open Decisions")
+	assertContainsAll(t, "prospective acceptance map", acceptance,
+		"TestSQLitePooledClaimReadCleanup", "TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation",
+		"TestPrivateReplayProgressConcurrencyAndCommitOutcome", "TestPrivateReplayProgressHasNoEffectPaths",
+		"FixtureNoMarkerThenFirstMarkerAfterRestart", "UnknownMarkerCommitDoesNotRetryWithinInvocation",
+		"IndistinguishableRestartHistoriesHaveSameFixtureEligibility", "ExplicitLaterFixtureCommandDoesNotConfirmPriorUnknown",
+		"CurrentReplayDoesNotConfirmPriorUnknown", "ExistingMarkerExactReplayOnly",
+		"TestPrivateReplaySharedObjectAllocation", "CrossSelectorFinalSlotHelperProcess",
+		"cd \"$SCHEMA3_SOURCE\" || exit", "workspace-off cached module graph",
+		"Command results belong to a separately bound source generation and evidence record",
+		"Consolidated repair path map", "TestPrivateReplayProgressAdmissionUnknownNoEffects",
+		"executes real COMMIT, reports the modeled response failure",
+	)
+}
+
 func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	plans := mustRead(t, "PLANS.md")
 	contracts := mustRead(t, ".docs/execution_lifecycle/contracts.md")
@@ -12555,8 +12951,16 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	remoteAlpha := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	linuxQualification := mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md")
 
-	currentStatus := compactDocSection(t, plans, "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
+	currentStatus := compactDocSection(t, plans, "## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)", "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)")
 	assertContainsAll(t, "integration status", currentStatus,
+		"PR #10 completed A1 source publication",
+		"f1aa8b934cc26c16a966a110c7b408abdaeadce7",
+		"8dd27f9acba98ed70d93736bdef8300ef1aba53f",
+		"public reliable-submit authority",
+		"K1 owner contract was selected for bounded implementation",
+	)
+	priorStatus := compactDocSection(t, plans, "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
+	assertContainsAll(t, "prior integration status", priorStatus,
 		"2478a24a18852f1abd7d474c0525c46bd2c05e5e",
 		"e7defd3a0df278ad70762f17f0f2a5b1c14a795b",
 		"fb9ae55797d9fcc02863c23fe8d3e43d16eac542",

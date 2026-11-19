@@ -2,6 +2,83 @@
 
 ## Status
 
+### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
+
+The latest independent audit rejected manifest
+`0812091529c67f4bc46d0bc343b3dea8595e63a461264e143d51606e581e0c06`.
+This **Bounded slice rule refinement** on the reliable-submit **Reopened redesign
+seam** completes the unpublished opener's pre-COMMIT cleanup routing and aligns
+admission §7.4 with the existing typed synchronization inventory. Persistence
+ADR §15B.5 requires checked nonmigrating readback after safe pool disposition.
+The private scope remains fixture-only and runtime-unwired. Public structural
+reliable-request refusal and unkeyed Submit remain current invariants.
+Operational cross-restart write-uncertainty authority remains outside this
+selection. Independent acceptance of the resulting bytes is a later gate.
+
+### Consolidated private replay-progress repair selected (2026-11-19)
+
+The fresh read-only audit rejected the thirty-path manifest
+`110cef71ba25f61b70297b37cc5a50a68732d639845e0ac4315d06cedcdbc1e3`
+over PR #10. Select one **Bounded slice rule refinement** on the
+reliable-submit **Reopened redesign seam** in the same unstaged candidate.
+Repair migration opening authority and literal namespace qualification,
+confirmation eligibility and borrow lifetime, current reconciliation
+predicates, definite occupied disposition, fixture terminal assertion
+association and scope-1 permit preflight. Add an external test-only
+admission lost-response witness under the existing no-effect boundary.
+The persistence ADR §15B and submit contract §6B govern the repair.
+The selected operating model, formats and migration literals remain
+the same. Independent acceptance of repaired bytes is a later gate.
+
+## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)
+
+PR #10 completed A1 source publication by squash merge on official `trunk_dev`
+at `f1aa8b934cc26c16a966a110c7b408abdaeadce7`, sole parent
+`fb9ae55797d9fcc02863c23fe8d3e43d16eac542`, complete 427-leaf tree
+`8dd27f9acba98ed70d93736bdef8300ef1aba53f`. That tree also identifies the
+preserved local A1 source at `fd2115ca8f44a615627adb08926896a1e052dc30`.
+Source publication grants no deployment, native qualification or public
+reliable-submit authority. The PR #9 and A1 selection section below records
+the previous planning state.
+
+Select private original replay with durable claim progress as one
+**Bounded slice rule extension** on the reliable-submit **Reopened redesign
+seam**. This candidate advances the SQLite head to schema 4, preserves
+immutable private codec 3 in `synthetic_nonoperational_v1` and carries
+historical codec 1/2 compatibility. Codec 4 and independently versioned
+migration 4 use the same ES
+SQLite authority, caller/key occupation, and one original and one attempt.
+The separate `synthetic_progress_nonoperational_v1` scope remains fixture-only,
+runtime-unwired and effect-ineligible at every phase. Public structural
+reliable-request refusal and unkeyed Submit remain current invariants.
+
+The persistence ADR §15B and submit contract §6B own the fixture semantics.
+The reconciled proposal keeps one codec-4 reconciliation observation as
+historical evidence, with a first fixture marker and independent terminal
+evidence for the same run. K1 limits fixture proof to the current row and
+each invocation's own write disposition. A later explicit fixture command
+uses fresh authentication, a new borrow and the exact current revision.
+It cannot resolve an earlier unknown response or supply operational
+permission. The full operational Validated No-Dispatch Evidence requirement
+remains unchanged. A separately reviewed cross-restart authority for
+relevant write dispositions is required before provider wiring. The shared
+count/create allocator serves both fixture publishers, including scope 1.
+The legacy codec-1/2 predicates and the codec-3 reader remain current source.
+Phase 0 is architectural review of the contract and acceptance map. Phase 1
+is the local pooled `loadClaim` cleanup repair and its bound regression. Phase
+2 implements codec, scope, format and schema. Phase 3 composes durable
+successors with authenticated private original replay. Phase 4 validates the
+integrated restart, concurrency, unknown-outcome and no-effect behavior.
+Phase 5 is one fresh independent audit of the integrated source. The exact
+K1 owner contract was selected for bounded implementation. This source
+candidate contains the pooled repair, schema 4, codec 4 and the integrated
+fixture path. Acceptance depends on the source-bound validation and a
+separate independent audit.
+The function-owned `loadClaimFresh` reader and codec-3 callers are outside
+the cleanup prerequisite. No phase selects a standalone documentation or
+reader-only PR. Operational ingress, identity, provider and recovery
+qualification require later decisions.
+
 ## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)
 
 PR #8 completed development acceptance, local source preservation, remote

@@ -125,9 +125,9 @@ func TestSQLiteClaimStoreMalformedAndInvalidCodecFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sqliteRecordArgs: %v", err)
 		}
-		args[len(args)-1] = int64(durableClaimCodecVersionSynthetic + 1)
+		args[len(args)-1] = int64(durableClaimCodecVersionProgress + 1)
 		// Only the deliberate corruption seed bypasses the current insert guard.
-		if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v3`); err != nil {
+		if _, err := store.db.Exec(`DROP TRIGGER reliable_submit_claims_guard_insert_v4`); err != nil {
 			t.Fatalf("drop insert guard for corruption seed: %v", err)
 		}
 		if _, err := store.db.Exec(`PRAGMA ignore_check_constraints=ON`); err != nil {
