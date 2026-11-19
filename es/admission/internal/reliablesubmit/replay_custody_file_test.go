@@ -38,6 +38,239 @@ func fixtureReplayObject(t *testing.T, values ...[]byte) []byte {
 	return out
 }
 
+// This is a source-order assertion. The dynamic publication case below proves
+// the retained file is empty, but does not hook or observe cipher.GCM.Seal.
+func a1ReadAssertPreSealSource(t *testing.T) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "replay_custody_file.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publish *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "PublishSealedSynthetic" {
+			publish = fn
+			break
+		}
+	}
+	if publish == nil {
+		t.Fatal("publication source function missing")
+	}
+	var checkPos, sealPos token.Pos
+	ast.Inspect(publish.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var rendered bytes.Buffer
+		if err := format.Node(&rendered, fset, call.Fun); err != nil {
+			t.Fatal(err)
+		}
+		switch rendered.String() {
+		case "c.store.consumeReplaySealPermit":
+			checkPos = call.Pos()
+		case "gcm.Seal":
+			sealPos = call.Pos()
+		}
+		return true
+	})
+	if checkPos == token.NoPos || sealPos == token.NoPos || checkPos >= sealPos {
+		t.Fatal("key-use check does not precede Seal in publication source")
+	}
+	guardedReturn := false
+	for _, stmt := range publish.Body.List {
+		if branch, ok := stmt.(*ast.IfStmt); ok && branch.Init != nil && branch.Pos() <= checkPos && checkPos < branch.End() {
+			if len(branch.Body.List) != 1 {
+				t.Fatal("pre-Seal key-check error has no direct refusal return")
+			}
+			_, guardedReturn = branch.Body.List[0].(*ast.ReturnStmt)
+			if !guardedReturn {
+				t.Fatal("pre-Seal key-check error has no direct refusal return")
+			}
+			break
+		}
+	}
+	if !guardedReturn {
+		t.Fatal("pre-Seal key-check refusal guard missing")
+	}
+}
+
+func a1ReadCustodyFixture(t *testing.T) (*PrivateReplayCustody, durableClaimRecord, PrivateReplayKeys, PrivateReplayFrozen, string) {
+	t.Helper()
+	record, _ := syntheticReplayRecordFixture(t)
+	keys := fixtureReplayKeys(t, 74)
+	root := fixtureReplayRoot(t)
+	ctx, cancel := a1ReadContext(t)
+	defer cancel()
+	custody, err := OpenPrivateReplayCustody(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = custody.Close() })
+	t.Cleanup(func() { a1ReadClearHooks(custody.store) })
+	frozen, err := NewPrivateReplayFrozen(record.claim, record.plan, keys, fixtureReplayPayload(t, record, keys))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return custody, record, keys, frozen, root
+}
+
+func TestReplayOriginalKeyReadCallerRefusal(t *testing.T) {
+	t.Run("publication_pre_seal_retains_inert_file_and_burns_permit", func(t *testing.T) {
+		a1ReadAssertPreSealSource(t)
+		custody, record, keys, frozen, root := a1ReadCustodyFixture(t)
+		ctx, cancel := a1ReadContext(t)
+		grant, err := custody.ReserveSealUse(ctx, frozen)
+		cancel()
+		if err != nil || grant.permit == nil {
+			t.Fatalf("setup grant: %v", err)
+		}
+		before := a1ReadSnapshot(t, custody.store, keys)
+		requestCtx, stop := context.WithCancel(context.Background())
+		defer stop()
+		reached := false
+		custody.store.a1ReadAfterBegin = func(*sql.Conn) error {
+			reached = true
+			stop()
+			return nil
+		}
+		publication, err := custody.PublishSealedSynthetic(requestCtx, frozen, grant)
+		a1ReadClearHooks(custody.store)
+		if !reached || !errors.Is(err, errClaimStoreUnavailable) || publication.descriptor.valid() {
+			t.Errorf("pre-Seal refusal: reached=%t valid=%t error=%v", reached, publication.descriptor.valid(), err)
+		}
+		if !grant.permit.used || grant.permit.consume(custody.store, keys.envelopeID, keys.envelopeFP, frozen.digest) {
+			t.Error("failed publication restored consumed permit")
+		}
+		path := filepath.Join(root, "objects", "v1", fmt.Sprintf("%x", frozen.objectID))
+		empty, err := os.ReadFile(path)
+		if err != nil || len(empty) != 0 {
+			t.Errorf("inert candidate file not retained empty: size=%d error=%v", len(empty), err)
+		}
+		if after := a1ReadSnapshot(t, custody.store, keys); after != before {
+			t.Errorf("failed publication changed durable facts: before=%+v after=%+v", before, after)
+		}
+		fresh, err := NewPrivateReplayFrozen(record.claim, record.plan, keys, fixtureReplayPayload(t, record, keys))
+		if err != nil || fresh.objectID == frozen.objectID {
+			t.Fatalf("new object identity unavailable: %v", err)
+		}
+		ctx, cancel = a1ReadContext(t)
+		newGrant, err := custody.ReserveSealUse(ctx, fresh)
+		if err != nil || newGrant.permit == nil {
+			t.Errorf("fresh legitimate grant unavailable: %v", err)
+		} else {
+			next, publishErr := custody.PublishSealedSynthetic(ctx, fresh, newGrant)
+			if publishErr != nil || !next.descriptor.valid() {
+				t.Errorf("new publication failed: valid=%t error=%v", next.descriptor.valid(), publishErr)
+			}
+		}
+		cancel()
+	})
+
+	t.Run("establish_preclaim_refuses_and_retains_published_bytes", func(t *testing.T) {
+		custody, _, keys, frozen, root := a1ReadCustodyFixture(t)
+		ctx, cancel := a1ReadContext(t)
+		grant, err := custody.ReserveSealUse(ctx, frozen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publication, err := custody.PublishSealedSynthetic(ctx, frozen, grant)
+		cancel()
+		if err != nil || !publication.descriptor.valid() {
+			t.Fatalf("setup publication: %v", err)
+		}
+		path := filepath.Join(root, filepath.FromSlash(publication.descriptor.ref))
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := a1ReadSnapshot(t, custody.store, keys)
+		requestCtx, stop := context.WithCancel(context.Background())
+		defer stop()
+		reached := false
+		custody.store.a1ReadAfterBegin = func(*sql.Conn) error {
+			reached = true
+			stop()
+			return nil
+		}
+		_, created, err := custody.EstablishSyntheticClaim(requestCtx, frozen, publication)
+		a1ReadClearHooks(custody.store)
+		if !reached || created || !errors.Is(err, errClaimStoreUnavailable) {
+			t.Errorf("preclaim refusal: reached=%t created=%t error=%v", reached, created, err)
+		}
+		if after := a1ReadSnapshot(t, custody.store, keys); after != before {
+			t.Errorf("failed preclaim changed durable facts: before=%+v after=%+v", before, after)
+		}
+		current, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(current, original) {
+			t.Errorf("preclaim changed published bytes: error=%v", err)
+		}
+		ctx, cancel = a1ReadContext(t)
+		_, created, err = custody.EstablishSyntheticClaim(ctx, frozen, publication)
+		cancel()
+		if err != nil || !created {
+			t.Errorf("fresh same-store establishment failed: created=%t error=%v", created, err)
+		}
+	})
+
+	t.Run("authenticated_existing_claim_refuses_zero_callback_then_recovers", func(t *testing.T) {
+		custody, record, keys, frozen, root := a1ReadCustodyFixture(t)
+		ctx, cancel := a1ReadContext(t)
+		grant, err := custody.ReserveSealUse(ctx, frozen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publication, err := custody.PublishSealedSynthetic(ctx, frozen, grant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, created, err := custody.EstablishSyntheticClaim(ctx, frozen, publication)
+		cancel()
+		if err != nil || !created {
+			t.Fatalf("setup claim: created=%t error=%v", created, err)
+		}
+		path := filepath.Join(root, filepath.FromSlash(publication.descriptor.ref))
+		original, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := a1ReadSnapshot(t, custody.store, keys)
+		requestCtx, stop := context.WithCancel(context.Background())
+		defer stop()
+		reached, callbacks := false, 0
+		custody.store.a1ReadAfterBegin = func(*sql.Conn) error {
+			reached = true
+			stop()
+			return nil
+		}
+		err = custody.WithAuthenticatedClaim(requestCtx, record.claim, keys, func(AuthenticatedClaimMeta, []byte) error {
+			callbacks++
+			return nil
+		})
+		a1ReadClearHooks(custody.store)
+		if !reached || !errors.Is(err, errClaimStoreUnavailable) || callbacks != 0 {
+			t.Errorf("authenticated read refusal: reached=%t callbacks=%d error=%v", reached, callbacks, err)
+		}
+		if after := a1ReadSnapshot(t, custody.store, keys); after != before {
+			t.Errorf("failed authenticated read changed durable facts: before=%+v after=%+v", before, after)
+		}
+		current, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(current, original) {
+			t.Errorf("failed authenticated read changed sealed bytes: error=%v", err)
+		}
+		ctx, cancel = a1ReadContext(t)
+		err = custody.WithAuthenticatedClaim(ctx, record.claim, keys, func(AuthenticatedClaimMeta, []byte) error {
+			callbacks++
+			return nil
+		})
+		cancel()
+		if err != nil || callbacks != 1 {
+			t.Errorf("fresh same-store authenticated read failed: callbacks=%d error=%v", callbacks, err)
+		}
+	})
+}
+
 func fixtureReplayObjectAbsent(t *testing.T, absent map[int]bool, values ...[]byte) []byte {
 	t.Helper()
 	fields := make([]replayField, len(values))

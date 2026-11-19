@@ -3322,6 +3322,28 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"A high-level `sql.Conn.Close()` alone is not disposal proof",
 		"A1 original-key read cleanup",
 	)
+	assertContainsAll(t, "A1 original-key read cleanup contract", revisionCAS,
+		"A1 original-key read cleanup — Bounded slice rule refinement",
+		"one read transaction on one checked connection",
+		"Semantic BEGIN, SELECT and COMMIT use the caller's context",
+		"read never registers a missing key",
+		"Invalid keys retain unsupported precedence",
+		"already-canceled request",
+		"before dispatching read BEGIN",
+		"nonnil result after BEGIN dispatch is potentially post-execution",
+		"fixed unexported five-second budget",
+		"Confirmed rollback permits ordinary connection release",
+		"failed, expired or unconfirmed rollback",
+		"marks COMMIT attempted before invoking COMMIT",
+		"no post-attempt rollback or durable-claim reload",
+		"no-ordinary-release decision precedes discard",
+		"at most two attempts",
+		"withhold that connection from ordinary",
+		"one-use Seal permit",
+		"inert empty/unclaimed file",
+		"no-adoption and no-object-ID-reuse",
+		"shared `beginRead`/`rollbackIfOpen` callers",
+	)
 	assertContainsAll(t, "reliable-submit persistence ADR effect intent", effectIntent,
 		"committed pure-model claim phase from orthogonal provider-effect facts",
 		"assigned but no provider effect may have started",
@@ -12533,13 +12555,18 @@ func TestIntegratedAcceptanceGateDocumentationIsConsistent(t *testing.T) {
 	remoteAlpha := mustRead(t, ".docs/system_overview/remote_supported_host_alpha.md")
 	linuxQualification := mustRead(t, ".docs/system_overview/supported_linux_host_qualification.md")
 
-	currentStatus := compactDocSection(t, plans, "## Post-PR #8 merged source and O2 hardening selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
+	currentStatus := compactDocSection(t, plans, "## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)", "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)")
 	assertContainsAll(t, "integration status", currentStatus,
 		"2478a24a18852f1abd7d474c0525c46bd2c05e5e",
 		"e7defd3a0df278ad70762f17f0f2a5b1c14a795b",
-		"source publication", "O2", "A1",
+		"fb9ae55797d9fcc02863c23fe8d3e43d16eac542",
+		"be8437c8ce48cbcbed53f60a03810283abbd9235",
+		"PR #9 completed source publication of O2",
+		"A1 original-key read cleanup",
 		"synthetic_nonoperational_v1", "runtime-unwired", "effect-ineligible",
 		"unavailable as public reliable Submit", "official `trunk_dev`",
+		"does not qualify operational behavior",
+		"does not itself supply independent acceptance or runtime qualification",
 	)
 	historicalStatus := compactDocSection(t, plans, "## Historical current-remote-base private synthetic replay custody selection (2026-11-17)", "This document is the authoritative planning document")
 	assertContainsAll(t, "historical integration selection", historicalStatus,

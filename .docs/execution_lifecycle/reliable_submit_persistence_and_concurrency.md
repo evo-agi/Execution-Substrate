@@ -344,8 +344,77 @@ record and revision semantics. A canceled caller may remain unavailable:
 request-independent cleanup does not detach semantic work from cancellation.
 A high-level `sql.Conn.Close()` alone is not disposal proof, and no uncertain
 transaction may return to the usable pool. This rule changes neither codec-3
-claim/grant/key guards nor A1 original-key read cleanup, which remains a
-separate before-runtime concern.
+claim/grant/key guards nor A1 original-key read cleanup, selected separately
+below as a before-runtime concern.
+
+**A1 original-key read cleanup — Bounded slice rule refinement.**
+`checkOriginalReplayKeys` keeps its binding-key, envelope-key and optional
+ACTIVE checks in one read transaction on one checked connection. Semantic
+BEGIN, SELECT and COMMIT use the caller's context. The read never registers a
+missing key. Purpose/fingerprint matching, ACTIVE requirements for new use,
+RETIRED-original eligibility for existing-claim verification, and
+REVOKED/missing/mismatched refusal remain unchanged. A transaction's paired-key
+snapshot is not a promise of instantaneous cross-process revocation; the next
+fresh-context transaction observes a later committed key-state transition.
+
+Invalid keys retain unsupported precedence. An already-canceled request
+returns fixed unavailable before read BEGIN. Cancellation observed at
+acquisition, semantic failure or the final success check cannot become success
+because cleanup succeeded. An A1-local release guard is installed before
+dispatching read BEGIN or its test-only fault seam. It distinguishes
+not-dispatched, known-begun, COMMIT-attempted and known-ended states. A nonnil
+result after BEGIN dispatch is potentially post-execution: the exact driver
+connection is discarded before ordinary pool return, and the read returns
+unavailable without retry or durable-write outcome classification. Known
+pre-dispatch cancellation need not discard a connection on which no
+transaction was dispatched.
+
+After known BEGIN and before read-COMMIT attempt, every exit confirms ROLLBACK
+with a new private context independent of caller cancellation. The cleanup
+context has a fixed unexported five-second budget, created when rollback
+starts, and its cancel function is always released. This bounds the context,
+not every driver or OS close call; no timeout worker is selected. Confirmed
+rollback permits ordinary connection release and preserves the safe operation
+result. A failed, expired or unconfirmed rollback instead discards that exact
+connection and returns fixed unavailable, overriding any ordinary result.
+Confirmation samples the cleanup context immediately after the rollback
+response and before releasing its cancel function. Only a nil rollback response
+with no observed cleanup-context error permits ordinary release; a nil response
+after observed expiry is unconfirmed and follows the same exact-discard and
+fixed-unavailable rule. This post-operation observation is not an atomic
+wall-clock guarantee through the later connection close.
+A possibly open read transaction never reaches ordinary `sql.Conn.Close()`.
+
+The read marks COMMIT attempted before invoking COMMIT or its test-only seam.
+A nonnil COMMIT result requires exact-connection discard, fixed unavailable,
+and no post-attempt rollback or durable-claim reload: this read has no write
+winner to classify. Known successful COMMIT ends the transaction and permits
+ordinary release. Cancellation checked before an explicit success return
+still refuses; cancellation after that observation/return boundary is not
+promised detectable. Cleanup never moves semantic key queries to a background
+context or authorizes success, retry, or a key/grant mutation.
+
+The A1-local no-ordinary-release decision precedes discard. The existing
+supported exact-connection primitive is unchanged. If its first disposal
+response is unconfirmed, one direct synchronous rescue with the real primitive
+is permitted; neither attempt restores success, and there are at most two
+attempts. If both remain unconfirmed, withhold that connection from ordinary
+`Conn.Close()` and return unavailable. This connection-local choice may
+retain a transaction or lose pool capacity; it proves neither physical close
+nor later store availability under simultaneous disposal failure. It adds no
+store-wide poison flag, registry, retry loop, finalizer, background disposer,
+or whole-store reopen. A high-level Close or pool count alone is not
+physical-close proof.
+
+The one-use Seal permit is consumed before this key check and stays burned on
+failure; there is no refund or same-permit retry. Failure stops before Seal,
+claim INSERT, and the authenticated callback at their respective callers.
+Publication creates an owner-only candidate file before consuming the permit;
+a failed check may leave an inert empty/unclaimed file. Existing no-delete,
+no-adoption and no-object-ID-reuse rules remain, and a later valid publication
+uses a new legitimate permit and object ID. A1 changes neither shared
+`beginRead`/`rollbackIfOpen` callers nor O2, C1/D1, schema, migration,
+codec, public configuration, or runtime wiring.
 
 ## 8. Provider-Effect Intent And Ordering
 
