@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"time"
 )
 
 const (
@@ -121,22 +122,104 @@ FROM reliable_submit_key_registry WHERE key_id=? COLLATE BINARY`, id).Scan(&reco
 	return nil
 }
 
-func (s *sqliteClaimStore) checkOriginalReplayKeys(ctx context.Context, keys PrivateReplayKeys, activeOnly bool) error {
+const a1ReadRollbackBudget = 5 * time.Second
+
+type a1ReadTransactionState uint8
+
+const (
+	a1ReadNotDispatched a1ReadTransactionState = iota
+	a1ReadBeginDispatched
+	a1ReadKnownBegun
+	a1ReadCommitAttempted
+	a1ReadKnownEnded
+)
+
+// A nonnil first response may itself be uncertain. The second attempt is
+// always the unchanged real exact-connection primitive, never a semantic retry.
+func (s *sqliteClaimStore) discardA1ReadConnection(conn *sql.Conn) bool {
+	first := discardUncertainSQLiteConn
+	if s.a1ReadDiscardAttempt != nil {
+		first = s.a1ReadDiscardAttempt
+	}
+	if first(conn) == nil {
+		return true
+	}
+	return discardUncertainSQLiteConn(conn) == nil
+}
+
+func (s *sqliteClaimStore) checkOriginalReplayKeys(ctx context.Context, keys PrivateReplayKeys, activeOnly bool) (out error) {
 	if !keys.valid {
 		return errClaimStoreUnsupported
 	}
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
+	}
 	conn, err := s.checkedConn(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return errClaimStoreUnavailable
+		}
 		return err
 	}
-	defer conn.Close()
-	if err := beginRead(ctx, conn); err != nil {
-		return err
+	state := a1ReadNotDispatched
+	safeRelease := true
+	defer func() {
+		switch state {
+		case a1ReadBeginDispatched, a1ReadCommitAttempted:
+			// Decide against ordinary pool return before disposal. No
+			// ROLLBACK follows an attempted read COMMIT.
+			safeRelease = false
+			safeRelease = s.discardA1ReadConnection(conn)
+			out = errClaimStoreUnavailable
+		case a1ReadKnownBegun:
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), a1ReadRollbackBudget)
+			rollback := func(ctx context.Context, conn *sql.Conn) error {
+				_, err := conn.ExecContext(ctx, "ROLLBACK")
+				return err
+			}
+			if s.a1ReadRollbackAttempt != nil {
+				rollback = s.a1ReadRollbackAttempt
+			}
+			rollbackErr := rollback(cleanupCtx, conn)
+			cleanupErr := cleanupCtx.Err() // observe before our own cancel changes the context
+			cancel()
+			if rollbackErr != nil || cleanupErr != nil {
+				safeRelease = false
+				safeRelease = s.discardA1ReadConnection(conn)
+				out = errClaimStoreUnavailable
+			} else if ctx.Err() != nil {
+				// Confirmed cleanup cannot convert a canceled request to success.
+				out = errClaimStoreUnavailable
+			}
+		}
+		if safeRelease {
+			_ = conn.Close()
+		}
+	}()
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
 	}
-	committed := false
-	defer rollbackIfOpen(ctx, conn, &committed)
+	begin := beginRead
+	if s.a1ReadBeginAttempt != nil {
+		begin = s.a1ReadBeginAttempt
+	}
+	state = a1ReadBeginDispatched
+	if err := begin(ctx, conn); err != nil {
+		return errClaimStoreUnavailable
+	}
+	state = a1ReadKnownBegun
+	if s.a1ReadAfterBegin != nil {
+		if err := s.a1ReadAfterBegin(conn); err != nil {
+			return err
+		}
+	}
 	if err := s.registerOrCompareReplayKey(ctx, conn, keys.bindingID, 1, keys.bindingFP, false); err != nil {
 		return err
+	}
+	if s.a1ReadAfterFirstKey != nil {
+		if err := s.a1ReadAfterFirstKey(conn); err != nil {
+			return err
+		}
 	}
 	if err := s.registerOrCompareReplayKey(ctx, conn, keys.envelopeID, 2, keys.envelopeFP, false); err != nil {
 		return err
@@ -151,10 +234,21 @@ func (s *sqliteClaimStore) checkOriginalReplayKeys(ctx context.Context, keys Pri
 			}
 		}
 	}
-	if err := commit(ctx, conn); err != nil {
-		return err
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
 	}
-	committed = true
+	commitRead := commit
+	if s.a1ReadCommitAttempt != nil {
+		commitRead = s.a1ReadCommitAttempt
+	}
+	state = a1ReadCommitAttempted
+	if err := commitRead(ctx, conn); err != nil {
+		return errClaimStoreUnavailable
+	}
+	state = a1ReadKnownEnded
+	if ctx.Err() != nil {
+		return errClaimStoreUnavailable
+	}
 	return nil
 }
 

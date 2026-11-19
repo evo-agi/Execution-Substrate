@@ -33,6 +33,12 @@ type sqliteClaimStore struct {
 	casCommitAttempt        func(context.Context, *sql.Conn) error // O2 test-only CAS COMMIT response seam.
 	casRollbackAttempt      func(context.Context, *sql.Conn) error // O2 test-only CAS ROLLBACK response seam.
 	casDiscardAttempt       func(*sql.Conn) error                  // O2 test-only exact-discard response seam.
+	a1ReadBeginAttempt      func(context.Context, *sql.Conn) error // A1 test-only read BEGIN response seam; nil in production.
+	a1ReadAfterBegin        func(*sql.Conn) error                  // A1 test-only known-BEGIN observation seam.
+	a1ReadAfterFirstKey     func(*sql.Conn) error                  // A1 test-only first-key observation seam.
+	a1ReadCommitAttempt     func(context.Context, *sql.Conn) error // A1 test-only read COMMIT response seam.
+	a1ReadRollbackAttempt   func(context.Context, *sql.Conn) error // A1 test-only read ROLLBACK response seam.
+	a1ReadDiscardAttempt    func(*sql.Conn) error                  // A1 test-only first-discard response seam.
 }
 
 type sqliteClaimStoreOptions struct {

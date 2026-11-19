@@ -2,7 +2,7 @@
 
 ## Status
 
-## Post-PR #8 merged source and O2 hardening selection (2026-11-18)
+## Post-PR #9 source publication and A1 read cleanup selection (2026-11-18)
 
 PR #8 completed development acceptance, local source preservation, remote
 source publication, and the squash merge on official `trunk_dev` at
@@ -15,15 +15,22 @@ seam**, limited to `synthetic_nonoperational_v1`: runtime-unwired,
 effect-ineligible, and unavailable as public reliable Submit. Public
 structural reliable-request refusal and unkeyed Submit remain in force.
 
-The next selected source-only refinement is O2, historical codec-1/2 CAS
-transaction cleanup after known BEGIN success and across COMMIT uncertainty.
-The persistence ADR owns its bounded contract; tests and implementation must
-prove request-independent rollback, exact-connection disposal when needed,
-and unchanged durable/replay results. This uncommitted O2 patch requires its
-own focused validation and fresh independent audit before acceptance. A1,
-canceled-context original-key read availability and read-transaction cleanup,
-remains a separate before-runtime concern and is not closed by O2. Neither
-slice authorizes runtime wiring or public reliable Submit.
+PR #9 completed source publication of O2, the bounded historical codec-1/2
+CAS cleanup refinement, by squash merge on official `trunk_dev` at
+`fb9ae55797d9fcc02863c23fe8d3e43d16eac542`, complete tree
+`be8437c8ce48cbcbed53f60a03810283abbd9235`. The persistence ADR
+retains O2's accepted contract and physical-close evidence limits. Source
+publication does not qualify operational behavior, native installed-source
+behavior, deployment, or public reliable Submit.
+
+A1 original-key read cleanup is the selected source-only **Bounded slice rule
+refinement** on the reliable-submit **Reopened redesign seam**. Its owner rule
+requires request-independent, bounded cleanup or exact-connection disposal
+after read-transaction uncertainty, while preserving paired-key snapshot and
+key-lifecycle behavior. The private path remains limited to
+`synthetic_nonoperational_v1`: runtime-unwired, effect-ineligible, and
+unavailable as public reliable Submit. A1 source work does not itself supply
+independent acceptance or runtime qualification.
 
 ## Historical current-remote-base private synthetic replay custody selection (2026-11-17)
 
