@@ -910,10 +910,14 @@ whole run-root reclamation, adoption, or alternate claim path is selected.
 ### 7.4 Exact synchronized mutable-state inventory
 
 The non-test production source under `./es/...` and `./cmd/es/...` contains
-32 structurally synchronization-bearing fields: five direct lock fields,
-three `atomic.Bool` fields, and 24 transitive reference, request or wrapper
+51 structurally synchronization-bearing fields: seven direct lock fields,
+four `atomic.Bool` fields, and 40 transitive reference, request or wrapper
 fields. The private fixture code is included in this source inventory. The
 private replay path remains runtime-unwired.
+`OperationalCustody.prestageProof` and `operationalProvider.exchangeEntry` are
+nil-default, instance-scoped proof function fields. They add no primitive lock,
+atomic field, shared registry or durable state; only the existing custody lock
+protects proof configuration.
 
 | Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
 | --- | --- | --- | --- | --- | --- |
@@ -922,12 +926,31 @@ private replay path remains runtime-unwired.
 | Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |
 | Lock | `es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` | One reservation and publication attempt |
 | Lock | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.mu:sync.RWMutex` | Scope-2 custody handle, its closed state and coordination with issuer qualification | `OpenPrivateReplayProgressCustody` initializes before publication. `PrivateReplayProgressCustody.Close` clears custody under the write lock. | The read-locked lookup, freeze, reserve, publish, establish, original load, confirmation, progress read and mutation paths qualify through `PrivateReplayProgressCustody.qualified` before using the handle. | One issuing custody handle |
+| Lock | `es/admission/internal/reliablesubmit:OperationalCustody.mu:sync.RWMutex` | Open custody and held original borrows | `OperationalCustody.Close` | `OperationalCustody.WithOperationalOriginal`, `OperationalCustody.EstablishOperational`, `OperationalCustody.ConfigureOperationalCommitFaultForProof`, `OperationalCustody.ConfigureOperationalPrestageProofForProof` | One issuing custody handle; the last method configures only nil-default, instance-scoped pre-stage proof within the test lifetime |
+| Lock | `es/admission:handoffOwner.mu:sync.Mutex` | One callback's open and marker-to-send decision | `handoffOwner.close`, `liveSender.consume` | `liveSender.consume` before transport entry | One synchronous handoff owner |
+| Atomic | `es/admission/internal/reliablesubmit:OperationalAccess.busy:atomic.Bool` | Exclusive use of one authenticated access during a command | `OperationalAccess.Prestage`, `OperationalAccess.applyOperational`, `OperationalAccess.BindVerifiedOperationalObservation`, `OperationalAccess.canBind`, `OperationalAccess.VerifyOperationalReceipt` | The same compare-and-swap operations | One authenticated original borrow |
 | Atomic | `es/admission/internal/reliablesubmit:progressAccessState.used:atomic.Bool` | One authenticated access consumption | `PrivateReplayProgressCustody.consumeProgressAccess` atomically checks and sets | The same compare-and-swap | One callback borrow |
 | Atomic | `es/admission/internal/reliablesubmit:progressAttemptState.used:atomic.Bool` | One establishment confirmation attempt | `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` atomically checks and sets | The same compare-and-swap | One establishment invocation |
 | Atomic | `es/admission/internal/reliablesubmit:progressOriginalLifetime.closed:atomic.Bool` | Expiration of one original view or access borrow | Deferred stores in `verifyProgressOriginalMatch` and `PrivateReplayProgressCustody.WithAuthenticatedProgressOriginal` | `progressOriginalLifetime.live` for typed fields and progress use, together with caller-context checks | One verifier or authenticated-use callback |
 
 | Category | Exact field and type | Reference target, creation and use |
 | --- | --- | --- |
+| Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.access:*reliablesubmit.OperationalAccess` | Limits the intent input to its authenticated original. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.self:*reliablesubmit.OperationalIntentInput` | Checks the original issued intent capsule. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalStageProof.access:*reliablesubmit.OperationalAccess` | Limits the held stage proof to one access. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalStageProof.self:*reliablesubmit.OperationalStageProof` | Checks the original issued stage capsule. |
+| Reference | `es/admission/internal/reliablesubmit:operationalStepShape.stage:*reliablesubmit.OperationalStageProof` | Carries the live stage capsule into the writer and post-commit qualification. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalMarkerCandidate.self:*reliablesubmit.OperationalMarkerCandidate` | Checks the original issued marker candidate. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalMarkerCandidate.stage:*reliablesubmit.OperationalStageProof` | Binds marker application to the checked stamp and live stage. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.self:*reliablesubmit.OperationalPositiveProof` | Checks the original issued acceptance command. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.issuer:*reliablesubmit.OperationalCustody` | Binds reads and commands to the same issuing custody. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.life:*reliablesubmit.progressOriginalLifetime` | Limits commands and receipt use to the authenticated callback. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalAccess.self:*reliablesubmit.OperationalAccess` | Prevents a copied access from issuing a command or constructing a proof. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalCustody.self:*reliablesubmit.OperationalCustody` | Binds the open handle identity before issuing access. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalOriginalView.life:*reliablesubmit.progressOriginalLifetime` | Expires the same decoder field borrows when verification returns. |
+| Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.access:*reliablesubmit.OperationalAccess` | Binds the observation proof to the callback access and exact marker projection. |
+| Reference | `es/admission:liveSender.owner:*admission.handoffOwner` | Binds the single sender to its callback owner. |
+| Reference | `es/admission:liveSender.self:*admission.liveSender` | Rejects a copy of the marker continuation. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody` | The issuer sets its own identity once at open. Close, lookup and qualification check it for that handle's lifetime. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit` | Carries the same operation-local burn latch through either scope. See the permit roles below. |
 | Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` | Authentication issues the access state. Progress consumption checks it during that callback. |
@@ -955,7 +978,7 @@ private replay path remains runtime-unwired.
 
 | Permit field | Writes or construction | Reads |
 | --- | --- | --- |
-| `PrivateReplaySealPermit.permit` | `PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal` |
+| `PrivateReplaySealPermit.permit` | `PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse`, `OperationalCustody.EstablishOperational` | `PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal` |
 | `ProgressSealPermit.permit` | `PrivateReplayProgressCustody.ReserveProgressSealUse` | `PrivateReplayProgressCustody.PublishProgressOriginal` |
 | `privateSealPermit.used` | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` |
 
@@ -967,14 +990,40 @@ the existing consume and burn rules. Persistence ADR §15B.5A owns the shared
 allocator and permit preflight ordering.
 
 `currentTrustModel` and `currentToken` return request-local copies. The sole
-package map, `reservedRuntimeEnvKeys`, is static lookup vocabulary. There is
-no map field beside synchronization and no package-level synchronization
-authority. SQLite owns committed claim, progress, key and grant/use state.
+package map, `reservedRuntimeEnvKeys`, is static lookup vocabulary. There is no package-level synchronization authority. The structural map scan
+follows three invocation-local references into the existing descriptor tree:
+`handoffOwner.stage`, `liveSender.owner`, and `liveSender.self`. They retain
+the held stage for revalidation and do not introduce a stage registry. SQLite owns committed claim, progress, key and grant/use state.
 The private primitives protect handle and invocation lifetimes and one-use
 consumption. Reference carriers convey those same protections without
 independent authority. These fields confer no durable run truth, process-global
 state, lease, registry, poison subsystem, worker, or staging/results-root
 authority. The rejected A3 topology in §7.5 remains excluded.
+
+### Selected operational composition and ownership
+
+The integrated candidate adds one custody read/write lock around the held
+database and replay root, and one atomic per-access command latch around the
+held original. The synchronous handoff owner has an invocation-local lifetime. Its mutex protects the open/send/close decision for that callback. The sender carries a self pointer and its
+exact handoff owner pointer. The final owner-protected context sample
+immediately precedes the synchronous transport call. The stage rechecks its
+commissioned parent without changing the ordinary staging identity comparator.
+`OperationalOriginalView` reuses the bounded
+field decoding and close latch without exposing a fixture operation bearer.
+`OperationalPositiveProof` binds the authenticated original access and the
+verified observation to the single acceptance writer. The SQLite opener
+remains behind the internal package. The operational admission test has one
+disposable SQLite connection for synthetic key setup and row observations.
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) defines the bounded
+private composition over the existing durable service, exclusive staging custody
+and typed provider boundary. `Service.composeOperationalOriginal` is one direct
+resolver caller. `verifyOperationalOriginal` directly reconstructs the plan,
+material and host context from the retained original. `operationalDomain.advanceOperational`
+directly projects the run and materializes its inputs on a held stage, and
+`operationalDomain.createOperationalStage` directly claims that stage. The stage measurement
+directly calls the existing held-tree revalidation twice before recording or using the stamp.
+The private `operationalProvider.project` uses the existing job renderer once and verifies the complete result against its separately commissioned template. Ordinary Submit retains its existing resolver and Nomad registration path. Current §7.4 describes current source. Public routing, startup and the rejected A3 topology remain outside the selection.
 
 ### 7.5 Rejected A3 topology inventory
 

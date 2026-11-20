@@ -454,7 +454,8 @@ func (v *replayStructure) assessment(f replayField) error {
 
 func (v *replayStructure) provenance(f replayField, scope byte) error {
 	return v.object(f, 6, 2, false, func(a []replayField) error {
-		if scope == 2 && string(a[0].value) != "synthetic_progress_nonoperational_v1" {
+		if scope == 2 && string(a[0].value) != "synthetic_progress_nonoperational_v1" ||
+			scope == 3 && string(a[0].value) != "operational_local_v1" {
 			return errReplayFormat
 		}
 		for i := 0; i < 4; i++ {
@@ -490,10 +491,11 @@ func validateReplayPayloadStructure(fields []replayField) error {
 }
 
 func validateReplayPayloadStructureForScope(fields []replayField, scope byte) error {
-	if len(fields) != 10 {
+	format, known := replayFormatForScope(int64(scope))
+	if !known || len(fields) != format.fieldCount() {
 		return errReplayFormat
 	}
-	v := &replayStructure{budget: replayDecodeBudget{nodes: 10}}
+	v := &replayStructure{budget: replayDecodeBudget{nodes: len(fields)}}
 	if err := v.object(fields[0], 2, 2, false, func(identity []replayField) error {
 		for _, f := range identity {
 			if err := v.scalar(f, 'x', 32, false); err != nil || len(f.value) != 32 {
@@ -525,7 +527,11 @@ func validateReplayPayloadStructureForScope(fields []replayField, scope byte) er
 		if err := v.scalar(image[1], 'x', 32, false); err != nil || len(image[1].value) != 32 {
 			return errReplayFormat
 		}
-		if err := v.scalar(image[3], '1', 1, false); err != nil || image[3].value[0] != 1 {
+		kind := byte(1)
+		if scope == 3 {
+			kind = 2
+		}
+		if err := v.scalar(image[3], '1', 1, false); err != nil || image[3].value[0] != kind {
 			return errReplayFormat
 		}
 		return v.scalar(image[4], 's', 4096, false)
@@ -567,6 +573,9 @@ func validateReplayPayloadStructureForScope(fields []replayField, scope byte) er
 	}
 	if err := v.scalar(fields[9], '1', 1, false); err != nil || fields[9].value[0] != scope {
 		return errReplayFormat
+	}
+	if scope == 3 {
+		return v.operationalDeployment(fields)
 	}
 	return nil
 }

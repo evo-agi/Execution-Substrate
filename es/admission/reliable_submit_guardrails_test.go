@@ -197,10 +197,7 @@ func TestReliableSubmitBindingProducerHasNoProductionCaller(t *testing.T) {
 			}
 		}
 		builder := requirePackageFunction(t, pkg, "buildReliableSubmitAdmissionBinding")
-		if err := validateTypedReferenceInventory("selected private binding callers", pkg.referencesTo(builder), map[string]int{
-			"es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1,
-			"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal":         1,
-		}, true); err != nil {
+		if err := validateTypedReferenceInventory("selected private binding callers", pkg.referencesTo(builder), privateBindingCallerInventory(), true); err != nil {
 			t.Fatalf("%s private binding caller closure: %v", view.target, err)
 		}
 		for _, rel := range producerFiles {
@@ -252,8 +249,12 @@ func TestReliableSubmitBindingProducerHasNoProductionCaller(t *testing.T) {
 						"newReliableBindingFamily": {
 							"es/admission/reliable_submit_replay_intent.go:parsePrivateReplayDelivery":     true,
 							"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": true,
+							"es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": true,
 						},
-						"newPrivateBindingKey": {"es/admission/reliable_submit_replay_private.go:newPrivateSyntheticKeyBundle": true},
+						"newPrivateBindingKey": {
+							"es/admission/reliable_submit_replay_private.go:newPrivateSyntheticKeyBundle":   true,
+							"es/admission/reliable_submit_operational_format.go:newOperationalOriginalKeys": true,
+						},
 					}
 					if privateHelperSites[function.Name.Name][reference.site] && reference.directCall && !reference.methodExpression && !reference.insideFuncLiteral {
 						continue
@@ -598,8 +599,8 @@ func bindingValidateOtherProductionSource(rel string, file *ast.File) error {
 		if declaration, ok := parents[identifier].(*ast.FuncDecl); ok && declaration.Name == identifier {
 			return true
 		}
-		// The synthetic, runtime-unwired adapter has exactly two direct PB1
-		// producer calls and the selected family/key constructors.
+		// Only the named runtime-unwired fixture and operational sites consume
+		// PB1 and its selected family/key constructors.
 		allowedPrivate := map[string]map[string]string{
 			"es/admission/reliable_submit_replay_private.go": {
 				"buildReliableSubmitAdmissionBinding": "composePrivateSyntheticReplay",
@@ -611,6 +612,14 @@ func bindingValidateOtherProductionSource(rel string, file *ast.File) error {
 			},
 			"es/admission/reliable_submit_replay_intent.go": {
 				"newReliableBindingFamily": "parsePrivateReplayDelivery",
+			},
+			"es/admission/reliable_submit_operational_handoff.go": {
+				"buildReliableSubmitAdmissionBinding": "composeOperationalOriginal",
+			},
+			"es/admission/reliable_submit_operational_format.go": {
+				"buildReliableSubmitAdmissionBinding": "verifyOperationalOriginal",
+				"newReliableBindingFamily":            "verifyOperationalOriginal",
+				"newPrivateBindingKey":                "newOperationalOriginalKeys",
 			},
 		}
 		if byName := allowedPrivate[rel]; byName != nil {
@@ -1284,4 +1293,173 @@ func assertAdmissionFoundationOmitsAll(t *testing.T, label string, source string
 			t.Fatalf("%s must not contain %q", label, phrase)
 		}
 	}
+}
+
+func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) {
+	const admissionPath = "execution-substrate/es/admission"
+	const storagePath = admissionPath + "/internal/reliablesubmit"
+	const handoff = "es/admission/reliable_submit_operational_handoff.go:"
+	const provider = "es/admission/reliable_submit_operational_provider.go:"
+	const storage = "es/admission/internal/reliablesubmit/operational_handoff.go:"
+	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
+	for _, view := range views {
+		pkg := requireTypedProductionPackage(t, view.packages, admissionPath)
+		for _, entry := range []string{"handoffOperational", "recoverOperational"} {
+			m := requirePackageMethod(t, pkg, "Service", entry)
+			if err := validateTypedReferenceInventory(entry, pkg.referencesTo(m), map[string]int{}, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range []string{"newOperationalDomain", "newOperationalLoopbackProvider"} {
+			fn := requirePackageFunction(t, pkg, name)
+			if err := validateTypedReferenceInventory(name, pkg.referencesTo(fn), map[string]int{}, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		store := requireTypedProductionPackage(t, view.packages, storagePath)
+		for _, member := range []struct {
+			typ, name string
+			want      map[string]int
+			closures  bool
+		}{
+			{"", "OpenProvisionedOperationalCustody", map[string]int{}, true},
+			{"OperationalCustody", "ConfigureOperationalCommitFaultForProof", map[string]int{}, true},
+			{"OperationalCustody", "ConfigureOperationalPrestageProofForProof", map[string]int{}, true},
+			{"", "MatchOperationalOriginal", map[string]int{handoff + "Service.operatePrivateHandoff": 1, handoff + "operationalDomain.advanceOperational": 1}, false},
+			{"OperationalAccess", "ApplyFirstMarker", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalIntent", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalStage", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalMarker", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindVerifiedOperationalObservation", map[string]int{provider + "verifiedOperationalObservation.bindOperationalObservation": 1}, true},
+			{"OperationalMarkerCandidate", "Ref", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalStageProof", "Requalify", map[string]int{
+				handoff + "liveSender.consume": 1, storage + "OperationalAccess.BindOperationalMarker": 1,
+				storage + "OperationalAccess.applyOperational": 1, storage + "OperationalAccess.operationalReleaseQualified": 1,
+			}, false},
+		} {
+			var ref types.Object
+			if member.typ == "" {
+				ref = requirePackageFunction(t, store, member.name)
+			} else {
+				ref = requirePackageMethod(t, store, member.typ, member.name)
+			}
+			var refs []typedReference
+			for _, p := range view.packages {
+				refs = append(refs, p.referencesMatching(func(candidate types.Object) bool {
+					return trancheB1ObjectIdentity(candidate) == trancheB1ObjectIdentity(ref)
+				})...)
+			}
+			if err := validateTypedReferenceInventory(member.name, refs, member.want, member.closures); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, member := range []struct {
+			typ, name string
+			want      map[string]int
+		}{
+			{"operationalProvider", "observe", map[string]int{handoff + "operationalDomain.reconcileOperational": 1}},
+			{"verifiedOperationalObservation", "bindOperationalObservation", map[string]int{handoff + "operationalDomain.reconcileOperational": 1}},
+			{"operationalProvider", "register", map[string]int{handoff + "liveSender.consume": 1}},
+			{"operationalProvider", "prepareExchange", map[string]int{handoff + "liveSender.consume": 1, provider + "operationalProvider.observe": 2}},
+			{"operationalProvider", "exchange", map[string]int{provider + "operationalProvider.register": 1, provider + "operationalProvider.observe": 2}},
+		} {
+			method := requirePackageMethod(t, pkg, member.typ, member.name)
+			if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, inventory := range []struct {
+			pkg  *typedProductionPackage
+			want map[string]string
+		}{
+			{pkg, map[string]string{
+				"verifiedOperationalObservation": provider + "operationalProvider.observe",
+				"liveSender":                     handoff + "operationalDomain.advanceOperational",
+				"handoffOwner":                   handoff + "operationalDomain.advanceOperational",
+			}},
+			{store, map[string]string{
+				"OperationalIntentInput":     storage + "OperationalAccess.BindOperationalIntent",
+				"OperationalStageProof":      storage + "OperationalAccess.BindOperationalStage",
+				"OperationalMarkerCandidate": storage + "OperationalAccess.BindOperationalMarker",
+				"OperationalPositiveProof":   storage + "OperationalAccess.BindVerifiedOperationalObservation",
+			}},
+		} {
+			if err := validateOperationalAuthorityConstruction(inventory.pkg, inventory.want); err != nil {
+				t.Fatal(err)
+			}
+		}
+		consume := requirePackageMethod(t, pkg, "liveSender", "consume")
+		if err := validateTypedReferenceInventory("synchronous operational marker continuation", pkg.referencesTo(consume),
+			map[string]int{handoff + "operationalDomain.advanceOperational": 1}, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
+	for _, entry := range []string{"bindOperationalObservation", "register", "exchange"} {
+		for _, changed := range []string{"method-value", "method-expression", "closure", "alternate-site", "duplicate"} {
+			t.Run(entry+"/"+changed, func(t *testing.T) {
+				direct := "p." + entry + "()"
+				bodies := map[string]string{
+					"method-value":      "indirect := p." + entry + "; indirect()",
+					"method-expression": "(*operationalProvider)." + entry + "(p)",
+					"closure":           "func(){" + direct + "}()",
+					"alternate-site":    direct + " }; func other(p *operationalProvider){ " + direct,
+					"duplicate":         direct + ";" + direct,
+				}
+				declarations := "package admission; type operationalProvider struct{}; func (*operationalProvider) " + entry + "(){}; "
+				baseline := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(p *operationalProvider){"+direct+"}")
+				want := map[string]int{"fixture.go:owner": 1}
+				if err := validateTypedReferenceInventory(entry, baseline.referencesTo(requirePackageMethod(t, baseline, "operationalProvider", entry)), want, true); err != nil {
+					t.Fatal(err)
+				}
+				mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(p *operationalProvider){"+bodies[changed]+"}")
+				if err := validateTypedReferenceInventory(entry, mutant.referencesTo(requirePackageMethod(t, mutant, "operationalProvider", entry)), want, true); err == nil {
+					t.Fatal("mutated authority reference passed its inventory")
+				}
+			})
+		}
+	}
+	for _, alternate := range []string{"&verifiedOperationalObservation{}", "new(verifiedOperationalObservation)"} {
+		t.Run(alternate, func(t *testing.T) {
+			const declarations = "package admission; type verifiedOperationalObservation struct{ index int };"
+			const verifier = "func verify() *verifiedOperationalObservation { return &verifiedOperationalObservation{index:1} };"
+			want := map[string]string{"verifiedOperationalObservation": "fixture.go:verify"}
+			if err := validateOperationalAuthorityConstruction(typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+verifier), want); err != nil {
+				t.Fatal(err)
+			}
+			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+verifier+"func alternate() *verifiedOperationalObservation { return "+alternate+"}")
+			if err := validateOperationalAuthorityConstruction(mutant, want); err == nil {
+				t.Fatal("additional observation construction escaped its inventory")
+			}
+		})
+	}
+}
+
+func validateOperationalAuthorityConstruction(pkg *typedProductionPackage, want map[string]string) error {
+	for name, expectedSite := range want {
+		got := make(map[string]int)
+		for fileName, file := range pkg.files {
+			parents := astParentMap(file)
+			ast.Inspect(file, func(node ast.Node) bool {
+				switch expr := node.(type) {
+				case *ast.CompositeLit:
+					if localNamedTypeName(pkg.info.TypeOf(expr)) == name {
+						got[typedFunctionSite(fileName, enclosingFunction(parents, expr))]++
+					}
+				case *ast.CallExpr:
+					if target, ok := expr.Fun.(*ast.Ident); ok && pkg.info.Uses[target] == types.Universe.Lookup("new") &&
+						len(expr.Args) == 1 && localNamedTypeName(pkg.info.TypeOf(expr.Args[0])) == name {
+						got[typedFunctionSite(fileName, enclosingFunction(parents, expr))]++
+					}
+				}
+				return true
+			})
+		}
+		if len(got) != 1 || got[expectedSite] != 1 {
+			return fmt.Errorf("%s authority construction changed: got %v, want %s once", name, got, expectedSite)
+		}
+	}
+	return nil
 }

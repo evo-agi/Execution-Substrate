@@ -1440,7 +1440,8 @@ func TestReplayReadOnlyCandidateOpenContract(t *testing.T) {
 		helper []string
 		direct []string
 	}{
-		{"OpenPrivateReplayCustody", []string{`openReplayReadOnlyCandidate(rootFD,"synthetic-replay-v1.marker")`}, []string{
+		{"OpenPrivateReplayCustody", nil, nil},
+		{"openReplayCustody", []string{`openReplayReadOnlyCandidate(rootFD,"synthetic-replay-v1.marker")`}, []string{
 			`unix.Openat(rootFD,"objects",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
 			`unix.Openat(objectsFD,"v1",unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,0)`,
 		}},

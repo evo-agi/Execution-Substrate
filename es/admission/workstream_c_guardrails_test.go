@@ -356,17 +356,17 @@ func TestTrancheB1FiniteSemanticShapeGuardrails(t *testing.T) {
 		want     map[string]int
 	}
 	inventories := []referenceInventory{
-		{label: "submit resolver", method: true, receiver: "Service", name: "resolveExecutionForSubmit", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1}},
+		{label: "submit resolver", method: true, receiver: "Service", name: "resolveExecutionForSubmit", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1, "es/admission/reliable_submit_operational_handoff.go:Service.composeOperationalOriginal": 1}},
 		{label: "private admission intent", method: true, receiver: "Service", name: "prepareAdmission", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/service.go:Service.Prepare": 1}},
 		{label: "admission request snapshot", name: "snapshotAdmissionRequest", want: map[string]int{"es/admission/service.go:Service.prepareAdmission": 2}},
 		{label: "admission validation/defaulting", name: "validatePrepareRequest", want: map[string]int{"es/admission/service.go:Service.prepareAdmission": 1}},
 		{label: "normalized submit placement", name: "normalizeSubmitPlacementFacts", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1}},
-		{label: "host context constructor", name: "newHostMaterializationContext", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.placement": 1}},
-		{label: "semantic plan constructor", name: "newResolvedExecutionPlan", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1}},
+		{label: "host context constructor", name: "newHostMaterializationContext", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.placement": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
+		{label: "semantic plan constructor", name: "newResolvedExecutionPlan", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
 		{label: "typed command constructor", name: "newResolvedRuntimeCommand", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1}},
-		{label: "run projection constructor", name: "newResolvedRunProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "provider projection constructor", method: true, receiver: "resolvedRunProjection", name: "nomadJobProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "Nomad job builder", name: "buildNomadJobSpec", want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
+		{label: "run projection constructor", name: "newResolvedRunProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
+		{label: "provider projection constructor", method: true, receiver: "resolvedRunProjection", name: "nomadJobProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_provider.go:operationalProvider.project": 1}},
+		{label: "Nomad job builder", name: "buildNomadJobSpec", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_provider.go:operationalProvider.project": 1}},
 		{label: "Nomad registration", method: true, receiver: "nomadClient", name: "submitJob", want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
 	}
 	for _, inventory := range inventories {
@@ -1723,7 +1723,7 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 	resolverReferences := mergedProductionReferences(t, views, "execution-substrate/es/admission", func(pkg *typedProductionPackage) types.Object {
 		return requirePackageMethod(t, pkg, "Service", "resolveExecutionForSubmit")
 	})
-	if err := validateTypedReferenceInventory("legacy and selected private resolver callers", resolverReferences, map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1}, true); err != nil {
+	if err := validateTypedReferenceInventory("legacy and selected private resolver callers", resolverReferences, map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1, "es/admission/reliable_submit_operational_handoff.go:Service.composeOperationalOriginal": 1}, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1772,9 +1772,10 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			label:        "descriptor-taking run-root claim",
 			functionName: "claimStagingCustodyFromQualifiedRoot",
 			want: map[string]int{
-				"es/admission/staging_custody.go:claimStagingCustody":             1,
-				"es/admission/staging_custody.go:probeStagingCustodyCapabilities": 1,
-				"es/admission/submit.go:Service.Submit":                           1,
+				"es/admission/reliable_submit_operational_handoff.go:operationalDomain.createOperationalStage": 1,
+				"es/admission/staging_custody.go:claimStagingCustody":                                          1,
+				"es/admission/staging_custody.go:probeStagingCustodyCapabilities":                              1,
+				"es/admission/submit.go:Service.Submit":                                                        1,
 			},
 		},
 		{
@@ -1807,7 +1808,7 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		{
 			label:        "typed execution materializer",
 			functionName: "materializeExecutionInputs",
-			want:         map[string]int{"es/admission/submit.go:Service.Submit": 1},
+			want:         map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1},
 		},
 		{
 			label:        "qualified staging descriptor transfer",
@@ -2012,6 +2013,7 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 	}
 
 	wantCustodyReturns := []string{
+		"es/admission/reliable_submit_operational_handoff.go:operationalDomain.createOperationalStage",
 		"es/admission/staging_custody.go:claimStagingCustody",
 		"es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot",
 	}
@@ -2025,6 +2027,7 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		"es/admission/executionpackage.go:materializeExecutionInputs",
 		"es/admission/mounts.go:materializeValidatedMountEntries",
 		"es/admission/mounts.go:materializeValidatedRuntimeMounts",
+		"es/admission/staging_custody.go:measureOperationalStage",
 	}
 	for _, view := range views {
 		pkg := requireTypedProductionPackage(t, view.packages, "execution-substrate/es/admission")
@@ -2283,6 +2286,21 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission:reservedRuntimeEnvKeys:map[string]struct{}",
 	}
 	wantSynchronizationFields := []string{
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.busy:atomic.Bool",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.issuer:*reliablesubmit.OperationalCustody",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.life:*reliablesubmit.progressOriginalLifetime",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.self:*reliablesubmit.OperationalAccess",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalCustody.mu:sync.RWMutex",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalCustody.self:*reliablesubmit.OperationalCustody",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalIntentInput.access:*reliablesubmit.OperationalAccess",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalIntentInput.self:*reliablesubmit.OperationalIntentInput",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalMarkerCandidate.self:*reliablesubmit.OperationalMarkerCandidate",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalMarkerCandidate.stage:*reliablesubmit.OperationalStageProof",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalOriginalView.life:*reliablesubmit.progressOriginalLifetime",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalPositiveProof.access:*reliablesubmit.OperationalAccess",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalPositiveProof.self:*reliablesubmit.OperationalPositiveProof",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalStageProof.access:*reliablesubmit.OperationalAccess",
+		"execution-substrate/es/admission/internal/reliablesubmit:OperationalStageProof.self:*reliablesubmit.OperationalStageProof",
 		"execution-substrate/es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.mu:sync.RWMutex",
 		"execution-substrate/es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody",
 		"execution-substrate/es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit",
@@ -2298,6 +2316,7 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission/internal/reliablesubmit:acceptWithReceiptRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission/internal/reliablesubmit:assignRunRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission/internal/reliablesubmit:mutationRequest.progress:*reliablesubmit.progressAccessState",
+		"execution-substrate/es/admission/internal/reliablesubmit:operationalStepShape.stage:*reliablesubmit.OperationalStageProof",
 		"execution-substrate/es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex",
 		"execution-substrate/es/admission/internal/reliablesubmit:progressAccessState.issuer:*reliablesubmit.PrivateReplayProgressCustody",
 		"execution-substrate/es/admission/internal/reliablesubmit:progressAccessState.life:*reliablesubmit.progressOriginalLifetime",
@@ -2313,6 +2332,9 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission/internal/reliablesubmit:recordReconciliationEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission/internal/reliablesubmit:recordStagingEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission:Service.mu:sync.RWMutex",
+		"execution-substrate/es/admission:handoffOwner.mu:sync.Mutex",
+		"execution-substrate/es/admission:liveSender.owner:*admission.handoffOwner",
+		"execution-substrate/es/admission:liveSender.self:*admission.liveSender",
 		"execution-substrate/es/app:App.mu:sync.RWMutex",
 		"execution-substrate/es/runtimehelper:helperServer.mu:sync.RWMutex",
 	}
@@ -2369,8 +2391,13 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 	if !reflect.DeepEqual(synchronizationFields, wantSynchronizationFields) {
 		t.Fatalf("production synchronization-field inventory changed: got %v want %v", synchronizationFields, wantSynchronizationFields)
 	}
-	if len(mapsBesideSynchronization) != 0 {
-		t.Fatalf("map fields beside synchronization primitives entered production: %v", mapsBesideSynchronization)
+	wantHeldStageReferences := []string{
+		"execution-substrate/es/admission:handoffOwner.stage:*admission.stagingCustody",
+		"execution-substrate/es/admission:liveSender.owner:*admission.handoffOwner",
+		"execution-substrate/es/admission:liveSender.self:*admission.liveSender",
+	}
+	if !reflect.DeepEqual(mapsBesideSynchronization, wantHeldStageReferences) {
+		t.Fatalf("structural map references beside synchronization changed: got %v want %v", mapsBesideSynchronization, wantHeldStageReferences)
 	}
 }
 
@@ -2460,12 +2487,50 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			},
 		},
 		{
+			label:      "operational custody lifetime lock",
+			importPath: "execution-substrate/es/admission/internal/reliablesubmit",
+			typeName:   "OperationalCustody",
+			fieldName:  "mu",
+			want: map[string]int{
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.Close":                                     2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.WithOperationalOriginal":                   2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":                      2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalCommitFaultForProof":   2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalPrestageProofForProof": 2,
+			},
+		},
+		{
+			label:      "operational access command latch",
+			importPath: "execution-substrate/es/admission/internal/reliablesubmit",
+			typeName:   "OperationalAccess",
+			fieldName:  "busy",
+			want: map[string]int{
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.Prestage":                           2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.applyOperational":                   2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.BindVerifiedOperationalObservation": 2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.VerifyOperationalReceipt":           2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.canBind":                            2,
+			},
+		},
+		{
+			label:      "operational handoff owner lock",
+			importPath: "execution-substrate/es/admission",
+			typeName:   "handoffOwner",
+			fieldName:  "mu",
+			want: map[string]int{
+				"es/admission/reliable_submit_operational_handoff.go:handoffOwner.close": 2,
+				"es/admission/reliable_submit_operational_handoff.go:liveSender.consume": 2,
+			},
+		},
+
+		{
 			label:      "operation-local seal permit wrapper",
 			importPath: "execution-substrate/es/admission/internal/reliablesubmit",
 			typeName:   "PrivateReplaySealPermit",
 			fieldName:  "permit",
 			want: map[string]int{
 				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.ReserveSealUse":                  1,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":              1,
 				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.publishReplayOriginal":           4,
 				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal": 2,
 				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse":  1,
@@ -3765,17 +3830,19 @@ func validateTrancheB1SemanticProducerFreeze(pkg *typedProductionPackage, fixtur
 	want := trancheB1SemanticFreezeInventory{
 		factsComposite: []string{"es/admission/reliable_submit_replay_hydration.go:privateReplayReader.plan", "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.plan", "es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit"},
 		planComposite:  []string{"es/admission/resolved_execution_plan.go:newResolvedExecutionPlan"},
-		planCalls:      []string{"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal", "es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit"},
+		planCalls:      []string{"es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal", "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal", "es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit"},
 		planFunctions:  []string{"es/admission/resolved_execution_plan.go:newResolvedExecutionPlan"},
 		planReturns:    []string{"es/admission/resolved_execution_plan.go:newResolvedExecutionPlan"},
 		planBindings: []string{
 			"es/admission/reliable_submit_binding_encoding.go:bindingEncodeCanonical",
 			"es/admission/reliable_submit_binding_encoding.go:bindingRecordFields",
+			"es/admission/reliable_submit_operational_format.go:encodeOperationalOriginal",
+			"es/admission/reliable_submit_operational_format.go:validateOperationalPlan",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.provenance",
 			"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal",
 			"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit",
 		},
-		factsBindings: []string{"es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal"},
+		factsBindings: []string{"es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal", "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal"},
 		factsPayload: []string{
 			"es/admission/reliable_submit_replay_hydration.go:privateReplayReader.plan",
 			"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit",
@@ -3785,6 +3852,7 @@ func validateTrancheB1SemanticProducerFreeze(pkg *typedProductionPackage, fixtur
 			"es/admission/reliable_submit_binding.go:bindingPrimaryValid",
 			"es/admission/reliable_submit_binding.go:bindingPrimaryValid",
 			"es/admission/reliable_submit_binding_encoding.go:bindingRecordFields",
+			"es/admission/reliable_submit_operational_format.go:encodeOperationalOriginal",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.plan",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.provenance",
 			"es/admission/resolved_execution_plan.go:newResolvedExecutionPlan",
@@ -4938,13 +5006,13 @@ func validateResolvedPlanSemanticCallFlow(pkg *typedProductionPackage) error {
 		definition semanticCallDefinition
 		want       map[string]int
 	}{
-		{label: "submit resolver", definition: semanticCallDefinition{receiver: "Service", name: "resolveExecutionForSubmit"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1}},
+		{label: "submit resolver", definition: semanticCallDefinition{receiver: "Service", name: "resolveExecutionForSubmit"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1, "es/admission/reliable_submit_operational_handoff.go:Service.composeOperationalOriginal": 1}},
 		{label: "execution locator", definition: semanticCallDefinition{name: "newExecutionLocator"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "run projection", definition: semanticCallDefinition{name: "newResolvedRunProjection"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
+		{label: "run projection", definition: semanticCallDefinition{name: "newResolvedRunProjection"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
 		{label: "Nomad registration", definition: semanticCallDefinition{receiver: "nomadClient", name: "submitJob"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "semantic plan freeze", definition: semanticCallDefinition{name: "newResolvedExecutionPlan"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1}},
-		{label: "material freeze", definition: semanticCallDefinition{name: "newResolvedExecutionMaterial"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1}},
-		{label: "host context freeze", definition: semanticCallDefinition{name: "newHostMaterializationContext"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.placement": 1}},
+		{label: "semantic plan freeze", definition: semanticCallDefinition{name: "newResolvedExecutionPlan"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
+		{label: "material freeze", definition: semanticCallDefinition{name: "newResolvedExecutionMaterial"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
+		{label: "host context freeze", definition: semanticCallDefinition{name: "newHostMaterializationContext"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.placement": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
 		{label: "mount target normalization", definition: semanticCallDefinition{name: "normalizeRuntimeMountTargetPath"}, want: map[string]int{
 			"es/admission/mounts.go:validateRuntimeMounts":                                  1,
 			"es/admission/reliable_submit_binding.go:bindingMountsValid":                    1,
@@ -5107,13 +5175,14 @@ func validateTrancheASemanticCallFlow(pkg *typedProductionPackage) error {
 			label:      "descriptor-taking run-root claim",
 			definition: semanticCallDefinition{name: "claimStagingCustodyFromQualifiedRoot"},
 			want: map[string]int{
-				"es/admission/staging_custody.go:claimStagingCustody":             1,
-				"es/admission/staging_custody.go:probeStagingCustodyCapabilities": 1,
-				"es/admission/submit.go:Service.Submit":                           1,
+				"es/admission/reliable_submit_operational_handoff.go:operationalDomain.createOperationalStage": 1,
+				"es/admission/staging_custody.go:claimStagingCustody":                                          1,
+				"es/admission/staging_custody.go:probeStagingCustodyCapabilities":                              1,
+				"es/admission/submit.go:Service.Submit":                                                        1,
 			},
 		},
-		{label: "materialization entry point", definition: semanticCallDefinition{name: "materializeExecutionInputs"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "pre-handoff revalidation", definition: semanticCallDefinition{receiver: "stagingCustody", name: "revalidateBeforeHandoff"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
+		{label: "materialization entry point", definition: semanticCallDefinition{name: "materializeExecutionInputs"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
+		{label: "pre-handoff revalidation", definition: semanticCallDefinition{receiver: "stagingCustody", name: "revalidateBeforeHandoff"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/staging_custody.go:measureOperationalStage": 2}},
 	} {
 		target, err := resolveSemanticCallTarget(pkg, inventory.definition)
 		if err != nil {
