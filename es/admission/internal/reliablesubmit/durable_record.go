@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	durableClaimCodecVersionLegacy    uint16 = 1
-	durableClaimCodecVersion          uint16 = 2
-	durableClaimCodecVersionSynthetic uint16 = 3
-	durableClaimCodecVersionProgress  uint16 = 4
+	durableClaimCodecVersionLegacy      uint16 = 1
+	durableClaimCodecVersion            uint16 = 2
+	durableClaimCodecVersionSynthetic   uint16 = 3
+	durableClaimCodecVersionProgress    uint16 = 4
+	durableClaimCodecVersionOperational uint16 = 5
 )
 
 var (
@@ -511,7 +512,7 @@ func (r durableRetentionFact) equal(other durableRetentionFact) bool {
 }
 
 type durableClaimRecord struct {
-	progressRowID   int64 // Only codec 4 retains the physical identity after insertion.
+	progressRowID   int64 // Codecs 4 and 5 retain the physical identity after insertion.
 	codecVersion    uint16
 	claim           ClaimID
 	plan            BoundPlan
@@ -570,7 +571,7 @@ func newDurableClaimRecord(input newDurableClaimRecordInput) (durableClaimRecord
 }
 
 func (r durableClaimRecord) validate() error {
-	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy && r.codecVersion != durableClaimCodecVersionSynthetic && r.codecVersion != durableClaimCodecVersionProgress) ||
+	if (r.codecVersion != durableClaimCodecVersion && r.codecVersion != durableClaimCodecVersionLegacy && r.codecVersion != durableClaimCodecVersionSynthetic && r.codecVersion != durableClaimCodecVersionProgress && r.codecVersion != durableClaimCodecVersionOperational) ||
 		!r.claim.Valid() ||
 		!r.plan.Valid() ||
 		!r.phase.valid() ||
@@ -599,6 +600,9 @@ func (r durableClaimRecord) validate() error {
 	}
 	if r.codecVersion == durableClaimCodecVersionProgress {
 		return r.validateFixtureProgress()
+	}
+	if r.codecVersion == durableClaimCodecVersionOperational {
+		return r.validateOperationalProgress()
 	}
 	if r.progressRowID != 0 {
 		return errInvalidDurableRecord

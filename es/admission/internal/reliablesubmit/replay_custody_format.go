@@ -188,6 +188,7 @@ type replayFormat struct {
 }
 
 var syntheticReplayFormat = replayFormat{1, "ESRSPAY1", "ESRSENV1", "ESRSAAD1", "ESRSINT1", "ESRSCTX1", "ESRSFRZ1"}
+var operationalReplayFormat = replayFormat{3, "ESRSPAY3", "ESRSENV3", "ESRSAAD3", "ESRSINT3", "ESRSCTX3", "ESRSFRZ3"}
 var progressReplayFormat = replayFormat{2, "ESRSPAY2", "ESRSENV2", "ESRSAAD2", "ESRSINT2", "ESRSCTX2", "ESRSFRZ2"}
 
 func replayFormatForScope(scope int64) (replayFormat, bool) {
@@ -196,6 +197,8 @@ func replayFormatForScope(scope int64) (replayFormat, bool) {
 		return syntheticReplayFormat, true
 	case 2:
 		return progressReplayFormat, true
+	case 3:
+		return operationalReplayFormat, true
 	default:
 		return replayFormat{}, false
 	}
@@ -234,11 +237,7 @@ func freezeReplayOriginal(format replayFormat, claim ClaimID, plan BoundPlan, ke
 		return PrivateReplayFrozen{}, err
 	}
 	intentWire, _ := encodeReplayField(fields[1])
-	contextWire := make([]byte, 0)
-	for _, field := range fields[5:8] {
-		encoded, _ := encodeReplayField(field)
-		contextWire = append(contextWire, encoded...)
-	}
+	contextWire := format.contextFields(fields)
 	intentMAC := replayHMAC(keys.binding, format.intentDomain, intentWire)
 	contextMAC := replayHMAC(keys.binding, format.contextDomain, contextWire)
 	var objectID [32]byte
@@ -295,7 +294,7 @@ func (format replayFormat) parsePayload(raw []byte) ([]replayField, error) {
 		return nil, errReplayFormat
 	}
 	budget := &replayDecodeBudget{}
-	fields, err := parseReplayObject(raw[14:], 10, budget, 1, 1)
+	fields, err := parseReplayObject(raw[14:], format.fieldCount(), budget, 1, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +314,7 @@ func checkReplayPayloadAssociations(fields []replayField, claim ClaimID, plan Bo
 }
 
 func (format replayFormat) checkPayloadAssociations(fields []replayField, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys) error {
-	if len(fields) != 10 {
+	if len(fields) != format.fieldCount() {
 		return errReplayFormat
 	}
 	budget := &replayDecodeBudget{}
@@ -387,6 +386,26 @@ func (format replayFormat) checkPayloadAssociations(fields []replayField, claim 
 		return errReplayFormat
 	}
 	return nil
+}
+
+func (format replayFormat) fieldCount() int {
+	if format.scope == 3 {
+		return 11
+	}
+	return 10
+}
+
+func (format replayFormat) contextFields(fields []replayField) []byte {
+	var encoded []byte
+	for _, field := range fields[5:8] {
+		item, _ := encodeReplayField(field)
+		encoded = append(encoded, item...)
+	}
+	if format.scope == 3 {
+		item, _ := encodeReplayField(fields[10])
+		encoded = append(encoded, item...)
+	}
+	return encoded
 }
 
 func replayU16(value uint16) []byte {

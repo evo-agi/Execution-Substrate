@@ -960,6 +960,26 @@ fixed result. Fixture references cannot convert to operational RunRefs or
 public receipts. Public structural reliable-request refusal and unkeyed
 Submit stay in force.
 
+### 6C. Selected operational handoff and receipt-only recovery
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) defines the private candidate codec-5 original, exact
+caller scoping, private result projections and two distinct authorization
+paths. Current exact caller authorization precedes lookup. First effects
+require current admission and an exact ACTIVE key pair. Accepted replay
+verifies an equivalent qualified retained original and immutable receipt with
+the exact ACTIVE or RETIRED pair. The receipt-only path consumes retained facts
+and current caller authorization. Mutable execution admission, current
+resolution, staging and provider access are excluded from that path.
+§6B continues to govern the completed private fixture.
+In the candidate, receipt recovery recomputes the retained marker projection
+and receipt MAC. Concurrent qualified receipt observations return the same
+verified winning receipt. This records provider registration only.
+The private projection reflects the current qualified cut. A denied or
+unverified pre-stage cut withholds the assigned run. A losing establishment
+preserves conflict or the qualified current winner as specified in the
+operational owner table. Write disposition survives a cleanup denial.
+Claim-scoped public lifecycle authorization remains a later qualification.
+
 ## 7. Narrow Durable Correlation Semantics
 
 Reliable keyed submit requires ES-owned durable recovery evidence sufficient to survive ES restart.

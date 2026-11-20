@@ -2,7 +2,73 @@
 
 ## Status
 
+### Pre-stage continuation and transport observation repair (2026-11-20)
+
+Refine the private operational handoff **Bounded slice rule** on the
+reliable-submit **Reopened redesign seam** after the independent rejection of
+manifest `8808e598683923aff485f5d16d2cf1298f7e93b15ce90d7c780a0250b170a58c`.
+An exclusive stage attempt requires the complete successful pre-stage result:
+`OperationalNoChange` and `OperationalReasonNone`. A failed rollback, release or
+observed cancellation may preserve the semantic NoChange observation but stops
+effects and withholds run/receipt without erasing an earlier observed write.
+Maintained proof distinguishes direct exchange-method entry, GetConn and receiver
+ingress. The final owner-protected cancellation sample and its possibly-delivered
+later race remain unchanged. The repair is private, unstaged, runtime-unwired and
+pending a fresh independent source audit; no new architecture reset is selected.
+Structural public keyed refusal and ordinary unkeyed Submit remain **Current
+invariants**.
+
+### Consolidated private operational handoff audit repair (2026-11-20)
+
+Refine the selected private operational handoff **Bounded slice rule** on the
+reliable-submit **Reopened redesign seam** after rejection of manifest
+`e4d58552913ae21118a51603de65924fd04235fabde930800883f2212ff4ceeb`.
+The operational owner governs current qualification, independent write and
+disclosure results, authenticated establishment confirmation, and the final
+protected synchronous entry cut. Qualify the pre-existing claim count on
+operational opening and retain separate logical and local physical old-opener
+witnesses. This selection preserves schemas, encodings, immutable receipts,
+the permanent marker, and the one live sender. Structural public keyed refusal
+and ordinary unkeyed Submit remain **Current invariants**. Independent
+acceptance requires a separate audit of the repaired bytes.
+
+The codec-5 decoder amendment permits only the raw optional-BLOB check in
+`sqliteClaimRow.record` in `sqlite_store.go`. This implements SQL NULL absence
+before phase and fact conversion, retaining the 69-byte operational RunRef
+and 32-byte fact and receipt references. The other codecs, shared scanner,
+migration literals and stored formats retain their existing contracts.
+
+The private composition rechecks stage metadata through held descriptors,
+prepares transport before the owner-protected entry cut, and binds intent,
+stage, marker and positive observation to the authenticated original access.
+The finite result reports current qualification and the observed write
+separately. The local test witnesses and completed generation are tied to
+their exact source in the repair evidence.
+
+### Post-PR #11 operational handoff owner-contract candidate (2026-11-19)
+
+PR #11 completed fixture-only private replay/progress source publication at
+`ae326b0ddc30ec6b35883ee32945c622405b68b6` on official `trunk_dev`, sole
+parent `f1aa8b934cc26c16a966a110c7b408abdaeadce7`, 430-leaf tree
+`e066cd4afa77fcb665f31b69bf00465989f9744e`. Current production source is
+schema 4 and the private progress path is fixture-only. The entries that
+follow record the earlier planning and audit decisions.
+
+Select a candidate **re-derivation of the reliable-submit Reopened redesign
+seam** for the private operational handoff and restart slice. The
+[operational handoff owner contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md)
+selects schema 5, codec 5 and encoded scope 3, a checked current writer turn,
+a permanent marker and one live sender only from the direct acknowledgement
+of the applied first-marker COMMIT. It selects exclusive staging custody
+without reattachment, positive registration evidence and immutable receipt
+recovery. Target, proof profile and native prerequisites are distinct. This
+candidate includes private implementation and maintained local proof cases on the selected seam. The local SQLite head is schema 5. Local proof validation and fresh independent
+source acceptance remain separate gates.
+Public keyed refusal and unkeyed Submit remain **Current invariants**.
+
 ### Private replay-progress pre-COMMIT and owner inventory refinement (2026-11-19)
+
+Historical selection state before PR #11 publication.
 
 The latest independent audit rejected manifest
 `0812091529c67f4bc46d0bc343b3dea8595e63a461264e143d51606e581e0c06`.
@@ -16,6 +82,8 @@ Operational cross-restart write-uncertainty authority remains outside this
 selection. Independent acceptance of the resulting bytes is a later gate.
 
 ### Consolidated private replay-progress repair selected (2026-11-19)
+
+Historical selection state before PR #11 publication.
 
 The fresh read-only audit rejected the thirty-path manifest
 `110cef71ba25f61b70297b37cc5a50a68732d639845e0ac4315d06cedcdbc1e3`
@@ -31,6 +99,8 @@ The selected operating model, formats and migration literals remain
 the same. Independent acceptance of repaired bytes is a later gate.
 
 ## Post-PR #10 source publication and private replay progress contract candidate (2026-11-18)
+
+Historical selection state before PR #11 publication.
 
 PR #10 completed A1 source publication by squash merge on official `trunk_dev`
 at `f1aa8b934cc26c16a966a110c7b408abdaeadce7`, sole parent

@@ -1,7 +1,10 @@
 package admission
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1291,4 +1294,149 @@ func probeStagingCustodyCapabilities(stagingRootPath string, owner executionPlat
 		return fmt.Errorf("no-follow open unexpectedly accepted a symbolic link")
 	}
 	return nil
+}
+
+type operationalStageEntry struct {
+	path      string
+	directory bool
+	mode      uint32
+	bytes     []byte
+}
+
+func qualifyOperationalStageParent(d *qualifiedDirectory, anchor custodyIdentity, owner executionPlatformStateOwner) (unix.Stat_t, error) {
+	var held, visible, final unix.Stat_t
+	if d == nil || d.verifyVisible() != nil || unix.Fstat(d.fd, &held) != nil ||
+		unix.Fstatat(d.parentFD, d.leafName, &visible, unix.AT_SYMLINK_NOFOLLOW) != nil || unix.Fstat(d.fd, &final) != nil {
+		return unix.Stat_t{}, errPrivateReplayUnavailable
+	}
+	identity := custodyIdentityFromStat(held)
+	if !operationalStageParentIdentityMatches(identity, anchor, owner) ||
+		identity != custodyIdentityFromStat(visible) || !platformStatSnapshotStable(held, final) {
+		return unix.Stat_t{}, errPrivateReplayUnavailable
+	}
+	return held, nil
+}
+
+func operationalStageParentIdentityMatches(identity, anchor custodyIdentity, owner executionPlatformStateOwner) bool {
+	return custodyIdentityIsDirectory(identity) && sameCustodyObject(anchor, identity) && identity.Mode&0o022 == 0 &&
+		sameCustodyRecordedMode(identity.Mode, anchor.Mode) && identity.UID == owner.UID && identity.GID == owner.GID
+}
+
+func measureOperationalStage(c *stagingCustody, material resolvedExecutionMaterial, original [32]byte,
+	run string, intent, project [32]byte, parentLinks *uint64, sync bool) ([]byte, error) {
+	if c == nil || c.rootFD < 0 || run != c.runID || parentLinks == nil || !sync && *parentLinks == 0 || c.revalidateBeforeHandoff() != nil {
+		return nil, errPrivateReplayUnavailable
+	}
+	entries := []operationalStageEntry{
+		{path: "payload", directory: true, mode: 0o750},
+		{path: "payload/artifact.tar.gz", mode: 0o600, bytes: material.payloadBytes},
+		{path: "run", directory: true, mode: 0o750},
+		{path: "run/platform", directory: true, mode: 0o750},
+		{path: "run/platform/es-runtime-support", mode: 0o750, bytes: material.runtimeSupportBytes},
+		{path: "run/result", directory: true, mode: 0o750},
+	}
+	if len(material.trust.vaultCACertBytes) > 0 && len(material.trust.workloadTLSBundleBytes) > 0 {
+		entries = append(entries,
+			operationalStageEntry{path: "run/platform/workload-vault-ca.pem", mode: 0o640, bytes: material.trust.vaultCACertBytes},
+			operationalStageEntry{path: "run/platform/workload-ca-bundle.pem", mode: 0o640, bytes: material.trust.workloadTLSBundleBytes})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	parent, err := qualifyOperationalStageParent(c.stagingRoot, c.parentIdentity, c.owner)
+	var root unix.Stat_t
+	if err != nil || unix.Fstat(c.rootFD, &root) != nil || uint32(root.Mode)&0o7777 != 0o750 ||
+		sync && (unix.Fsync(c.rootFD) != nil || unix.Fsync(c.parentFD) != nil) {
+		return nil, errPrivateReplayUnavailable
+	}
+	out := append([]byte("ESOHSTG1"), original[:]...)
+	out = operationalFrame(out, []byte(run))
+	out = append(out, intent[:]...)
+	out = append(out, project[:]...)
+	parentIdentity := custodyIdentityFromStat(parent)
+	if !sync {
+		parentIdentity.Links = *parentLinks
+	}
+	out = appendOperationalStageIdentity(out, parentIdentity, true)
+	out = appendOperationalStageIdentity(out, custodyIdentityFromStat(root), true)
+	out = binary.BigEndian.AppendUint16(out, uint16(len(entries)))
+	total := 0
+	for _, entry := range entries {
+		out = operationalFrame(out, []byte(entry.path))
+		identity, digest, err := c.operationalStageEntry(entry, sync)
+		total += len(entry.bytes)
+		if err != nil || total > 1048576 {
+			return nil, errPrivateReplayUnavailable
+		}
+		out = appendOperationalStageIdentity(out, identity, entry.directory)
+		out = binary.BigEndian.AppendUint64(out, uint64(len(entry.bytes)))
+		out = append(out, digest[:]...)
+	}
+	var finalRoot unix.Stat_t
+	finalParent, err := qualifyOperationalStageParent(c.stagingRoot, c.parentIdentity, c.owner)
+	if err != nil || c.revalidateBeforeHandoff() != nil || unix.Fstat(c.rootFD, &finalRoot) != nil ||
+		!platformStatSnapshotStable(root, finalRoot) || !platformStatSnapshotStable(parent, finalParent) {
+		return nil, errPrivateReplayUnavailable
+	}
+	if sync {
+		*parentLinks = parentIdentity.Links
+	}
+	return out, nil
+}
+
+func (c *stagingCustody) operationalStageEntry(entry operationalStageEntry, sync bool) (custodyIdentity, [32]byte, error) {
+	fail := func() (custodyIdentity, [32]byte, error) {
+		return custodyIdentity{}, [32]byte{}, errPrivateReplayUnavailable
+	}
+	var digest [32]byte
+	var identity custodyIdentity
+	if entry.directory {
+		fd, err := c.openRegisteredDirectory(entry.path)
+		if err != nil {
+			return fail()
+		}
+		var info unix.Stat_t
+		statErr := unix.Fstat(fd, &info)
+		var syncErr error
+		if sync {
+			syncErr = unix.Fsync(fd)
+		}
+		if unix.Close(fd) != nil || statErr != nil || syncErr != nil {
+			return fail()
+		}
+		identity = custodyIdentityFromStat(info)
+		if !custodyIdentityIsDirectory(identity) {
+			return fail()
+		}
+	} else {
+		if len(entry.bytes) > 262144 {
+			return fail()
+		}
+		fd, err := c.openRegisteredDirectory(pathDir(entry.path))
+		if err != nil {
+			return fail()
+		}
+		actual, current, err := readStableRegularFileAt(fd, pathBase(entry.path), 262144, c.rootIdentity.Device)
+		if unix.Close(fd) != nil || err != nil || !bytes.Equal(actual, entry.bytes) {
+			return fail()
+		}
+		identity = current
+		digest = sha256.Sum256(actual)
+	}
+	if identity.Mode&0o7777 != entry.mode || identity.Device != c.rootIdentity.Device || identity.UID != c.owner.UID || identity.GID != c.owner.GID {
+		return fail()
+	}
+	return identity, digest, nil
+}
+
+func appendOperationalStageIdentity(out []byte, identity custodyIdentity, directory bool) []byte {
+	tag := byte(2)
+	if directory {
+		tag = 1
+	}
+	out = append(out, tag)
+	out = binary.BigEndian.AppendUint64(out, identity.Device)
+	out = binary.BigEndian.AppendUint64(out, identity.Inode)
+	out = binary.BigEndian.AppendUint32(out, uint32(identity.UID))
+	out = binary.BigEndian.AppendUint32(out, uint32(identity.GID))
+	out = binary.BigEndian.AppendUint32(out, identity.Mode&0o7777)
+	return binary.BigEndian.AppendUint64(out, identity.Links)
 }

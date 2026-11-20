@@ -4044,7 +4044,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 
 	sqliteMigrationSource := mustRead(t, "es/admission/internal/reliablesubmit/sqlite_migrations.go")
 	assertContainsAll(t, "current reliable-submit SQLite schema version", sqliteMigrationSource,
-		"sqliteClaimStoreSchemaVersion = 4",
+		"sqliteClaimStoreSchemaVersion = 5",
 	)
 	assertContainsAll(t, "current SQLite schema persists latest operation descriptor", sqliteMigrationSource,
 		"revision INTEGER NOT NULL CHECK (revision > 0)",
@@ -4083,8 +4083,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 33; got != want {
-		t.Fatalf("reliable-submit package should contain the exact model, persistence and fixture custody inventory; got %d files: %v", got, reliableSubmitFiles)
+	if got, want := len(reliableSubmitFiles), 36; got != want {
+		t.Fatalf("reliable-submit package inventory has %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
 		"es/admission/internal/reliablesubmit/model.go",
@@ -4097,6 +4097,9 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/store.go",
 		"es/admission/internal/reliablesubmit/durable_service.go",
 		"es/admission/internal/reliablesubmit/sqlite_migrations.go",
+		"es/admission/internal/reliablesubmit/operational_handoff.go",
+		"es/admission/internal/reliablesubmit/operational_handoff_test.go",
+		"es/admission/internal/reliablesubmit/sqlite_operational_handoff_schema.go",
 		"es/admission/internal/reliablesubmit/sqlite_store.go",
 		"es/admission/internal/reliablesubmit/durable_record_test.go",
 		"es/admission/internal/reliablesubmit/durable_service_test.go",
@@ -12604,8 +12607,8 @@ func TestPrivateReplayProgressSynchronizationInventoryDocsContract(t *testing.T)
 			}
 		}
 	}
-	if len(want) != 32 {
-		t.Fatalf("expected 32 frozen structural fields, got %d", len(want))
+	if len(want) != 51 {
+		t.Fatalf("expected 51 exact structural fields, got %d", len(want))
 	}
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	section := docSection(t, admission, "### 7.4 Exact synchronized mutable-state inventory", "### 7.5 Rejected A3 topology inventory")
@@ -12643,7 +12646,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 	permits := make(map[string][2]string)
 	permitRoles := map[string][2]string{
 		"`PrivateReplaySealPermit.permit`": {
-			"`PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse`",
+			"`PrivateReplayCustody.ReserveSealUse`, `PrivateReplayProgressCustody.ReserveProgressSealUse`, `OperationalCustody.EstablishOperational`",
 			"`PrivateReplayCustody.publishReplayOriginal`, `PrivateReplayProgressCustody.PublishProgressOriginal`",
 		},
 		"`ProgressSealPermit.permit`": {
@@ -12693,7 +12696,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 			return fmt.Errorf("missing exact field %q", field)
 		}
 	}
-	if counts["Lock"] != 5 || counts["Atomic"] != 3 || counts["Reference"] != 24 {
+	if counts["Lock"] != 7 || counts["Atomic"] != 4 || counts["Reference"] != 40 {
 		return fmt.Errorf("synchronization category counts differ: %v", counts)
 	}
 	for field, roles := range permitRoles {
@@ -12704,7 +12707,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 	text := compactText(section)
 	for _, rule := range []string{
 		"non-test production source under `./es/...` and `./cmd/es/...`",
-		"32 structurally synchronization-bearing fields: five direct lock fields, three `atomic.Bool` fields, and 24 transitive reference, request or wrapper fields",
+		"51 structurally synchronization-bearing fields: seven direct lock fields, four `atomic.Bool` fields, and 40 transitive reference, request or wrapper fields",
 		"private replay path remains runtime-unwired",
 		"SQLite owns committed claim, progress, key and grant/use state",
 		"no package-level synchronization authority",
@@ -12797,7 +12800,7 @@ func TestPrivateOriginalReplayProgressContractSelection(t *testing.T) {
 		},
 		{
 			"Operational dispatch or restart recovery",
-			"The full operational Validated No-Dispatch Evidence requirement in §8 remains unchanged. A later explicit fixture command grants no operational permission. Before provider wiring, a separately reviewed operating model must identify durable ES-owned evidence or other explicitly governed authoritative input for the relevant write dispositions, or explicitly re-derive that requirement with adequate safety proof.",
+			"A later explicit fixture command grants no operational permission. The selected codec-5 interpretation of §8 delegates present-state eligibility and sender proof to Operational Handoff. Fixture eligibility and write-disposition guarantees above remain unchanged.",
 		},
 	}
 	checkScopeRules := func(section string) string {
@@ -13736,5 +13739,250 @@ func TestReview17ProofResultHandoffContract(t *testing.T) {
 				t.Fatalf("%s missing Review-17 result handoff contract %q", check.path, phrase)
 			}
 		}
+	}
+}
+
+const operationalHandoffOwnerDoc = ".docs/execution_lifecycle/reliable_submit_operational_handoff.md"
+
+type handoffContractRow struct {
+	key        string
+	evidence   string
+	senders    string
+	permission string
+	projection string
+}
+
+type handoffContractTable struct {
+	name, start, end string
+	headers          []string
+	rows             []handoffContractRow
+}
+
+func operationalHandoffTables() []handoffContractTable {
+	return []handoffContractTable{
+		{
+			name:    "write outcomes",
+			start:   "| Decision | Evidence | Sender count | Permission | Projection |",
+			end:     "An invocation reports the selected operation",
+			headers: []string{"Decision", "Evidence", "Sender count", "Permission", "Projection"},
+			rows: []handoffContractRow{
+				{"AppliedFirstMarkerDirect", "Applied NULL-to-marker CAS and own direct COMMIT ACK", "1", "ConsumeOnce", "Known marker, same run, ambiguous until positive acceptance"},
+				{"AppliedFirstMarkerReleaseFailed", "Applied and direct ACK, failed post-COMMIT qualification or disposal", "0", "Stop", "Known applied, withhold projection when release cannot authenticate"},
+				{"AppliedOtherDirect", "Applied establish, assign, intent, stamp or accept and own direct COMMIT ACK", "0", "AdvanceOnlySelectedNextStep", "Committed phase with authorized projection"},
+				{"DefinitelyNotApplied", "Proven rollback/refusal before successful COMMIT", "0", "Stop", "Preserve refusal and eligible current projection"},
+				{"OwnCommitConfirmed", "Full authenticated own-commit readback after indeterminate command", "0", "Stop", "Own applied confirmed, eligible read-only projection"},
+				{"UnknownCommit", "Indeterminate and own readback unavailable or fails full equality", "0", "Stop", "Unknown, withhold projection in this invocation"},
+				{"ExactLatestReplay", "Exact mutation, operation, predecessor and input match latest", "0", "ReadOnly", "Authenticated current projection"},
+				{"NoChange", "Successful current read or read-only/no-change transaction", "0", "ReadOnly", "Authenticated current projection"},
+				{"StaleCAS", "Stale revision, failed CAS or advanced record", "0", "Stop", "Stale, eligible authenticated winner or withhold"},
+				{"ConflictOrOccupied", "Different intent, foreign scope or unique-key loser", "0", "Stop", "Conflict or eligible authenticated same-scope winner"},
+				{"Refused", "Validation, permission, capacity, context or integrity refusal", "0", "Stop", "Fixed refusal class, withhold unqualified facts"},
+			},
+		},
+		{
+			name:    "crash histories and disclosure",
+			start:   "| Scenario | Evidence | Sender count | Permission | Projection |",
+			end:     "K1 indistinguishable histories:",
+			headers: []string{"Scenario", "Evidence", "Sender count", "Permission", "Projection"},
+			rows: []handoffContractRow{
+				{"FreshPrestage", "Fresh qualified writer turn, absent stamp and physical stage, exclusive-create only", "0", "CreateOneStage", "Same run, pending until first marker"},
+				{"UnlockedAbsence", "Snapshot, cache, preflight or unlocked marker absence", "0", "Stop", "No effect eligibility"},
+				{"StageOwnerLost", "Stage residue or retained stamp without original live owner", "0", "Stop", "Same run pending or ambiguous, residue charged"},
+				{"PrestageUnknownSettled", "Prior invocation stopped, fresh checked turn and no stamp or physical stage", "0", "CreateOneStage", "Earlier response preserved, independent same-run eligibility"},
+				{"MarkerRollbackAfterStage", "Real marker rollback or failed marker with completed stage residue", "0", "StopBothInvocations", "Fresh absent marker cannot confer stage ownership"},
+				{"MarkerCommitReplyLost", "Real marker COMMIT, response lost, even with exact readback", "0", "NeverPost", "Same-run ambiguity until positive proof"},
+				{"MarkerDirectOwnerConsumed", "Directly acknowledged first marker and one valid consumed live owner", "1", "AtMostOneReceiverDelivery", "Receiver-count positive witness has exactly one ingress total"},
+				{"MarkerDirectOwnerLost", "Known marker with canceled, failed or crashed owner before entry", "0", "NeverPost", "Possibly indefinite ambiguity"},
+				{"MarkerCASLoser", "Two marker commands, only the applied and directly acknowledged command eligible", "0", "NeverPost", "Current projection only"},
+				{"Provider404", "Qualified GET absence or any inconclusive evidence", "0", "PositiveObservationOnly", "Ambiguous, no negative terminal"},
+				{"AcceptedReplay", "Current caller and qualified equivalent retained original with an eligible ACTIVE or RETIRED key pair", "0", "ReceiptOnly", "Same immutable run and receipt without mutable admission, resolution, staging or provider"},
+				{"SyntheticAuthority", "Synthetic row, object, permit, borrow, marker or receipt", "0", "OccupancyOnly", "Unavailable across scope"},
+				{"PublicOrRouteOnly", "Public route/startup or route-level permission alone", "0", "Refuse", "Public keyed refusal and claim-scoped later gate"},
+			},
+		},
+		{
+			name:    "provider exchanges",
+			start:   "| Exchange condition | Selected behavior | Extra POST deliveries |",
+			end:     "Direct `POST /v1/jobs?",
+			headers: []string{"Exchange condition", "Selected behavior", "Extra POST deliveries"},
+			rows: []handoffContractRow{
+				{key: "FirstMarkerSender", evidence: "One synchronous direct bounded POST, consumed before entry", senders: "0"},
+				{key: "RedirectOrReplay", evidence: "Refuse redirect, retry and transport replay, including fallback", senders: "0"},
+				{key: "MissingOrRejected", evidence: "Preserve ambiguity on 404, collision, timeout or other inconclusive response", senders: "0"},
+				{key: "PositiveAcceptance", evidence: "Require qualified Job plus unique matching initial registration evaluation before receipt CAS", senders: "0"},
+			},
+		},
+	}
+}
+
+func checkOperationalHandoffTable(section string, table handoffContractTable) string {
+	lines := strings.Split(strings.TrimSpace(section), "\n")
+	width := len(table.headers)
+	if len(lines) < 2 || lines[0] != table.start {
+		return "header"
+	}
+	separator := "| " + strings.TrimSuffix(strings.Repeat("--- | ", width), " ")
+	if strings.TrimSpace(lines[1]) != separator {
+		return "separator"
+	}
+
+	expected := make(map[string]handoffContractRow, len(table.rows))
+	for _, row := range table.rows {
+		expected[row.key] = row
+	}
+	seen := make(map[string]bool, len(table.rows))
+	for _, raw := range lines[2:] {
+		line := strings.TrimSpace(raw)
+		cells := strings.Split(line, "|")
+		if len(cells) != width+2 || cells[0] != "" || cells[width+1] != "" {
+			return "malformed row"
+		}
+		key := strings.TrimSpace(cells[1])
+		want, ok := expected[key]
+		if !ok || seen[key] {
+			return key
+		}
+		if strings.TrimSpace(cells[2]) != want.evidence || strings.TrimSpace(cells[3]) != want.senders {
+			return key
+		}
+		if width == 5 && (strings.TrimSpace(cells[4]) != want.permission || strings.TrimSpace(cells[5]) != want.projection) {
+			return key
+		}
+		seen[key] = true
+	}
+	for _, row := range table.rows {
+		if !seen[row.key] {
+			return row.key
+		}
+	}
+	return ""
+}
+
+func operationalPrestageOwnerRule(owner string) bool {
+	return strings.Contains(owner, "| Pre-stage turn | Only a complete NoChange plus ReasonNone result allows one following exclusive attempt.")
+}
+
+func TestOperationalSubmitHandoffContractSelection(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	if !operationalPrestageOwnerRule(owner) {
+		t.Fatal("owner lacks the complete positive pre-stage prerequisite")
+	}
+	assertContainsAll(t, "complete pre-stage prerequisite", owner,
+		"Only a complete NoChange plus ReasonNone result allows one following exclusive attempt",
+		"Failed cleanup, release, observed cancellation, denied or stale cuts stop effects",
+		"direct exchange-method entry", "standard HTTP GetConn callbacks", "receiver ingress")
+	prestageSource := mustRead(t, "es/admission/reliable_submit_operational_handoff.go")
+	if !strings.Contains(prestageSource, "prestage.Disposition() != reliablesubmit.OperationalNoChange ||\n\t\tprestage.Reason() != reliablesubmit.OperationalReasonNone") {
+		t.Fatal("admission lacks the complete positive pre-stage result gate")
+	}
+	for _, table := range operationalHandoffTables() {
+		if issue := checkOperationalHandoffTable(docSection(t, owner, table.start, table.end), table); issue != "" {
+			t.Errorf("%s contract differs at %q", table.name, issue)
+		}
+	}
+
+	plans := mustRead(t, "PLANS.md")
+	selection := compactDocSection(t, plans, "### Post-PR #11 operational handoff owner-contract candidate", "### Private replay-progress pre-COMMIT")
+	assertContainsAll(t, "published base and selected status", selection,
+		"ae326b0ddc30ec6b35883ee32945c622405b68b6", "e066cd4afa77fcb665f31b69bf00465989f9744e",
+		"Current production source is schema 4", "the private progress path is fixture-only",
+		"schema 5, codec 5 and encoded scope 3", "source acceptance remain separate gates")
+	adr := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
+	cut := compactDocSection(t, adr, "### Selected codec-5 interpretation of §8", "Ordering implications:")
+	assertContainsAll(t, "scoped §8 exception", cut, "scoped to codec 5", "retains conditions 1–8 and 11",
+		"expected-revision CAS for 12", "after `BEGIN IMMEDIATE` on the same unchanged authority domain for conditions 9–10",
+		"supersedes the repair/reuse permission", "§15B continues to govern the fixture scope")
+	submit := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	receipt := compactDocSection(t, submit, "### 6C. Selected operational handoff and receipt-only recovery", "## 7. Narrow Durable Correlation Semantics")
+	assertContainsAll(t, "receipt access", receipt, "Current exact caller authorization precedes lookup",
+		"exact ACTIVE key pair", "qualified retained original and immutable receipt with the exact ACTIVE or RETIRED pair",
+		"Mutable execution admission, current resolution, staging and provider access are excluded",
+		"§6B continues to govern the completed private fixture")
+	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	composition := compactDocSection(t, admission, "### Selected operational composition and ownership", "### 7.5 Rejected A3 topology inventory")
+	assertContainsAll(t, "composition scope", composition, "bounded private composition",
+		"invocation-local lifetime", "Current §7.4 describes current source",
+		"Public routing, startup and the rejected A3 topology remain outside the selection")
+	for _, doc := range []string{adr, submit, admission} {
+		assertContainsAll(t, "owner delegation", doc, "(reliable_submit_operational_handoff.md)")
+	}
+
+	state := compactDocSection(t, owner, "## 2. Installation, scope and physical state", "## 3. Original, key cuts and encodings")
+	assertContainsAll(t, "retained state", state, "`operational_local_v1` / 3",
+		"Global caller/key occupation spans the table", "cannot be promoted, relabeled or republished as operational originals",
+		"Copy every field including physical rowid", "Marker is permanent", "No operations 6, 7, 9 or 10 on codec 5")
+	custody := compactDocSection(t, owner, "## 5. Exclusive staging and exact bindings", "## 6. Provider exchange and receipt")
+	assertContainsAll(t, "staging qualification", custody, "one exclusive descriptor-relative mkdir", "stamp without its live owner",
+		"No cross-invocation stamp authority", "Preserve every residue and capacity charge",
+		"Job0 has no carrier, stage digest or filesystem inode")
+	transport := compactDocSection(t, owner, "### Exchange limits and positive witness", "## 7. Authority and history matrix")
+	assertContainsAll(t, "pinned provider observation", transport, "EnforceIndex=true and JobModifyIndex=0",
+		"JobModifyIndex=CreateIndex=Job.CreateIndex=Job.JobModifyIndex>0",
+		"No requirement that both reads be one atomic Job+Eval snapshot", "A 404 carries no negative terminal inference",
+		"Require LastContact integer 0, KnownLeader false, NextToken empty string",
+		"Job index header equals Job.ModifyIndex",
+		"a2a5fee9c42d6481adcb9be865bcbccf8fd4d725")
+}
+
+func TestOperationalSubmitHandoffContractRejectsUnsafeMutants(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	t.Run("PrestageReasonOmitted", func(t *testing.T) {
+		row := "Only a complete NoChange plus ReasonNone result allows one following exclusive attempt"
+		if !strings.Contains(owner, row) {
+			t.Fatal("real pre-stage owner rule missing")
+		}
+		mutant := strings.Replace(owner, row, "NoChange allows one following exclusive attempt", 1)
+		if mutant == owner || operationalPrestageOwnerRule(mutant) {
+			t.Fatal("unsafe disposition-only owner rule survived")
+		}
+	})
+	tables := operationalHandoffTables()
+	for _, mutant := range []struct {
+		name, row, from, to string
+		table               int
+	}{
+		{"RecoveredCommitMints", "OwnCommitConfirmed", "| 0 | Stop |", "| 1 | ConsumeOnce |", 0},
+		{"LatestReplayMints", "ExactLatestReplay", "| 0 | ReadOnly |", "| 1 | ConsumeOnce |", 0},
+		{"NoOpMints", "NoChange", "| 0 | ReadOnly |", "| 1 | ConsumeOnce |", 0},
+		{"ReadMints", "NoChange", "Successful current read", "Authenticated current read mints a sender", 0},
+		{"MarkerUnknownPosts", "UnknownCommit", "| 0 | Stop |", "| 1 | ConsumeOnce |", 0},
+		{"MarkerUnknownRetries", "UnknownCommit", "| 0 | Stop |", "| 0 | RetryMarker |", 0},
+		{"UnlockedAbsenceAuthorizes", "UnlockedAbsence", "| 0 | Stop |", "| 0 | CreateOneStage |", 1},
+		{"OmittedPhysicalPrerequisite", "PrestageUnknownSettled", "no stamp or physical stage", "no stamp", 1},
+		{"AdoptAbandonedStage", "StageOwnerLost", "| 0 | Stop |", "| 0 | AdoptStage |", 1},
+		{"RolledBackMarkerAllowsDistinctOwner", "MarkerRollbackAfterStage", "| 0 | StopBothInvocations |", "| 0 | CreateOneStage |", 1},
+		{"LostMarkerReplyPermitsPost", "MarkerCommitReplyLost", "| 0 | NeverPost |", "| 1 | ConsumeOnce |", 1},
+		{"KnownMarkerGuaranteesSend", "MarkerDirectOwnerLost", "Possibly indefinite ambiguity", "Guaranteed send, acceptance and execution", 1},
+		{"FixtureConvertsToOperational", "SyntheticAuthority", "| 0 | OccupancyOnly |", "| 1 | ConsumeOnce |", 1},
+		{"ReceiptRerunsMutableResolution", "AcceptedReplay", "without mutable admission, resolution, staging or provider", "after mutable admission, resolution, staging and provider", 1},
+		{"RouteOrPublicWiring", "PublicOrRouteOnly", "Public keyed refusal and claim-scoped later gate", "Current public wiring and route ACL establish claim ownership", 1},
+		{"RedirectOrAutomaticRetry", "RedirectOrReplay", "Refuse redirect, retry and transport replay", "Permit redirect, retry and transport replay", 2},
+		{"Provider404IsNegativeTerminal", "MissingOrRejected", "Preserve ambiguity on 404", "Record provably not accepted on 404", 2},
+	} {
+		t.Run(mutant.name, func(t *testing.T) {
+			table := tables[mutant.table]
+			section := docSection(t, owner, table.start, table.end)
+			if issue := checkOperationalHandoffTable(section, table); issue != "" {
+				t.Fatalf("real table differs at %q", issue)
+			}
+			prefix := "| " + mutant.row + " |"
+			lines := strings.Split(section, "\n")
+			mutated := 0
+			for idx, line := range lines {
+				if strings.HasPrefix(line, prefix) {
+					if strings.Count(line, mutant.from) != 1 {
+						t.Fatalf("row %q lacks a unique mutation target %q", mutant.row, mutant.from)
+					}
+					lines[idx] = strings.Replace(line, mutant.from, mutant.to, 1)
+					mutated++
+				}
+			}
+			if mutated != 1 {
+				t.Fatalf("mutated %d rows, want one", mutated)
+			}
+			if issue := checkOperationalHandoffTable(strings.Join(lines, "\n"), table); issue != mutant.row {
+				t.Fatalf("mutant rejected at %q, want %q", issue, mutant.row)
+			}
+		})
 	}
 }

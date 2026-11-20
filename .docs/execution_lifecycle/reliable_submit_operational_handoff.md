@@ -1,0 +1,913 @@
+# Reliable Submit Operational Handoff Owner Contract
+
+## 1. Status and precedence
+
+| Class | Scope |
+| --- | --- |
+| Current invariant | Published PR #11 is schema 4. Codecs 1/2, immutable codec 3, and fixture-only codec 4 retain their existing meanings. Structural public keyed-request refusal and ordinary unkeyed Submit remain current. ES owns its durable facts, Nomad its scheduling and execution observations, and Coordinator semantic acceptance. |
+| Selected target | Re-derivation of the reliable-submit Reopened redesign seam. A single private handoff across durable CAS, exclusive staging, one-use dispatch and positive receipt recovery. The private schema-5 source and maintained proof are under local implementation validation. Independent source acceptance and native qualification are separate later gates. |
+| Proof only | Real local SQLite and actual descriptor-relative fixture staging with two independent handles/processes, provisioned test keys and a counting loopback provider through the same private composition. Four operational claim slots, 32 object names, and 32 aggregate nonrefundable reservations. |
+| Native prerequisite | Governed Ubuntu 24.04 Linux arm64 supported-local, one ES installation and exact authorized SPIFFE workload identity, default-off startup, private precommissioned state, qualified transport/provider and mounts, finite retained storage, and caller-scoped lifecycle authorization. |
+
+[Persistence ADR](reliable_submit_persistence_and_concurrency.md) owns SQLite,
+CAS and migration governance, including its scoped §8 exception. [Submit and
+recovery](submit_idempotency_correlation_and_recovery.md) owns caller and
+disclosure policy and prior binary grammars. [Admission
+model](es_execution_admission_model.md) owns composition and current source
+inventories. This document owns the codec-5 specializations, transient sender
+and provider proof. Apply these specializations after the referenced general
+rules. §15B and §6B continue to govern codec 4.
+
+The future execution shape is asynchronous static-script/default, one immutable
+qualified image, no extra workload mounts or workload network access, and one
+single-region nonperiodic, nonparameterized batch job with one group and one
+task. ES still consumes the source-owned resolved plan, material and PB1
+binding. Initial resolution verifies the signed material, a qualified image
+digest and immutable placement. New effects from a retained original assess
+its frozen inputs against current admission and installation policy with exact
+agreement. Receipt replay processes only retained facts and caller authority.
+The contract introduces zero CP, Coordinator or other run-truth writers.
+
+## 2. Installation, scope and physical state
+
+Commission one unchanged SQLite database, original custody and staging domain
+with one independent random nonzero 32-byte installation ID and uint64 epoch
+greater than zero, stored in the administrator-owned qualified installation
+policy. The proof supplies these values as immutable injected fixture facts.
+Bind the ID and epoch to the exact verified caller identity, anchored DB and
+journal/sidecar directory, custody and staging parent, key registry, installed
+provider identity and paths/mount mappings in §3. Retain qualified parent
+descriptors. Compare visible and held directory/file identities, owner/mode,
+device/mount and required capabilities at open and at each operation boundary.
+A pathname, copied identity value, stale handle or empty replacement cannot
+establish continuity. Qualify SQLite's local lock and durability semantics,
+including journal/sidecar fidelity, and kernel descriptor-relative semantics by
+behavior. Cooperating instances run one qualified release and policy epoch on
+that same local domain. Epoch change requires withdrawing all old
+effect-enabled processes and requalification before enabling new effects.
+Existing accepted receipts require a retained-original qualification for the
+original epoch. Keep read qualification of earlier epochs tied to the same
+unreplaced domain and retained manifests. Older epochs cannot obtain new
+first-effect permission.
+
+Replaced/rolled-back/restored/cloned data, detached or relinked roots, sidecar
+loss, mixed writers, key reuse, unapproved policy changes, namespace writes
+outside this contract, HA/failover and process-image cloning of a live sender
+violate the proof premises. Detected violations close the affected operation.
+The contract does not derive safe restoration from logical row equality.
+Independent immutable policy and qualified custody are required to detect
+administrative violations. Public enablement requires separate commissioning.
+The current rootful supported-local profile leaves the `es:es` private-store
+ownership prerequisite unsatisfied. The loopback proof establishes no installed
+ownership, provider, host, mount or durability claim.
+
+| Schema | Row codec | Scope | Operational read / write / dispatch |
+| --- | --- | --- | --- |
+| Historical 1–4, readable unchanged in 5 | 1/2 | SQL NULL | Occupancy only / refuse / refuse |
+| 3–5 | 3 | `synthetic_nonoperational_v1` / 1 | Occupancy only / refuse / refuse |
+| 4–5 | 4 | `synthetic_progress_nonoperational_v1` / 2 | Occupancy only / refuse / refuse |
+| 5 | 5 | `operational_local_v1` / 3 | Exact verified original / governed operations / live sender only |
+| Wrong, partial or unknown tuple | Any | Any | Fail closed / refuse / refuse |
+
+Legacy and fixture APIs retain their current scopes and refuse codec 5
+projections, authority and effects. Global caller/key occupation spans the
+table. Occupied foreign scope projects unavailable without a run. Existing
+objects, keys, permits, markers, rows and receipts cannot be promoted, relabeled
+or republished as operational originals. Preserve original migration 1–4
+literals, digests and application. Append migration 5, under the existing
+checked opening transaction, to rebuild claims with the same 47 columns and
+constraints for codecs 1–4, add codec 5 admissibility, and add one partial unique BINARY BLOB-key index on `run_ref WHERE codec_version=5 AND run_ref IS NOT NULL`.
+Set and check the exact schema-5 ledger, shape, trigger/index definitions and
+version under lock. Copy every field including physical rowid. Compare both
+row sets with explicit BINARY text comparison and exact NULL/bytes handling
+before dropping old claims. Preserve other tables, counters, global uniqueness,
+and existing guarded same-scope mutations unchanged. Codec-5 triggers prevent
+delete, rowid or immutable change, any nonselected transition, regression and
+marker/receipt replacement. Enforce complete codec-5 invariants on hydration
+and under writer CAS even where SQL constraints enforce shape. Reject partial,
+unsupported, or mixed schema/ledger states without migration guessing, creation
+of replacement state or fallback. Use existing opener disposal and checked
+readback for unknown migration COMMIT. A fresh opener must qualify the exact
+result before any operation.
+
+Only assignment generates a RunRef. Retain its exact ASCII as a SQLite BLOB.
+Target RunRef generation uses independent
+32 random bytes, string form `esoh-` plus 64 lowercase hexadecimal digits,
+excluding all-zero. Zero/empty run uses SQL NULL. A codec-5 RunRef collision
+with any codec-5 row, including a distinct caller, refuses assignment without
+another draw or reassignment. The installation reserves the `esoh-` prefix
+from other writers for stage names and `esoh-job-` for provider job IDs. The
+stage component is precisely the selected RunRef, and the provider job component
+is `esoh-job-` plus the 64 digits. Match full component bytes. The public
+run grammar and representation remain the existing contract.
+
+### Retained columns and transitions
+
+Use the ADR's existing field encodings and SQL representations including all
+reference widths and nonempty requirements, with the following exact groups
+covering 47 columns. Timestamp columns are signed positive Unix nanoseconds,
+nondecreasing across a transition. Ref/time pairs change together. SQL NULL
+denotes absent optional values including run and receipt.
+
+For exactly codec 5, validate optional BLOB presence before constructing
+phase or effect facts. A non-NULL RunRef has the existing 69-byte width and
+operational grammar. A non-NULL receipt or fact reference has the existing
+32-byte width, followed by the existing phase, kind, time and nonzero
+validation. A reconciliation reference remains forbidden. Empty BLOB and
+SQL NULL are distinct decoder inputs. The shared scanner and legacy codec
+rules do not change.
+
+| Group | Exact columns | Codec-5 rule |
+| --- | --- | --- |
+| Claim and PB1 | claim_rowid, caller_ref, submit_key_ref, plan_binding, witness_resolved_mask, witness_inapplicable_mask, created_at_unix_ns, codec_version | Positive rowid and valid disjoint PB1 masks. Immutable from establishment. Codec = 5. |
+| Original | replay_scope, intent_format, intent_commitment, context_commitment, envelope_wrapper_format, envelope_payload_format, envelope_algorithm, envelope_ref, envelope_size, envelope_sha256, binding_key_id, binding_key_fingerprint, envelope_key_id, envelope_key_fingerprint | Immutable non-NULL exact descriptor of §3. Envelope ref is the existing random object-name grammar. Match descriptor, header and qualified physical original. |
+| Phase and run | phase_tag, run_ref, assigned_at_unix_ns | 1 pending, 3 effect-capable assigned, 6 accepted. Establish 1 with run/assigned NULL, assign once to 3 with run/time. Intent, stamp and marker preserve 3. Accepted preserves run/time and changes 3 to 6. |
+| Progress | effect_intent_ref, effect_intent_at_unix_ns, staging_ref, staging_at_unix_ns, dispatch_ref, dispatch_at_unix_ns | Each pair begins NULL, is set once in this order while phase 3 and stays immutable. Marker is permanent. A later stage ref or marker cannot exist without every preceding pair. |
+| Positive terminal | receipt_ref, provider_observation_kind, provider_observation_ref, provider_observation_at_unix_ns | Kind=0 with NULL receipt/ref/time until phase 6. One atomic acceptance writes receipt and kind=3 positive ref/time. All four then immutable. |
+| No negative history | reconciliation_kind, reconciliation_ref, reconciliation_at_unix_ns | Kind=0 and ref/time NULL. On marker without receipt disclose ambiguity. No durable ambiguous/no-acceptance observation, negative terminal or stage-repair mutation. |
+| Retention | expires_at_unix_ns, retention_state, unavailable_at_unix_ns, unavailable_reason | NULL, 1, NULL, empty text respectively. Always charged and occupied. |
+| Latest operation | revision, updated_at_unix_ns, last_mutation_ref, latest_operation_kind, latest_operation_input_digest | Revision 1 on establish and +1 on each separate applied transition. Exact latest-operation replay preserves the row. Kind codes 1, 2, 3, 4, 5 and 8 across the selected transitions. Reuse existing durable-operation encoding and protected comparisons. |
+
+For kind 1 use existing establish with immutable descriptor, kind 2 binds run,
+kind 3 binds intent ref, kind 4 stage ref, kind 5 marker ref and kind 8 binds
+receipt then positive observation ref. The existing operation digest uses each
+existing kind-specific input plus predecessor revision under the durable service
+contract. Every write compares identity, scope, current revision and exact
+expected immutable and predecessor facts, before constructing the expected
+post-write row and committing. Permit one durable write attempt per command.
+An authenticated winner may supply its current projection, with the attempted
+write disposition kept separately. Unknown outcome recovery compares the full
+expected record, including latest operation and physical rowid. Exact readback
+may classify the command as OwnCommitConfirmed. Advanced or mismatched state
+cannot classify it. No operations 6, 7, 9 or 10 on codec 5. No alternate row
+writer. Migration can rewrite physical table storage only under the existing
+authority. Existing key registry/counter writers and installation commissioning
+own those facts, outside claim progress. Staging custody owns files. No provider
+or receipt-history mirror, new authority table or new stored column is selected.
+
+## 3. Original, key cuts and encodings
+
+| Axis | Selected value |
+| --- | --- |
+| SQL / per-row codec / scope | 5 / 5 / 3 |
+| Original intent / PB1 | 1 / 1 |
+| Wrapper / payload / cipher | 3 / 3 / 1 |
+| Deployment / stage / projection / evidence | Each 1 with independent literal domain labels below |
+
+SUB §6A and §6B define the prior strict nested grammar and parser. Reuse their
+exact TLV envelope field meanings, state convention, byte order and raw intent
+grammar. Operational plaintext is `ESRSPAY3 || u16(3) || u32(body bytes)`
+followed by `u16(11)` and ordered TLVs. IDs 1–10 are §6B top-level IDs with
+these replacements: TLV 6 leaf 2 is the 32-byte qualified OCI content digest
+and leaf 4 is proof kind u8=2 (installed qualification for native, explicit
+fixture authority for proof), leaf 1 equals the digest-pinned resolved image,
+and issuer and topology equal qualified frozen facts. TLV 7 has exact qualified
+staging/results/SPIRE/datacenter strings and UID/GID. TLV 8 leaf 1 is the
+ASCII literal `operational_local_v1`. TLV 9 wrapper and payload leaves are
+u16=3. TLV 10 is u8=3. Each original and resolved plan contains zero additional
+mount items, network false and the exact selected mode/profile/job shape.
+
+TLV 11 uses a count of 15 followed by present ordered TLVs: (1) deployment
+format u16=1, (2) installation B32, (3) epoch u64, (4) provider installation
+B32, (5) endpoint TLS leaf SPKI SHA-256 B32, (6) endpoint HTTPS DNS name,
+(7) port u16 1..65535, (8) region, (9) datacenter, (10) namespace,
+(11) staging parent, (12) results root, (13) SPIRE socket path,
+(14) provider build B32, (15) expanded Job template digest B32. B32 means
+32 raw bytes, zero refused for identity/key/proof fields. Provider installation
+is a separately provisioned nonzero random identity for one qualified Raft
+domain. Build is SHA-256 of the commissioned installed executable. The
+fixture uses independently provisioned test build and endpoint identities.
+Region, datacenter and namespace match lower-case ASCII
+`[a-z0-9][a-z0-9-]{0,62}` with final byte alphanumeric. DNS hostname uses
+one to 253 lower-case ASCII DNS bytes with those labels, no trailing dot.
+Paths in 11–13 are absolute ASCII 2..512 bytes, with each component 1..128
+of `[A-Za-z0-9_.-]` other than dot/dotdot, no trailing slash, empty
+component or backslash, equal to placement leaves 1–3. Placement datacenter
+equals leaf 9. Fix namespace to `es-operational-v1` and require its
+exclusive-writer qualification. Leaf 15 identifies one immutable versioned
+template per epoch and build as specified in §6. Credential, CA private
+material and secret keys are absent from TLV 11. Provision and validate the
+exact peer name/pin, approved trust chain and credential separately under the
+qualified policy. Frozen originals bind the SPIFFE identity through the
+existing caller ref and policy's exact identity check.
+
+Header starts with `ESRSENV3 || u16(3) || u32(header bytes) || u16(14)` and
+then the same 14 present TLVs as §6B with payload=3 and scope=3. Header length is
+289 plus lengths of the two key IDs and raw PB1 (292..673). AAD is
+`ESRSAAD3 || raw header`. File appends AES-256-GCM's random 12-byte nonce,
+plaintext ciphertext and 16-byte tag. Intent HMAC under the original
+binding key is `ESRSINT3 || complete TLV 2`. Context HMAC under the same
+key is `ESRSCTX3 || complete TLVs 6,7,8,11` in that order. Permit binding is
+`SHA256(ESRSFRZ3 || bindingFP32 || envelopeFP32 || raw header || plaintext)`.
+Envelope SHA-256 is unprefixed over the complete file. Preserve separate
+key purposes and purpose-aware fingerprints (`ESRSKEY1`), strict dispatch
+on all axes and constant-time protected comparisons. Accept no alternate
+decoder, key search, downgrade or mixed tuple.
+
+Require raw and decoded intent each ≤262144 bytes, JSON depth ≤8, plaintext
+and aggregate retained binary leaves each ≤1048576, sealed file ≤2097152,
+header ≤4096, captured component ≤262144, data string ≤65536, object depth
+≤5, container depth ≤8, TLV count ≤32768, each sequence ≤8192, and existing
+narrower §6A limits. Check overflow, counts, exact lengths and states before
+allocation. Refuse malformed, noncanonical order, missing, duplicate, unknown,
+trailing or mismatched leaves. Redact all private values as in §6B. Use only
+the captured material in proof verification and stage rendering.
+
+Authenticate same original bytes/file descriptor and row descriptor, caller,
+PB1, two exact purpose-key identities/fingerprints, AEAD, commitments and
+policy binding. Keep the held original and exact immutable row plus scope as
+an optimistic certificate until the writer turn compares them with the
+fresh row and performs bounded physical revalidation. Revalidate the exact
+pair from the same SQLite registry at grant issuance, claim establishment,
+pre-stage authorization and marker admission, using the selected same-row
+cuts. Both must be precommissioned ACTIVE and designated as the exact permitted
+operational pair by the immutable installation policy. Designation cannot
+be inferred from an existing fixture registry entry. Refuse missing,
+revoked, wrong-purpose or replacement keys. A failed registry check means
+unavailable. Use shared
+permit/counters keyed by actual key, with no fixture missing-key registration
+for operational scope. Consume once, charge reservation before object
+publication and retain charge or residue through failure. Publish and sync
+the immutable original before claim insert, under existing custody ownership.
+Two independently charged publications may yield a single claim winner. Only
+the winner's descriptor may be used. A losing or uncertain invocation cannot
+adopt its own object as the winner.
+
+First-effect authorization also requires the current caller, original epoch
+and current execution admission at each stage and marker boundary. Observe
+key/policy cuts in the corresponding checked writers immediately before
+allowing a stage attempt and applying marker. A key change after stage cut
+may leave inert residue and blocks a later marker cut. Admission precedes
+revocation at a serialized cut. Revocation cannot retract authority already
+validly admitted or I/O already in flight. Observed cancellation, policy
+withdrawal or key denial before entry burns the continuation. Receipt-only
+verification and positive-receipt CAS may use the exact ACTIVE or RETIRED
+pair with currently authorized caller and qualified retained original, and
+confer solely read/reconciliation authority. No mixing of keys from other
+objects or substitution of present resolver output for retained input.
+
+## 4. Writer turn, sender and results
+
+The §8 current-state substitution applies only to codec 5. Keep conditions
+1–8 and 11. For 12 compare exact current revision after a successful
+`BEGIN IMMEDIATE`, and enforce it in the same transaction's CAS. For 9–10,
+the successful writer turn on the unchanged domain serializes ahead of any
+later writer and after disposition of any earlier writer. It freshly reads,
+decodes and hydrates the current authenticated row. Compare exact same
+caller/key, claim rowid, PlanBinding, RunRef, scope, immutable descriptor and
+physical original with the held authenticated certificate. Check active
+retention, effect intent, and marker SQL NULL. Pre-stage turn also requires
+stamp NULL. Marker turn requires the exact still-live stage owner's stamp
+and revalidated snapshot. Qualification inside the turn is bounded read-only
+descriptor and byte verification on retained original/stage and exact key
+and policy reads. All creation, stage writes, sync, and provider I/O run
+outside SQLite. Unsettled older writer either excludes this turn or settles
+before the read. An unqualified store, busy/failed turn, changed certificate,
+unlocked absence, or a cached snapshot cannot pass.
+
+A complete successful pre-stage cut (`OperationalNoChange` with
+`OperationalReasonNone`) allows only one immediately following exclusive
+creation attempt with the checked revision and original. No other disposition
+or reason grants that attempt. A failed cleanup, release or observed cancellation
+after semantic qualification stops effect continuation and withholds run and
+receipt, while preserving the earlier invocation's actual operation and write
+disposition. A read-only cut neither invents a write nor erases one. A contender whose cut becomes
+stale can at most leave inert stage residue after exclusive creation. Stamp
+and marker CAS recheck exact revision and current admission. If a contender
+already owns the stage, another exclusive create fails and produces no
+authority. A marker can be applied only while the same original owner holds
+verified stage descriptors through CAS and transport entry.
+
+Private API signatures below specify roles and closed variants. Every argument
+type is an opaque redacted value with validating private constructors. MutationRef is fresh nonzero random B32 for every new write. Closed
+commands are nominal application inputs. No general-purpose setter, exported
+boolean, raw token or method on a zero value can choose an authority variant.
+
+| Owner entry | Typed input | Typed result |
+| --- | --- | --- |
+| Admission `handoff(ctx, AuthorizedDelivery, QualifiedDomain)` | Exact caller + immutable parsed delivery, qualified composition dependencies | `HandoffResult` below |
+| Admission `recover(ctx, AuthorizedDelivery, QualifiedDomain)` | Same scope, accepted receipt read or bounded positive lookup for a marker | `HandoffResult`, zero senders |
+| Durable service `apply(ctx, OriginalAccess, Revision, MutationRef, ProgressCommand)` | Live invocation-bound access, exact predecessor revision (zero on establish), fresh mutation identity. Closed command variants Establish, Assign, Intent, Stamp, Accept | `WriteOutcome` plus separate eligible projection |
+| Durable service `applyFirstMarker(ctx, OriginalAccess, Revision, MutationRef, MarkerCandidate, OnApplied)` | Exact current live stage/request owner and synchronous private consumer callback | `MarkerOutcome` (WriteOutcome plus optional callback ExchangeResult only for AppliedFirstMarkerDirect). Calls OnApplied once only after directly acknowledged applied COMMIT and revalidation. OnApplied synchronously returns a tagged ExchangeResult or Closed. No sender escapes as a result. |
+| Callback `consume(ctx, *liveSender, *handoffOwner)` | Exact issued pointer and currently active owner, bound stage and request | `ExchangeResult` or closed/refused, consumption before transport |
+| Provider `postOnce(ctx, PreparedRegistration)` | Immutable exact fully formed request, admitted by private consume | `PostObserved(ImmediateAck)` or `PostInconclusive(ExchangeReason)` |
+| Provider `observe(ctx, InitialJobLocator)` | Qualified realm, job locator, at most one Job and Evaluations read each | `ObservationPair` typed bounded snapshots or `Inconclusive(ExchangeReason)`. Only verifier can create PositiveProof. |
+
+`WriteOutcome` is a closed tagged union with private storage. Transient
+transport or scope failures are finite reasons (unavailable, canceled, stale,
+wrong-scope, conflict, occupied, closed, integrity, capacity, unsupported,
+inconclusive) and project no raw cause. Transport reasons additionally identify
+timeout, I/O, HTTP status refusal, malformed/oversize, or continuity failure.
+Execution and database observers receive value-free classes. Exact direct
+acknowledgement means SQLite returns success for the very COMMIT following
+the reported applied transition, after required checked disposal/authentication
+for release. A successful commit of a read, no-op or latest replay cannot
+construct this variant. Direct COMMIT with failed release still has known
+write disposition and cannot issue a sender. A direct marker success never
+requires inferring what a different call saw.
+
+| Decision | Evidence | Sender count | Permission | Projection |
+| --- | --- | --- | --- | --- |
+| AppliedFirstMarkerDirect | Applied NULL-to-marker CAS and own direct COMMIT ACK | 1 | ConsumeOnce | Known marker, same run, ambiguous until positive acceptance |
+| AppliedFirstMarkerReleaseFailed | Applied and direct ACK, failed post-COMMIT qualification or disposal | 0 | Stop | Known applied, withhold projection when release cannot authenticate |
+| AppliedOtherDirect | Applied establish, assign, intent, stamp or accept and own direct COMMIT ACK | 0 | AdvanceOnlySelectedNextStep | Committed phase with authorized projection |
+| DefinitelyNotApplied | Proven rollback/refusal before successful COMMIT | 0 | Stop | Preserve refusal and eligible current projection |
+| OwnCommitConfirmed | Full authenticated own-commit readback after indeterminate command | 0 | Stop | Own applied confirmed, eligible read-only projection |
+| UnknownCommit | Indeterminate and own readback unavailable or fails full equality | 0 | Stop | Unknown, withhold projection in this invocation |
+| ExactLatestReplay | Exact mutation, operation, predecessor and input match latest | 0 | ReadOnly | Authenticated current projection |
+| NoChange | Successful current read or read-only/no-change transaction | 0 | ReadOnly | Authenticated current projection |
+| StaleCAS | Stale revision, failed CAS or advanced record | 0 | Stop | Stale, eligible authenticated winner or withhold |
+| ConflictOrOccupied | Different intent, foreign scope or unique-key loser | 0 | Stop | Conflict or eligible authenticated same-scope winner |
+| Refused | Validation, permission, capacity, context or integrity refusal | 0 | Stop | Fixed refusal class, withhold unqualified facts |
+
+An invocation reports the selected operation and its own disposition when one was
+attempted, a finite current reason, and separately qualified projection. The
+absence of an attempted write is distinct from Refused. Results carry no
+continuation authority. Earlier acknowledged writes are facts and never
+substitute for a later command result or checked denial. Cleanup may withhold
+projection and report a closed reason while preserving the selected write
+disposition. A direct COMMIT stays known when release fails. Establishment
+confirmation requires exact owned row equality plus a live authorized context
+and the exact ACTIVE effective key pair, authenticated descriptor and file,
+and original/PB1 association. Failure of that qualification preserves Unknown.
+Later commands confirm against the same original and current operation's key
+and owner eligibility. Receipt recovery reads may use the exact RETIRED pair.
+
+| Composition exit | Projection and disposition |
+| --- | --- |
+| Initial lookup | Unauthorized before lookup. Conflict, scope, integrity and unavailable denial withhold. A current authenticated original may project. Initial absence has no write. |
+| Occupied winner lookup | Conflict is returned with Occupied and no projection. Equivalent eligible winner may project with Occupied. Failed winner qualification withholds with Occupied. |
+| Post-establishment authentication | Own confirmed permits only eligible read-only projection. Unknown withholds. Failed release of direct COMMIT preserves known establishment, with no projection or further operation. |
+| Assign or intent | The invoked command reports its own disposition. Refused and unknown withhold. A confirmed/no-op/stale result may project only authenticated current facts and stops effects. |
+| Pre-stage turn | Only a complete NoChange plus ReasonNone result allows one following exclusive attempt. Failed cleanup, release, observed cancellation, denied or stale cuts stop effects and withhold run and receipt while retaining the earlier operation/write result. |
+| Stage creation, materialization or stamp | Qualified retained collision may return Pending. Integrity failure withholds. Stamp reports its own disposition and only direct applied advances. |
+| Marker | Only direct applied first marker with successful release calls the synchronous consumer. Refusal or unknown withholds. An authenticated applied marker without a send remains ambiguous. |
+| Observation | Qualified evidence is required for receipt CAS. An inconclusive exchange leaves eligible marker ambiguity with the bounded reason. |
+| Receipt CAS | Expose the same verified immutable receipt from the authenticated allowed outcomes. Refusal or unknown withholds. |
+| Callback completion or cleanup | Burn the local right, dispose after synchronous use, and withhold on failed cleanup without changing the selected operation or write disposition. |
+
+Read-only cuts may withhold a projection while preserving a command observed
+earlier in the invocation. A later attempted command takes precedence in the
+reported write slot. After a definite rollback, any projected row is freshly
+authenticated at the same revision with the operation's current qualification.
+The nil-default per-domain proof hooks in the private composition order the
+establishment, pre-stage, stamp, marker and entry cuts in maintained tests. The
+instance-scoped custody pre-stage proof observes semantic success and real
+rollback/release before it may model a failed cleanup response or order caller
+cancellation. The stage-close witness observes real cleanup and may model its
+reported error. These hooks create no write, projection or sender authority.
+A rollback-response model runs after the real rollback and leaves connection
+release to the existing deferred cleanup. The maintained admission proof counts
+stage creation and materialization attempts at their direct call sites, after
+the complete pre-stage gate. Its direct exchange observer sees only the HTTP
+method just before the unchanged concrete `RoundTrip` call; it cannot substitute
+transport, supply a response or claim receiver delivery.
+A maintained real-SQLite regression compares the same pre-stage schedules under
+the disposition-only and complete-result admission gates; it records stage,
+materialization, durable rows/charges, sealed original, and provider effects.
+The internal result and admission composition remain separate observations.
+
+The finite reason tags distinguish cancellation, stale, wrong scope, conflict,
+occupied, closed, integrity, capacity, unsupported, and inconclusive. Exchange
+failures additionally distinguish timeout, I/O, HTTP refusal, malformed or
+oversized evidence, and continuity failure. Generic unavailable covers
+unclassified unavailability. These private tags carry no raw cause.
+
+Admission owns typed validation of the frozen plan, job, held stage and provider
+observation. The internal durable service owns scoped capsules bound to the
+active access and exact projection, and derives the durable intent and marker
+using the selected fixed preimages. Stage revalidation supplies the exact
+qualified stage evidence rather than a Boolean assertion. The provider verifier
+issues distinct positive observation evidence only after validating the pair.
+The admission association adapter checks the verifier's issuer, pointer and
+exact projection and supplies the existing W MAC and complete witness preimage
+to the owning access. The access independently checks the preimage and MAC
+against its live authenticated projection and derives the existing receipt.
+The stage adapter supplies the full bounded stage preimage from its held
+descriptors. The access validates its scope, layout and metadata, pins the
+exact bytes and requires a fresh matching measurement at use. First-effect
+qualification supplies a match of the live original after checking current
+admission and the commissioned domain. An immediate ACK carries no acceptance
+authority. The exact reference inventories constrain these adapters and the
+constructors and consumers across the Go package boundary.
+
+For a matching active claim, the fresh explicit invocation can load its
+current phase and choose a new authorized next command. A replay/no-op itself
+has no effect permission. If one invocation receives an uncertain response
+to any command (claim, assignment, intent, stamp, marker or receipt), end the
+entire effect-producing sequence. Safe readback may classify but cannot
+continue it. A definite marker failure also ends the invocation. Readback
+after failed disposal withholds authority. A later explicit invocation
+uses identical retained facts and identical fresh inputs identically.
+Pre-assignment outcomes have no run. Authenticated assigned nonterminal
+outcomes include the same run (Pending before marker, Ambiguous after marker).
+Accepted includes same run and immutable receipt. Current authorization before
+lookup, different-intent conflict, foreign scope, unavailable integrity or
+key state, and unauthenticated failures withhold the run and receipt. Preserve
+known occupied vs unknown own-write disposition internally. Recovery never
+synthesizes an extra mutation to classify an earlier result.
+
+HandoffResult is a private sum of Unauthorized, Conflict, Unavailable(reason),
+PendingBeforeAssignment, PendingAfterAssignment(RunRef), Ambiguous(RunRef),
+and Accepted(RunRef, ReceiptRef). A command with indeterminate disposition
+and no authenticated projection maps to Unavailable(unknown-write) for that
+invocation. Authenticated readback may supply the applicable class without
+resuming effects. Equivalent retained original means the same currently
+authorized caller/key namespace and exact original-intent TLV bytes under
+the stored scope, bound by the intent HMAC, with the qualified exact frozen
+file and PB1. Omitted and defaulted values retain their original representation.
+
+The admission invocation owns an unexported pointer `handoffOwner`. Its
+private one-use `liveSender` stores original self pointer, exact issuer and
+owner pointers, held stage identity/handles, O, RunRef, S, D, P and prepared
+request bytes/locator. State is invocation-local Open → Consumed or Closed,
+with a single owner mutex serializing consumption, owner close and the actual
+synchronous transport-entry decision.
+The issuer registers no global state. Verify self pointer equals receiver,
+issuer/owner and original match, owner active, keys/policy view and held
+stage checks pass, and context live. Copy, zero, foreign pointer, wrong
+binding, closed custody or escaped callback refuses. Consume state before
+single synchronous transport entry. Prepare the request and transport before
+the final gate. Under the owner mutex, revalidate the qualified binding and
+sample context cancellation immediately before the synchronous transport call.
+Owner closure ordered before that cut and cancellation observed at that sample
+refuse entry. Independent context cancellation does not acquire the mutex.
+Cancellation after the entry-admission cut is possibly delivered, including
+before any OS send. Close may wait for synchronous use to complete. No physical
+wire atomicity, instantaneous cancellation, or universal close latency is
+selected. Burning on mismatch or denial prevents any
+later retry by that owner. Callback return closes access and burns any unused
+sender, with disposal by the invocation owner after transport exits. No
+goroutine or later callback receives a usable owner. Close/failed validation
+and disposal forbid additional operations. The cut relies on actual callback
+ownership and the live Go process. Process-image fork/clone of a live
+capability is outside the proof. The existing per-custody lifetime controls
+remain in use. No A3 topology, global registry, lease, root-pair registry,
+new flock or poison subsystem.
+
+## 5. Exclusive staging and exact bindings
+
+Only after known durable run assignment and intent with the new checked cut,
+try one exclusive descriptor-relative mkdir of the exact run component under
+qualified parent at mode 0750. Existing partial or complete directory (even
+with no stamp), any retained stamp without its live owner, path alias, missing
+directory with retained stamp, collision and unresolved cleanup all withhold
+authority. Preserve every residue and capacity charge. No delete/recreate,
+adopt, reopen for dispatch, new run, refund or repair/reuse. A still-live
+successful owner can finish its nonfailed sequence. Evidence inspection may
+observe old files without taking stage ownership. No cross-invocation stamp
+authority. Before stamp, marker and consume compare actual ordered entries,
+contents and held and visible identities under that owner. On failure burn,
+close and withhold.
+
+The allowed tree has root and exact entries `payload`,
+`payload/artifact.tar.gz`, `run`, `run/platform`,
+`run/platform/es-runtime-support`, and `run/result`. When original CA/TLS
+applicability is true include both `run/platform/workload-vault-ca.pem` and
+`run/platform/workload-ca-bundle.pem`, otherwise neither. Directories and
+support executable mode 0750, payload archive 0600, trust files 0640, exact
+commissioned uid/gid.
+Result directory is empty before dispatch. Artifact, support and optional
+trust file bytes are the corresponding exact retained leaves. Each file at
+most 262144 bytes, aggregate at most 1048576, at most eight child entries,
+and no extra names. Relative path ≤128 ASCII bytes, depth ≤3, exact list
+only. Refuse symlinks, file links other than nlink=1, cross-device paths,
+devices, special/type or mode changes, unknown entries, mismatched lengths,
+unstable before/after stats or visible/held mismatch and content changes.
+Directories must have their exact observed link counts, with no topology
+change across checks. Stage filesystem sync and qualification of held
+descriptors precede stamping. Native must prove all worker-visible bind
+sources and mount modes match the frozen projection, staged inputs stay
+stable through provider use, and runtime/result writes cannot alter them.
+A pre-entry check cannot prevent post-check hostile filesystem actions.
+
+An operational stage parent is requalified from the held and no-follow visible
+identities at each effect boundary, including the reopen, stamp, marker and
+final entry. Compare the commissioned owner and anchored permitted mode.
+The held parent, its visible entry and a second held sample must agree on
+identity and metadata within each qualification. The independently opened
+parent for exclusive creation is checked against the domain's original anchor.
+Revalidation refuses drift before reading it as stamp evidence. Parent link
+count is stable within each bounded check but may change across operations as
+authorized sibling stages appear. Revalidation uses the original stamp's
+historical parent count in the exact preimage after checking fresh safety and
+per-check stability. Receipt-only recovery needs no live staging anchor.
+
+A missing-stage prerequisite is a descriptor-relative no-follow lookup of
+the exact child returning ENOENT under the held qualified parent. Confirm it
+outside SQLite after the checked cut, then rely on exclusive mkdir for the race.
+Treat every other error as refusal. Validate file descriptors before and after
+hashing, plus child resolution from the held root. Stage writes end at completed
+materialization.
+
+### Preimages
+
+`F(x)` is u32 byte length then bytes. Integers below are unsigned
+big-endian of named width. B32 fields have no inner framing. Concatenate in
+written order with no delimiters. Labels are exact ASCII without terminator.
+Use SHA-256 unless HMAC is named.
+
+| Value | Exact preimage |
+| --- | --- |
+| O original identity | `ESOHORIG1`, u64 physical positive rowid, caller B32, key ref B32, F(PB1), u16 resolved mask, u16 inapplicable mask, u64 creation ns, F(exact raw original header), F(canonical envelope ref), u64 envelope size, file digest B32, binding FP B32, envelope FP B32 |
+| L locator | `ESOHLOC1`, installation B32, u64 epoch, provider installation B32, SPKI B32, F(DNS name), u16 port, F(region), F(datacenter), F(namespace), F(job ID), build B32, template digest B32 |
+| I durable intent ref | `ESOHINT1`, O, F(run), L |
+| P prepared projection | `ESOHJOB1`, L, F(canonical Job0 JSON) |
+| S durable stage ref | `ESOHSTG1`, O, F(run), I, P, parent identity, root identity, u16 child-entry count, then for each sorted child F(relative path), identity, u64 size, and content digest B32 |
+| D durable marker ref | `ESOHMRK1`, O, F(run), I, S, P, L, raw 32-byte mutation ref, u64 predecessor revision |
+| C job correlation carrier | HMAC-SHA-256 binding key over `ESOHCOR1`, O, F(run), S, D, P, L. Encode 64 lowercase hex in exactly `Job.Meta["es_operational_correlation_v1"]`. |
+| W durable positive observation ref | HMAC-SHA-256 binding key over `ESOHEVD1`, O, F(run), S, D, P, L, u64 initial index, raw 16-byte evaluation UUID |
+| R durable receipt ref | HMAC-SHA-256 binding key over `ESOHREC1`, O, F(run), S, D, P, L, W |
+
+L is the SHA-256 of its preimage. Stage identity encoding is type u8 (1
+directory, 2 regular), u64 device, u64 inode, u32 uid, u32 gid, u32 POSIX mode
+bits 07777, u64 link count. Compare against both held and visible descriptor
+identities. Child order is ascending unsigned pathname bytes. Directory
+size/digest in the preimage are zero, file size and unprefixed SHA-256 over
+bytes are exact. Qualified parent identity and mount constraints are
+validated separately from per-entry mode restrictions. Job0 has no carrier,
+stage digest or filesystem inode. The wire Job adds only C to Job0.
+§6 verifies C separately and removes it before comparison. This makes S,
+D, C acyclic and lets recovery recompute P without adopting stage files.
+The durable store protects the retained immutable D and S. Reconciliation
+uses them directly after row authentication and structural validation.
+
+## 6. Provider exchange and receipt
+
+### Deterministic projection and permitted normalization
+
+Job0 is the closed object rendered by the current `buildNomadJobSpec` rule
+from the qualified captured projection with the target job ID, explicit
+`Region` and `Namespace` added and initial priority set to integer 50.
+Effect-bearing fields rendered by ES are the following, with no omitted or
+additional submitted keys:
+
+| Location | Fields and selected values |
+| --- | --- |
+| Job | ID and Name both target job ID, Region and Namespace from L, Type batch, Datacenters singleton frozen DC, Priority 50, Meta, TaskGroups singleton |
+| Job.Meta | run_id is exact RunRef, execution_substrate.authority_handoff.schema is the literal v1, execution_substrate.authority_handoff.runtime_profile is frozen selected profile, execution_substrate.authority_handoff.workload_zone_vault_config_digest is exact captured zone digest. Only final wire adds es_operational_correlation_v1. |
+| TaskGroups[0] | Name and Count from PB1-frozen job envelope (count 1), RestartPolicy Attempts/Mode/Interval/Delay and ReschedulePolicy Attempts/Unlimited/Delay/DelayFunction/MaxDelay from that envelope, Tasks singleton |
+| Tasks[0] | Name/Driver/User from envelope, driver docker, Env exact existing rendered runtime map including frozen authority handoff, Resources CPU/MemoryMB from retained plan, Meta exactly run_id/artifact_digest/derivation_spec_digest/output_id from run and retained plan, Config |
+| Config | image is qualified digest-pinned runtime image, command/args exact resolved supervisor command, privileged/security_opt exact qualified envelope, mounts exact built-in layout mapping for payload/run/SPIRE, network_mode is none. No added workload mount, alternate credential/image or network mode. |
+
+The four Config.mounts entries, in order, are dictionaries with exactly
+these fields. First, type=bind, source=<staging parent>/<RunRef>/payload,
+target=/execution/staged, readonly=true. Second, type=bind,
+source=<staging parent>/<RunRef>/run, target=/execution/run, readonly=false.
+Third, type=tmpfs, target=/run/es-runtime-identity/<RunRef>, readonly=false,
+and tmpfs_options with sole size key equal to retained identity tmpfs uint64.
+Fourth, type=bind, source=directory of the frozen SPIRE socket, target=
+/run/es-runtime-identity/<RunRef>/internal/source, readonly=true.
+Check the existing qualified ownership contract for these layers. Require
+native qualification to prove mutable writes isolated from retained inputs.
+No runtime script, alternate Job builder or native adapter is created in
+this turn.
+
+The canonical JSON model is UTF-8, unique decoded object keys sorted by
+unsigned UTF-8 bytes, arrays preserved, no insignificant whitespace,
+double-quoted strings using shortest valid escapes for quote, backslash
+and controls (named JSON control escapes where available, otherwise
+lowercase four-digit u escape), raw UTF-8 for other scalar values, booleans
+and null in lowercase, and decimal integer tokens normalized to their
+mathematical value. Numeric domain is signed 64 to unsigned 64 inclusive
+(`-2^63..2^64-1`), no negative zero, fractions or exponents. Refuse invalid
+UTF-8/unpaired surrogates, duplicate decoded keys, trailing tokens, any
+unsupported number, >16 levels, >8192 nodes or >65536 bytes decoded string.
+No coercion, absent/empty equivalence or array reordering. Canonical Job0
+≤65536 bytes. Canonical complete POST body ≤131072 bytes. HTTP JSON objects
+are strictly parsed even for removed or immaterial fields.
+
+GET Job returns Nomad's expanded Job object. Verify and then remove exactly
+top-level CreateIndex, JobModifyIndex, ModifyIndex, Version, Status,
+StatusDescription, Stable and SubmitTime. Version must be integer 0. Initial
+indexes must agree as below. Status is one of pending, running or dead.
+StatusDescription is string ≤4096 bytes, Stable boolean, SubmitTime positive
+signed-64 ns. Verify C at its exact Job.Meta key and remove that key only.
+The remaining whole object must equal the exact expanded template rendered
+with the Job0 field values above. Every effect-bearing field is either a
+named submitted value in the table, or an exact literal in the commissioned
+expanded template. No other provider field may be ignored or wild-carded,
+including the commissioned token accessor when serialized, Periodic,
+ParameterizedJob, Multiregion, ParentID, Stop, AllAtOnce,
+NodePool, Datacenters, constraints/affinities/spreads, dispatch, identity,
+services/connect, networks/ports, scaling, volumes, actions, templates,
+secrets, lifecycle hooks and policy/default values at every nesting level.
+
+The template is a private canonical JSON object ≤65536 bytes with the actual
+expanded inert/default literals and only these substitutions. At each
+Job0 scalar or complete submitted variable collection in the table use an
+object consisting of the sole key `"$job0"` with exact RFC 6901 pointer to
+that same location in Job0. Placeholders for entire Meta, Env, Datacenters,
+Config.mounts, Config.args and Config.security_opt are permitted as leaves.
+Use individual named scalar placeholders for all remaining submitted
+fields. All named submitted paths must be covered, each exactly once,
+same pointer and destination. Object ancestors in Job0 retain structure
+and arrays retain the one-group and one-task cardinalities. No placeholder
+in any other position or added template key containing dollar sign. Dynamic
+provider values beyond the explicit normalization removals cause refusal.
+Use `SHA256(ESOHJTPL1 || F(canonical template))` as TLV 11 leaf 15.
+Before provisioning require an authoritative checked template for this
+exact build/admission/mount epoch and prove every fixed value is within the
+selected execution shape. The proof fixture has its own frozen exact
+template. No template inference from GET, caller input or immediate response.
+Template/load mismatch is inconclusive. Native template qualification is a
+later gate that must verify the installed defaults, including serialization
+and normalization compatibility.
+
+### Exchange limits and positive witness
+
+| Exchange condition | Selected behavior | Extra POST deliveries |
+| --- | --- | --- |
+| FirstMarkerSender | One synchronous direct bounded POST, consumed before entry | 0 |
+| RedirectOrReplay | Refuse redirect, retry and transport replay, including fallback | 0 |
+| MissingOrRejected | Preserve ambiguity on 404, collision, timeout or other inconclusive response | 0 |
+| PositiveAcceptance | Require qualified Job plus unique matching initial registration evaluation before receipt CAS | 0 |
+
+Direct `POST /v1/jobs?region=<region>&namespace=<namespace>` with
+`Content-Type: application/json`, exact host/realm/paths from L. Request
+body contains exactly Job with C, EnforceIndex=true and JobModifyIndex=0.
+Use explicit identity encoding, one fixed Content-Length, no Expect
+continue, no redirects, proxies, middleware retries, replayable GetBody,
+idempotency header, POST fallback, alternate endpoint or provider.
+One fresh nonpooled HTTP/1.1 authenticated connection per exchange, no
+HTTP/2, no reusable idle connection, no TLS early data. Trust only
+commissioned direct endpoint and identity with probe-qualified no replay
+behavior. Synchronous attempt uses total 5 s maximum (including connects,
+TLS, headers/read), 1 s dial and 2 s TLS within it, ≤16384 response header
+bytes, and immediate response ≤16384 body bytes. Consume the sender before
+the only transport entry, regardless of whether bytes reach the receiver.
+Count logical POST deliveries separately from TCP retransmissions. Count
+entry, target receiver ingress and redirect receiver ingress separately.
+
+A usable immediate response is HTTP 200, uncompressed JSON, object with
+EvalID (canonical lower-case nonzero UUID in 8-4-4-4-12 form),
+EvalCreateIndex, JobModifyIndex and Index (all same positive u64). The pinned
+handler serializes embedded QueryMeta. Require LastContact integer 0,
+KnownLeader false, NextToken empty string and Warnings empty string. Require
+X-Nomad-Index equal to body Index. Refuse missing, unknown, duplicate or
+wrongly typed members in this closed shape. Check a single application/json
+content type with optional UTF-8 charset and absent or identity
+Content-Encoding on every accepted response. An unparseable/nonselected response may leave the outcome ambiguous
+and never authorizes a POST. A positive proof requires GETs even after an
+immediate acknowledgement. Compare its UUID and index if authenticated
+immediate ACK is available in the same invocation. No write for storing
+that ACK alone.
+
+Read each once, ordered Job then Evaluations, with same region/namespace and
+peer, `GET /v1/job/<job>` and `GET /v1/job/<job>/evaluations`, using the same
+query as POST. Omit stale, blocking/wait/index, filter and pagination.
+Pinned direct qualified leader/consistent read path for both requests. Verify
+HTTP 200, single-valued `X-Nomad-KnownLeader: true`,
+`X-Nomad-LastContact: 0` and canonical positive decimal `X-Nomad-Index` at
+least initial registration index on each response. The Job index header equals
+Job.ModifyIndex. The Evaluations index header is at least every returned
+evaluation's ModifyIndex. Those headers supplement commissioned read provenance. They cannot
+supply it by themselves. Header size/connection rules as above, each response
+≤262144 bytes and 5 s, 10 s pair maximum. Evaluations is a complete array
+of 1..64 objects. Refuse pagination indications, duplicate IDs or mixed
+job/namespace/type. Each evaluation requires canonical UUID, Namespace, JobID,
+Type=batch, TriggeredBy, Priority, CreateIndex, ModifyIndex and JobModifyIndex.
+Require positive create and job-modify indexes, ModifyIndex ≥ CreateIndex,
+nonnegative integer Priority ≤100, ASCII trigger 1..64 bytes. Other eval
+fields are structurally parsed and bounded but never interpreted as proof:
+scheduler status/times/metrics/links convey no registration polarity.
+Exactly one evaluation has TriggeredBy=`job-register`. Its Priority is
+50 and its JobModifyIndex=CreateIndex=Job.CreateIndex=Job.JobModifyIndex>0.
+Job.ModifyIndex ≥ Job.JobModifyIndex. Require the unmodified version zero
+specification and exact C, Job projection and full locator. A foreign job,
+registration collision, missing/expired evaluation, second registration eval,
+initial-index mismatch, compare mismatch with authenticated ACK, oversize,
+404, timeout, stale or other unqualified observation is inconclusive. A
+404 carries no negative terminal inference. Preserve ambiguity and zero
+new POSTs. No requirement that both reads be one atomic Job+Eval snapshot.
+
+Primary source reference is Nomad v2.0.3,
+`a2a5fee9c42d6481adcb9be865bcbccf8fd4d725`. The
+[register endpoint](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/nomad/job_endpoint.go#L290-L375)
+constructs the registration evaluation and indexes the success response
+with the Raft index. [State store job
+upsert](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/nomad/state/state_store.go#L1785-L1870)
+checks EnforceIndex inside the write transaction and assigns initial Job
+indexes. [FSM job registration](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/nomad/fsm.go#L695-L806)
+uses separate job and eval writes, stamping the evaluation's JobModifyIndex
+with that Raft index. The
+[HTTP handler](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/command/agent/job_endpoint.go#L555-L617)
+returns the [register response with embedded
+QueryMeta](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/nomad/structs/structs.go#L1447-L1456).
+The GET endpoints derive their indexes from the returned Job and eval table
+respectively. [State evaluation
+upsert](https://github.com/hashicorp/nomad/blob/a2a5fee9c42d6481adcb9be865bcbccf8fd4d725/nomad/state/state_store.go#L3435-L3490)
+assigns a new evaluation's CreateIndex and updates ModifyIndex.
+[Nomad registration API](https://developer.hashicorp.com/nomad/api-docs/jobs#register-job)
+and [consistency modes](https://developer.hashicorp.com/nomad/api-docs#consistency-modes)
+supply the exchange context. Installed source, build/patches/defaults, ACL,
+namespace exclusivity, read provenance and actual transport still require
+qualification. The current ES installer leaves Nomad unpinned.
+
+Only the typed verifier constructs PositiveProof bound to O, same RunRef,
+I, S, D, P, L and exact positive UUID/index witness. Compute W and R using
+§5 (I is bound by D and validated predecessor). The admission caller passes
+opaque proof to durable service, which rebinds it and exact authorized
+pair/projection to the fresh checked row and expected revision before the
+single kind-8 CAS. Independently qualified concurrent winners return only
+the authenticated accepted row's receipt. No replacement even with a later
+observation. A known mutation or successful exact own-commit confirmation
+can project the same receipt. Failure to confirm leaves that invocation
+unknown. A later accepted read recomputes O, P, L and receipt MAC over the
+stored W and exact permanent stored marker and stage. W is the trusted
+stored positive witness commitment, never a request-supplied value.
+There is no need to rerender mutable resolver inputs, verify provider status
+again, or read staging. Current caller authorization, original qualification,
+equivalence, paired ACTIVE/RETIRED keys and checksum/MAC match are required.
+A receipt concerns registration acceptance only. Nomad lifecycle and
+Coordinator acceptance remain independent.
+
+## 7. Authority and history matrix
+
+This table is normative. New independent invocation authorization always
+requires the current §4 gate. Prior observed dispositions convey zero authority.
+
+| Scenario | Evidence | Sender count | Permission | Projection |
+| --- | --- | --- | --- | --- |
+| FreshPrestage | Fresh qualified writer turn, absent stamp and physical stage, exclusive-create only | 0 | CreateOneStage | Same run, pending until first marker |
+| UnlockedAbsence | Snapshot, cache, preflight or unlocked marker absence | 0 | Stop | No effect eligibility |
+| StageOwnerLost | Stage residue or retained stamp without original live owner | 0 | Stop | Same run pending or ambiguous, residue charged |
+| PrestageUnknownSettled | Prior invocation stopped, fresh checked turn and no stamp or physical stage | 0 | CreateOneStage | Earlier response preserved, independent same-run eligibility |
+| MarkerRollbackAfterStage | Real marker rollback or failed marker with completed stage residue | 0 | StopBothInvocations | Fresh absent marker cannot confer stage ownership |
+| MarkerCommitReplyLost | Real marker COMMIT, response lost, even with exact readback | 0 | NeverPost | Same-run ambiguity until positive proof |
+| MarkerDirectOwnerConsumed | Directly acknowledged first marker and one valid consumed live owner | 1 | AtMostOneReceiverDelivery | Receiver-count positive witness has exactly one ingress total |
+| MarkerDirectOwnerLost | Known marker with canceled, failed or crashed owner before entry | 0 | NeverPost | Possibly indefinite ambiguity |
+| MarkerCASLoser | Two marker commands, only the applied and directly acknowledged command eligible | 0 | NeverPost | Current projection only |
+| Provider404 | Qualified GET absence or any inconclusive evidence | 0 | PositiveObservationOnly | Ambiguous, no negative terminal |
+| AcceptedReplay | Current caller and qualified equivalent retained original with an eligible ACTIVE or RETIRED key pair | 0 | ReceiptOnly | Same immutable run and receipt without mutable admission, resolution, staging or provider |
+| SyntheticAuthority | Synthetic row, object, permit, borrow, marker or receipt | 0 | OccupancyOnly | Unavailable across scope |
+| PublicOrRouteOnly | Public route/startup or route-level permission alone | 0 | Refuse | Public keyed refusal and claim-scoped later gate |
+
+K1 indistinguishable histories: A loses a pre-stage write response after
+a settled applied intent. B directly observes that same write with the same
+retained state and physical absence. With equal qualified current inputs,
+both later explicit invocations may acquire the single new stage and then
+seek the first marker. A's historical observed response stays unknown.
+C loses a real first-marker COMMIT response. D directly observes the same
+COMMIT then crashes before entering transport. Equal marker/stamp/row bytes
+and equal current inputs afford zero senders to either later invocation,
+regardless of distinguishable old in-process events. E rolls back a marker
+after valid staging. Equal retained absence before/after a checked writer
+turn is compatible with that rollback, but the prior physical stage and stamp
+prevent distinct owner acquisition. No later invocation can recover zero POST
+as proof of negative acceptance. A positive test follows the applied direct
+marker, consumes once and counts exactly one ingress. The contract bounds
+logical deliveries by one, and allows zero from a known marker.
+
+For the safety argument, every eligible POST originates in the unique
+applied NULL-to-marker transition on the qualified domain. The permanent
+marker and serialization/current-revision CAS exclude a second transition.
+Direct acknowledgement of that applied write is the only mint event. Recovery,
+replay, no-op, losing CAS and restart allocate zero. A matching live, held
+stage and frozen request can consume the sender once. Direct transport
+introduces no second logical POST. Together these premises give conditional
+at-most-once ES registration dispatch, with indefinite ambiguity, inert
+residue and zero delivery possible. The model offers no exactly-once
+execution, guaranteed send, registration acceptance, execution completion,
+or universal prevention of workload side effects.
+
+## 8. Capacity, disposal and later gates
+
+The proof caps codec-5 claims at four via the checked writer count, including
+all operational phases forever. Preserve global caller/key occupation across
+legacy and synthetic records, count pre-existing operational records when
+opening, and apply any tighter existing aggregate legacy/synthetic path bound
+to that path without converting its quota into operational capacity.
+Classify an existing key normally before new-work capacity refusal. Across
+scopes share the custody object's exact 32-name limit (published and orphan
+names, plus active exclusively allocated names), and a 32 aggregate reservation
+cap over persistent charged counters across all purposes admitted to the
+envelope publisher, including prior reservations and orphan sites. Each new
+envelope grant consumes one durable aggregate reservation under the shared
+writer plus the existing actual-key budget. Count an object once by its
+qualified name. Completed or unconfirmed cleanup does not refund a charge.
+For operational allocation the held-directory scan qualifies every existing leaf by canonical name, regular-file mode, ownership, device, link count and bounded size before creating a new name. Unknown accounting, unexpected names or exceeded bounds refuse new work.
+No expiry, refund, reuse, automatic GC or routine human approval.
+
+Allow at most one stage attempt/residue per assigned operational run, hence
+four proof-stage roots and ≤4 MiB payload bytes total plus bounded metadata.
+Limit custody payload to 32 × 2 MiB plus bounded metadata. Proof preconditions
+include isolated finite test filesystem and reserved storage. SQLite and
+sidecar allocation and runtime results require independent native byte and
+capacity bounds. No operational limits are extrapolated from proof sizing.
+Keep hard-close latency, physical/device close, actual double withholding
+and hostile-native filesystem behavior as qualification/availability limits.
+If disposal cannot be confirmed, release no further authority. Native evidence
+must address SQLite sidecar/file-byte preservation and prohibit restoration
+as an effect-enablement shortcut. These residuals do not select an unrelated
+helper campaign.
+
+Before native use require exact caller authorization (one verified canonical
+SPIFFE workload identity, no route-level substitution), default-off startup,
+es:es owner-only state/store/custody keys, domain/epoch commissioning, exact
+provider build/pin and writer exclusivity, direct transport and read provenance,
+native stage/mount identity and integrity, finite retained storage, and
+caller-scoped lifecycle access with claim ownership. Current unkeyed Submit
+and its builder, public structural keyed refusal, handlers, startup and
+fixture composition have zero callers of the target entry. No new public
+HTTP status, DTO field, producer declaration or configuration spelling is
+selected. Current finite inventories enumerate the private typed references in the local candidate.
+
+## 9. Future integrated proof and bounded path map
+
+The consolidated repair adds one conditional companion to the original
+repair map. `I/sqlite_store.go` may change only in `sqliteClaimRow.record`
+for the exact codec-5 raw optional-BLOB check above. The rest of that file,
+the shared scanner, codecs 1–4, migration literals and all stored formats
+stay outside this correction. The repair allowance is 19 primary and eight
+conditional paths with the same 37-file aggregate HEAD ceiling.
+
+The following is the local candidate path allowance and proof map.
+`I/` means `es/admission/internal/reliablesubmit/` and `A/` means
+`es/admission/`. Any further file requires separate owner reconciliation at
+that gate. Follow existing CAS, original custody, sidecar disposal and
+reachable-caller inventories.
+
+| Exact prospective paths | Governing scope and planned witnesses |
+| --- | --- |
+| I/sqlite_migrations.go, I/sqlite_store.go, I/sqlite_replay_shape.go, I/sqlite_replay_progress_schema.go, I/sqlite_replay_claim.go, I/sqlite_operational_handoff_schema.go (new) | §2 compatibility, atomic migration 5, exact shape/row and scope enforcement. Append a new literal and preserve migration 1–4 payloads |
+| I/durable_record.go, I/durable_operation.go, I/durable_service.go, I/replay_custody_file.go, I/replay_custody_format.go, I/replay_key_use_sqlite.go, I/operational_handoff.go (new) | §§2–5 exact row/CAS, receipt admission, same original/key checks and sender callback boundary. Reuse the existing physical custody publisher |
+| A/reliable_submit_operational_handoff.go, A/reliable_submit_operational_format.go, A/reliable_submit_operational_provider.go (new) | §§3–7 exact original/projection and one private composition with a finite private loopback-provider seam |
+| A/staging_custody.go, A/executionpackage.go | §§4–5 already-held custody and layout projection for stage proof, preserving the ordinary path |
+| I/operational_handoff_test.go (new), I/sqlite_replay_migration_test.go, I/sqlite_replay_shape_test.go | `TestOperationalHandoffMigrationCompatibility`, `TestOperationalHandoffWriterDisposition`, `TestOperationalHandoffFirstMarkerCAS`, `TestOperationalHandoffKeyCutsAndCapacity` |
+| A/reliable_submit_operational_handoff_test.go, A/reliable_submit_operational_provider_test.go (new) | `TestOperationalHandoffPrestageRecovery`, `TestOperationalHandoffMarkerDispositionAndStageResidue`, `TestOperationalHandoffSenderLifetime`, `TestOperationalHandoffProviderExchange`, `TestOperationalHandoffReceiptRecovery` |
+| I/guardrails_test.go, A/reliable_submit_guardrails_test.go, A/workstream_c_guardrails_test.go | `TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller` plus exact current-to-target inventory delta if new transient state is implemented |
+| PLANS.md, .docs/execution_lifecycle/reliable_submit_operational_handoff.md, .docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md, .docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md, .docs/execution_lifecycle/es_execution_admission_model.md, docs_contract_test.go | Owner precedence and source status, replace schema-head assertion only when source changes |
+| I/sqlite_physical_test.go, I/sqlite_store_test.go | Conditional schema tests move the unsupported codec above codec 5. Keep malformed supported-encoding cases separate and preserve the genuine schema-2 fixture. |
+| I/replay_custody_file_test.go | Conditional exact scope-aware opener inventory, preserving the inherited nonblocking FIFO controls. |
+| I/replay_custody_structure.go | Conditional shared reader bounds and exact operational TLV 11 validation. Synthetic document sizes, proofs and scope dispatch continue to use their own cases. |
+| A/reliable_submit_replay_private_test.go | Scope amendment to the finite typed PB1 producer caller inventory in TestPrivateReplayFiniteCallerAndNoRuntimeWiring, preserving both fixture sites and the direct-call, count, escape and no-runtime checks. |
+
+The seal-permit guard follows the shared reservation writer
+`reserveReplaySealUseWithScope`, the sole constructor after confirmed COMMIT.
+The existing fixture wrapper selects the same fixture path, including its
+registration and burn behavior. The operational path selects an already
+registered key pair and checks global occupancy under the same reservation lock.
+
+The operational PB1 sites are `A/reliable_submit_operational_handoff.go:
+Service.composeOperationalOriginal` once for a newly resolved original, and
+`A/reliable_submit_operational_format.go:verifyOperationalOriginal` once for
+rehydration from captured inputs. Each calls the existing PB1 producer
+directly. They join both existing fixture sites in the exact private
+reference inventory. Only the original-production path may resolve.
+
+Migration witness opens exact 1/2/3/4/5, preserves every legacy/progress byte
+and physical rowid across migration, rejects malformed tuple/index/NULL cases,
+proves scoped RunRef uniqueness, cross-scope collision and no conversion.
+Use a separately source-bound schema-4 opener from the exact PR #11 squash
+and offline inputs. Permit read-only version and schema qualification.
+Require refusal with zero operational claim or payload hydration and
+disclosure, migration or semantic writes, and relabeling. Historical
+schema-2 and schema-3 probes cannot establish this check. Bind old compiled
+opener and baseline/support source exactly. The local populated schema-5
+refusal witness compares complete logical state and all retained sealed files.
+At a separate quiescent cut close current pools, capture the exact main
+database, WAL, SHM and journal identities/modes/bytes and explicit absences,
+then invoke the immutable opener. Capture again before any logical read or
+lifecycle observer. Native durability and hostile filesystem qualification
+remain independent.
+Precommit rollback and real COMMIT-response loss continue to require exact
+checked disposition.
+
+Use independent real SQLite handles and two processes on the same files, plus
+explicit held-writer and release barriers, to distinguish excluded/stale turns
+and real applied writes from recovered or ambiguous outcomes. Inject a real
+rollback before marker COMMIT and a real COMMIT with lost response separately.
+Check exact row, revisions, immutable descriptor and stage bytes/modes, retained
+charges and transport counts at each boundary. Compete two marker attempts,
+verify single CAS and sender, and deny old, stale or canceled owners. Verify
+uncertainty stop for claim, assignment, intent, stage and receipt. Exercise
+positive pre-stage restart independently from both marker-failure histories.
+Exercise retired/revoked/missing/mixed-purpose keys at paired cuts and changed
+epoch/installation. Refuse path mutation, replaced file identity, partial and
+complete residue and missing physical staged directory. Test zero, copied,
+foreign, escaped and expired sender and closure/cancel racing actual entry.
+
+Actual counting loopback exchanges must witness single logical POST and zero
+duplicate/redirect target ingress, including ambiguous/lost transport response.
+The maintained proof separately counts direct exchange-method entry immediately
+before the unchanged concrete RoundTrip call, standard HTTP GetConn callbacks,
+and receiver ingress. The first is a synchronous call attempt, not proof of an
+OS send or provider receipt. GetConn may be zero after method entry when the
+request is canceled. The instance-scoped nil-default entry observer returns no
+transport result and carries no effect authority. It also closes the first custody handle after losing the
+response to a POST that reached the receiver. Reopening recovers the same
+run through read-only provider observation.
+Return lost provider reply, 404, timeout, stale/unqualified provenance, missing
+eval, wrong/create/modify index or polarity, duplicate JSON and oversized
+body, foreign Job or eval, changed defaults/metadata, wrong carrier and
+valid exact evidence. Accept only the last valid positive evidence case with
+receipt CAS. Verify concurrent winner and exact receipt after lost COMMIT
+response, and same receipt after mutable resolver/admission changes with
+eligible keys. Count zero resolver/stage/provider interactions for accepted
+replay, and assert unauthorized before lookup and no foreign-run projection.
+Use actual fixture staging/SQLite with the same private orchestration entry,
+never a test-only reimplementation of the handoff decision. Verify current
+ordinary Submit and fixture paths remain disjoint. Documentation tests
+establish these selected obligations statically. Local proof results are recorded in the evidence for this candidate. Native
+qualification and independent source acceptance are later gates.

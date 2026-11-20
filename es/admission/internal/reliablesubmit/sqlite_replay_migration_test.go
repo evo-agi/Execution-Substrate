@@ -3,6 +3,7 @@ package reliablesubmit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -496,8 +497,8 @@ func TestSQLiteV4MigrationPreservesFullState(t *testing.T) {
 					t.Fatal(err)
 				}
 				after := replayLogicalWitness(t, path, starting)
-				if after.version != 4 || after.appID != sqliteClaimStoreApplicationID || after.digest != sqliteSchema4SHA256 {
-					t.Fatal("upgrade did not reach exactly schema 4")
+				if after.version != 5 || after.appID != sqliteClaimStoreApplicationID || after.digest != sqliteSchema5SHA256 {
+					t.Fatal("upgrade did not reach exactly schema 5")
 				}
 				if starting > 0 && !reflect.DeepEqual(before.claims, after.claims) {
 					t.Fatal("old rowid, storage type or complete claim content changed")
@@ -561,7 +562,7 @@ func TestSQLiteV4MigrationPreservesFullState(t *testing.T) {
 			t.Fatalf("canceled recovery acquired store: %v", err)
 		}
 		after := replayLogicalWitness(t, path, 3)
-		if after.version != 4 || after.digest != sqliteSchema4SHA256 ||
+		if after.version != 5 || after.digest != sqliteSchema5SHA256 ||
 			!reflect.DeepEqual(before.claims, after.claims) || !reflect.DeepEqual(before.keys, after.keys) ||
 			!reflect.DeepEqual(before.grants, after.grants) || !reflect.DeepEqual(before.ledger, after.ledger) {
 			t.Fatal("canceled recovery changed the actual migrated state")
@@ -707,7 +708,7 @@ func TestSQLiteMigrationOpeningRevalidatedUnderLock(t *testing.T) {
 			if err := store.close(); err != nil {
 				t.Fatal(err)
 			}
-			fixtureAssertMigrationOutcome(t, path, version, before, 4)
+			fixtureAssertMigrationOutcome(t, path, version, before, 5)
 		})
 	}
 }
@@ -765,7 +766,7 @@ func TestSQLiteMigrationPrecommitClosedWrapperRecovery(t *testing.T) {
 					clock: migrationPreflightClock(func() { openings++ }),
 					beforeMigrationCommit: func(ctx context.Context, conn *sql.Conn) error {
 						if err := verifySQLiteStoreCurrent(ctx, conn); err != nil {
-							t.Fatalf("migration did not reach verified schema 4 inside the transaction: %v", err)
+							t.Fatalf("migration did not reach verified schema 5 inside the transaction: %v", err)
 						}
 						precommit++
 						if scenario.closeWrapper {
@@ -801,11 +802,93 @@ func TestSQLiteMigrationPrecommitClosedWrapperRecovery(t *testing.T) {
 						t.Fatalf("sealed original changed: %v", err)
 					}
 				}
-				t.Logf("verified schema 4 before COMMIT, one migration, zero COMMIT attempts, preserved opening schema %d and full logical state", version)
+				t.Logf("verified schema 5 before COMMIT, one migration, zero COMMIT attempts, preserved opening schema %d and full logical state", version)
 				if !errors.Is(err, scenario.want) {
 					t.Errorf("pre-COMMIT classification = %v, want %v", err, scenario.want)
 				}
 			})
 		}
+	}
+}
+
+func TestOperationalHandoffSchema4MigrationPreservesCompleteState(t *testing.T) {
+	for _, boundary := range []string{"KnownCommit", "Rollback", "LostCommitResponse"} {
+		t.Run(boundary, func(t *testing.T) {
+			root := fixtureReplayRoot(t)
+			path := filepath.Join(root, "reliable-submit.sqlite3")
+			base, _ := syntheticReplayRecordFixture(t)
+			_, sealed, descriptor := unclaimedReplaySealedFixture(t, base, fixtureReplayKeys(t, 80))
+			legacy, err := newReplayDurableClaimRecord(base.claim, base.plan, descriptor, base.createdAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, descriptor.ref), sealed, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			seedProgressMigrationV3WithOriginal(t, path, legacy)
+			base.claim = mustPrivateClaimID(t, legacy.claim.caller, mustPrivateSubmitKeyRef(t, bytes.Repeat([]byte{81}, 32)))
+			progress, progressBytes := seedHistoricalSchema4Progress(t, root, path, base, fixtureReplayKeys(t, 82))
+			originals := map[string][]byte{descriptor.ref: sealed, progress.replay.ref: progressBytes}
+			snapshots := func() map[string]string {
+				t.Helper()
+				result := map[string]string{}
+				for name, expected := range originals {
+					path := filepath.Join(root, name)
+					data, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(data, expected) {
+						t.Fatalf("sealed original changed: %v", err)
+					}
+					info, err := os.Lstat(path)
+					if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+						t.Fatalf("sealed original mode changed: %v", err)
+					}
+					result[name] = fmt.Sprintf("%x", sha256.Sum256(data))
+				}
+				return result
+			}
+			beforeFiles := snapshots()
+			before := replayLogicalWitness(t, path, 4)
+			if before.version != 4 || len(before.claims) != 4 || len(before.keys) == 0 || len(before.grants) == 0 || len(before.ledger) != 4 {
+				t.Fatal("fixture lacks complete populated schema 4")
+			}
+			options := sqliteClaimStoreOptions{path: path}
+			switch boundary {
+			case "Rollback":
+				options.beforeMigrationCommit = func(context.Context, *sql.Conn) error { return errClaimStoreUnavailable }
+			case "LostCommitResponse":
+				options.migrationCommit = func(ctx context.Context, conn *sql.Conn) error {
+					if err := commit(ctx, conn); err != nil {
+						return err
+					}
+					return errClaimStoreCommitUnknown
+				}
+			}
+			store, err := openSQLiteClaimStore(context.Background(), options)
+			if boundary == "Rollback" {
+				if store != nil || !errors.Is(err, errClaimStoreUnavailable) || !reflect.DeepEqual(before, replayLogicalWitness(t, path, 4)) {
+					t.Fatalf("rollback changed old schema or state: %v", err)
+				}
+			} else {
+				if err != nil || store == nil {
+					t.Fatal(err)
+				}
+				if store.migrationRecoveredNew != (boundary == "LostCommitResponse") {
+					t.Fatal("wrong migration reply classification")
+				}
+				if err := store.close(); err != nil {
+					t.Fatal(err)
+				}
+				after := replayLogicalWitness(t, path, 0)
+				if after.version != 5 || after.digest != sqliteSchema5SHA256 || len(after.ledger) != 5 ||
+					!reflect.DeepEqual(before.ledger, after.ledger[:4]) || before.appID != after.appID ||
+					!reflect.DeepEqual(before.claims, after.claims) || !reflect.DeepEqual(before.keys, after.keys) ||
+					!reflect.DeepEqual(before.grants, after.grants) {
+					t.Fatal("upgrade failed to preserve complete original logical state")
+				}
+			}
+			if !reflect.DeepEqual(beforeFiles, snapshots()) {
+				t.Fatal("upgrade changed retained originals")
+			}
+		})
 	}
 }

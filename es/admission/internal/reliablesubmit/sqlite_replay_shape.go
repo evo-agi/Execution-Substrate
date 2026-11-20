@@ -8,7 +8,7 @@ import (
 )
 
 // These hashes bind the complete non-internal sqlite_schema rows created by
-// the four literal migrations under the pinned SQLite driver. A schema row
+// the literal migrations under the pinned SQLite driver. A schema row
 // includes the table definition (including STRICT, CHECK, and FK clauses),
 // named indexes, and the complete trigger body. They are deliberately not
 // learned from an existing database during open.
@@ -17,6 +17,7 @@ const (
 	sqliteSchema2SHA256 = "944094f4e5fae102ea2882a076f580c69494678f41acedf9eaa971fe836eb280"
 	sqliteSchema3SHA256 = "15ab48bde4d53bb252dc954a2aa3b1db12de7295111f23bb0264f74f153dba92"
 	sqliteSchema4SHA256 = "2ae4721c8526ed9b8de35fd3acdfa31448eae9b547ba8662a22ed130035f7c15"
+	sqliteSchema5SHA256 = "e1239b294f35da571fdd687f91a92fb2163a3dad8650309c08cec3a9ce0409ed"
 )
 
 // SQLite reserves the literal ASCII prefix sqlite_ for internal objects.
@@ -68,6 +69,8 @@ func verifySQLiteSchemaShape(ctx context.Context, conn *sql.Conn, version int) e
 		expected = sqliteSchema3SHA256
 	case 4:
 		expected = sqliteSchema4SHA256
+	case 5:
+		expected = sqliteSchema5SHA256
 	default:
 		return errClaimStoreUnsupported
 	}

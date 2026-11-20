@@ -510,6 +510,36 @@ Failure of any condition makes reliable submit unavailable, ambiguous, or
 fail-closed according to later implementation semantics. Failure does not
 authorize dispatch or fallback to unkeyed submit.
 
+### Selected codec-5 interpretation of §8
+
+Operational command operands bind the exact authenticated predecessor. Intent
+and marker use the owner-specified preimages. Stamp and marker require a
+fresh matching held-stage measurement. Receipt CAS accepts the authenticated
+positive verifier witness and rechecks it against the current row. Cleanup
+can withhold projection while preserving the invoked command's disposition.
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) selects a target scoped to codec 5. It retains
+conditions 1–8 and 11, uses exact lock-held current revision and expected-revision
+CAS for 12, and substitutes a checked current authenticated writer turn after
+`BEGIN IMMEDIATE` on the same unchanged authority domain for conditions 9–10.
+This selects present first-effect eligibility and preserves all earlier observed
+write dispositions. The codec-5-only staging rule requires a newly acquired
+exclusive live owner or its still-live continuation. This carve-out supersedes
+the repair/reuse permission above and in §10 for codec 5 alone. The marker
+transition, sole sender issuance, uncertainties and resume conditions are
+defined in the target owner. §15B continues to govern the fixture scope.
+
+In the local candidate the schema-5 migration preserves codecs 1–4 and adds
+the codec-5 constraints and scoped unique RunRef index. A provisioned
+operational custody handle opens only the checked current schema. Its writer
+runs under the existing immediate-transaction discipline, with a single
+directly acknowledged first-marker continuation. Later reads authenticate the
+original and project durable facts. Operational opening qualifies the
+pre-existing claim population on the checked schema snapshot. Exact expected
+row equality after write uncertainty requires complete original and key
+qualification for confirmation. Observed disposition and release qualification
+are separate. The old fixture remains governed by §15B.
+
 Ordering implications:
 
 - Provider-dispatch-attempt fact implies provider-effect intent.
@@ -858,6 +888,10 @@ Implementation ordering is frozen:
    the source repair is accepted.
 
 ## 10. Crash-Window Matrix
+
+The [Operational Handoff](reliable_submit_operational_handoff.md) history matrix selects the codec-5-only crash
+behavior, including the exclusive-stage rule and preservation of residue after
+marker rollback. The table below supplies the earlier general design context.
 
 | Crash window | Durable facts | Could provider dispatch have occurred? | Duplicate delivery or first-effect behavior | Required reconciliation | Forbidden inference |
 | --- | --- | --- | --- | --- | --- |
@@ -1646,7 +1680,7 @@ bounded recovery. No history-wide write proof is selected.
 | One write invocation and its recovery | Preserve known commit, evidenced not-applied/refused, or unknown. Only an authenticated full expected record can confirm its own COMMIT during recovery. Unknown recovery performs no second semantic write, automatic fresh mutation, rebase or retry loop. A failed recovery withholds projection. Failed post-commit authentication withholds projection and preserves known commit. |
 | Later explicit fixture command | A separately supplied command requires fresh original authentication, a new live one-use borrow and the caller's exact current expected revision and mutation input. Evaluate a new marker against the current persisted row. An absent marker does not resolve a prior unknown write. The fixture predicate does not establish the complete operational no-dispatch predicate. |
 | Later authenticated fixture read | Current replay may project authenticated current fixture state. It does not resolve a prior unknown write or rewrite a known disposition. Exact latest replay describes the current descriptor, without confirming ownership of an earlier uncertain transaction. |
-| Operational dispatch or restart recovery | The full operational Validated No-Dispatch Evidence requirement in §8 remains unchanged. A later explicit fixture command grants no operational permission. Before provider wiring, a separately reviewed operating model must identify durable ES-owned evidence or other explicitly governed authoritative input for the relevant write dispositions, or explicitly re-derive that requirement with adequate safety proof. |
+| Operational dispatch or restart recovery | A later explicit fixture command grants no operational permission. The selected codec-5 interpretation of §8 delegates present-state eligibility and sender proof to Operational Handoff. Fixture eligibility and write-disposition guarantees above remain unchanged. |
 
 The fixture facade has no retained response history, extra knowledge
 ledger or second attempt. Neither local memory, traces, reports, tests,
