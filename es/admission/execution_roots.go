@@ -12,10 +12,6 @@ import (
 
 const executionRootDirectoryMode = 0o755
 
-// nestedStagingProbeName names the directory the startup probe creates inside
-// its staging probe directory (probeNestedStagingDirectory).
-const nestedStagingProbeName = "nested"
-
 type executionRootAcquisitionLedger struct {
 	Count int
 }
@@ -485,10 +481,6 @@ func (roots *qualifiedExecutionRoots) probeCapabilities(owner executionPlatformS
 		_ = unix.Close(stagingFD)
 		return err
 	}
-	if err := roots.probeNestedStagingDirectory(stagingFD, owner); err != nil {
-		_ = unix.Close(stagingFD)
-		return err
-	}
 	if err := unix.Close(stagingFD); err != nil {
 		return err
 	}
@@ -554,54 +546,6 @@ func (roots *qualifiedExecutionRoots) probeCapabilities(owner executionPlatformS
 		return fmt.Errorf("no-replace rename unexpectedly replaced a result probe destination")
 	}
 	return roots.probeNaturalResultDirectory(owner, token)
-}
-
-// probeNestedStagingDirectory repeats, inside the staging probe directory, what
-// staging does inside a run staging root: it creates a directory, gives it the
-// roots' owner and the stable stage mode, and checks the result. The probe
-// directory, like a claimed run staging root, has just been set to the stable
-// stage mode, which carries no setgid bit, so the new directory gets this
-// process's effective GID rather than the roots' GID. Giving it the roots' GID
-// then needs membership of that group or the privilege to change any group.
-// Probes that create entries directly in the roots cannot see this when the
-// roots hand their group down through the setgid bit.
-func (roots *qualifiedExecutionRoots) probeNestedStagingDirectory(stagingFD int, owner executionPlatformStateOwner) error {
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	if err := unix.Mkdirat(stagingFD, nestedStagingProbeName, stableStageDirMode); err != nil {
-		return err
-	}
-	nestedFD, err := platformOpenAtNoFollow(stagingFD, nestedStagingProbeName, unix.O_RDONLY|unix.O_DIRECTORY, 0, true)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(nestedFD)
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	if err := unix.Fchown(nestedFD, owner.UID, owner.GID); err != nil {
-		return fmt.Errorf("nested staging directory ownership is unavailable: %w", err)
-	}
-	if err := roots.reobserve(); err != nil {
-		return err
-	}
-	if err := unix.Fchmod(nestedFD, uint32(stableStageDirMode)); err != nil {
-		return err
-	}
-	var nestedStat unix.Stat_t
-	if err := unix.Fstat(nestedFD, &nestedStat); err != nil {
-		return err
-	}
-	nestedIdentity := custodyIdentityFromStat(nestedStat)
-	if !custodyIdentityIsDirectory(nestedIdentity) ||
-		nestedIdentity.Device != roots.staging.existingIdentity.Device ||
-		nestedIdentity.Links < 1 ||
-		nestedIdentity.UID != owner.UID || nestedIdentity.GID != owner.GID ||
-		!sameCustodyRecordedMode(nestedIdentity.Mode, unix.S_IFDIR|uint32(stableStageDirMode)) {
-		return fmt.Errorf("nested staging directory ownership is unavailable")
-	}
-	return nil
 }
 
 func (roots *qualifiedExecutionRoots) probeNaturalResultDirectory(owner executionPlatformStateOwner, token string) error {

@@ -131,6 +131,7 @@ architecture.
 
 - `storage.root_dir` must point to a writable directory
 - `storage.index_file` must point to a writable file path
+- in bring-up, ARS runs as the operator's UID and primary GID; `scripts/02_start_ars.sh` creates a missing storage root as the operator and refuses, before starting ARS, unless the index file exists and the operator's UID and primary GID, without supplementary groups (the container's identity), can write every storage directory and the index directory and read every stored file; an entry that identity does not own and that has an access ACL is refused, and on hosts other than Linux, where the check cannot read ACLs, so is every entry that identity does not own
 - `security.bootstrap_issuer_common_name` must name the legacy/bootstrap issuer that ARS rejects on both read and write paths
 - `authorization.allowed_spiffe_path_prefixes` must allow ES and other intended readers
 - AGS writes use the dedicated `service/artifact-governance` writer identity

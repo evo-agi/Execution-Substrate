@@ -892,8 +892,9 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	offline := compactDocSection(t, baselineDoc, "## 6. Offline Behavior", "## 7. Compatibility And Runtime Limits")
 	runtimeLimits := compactDocSection(t, baselineDoc, "## 7. Compatibility And Runtime Limits", "## 8. Database Dependency Scope")
 	databaseDependencyScope := compactDocSection(t, baselineDoc, "## 8. Database Dependency Scope", "## 9. Rollback")
-	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Explicit Non-Claims")
-	nonClaims := compactDocSection(t, baselineDoc, "## 10. Explicit Non-Claims", "")
+	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Continuous Integration")
+	continuousIntegration := compactDocSection(t, baselineDoc, "## 10. Continuous Integration", "## 11. Explicit Non-Claims")
+	nonClaims := compactDocSection(t, baselineDoc, "## 11. Explicit Non-Claims", "")
 	assertContainsAll(t, "Go baseline current status", currentStatus,
 		"Go 1.26.5 is the current Execution Substrate minimum Go version",
 		"supported scripted build/proof toolchain",
@@ -954,9 +955,97 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"Rollback of the reliable-submit SQLite source is a separate source/dependency rollback",
 		"runtime-state migration",
 	)
+	assertContainsAll(t, "Go baseline continuous integration", continuousIntegration,
+		"`.github/workflows/go.yml` runs on every pull request and on every push to `trunk_dev`",
+		"GitHub-hosted `ubuntu-24.04` runner",
+		"`GOTOOLCHAIN=local` and `GOFLAGS=-mod=readonly`",
+		"restores no build or module cache",
+		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
+		"One more step runs `GOOS=darwin GOARCH=arm64 go vet ./...`",
+		"It type-checks the files that build only on macOS and runs no test",
+		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes and of which tests exclude themselves on that runner",
+		"An entry names a test or subtest that cannot pass on that runner for host reasons",
+		"`.github/ci/go_test_gate.py` skips those entries, each only in the package it names",
+		"A `skips-itself` line names a test or subtest that skips itself on that runner",
+		"The test step fails the run unless the tests that skipped themselves are exactly the tests that those lines name",
+		"a test that skips itself on the runner needs a line, and a line cannot outlive its reason",
+		"The log of the step names every test that skipped itself",
+		"For every package the step also fails the run unless every top-level test that `go test` lists for the package, and that is not an entry, reported a verdict",
+		"`go test` reads a test path as the start of a path, so the skip for a listed subtest also covers every test whose path starts with the path of that entry",
+		"a skipped test leaves no trace in the output",
+		"runs a package that has an entry for a subtest a second time, with a test binary that writes down every test that `-skip` drops",
+		"It fails the run unless those tests are exactly the entries of that package",
+		"For that one run `go test -overlay` builds the test binary with a copy of `src/testing/match.go` of the Go standard library, to which the gate adds the call that writes the name down",
+		"The installed toolchain is not changed, and no other run uses the copy",
+		"The gate makes the copy only from the file of the exact Go version that it names, so a change of the Go baseline has to review that file and change the gate in the same change",
+		"That run needs a Go installation outside the module cache, as `actions/setup-go` makes one on the runner",
+		"the `go` command does not let `-overlay` replace a file beneath `GOMODCACHE`, so with a toolchain that the `go` command downloaded itself the test step fails and shows that error",
+		"A second blocking step judges every entry twice: in a run of its whole package with nothing skipped, and in a `go test` of its own",
+		"It fails the run when an entry no longer fails on the runner in one of the two",
+		"An entry fails there only if the testing package reported its failure",
+		"A test that was running when the test binary stopped has reported none, so a test that ends the process without reporting, for example with `os.Exit` or `log.Fatal`, cannot be listed",
+		"The run of a package has to come to its end",
+		"When a listed test panics, the package runs again without it",
+		"The step fails when a run stops and no listed test reported a failure as it stopped: a test that is not listed, or the time limit of `go test`, stopped it",
+		"It also fails the run when the run of an entry for a subtest starts another test under the path of that entry",
+		"`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before the tests",
+		"It also holds the workflow file by its SHA-256, so every edit of the workflow has to change that value in the same change",
+		"A green run is validation evidence for the committed tree on that runner image",
+		"It is not design authority",
+		"It is not a macOS run, a race-detector run, a Linux runtime proof, a Remote Alpha proof, or a supported-local proof",
+		"does not replace the exact-Go preflights of the supported scripts",
+		"It does not show that a test named in the list passes: on that runner those tests fail or skip themselves",
+	)
+	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
+		"no CI system introduced",
+		"skips exactly those entries",
+	)
+	ciWorkflow := mustRead(t, ".github/workflows/go.yml")
+	assertContainsAll(t, "Go CI workflow matches the documented baseline", ciWorkflow,
+		"\n  pull_request:\n",
+		"\n  push:\n    branches:\n      - trunk_dev\n",
+		"runs-on: ubuntu-24.04",
+		"GOTOOLCHAIN: local",
+		"GOFLAGS: -mod=readonly",
+		"go-version-file: go.mod",
+		"cache: false",
+		"ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt",
+		"run: go mod download",
+		"run: go mod verify",
+		"run: go build ./...",
+		"run: go vet ./...",
+		"run: GOOS=darwin GOARCH=arm64 go vet ./...",
+		"run: python3 -I -B .github/ci/go_test_gate_selftest.py",
+		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
+		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
+	)
+	// The CI self-check holds the workflow file by its SHA-256. This test
+	// requires that value to be the hash of the file as it is, so an edit of
+	// the workflow is also caught by go test on any host, and not only by the
+	// workflow step that runs the self-check.
+	ciWorkflowHold := fmt.Sprintf("WORKFLOW_SHA256 = \"%x\"\n", sha256.Sum256([]byte(ciWorkflow)))
+	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+ciWorkflowHold) {
+		t.Fatalf("the CI self-check does not hold .github/workflows/go.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(ciWorkflowHold))
+	}
+	// The observed run of the CI gate is written against one Go version and
+	// one file of its standard library. A change of the Go baseline has to
+	// come to this test, and so to these two values.
+	assertContainsAll(t, "Go CI gate observed-run toolchain", mustRead(t, ".github/ci/go_test_gate.py"),
+		"\nOBSERVED_GO_VERSION = \"go1.26.5\"\n",
+		"\nMATCH_GO_SHA256 = \"f28418759ed48c72821b5ecc3700041b74151108557618f50d355ea98a1bbebe\"\n",
+	)
+	for _, path := range []string{
+		".github/ci/environment-only-tests.txt",
+		".github/ci/go_test_gate.py",
+		".github/ci/go_test_gate_selftest.py",
+	} {
+		if strings.TrimSpace(mustRead(t, path)) == "" {
+			t.Fatalf("Go CI file %s is empty", path)
+		}
+	}
 	assertContainsAll(t, "Go baseline non-claims", nonClaims,
 		"no runtime behavior change",
-		"no CI system introduced",
+		"no CI claim beyond section 10",
 		"no vendoring",
 		"no system-wide toolchain manager",
 		"no Linux runtime proof",
@@ -13462,36 +13551,6 @@ func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T)
 				t.Fatalf("supported-local boundary document missing %q", phrase)
 			}
 		}
-	}
-}
-
-func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
-	checks := []struct {
-		path    string
-		phrases []string
-	}{
-		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
-		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
-		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
-		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
-		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", "nested staging directory ownership is unavailable"}},
-	}
-	for _, check := range checks {
-		content := compactText(mustRead(t, check.path))
-		for _, phrase := range check.phrases {
-			if !strings.Contains(content, phrase) {
-				t.Fatalf("%s missing nested staging owner probe contract %q", check.path, phrase)
-			}
-		}
-	}
-	// The known gap these documents described before the probe existed must
-	// not come back.
-	for _, path := range []string{".runbooks/system/v1_bringup.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
-		assertContainsNone(t, path+" stale setgid-inherited group gap", compactText(mustRead(t, path)),
-			"inherit another group from a setgid parent directory are not refused",
-			"do not yet catch roots that inherit another group",
-			"so ES reports ready but every submission fails to stage",
-		)
 	}
 }
 

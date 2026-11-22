@@ -148,6 +148,162 @@ ensure_control_plane_image() {
   fi
 }
 
+# control_plane_operator_user prints the calling operator's numeric effective
+# UID and primary GID as UID:GID for docker run --user. The generic bring-up
+# launchers run ARS, EGS, AGS and ES as that identity, so no service holds more
+# host authority than the operator who started it and every file a service
+# writes belongs to that operator. Docker gives the identity no supplementary
+# groups. Both IDs must be numeric, because docker run --user with an empty UID
+# runs as root. Command substitutions do not inherit errexit, so each id call
+# is checked explicitly.
+control_plane_operator_user() {
+  local service=$1
+  local uid
+  local gid
+
+  uid="$(id -u)" || return 1
+  gid="$(id -g)" || return 1
+  if [[ ! "${uid}" =~ ^[0-9]+$ || ! "${gid}" =~ ^[0-9]+$ ]]; then
+    printf 'cannot run %s as the operator: id -u and id -g must print numeric IDs, got %q and %q\n' "${service}" "${uid}" "${gid}" >&2
+    return 1
+  fi
+  printf '%s:%s\n' "${uid}" "${gid}"
+}
+
+# verify_ars_storage_for_operator checks, before ARS starts, that ARS can use
+# its storage as the exact container identity it will run as: the UID:GID that
+# control_plane_operator_user printed, passed as the second argument, with no
+# supplementary groups, because docker run --user UID:GID gives the container
+# none. storage.root_dir and storage.index_file must be absolute, the root is
+# created as the caller when it is missing (otherwise Docker would create the
+# bind source as root), the index file must already exist (ARS refuses to start
+# without it), every directory under the root plus the index file's directory
+# must be writable and searchable, and every file there plus the index file
+# readable, by that identity. Access is decided from each entry's owner, group
+# and mode the way the kernel decides it for that one UID and GID, not with the
+# calling process's credentials, which include the caller's supplementary
+# groups. An entry that identity does not own and that carries a POSIX access
+# ACL is refused, because the check does not evaluate ACLs; where Python cannot
+# read ACLs, which is every host but Linux, an entry that identity does not own
+# is refused too. UID 0 may use any entry, as the kernel lets root.
+# ARS writes blobs and the index as 0600 files, so storage that an earlier
+# bring-up wrote as root is unusable until the operator owns it again.
+verify_ars_storage_for_operator() {
+  local config_path=$1
+  local container_user=$2
+
+  python3 - "${config_path}" "${container_user}" <<'PY'
+import errno
+import json
+import os
+import pathlib
+import re
+import shlex
+import stat
+import sys
+
+prefix = "ARS storage check failed"
+user_match = re.fullmatch(r"([0-9]+):([0-9]+)", sys.argv[2])
+if user_match is None:
+    print(f"{prefix}: the container identity must be numeric UID:GID, got {sys.argv[2]!r}", file=sys.stderr)
+    raise SystemExit(1)
+UID = int(user_match.group(1))
+GID = int(user_match.group(2))
+IDENTITY = f"{UID}:{GID}"
+cfg = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+storage = cfg.get("storage") if isinstance(cfg.get("storage"), dict) else {}
+root_dir = storage.get("root_dir") if isinstance(storage.get("root_dir"), str) else ""
+index_file = storage.get("index_file") if isinstance(storage.get("index_file"), str) else ""
+root_dir = root_dir.strip()
+index_file = index_file.strip()
+
+
+def refuse(message, path=None, recursive=False):
+    if path is not None:
+        chown = "chown -R" if recursive else "chown"
+        message += (
+            f": {path}. ARS runs as {IDENTITY}, your UID and primary group, with no"
+            f" supplementary groups; if an earlier bring-up wrote this storage as root,"
+            f" or it is shared through another group, hand it back with:"
+            f" sudo {chown} {IDENTITY} {shlex.quote(str(fix_path or path))}"
+        )
+    print(f"{prefix}: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+fix_path = None
+if not os.path.isabs(root_dir):
+    refuse("storage.root_dir must be an absolute path")
+if not os.path.isabs(index_file):
+    refuse("storage.index_file must be an absolute path")
+root = pathlib.Path(os.path.normpath(root_dir))
+index = pathlib.Path(os.path.normpath(index_file))
+
+if not root.exists():
+    root.mkdir(parents=True)
+if not root.is_dir():
+    refuse(f"storage.root_dir is not a directory: {root}")
+if not index.is_file():
+    refuse(f"storage.index_file must be an existing regular file: {index}")
+
+READ, WRITE, SEARCH = 4, 2, 1
+
+
+def unusable(path, info, want, what, recursive):
+    """Refuse unless IDENTITY, with no supplementary groups, has want on path.
+
+    info is the entry's stat result. Root may read, write and search any
+    directory and read any file. The owner class applies when IDENTITY owns
+    the entry, even with an ACL, because the ACL's owner entry is the owner
+    mode bits. Otherwise an access ACL could grant or deny differently from the
+    mode bits, so an entry with one is refused, as is an entry on a host that
+    cannot show ACLs. Without an ACL, the group class applies when the entry's
+    group is GID, and the other class otherwise."""
+    if UID == 0:
+        return
+    if info.st_uid == UID:
+        granted = (info.st_mode >> 6) & 7
+    else:
+        getxattr = getattr(os, "getxattr", None)
+        if getxattr is None:
+            refuse(f"{what} is not owned by your UID, and this host cannot show whether it has an access ACL", path, recursive)
+        try:
+            getxattr(path, "system.posix_acl_access")
+        except OSError as error:
+            if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                refuse(f"cannot read the access ACL of this {what} ({error.strerror})", path, recursive)
+        else:
+            refuse(f"{what} is not owned by your UID and has an access ACL, which this check does not evaluate", path, recursive)
+        granted = (info.st_mode >> 3) & 7 if info.st_gid == GID else info.st_mode & 7
+    if granted & want != want:
+        needs = "writable and searchable" if want == WRITE | SEARCH else "readable"
+        refuse(f"{what} is not {needs} by your UID and primary group", path, recursive)
+
+
+# The index directory and file get a non-recursive hint: the index may sit in
+# a directory that also holds other services' state.
+unusable(index.parent, os.stat(index.parent), WRITE | SEARCH, "directory", False)
+unusable(index, os.stat(index), READ, "file", False)
+
+# Everything under the storage root belongs to ARS, so its hint is recursive
+# from the root.
+fix_path = root
+
+
+def walk_error(error):
+    refuse("cannot list directory", error.filename, recursive=True)
+
+
+for current, dirs, files in os.walk(root, onerror=walk_error):
+    unusable(current, os.stat(current), WRITE | SEARCH, "directory", True)
+    for name in files:
+        path = os.path.join(current, name)
+        info = os.lstat(path)
+        if stat.S_ISREG(info.st_mode):
+            unusable(path, info, READ, "file", True)
+PY
+}
+
 control_plane_mount_specs() {
   local service=$1
   local config_path=$2

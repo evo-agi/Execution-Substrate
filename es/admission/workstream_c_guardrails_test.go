@@ -1837,12 +1837,6 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			want:         map[string]int{"es/admission/service.go:NewService": 1},
 		},
 		{
-			label:        "startup nested staging ownership probe",
-			receiverName: "qualifiedExecutionRoots",
-			functionName: "probeNestedStagingDirectory",
-			want:         map[string]int{"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities": 1},
-		},
-		{
 			label:        "configured-root component creator",
 			receiverName: "qualifiedExecutionRoots",
 			functionName: "createNextConfiguredRootComponent",
@@ -1948,7 +1942,6 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		"es/admission/execution_roots.go:qualifyExecutionRoots":                               1,
 		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           10,
 		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNaturalResultDirectory": 2,
-		"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 3,
 		"es/admission/results.go:openExistingRetainedResultDirectory":                         1,
 		"es/admission/results.go:openOrCreateRetainedResultDirectory":                         1,
 		"es/admission/service.go:NewService":                                                  1,
@@ -1970,7 +1963,6 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.createNextConfiguredRootComponent": 1,
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":                 1,
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNaturalResultDirectory":       1,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory":       1,
 			"es/admission/results.go:openRetainedResultDirectoryFromQualifiedRoot":                      1,
 			"es/admission/staging_custody.go:claimStagingCustodyFromQualifiedRoot":                      1,
 			"es/admission/staging_custody.go:openQualifiedDirectoryClean":                               1,
@@ -1985,7 +1977,6 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		},
 		"golang.org/x/sys/unix.Fchown": {
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           2,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1,
 			"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord":     1,
 			"es/admission/results.go:retainedResultDirectory.createTempFile":                      1,
 			"es/admission/results.go:retainedResultDirectory.ensureNormalizationEvidenceWithHook": 1,
@@ -1995,7 +1986,6 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		},
 		"golang.org/x/sys/unix.Fchmod": {
 			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeCapabilities":           2,
-			"es/admission/execution_roots.go:qualifiedExecutionRoots.probeNestedStagingDirectory": 1,
 			"es/admission/result_auth.go:retainedResultDirectory.publishRetainedResultRecord":     1,
 			"es/admission/results.go:retainedResultDirectory.createTempFile":                      1,
 			"es/admission/results.go:retainedResultDirectory.ensureNormalizationEvidenceWithHook": 1,
