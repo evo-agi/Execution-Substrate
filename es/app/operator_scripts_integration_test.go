@@ -264,7 +264,6 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BaseImage:                  "python:3.13-alpine",
 			RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
-			RetainedResultAuth:         newBringupRetainedResultAuth(t, rootDir),
 		},
 	}
 
@@ -480,43 +479,6 @@ advertise {
 	if !strings.Contains(string(failedCheckOutput), "nomad: leader request failed") {
 		t.Fatalf("expected explicit nomad submit-readiness failure, got %s", string(failedCheckOutput))
 	}
-}
-
-// newBringupRetainedResultAuth plays the trusted operator that supplies the
-// retained-result key which configured Submit requires at startup
-// (.docs/execution_lifecycle/contracts.md, "Selected isolated R1
-// byte-eligibility contract"). ES accepts only a key file owned by its own
-// effective UID (es/admission/result_auth.go validateRetainedResultKeyStat),
-// and bring-up runs ES in the control-plane container without --user. So the
-// key is written by a container on the same Docker daemon: it then has the
-// owner that daemon gives the containerised ES, also under a user-namespace
-// remap. As in newSubmitStackSyntheticRetainedResultAuth, the key bytes are
-// synthetic.
-func newBringupRetainedResultAuth(t *testing.T, rootDir string) esconfig.RetainedResultAuthConfig {
-	t.Helper()
-
-	keyDir := filepath.Join(rootDir, "es-auth")
-	if err := os.Mkdir(keyDir, 0o700); err != nil {
-		t.Fatalf("create bring-up result auth directory: %v", err)
-	}
-	output, err := exec.Command(
-		"docker", "run", "--rm", "--network", "none",
-		"-v", keyDir+":/es-auth",
-		"alpine:3.20",
-		"sh", "-ceu", `umask 077; printf '%s' "$1" > /es-auth/key`, "sh", strings.Repeat("S", 32),
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("write bring-up result auth key from a container: %v output=%s", err, string(output))
-	}
-	keyPath := filepath.Join(keyDir, "key")
-	info, err := os.Lstat(keyPath)
-	if err != nil {
-		t.Fatalf("stat bring-up result auth key: %v", err)
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() != 32 {
-		t.Fatalf("bring-up result auth key mode=%v size=%d, want a regular 0600 file of 32 bytes", info.Mode(), info.Size())
-	}
-	return esconfig.RetainedResultAuthConfig{StoreID: "test_store", KeyID: "test_key", KeyFile: keyPath}
 }
 
 func TestGenerateControlPlaneDockerfile(t *testing.T) {
