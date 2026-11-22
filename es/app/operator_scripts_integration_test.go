@@ -264,6 +264,7 @@ func TestBringupScriptUpCheckDownFullProfile(t *testing.T) {
 			BaseImage:                  "python:3.13-alpine",
 			RuntimeSupportBinary:       "/usr/local/bin/es-runtime-support",
 			SPIREWorkloadAPISocketPath: mockSPIRE.socketPath,
+			RetainedResultAuth:         newSubmitStackSyntheticRetainedResultAuth(t, rootDir),
 		},
 	}
 
@@ -443,7 +444,7 @@ advertise {
 		"http://127.0.0.1:"+itoa(t, nomadHTTPPort),
 		runtimeIdentityResult.Summary.RunID,
 		esCfg.Execution.StagingRootDir,
-		esCfg.Execution.SPIREWorkloadAPISocketPath,
+		filepath.Dir(esCfg.Execution.SPIREWorkloadAPISocketPath),
 	)
 	assertStagingInvariantProof(t, filepath.Join(bringupDir, "staging-invariant.json"), esCfg.Execution.StagingRootDir)
 	for _, marker := range []string{
