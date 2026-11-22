@@ -195,6 +195,13 @@ with bounded backoff and the status lock retained until group absence and
 exactly one direct-child reap are proved. One-shot faults recover on later
 iterations; no outer retry may return unproved. Only a non-signaling
 identity-based proc absence scan follows reap.
+The process-identity read parses the proc stat line as bytes and never decodes
+the process name, which its own process chooses; only the kernel-written
+fields after the last `)` supply group ID and start time. A process that ended
+before its stat file could be opened or read (`ENOENT` or `ESRCH`) is absent,
+not unproved. The name or the exit of an unrelated process therefore neither
+fails the capability probe nor prolongs the unresolved-cleanup hold; the hold
+gains no time limit.
 After bootstrap stage removal and status-lock acquisition, before status
 config, certificate, key, trust-anchor, or prior-summary reads and before any
 OpenSSL spawn, exactly one process-capability probe uses one fixed internal fork

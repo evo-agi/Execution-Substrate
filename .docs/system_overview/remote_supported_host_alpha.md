@@ -3549,6 +3549,23 @@ and no OS-label or direct-child-only fallback. No child
 inherits the same-scope status lock; no unbounded ordinary child wait or
 double reap is allowed. The unresolved-cleanup hold is exceptional.
 
+`Bounded slice rule` for the process-identity read: the capability probe and
+every membership scan read `/proc/<pid>/stat` of every process on the host,
+including processes of other accounts, so a process outside the fixed group
+must not decide the result. The reader parses the stat line as bytes. The
+process name between the first `(` and the last `)` is chosen by its own
+process and may hold any byte, including non-ASCII bytes, `)`, spaces, and
+newlines; it is never decoded, compared, or otherwise interpreted. Only the
+kernel-written fields after the last `)` supply the group ID and the start
+time. A process that ended before its stat file could be opened or read,
+reported as `ENOENT` or `ESRCH`, is absent, not unproved: the process that
+the scan listed no longer exists. Every other open or read error is unproved,
+never absent, and a missing `<pid> (` prefix, a line over 4096 bytes, and a
+missing or non-numeric field remain `process_identity_unproved`. The name or
+the exit of an unrelated process therefore neither fails the capability probe
+nor prolongs the unresolved-cleanup hold. This rule adds no time limit to
+that hold and never counts a visible zombie as absent.
+
 The exact client verification argv is `/usr/bin/openssl verify -trusted
 <selected-ca-fd> -purpose sslclient /dev/stdin`. The server argv is
 `/usr/bin/openssl verify -trusted <selected-ca-fd> -purpose sslserver

@@ -2256,6 +2256,21 @@ After one member fault, later observed candidates still require their own
 pidfd and exact group/start-time revalidation before signaling. Aggregate
 member uncertainty enters the existing child-owner hold after that finite
 scan, without changing its signal, reap, or lock authority.
+`Bounded slice rule` process-identity refinement: every membership scan reads
+the proc stat line of every process on the host, so the reader must not let a
+process outside the fixed group decide its result. The reader parses that line
+as bytes. The process name between the first `(` and the last `)` is chosen by
+its own process and may hold any byte; it is never decoded, compared, or
+otherwise interpreted. Only the kernel-written fields after the last `)`
+supply the group ID and the start time. A process that ended before its stat
+file could be opened or read, reported as `ENOENT` or `ESRCH`, is absent,
+not unproved. Every other open or read error is unproved, never absent, and
+a missing `<pid> (` prefix, an oversized line, and a missing or non-numeric
+field remain `process_identity_unproved`. The name or the exit of an
+unrelated process therefore neither fails the capability probe nor prolongs
+the unresolved-cleanup hold. This refinement adds no time limit to that hold,
+never counts a visible zombie as absent, and changes no signal, reap, lock,
+publication, or retry authority.
 
 The facade uses one fixed remote Python stage-creation helper. It opens the
 fixed `/tmp` parent, refuses an existing generated name, creates only that

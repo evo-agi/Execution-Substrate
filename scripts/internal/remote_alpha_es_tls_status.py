@@ -813,19 +813,29 @@ def validate_process_capability(backend: ProcessCapabilityBackend | None = None)
 
 
 def read_proc_identity(pid: int) -> tuple[int, int] | None:
-    """Return (PGID, starttime) from one bounded, no-follow proc stat read."""
+    """Return (PGID, starttime) from one bounded, no-follow proc stat read.
+
+    Every scan reads this line for every process on the host. The name
+    between the first "(" and the last ")" is chosen by that process and may
+    hold any byte, so the line is parsed as bytes and the name is never
+    interpreted. A process that ended before its stat file could be opened
+    or read (ENOENT or ESRCH) no longer exists and is absent.
+    """
     global WITNESS_DISPOSITION_UNPROVED
     if pid <= 0:
         raise Incomplete("process_identity_unproved")
     try:
         fd = os.open(f"/proc/{pid}/stat",
                      os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     except OSError as exc:
         raise Incomplete("process_identity_unproved") from exc
     try:
-        raw = os.read(fd, 4097)
+        try:
+            raw = os.read(fd, 4097)
+        except ProcessLookupError:
+            return None
     finally:
         try:
             os.close(fd)
@@ -835,15 +845,14 @@ def read_proc_identity(pid: int) -> tuple[int, int] | None:
     if len(raw) > 4096:
         raise Incomplete("process_identity_unproved")
     try:
-        text = raw.decode("ascii", "strict")
-        close = text.rfind(")")
-        if close < 0 or not text.startswith(str(pid) + " ("):
+        close = raw.rfind(b")")
+        if close < 0 or not raw.startswith(b"%d (" % pid):
             raise ValueError()
-        fields = text[close + 2:].split()
+        fields = raw[close + 2:].split()
         if len(fields) < 20:
             raise ValueError()
         return int(fields[2]), int(fields[19])
-    except (UnicodeError, ValueError, IndexError) as exc:
+    except (ValueError, IndexError) as exc:
         raise Incomplete("process_identity_unproved") from exc
 
 
