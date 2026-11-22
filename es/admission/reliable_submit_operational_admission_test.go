@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -400,6 +401,10 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 	if got := resign(&positive); got != f.expectedEvidence || !operationalEvidenceMatchesOriginal(positive, original, f.domain.realm) {
 		t.Fatal("matching signed evidence did not meet the same retained association")
 	}
+	if wire, err := encodeOperationalOriginal(original.delivery, original.resolved, original.assessment,
+		f.domain.keys, f.domain.realm); err != nil || !bytes.Equal(wire, original.wire) {
+		t.Fatalf("control: the matching original does not encode to its own bytes: %v", err)
+	}
 	for name, alter := range map[string]func(*evidencev1.ArtifactEvidence){
 		"artifact digest": func(e *evidencev1.ArtifactEvidence) {
 			identity, _ := evidencev1.NewArtifactIdentity(e.Claims.Package.Identity.PayloadDigest,
@@ -439,6 +444,16 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 			if reason := f.service.qualifyOperationalRetained(context.Background(), candidate, f.domain.realm); reason != reliablesubmit.OperationalIntegrity {
 				t.Fatalf("contradictory retained evidence reason=%d", reason)
 			}
+			// The encoder refuses the same contradiction before custody can
+			// hold it. The record itself decodes, so only its association
+			// with the plan and the material can be what fails.
+			if _, err := decodeOperationalEvidence(candidate.resolved.provenanceRecord); err != nil {
+				t.Fatalf("control: the mismatched record does not decode: %v", err)
+			}
+			if wire, err := encodeOperationalOriginal(candidate.delivery, candidate.resolved, candidate.assessment,
+				f.domain.keys, f.domain.realm); err == nil {
+				t.Fatalf("validly signed but mismatched evidence was encoded (%d bytes)", len(wire))
+			}
 			wire := operationalVectorReplaceProvenance(t, original.wire, "operational_local_v2", []byte(candidate.resolved.provenanceRecord))
 			if _, err := verifyOperationalOriginal(wire, f.domain.keys, f.domain.realm); err == nil {
 				t.Fatal("structural reader accepted validly signed but mismatched evidence")
@@ -476,6 +491,10 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 			}
 			if reason := f.service.qualifyOperationalRetained(context.Background(), candidate, f.domain.realm); reason != reliablesubmit.OperationalIntegrity {
 				t.Fatalf("contradictory frozen input reason=%d", reason)
+			}
+			if wire, err := encodeOperationalOriginal(candidate.delivery, candidate.resolved, candidate.assessment,
+				f.domain.keys, f.domain.realm); err == nil {
+				t.Fatalf("an original that contradicts its evidence was encoded (%d bytes)", len(wire))
 			}
 		})
 	}
@@ -602,6 +621,21 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 			t.Fatal("copy fixture did not reproduce the precommission Service")
 		}
 		refused(t, f, copied, "copied precommission Service")
+		// The same with content of its own. The copy above holds the stored
+		// content, so a store write by it would change nothing; this one would
+		// replace the row and fence every other process if its ownership were
+		// checked only after the write.
+		changed := func(s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				"sha256:"+strings.Repeat("c", 64))
+		}
+		other, _ := operationalUncommissionedService(t, f, changed)
+		if _, _, _, digest, ok := other.operationalAdmissionContent(); !ok || digest == operationalAdmissionRowAt(t, f).Digest {
+			t.Fatal("control: the changed candidate does not carry content of its own")
+		}
+		copiedOther := new(Service)
+		reflect.ValueOf(copiedOther).Elem().Set(reflect.ValueOf(other).Elem())
+		refused(t, f, copiedOther, "copied Service with content of its own")
 		oversized, _ := operationalUncommissionedService(t, f, func(s *Service) {
 			for i := 0; i < 3600; i++ {
 				s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
@@ -610,8 +644,12 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		})
 		refused(t, f, oversized, "oversized trust representation")
 		for name, configure := range map[string]func(*Service){
-			"no trust":              func(s *Service) { s.trustModel = nil },
-			"unverified trust":      func(s *Service) { s.trustModelVerified = false },
+			"no trust":         func(s *Service) { s.trustModel = nil },
+			"unverified trust": func(s *Service) { s.trustModelVerified = false },
+			"unverified trust with content of its own": func(s *Service) {
+				changed(s)
+				s.trustModelVerified = false
+			},
 			"invalid trust":         func(s *Service) { s.trustModel.SignerPolicy.AllowedSigners = []string{"twice", "twice"} },
 			"no verifier":           func(s *Service) { s.provenanceVerifier = nil },
 			"short verifier key":    func(s *Service) { s.provenanceVerifier.publicKey = s.provenanceVerifier.publicKey[:31] },
@@ -2194,6 +2232,130 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 			t.Fatal("control: BEGIN IMMEDIATE succeeded inside the run-assignment writer turn")
 		}
 	})
+}
+
+// Every sample of the view is a point where the deadline can pass. The sweep
+// moves that point over every freshness read of one complete fresh delivery.
+// Whichever sample sees it first, that sample is the last thing the
+// invocation does to the claim: nothing is written, staged or sent after it,
+// and no run or receipt is disclosed. This pins the last sample before each
+// effect, wherever it sits.
+func TestOperationalAdmissionDeadlineAtEverySample(t *testing.T) {
+	type observation struct {
+		f     *operationalFixture
+		mu    sync.Mutex
+		reads int
+		seen  bool
+		at    operationalPrestageState
+		out   operationalHandoffResult
+	}
+	run := func(t *testing.T, at int) *observation {
+		t.Helper()
+		o := &observation{f: makeOperationalFixture(t, "")}
+		o.f.service.operationalAdmission.proof.skew = func() time.Duration {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			if o.reads++; o.reads == at {
+				o.seen, o.at = true, operationalPrestageStateAt(t, o.f)
+			}
+			if o.seen {
+				return operationalAdmissionConfirmationLimit
+			}
+			return 0
+		}
+		o.out = o.f.submit()
+		return o
+	}
+	control := run(t, 0)
+	assertOperationalCompleted(t, control.f, control.out, "control: a delivery whose deadline never passes")
+	// The number is exact so that adding or dropping a sample is a deliberate
+	// change: a dropped sample would otherwise only shorten the sweep.
+	if control.seen || control.reads != 48 {
+		t.Fatalf("control: a complete fresh delivery sampled the view %d times, want 48 (deadline seen=%t)", control.reads, control.seen)
+	}
+	// reached records the state of the claim at the sample that saw the
+	// deadline, so the sweep is known to have stood before every writer.
+	type stage struct {
+		revision int
+		staged   bool
+	}
+	reached := map[stage]int{}
+	for at := 1; at <= control.reads; at++ {
+		t.Run(fmt.Sprintf("sample %d of %d", at, control.reads), func(t *testing.T) {
+			o := run(t, at)
+			after := operationalPrestageStateAt(t, o.f)
+			if !o.seen {
+				t.Fatalf("the invocation ended after %d samples, before sample %d", o.reads, at)
+			}
+			if o.out.kind != operationalUnavailable || o.out.reason != reliablesubmit.OperationalUnavailable ||
+				o.out.run != "" || o.out.receipt.Valid() || after.Posts != 0 || after.Receipt || after != o.at {
+				t.Fatalf("an effect or a disclosure followed the sample that saw the deadline: %s at the sample=%+v after=%+v",
+					operationalResultText(o.out), o.at, after)
+			}
+			reached[stage{o.at.Revision, o.at.StageEntries != 0}]++
+		})
+	}
+	for _, want := range []stage{{0, false}, {1, false}, {2, false}, {3, false}, {3, true}, {4, true}, {5, true}} {
+		if reached[want] == 0 {
+			t.Errorf("no sample stood at revision %d (staged=%t); the sweep reached %v", want.revision, want.staged, reached)
+		}
+	}
+}
+
+// The qualifier samples the view again after it has evaluated. A passed
+// deadline, a withdrawal or a supersession that arrives during the
+// evaluation makes that judgment unusable, also for a caller that asks the
+// qualifier directly and not through a writer cut.
+func TestOperationalAdmissionChangeDuringEvaluation(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		arrive func(t *testing.T, f *operationalFixture, late *atomic.Bool)
+	}{
+		{"the deadline passes", func(_ *testing.T, _ *operationalFixture, late *atomic.Bool) { late.Store(true) }},
+		{"the domain is withdrawn", func(t *testing.T, f *operationalFixture, _ *atomic.Bool) {
+			if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+				t.Error("control: the withdrawal was not confirmed")
+			}
+		}},
+		{"EGS serves other trust", func(t *testing.T, f *operationalFixture, _ *atomic.Bool) {
+			trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+			trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("d", 64))
+			f.egs.serve(trust)
+			requests := f.egs.count()
+			f.service.confirmOperationalAdmission(ctx)
+			if f.egs.count() != requests+1 {
+				t.Error("control: the confirmation did not ask EGS")
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			original := operationalV2Original(t, f)
+			f.confirm()
+			late := f.lateClock()
+			calls := 0
+			f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+				if calls++; calls != 2 {
+					return
+				}
+				if !allowed {
+					t.Error("control: the interrupted evaluation did not allow the claim")
+				}
+				c.arrive(t, f, late)
+			}
+			if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalReasonNone || calls != 1 {
+				t.Fatalf("control: an undisturbed evaluation: reason=%d evaluations=%d", reason, calls)
+			}
+			if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalUnavailable || calls != 2 {
+				t.Fatalf("a judgment made before the change was returned: reason=%d evaluations=%d", reason, calls)
+			}
+			// The change is not undone by asking again.
+			if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalUnavailable || calls != 2 {
+				t.Fatalf("a stopped view judged again: reason=%d evaluations=%d", reason, calls)
+			}
+		})
+	}
 }
 
 // ---- Outcomes (design 5.6; red-team RT-2) ----
