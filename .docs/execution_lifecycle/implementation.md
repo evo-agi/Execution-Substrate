@@ -996,8 +996,10 @@ How Docker appears in the implementation:
   owner/mode/identity, and exact same-path read-write mounts. Only this
   validated profile omits the ordinary operator's write test; generic
   readiness still requires existing caller-writable roots and creates none.
-  The generic ES launcher runs the ES container as the caller's UID:GID, so
-  this probe sees ES create directories as the operator who owns the roots.
+  The generic ES launcher runs the ES container as the caller's numeric
+  effective UID and primary GID, with no supplementary groups, so this probe
+  sees ES create directories with the UID and GID of roots the operator
+  created; roots that carry another group fail it.
   Setup retains only a fixed safe projection of its static configured-root
   check, without raw root paths, key contents, or a container-capability claim.
   The setup helper keeps each newly opened child descriptor from the

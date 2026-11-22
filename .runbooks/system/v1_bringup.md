@@ -242,10 +242,13 @@ scripts/01_bringup.sh up
 What this does:
 
 - regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path; that image currently bundles `ars`, `ags`, `egs`, `es`, `es-runtime-support`, and `cgs` even though the minimal operator path starts only ARS, EGS, AGS, and ES
-- proves that Docker host networking can actually reach host loopback from a container before continuing
+- proves that Docker host networking can actually reach host loopback from a container before continuing; on a user-namespace-remapped Docker daemon, Docker refuses host networking (`cannot share the host's network namespace when user namespaces are enabled`), so bring-up stops here before starting any service. Rootless Docker is untested and unsupported for bring-up
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
-- starts ES and waits for its admission-oriented health surface to report `"ready": true`; without a supported-local roots profile, ES runs in its container as your own UID:GID, so you must own the configured staging and results roots and the retained-result key file (ES refuses to start otherwise, and on a rootless or user-namespace-remapped Docker daemon)
+- starts ES and waits for its admission-oriented health surface to report `"ready": true`; without a supported-local roots profile, ES runs in its container as your numeric UID and primary GID (what `id -u` and `id -g` print), with no supplementary groups. ES refuses to start unless:
+  - the configured staging and results roots are owned by your UID and your primary group; roots that carry another group, for example a shared project group or the group a setgid parent directory hands down, are refused
+  - the retained-result key file is owned by you, has mode `0400` or `0600` and sits outside both roots
+  - the ES config file and every other file it names in a `*_file` setting (TLS certificate, key and client CA, the ARS and EGS client certificates, keys and root CA) are readable by your UID or your primary group; a file readable only by root, or only through another group you belong to, stops ES when it loads that file
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
 - starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver
