@@ -1013,9 +1013,9 @@ How Docker appears in the implementation:
   earlier in ES's startup capability probes, when ES cannot give its staging
   probe directory that group. Roots that inherit another group from a setgid
   parent pass those probes, because entries created directly in them inherit
-  that group; staging then clears the setgid bit on the run directory and
-  cannot give a nested directory that group, so ES reports ready but every
-  submission fails to stage.
+  that group; the nested staging probe above refuses them, because staging
+  clears the setgid bit on the run directory and could not give a nested
+  directory that group.
   Setup retains only a fixed safe projection of its static configured-root
   check, without raw root paths, key contents, or a container-capability claim.
   The setup helper keeps each newly opened child descriptor from the

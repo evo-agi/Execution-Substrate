@@ -13471,8 +13471,9 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 		phrases []string
 	}{
 		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
-		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`"}},
-		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`"}},
+		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "roots that inherit another group from a setgid parent directory refuse startup instead of failing at the first submission"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`", "the nested staging probe above refuses them"}},
+		{".runbooks/system/v1_bringup.md", []string{"or inherited from a setgid parent directory; the inherited case is reported as `nested staging directory ownership is unavailable`"}},
 		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", "nested staging directory ownership is unavailable"}},
 	}
 	for _, check := range checks {
@@ -13482,6 +13483,15 @@ func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
 				t.Fatalf("%s missing nested staging owner probe contract %q", check.path, phrase)
 			}
 		}
+	}
+	// The known gap these documents described before the probe existed must
+	// not come back.
+	for _, path := range []string{".runbooks/system/v1_bringup.md", ".docs/execution_lifecycle/implementation.md", ".docs/system_overview/capability_probing.md"} {
+		assertContainsNone(t, path+" stale setgid-inherited group gap", compactText(mustRead(t, path)),
+			"inherit another group from a setgid parent directory are not refused",
+			"do not yet catch roots that inherit another group",
+			"so ES reports ready but every submission fails to stage",
+		)
 	}
 }
 
