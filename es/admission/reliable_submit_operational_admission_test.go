@@ -650,9 +650,15 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				changed(s)
 				s.trustModelVerified = false
 			},
-			"invalid trust":         func(s *Service) { s.trustModel.SignerPolicy.AllowedSigners = []string{"twice", "twice"} },
-			"no verifier":           func(s *Service) { s.provenanceVerifier = nil },
-			"short verifier key":    func(s *Service) { s.provenanceVerifier.publicKey = s.provenanceVerifier.publicKey[:31] },
+			"invalid trust":                  func(s *Service) { s.trustModel.SignerPolicy.AllowedSigners = []string{"twice", "twice"} },
+			"no verifier":                    func(s *Service) { s.provenanceVerifier = nil },
+			"short verifier key":             func(s *Service) { s.provenanceVerifier.publicKey = s.provenanceVerifier.publicKey[:31] },
+			"unsupported verifier algorithm": func(s *Service) { s.provenanceVerifier.algorithm = "ed448" },
+			"blank verifier key id":          func(s *Service) { s.provenanceVerifier.keyID = " \t" },
+			// Consistently configured, so only the configuration's own validity refuses it.
+			"invalid configuration": func(s *Service) {
+				configureConfiguredStaticScriptLiteralDenyService(s, "control\x00character")
+			},
 			"unsupported evaluator": func(s *Service) { s.admissionPolicyEvaluator = &rejectAllPolicy{} },
 			"nested evaluator": func(s *Service) {
 				s.admissionPolicyEvaluator = admissionPolicySet{policies: []AdmissionPolicyEvaluator{admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}}}
@@ -706,6 +712,83 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if !ok || !afterOK || after != digest || selected.entries[0].literal != "immutable-marker" ||
 			view.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[0].literal != "immutable-marker" {
 			t.Fatal("commissioned policy entries aliased config or ordinary evaluator")
+		}
+	})
+	// The digest decides whether a restarted process joins the stored generation
+	// or has to advance it. Each candidate differs from the stored content in
+	// exactly one field. A digest that left that field out would let the
+	// candidate join, unfenced, with content of its own.
+	t.Run("content that differs in one field is other content", func(t *testing.T) {
+		entries := func(pairs ...[2]string) func(*Service) {
+			return func(s *Service) {
+				configureConfiguredStaticScriptLiteralDenyService(s, pairs[0][1])
+				policy := s.cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny
+				first := policy.Entries[0]
+				policy.Entries = policy.Entries[:0]
+				for _, pair := range pairs {
+					entry := first
+					entry.ID, entry.Literal = pair[0], pair[1]
+					policy.Entries = append(policy.Entries, entry)
+				}
+				s.admissionPolicyEvaluator = admissionPolicyEvaluatorFromConfig(s.cfg.AdmissionPolicy)
+			}
+		}
+		for _, tc := range []struct {
+			name              string
+			stored, candidate func(*Service)
+		}{
+			{"the literal of a configured entry", entries([2]string{"marker", "literal-one"}), entries([2]string{"marker", "literal-two"})},
+			{"the id of a configured entry", entries([2]string{"marker-one", "literal"}), entries([2]string{"marker-two", "literal"})},
+			{"one more configured entry", entries([2]string{"marker", "literal"}),
+				entries([2]string{"marker", "literal"}, [2]string{"second", "other"})},
+			{"the literal of the second configured entry", entries([2]string{"marker", "literal"}, [2]string{"second", "one"}),
+				entries([2]string{"marker", "literal"}, [2]string{"second", "two"})},
+			{"the verifier key id", nil, func(s *Service) { s.provenanceVerifier.keyID += "-next" }},
+			{"the verifier key", nil, func(s *Service) { s.provenanceVerifier.publicKey[0] ^= 1 }},
+			{"one more allowed signer", nil, func(s *Service) {
+				s.trustModel.SignerPolicy.AllowedSigners = append(s.trustModel.SignerPolicy.AllowedSigners, "one-more-signer")
+			}},
+			{"one more revoked signer", nil, func(s *Service) {
+				s.trustModel.SignerPolicy.RevokedSigners = append(s.trustModel.SignerPolicy.RevokedSigners, "one-more-revoked-signer")
+			}},
+			{"one more revoked artifact", nil, func(s *Service) {
+				s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+					"sha256:"+strings.Repeat("f", 64))
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := makeOperationalFixture(t, "")
+				if tc.stored != nil {
+					operationalProofService(t, f, tc.stored)
+				}
+				row := operationalAdmissionRowAt(t, f)
+				candidate, _ := operationalUncommissionedService(t, f, tc.candidate)
+				_, _, _, digest, ok := candidate.operationalAdmissionContent()
+				if !ok {
+					t.Fatal("control: the candidate's content cannot be commissioned at all")
+				}
+				if digest == row.Digest {
+					t.Fatal("content that differs in this field carries the stored digest")
+				}
+				if err := candidate.commissionOperationalAdmission(ctx, f.domain); err == nil || candidate.operationalAdmission != nil ||
+					operationalAdmissionRowAt(t, f) != row {
+					t.Fatalf("content that differs in this field joined the stored generation: err=%v", err)
+				}
+				if err := candidate.advanceOperationalAdmission(ctx, f.domain, row.Generation); err != nil {
+					t.Fatalf("other content could not advance the domain: %v", err)
+				}
+				next := operationalAdmissionRowAt(t, f)
+				if next.Generation != row.Generation+1 || next.State != 1 || next.Digest != digest {
+					t.Fatalf("the advance did not store the candidate's content: before=%+v after=%+v", row, next)
+				}
+				// Control: the comparison is by content, so a second process with
+				// the candidate's content joins the candidate's generation.
+				twin, _ := operationalUncommissionedService(t, f, tc.candidate)
+				if err := twin.commissionOperationalAdmission(ctx, f.domain); err != nil ||
+					twin.operationalAdmission.token != candidate.operationalAdmission.token || operationalAdmissionRowAt(t, f) != next {
+					t.Fatalf("control: equal content did not join its own generation: %v", err)
+				}
+			})
 		}
 	})
 	// No comma in this name: the fixture's staging path is derived from it, and
@@ -768,6 +851,30 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if done := next.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw); done.kind != operationalAccepted ||
 			operationalPrestageStateAt(t, f).Posts != 1 {
 			t.Fatalf("new generation after a withdrawal: %s state=%+v", operationalResultText(done), operationalPrestageStateAt(t, f))
+		}
+	})
+	t.Run("a withdrawal the store does not confirm is reported as unconfirmed", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		f.confirm()
+		// The store refuses every write under an ended context, so this
+		// withdrawal reaches the process and not the domain.
+		ended, cancel := context.WithCancel(ctx)
+		cancel()
+		if f.service.withdrawOperationalEffects(ended, f.domain) {
+			t.Fatal("a withdrawal the store did not perform was reported as confirmed")
+		}
+		if row := operationalAdmissionRowAt(t, f); row.State != 1 || row.Generation != 1 {
+			t.Fatalf("control: the store performed the withdrawal: %+v", row)
+		}
+		if _, ok := f.service.currentOperationalAdmission(f.domain.realm); ok {
+			t.Fatal("the process is not stopped after an unconfirmed withdrawal")
+		}
+		// The call may be repeated, and the repeat is what stops the domain.
+		if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+			t.Fatal("the repeated withdrawal was not confirmed")
+		}
+		if row := operationalAdmissionRowAt(t, f); row.State != 2 || row.Generation != 1 {
+			t.Fatalf("the repeated withdrawal is not durable: %+v", row)
 		}
 	})
 	t.Run("Initialize fetch cannot overwrite racing commission", func(t *testing.T) {
@@ -2169,6 +2276,54 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 				t.Fatalf("confirmation time %s is not earlier than the request %s", f.service.operationalConfirmed, during)
 			}
 		})
+	})
+	// Two confirmations can overlap: each invocation asks once, and invocations
+	// run concurrently. The one that started first vouches for an earlier
+	// moment, so when it finishes last it must not replace the later time.
+	t.Run("a confirmation that started earlier and finishes later does not move the time back", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		confirmedAt := func() time.Time {
+			f.service.mu.RLock()
+			defer f.service.mu.RUnlock()
+			return f.service.operationalConfirmed
+		}
+		var requests atomic.Int32
+		entered, release := make(chan struct{}), make(chan struct{})
+		f.egs.observe(func() {
+			// Only the first request is held at EGS.
+			if requests.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+		})
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			f.service.confirmOperationalAdmission(ctx)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the first confirmation did not reach EGS")
+		}
+		if held := confirmedAt(); !held.IsZero() {
+			t.Fatalf("control: a confirmation was recorded while the only request was still held: %s", held)
+		}
+		time.Sleep(2 * time.Millisecond)
+		f.service.confirmOperationalAdmission(ctx)
+		later := confirmedAt()
+		if later.IsZero() {
+			t.Fatal("control: the second confirmation recorded nothing")
+		}
+		close(release)
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the held confirmation did not finish")
+		}
+		if final := confirmedAt(); final != later || requests.Load() != 2 || f.service.operationalSuperseded {
+			t.Fatalf("the earlier confirmation changed the recorded time: later=%s final=%s requests=%d", later, final, requests.Load())
+		}
 	})
 	t.Run("a Service that was never confirmed admits nothing", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
