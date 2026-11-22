@@ -228,6 +228,44 @@ func TestRedTeamPR13HoldsDenialMatrixAcrossCrashPoints(t *testing.T) {
 	}
 }
 
+// A withdrawn Service must not open a new claim for a fresh delivery: no
+// claim row, no sealed original and no occupied submit key. The fixture
+// Service is able to compose and submit that delivery (the control fixture,
+// built the same way, is accepted), so the refusal comes only from the two
+// authority samples around Establish. Removing both samples passed the whole
+// es/admission suite at e544e0f. The second case withdraws between the two
+// samples and so pins the later one on its own.
+func TestRedTeamPR13HoldsNoNewClaimAfterWithdrawal(t *testing.T) {
+	control := makeOperationalFixture(t, "")
+	if out := control.submit(); out.kind != operationalAccepted || operationalPrestageStateAt(t, control).Claims != 1 {
+		t.Fatalf("control fixture was not accepted: kind=%d reason=%d", out.kind, out.reason)
+	}
+	for _, when := range []string{"before the handoff", "between the two authority samples"} {
+		t.Run(when, func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			domain := f.reopen()
+			withdrawn := false
+			withdraw := func() { withdrawn = f.service.withdrawOperationalEffects() }
+			if when == "before the handoff" {
+				withdraw()
+			} else {
+				domain.proof = &operationalHandoffProofHooks{beforeEstablish: withdraw}
+			}
+			for _, recovery := range []bool{false, true} {
+				out := f.service.operatePrivateHandoff(context.Background(), domain, f.domain.caller, f.raw, recovery)
+				state := operationalPrestageStateAt(t, f)
+				sealed, _ := os.ReadDir(filepath.Join(f.root, "objects", "v1"))
+				if !withdrawn || out.kind != operationalUnavailable || out.run != "" || out.receipt.Valid() ||
+					state.Claims != 0 || state.StageEntries != 0 || state.Posts != 0 || len(sealed) != 0 {
+					t.Fatalf("fresh delivery after withdrawal (recovery=%t, withdrawn=%t) opened a claim: kind=%d run=%q reason=%d sealed=%d state=%+v",
+						recovery, withdrawn, out.kind, out.run, out.reason, len(sealed), state)
+				}
+				domain = f.reopen()
+			}
+		})
+	}
+}
+
 // A realm commissioned for a later epoch, or for another installation, must
 // not advance, disclose or read an original sealed for the earlier realm,
 // with or without a matching Service authority. The earlier realm's own
