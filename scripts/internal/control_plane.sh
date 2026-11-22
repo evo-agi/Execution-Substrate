@@ -239,11 +239,29 @@ if not os.path.isabs(index_file):
 root = pathlib.Path(os.path.normpath(root_dir))
 index = pathlib.Path(os.path.normpath(index_file))
 
-if not root.exists():
-    root.mkdir(parents=True)
-if not root.is_dir():
+# The caller must be able to reach both paths; a permission error is a
+# refusal with the path, not a traceback.
+try:
+    root_info = os.stat(root)
+except FileNotFoundError:
+    try:
+        root.mkdir(parents=True)
+        root_info = os.stat(root)
+    except OSError as error:
+        refuse(f"cannot create storage.root_dir as you: {root} ({error.strerror})")
+except NotADirectoryError:
     refuse(f"storage.root_dir is not a directory: {root}")
-if not index.is_file():
+except OSError as error:
+    refuse(f"cannot reach storage.root_dir as you: {root} ({error.strerror}); you need search permission on every directory above it")
+if not stat.S_ISDIR(root_info.st_mode):
+    refuse(f"storage.root_dir is not a directory: {root}")
+try:
+    index_info = os.stat(index)
+except (FileNotFoundError, NotADirectoryError):
+    refuse(f"storage.index_file must be an existing regular file: {index}")
+except OSError as error:
+    refuse(f"cannot reach storage.index_file as you: {index} ({error.strerror}); you need search permission on every directory above it")
+if not stat.S_ISREG(index_info.st_mode):
     refuse(f"storage.index_file must be an existing regular file: {index}")
 
 READ, WRITE, SEARCH = 4, 2, 1
@@ -283,7 +301,7 @@ def unusable(path, info, want, what, recursive):
 # The index directory and file get a non-recursive hint: the index may sit in
 # a directory that also holds other services' state.
 unusable(index.parent, os.stat(index.parent), WRITE | SEARCH, "directory", False)
-unusable(index, os.stat(index), READ, "file", False)
+unusable(index, index_info, READ, "file", False)
 
 # Everything under the storage root belongs to ARS, so its hint is recursive
 # from the root.
@@ -294,11 +312,18 @@ def walk_error(error):
     refuse("cannot list directory", error.filename, recursive=True)
 
 
+def reach(path, follow):
+    try:
+        return os.stat(path) if follow else os.lstat(path)
+    except OSError as error:
+        refuse(f"cannot reach this entry as you ({error.strerror})", path, recursive=True)
+
+
 for current, dirs, files in os.walk(root, onerror=walk_error):
-    unusable(current, os.stat(current), WRITE | SEARCH, "directory", True)
+    unusable(current, reach(current, True), WRITE | SEARCH, "directory", True)
     for name in files:
         path = os.path.join(current, name)
-        info = os.lstat(path)
+        info = reach(path, False)
         if stat.S_ISREG(info.st_mode):
             unusable(path, info, READ, "file", True)
 PY
