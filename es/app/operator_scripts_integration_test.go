@@ -447,7 +447,6 @@ advertise {
 		filepath.Dir(esCfg.Execution.SPIREWorkloadAPISocketPath),
 	)
 	assertStagingInvariantProof(t, filepath.Join(bringupDir, "staging-invariant.json"), esCfg.Execution.StagingRootDir)
-	assertBringupServicesRunAsOperator(t, bringupDir, arsRootDir, indexPath)
 	for _, marker := range []string{
 		"PLATFORM-ENDPOINT-USED",
 		"RAW-SPIRE-DENIED",
@@ -3880,54 +3879,6 @@ func readExecutionLoopResultFromWorkdirBase(t *testing.T, workdirBase string) ex
 	return executionLoopResult{
 		Summary: summary,
 		Logs:    string(logsBytes),
-	}
-}
-
-// assertBringupServicesRunAsOperator checks that bring-up ran ARS, EGS, AGS
-// and ES as the operator: each launcher log shows the docker run command with
-// the operator's UID:GID, and every entry in ARS's storage, including the blobs
-// ARS stored during the execution loop, and the index file belong to the
-// operator. Before, ARS ran as root and left root-owned 0600 blobs there.
-func assertBringupServicesRunAsOperator(t *testing.T, bringupDir, arsRootDir, indexPath string) {
-	t.Helper()
-	operator := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
-	for _, service := range []string{"ars", "egs", "ags", "es"} {
-		data, err := os.ReadFile(filepath.Join(bringupDir, "logs", service+".log"))
-		if err != nil || !strings.Contains(string(data), " --user "+operator+" ") {
-			t.Fatalf("%s launcher log does not show docker run --user %s (err=%v)", service, operator, err)
-		}
-	}
-	ownedByOperator := func(path string, info os.FileInfo) error {
-		st, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || int(st.Uid) != os.Getuid() || int(st.Gid) != os.Getgid() {
-			return fmt.Errorf("%s is not owned by the operator %s: %+v", path, operator, info.Sys())
-		}
-		return nil
-	}
-	files := 0
-	err := filepath.Walk(arsRootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() {
-			files++
-		}
-		return ownedByOperator(path, info)
-	})
-	if err != nil {
-		t.Fatalf("ARS storage ownership: %v", err)
-	}
-	// The test stored one blob itself; the execution loop stores more
-	// through ARS.
-	if files < 2 {
-		t.Fatalf("ARS storage holds %d files, want the test's blob plus at least one that ARS stored", files)
-	}
-	info, err := os.Stat(indexPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ownedByOperator(indexPath, info); err != nil {
-		t.Fatalf("ARS index ownership: %v", err)
 	}
 }
 

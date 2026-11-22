@@ -26,8 +26,9 @@ MOUNT_SPECS=()
 # writable by that operator. ES's startup capability probe then requires a
 # result directory that ES creates naturally to carry the roots' UID and GID
 # (probeNaturalResultDirectory in es/admission/execution_roots.go), so ES runs
-# as the operator's numeric effective UID and primary GID
-# (control_plane_operator_user) instead of the image's default root user. The
+# as the operator's effective UID and primary GID instead of the image's
+# default root user. Docker gives that identity no supplementary groups. Both
+# IDs must be numeric: docker run --user with an empty UID runs as root. The
 # identity is derived before any image build, root creation or container
 # change. On a user-namespace-remapped daemon, Docker itself refuses the host
 # network that this launcher requires, so bring-up cannot start ES there;
@@ -35,8 +36,13 @@ MOUNT_SPECS=()
 # profile keeps the default user because its roots are 0:0.
 USER_SPECS=()
 if [[ -z "${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-}" ]]; then
-  ES_CONTAINER_USER="$(control_plane_operator_user ES)"
-  USER_SPECS=(--user "${ES_CONTAINER_USER}")
+  ES_CONTAINER_UID="$(id -u)"
+  ES_CONTAINER_GID="$(id -g)"
+  if [[ ! "${ES_CONTAINER_UID}" =~ ^[0-9]+$ || ! "${ES_CONTAINER_GID}" =~ ^[0-9]+$ ]]; then
+    printf 'cannot run ES as the operator: id -u and id -g must print numeric IDs, got %q and %q\n' "${ES_CONTAINER_UID}" "${ES_CONTAINER_GID}" >&2
+    exit 1
+  fi
+  USER_SPECS=(--user "${ES_CONTAINER_UID}:${ES_CONTAINER_GID}")
 fi
 
 ensure_control_plane_image "${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}/logs/control-plane-image-build.log"

@@ -1,0 +1,212 @@
+# Probe only: runs on pushes to this probe branch. Not part of the change
+# under review. On a GitHub-hosted runner (passwordless sudo, rootful Docker,
+# pinned Nomad, Vault and SPIRE) it runs, for the nested staging ownership
+# startup probe:
+# - the probe's unit tests as the runner user, where sudo lets the refusal
+#   test build roots with a foreign group, and as a second user whose UID
+#   differs from its GID; whole es/admission; the docs tests;
+# - the bring-up test with an ordinary workspace as both users, checking
+#   that ES's startup probe left a "nested" directory with the operator's
+#   owner and mode 0750;
+# - whole es/app and the root package (informational);
+# - live red/green: the bring-up test with its workspace under a setgid
+#   directory whose group the operator is not in, on this tree (ES must
+#   refuse at startup with the new error) and on trunk_dev 3a5f257 (ES
+#   reports ready and the first submission fails to stage).
+name: probe-setgid
+
+on:
+  push:
+    branches:
+      - claude/project-thread-a9tcoa-bringup-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      AWS_EC2_METADATA_DISABLED: "true"
+      BASE_SHA: 3a5f25776274b3e9ada3e2d489c9bfe0e8bf8a28
+      PROBE_TESTS: '^(TestExecutionRootProbeRefusesWhenStagingCannotOwnNestedDirectories|TestExecutionRootProbeAcceptsSetgidRootsWithTheProcessGroup|TestExecutionRootProbeAcceptsSetgidRootsWithASupplementaryGroup|TestExecutionRootCapabilityProbeCoversBothConfiguredRoots|TestRetainedResultReviewStartupNaturalDirectoryMask)$'
+      SKIP: '^TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal$|^TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody$|^TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution$|^TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal$|^TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap$|^TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition$|^TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression$|^TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap$|^TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable$|^TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks$|^TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest$'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Host facts
+        run: |
+          set -x
+          id; uname -r; nproc; docker version --format '{{.Server.Version}}'; ls -ld /tmp .out
+          git log --oneline -4
+          git cat-file -t "$BASE_SHA"
+      - name: Install Nomad, Vault, SPIRE (pinned by SHA-256)
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"; mkdir -p "$tools/bin" "$tools/dl"
+          fetch() { curl --fail --silent --show-error --location --retry 3 -o "$tools/dl/$2" "$1"; echo "$3  $tools/dl/$2" | sha256sum --check --strict; }
+          fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39
+          fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4
+          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz 4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5
+          unzip -q -o "$tools/dl/nomad.zip" nomad -d "$tools/bin"
+          unzip -q -o "$tools/dl/vault.zip" vault -d "$tools/bin"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+          echo "SUPPORTED_LOCAL_TEST_SPIRE_TARBALL=$tools/dl/spire.tar.gz" >> "$GITHUB_ENV"
+      - name: Pull test images by digest
+        run: |
+          set -euo pipefail
+          pull() { docker pull --quiet "$1@$2"; docker tag "$1@$2" "$1:$3"; }
+          pull alpine sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc 3.20
+          pull python sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e 3.13-alpine
+          pull golang sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 1.26.5-alpine3.24
+      - run: nomad version && vault version && go version
+      - run: go mod download
+      - name: gofmt; go vet ./es/admission (informational, known copylocks finding)
+        run: |
+          set -uo pipefail
+          test -z "$(gofmt -l es/admission docs_contract_test.go)"
+          go vet ./es/admission || true
+      - name: Probe tests as the runner user (passwordless sudo, so the refusal test runs)
+        run: |
+          set -uo pipefail
+          sudo -n true
+          go test ./es/admission -run "$PROBE_TESTS" -count=1 -v 2>&1 | grep -E '^(\s*--- |ok|FAIL|PASS)|_test\.go:[0-9]+:' | tee "$RUNNER_TEMP/probe-runner.log"; rc=${PIPESTATUS[0]}
+          test "$rc" = 0
+          grep -q -- '--- PASS: TestExecutionRootProbeRefusesWhenStagingCannotOwnNestedDirectories' "$RUNNER_TEMP/probe-runner.log"
+      - name: Whole es/admission as the runner user
+        run: go test ./es/admission -count=1 2>&1 | grep -E '^(--- FAIL|    --- FAIL|ok|FAIL|panic)|_test\.go:[0-9]+:' | head -60; exit "${PIPESTATUS[0]}"
+      - name: Docs tests
+        run: go test . -run 'Doc' -count=1 -v 2>&1 | grep -E '^(--- FAIL|ok|FAIL)|_test\.go:[0-9]+:|NestedStagingOwnerProbe' | head -60; exit "${PIPESTATUS[0]}"
+      - name: Bring-up test as the runner user, ordinary workspace
+        run: |
+          set -uo pipefail
+          touch "$RUNNER_TEMP/mark-ok"; sleep 1
+          EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE=1 go test ./es/app -run '^TestBringupScriptUpCheckDownFullProfile$' -count=1 -v -timeout 30m 2>&1 | grep -v '"event":"' > "$RUNNER_TEMP/bringup-ok.log"; rc=${PIPESTATUS[0]}
+          echo "go test exit $rc"
+          grep -E '^(--- |ok|FAIL|panic)' "$RUNNER_TEMP/bringup-ok.log" || true
+          grep -E '^\s+\S+_test\.go:[0-9]+:' "$RUNNER_TEMP/bringup-ok.log" | cut -c1-3000 || true
+          n=0
+          for d in $(find .out -maxdepth 1 -name 'bringup-script-*' -newer "$RUNNER_TEMP/mark-ok"); do
+            for p in $(find "$d" -type d -name '.execution-substrate-staging-probe-*'); do
+              echo "probe dir $p: $(stat -c '%u:%g %a' "$p"); entries: $(ls -A "$p" | tr '\n' ' ')"
+              got="$(stat -c '%u:%g %a' "$p/nested" 2>/dev/null || echo missing)"
+              echo "nested: $got"
+              if [ "$got" = "$(id -u):$(id -g) 750" ]; then n=$((n+1)); fi
+            done
+          done
+          echo "staging probe dirs with nested $(id -u):$(id -g) 750: $n"
+          test "$rc" = 0
+          test "$n" = 1
+      - name: Second operator whose UID differs from its GID
+        run: |
+          set -euo pipefail
+          sudo groupadd -g 2600 opgrp
+          sudo useradd -m -u 2500 -g 2600 -G docker -s /bin/bash op
+          sudo install -m 0755 "$RUNNER_TEMP/tools/bin/nomad" "$RUNNER_TEMP/tools/bin/vault" /usr/local/bin/
+          sudo install -o op -g opgrp -m 0644 "$SUPPORTED_LOCAL_TEST_SPIRE_TARBALL" /home/op/spire.tar.gz
+          sudo mkdir /home/op/es
+          git archive HEAD | sudo tar -x -C /home/op/es
+          sudo chown -R op:opgrp /home/op/es
+          printf '%s\n' \
+            "export PATH=$(dirname "$(command -v go)"):/usr/local/bin:/usr/bin:/bin" \
+            'export HOME=/home/op GOTOOLCHAIN=local GOFLAGS=-mod=readonly AWS_EC2_METADATA_DISABLED=true' \
+            'export SUPPORTED_LOCAL_TEST_SPIRE_TARBALL=/home/op/spire.tar.gz' \
+            "export PROBE_TESTS='$PROBE_TESTS'" \
+            'umask 022; cd /home/op/es' | sudo tee /home/op/env.sh >/dev/null
+          sudo -u op env -i bash -c '. /home/op/env.sh; id; go mod download'
+      - name: Probe tests as the second operator (no sudo, so the refusal test skips)
+        run: sudo -u op env -i bash -c '. /home/op/env.sh; go test ./es/admission -run "$PROBE_TESTS" -count=1 -v 2>&1 | grep -E "^(\s*--- |ok|FAIL|PASS)|_test\.go:[0-9]+:"; exit "${PIPESTATUS[0]}"'
+      - name: Bring-up test as the second operator, ordinary workspace
+        run: |
+          set -uo pipefail
+          sudo -u op env -i bash -c '. /home/op/env.sh; EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE=1 go test ./es/app -run "^TestBringupScriptUpCheckDownFullProfile$" -count=1 -v -timeout 30m 2>&1 | grep -v "\"event\":\"" > /home/op/run-op.log; rc=${PIPESTATUS[0]}; echo "go test exit $rc"; echo "$rc" > /home/op/rc-op'
+          sudo grep -E '^(--- |ok|FAIL|panic)' /home/op/run-op.log || true
+          sudo grep -E '^\s+\S+_test\.go:[0-9]+:' /home/op/run-op.log | cut -c1-3000 || true
+          n=0
+          for p in $(sudo find /home/op/es/.out -type d -name '.execution-substrate-staging-probe-*'); do
+            got="$(sudo stat -c '%u:%g %a' "$p/nested" 2>/dev/null || echo missing)"
+            echo "probe dir $p: nested $got"
+            if [ "$got" = "2500:2600 750" ]; then n=$((n+1)); fi
+          done
+          echo "staging probe dirs with nested 2500:2600 750: $n"
+          test "$(sudo cat /home/op/rc-op)" = 0
+          test "$n" = 1
+      - name: Whole es/app package, informational
+        if: always()
+        run: |
+          go test ./es/app -count=1 -timeout 45m 2>&1 | grep -v '"event":"' > "$RUNNER_TEMP/app.log"; echo "go test exit ${PIPESTATUS[0]}"
+          grep -E '^(--- FAIL|    --- FAIL|ok|FAIL|panic)' "$RUNNER_TEMP/app.log" || true
+      - name: Root package with the gate's 11 environment-only skips, informational
+        if: always()
+        run: go test . -count=1 -skip "$SKIP" 2>&1 | grep -E '^(--- FAIL|ok|FAIL)|_test\.go:[0-9]+:' | cut -c1-600 | head -60 || true
+      - name: Foreign group for the setgid runs
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo groupadd -g 1800 proj
+          id
+          ! id -G | tr ' ' '\n' | grep -qx 1800
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          git -C "$RUNNER_TEMP/base" log --oneline -1
+      - name: Setgid workspace on this tree, ES must refuse at startup
+        if: always()
+        run: |
+          set -uo pipefail
+          sudo chgrp proj .out && sudo chmod 2755 .out && ls -ld .out
+          touch "$RUNNER_TEMP/mark-sg-head"; sleep 1
+          EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE=1 go test ./es/app -run '^TestBringupScriptUpCheckDownFullProfile$' -count=1 -v -timeout 30m 2>&1 | grep -v '"event":"' > "$RUNNER_TEMP/sg-head.log"; rc=${PIPESTATUS[0]}
+          sudo chgrp "$(id -g)" .out && sudo chmod g-s .out && ls -ld .out
+          echo "go test exit $rc"
+          grep -E '^(--- |ok|FAIL|panic)' "$RUNNER_TEMP/sg-head.log" || true
+          grep -E '^\s+\S+_test\.go:[0-9]+:' "$RUNNER_TEMP/sg-head.log" | cut -c1-2000 || true
+          d=$(find .out -maxdepth 1 -name 'bringup-script-*' -newer "$RUNNER_TEMP/mark-sg-head" | head -1)
+          echo "workspace $d: $(stat -c '%u:%g %A' "$d")"
+          find "$d" -maxdepth 3 -type d \( -name 'es-stage*' -o -name '*staging*' -o -name '*results*' \) -exec stat -c '%u:%g %A %n' {} + | head -10
+          refused=$(sudo grep -rlF 'nested staging directory ownership is unavailable' "$d" "$RUNNER_TEMP/sg-head.log" | wc -l)
+          sudo grep -rhF 'nested staging directory ownership is unavailable' "$d" "$RUNNER_TEMP/sg-head.log" | cut -c1-400 | sort -u | head -5
+          ready=$(sudo grep -rhF 'submit-ready: true' "$d" "$RUNNER_TEMP/sg-head.log" | wc -l)
+          staged=$(sudo find "$d" -type d -name 'run-*' | wc -l)
+          echo "files with the refusal: $refused; submit-ready: true lines: $ready; run directories: $staged"
+          test "$rc" != 0
+          test "$refused" -ge 1
+          test "$ready" = 0
+          test "$staged" = 0
+      - name: Setgid workspace on trunk_dev 3a5f257 (control), ES reports ready and staging fails
+        if: always()
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/base"
+          sudo chgrp proj .out && sudo chmod 2755 .out && ls -ld .out
+          touch "$RUNNER_TEMP/mark-sg-base"; sleep 1
+          EXECUTION_PLATFORM_KEEP_TEST_WORKSPACE=1 go test ./es/app -run '^TestBringupScriptUpCheckDownFullProfile$' -count=1 -v -timeout 30m 2>&1 | grep -v '"event":"' > "$RUNNER_TEMP/sg-base.log"; rc=${PIPESTATUS[0]}
+          sudo chgrp "$(id -g)" .out && sudo chmod g-s .out
+          echo "go test exit $rc"
+          grep -E '^(--- |ok|FAIL|panic)' "$RUNNER_TEMP/sg-base.log" || true
+          grep -E '^\s+\S+_test\.go:[0-9]+:' "$RUNNER_TEMP/sg-base.log" | cut -c1-2000 || true
+          d=$(find .out -maxdepth 1 -name 'bringup-script-*' -newer "$RUNNER_TEMP/mark-sg-base" | head -1)
+          echo "workspace $d: $(stat -c '%u:%g %A' "$d")"
+          failed=$(sudo grep -rlF 'stage artifact payload failed' "$d" "$RUNNER_TEMP/sg-base.log" | wc -l)
+          ready=$(sudo grep -rhF 'submit-ready: true' "$d" "$RUNNER_TEMP/sg-base.log" | wc -l)
+          refused=$(sudo grep -rlF 'nested staging directory ownership is unavailable' "$d" "$RUNNER_TEMP/sg-base.log" | wc -l)
+          sudo find "$d" -type d -name 'run-*' -exec stat -c '%u:%g %A %n' {} + | head -5
+          sudo find "$d" -path '*run-*/payload' -exec stat -c '%u:%g %A %n' {} + | head -5
+          echo "files with stage artifact payload failed: $failed; submit-ready: true lines: $ready; files with the new refusal: $refused"
+          test "$rc" != 0
+          test "$failed" -ge 1
+          test "$ready" -ge 1
+          test "$refused" = 0
+      - name: Leftovers
+        if: always()
+        run: |
+          ls -la .out | head -40
+          docker ps -a
+          pgrep -a 'nomad|vault|spire' || true
