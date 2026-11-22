@@ -507,6 +507,95 @@ func TestOperationalAdmissionSerializedWriters(t *testing.T) {
 			t.Fatal("the stored row is not the single winner's")
 		}
 	})
+	// The three subtests above need the scheduler to overlap two writers, so
+	// a missing writer turn does not fail them on every run. This one does
+	// not depend on timing. Another process holds the writer lock with a
+	// withdrawal it has not committed. Each call is one whose step writes
+	// nothing, so only the writer turn itself can make it wait. With no
+	// deadline it ends when the store's own busy timeout expires, and it must
+	// end unavailable: an answer taken from the committed row would be a
+	// decision made outside the writer turn.
+	t.Run("NoWriteOutcomeWaitsForTheWriterTurn", func(t *testing.T) {
+		f := newOperationalStoreFixture(t, fixtureReplayRoot(t))
+		writer, err := f.second().base.store.checkedConn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		if _, err := writer.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+			t.Fatal(err)
+		}
+		defer writer.ExecContext(ctx, "ROLLBACK")
+		result, err := writer.ExecContext(ctx, `UPDATE reliable_submit_operational_admission
+SET state=2, updated_at_unix_ns=updated_at_unix_ns+1 WHERE singleton=1 AND state=1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			t.Fatalf("the held writer's withdrawal touched %d rows: %v", affected, err)
+		}
+		committed := f.admissionSnapshot()
+		if !strings.Contains(committed, "generation=1") || !strings.Contains(committed, "state=1") {
+			t.Fatalf("the uncommitted withdrawal is visible: %s", committed)
+		}
+		foreign := f.token
+		foreign.installation[0] ^= 1
+		calls := []struct {
+			name string
+			run  func(c *OperationalCustody) (OperationalAdmissionToken, error)
+		}{
+			{"a commission that would adopt the stored row", func(c *OperationalCustody) (OperationalAdmissionToken, error) {
+				return c.CommissionOperationalAdmission(ctx, inst, epoch, operationalStoreFixtureDigest)
+			}},
+			{"an advance from a generation that is not stored", func(c *OperationalCustody) (OperationalAdmissionToken, error) {
+				return f.advance(c, digests[0], 7)
+			}},
+			{"a withdrawal for another installation", func(c *OperationalCustody) (OperationalAdmissionToken, error) {
+				return OperationalAdmissionToken{}, c.WithdrawOperationalAdmission(ctx, foreign)
+			}},
+		}
+		// The calls wait side by side only so that the busy timeout is paid
+		// once. None depends on another: each has its own handle and pool.
+		handles := []*OperationalCustody{f.c, f.second(), f.second()}
+		tokens, errs := make([]OperationalAdmissionToken, len(calls)), make([]error, len(calls))
+		var done sync.WaitGroup
+		for i := range calls {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				tokens[i], errs[i] = calls[i].run(handles[i])
+			}()
+		}
+		done.Wait()
+		for i, call := range calls {
+			if !errors.Is(errs[i], errClaimStoreUnavailable) || tokens[i].Valid() {
+				t.Errorf("%s was decided while another writer held the turn: valid=%t error=%v", call.name, tokens[i].Valid(), errs[i])
+			}
+		}
+		if got := f.admissionSnapshot(); got != committed {
+			t.Fatalf("a waiting call changed the row: %s", got)
+		}
+		if t.Failed() {
+			return
+		}
+		// Once the writer settles, each call is decided from the row it wrote.
+		// The adoption is now refused, which is not what the committed row
+		// would have answered while the withdrawal was pending.
+		if _, err := writer.ExecContext(ctx, "COMMIT"); err != nil {
+			t.Fatal(err)
+		}
+		withdrawn := f.admissionSnapshot()
+		if !strings.Contains(withdrawn, "generation=1") || !strings.Contains(withdrawn, "state=2") {
+			t.Fatalf("the writer's withdrawal was not stored: %s", withdrawn)
+		}
+		for i, call := range calls {
+			got, err := call.run(handles[i])
+			requireOperationalAdmissionRefused(t, call.name+" after the writer settled", got, err)
+		}
+		if got := f.admissionSnapshot(); got != withdrawn {
+			t.Fatalf("a refused call changed the row: %s", got)
+		}
+	})
 }
 
 func TestOperationalAdmissionTriggers(t *testing.T) {
