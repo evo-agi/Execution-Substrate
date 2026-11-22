@@ -245,7 +245,7 @@ What this does:
 - proves that Docker host networking can actually reach host loopback from a container before continuing
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
-- starts ES and waits for its admission-oriented health surface to report `"ready": true`
+- starts ES and waits for its admission-oriented health surface to report `"ready": true`; without a supported-local roots profile, ES runs in its container as your own UID:GID, so you must own the configured staging and results roots and the retained-result key file (ES refuses to start otherwise, and on a rootless or user-namespace-remapped Docker daemon)
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
 - verifies Docker readiness
 - starts Nomad from `NOMAD_CONFIG` as a bounded local fallback/troubleshooting path, then waits for a leader plus at least one ready node with positive `cpu.totalcompute` and a healthy Docker driver

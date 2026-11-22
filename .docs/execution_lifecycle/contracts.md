@@ -1526,6 +1526,10 @@ config, service image and Dockerfile, root owner/mode/identity, and exact
 same-path read-write mounts before the ordinary operator's own write access is
 omitted from the readiness test. Generic callers without that profile retain
 their prior caller-writable check of existing roots; unknown profiles refuse.
+The generic ES launcher runs the ES container as the caller's UID:GID, so the
+natural result directories that ES creates carry the owner of roots the caller
+created. It does not branch on daemon labels: on a daemon that remaps
+container identities, ES's startup capability probe refuses instead.
 Readiness does not create roots or write staging-invariant evidence. This
 profile does not alter ES's natural `0750` per-run
 directory rule, prove the future container's identity or mapping, or approve

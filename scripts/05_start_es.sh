@@ -30,9 +30,24 @@ while IFS= read -r spec; do
   MOUNT_SPECS+=(-v "${spec}")
 done < <(control_plane_mount_specs es "${ES_CONFIG}")
 
+# Without a supported-local roots profile, verify_es_staging_invariant creates
+# missing execution roots as the calling operator and requires both roots to be
+# writable by that operator. ES's startup capability probe then requires a
+# result directory that ES creates naturally to carry the roots' owner
+# (probeNaturalResultDirectory in es/admission/execution_roots.go), so ES runs
+# as the operator's UID:GID instead of the image's default root user. A daemon
+# that remaps container identities (rootless or user-namespace remapped) does
+# not give that UID:GID the operator's host identity, and ES's startup probe
+# then refuses to start. The service-root-v1 profile keeps the default user
+# because its roots are 0:0.
+USER_SPECS=()
+if [[ -z "${SUPPORTED_LOCAL_ES_ROOTS_PROFILE:-}" ]]; then
+  USER_SPECS=(--user "$(id -u):$(id -g)")
+fi
+
 printf '+ '
-printf '%q ' docker run --rm --name "${CONTAINER_NAME}" --network host "${MOUNT_SPECS[@]}" "${IMAGE}" "$(control_plane_binary_path es)" -config "${ES_CONFIG}"
+printf '%q ' docker run --rm --name "${CONTAINER_NAME}" --network host ${USER_SPECS[@]+"${USER_SPECS[@]}"} "${MOUNT_SPECS[@]}" "${IMAGE}" "$(control_plane_binary_path es)" -config "${ES_CONFIG}"
 printf '\n'
 
 cd "${REPO_ROOT}"
-exec docker run --rm --name "${CONTAINER_NAME}" --network host "${MOUNT_SPECS[@]}" "${IMAGE}" "$(control_plane_binary_path es)" -config "${ES_CONFIG}"
+exec docker run --rm --name "${CONTAINER_NAME}" --network host ${USER_SPECS[@]+"${USER_SPECS[@]}"} "${MOUNT_SPECS[@]}" "${IMAGE}" "$(control_plane_binary_path es)" -config "${ES_CONFIG}"
