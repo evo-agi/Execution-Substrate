@@ -119,7 +119,12 @@ type Service struct {
 	trustModelOwner      *Service
 	operationalAdmission *operationalAdmissionSnapshot
 	operationalWithdrawn bool
-	operationalProof     *operationalAdmissionProofHooks
+	// operationalSuperseded latches when EGS serves trust that differs from the
+	// commissioned content. operationalConfirmed is the time of the last
+	// confirmation that found it equal; zero means never.
+	operationalSuperseded bool
+	operationalConfirmed  time.Time
+	operationalProof      *operationalAdmissionProofHooks
 }
 
 type dependencyClient struct {
@@ -299,36 +304,10 @@ func (s *Service) Initialize(ctx context.Context) error {
 	if commissioned {
 		return fmt.Errorf("private operational authority is already commissioned or withdrawn")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
-	defer cancel()
-
-	response, err := s.egsClient.get(requestCtx, "/v1/trust-model")
+	normalized, err := s.fetchVerifiedTrustModel(ctx)
 	if err != nil {
-		return fmt.Errorf("fetch trust model: %w", err)
+		return err
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
-	}
-
-	var payload signedRuntimeTrustResponse
-	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
-		return fmt.Errorf("decode trust model response: %w", err)
-	}
-	if err := payload.RuntimeTrust.Validate(); err != nil {
-		return fmt.Errorf("validate trust model: %w", err)
-	}
-
-	canonical, err := payload.RuntimeTrust.CanonicalBytes()
-	if err != nil {
-		return fmt.Errorf("canonicalize trust model: %w", err)
-	}
-	if err := s.verifyTrustModelEnvelope(payload, canonical); err != nil {
-		return fmt.Errorf("verify trust model: %w", err)
-	}
-
-	normalized := payload.RuntimeTrust.Normalized()
 
 	s.mu.Lock()
 	if s.operationalAdmission != nil || s.operationalWithdrawn {
@@ -341,6 +320,43 @@ func (s *Service) Initialize(ctx context.Context) error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// fetchVerifiedTrustModel requests the signed runtime trust model from EGS,
+// verifies its envelope and returns the normalized policy. It reads and
+// changes no Service state; Initialize and the private operational
+// confirmation are its only callers.
+func (s *Service) fetchVerifiedTrustModel(ctx context.Context) (egsmodel.RuntimeTrustPolicy, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
+	defer cancel()
+
+	response, err := s.egsClient.get(requestCtx, "/v1/trust-model")
+	if err != nil {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("fetch trust model: unexpected status %d", response.StatusCode)
+	}
+
+	var payload signedRuntimeTrustResponse
+	if err := decodeBoundedJSONResponse(response, &payload); err != nil {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("decode trust model response: %w", err)
+	}
+	if err := payload.RuntimeTrust.Validate(); err != nil {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("validate trust model: %w", err)
+	}
+
+	canonical, err := payload.RuntimeTrust.CanonicalBytes()
+	if err != nil {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("canonicalize trust model: %w", err)
+	}
+	if err := s.verifyTrustModelEnvelope(payload, canonical); err != nil {
+		return egsmodel.RuntimeTrustPolicy{}, fmt.Errorf("verify trust model: %w", err)
+	}
+
+	return payload.RuntimeTrust.Normalized(), nil
 }
 
 func (s *Service) Health(ctx context.Context) HealthSnapshot {
@@ -461,13 +477,12 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 		return preparedArtifact{}, err
 	}
 	// The successful ordinary resolution owns the exact typed record it used.
-	// This carrier is inert for ordinary Submit and never enters its plan.
-	fullRecord, marshalErr := json.Marshal(discovery.evidence)
-	if marshalErr != nil {
-		return preparedArtifact{}, &Error{Status: http.StatusForbidden, Code: codeArtifactEvidenceInvalid,
-			Message: "artifact evidence record cannot be represented"}
+	// This carrier is inert for ordinary Submit and never enters its plan. A
+	// record that cannot be represented leaves the carrier empty: ordinary
+	// Prepare and Submit proceed, and the private builder refuses an empty one.
+	if fullRecord, marshalErr := json.Marshal(discovery.evidence); marshalErr == nil {
+		artifact.provenanceRecord = string(fullRecord)
 	}
-	artifact.provenanceRecord = string(fullRecord)
 	return artifact, nil
 }
 

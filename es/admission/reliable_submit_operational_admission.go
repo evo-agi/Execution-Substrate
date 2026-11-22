@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	egsmodel "execution-substrate/egs/model"
@@ -16,16 +19,24 @@ import (
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
-const maxOperationalEvidenceBytes = 256 * 1024
+// The evidence cap is the store's: custody and admission refuse the same size.
+const maxOperationalEvidenceBytes = reliablesubmit.OperationalEvidenceLimit
+
+// operationalAdmissionConfirmationLimit is how long a view may be used after
+// the last confirmation that EGS still serves the commissioned trust.
+const operationalAdmissionConfirmationLimit = 30 * time.Second
 
 var errOperationalAdmissionCommission = errors.New("private operational admission unavailable")
 
-// operationalAdmissionSnapshot is immutable after its one-shot installation.
-// Its owner link prevents a copy of Service from borrowing the authority.
+// operationalAdmissionSnapshot is the view: an immutable copy of the admission
+// content, installed once, together with the token of the admission row it was
+// commissioned or advanced under. Its owner link prevents a copy of Service
+// from borrowing the authority.
 type operationalAdmissionSnapshot struct {
 	owner        *Service
 	installation [32]byte
 	epoch        uint64
+	token        reliablesubmit.OperationalAdmissionToken
 	trust        egsmodel.RuntimeTrustPolicy
 	verifier     ed25519Verifier
 	policy       admissionPolicySet
@@ -33,10 +44,12 @@ type operationalAdmissionSnapshot struct {
 }
 
 // Nil in production. Tests may count calls made by the selected built-in set.
+// skew adds elapsed time to the confirmation deadline; it cannot remove any.
 type operationalAdmissionProofHooks struct {
 	required        func([]AdmissionPolicyInputClass)
 	evaluated       func(bool)
 	contextObserved func(AdmissionPolicyContext)
+	skew            func() time.Duration
 }
 
 func copyOperationalPolicySet(s admissionPolicySet) (admissionPolicySet, bool) {
@@ -90,46 +103,71 @@ func operationalPolicyEquals(a, b admissionPolicySet) bool {
 	return true
 }
 
-// commissionOperationalAdmission is private and has no production caller.
-// A fixture may present its explicitly verified trust setup to this method.
-func (s *Service) commissionOperationalAdmission(realm operationalRealm) error {
-	if s == nil || realm.installation == [32]byte{} || realm.epoch == 0 {
-		return errOperationalAdmissionCommission
+// operationalAdmissionDigest names the admission content: the normalized
+// trust lists, the evidence verifier, and the selected built-in policies with
+// every configured entry. It is taken over the values a view holds, so what
+// is hashed is what is enforced. It does not cover the compiled behaviour of
+// a built-in policy; two releases with equal configuration present one digest.
+func operationalAdmissionDigest(trust egsmodel.RuntimeTrustPolicy, verifier ed25519Verifier, policy admissionPolicySet) ([32]byte, bool) {
+	canonical, err := trust.CanonicalBytes()
+	if err != nil || len(policy.policies) == 0 {
+		return [32]byte{}, false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.operationalAdmission != nil || s.operationalWithdrawn || !s.trustModelVerified ||
-		s.trustModelOwner != s || s.trustModel == nil || s.provenanceVerifier == nil {
-		return errOperationalAdmissionCommission
+	b := operationalFrame([]byte("ESOHADM1"), canonical)
+	b = operationalFrame(b, []byte(verifier.algorithm))
+	b = operationalFrame(b, []byte(verifier.keyID))
+	b = operationalFrame(b, verifier.publicKey)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(policy.policies)))
+	for _, candidate := range policy.policies {
+		switch selected := candidate.(type) {
+		case selectedDestructiveShellCommandPolicy:
+			b = operationalFrame(b, []byte(selectedDestructiveShellCommandPolicyID))
+			b = binary.BigEndian.AppendUint32(b, 0)
+		case configuredStaticScriptLiteralDenyPolicy:
+			b = operationalFrame(b, []byte(configuredStaticScriptLiteralDenyPolicyID))
+			b = binary.BigEndian.AppendUint32(b, uint32(len(selected.entries)))
+			for _, entry := range selected.entries {
+				b = operationalFrame(b, []byte(entry.id))
+				b = operationalFrame(b, []byte(entry.literal))
+			}
+		default:
+			return [32]byte{}, false
+		}
 	}
-	if err := s.trustModel.Validate(); err != nil {
-		return errOperationalAdmissionCommission
+	return sha256.Sum256(b), true
+}
+
+// operationalAdmissionContent copies what this Service would enforce and
+// names it. The caller holds Service.mu.
+func (s *Service) operationalAdmissionContent() (trust egsmodel.RuntimeTrustPolicy, verifier ed25519Verifier,
+	policy admissionPolicySet, digest [32]byte, ok bool) {
+	if !s.trustModelVerified || s.trustModelOwner != s || s.trustModel == nil || s.provenanceVerifier == nil ||
+		s.trustModel.Validate() != nil {
+		return trust, verifier, policy, digest, false
 	}
 	trustBytes, err := json.Marshal(s.trustModel)
 	if err != nil || int64(len(trustBytes)) > maxDependencyJSONResponseBytes {
-		return errOperationalAdmissionCommission
+		return trust, verifier, policy, digest, false
 	}
-	verifier := s.provenanceVerifier
-	if verifier.algorithm != "ed25519" || strings.TrimSpace(verifier.keyID) == "" ||
-		len(verifier.publicKey) != ed25519.PublicKeySize {
-		return errOperationalAdmissionCommission
+	configured := s.provenanceVerifier
+	if configured.algorithm != "ed25519" || strings.TrimSpace(configured.keyID) == "" ||
+		len(configured.publicKey) != ed25519.PublicKeySize {
+		return trust, verifier, policy, digest, false
 	}
-	if cfg := s.cfg.AdmissionPolicy; cfg != nil {
-		if err := cfg.Validate(); err != nil {
-			return errOperationalAdmissionCommission
-		}
+	if cfg := s.cfg.AdmissionPolicy; cfg != nil && cfg.Validate() != nil {
+		return trust, verifier, policy, digest, false
 	}
-	expected, ok := admissionPolicyEvaluatorFromConfig(s.cfg.AdmissionPolicy).(admissionPolicySet)
-	if !ok {
-		return errOperationalAdmissionCommission
+	expected, typeOK := admissionPolicyEvaluatorFromConfig(s.cfg.AdmissionPolicy).(admissionPolicySet)
+	if !typeOK {
+		return trust, verifier, policy, digest, false
 	}
 	var selected admissionPolicySet
 	if s.admissionPolicyEvaluator == nil {
 		selected, ok = copyOperationalPolicySet(expected)
 	} else {
-		actual, typeOK := s.admissionPolicyEvaluator.(admissionPolicySet)
-		if !typeOK {
-			return errOperationalAdmissionCommission
+		actual, isSet := s.admissionPolicyEvaluator.(admissionPolicySet)
+		if !isSet {
+			return trust, verifier, policy, digest, false
 		}
 		selected, ok = copyOperationalPolicySet(actual)
 		if ok && !operationalPolicyEquals(selected, expected) {
@@ -137,45 +175,178 @@ func (s *Service) commissionOperationalAdmission(realm operationalRealm) error {
 		}
 	}
 	if !ok {
+		return trust, verifier, policy, digest, false
+	}
+	// The view enforces the normalized lists, and the digest is taken over
+	// exactly these values. Normalized returns newly allocated lists, so the
+	// view shares no backing array with the Service's own trust model.
+	trust = s.trustModel.Normalized()
+	verifier = ed25519Verifier{
+		algorithm: configured.algorithm,
+		keyID:     configured.keyID,
+		publicKey: append(ed25519.PublicKey(nil), configured.publicKey...),
+	}
+	digest, ok = operationalAdmissionDigest(trust, verifier, selected)
+	if !ok {
+		return egsmodel.RuntimeTrustPolicy{}, ed25519Verifier{}, admissionPolicySet{}, [32]byte{}, false
+	}
+	return trust, verifier, selected, digest, true
+}
+
+// installOperationalAdmission is the one place a view is created. The store
+// write runs without Service.mu, and the view is installed only after that
+// transaction has ended, with the token the store returned for exactly the
+// content this Service copied. It must not be called inside a writer turn.
+func (s *Service) installOperationalAdmission(ctx context.Context, d *operationalDomain,
+	write func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error)) error {
+	if s == nil || d == nil || d.self != d || d.custody == nil || write == nil ||
+		d.realm.installation == [32]byte{} || d.realm.epoch == 0 || ctx.Err() != nil {
+		return errOperationalAdmissionCommission
+	}
+	s.mu.RLock()
+	sampled := s.trustModel
+	stopped := s.operationalAdmission != nil || s.operationalWithdrawn || s.operationalSuperseded
+	trust, verifier, policy, digest, ok := s.operationalAdmissionContent()
+	s.mu.RUnlock()
+	if stopped || !ok {
+		return errOperationalAdmissionCommission
+	}
+	token, err := write(digest)
+	if err != nil || !token.Names(d.realm.installation, d.realm.epoch, digest) {
+		return errOperationalAdmissionCommission
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A trust load that raced the store write leaves the row in place and this
+	// Service without a view: it stays closed.
+	if s.operationalAdmission != nil || s.operationalWithdrawn || s.operationalSuperseded ||
+		s.trustModel != sampled || s.trustModelOwner != s || !s.trustModelVerified {
 		return errOperationalAdmissionCommission
 	}
 	s.operationalAdmission = &operationalAdmissionSnapshot{
-		owner: s, installation: realm.installation, epoch: realm.epoch,
-		trust: snapshotRuntimeTrustModel(*s.trustModel),
-		verifier: ed25519Verifier{
-			algorithm: verifier.algorithm,
-			keyID:     verifier.keyID,
-			publicKey: append(ed25519.PublicKey(nil), verifier.publicKey...),
-		},
-		policy: selected,
-		proof:  s.operationalProof,
+		owner: s, installation: d.realm.installation, epoch: d.realm.epoch, token: token,
+		trust: trust, verifier: verifier, policy: policy, proof: s.operationalProof,
 	}
 	return nil
 }
 
-// withdrawOperationalEffects is monotonic and does not take custody or SQLite.
-func (s *Service) withdrawOperationalEffects() bool {
-	if s == nil {
+// commissionOperationalAdmission is private and has no production caller. It
+// creates generation 1 on an empty domain, or joins the stored generation
+// when the domain already holds exactly this Service's content.
+func (s *Service) commissionOperationalAdmission(ctx context.Context, d *operationalDomain) error {
+	return s.installOperationalAdmission(ctx, d, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+		return d.custody.CommissionOperationalAdmission(ctx, d.realm.installation, d.realm.epoch, digest)
+	})
+}
+
+// advanceOperationalAdmission is private and has no production caller. A
+// fresh Service whose content differs from the stored row replaces it at the
+// next generation; every process holding the old token is fenced at its next
+// first-effect write. A Service that already holds a view cannot advance.
+func (s *Service) advanceOperationalAdmission(ctx context.Context, d *operationalDomain, expectedGeneration uint64) error {
+	return s.installOperationalAdmission(ctx, d, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+		return d.custody.AdvanceOperationalAdmission(ctx, d.realm.installation, d.realm.epoch, digest, expectedGeneration)
+	})
+}
+
+// withdrawOperationalEffects is private and has no production caller. It
+// stops this process first and the domain second, and reports true only when
+// the durable withdrawal is confirmed. After a false result this process
+// stays stopped and the call may be repeated. Service.mu is not held across
+// the store write, and it must not be called inside a writer turn.
+func (s *Service) withdrawOperationalEffects(ctx context.Context, d *operationalDomain) bool {
+	if s == nil || d == nil || d.self != d || d.custody == nil {
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.operationalAdmission == nil || s.operationalAdmission.owner != s {
+	view := s.operationalAdmission
+	if view == nil || view.owner != s || view.installation != d.realm.installation || view.epoch != d.realm.epoch {
+		s.mu.Unlock()
 		return false
 	}
 	s.operationalWithdrawn = true
+	s.mu.Unlock()
+	return d.custody.WithdrawOperationalAdmission(ctx, view.token) == nil
+}
+
+// confirmOperationalAdmission asks EGS for the signed trust model and
+// compares it, through the admission digest, with the content this process
+// holds. Equal content records the time sampled before the request was sent.
+// Different content latches supersession for the life of the process. A
+// failed request changes nothing, so the deadline keeps running. It performs
+// network I/O and is called outside every lock and every writer turn.
+func (s *Service) confirmOperationalAdmission(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	view := s.operationalAdmission
+	stopped := view == nil || view.owner != s || s.operationalWithdrawn || s.operationalSuperseded
+	s.mu.RUnlock()
+	// A Service that cannot ask EGS cannot confirm; its deadline keeps running.
+	if stopped || s.egsClient == nil || s.egsClient.client == nil || s.trustModelVerifier == nil {
+		return
+	}
+	started := time.Now()
+	trust, err := s.fetchVerifiedTrustModel(ctx)
+	if err != nil {
+		return
+	}
+	digest, ok := operationalAdmissionDigest(trust, view.verifier, view.policy)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.operationalAdmission != view {
+		return
+	}
+	if !view.token.Names(view.installation, view.epoch, digest) {
+		s.operationalSuperseded = true
+		return
+	}
+	if started.After(s.operationalConfirmed) {
+		s.operationalConfirmed = started
+	}
+}
+
+// operationalConfirmationFresh requires a confirmation, and less than the
+// limit elapsed since it on both the monotonic and the wall clock, with
+// neither reading negative. The proof seam can only add elapsed time; a
+// negative skew refuses.
+func operationalConfirmationFresh(confirmed, now time.Time, proof *operationalAdmissionProofHooks) bool {
+	if confirmed.IsZero() {
+		return false
+	}
+	var skew time.Duration
+	if proof != nil && proof.skew != nil {
+		if skew = proof.skew(); skew < 0 {
+			return false
+		}
+	}
+	for _, elapsed := range [2]time.Duration{now.Sub(confirmed), now.Round(0).Sub(confirmed.Round(0))} {
+		if elapsed < 0 || elapsed >= operationalAdmissionConfirmationLimit ||
+			skew >= operationalAdmissionConfirmationLimit-elapsed {
+			return false
+		}
+	}
 	return true
 }
 
+// currentOperationalAdmission returns the view only while it may be used: it
+// exists for this realm, is neither withdrawn nor superseded, and its last
+// confirmation is within the limit. Every sample point inherits all of it.
 func (s *Service) currentOperationalAdmission(realm operationalRealm) (*operationalAdmissionSnapshot, bool) {
 	if s == nil {
 		return nil, false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	snapshot := s.operationalAdmission
-	if snapshot == nil || snapshot.owner != s || s.operationalWithdrawn ||
-		snapshot.installation != realm.installation || snapshot.epoch != realm.epoch {
+	stopped := snapshot == nil || snapshot.owner != s || s.operationalWithdrawn || s.operationalSuperseded ||
+		snapshot.installation != realm.installation || snapshot.epoch != realm.epoch
+	confirmed := s.operationalConfirmed
+	s.mu.RUnlock()
+	if stopped || !operationalConfirmationFresh(confirmed, time.Now(), snapshot.proof) {
 		return nil, false
 	}
 	return snapshot, true
@@ -265,13 +436,15 @@ func completeOperationalPolicyInputs(policyCtx *AdmissionPolicyContext, required
 	return true
 }
 
+// qualifyOperationalRetained judges a retained original under this process's
+// own current view. A refusal by the current content is Denied; an absent,
+// withdrawn, superseded or unconfirmed view and an input the built-in set
+// cannot evaluate are Unavailable; evidence that contradicts the
+// authenticated original is Integrity.
 func (s *Service) qualifyOperationalRetained(ctx context.Context, original verifiedOperationalOriginal,
 	realm operationalRealm) reliablesubmit.OperationalReason {
 	if ctx.Err() != nil {
 		return reliablesubmit.OperationalCanceled
-	}
-	if original.variant != operationalOriginalV2 {
-		return reliablesubmit.OperationalUnavailable
 	}
 	snapshot, ok := s.currentOperationalAdmission(realm)
 	if !ok {
@@ -286,11 +459,11 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 	}
 	if evidencev1.Verify(evidence, snapshot.verifier.keyID, snapshot.verifier.algorithm,
 		snapshot.verifier.publicKey) != nil {
-		return reliablesubmit.OperationalIntegrity
+		return reliablesubmit.OperationalDenied
 	}
 	if enforceTrustModel(snapshot.trust, evidence.Seal.KeyID,
 		evidence.Claims.Package.Identity.ArtifactDigest) != nil {
-		return reliablesubmit.OperationalUnavailable
+		return reliablesubmit.OperationalDenied
 	}
 	artifact := preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
@@ -316,12 +489,13 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 		snapshot.proof.evaluated(decision.Allow)
 	}
 	if !decision.Allow {
-		return reliablesubmit.OperationalUnavailable
+		return reliablesubmit.OperationalDenied
 	}
 	if ctx.Err() != nil {
 		return reliablesubmit.OperationalCanceled
 	}
-	// Withdrawal can occur during bounded local evaluation.
+	// Withdrawal, supersession or the deadline can arrive during bounded
+	// local evaluation.
 	if current, still := s.currentOperationalAdmission(realm); !still || current != snapshot {
 		return reliablesubmit.OperationalUnavailable
 	}

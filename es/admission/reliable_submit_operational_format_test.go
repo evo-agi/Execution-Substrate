@@ -428,7 +428,7 @@ func TestOperationalOriginalBindingAndCustody(t *testing.T) {
 	if _, err := reliablesubmit.MatchOperationalOriginal(request.refs.claimID, original.assessment.boundPlan, original.wire); err != nil {
 		t.Fatalf("store shape rejected scope 3 original: %v", err)
 	}
-	if got := f.domain.custody.EstablishOperational(ctx, request.refs.claimID, original.assessment.boundPlan, f.domain.keys.storage, original.wire).Disposition(); got != reliablesubmit.OperationalApplied {
+	if got := f.domain.custody.EstablishOperational(ctx, request.refs.claimID, original.assessment.boundPlan, f.domain.keys.storage, original.wire, f.service.operationalAdmission.token).Disposition(); got != reliablesubmit.OperationalApplied {
 		var cutoff int
 		if err := f.db.QueryRow("SELECT count(*) FROM reliable_submit_seal_use").Scan(&cutoff); err != nil {
 			t.Fatal(err)
@@ -473,9 +473,10 @@ func TestOperationalHandoffIndependentBindingVectors(t *testing.T) {
 			t.Fatalf("independent complete v2 wire differs: expected=%d actual=%d", len(expected), len(original.wire))
 		}
 		read, err := verifyOperationalOriginal(expected, f.domain.keys, f.domain.realm)
-		if err != nil || read.variant != operationalOriginalV2 || read.resolved.provenanceRecord != f.expectedEvidence {
+		if err != nil || read.resolved.provenanceRecord != f.expectedEvidence {
 			t.Fatalf("independent full v2 reader: %v", err)
 		}
+		f.confirm()
 		if reason := f.service.qualifyOperationalRetained(context.Background(), read, f.domain.realm); reason != reliablesubmit.OperationalReasonNone {
 			t.Fatalf("independent full v2 policy qualification reason=%d", reason)
 		}

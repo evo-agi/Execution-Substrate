@@ -4,8 +4,9 @@
 
 | Class | Scope |
 | --- | --- |
-| Current invariant | Published PR #12 is schema 5. Codecs 1/2, immutable codec 3, fixture-only codec 4, structural public keyed-request refusal and ordinary unkeyed Submit retain their meanings. ES owns its durable facts, Nomad its scheduling and execution observations, and Coordinator semantic acceptance. |
-| Bounded slice refinement | Repair PR #12's supported retained-current-admission omission with a v2 signed-evidence original and one commissioned Service-owned local authority. The repair is a committed draft-PR candidate awaiting fresh independent audit and red-team review; native qualification remains separate. |
+| Current invariant | Codecs 1/2, immutable codec 3, fixture-only codec 4, structural public keyed-request refusal and ordinary unkeyed Submit retain their meanings. ES owns its durable facts, Nomad its scheduling and execution observations, and Coordinator semantic acceptance. |
+| Selected target | Re-derivation of the reliable-submit Reopened redesign seam. A single private handoff across durable CAS, exclusive staging, one-use dispatch and positive receipt recovery. PR #12 published the private schema-5 source at `8058561` as an open pull request; schema 5 is unmerged, stays on the reopened seam and is not a Current invariant. Independent source acceptance and native qualification are separate later gates. |
+| Re-derivation in this repair | Repair PR #12's retained-current-admission omission with a v2 signed-evidence original, one durable admission row compared under the SQLite writer lock at every first-effect cut, a commissioned Service-owned view of that row, and a confirmation deadline. `operational_local_v1` is removed. The repair is a committed draft-PR candidate awaiting fresh independent audit and red-team review. |
 | Proof only | Real local SQLite and actual descriptor-relative fixture staging with two independent handles/processes, provisioned test keys and a counting loopback provider through the same private composition. Four operational claim slots, 32 object names, and 32 aggregate nonrefundable reservations. |
 | Native prerequisite | Governed Ubuntu 24.04 Linux arm64 supported-local, one ES installation and exact authorized SPIFFE workload identity, default-off startup, private precommissioned state, qualified transport/provider and mounts, finite retained storage, and caller-scoped lifecycle authorization. |
 
@@ -42,9 +43,15 @@ device/mount and required capabilities at open and at each operation boundary.
 A pathname, copied identity value, stale handle or empty replacement cannot
 establish continuity. Qualify SQLite's local lock and durability semantics,
 including journal/sidecar fidelity, and kernel descriptor-relative semantics by
-behavior. Cooperating instances run one qualified release and policy epoch on
-that same local domain. Epoch change requires withdrawing all old
-effect-enabled processes and requalification before enabling new effects.
+behavior. Cooperating instances run one qualified release on that same local
+domain and present the same admission token. The epoch names the deployment
+identity of §3. Replacing trust, the provenance verifier or the built-in
+policy configuration does not change the epoch; it advances the admission
+generation of the admission row below. An epoch change is not implemented:
+the stored installation and epoch are immutable, and a procedure for one is
+the prerequisite `CP-EPOCH` of §8. Any such procedure requires withdrawing
+all old effect-enabled processes and requalification before enabling new
+effects.
 Existing accepted receipts require a retained-original qualification for the
 original epoch. Keep read qualification of earlier epochs tied to the same
 unreplaced domain and retained manifests. Older epochs cannot obtain new
@@ -66,9 +73,8 @@ ownership, provider, host, mount or durability claim.
 | Historical 1–4, readable unchanged in 5 | 1/2 | SQL NULL | Occupancy only / refuse / refuse |
 | 3–5 | 3 | `synthetic_nonoperational_v1` / 1 | Occupancy only / refuse / refuse |
 | 4–5 | 4 | `synthetic_progress_nonoperational_v1` / 2 | Occupancy only / refuse / refuse |
-| 5 | 5 | `operational_local_v1` / 3 | Exact receipt read or positive marked reconciliation only; no new first effect |
 | 5 | 5 | `operational_local_v2` / 3 | Exact verified original / current-admission-governed first effect / live sender only |
-| Wrong, partial or unknown tuple | Any | Any | Fail closed / refuse / refuse |
+| Wrong, partial or unknown tuple, including the removed `operational_local_v1` literal | Any | Any | Fail closed / refuse / refuse |
 
 Legacy and fixture APIs retain their current scopes and refuse codec 5
 projections, authority and effects. Global caller/key occupation spans the
@@ -77,7 +83,8 @@ objects, keys, permits, markers, rows and receipts cannot be promoted, relabeled
 or republished as operational originals. Preserve original migration 1–4
 literals, digests and application. Append migration 5, under the existing
 checked opening transaction, to rebuild claims with the same 47 columns and
-constraints for codecs 1–4, add codec 5 admissibility, and add one partial unique BINARY BLOB-key index on `run_ref WHERE codec_version=5 AND run_ref IS NOT NULL`.
+constraints for codecs 1–4, add codec 5 admissibility, add one partial unique BINARY BLOB-key index on `run_ref WHERE codec_version=5 AND run_ref IS NOT NULL`,
+and create the one-row admission table below with its triggers.
 Set and check the exact schema-5 ledger, shape, trigger/index definitions and
 version under lock. Copy every field including physical rowid. Compare both
 row sets with explicit BINARY text comparison and exact NULL/bytes handling
@@ -144,7 +151,44 @@ cannot classify it. No operations 6, 7, 9 or 10 on codec 5. No alternate row
 writer. Migration can rewrite physical table storage only under the existing
 authority. Existing key registry/counter writers and installation commissioning
 own those facts, outside claim progress. Staging custody owns files. No provider
-or receipt-history mirror, new authority table or new stored column is selected.
+or receipt-history mirror or new stored claim column is selected. The one
+authority table is the admission row.
+
+### Admission row
+
+Migration 5 creates `reliable_submit_operational_admission`, a STRICT table
+that can hold exactly one row. It is the durable fact behind "current
+admission" for this domain.
+
+| Column | Rule |
+| --- | --- |
+| `singleton` | Primary key, equal to 1. |
+| `installation` | 32 bytes, not all zero. Immutable. |
+| `epoch` | Integer greater than zero. Immutable. |
+| `generation` | Integer greater than zero. |
+| `admission_digest` | 32 bytes. |
+| `state` | 1 enabled, 2 withdrawn. |
+| `updated_at_unix_ns` | Positive, nondecreasing. |
+
+Epoch and generation are stored as positive SQLite integers; a value above
+2^63-1 is refused before any write. Its triggers allow no delete; an insert
+only into an empty table with generation 1 and state 1; and an update only as
+a withdrawal (same generation and digest, state 1 to 2) or an advance
+(generation plus one, a different digest, new state 1), with installation and
+epoch unchanged. A withdrawn row cannot return to enabled at the same
+generation.
+
+Two existing claim triggers gain one clause each. A codec-5 insert aborts
+unless an enabled admission row exists. A codec-5 update whose latest
+operation kind is not 8 aborts unless an enabled admission row exists; the
+codec-5 table constraint already limits such an update to kinds 2, 3, 4 and 5.
+Kind 8, accept with receipt, is not affected, and codecs 1–4 are not affected.
+Migration 5 copies the earlier rows before it creates any trigger.
+
+Because migration 5 was amended before it merged, a database that carries the
+schema-5 shape published at `8058561` is refused on open, without change, by
+the pinned shape digest and by the migration ledger hash. No production opener
+exists, so no such database is expected outside test directories.
 
 ## 3. Original, key cuts and encodings
 
@@ -164,8 +208,7 @@ and leaf 4 is proof kind u8=2 (installed qualification for native, explicit
 fixture authority for proof), leaf 1 equals the digest-pinned resolved image,
 and issuer and topology equal qualified frozen facts. TLV 7 has exact qualified
 staging/results/SPIRE/datacenter strings and UID/GID. TLV 8 leaf 1 is the
-ASCII literal `operational_local_v1` for existing originals or
-`operational_local_v2` for new originals. TLV 9 wrapper and payload leaves are
+ASCII literal `operational_local_v2`. TLV 9 wrapper and payload leaves are
 u16=3. TLV 10 is u8=3. Each original and resolved plan contains zero additional
 mount items, network false and the exact selected mode/profile/job shape.
 
@@ -250,29 +293,38 @@ objects or substitution of present resolver output for retained input.
 
 ### PR #12 v2 retained evidence and current admission
 
-The repaired candidate keeps schema 5, codec 5, scope 3, eleven outer
-`ESRSPAY3` fields, and every wrapper, AAD, commitment, receipt, migration and
-SQL literal unchanged. TLV 8 provenance leaf 1 is the authenticated variant
-discriminator. New originals use `operational_local_v2`; leaf 5 is the complete
+The repaired candidate keeps codec 5, scope 3, eleven outer `ESRSPAY3` fields,
+and every wrapper, AAD, commitment, receipt and claim-column literal
+unchanged. It amends the unmerged migration 5 to add the admission row of §2;
+migrations 1–4 and their literal hashes are untouched. TLV 8 provenance leaf 1
+is the authenticated ASCII literal `operational_local_v2`, and no other
+literal names an operational original. Leaf 5 is the complete
 signed `evidencev1.ArtifactEvidence` (Claims **and** Seal) encoded by compact
 `encoding/json.Marshal` without a newline. The field is nonempty valid UTF-8
-and at most 256 KiB within the existing 1 MiB original. Strict typed decoding
+and at most 256 KiB within the existing 1 MiB original; one exported store
+constant carries that cap for custody and admission. Strict typed decoding
 refuses unknown members, multiple values, duplicate or noncanonical spellings,
 order and whitespace by requiring exact full-record re-encoding. The evidence
 contract's `CanonicalBytes` signs claims only and is not this full-record wire.
 Durable custody validates the v2 leaf only as bounded opaque bytes and keeps
-scope 1/2 grammar intact. Admission validates the evidence structure, signed
+scope 1/2 grammar intact; for scope 3 it accepts only the v2 literal with that
+opaque evidence scalar. Admission validates the evidence structure, signed
 claims, signature and frozen-plan associations. The common original reader
-must authenticate, decode, bind PB1 and re-encode either variant without
+must authenticate, decode, bind PB1 and re-encode the original without
 requiring current Service trust or policy.
-For historical v1, scope-3 custody keeps its inherited bounded sequence
-grammar and can accept a structurally valid nonempty provenance sequence.
-Admission requires the historical empty sequence by exact whole-wire
-re-encoding and refuses a nonempty variant before any operational effect.
+
+`operational_local_v1` is removed and is not a compatibility edge. PR #12 as
+published at `8058561` could seal that literal with an empty provenance
+sequence, but no production caller could create one, and a database carrying
+the published schema-5 shape is refused on open. Scope-3 custody refuses the
+v1 literal, the reader refuses it in its fail-closed default, the encoder
+refuses an empty evidence record instead of choosing a literal, and no
+production source contains the v1 literal. Unknown variants fail closed.
 Maintained inert vectors independently build the full scope-3 TLV and PB1
-preimage/MAC from the published `8058561` field layout, for both complete
-signed-v2 Claims+Seal bytes and the historical empty-sequence v1 bytes. The
-expected wire is compared in full with the production encoder; the common
+preimage/MAC from the published `8058561` field layout for the complete
+signed-v2 Claims+Seal bytes, and build the published empty-sequence v1 bytes
+as a negative vector that custody and the reader must each refuse. The
+expected v2 wire is compared in full with the production encoder; the common
 reader and retained qualifier consume that expectation. Validly re-signed
 claims mutations must first pass the configured synthetic verifier before an
 association refusal is attributed to binding. Claims-syntax refusals remain
@@ -293,36 +345,175 @@ output, signed artifact type, target and network claims, runtime capabilities,
 argv, selected default profile and full retained payload bytes to the original
 intent and plan. Keep publication `IntentDigest` distinct from the reliable
 request-intent commitment. `imageIssuer` is not the artifact signer. Reject
-oversize or contradictory evidence before publication; do not make a new v1.
+oversize or contradictory evidence before publication. An empty or missing
+record refuses and never selects another literal. The carrier adds one compact
+marshal of the already validated evidence to ordinary resolution. It cannot
+fail an ordinary request: if the record cannot be represented the carrier
+stays empty, ordinary Prepare and Submit proceed unchanged, and only the
+private builder refuses.
 
-The unexported Service-owned private authority is commissioned once for a
-nonzero qualified installation identity and selected epoch after startup has
-loaded and verified trust. It deep-copies trust lists, provenance verifier key
-bytes and validated built-in policy entries. The verified trust publication is
-bound to the original Service instance; a copied precommission Service cannot
-borrow it. The retained trust JSON representation must fit the existing
+#### Admission content, digest, token and view
+
+"Current admission" on this path means exactly: the enabled admission row of
+§2, a process whose installed view carries a token equal to that row, and a
+confirmation of that view's trust with EGS inside the deadline below.
+
+- **Admission content** is the normalized trust model, the provenance
+  verifier (algorithm, key ID, public key) and the built-in policy set a
+  process would use to admit.
+- **Admission digest** is SHA-256 over the label `ESOHADM1` followed by
+  length-framed fields: the trust model's canonical bytes, the verifier
+  algorithm, key ID and public key, the number of built-in policies, and for
+  each policy its identifier and, for the configured literal-deny policy,
+  every configured entry in order.
+- **Admission generation** is the store counter that starts at 1 and
+  increases by exactly one each time the domain's admission content is
+  replaced.
+- **Admission token** is (installation, epoch, generation, admission digest).
+  Only the store mints a nonzero token.
+- **Fence**: a first-effect cut proceeds only if the presented token equals
+  the enabled admission row read under the SQLite writer lock.
+
+The digest covers trust, verifier and policy configuration. It does not cover
+the compiled behaviour of the built-in policies: two different ES builds with
+the same configuration present the same digest. One qualified release per
+domain therefore remains a premise, named `CP-RELEASE` in §8.
+
+Three private store operations are the only writers of the admission row.
+Each is one `BEGIN IMMEDIATE` transaction and is idempotent by content, so an
+unknown COMMIT outcome returns an error, the caller stays closed and calls
+again.
+
+| Operation | Rule |
+| --- | --- |
+| Commission | Empty table: insert generation 1 with this digest. Enabled row with the same installation, epoch and digest: adopt its generation. Anything else refuses. |
+| Advance (expected generation g) | Row at generation g with a different digest, enabled or withdrawn: write generation g+1 with this digest, enabled. Row already at g+1 with this digest, enabled: success. Anything else refuses. |
+| Withdraw | Enabled row with the token's installation and epoch: write withdrawn. Already withdrawn: success. The token's generation need not match, so a fenced process can still stop the domain. |
+
+The unexported Service-owned view is installed at most once, after startup
+has loaded and verified trust, by Commission or Advance for the domain's
+nonzero installation and epoch. It holds the returned token and deep copies of
+the normalized trust lists, provenance verifier key bytes and validated
+built-in policy entries; the digest is taken over exactly those retained
+lists, so what is hashed is what is enforced. The verified trust publication
+is bound to the original Service instance; a copied precommission Service
+cannot borrow it. The retained trust JSON representation must fit the existing
 256 KiB dependency response bound. Nil ordinary evaluator means its
 validated configured default. A nonnil evaluator must be an exact supported
 `admissionPolicySet` whose concrete members are inspected before any call;
 unknown, nested or arbitrary interface implementations cannot run under a
-writer. One Service cannot recommission, change realm or reenable after
-withdrawal. `Service.Initialize` cannot replace trust once commissioned,
-including a fetch racing commission. No production caller commissions this
-private authority. The local monotonic withdrawal is protected by the
-existing `Service.mu`; it is not cross-process revocation. Trust, verifier or
-policy replacement requires a new qualified epoch and withdrawal of old
-effect-enabled processes. Native policy-epoch consistency remains a separate
-commissioning prerequisite.
+writer. One Service cannot commission or advance twice, change realm or
+reenable after its local latch. `Service.Initialize` cannot replace trust once
+a view is installed, including a fetch racing commission. A process whose view
+no longer equals the row is finished for first effects until it is restarted
+and commissioned or advanced again; it does not adopt new content while
+running. No production caller commissions, advances or withdraws.
+
+Withdrawal sets the local latch first and then writes the durable row. It
+reports success only when the durable withdrawal is confirmed; a failed or
+unknown write still leaves this process closed. Withdrawal is durable and
+domain-wide, and enabling again requires an advance to new content. Replacing
+trust, verifier or policy advances the generation in the same epoch and does
+not invalidate any original: a claim the new content allows completes, and a
+claim it denies is refused as denied. None of the three operations may run
+inside a writer turn, and none holds `Service.mu` across its store call; the
+view or latch changes only outside the transaction.
+
+#### Where the token is checked
+
+| Cut | Check | Serialized with the claim write |
+| --- | --- | --- |
+| Before establish | Local view sampled before and after composing the original, and one pooled read of the row before any reservation or publication. Hints, not the authority. | No |
+| Establish turn | The presented token equals the enabled row read through the turn's connection. | Yes |
+| Before run assignment, and before intent and pre-stage | Pre-check: one pooled read of the row, then the same qualification callback. It refuses before a writer turn is requested and grants nothing. | No |
+| Run assignment, intent, pre-stage, stamp and first-marker turns | The store reads the row through the turn's connection and passes it to the qualification callback; the returned match must carry a token equal to that row. Then the bounded local evaluation of the retained evidence. | Yes |
+| Post-COMMIT release | The row is read again on a pooled connection beside the key re-read, with the same callback and comparison. | No |
+| Final sender entry | Local view only: identity, latches and confirmation deadline. | No |
+| Accept with receipt, receipt reads, marked reconciliation | None. | n/a |
+
+An advance or a withdrawal is itself a writer transaction, so it is strictly
+ordered against every claim write: a claim write either committed before it
+or sees it. The callback receives the stored token and compares it first, so that a
+fenced process evaluates no evidence and
+reports `OperationalUnavailable`; the store's own comparison stays the
+authority, and a match that carries no token can never pass a first-effect
+cut. The establish pooled read protects the domain's 32 nonrefundable
+reservations from a process that does not know it is fenced; a change between
+that read and the turn can still cost one reservation per race. The final
+sender entry deliberately does not read the row: a sender minted from a marker
+that committed before the advance was validly admitted. A returned withdrawal
+therefore means that no later first-effect write commits on the domain; one
+sender already past its release re-read may still POST.
+
+The claim triggers of §2 make "no codec-5 first-effect progress on an
+uncommissioned or withdrawn domain" a property of the store even if a caller
+omits the Go comparison. They do not identify the writer; the token
+comparison does.
+
+#### Freshness
+
+The process records the time of its last successful confirmation.
+Commissioning and advancing record none, so the first use must confirm.
+Confirmation runs outside every lock and every transaction. It performs the
+same fetch and signature verification as `Service.Initialize`, computes the
+admission digest with the fetched trust, and compares it with the view.
+Equal: the confirmation time becomes the instant sampled before the request
+was sent. Different: a permanent local superseded latch is set and this
+process admits nothing further, even if EGS later serves the old trust again.
+A fetch or verification failure changes nothing. Confirmation is attempted at
+most once per invocation and only at three points: before the first authority
+sample of a fresh delivery, and before each of the two pre-checks that precede
+run assignment and intent. Recovery, accepted replay, stamped retries,
+receipt reads and marked reconciliation never confirm and send no trust
+request.
+
+Every use of the view requires: installed for this Service, installation and
+epoch equal to the domain's, not withdrawn, not superseded, a confirmation
+exists, and less than 30 seconds elapsed since it on both the monotonic and
+the wall clock, with neither reading negative. The limit is a compiled
+constant. Because the qualification callback samples the view at its start
+and end inside the writer turn, the deadline is enforced inside the writer
+without I/O. The test clock seam can only add a non-negative skew to the
+elapsed time; a negative value refuses, so it cannot lengthen the deadline.
+The process does not adopt new trust while running. It stops, and a restarted
+process advances the generation.
+
+Not solved here: if EGS serves an older validly signed payload, ES cannot
+tell (`CP-ROLLBACK` in §8). Within one domain the generation counter still
+prevents a stale process from joining or silently replacing newer content.
+Ordinary unkeyed Submit is unchanged and still reads trust only at startup.
+
+#### Typed inventories and guard limits
 
 Maintained typed production inventories enforce zero non-test references to
-`Service.commissionOperationalAdmission` and
-`Service.withdrawOperationalEffects`, zero non-test configuration of
-`Service.operationalProof` or its hook callbacks, and exactly one
-`operationalAdmissionSnapshot` construction in the commissioning method.
+`Service.commissionOperationalAdmission`,
+`Service.advanceOperationalAdmission` and
+`Service.withdrawOperationalEffects`, to the two private handoff entries, the
+domain and provider constructors and the store's release proof hook, each with
+a positive control. Each of the three store operations
+`OperationalCustody.CommissionOperationalAdmission`,
+`OperationalCustody.AdvanceOperationalAdmission` and
+`OperationalCustody.WithdrawOperationalAdmission` has exactly one reference,
+from the Service method of the same purpose, so none is reachable from
+production code either. The inventories also enforce zero non-test
+configuration of
+`Service.operationalProof` or its hook callbacks, the clock seam included;
+exactly one reference to `Service.confirmOperationalAdmission`, whose
+once-per-invocation closure is invoked at exactly three sites; exactly two
+callers of `Service.fetchVerifiedTrustModel`; and exactly one
+`operationalAdmissionSnapshot` construction, in the one function that
+installs the view, which only the commissioning and advance methods call.
+Exactly three store functions contain a statement that
+writes the admission table, and no production statement updates its
+installation or epoch column. The same gate carries the prerequisite
+identifiers of §8 and prints them when a production reference appears.
 Exact protected-field reads, assignments and keyed initializers cover verified
-trust ownership, installed snapshot/withdrawal, snapshot identity/content,
-the handoff owner links and proof hooks; mutex reference counts do not replace
-these access inventories. Transparent parentheses enclosing a resolved field
+trust ownership, installed view/withdrawal/supersession/confirmation, view
+identity/token/content, the handoff owner links and proof hooks; mutex
+reference counts do not replace
+these access inventories. An occurrence inside a function literal is an access
+kind of its own and passes only where an inventory lists it: the two token
+reads of the qualification callback. Transparent parentheses enclosing a resolved field
 selector do not change its access kind: parenthesized reads, including right-hand
 side and receiver/base evaluation, remain reads; parenthesized whole-field `=`
 targets remain assignments; parenthesized compound-assignment and
@@ -332,80 +523,133 @@ are assignments. Taking a field's address is an `address` access, whether
 explicit with `&` or implicit through slicing an addressable array or calling a
 pointer-receiver method on an addressable field value. An assignment,
 increment/decrement, range target, address-of, `clear`, `close`, `delete` or
-`copy` destination applied through a selector, index, slice, type assertion or
-dereference chain rooted at the field is a `write-through` access. None of
+`copy` destination applied through a selector, index, slice, type assertion,
+conversion or dereference chain rooted at the field is a `write-through` access.
+A conversion is a transparent step in that chain. A channel send on the field,
+and an `append` whose first argument is rooted at the field, are write-through
+as well. None of
 these is a read; an unresolved selection in such a chain is unclassified and
-fails the inventory. Called functions and methods are not analyzed beyond
-Go's implicit address-of. The maintained guarantee is exact syntactic
+fails the inventory.
+
+A protected field can also be written without being spelled. For every
+protected field the inventory therefore also lists each whole-value
+occurrence of its owning struct type as its own access kind: a positional
+literal element (`initializer`), a keyed literal that omits the field
+(`zero-initializer`), an assignment or range `=` target that is or contains the
+owning type by value (`whole-assign`), a conversion to the owning type or to
+a pointer to or container of it
+(`whole-convert`), a declared variable, parameter, result, receiver or field
+that is or contains it by value, a type-switch clause for it, a `new` or
+`make` of it (`whole-declare`), a `copy`, `clear`
+or `append` over a container of it (`whole-copy`), and any other use of such a
+value, which copies the field (`whole-read`). A defined type over the owning
+struct counts as the owning type. The construction inventory
+counts the same forms, so a zero-value declaration and a same-shape
+conversion of an authority type are refused like a second literal. The older
+site-count inventories of lock and lock-protected fields list the whole-value
+occurrences of their owning struct in the same way, beside their identifier
+counts.
+
+Limits that remain, by name: values reached through an alias or pointer that
+was itself obtained at an inventoried site; the bodies of called functions
+and methods, generic ones included, beyond Go's implicit address-of;
+reflection; `unsafe`; and cgo. For the last three an exact import inventory
+covers every non-test source file of `es/admission` and the store package, so
+a new `reflect`, `unsafe` or `C` import fails a test. The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
 runtime safety. `Service.mu` owns the mutable Service state, while
-the commissioned snapshot is immutable and bound to its original Service.
+the installed view is immutable and bound to its original Service.
 The per-instance proof hooks are nil in production and non-authoritative.
 
-For unmarked v2, each run/intent writer, pre-stage checked writer, stamp writer
-and first-marker writer authenticates the exact current row, original, keys,
-revision and retained material, then checks complete current admission on that
+#### Writers, locks and outcomes
+
+For an unmarked original, each run/intent writer, pre-stage checked writer,
+stamp writer and first-marker writer authenticates the exact current row,
+original, keys, revision and retained material, compares the admission token
+with the row, then checks complete current admission on that
 same original. This is only bounded local Service admission over retained
 bytes. Inside a SQLite writer the lock order is writer then a brief
-`Service.mu` read. Copy the immutable commissioned snapshot/withdrawal state,
-release the Service lock, run bounded local evidence verification, trust and
-built-in `RequiredInputClasses`/`Evaluate`, then sample withdrawal/identity
-again before positive return. No resolver, ARS/EGS read, arbitrary evaluator,
-filesystem materialization or provider I/O runs in this callback.
-The withdrawal writer takes only `Service.mu` and never takes SQLite, custody,
-stage or owner locks. The final sender lock order is owner mutex then a brief
-Service read; no reverse path is allowed. Post-COMMIT release rechecks the
+`Service.mu` read. Copy the immutable view and the latch and confirmation
+state, release the Service lock, run bounded local evidence verification,
+trust and built-in `RequiredInputClasses`/`Evaluate`, then sample the view,
+latches, deadline and identity again before positive return. No resolver,
+ARS/EGS read, arbitrary evaluator, filesystem materialization or provider I/O
+runs in this callback. Commission, advance and withdrawal take the SQLite
+writer without `Service.mu` and never custody, stage or owner locks; the
+confirmation takes no lock while it fetches. The final sender lock order is
+owner mutex then a brief Service read; no reverse path is allowed.
+Post-COMMIT release rechecks the
 same admission before it can release a sender. Final owner-protected entry
 checks context, authority/Service/installation/epoch identity, withdrawal,
-original/marker/stage/request and existing key eligibility before direct
-transport. No Service lock spans transport.
+supersession, the confirmation deadline, original/marker/stage/request and
+existing key eligibility before direct transport. No Service lock spans
+transport.
 
-An unavailable or denied current authority, unsupported required input or
-missing bounded payload returns value-free `OperationalUnavailable` and
-withholds run/receipt; malformed or contradictory authenticated evidence
-returns `OperationalIntegrity`; cancellation returns `OperationalCanceled`.
-Preserve the exact prior operation and write disposition: denial after an
-acknowledged intent, stamp or marker does not erase the write, and an unknown
-response is not upgraded. A pre-stage denial creates no new stage; denial
+| Cause | Reason | Run disclosed |
+| --- | --- | --- |
+| Signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |
+| Retained evidence does not verify under the current verifier | `OperationalDenied`. The original is already authenticated, so this means the verifier was replaced. | No |
+| No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |
+| Malformed or contradictory authenticated evidence; an existing original whose realm is not the domain's | `OperationalIntegrity` | No |
+| Cancellation | `OperationalCanceled` | No |
+
+Every row is value-free and withholds run and receipt at the refused cut.
+When one call is both cancelled and refused by the authority, the authority
+refusal is reported, at reconciliation and at the final sender entry alike,
+because it withholds the run and a cancellation alone does not.
+The durable write is never erased: denial after an acknowledged intent, stamp
+or marker leaves it committed, and an unknown response is not upgraded. The
+result carries one operation and write slot and reports the last writer
+attempted in that call, as §4 states; an earlier applied writer of the same
+call is visible in the row, not in that slot. A refused first-effect cut
+returns a value-free result. An entry that attempts no cut (recovery, a
+stamped-but-unmarked retry, a marked retry) returns the stored run to the
+authenticated original caller under any authority and sends no trust request;
+withholding at a refused cut is a result-shape rule, not a confidentiality
+boundary against the claim's own caller.
+A pre-stage denial creates no new stage; denial
 after legitimate staging may leave inert charged residue; a marker after
 withdrawal may remain but grants no sender. The complete
 `OperationalNoChange` **and** `OperationalReasonNone` pre-stage gate, exact
 revision CAS, permanent marker, direct-only one-use sender and no stage
-reattachment remain in force. A withdrawal observed before a cut stops its
-next action; a previous committed write or already-entered I/O cannot be
-retracted. A retry after a changed configured literal policy, artifact revocation or
+reattachment remain in force. A withdrawal or advance observed before a cut
+stops its next action; a previous committed write or already-entered I/O
+cannot be retracted. A retry after a changed configured literal policy, artifact revocation or
 signer revocation is refused at its first remaining cut, after a committed
-run assignment or intent, without advancing or disclosing the claim; a later
-retry under an allowing authority still completes, so a denial does not
-poison the claim.
+run assignment or intent, without advancing or disclosing the claim. A later
+generation that allows the claim lets a retry complete with exactly one POST,
+so before staging a denial does not poison the claim. After staging the claim
+keeps its charged residue and cannot stage again; it needs a new submit key.
 
-An `operational_local_v1` original remains a **Temporary compatibility edge**.
-Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,
-marker or POST and cannot be relabeled or resealed. Accepted v1/v2 receipt
+Receipt-only verification is outside current admission. Accepted receipt
 verification needs exact caller, authenticated historical realm/original and
-eligible exact ACTIVE/RETIRED key pair, but no current Service authority,
-stage, resolver or provider. A marked v1/v2 claim may record only verified
+eligible exact ACTIVE/RETIRED key pair, but no view, token, confirmation,
+stage, resolver or provider. A marked claim may record only verified
 positive provider registration and immutable receipt, never dispatch again.
 Missing/revoked/mixed keys and unauthorized callers still refuse without
-disclosure. Unknown variants fail closed. Canonical public caller selection and
+disclosure. Canonical public caller selection and
 installed lifecycle authorization remain outside this private injected proof.
 
 The maintained proof uses an independently constructed complete signed-v2
-outer wire and a historical v1 complete byte/commitment oracle derived from
-the published layout, rather than a producer/reader round trip as its expected
-value. Otherwise-valid signed contradictions isolate evidence-to-plan/material
+outer wire derived from the published layout, rather than a producer/reader
+round trip as its expected value. Otherwise-valid signed contradictions
+isolate evidence-to-plan/material
 association from signature refusal. An eligible retained cut observes actual
 argv, artifact, profile, payload count and bounded text supplied to the
-selected built-in policy; a separately commissioned synthetic trust view
-isolates current signer revocation. These are local proof obligations, not
-new authorities or installed epoch-consensus claims.
+selected built-in policy. Two and three Services on one domain, and two
+processes on one database, prove the fence, the denial and the later
+completion; a fake signed EGS proves the freshness rules. These are local
+proof obligations, not new authorities or installed consensus claims.
 
 The existing per-instance `operationalAdmissionProofHooks` may carry one
 nil-default `contextObserved` callback for inert test observation. It receives
 only a detached `AdmissionPolicyContext` value with independently cloned argv,
 after retained inputs are complete and immediately before the existing built-in
 `Evaluate` call. It returns no decision and grants no permission, replacement
-evaluator, storage fact or output channel. Non-test source configures no proof
+evaluator, storage fact or output channel. The nil-default `skew` callback is
+the clock seam above. The store's nil-default release proof hook runs after a
+directly acknowledged COMMIT and before the release re-read; it receives only
+the operation and returns nothing. Non-test source configures no proof
 hook. The exact call/read and configuration sites are maintained by typed
 inventories; ordinary admission and the private writer's policy algorithm
 remain unchanged.
@@ -977,6 +1221,20 @@ fixture composition have zero callers of the target entry. No new public
 HTTP status, DTO field, producer declaration or configuration spelling is
 selected. Current finite inventories enumerate the private typed references in the local candidate.
 
+Commissioning gate. Commission, advance and withdrawal have zero production
+callers. A maintained gate fails on the first non-test reference to any of
+them and prints the prerequisites below, which must each be answered before
+such a reference is added. The gate's identifiers are pinned against this
+list, so the gate and this document cannot drift apart.
+
+| Identifier | Prerequisite |
+| --- | --- |
+| `CP-ROLLBACK` | The trust publication carries a signed monotonic sequence, or an equivalent the owner accepts, so that an older validly signed payload cannot be confirmed as current. |
+| `CP-EPOCH` | An epoch-change procedure exists, with drain or terminal rules for unmarked claims and receipt reads under a historical realm. Until then the stored installation and epoch cannot change. |
+| `CP-POLICY-CUSTODY` | Who may commission, advance and withdraw, and where the installation policy is stored. |
+| `CP-NATIVE` | The native prerequisites of the paragraph above. |
+| `CP-RELEASE` | One qualified release per domain is enforced, or the admission digest covers the release. The digest covers configuration, not the compiled behaviour of the built-in policies. |
+
 ## 9. Future integrated proof and bounded path map
 
 The consolidated repair adds one conditional companion to the original
@@ -1012,7 +1270,14 @@ reconciliation at this gate. It adds exactly five paths outside the table:
 A/reliable_submit_operational_admission.go (new),
 A/reliable_submit_operational_admission_test.go (new), A/service.go,
 A/resolved_execution_plan.go and .docs/system_overview/boundaries.md. With
-them the aggregate HEAD ceiling for PR #12 plus that repair is 42 files. Any
+them the aggregate HEAD count for PR #12 plus that repair was 42 files.
+
+The durable admission generation repair is a further owner reconciliation at
+this gate. It adds exactly four more paths: I/operational_admission.go (new),
+I/operational_admission_test.go (new),
+A/reliable_submit_operational_admission_redteam_test.go (new) and
+.docs/execution_lifecycle/implementation.md. With them the aggregate HEAD
+ceiling for PR #12 plus both repairs is 46 files. Any
 further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer

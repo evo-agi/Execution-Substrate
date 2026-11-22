@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	egsmodel "execution-substrate/egs/model"
 
@@ -24,6 +27,8 @@ import (
 
 // These fixtures explicitly commission local proof Services. There is no
 // production commissioning caller or installed policy-epoch agreement here.
+// Every proof Service has its own synthetic EGS, which signs and serves the
+// trust model that Service was commissioned with unless a test changes it.
 func operationalV2Original(t *testing.T, f *operationalFixture) verifiedOperationalOriginal {
 	t.Helper()
 	caller, err := newSyntheticCallerFact(f.domain.caller.String())
@@ -56,21 +61,107 @@ func operationalSeedIntent(t *testing.T, argv ...string) *operationalFixture {
 	return f
 }
 
-func operationalProofService(t *testing.T, f *operationalFixture, configure func(*Service)) *Service {
+type operationalAdmissionRowState struct {
+	Present    bool
+	Generation uint64
+	Digest     [32]byte
+	State      int
+}
+
+func operationalAdmissionRowAt(t *testing.T, f *operationalFixture) operationalAdmissionRowState {
+	t.Helper()
+	var row operationalAdmissionRowState
+	var generation int64
+	var digest []byte
+	err := f.db.QueryRow("SELECT generation, admission_digest, state FROM reliable_submit_operational_admission").
+		Scan(&generation, &digest, &row.State)
+	if err == sql.ErrNoRows {
+		return row
+	}
+	if err != nil || len(digest) != 32 || generation <= 0 {
+		t.Fatalf("admission row: generation=%d digest=%d err=%v", generation, len(digest), err)
+	}
+	row.Present, row.Generation = true, uint64(generation)
+	copy(row.Digest[:], digest)
+	return row
+}
+
+// operationalResultText prints the value-free parts of a result; the result
+// itself formats as a redaction.
+func operationalResultText(r operationalHandoffResult) string {
+	return fmt.Sprintf("kind=%d reason=%d operation=%d write=%d run=%t receipt=%t", r.kind, r.reason, r.operation, r.write,
+		r.run != "", r.receipt.Valid())
+}
+
+// operationalUncommissionedService is a restarted process before it holds a
+// view: the fixture's configuration, a private copy of its trust and verifier,
+// and its own synthetic EGS serving whatever configure left in place.
+func operationalUncommissionedService(t *testing.T, f *operationalFixture, configure func(*Service)) (*Service, *operationalTrustAuthority) {
 	t.Helper()
 	trust := snapshotRuntimeTrustModel(*f.service.trustModel)
 	old := f.service.provenanceVerifier
 	service := &Service{cfg: f.service.cfg, trustModel: &trust, trustModelVerified: true,
 		provenanceVerifier: &ed25519Verifier{algorithm: old.algorithm, keyID: old.keyID,
-			publicKey: bytes.Clone(old.publicKey)}}
+			publicKey: bytes.Clone(old.publicKey)},
+		// The ordinary resolver's dependencies, so it can also take a fresh delivery.
+		arsClient: f.service.arsClient, nomadClient: f.service.nomadClient,
+		workloadZoneVaultConfigRef: f.service.workloadZoneVaultConfigRef}
 	service.trustModelOwner = service
 	if configure != nil {
 		configure(service)
 	}
-	if err := service.commissionOperationalAdmission(f.domain.realm); err != nil {
+	var egs *operationalTrustAuthority
+	if service.trustModel != nil {
+		egs = attachOperationalTrustAuthority(t, service, *service.trustModel)
+	}
+	return service, egs
+}
+
+// operationalProofServiceWithEGS commissions a second Service on the fixture's
+// domain as a restarted process would. Content equal to the stored row joins
+// its generation. Different content advances the domain from the stored
+// generation, which fences every Service that still holds the old token,
+// f.service included.
+func operationalProofServiceWithEGS(t *testing.T, f *operationalFixture, configure func(*Service)) (*Service, *operationalTrustAuthority) {
+	t.Helper()
+	ctx := context.Background()
+	service, egs := operationalUncommissionedService(t, f, configure)
+	_, _, _, digest, ok := service.operationalAdmissionContent()
+	if !ok {
+		t.Fatal("proof Service content cannot be commissioned")
+	}
+	stored := operationalAdmissionRowAt(t, f)
+	var err error
+	if stored.Present && stored.State == 1 && stored.Digest == digest {
+		err = service.commissionOperationalAdmission(ctx, f.domain)
+	} else {
+		err = service.advanceOperationalAdmission(ctx, f.domain, stored.Generation)
+	}
+	if err != nil {
 		t.Fatalf("commission selected synthetic policy: %v", err)
 	}
+	after := operationalAdmissionRowAt(t, f)
+	if after.State != 1 || after.Digest != digest || !service.operationalAdmission.token.Names(f.domain.realm.installation, f.domain.realm.epoch, digest) {
+		t.Fatalf("proof Service does not hold the stored admission: row=%+v", after)
+	}
+	return service, egs
+}
+
+func operationalProofService(t *testing.T, f *operationalFixture, configure func(*Service)) *Service {
+	t.Helper()
+	service, _ := operationalProofServiceWithEGS(t, f, configure)
 	return service
+}
+
+// assertOperationalRefusal is assertOperationalNoFurtherEffect plus the exact
+// value-free reason.
+func assertOperationalRefusal(t *testing.T, f *operationalFixture, before operationalPrestageState,
+	out operationalHandoffResult, reason reliablesubmit.OperationalReason) {
+	t.Helper()
+	assertOperationalNoFurtherEffect(t, f, before, out)
+	if out.reason != reason {
+		t.Fatalf("refusal reason=%d, want %d: %s", out.reason, reason, operationalResultText(out))
+	}
 }
 
 func assertOperationalNoFurtherEffect(t *testing.T, f *operationalFixture, before operationalPrestageState, out operationalHandoffResult) {
@@ -98,7 +189,7 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		f := operationalSeedIntent(t)
 		before := operationalPrestageStateAt(t, f)
 		out := (&Service{}).handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
-		assertOperationalNoFurtherEffect(t, f, before, out)
+		assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalUnavailable)
 	})
 	t.Run("current configured literal denial", func(t *testing.T) {
 		f := operationalSeedIntent(t)
@@ -112,7 +203,7 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		})
 		before := operationalPrestageStateAt(t, f)
 		out := service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
-		assertOperationalNoFurtherEffect(t, f, before, out)
+		assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalDenied)
 		if required.Load() == 0 || evaluated.Load() == 0 {
 			t.Fatal("retained denial bypassed selected built-in policy")
 		}
@@ -136,7 +227,7 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		})
 		before := operationalPrestageStateAt(t, f)
 		out := service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
-		assertOperationalNoFurtherEffect(t, f, before, out)
+		assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalDenied)
 	})
 	t.Run("current signer revocation", func(t *testing.T) {
 		f := operationalSeedIntent(t)
@@ -153,7 +244,7 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		}
 		before := operationalPrestageStateAt(t, f)
 		out := service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
-		assertOperationalNoFurtherEffect(t, f, before, out)
+		assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalDenied)
 	})
 	t.Run("fresh ordinary policy denial", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
@@ -233,15 +324,20 @@ func TestPR12ReceiptAdmissionIndependence(t *testing.T) {
 func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 	f := makeOperationalFixture(t, "")
 	original := operationalV2Original(t, f)
-	if original.variant != operationalOriginalV2 || original.resolved.provenanceRecord != f.expectedEvidence ||
+	if original.resolved.provenanceRecord != f.expectedEvidence ||
 		!bytes.Contains(original.wire, []byte("operational_local_v2")) ||
 		!bytes.Contains(original.wire, []byte(f.expectedEvidence)) {
 		t.Fatal("full signed evidence was not retained in v2 leaf")
 	}
 	verified, err := verifyOperationalOriginal(original.wire, f.domain.keys, f.domain.realm)
-	if err != nil || verified.variant != operationalOriginalV2 || verified.resolved.provenanceRecord != f.expectedEvidence {
+	if err != nil || verified.resolved.provenanceRecord != f.expectedEvidence {
 		t.Fatalf("v2 exact reader: %v", err)
 	}
+	// A view admits nothing before its first confirmation.
+	if reason := f.service.qualifyOperationalRetained(context.Background(), verified, f.domain.realm); reason != reliablesubmit.OperationalUnavailable {
+		t.Fatalf("unconfirmed view judged a retained input: %d", reason)
+	}
+	f.confirm()
 	if reason := f.service.qualifyOperationalRetained(context.Background(), verified, f.domain.realm); reason != reliablesubmit.OperationalReasonNone {
 		t.Fatalf("valid retained input denied: %d", reason)
 	}
@@ -271,7 +367,9 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 	}
 	mutant := original
 	mutant.resolved.provenanceRecord = string(changed)
-	if reason := f.service.qualifyOperationalRetained(context.Background(), mutant, f.domain.realm); reason != reliablesubmit.OperationalIntegrity {
+	// The original is authenticated, so a seal the current verifier refuses is
+	// a refusal by the current content, not damaged custody.
+	if reason := f.service.qualifyOperationalRetained(context.Background(), mutant, f.domain.realm); reason != reliablesubmit.OperationalDenied {
 		t.Fatalf("signature mutant reason=%d", reason)
 	}
 	verifier := f.service.operationalAdmission.verifier
@@ -410,133 +508,240 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 }
 
 func TestOperationalAdmissionCommissioning(t *testing.T) {
-	f := makeOperationalFixture(t, "")
-	realm := f.domain.realm
-	initialTrust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
-	initialVerifier := bytes.Clone(f.service.operationalAdmission.verifier.publicKey)
-	f.service.trustModel.ArtifactPolicy.RevokedArtifacts = append(f.service.trustModel.ArtifactPolicy.RevokedArtifacts,
-		"sha256:"+strings.Repeat("a", 64))
-	f.service.provenanceVerifier.publicKey[0] ^= 0xff
-	if !reflect.DeepEqual(initialTrust, f.service.operationalAdmission.trust) ||
-		!bytes.Equal(initialVerifier, f.service.operationalAdmission.verifier.publicKey) {
-		t.Fatal("commissioned trust or verifier aliased caller input")
+	ctx := context.Background()
+	// refused requires that neither store operation accepts this Service: a
+	// candidate whose content equals the row would otherwise join it, and any
+	// other content would otherwise advance it.
+	refused := func(t *testing.T, f *operationalFixture, s *Service, what string) {
+		t.Helper()
+		before := operationalAdmissionRowAt(t, f)
+		held := s.operationalAdmission
+		if err := s.commissionOperationalAdmission(ctx, f.domain); err == nil {
+			t.Fatalf("%s: commission accepted", what)
+		}
+		if err := s.advanceOperationalAdmission(ctx, f.domain, before.Generation); err == nil {
+			t.Fatalf("%s: advance accepted", what)
+		}
+		if after := operationalAdmissionRowAt(t, f); after != before || s.operationalAdmission != held {
+			t.Fatalf("%s: a refused commission changed the domain or the view: before=%+v after=%+v", what, before, after)
+		}
 	}
-	if err := f.service.commissionOperationalAdmission(realm); err == nil {
-		t.Fatal("second commission accepted")
-	}
-	if _, ok := (&Service{operationalAdmission: f.service.operationalAdmission}).currentOperationalAdmission(realm); ok {
-		t.Fatal("foreign Service borrowed authority")
-	}
-	copyTrust := snapshotRuntimeTrustModel(*f.service.trustModel)
-	copyVerifier := *f.service.provenanceVerifier
-	precommission := &Service{trustModel: &copyTrust, provenanceVerifier: &copyVerifier, trustModelVerified: true}
-	precommission.trustModelOwner = precommission
-	// An exact struct copy of the unlocked precommission Service. Reflection
-	// keeps vet's copylocks check enabled for every ordinary assignment.
-	copied := new(Service)
-	reflect.ValueOf(copied).Elem().Set(reflect.ValueOf(precommission).Elem())
-	if copied.trustModelOwner != precommission || copied.trustModel != precommission.trustModel ||
-		!copied.trustModelVerified || copied.provenanceVerifier != precommission.provenanceVerifier {
-		t.Fatal("copy fixture did not reproduce the precommission Service")
-	}
-	if err := copied.commissionOperationalAdmission(realm); err == nil {
-		t.Fatal("copied precommission Service acquired authority")
-	}
-	tooLargeTrust := snapshotRuntimeTrustModel(*f.service.trustModel)
-	for i := 0; i < 3600; i++ {
-		tooLargeTrust.ArtifactPolicy.RevokedArtifacts = append(tooLargeTrust.ArtifactPolicy.RevokedArtifacts,
-			fmt.Sprintf("sha256:%064x", i))
-	}
-	oversized := &Service{trustModel: &tooLargeTrust, provenanceVerifier: &copyVerifier, trustModelVerified: true}
-	oversized.trustModelOwner = oversized
-	if err := oversized.commissionOperationalAdmission(realm); err == nil {
-		t.Fatal("oversized trust representation acquired writer authority")
-	}
-	other := realm
-	other.epoch++
-	if _, ok := f.service.currentOperationalAdmission(other); ok {
-		t.Fatal("old authority crossed epoch")
-	}
-	if err := f.service.Initialize(context.Background()); err == nil {
-		t.Fatal("Initialize replaced commissioned trust")
-	}
-	for name, configure := range map[string]func(*Service){
-		"no trust":              func(s *Service) { s.trustModel = nil },
-		"unverified trust":      func(s *Service) { s.trustModelVerified = false },
-		"no verifier":           func(s *Service) { s.provenanceVerifier = nil },
-		"unsupported evaluator": func(s *Service) { s.admissionPolicyEvaluator = &rejectAllPolicy{} },
-		"nested evaluator": func(s *Service) {
-			s.admissionPolicyEvaluator = admissionPolicySet{policies: []AdmissionPolicyEvaluator{admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}}}
-		},
-		"mismatched built-in": func(s *Service) {
-			configureConfiguredStaticScriptLiteralDenyService(s, "policy-fixture-ok")
-			s.admissionPolicyEvaluator = defaultAdmissionPolicyEvaluator()
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			trust := snapshotRuntimeTrustModel(*f.service.trustModel)
-			verifier := *f.service.provenanceVerifier
-			s := &Service{trustModel: &trust, provenanceVerifier: &verifier, trustModelVerified: true}
-			s.trustModelOwner = s
-			configure(s)
-			if err := s.commissionOperationalAdmission(realm); err == nil {
-				t.Fatal("unsupported commission accepted")
+	t.Run("view is a private copy bound to owner, installation and epoch", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		realm := f.domain.realm
+		view := f.service.operationalAdmission
+		row := operationalAdmissionRowAt(t, f)
+		digest, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
+		if !ok || !row.Present || row.Generation != 1 || row.State != 1 || row.Digest != digest ||
+			!view.token.Names(realm.installation, realm.epoch, digest) {
+			t.Fatalf("fixture commission is not generation 1 of the view's own content: %+v", row)
+		}
+		original := operationalV2Original(t, f)
+		initialTrust := snapshotRuntimeTrustModel(view.trust)
+		initialVerifier := bytes.Clone(view.verifier.publicKey)
+		// In-place changes reach a view that shares a backing array; an append
+		// alone would not.
+		f.service.trustModel.SignerPolicy.AllowedSigners[0] = "replaced-after-commission"
+		f.service.trustModel.ArtifactPolicy.RevokedArtifacts = append(f.service.trustModel.ArtifactPolicy.RevokedArtifacts,
+			original.resolved.plan.artifactDigest)
+		f.service.provenanceVerifier.publicKey[0] ^= 0xff
+		after, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
+		if !ok || after != digest || !reflect.DeepEqual(initialTrust, view.trust) ||
+			!bytes.Equal(initialVerifier, view.verifier.publicKey) || operationalAdmissionRowAt(t, f) != row {
+			t.Fatal("commissioned trust or verifier aliased caller input")
+		}
+		f.confirm()
+		if reason := f.service.qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalReasonNone {
+			t.Fatalf("a change to the Service's own lists changed the view's decision: %d", reason)
+		}
+		refused(t, f, f.service, "Service that already holds a view")
+		foreign := &Service{operationalAdmission: view, operationalConfirmed: time.Now()}
+		if _, ok := foreign.currentOperationalAdmission(realm); ok {
+			t.Fatal("foreign Service borrowed authority")
+		}
+		otherEpoch, otherInstallation := realm, realm
+		otherEpoch.epoch++
+		otherInstallation.installation[0] ^= 1
+		if current, ok := f.service.currentOperationalAdmission(realm); !ok || current != view {
+			t.Fatal("confirmed view is not current for its own realm")
+		}
+		if _, ok := f.service.currentOperationalAdmission(otherEpoch); ok {
+			t.Fatal("old authority crossed epoch")
+		}
+		if _, ok := f.service.currentOperationalAdmission(otherInstallation); ok {
+			t.Fatal("authority crossed installation")
+		}
+		if err := f.service.Initialize(ctx); err == nil || f.egs.count() != 1 {
+			t.Fatalf("Initialize replaced commissioned trust: err=%v trust requests=%d", err, f.egs.count())
+		}
+	})
+	t.Run("the view enforces normalized lists", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		original := operationalV2Original(t, f)
+		padded, egs := operationalProofServiceWithEGS(t, f, func(s *Service) {
+			s.trustModel.SignerPolicy.AllowedSigners[0] = "  " + s.trustModel.SignerPolicy.AllowedSigners[0] + "\t"
+		})
+		if row := operationalAdmissionRowAt(t, f); row.Generation != 1 ||
+			padded.operationalAdmission.token != f.service.operationalAdmission.token {
+			t.Fatalf("equal normalized content did not join the stored generation: %+v", row)
+		}
+		padded.confirmOperationalAdmission(ctx)
+		if reason := padded.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalReasonNone || egs.count() != 1 {
+			t.Fatalf("view did not enforce the normalized list it was hashed over: reason=%d requests=%d", reason, egs.count())
+		}
+	})
+	t.Run("copied, oversized and unsupported Services gain nothing", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		precommission, _ := operationalUncommissionedService(t, f, nil)
+		// An exact struct copy of the unlocked precommission Service. Reflection
+		// keeps vet's copylocks check enabled for every ordinary assignment.
+		copied := new(Service)
+		reflect.ValueOf(copied).Elem().Set(reflect.ValueOf(precommission).Elem())
+		if copied.trustModelOwner != precommission || copied.trustModel != precommission.trustModel ||
+			!copied.trustModelVerified || copied.provenanceVerifier != precommission.provenanceVerifier {
+			t.Fatal("copy fixture did not reproduce the precommission Service")
+		}
+		refused(t, f, copied, "copied precommission Service")
+		oversized, _ := operationalUncommissionedService(t, f, func(s *Service) {
+			for i := 0; i < 3600; i++ {
+				s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+					fmt.Sprintf("sha256:%064x", i))
 			}
 		})
-	}
-	configured := operationalProofService(t, f, func(s *Service) {
-		configureConfiguredStaticScriptLiteralDenyService(s, "immutable-marker")
+		refused(t, f, oversized, "oversized trust representation")
+		for name, configure := range map[string]func(*Service){
+			"no trust":              func(s *Service) { s.trustModel = nil },
+			"unverified trust":      func(s *Service) { s.trustModelVerified = false },
+			"invalid trust":         func(s *Service) { s.trustModel.SignerPolicy.AllowedSigners = []string{"twice", "twice"} },
+			"no verifier":           func(s *Service) { s.provenanceVerifier = nil },
+			"short verifier key":    func(s *Service) { s.provenanceVerifier.publicKey = s.provenanceVerifier.publicKey[:31] },
+			"unsupported evaluator": func(s *Service) { s.admissionPolicyEvaluator = &rejectAllPolicy{} },
+			"nested evaluator": func(s *Service) {
+				s.admissionPolicyEvaluator = admissionPolicySet{policies: []AdmissionPolicyEvaluator{admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}}}
+			},
+			"mismatched built-in": func(s *Service) {
+				configureConfiguredStaticScriptLiteralDenyService(s, "policy-fixture-ok")
+				s.admissionPolicyEvaluator = defaultAdmissionPolicyEvaluator()
+			},
+			// Audit R2: the same shape as configuration with a different entry.
+			"injected entries differ from configuration": func(s *Service) {
+				injected := &Service{}
+				configureConfiguredStaticScriptLiteralDenyService(injected, "injected-literal")
+				configureConfiguredStaticScriptLiteralDenyService(s, "configured-literal")
+				s.admissionPolicyEvaluator = injected.admissionPolicyEvaluator
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				s, _ := operationalUncommissionedService(t, f, configure)
+				refused(t, f, s, name)
+			})
+		}
+		// Controls: the unchanged candidate joins, and a consistently configured
+		// one advances, so each refusal above is the content check's.
+		if err := precommission.commissionOperationalAdmission(ctx, f.domain); err != nil ||
+			precommission.operationalAdmission.token != f.service.operationalAdmission.token {
+			t.Fatalf("control: unchanged precommission Service did not join: %v", err)
+		}
+		consistent, _ := operationalUncommissionedService(t, f, func(s *Service) {
+			configureConfiguredStaticScriptLiteralDenyService(s, "configured-literal")
+		})
+		if err := consistent.advanceOperationalAdmission(ctx, f.domain, 1); err != nil || operationalAdmissionRowAt(t, f).Generation != 2 {
+			t.Fatalf("control: consistently configured Service did not advance: %v", err)
+		}
 	})
-	selected := configured.operationalAdmission.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy)
-	configured.cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny.Entries[0].Literal = "mutated-config"
-	outer := configured.admissionPolicyEvaluator.(admissionPolicySet)
-	aliased := outer.policies[1].(configuredStaticScriptLiteralDenyPolicy)
-	aliased.entries[0].literal = "mutated-evaluator"
-	if selected.entries[0].literal != "immutable-marker" ||
-		configured.operationalAdmission.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[0].literal != "immutable-marker" {
-		t.Fatal("commissioned policy entries aliased config or ordinary evaluator")
-	}
-	if !f.service.withdrawOperationalEffects() || !f.service.withdrawOperationalEffects() {
-		t.Fatal("withdrawal did not remain monotonic")
-	}
-	if _, ok := f.service.currentOperationalAdmission(realm); ok || f.service.commissionOperationalAdmission(realm) == nil {
-		t.Fatal("withdrawn authority was reenabled")
-	}
+	t.Run("configured entries are private copies", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		configured := operationalProofService(t, f, func(s *Service) {
+			configureConfiguredStaticScriptLiteralDenyService(s, "immutable-marker")
+		})
+		view := configured.operationalAdmission
+		digest, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
+		selected := view.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy)
+		configured.cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny.Entries[0].Literal = "mutated-config"
+		outer := configured.admissionPolicyEvaluator.(admissionPolicySet)
+		aliased := outer.policies[1].(configuredStaticScriptLiteralDenyPolicy)
+		aliased.entries[0].literal = "mutated-evaluator"
+		after, afterOK := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
+		if !ok || !afterOK || after != digest || selected.entries[0].literal != "immutable-marker" ||
+			view.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[0].literal != "immutable-marker" {
+			t.Fatal("commissioned policy entries aliased config or ordinary evaluator")
+		}
+	})
+	// No comma in this name: the fixture's staging path is derived from it, and
+	// scope-3 custody refuses a path that holds one.
+	t.Run("withdrawal is monotonic and durable for the whole domain", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		realm := f.domain.realm
+		joined, _ := operationalProofServiceWithEGS(t, f, nil)
+		f.confirm()
+		joined.confirmOperationalAdmission(ctx)
+		if _, ok := joined.currentOperationalAdmission(realm); !ok {
+			t.Fatal("control: joined Service is not current before the withdrawal")
+		}
+		if (&Service{}).withdrawOperationalEffects(ctx, f.domain) {
+			t.Fatal("a Service without a view withdrew the domain")
+		}
+		if row := operationalAdmissionRowAt(t, f); row.State != 1 || row.Generation != 1 {
+			t.Fatalf("refused withdrawal changed the row: %+v", row)
+		}
+		if !f.service.withdrawOperationalEffects(ctx, f.domain) || !f.service.withdrawOperationalEffects(ctx, f.reopen()) {
+			t.Fatal("withdrawal did not remain monotonic")
+		}
+		if row := operationalAdmissionRowAt(t, f); row.State != 2 || row.Generation != 1 {
+			t.Fatalf("withdrawal is not durable at the same generation: %+v", row)
+		}
+		if _, ok := f.service.currentOperationalAdmission(realm); ok {
+			t.Fatal("withdrawn authority is still current")
+		}
+		refused(t, f, f.service, "withdrawn Service")
+		// The domain is stopped for a Service that never withdrew.
+		seeded := operationalPrestageStateAt(t, f)
+		out := joined.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+		if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			out.run != "" || state != seeded || state.Claims != 0 {
+			t.Fatalf("a withdrawn domain admitted a fresh delivery: %s state=%+v", operationalResultText(out), state)
+		}
+		// Equal content cannot enable it again; only an advance to new content can.
+		same, _ := operationalUncommissionedService(t, f, nil)
+		refused(t, f, same, "equal content on a withdrawn domain")
+		next := operationalProofService(t, f, func(s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				"sha256:"+strings.Repeat("e", 64))
+		})
+		if row := operationalAdmissionRowAt(t, f); row.State != 1 || row.Generation != 2 {
+			t.Fatalf("advance after withdrawal did not enable the next generation: %+v", row)
+		}
+		// The process that withdrew stays stopped; the new generation works.
+		f.service.confirmOperationalAdmission(ctx)
+		if _, ok := f.service.currentOperationalAdmission(realm); ok {
+			t.Fatal("withdrawn authority was reenabled")
+		}
+		if stopped := f.submit(); stopped.kind != operationalUnavailable || operationalPrestageStateAt(t, f).Claims != 0 {
+			t.Fatalf("withdrawn Service acted after the domain was enabled again: %s", operationalResultText(stopped))
+		}
+		if done := next.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw); done.kind != operationalAccepted ||
+			operationalPrestageStateAt(t, f).Posts != 1 {
+			t.Fatalf("new generation after a withdrawal: %s state=%+v", operationalResultText(done), operationalPrestageStateAt(t, f))
+		}
+	})
 	t.Run("Initialize fetch cannot overwrite racing commission", func(t *testing.T) {
-		trust := snapshotRuntimeTrustModel(initialTrust)
-		verifier := *f.service.provenanceVerifier
-		s := &Service{trustModel: &trust, provenanceVerifier: &verifier, trustModelVerified: true}
-		s.trustModelOwner = s
-		public, private, err := ed25519.GenerateKey(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.trustModelVerifier = &ed25519Verifier{algorithm: "ed25519", keyID: "synthetic-egs", publicKey: public}
-		remote := egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"other-signer"}}}
-		canonical, err := remote.CanonicalBytes()
-		if err != nil {
-			t.Fatal(err)
-		}
-		envelope := signedRuntimeTrustResponse{RuntimeTrust: remote, Algorithm: "ed25519", KeyID: "synthetic-egs",
-			PayloadDigest: digestBytes(canonical), Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(private, canonical))}
+		f := makeOperationalFixture(t, "")
+		s, egs := operationalUncommissionedService(t, f, nil)
+		trust := snapshotRuntimeTrustModel(*s.trustModel)
+		egs.serve(egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
 		entered, release := make(chan struct{}), make(chan struct{})
-		s.egsClient = newResolvedPlanDependencyClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1/trust-model" {
-				t.Errorf("unexpected path %s", r.URL.Path)
-			}
+		egs.observe(func() {
 			close(entered)
 			<-release
-			writeJSONResponse(t, w, http.StatusOK, envelope)
-		}))
-		s.egsClient.client.Timeout = 5 * time.Second
+		})
 		result := make(chan error, 1)
-		go func() { result <- s.Initialize(context.Background()) }()
+		go func() { result <- s.Initialize(ctx) }()
 		select {
 		case <-entered:
 		case <-time.After(5 * time.Second):
 			t.Fatal("Initialize did not enter trust fetch")
 		}
-		if err := s.commissionOperationalAdmission(realm); err != nil {
+		if err := s.commissionOperationalAdmission(ctx, f.domain); err != nil {
 			t.Fatalf("racing commission: %v", err)
 		}
 		close(release)
@@ -551,6 +756,57 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if !reflect.DeepEqual(*s.trustModel, trust) {
 			t.Fatal("racing Initialize replaced commissioned trust")
 		}
+	})
+	t.Run("trust load during the store write leaves the Service closed", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		s, egs := operationalUncommissionedService(t, f, nil)
+		egs.serve(egsmodel.RuntimeTrustPolicy{SignerPolicy: egsmodel.SignerPolicy{AllowedSigners: []string{"other-signer"}}})
+		loaded := false
+		err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+			if err := s.Initialize(ctx); err != nil {
+				t.Fatalf("trust load before a view exists: %v", err)
+			}
+			loaded = true
+			return f.domain.custody.CommissionOperationalAdmission(ctx, f.domain.realm.installation, f.domain.realm.epoch, digest)
+		})
+		if !loaded || err == nil || s.operationalAdmission != nil {
+			t.Fatalf("a view was installed over a trust model the store write did not cover: loaded=%t err=%v", loaded, err)
+		}
+		s.confirmOperationalAdmission(ctx)
+		if _, ok := s.currentOperationalAdmission(f.domain.realm); ok {
+			t.Fatal("Service without a view is current")
+		}
+		if row := operationalAdmissionRowAt(t, f); row.Generation != 1 || row.State != 1 {
+			t.Fatalf("raced commission changed the domain: %+v", row)
+		}
+	})
+	t.Run("a token from one database is refused by another", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		// The second database lives in a nested test so that its installation
+		// identity, which the fixture derives from the test name, differs.
+		t.Run("other database", func(t *testing.T) {
+			other := makeOperationalFixture(t, "")
+			if other.domain.realm.installation == f.domain.realm.installation {
+				t.Fatal("control: the two databases share an installation identity")
+			}
+			original := operationalV2Original(t, other)
+			foreign := f.service.operationalAdmission.token
+			if got := other.domain.custody.EstablishOperational(ctx, original.delivery.refs.claimID, original.assessment.boundPlan,
+				other.domain.keys.storage, original.wire, foreign).Disposition(); got == reliablesubmit.OperationalApplied ||
+				got == reliablesubmit.OperationalOwnCommitConfirmed {
+				t.Fatalf("another database accepted a foreign admission token: %d", got)
+			}
+			f.confirm()
+			out := f.service.handoffOperational(ctx, other.domain, other.domain.caller, other.raw)
+			if state := operationalPrestageStateAt(t, other); out.kind != operationalUnavailable ||
+				out.reason != reliablesubmit.OperationalUnavailable || state.Claims != 0 || state.Grants != 0 || state.Posts != 0 {
+				t.Fatalf("a Service commissioned elsewhere acted on this database: %s state=%+v", operationalResultText(out), state)
+			}
+			if got := other.domain.custody.EstablishOperational(ctx, original.delivery.refs.claimID, original.assessment.boundPlan,
+				other.domain.keys.storage, original.wire, other.service.operationalAdmission.token).Disposition(); got != reliablesubmit.OperationalApplied {
+				t.Fatalf("control: the database's own token did not establish: %d", got)
+			}
+		})
 	})
 }
 
@@ -593,6 +849,7 @@ func TestOperationalRetainedAdmissionInputs(t *testing.T) {
 		completeOperationalPolicyInputs(&policyCtx, all, nil) {
 		t.Fatal("unavailable retained input admitted")
 	}
+	f.confirm()
 	if reason := f.service.qualifyOperationalRetained(context.Background(), original, f.domain.realm); reason != reliablesubmit.OperationalReasonNone {
 		t.Fatalf("built-in retained input denied: %d", reason)
 	}
@@ -611,11 +868,15 @@ func TestOperationalRetainedAdmissionInputs(t *testing.T) {
 			observations = append(observations, copyOfValue)
 			value.InvocationArgv[0] = "observer-mutated-copy"
 		}
-		// A retained continuation has no ARS, EGS or resolver dependency.
+		// A retained continuation has no ARS or resolver dependency. It asks
+		// EGS once, only to confirm the trust it was commissioned with.
 		retained.service.arsClient = nil
-		retained.service.egsClient = nil
 		before := operationalPrestageStateAt(t, retained)
+		requests := retained.egs.count()
 		out := retained.service.handoffOperational(context.Background(), retained.reopen(), retained.domain.caller, retained.raw)
+		if retained.egs.count() != requests+1 {
+			t.Fatalf("retained continuation made %d trust requests, want exactly one", retained.egs.count()-requests)
+		}
 		if out.kind != operationalAccepted || len(observations) == 0 || retained.required.Load() != int32(len(observations)) || retained.evaluated.Load() != int32(len(observations)) {
 			t.Fatalf("eligible retained built-in policy context not observed: kind=%d seen=%d required=%d evaluated=%d", out.kind, len(observations), retained.required.Load(), retained.evaluated.Load())
 		}
@@ -660,7 +921,14 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 			f := operationalSeedIntent(t)
 			d := f.reopen()
 			var reached atomic.Bool
-			withdraw := func() { reached.Store(true); f.service.withdrawOperationalEffects() }
+			// Each hook runs between writer turns. The withdrawal must be
+			// durable there, not only local.
+			withdraw := func() {
+				reached.Store(true)
+				if !f.service.withdrawOperationalEffects(context.Background(), f.domain) {
+					t.Error("withdrawal between turns was not confirmed")
+				}
+			}
 			d.proof = &operationalHandoffProofHooks{}
 			switch tc.hook {
 			case "prestage":
@@ -677,8 +945,9 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 			out := f.service.handoffOperational(context.Background(), d, d.caller, f.raw)
 			state := operationalPrestageStateAt(t, f)
 			if !reached.Load() || out.kind != operationalUnavailable || out.run != "" || out.receipt.Valid() ||
+				out.reason != reliablesubmit.OperationalUnavailable ||
 				state.Revision != tc.wantRevision || (state.StageEntries != 0) != tc.wantStage ||
-				state.Marker != tc.wantMarker || state.Posts != 0 {
+				state.Marker != tc.wantMarker || state.Posts != 0 || operationalAdmissionRowAt(t, f).State != 2 {
 				t.Fatalf("withdrawal cut result=%+v state=%+v", out, state)
 			}
 		})
@@ -691,7 +960,7 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 			var revision int
 			if f.db.QueryRow("SELECT revision FROM reliable_submit_claims WHERE codec_version=5").Scan(&revision) == nil && revision == 5 {
 				reached = true
-				f.service.withdrawOperationalEffects()
+				f.service.withdrawOperationalEffects(context.Background(), f.domain)
 			}
 		}
 		defer func() { beforeStagingHandoffValidationForTest = nil }()
@@ -711,8 +980,9 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 		f.service.operationalAdmission.proof.evaluated = func(bool) {
 			if armed {
 				calls++
-				if calls == 2 {
-					f.service.withdrawOperationalEffects()
+				// Evaluation 2 is the release qualifier, after COMMIT.
+				if calls == 2 && !f.service.withdrawOperationalEffects(context.Background(), f.domain) {
+					t.Error("withdrawal at the release qualifier was not confirmed")
 				}
 			}
 		}
@@ -744,7 +1014,7 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("POST did not enter before withdrawal")
 		}
-		if !f.service.withdrawOperationalEffects() {
+		if !f.service.withdrawOperationalEffects(context.Background(), f.domain) {
 			t.Fatal("withdrawal unavailable")
 		}
 		close(f.receiver.release)
@@ -759,254 +1029,94 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 	})
 }
 
-func TestOperationalAdmissionV1Compatibility(t *testing.T) {
-	t.Run("nonempty historical sequence is storage-shaped but admission-refused", func(t *testing.T) {
-		f := makeOperationalFixture(t, "")
-		legacy := operationalV2Original(t, f)
-		legacy.resolved.provenanceRecord = ""
-		wire, err := encodeOperationalOriginal(legacy.delivery, legacy.resolved, legacy.assessment, f.domain.keys, f.domain.realm)
-		if err != nil {
-			t.Fatal(err)
-		}
-		member := operationalVectorObject([]byte("synthetic"), []byte("record"), []byte("owner"))
-		sequence := binary.BigEndian.AppendUint16(nil, 1)
-		sequence = binary.BigEndian.AppendUint32(sequence, uint32(len(member)))
-		sequence = append(sequence, member...)
-		mutant := operationalVectorReplaceProvenance(t, wire, "operational_local_v1", sequence)
-		if _, err := reliablesubmit.MatchOperationalOriginal(legacy.delivery.refs.claimID, legacy.assessment.boundPlan, mutant); err != nil {
-			t.Fatalf("inherited custody shape refused structurally valid nonempty v1: %v", err)
-		}
-		if _, err := verifyOperationalOriginal(mutant, f.domain.keys, f.domain.realm); err == nil {
-			t.Fatal("admission accepted nonempty historical v1 whole wire")
-		}
-		if got := f.domain.custody.EstablishOperational(context.Background(), legacy.delivery.refs.claimID,
-			legacy.assessment.boundPlan, f.domain.keys.storage, mutant).Disposition(); got != reliablesubmit.OperationalApplied {
-			t.Fatalf("custody refused structural nonempty v1 proof: %d", got)
-		}
-		before := operationalPrestageStateAt(t, f)
-		assertOperationalNoFurtherEffect(t, f, before, f.submit())
-	})
+// operational_local_v1 is removed. Its bytes, built independently in the layout
+// published at 8058561, remain only as negative vectors: scope-3 custody
+// refuses them, the reader refuses them, and nothing can compose them.
+func TestOperationalV1Removed(t *testing.T) {
+	ctx := context.Background()
 	f := makeOperationalFixture(t, "")
 	original := operationalV2Original(t, f)
-	legacy := original
-	legacy.resolved.provenanceRecord = ""
-	// The test-only full TLV/PB1 builder follows the published 8058561 v1
-	// layout, including its empty provenance sequence and original commitments.
-	historical := operationalVectorWire(t, f, original, "")
-	wire, err := encodeOperationalOriginal(legacy.delivery, legacy.resolved, legacy.assessment, f.domain.keys, f.domain.realm)
-	if err != nil {
-		t.Fatal(err)
+	claim, plan, token := original.delivery.refs.claimID, original.assessment.boundPlan, f.service.operationalAdmission.token
+	// Control: the same independent builder reproduces the v2 wire, and both
+	// layers accept it, so each refusal below is about the v1 layout alone.
+	current := operationalVectorWire(t, f, original, f.expectedEvidence)
+	if !bytes.Equal(current, original.wire) {
+		t.Fatal("control: independent v2 vector differs from the composed original")
 	}
-	if !bytes.Equal(wire, historical) {
-		t.Fatalf("historical v1 full-wire/PB1 oracle changed: expected=%d actual=%d", len(historical), len(wire))
+	if _, err := reliablesubmit.MatchOperationalOriginal(claim, plan, current); err != nil {
+		t.Fatalf("control: scope-3 custody refused v2: %v", err)
 	}
-	wire = historical
-	read, err := verifyOperationalOriginal(wire, f.domain.keys, f.domain.realm)
-	if err != nil || read.variant != operationalOriginalV1 || !bytes.Contains(wire, []byte("operational_local_v1")) {
-		t.Fatalf("historical exact reader: %v", err)
+	if _, err := verifyOperationalOriginal(current, f.domain.keys, f.domain.realm); err != nil {
+		t.Fatalf("control: reader refused v2: %v", err)
 	}
-	if !reflect.DeepEqual(wire, read.wire) {
-		t.Fatal("historical bytes changed during read")
-	}
-	if reason := f.service.qualifyOperationalRetained(context.Background(), read, f.domain.realm); reason != reliablesubmit.OperationalUnavailable {
-		t.Fatalf("unmarked v1 granted current first effect: %d", reason)
-	}
-	if got := f.domain.custody.EstablishOperational(context.Background(), legacy.delivery.refs.claimID,
-		legacy.assessment.boundPlan, f.domain.keys.storage, wire).Disposition(); got != reliablesubmit.OperationalApplied {
-		t.Fatalf("legacy proof establishment=%d", got)
-	}
-	before := operationalPrestageStateAt(t, f)
-	out := f.submit()
-	assertOperationalNoFurtherEffect(t, f, before, out)
-	t.Run("stamped but unmarked", func(t *testing.T) {
-		old, seed := operationalSeedHistoricalV1ForProof(t, false, true)
-		atStamp := operationalPrestageStateAt(t, old)
-		if seed.write != reliablesubmit.OperationalOwnCommitConfirmed || atStamp.Revision != 4 ||
-			!atStamp.Stamp || atStamp.Marker || atStamp.StageEntries != 1 || atStamp.Posts != 0 {
-			t.Fatalf("historical stamped seed: write=%d state=%+v", seed.write, atStamp)
-		}
-		refused := old.submit()
-		assertOperationalNoFurtherEffect(t, old, atStamp, refused)
-	})
-	for _, rollback := range []bool{false, true} {
-		name := "accepted"
-		if rollback {
-			name = "marked positive"
-		}
+	published := operationalVectorWire(t, f, original, "")
+	member := operationalVectorObject([]byte("synthetic"), []byte("record"), []byte("owner"))
+	sequence := binary.BigEndian.AppendUint16(nil, 1)
+	sequence = binary.BigEndian.AppendUint32(sequence, uint32(len(member)))
+	sequence = append(sequence, member...)
+	for name, wire := range map[string][]byte{
+		"published layout with the empty sequence":   published,
+		"published layout with a nonempty sequence":  operationalVectorReplaceProvenance(t, published, "operational_local_v1", sequence),
+		"v1 literal over the retained evidence leaf": operationalVectorReplaceProvenance(t, original.wire, "operational_local_v1", []byte(f.expectedEvidence)),
+	} {
 		t.Run(name, func(t *testing.T) {
-			old, seeded := operationalSeedHistoricalV1ForProof(t, rollback)
-			if rollback && seeded.kind != operationalAmbiguous || !rollback && seeded.kind != operationalAccepted {
-				t.Fatalf("historical v1 seed: %+v", seeded)
+			if bytes.Equal(wire, current) {
+				t.Fatal("negative vector equals the accepted wire")
 			}
-			before := operationalPrestageStateAt(t, old)
-			resumed := (&Service{}).recoverOperational(context.Background(), old.reopen(), old.domain.caller, old.raw)
-			after := operationalPrestageStateAt(t, old)
-			if resumed.kind != operationalAccepted || !resumed.receipt.Valid() ||
-				after.Posts != before.Posts || after.Revision != 6 ||
-				(!rollback && !resumed.receipt.Equal(seeded.receipt)) {
-				t.Fatalf("historical v1 receipt/reconciliation: seed=%+v resumed=%+v before=%+v after=%+v", seeded, resumed, before, after)
+			if _, err := reliablesubmit.MatchOperationalOriginal(claim, plan, wire); err == nil {
+				t.Fatal("scope-3 custody shape accepted a removed layout")
+			}
+			if _, err := verifyOperationalOriginal(wire, f.domain.keys, f.domain.realm); err == nil {
+				t.Fatal("reader accepted a removed layout")
+			}
+			before := operationalPrestageStateAt(t, f)
+			got := f.domain.custody.EstablishOperational(ctx, claim, plan, f.domain.keys.storage, wire, token)
+			if after := operationalPrestageStateAt(t, f); got.Disposition() == reliablesubmit.OperationalApplied ||
+				got.Disposition() == reliablesubmit.OperationalOwnCommitConfirmed || after != before || after.Claims != 0 || after.Grants != 0 {
+				t.Fatalf("custody stored a removed layout: disposition=%d before=%+v after=%+v", got.Disposition(), before, after)
 			}
 		})
 	}
-}
-
-// A test-only historical writer makes a genuinely sealed v1 marker/receipt.
-// The production handoff has no fresh-v1 writer path and refuses v1 first effects.
-func operationalSeedHistoricalV1ForProof(t *testing.T, rollbackReceipt bool, stopAtStamp ...bool) (*operationalFixture, operationalHandoffResult) {
-	t.Helper()
-	f := makeOperationalFixture(t, "")
-	base := operationalV2Original(t, f)
-	legacy := base
-	legacy.resolved.provenanceRecord = ""
-	historical := operationalVectorWire(t, f, base, "")
-	wire, err := encodeOperationalOriginal(legacy.delivery, legacy.resolved, legacy.assessment, f.domain.keys, f.domain.realm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(wire, historical) {
-		t.Fatal("historical v1 seed differs from independent complete byte/commitment oracle")
-	}
-	wire = historical
-	legacy, err = verifyOperationalOriginal(wire, f.domain.keys, f.domain.realm)
-	if err != nil || legacy.variant != operationalOriginalV1 {
-		t.Fatalf("legacy test-only byte construction: %v", err)
-	}
-	if rollbackReceipt {
-		if err := f.domain.custody.ConfigureOperationalCommitFaultForProof(reliablesubmit.OperationalAccept, true); err != nil {
-			t.Fatal(err)
+	t.Run("an empty evidence record cannot be composed", func(t *testing.T) {
+		if _, err := encodeOperationalOriginal(original.delivery, original.resolved, original.assessment, f.domain.keys, f.domain.realm); err != nil {
+			t.Fatalf("control: the resolved original does not encode: %v", err)
 		}
-	}
-	if len(stopAtStamp) > 0 && stopAtStamp[0] {
-		if err := f.domain.custody.ConfigureOperationalCommitFaultForProof(reliablesubmit.OperationalStamp, false); err != nil {
-			t.Fatal(err)
+		empty := original.resolved
+		empty.provenanceRecord = ""
+		if wire, err := encodeOperationalOriginal(original.delivery, empty, original.assessment, f.domain.keys, f.domain.realm); err == nil {
+			t.Fatalf("an empty evidence record was encoded (%d bytes)", len(wire))
 		}
-	}
-	if got := f.domain.custody.EstablishOperational(context.Background(), legacy.delivery.refs.claimID,
-		legacy.assessment.boundPlan, f.domain.keys.storage, wire).Disposition(); got != reliablesubmit.OperationalApplied {
-		t.Fatalf("legacy original establishment=%d", got)
-	}
-	canonical, err := privateIncomingIntent(legacy.delivery)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result operationalHandoffResult
-	read := f.domain.custody.WithOperationalOriginal(context.Background(), legacy.delivery.refs.claimID,
-		f.domain.keys.storage, canonical, reliablesubmit.OperationalEstablishmentRead,
-		func(*reliablesubmit.OperationalOriginalView) (reliablesubmit.OperationalOriginalMatch, error) {
-			return reliablesubmit.MatchOperationalOriginal(legacy.delivery.refs.claimID, legacy.assessment.boundPlan, wire)
-		}, func(access *reliablesubmit.OperationalAccess, projection reliablesubmit.OperationalProjection) {
-			result = operationalAdvanceHistoricalV1ForProof(t, f.domain, access, projection, legacy, len(stopAtStamp) > 0 && stopAtStamp[0])
-		})
-	if read.Disposition() != reliablesubmit.OperationalCurrent {
-		t.Fatalf("legacy authenticated borrow=%d reason=%d", read.Disposition(), read.Reason())
-	}
-	return f, result
-}
-
-func operationalAdvanceHistoricalV1ForProof(t *testing.T, d *operationalDomain, a *reliablesubmit.OperationalAccess,
-	p reliablesubmit.OperationalProjection, original verifiedOperationalOriginal, stopAtStamp bool) operationalHandoffResult {
-	t.Helper()
-	ctx := context.Background()
-	qualify := func() (reliablesubmit.OperationalOriginalMatch, error) {
-		return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
-	}
-	apply := func(current reliablesubmit.OperationalProjection, command reliablesubmit.OperationalCommand) reliablesubmit.OperationalProjection {
-		t.Helper()
-		mutation, err := reliablesubmit.NewOperationalMutation()
-		if err != nil {
-			t.Fatal(err)
+		if _, err := decodeOperationalEvidence(""); err == nil {
+			t.Fatal("an empty evidence record was decoded")
 		}
-		status, next := a.Apply(ctx, current, mutation, command, qualify)
-		if status != reliablesubmit.OperationalApplied {
-			t.Fatalf("historical proof write status=%d", status)
-		}
-		return next
-	}
-	assign, err := reliablesubmit.NewAssignOperationalRun()
-	if err != nil {
-		t.Fatal(err)
-	}
-	p = apply(p, assign)
-	runID, jobID, ok := p.Locator()
-	if !ok {
-		t.Fatal("legacy run assignment missing")
-	}
-	run := newResolvedRunProjection(original.resolved.plan, original.resolved.host, executionLocator{RunID: runID, jobID: jobID})
-	job, err := d.provider.project(run, jobID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	intent, err := a.BindOperationalIntent(p, job.locator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p = apply(p, intent)
-	prestage := a.Prestage(ctx, p, qualify)
-	if prestage.Disposition() != reliablesubmit.OperationalNoChange || prestage.Reason() != reliablesubmit.OperationalReasonNone {
-		t.Fatalf("legacy pre-stage proof=%d/%d", prestage.Disposition(), prestage.Reason())
-	}
-	held, err := d.createOperationalStage(runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer held.close()
-	if _, failure := materializeExecutionInputs(held, run, original.resolved.material); failure != nil {
-		t.Fatal("legacy test-only materialization")
-	}
-	originalRef, intentRef, _, _, _ := p.Bindings()
-	var parentLinks uint64
-	first, err := measureOperationalStage(held, original.resolved.material, originalRef, runID, intentRef,
-		job.project, &parentLinks, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stage, err := a.BindOperationalStage(p, job.project, job.locator, first, func() ([]byte, error) {
-		return measureOperationalStage(held, original.resolved.material, originalRef, runID, intentRef,
-			job.project, &parentLinks, false)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stopAtStamp {
-		mutation, err := reliablesubmit.NewOperationalMutation()
-		if err != nil {
-			t.Fatal(err)
+	t.Run("no production source names the removed literal", func(t *testing.T) {
+		removed := "operational_local_" + "v1"
+		checked := 0
+		for _, dir := range []string{".", "internal/reliablesubmit"} {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				checked++
+				if bytes.Contains(data, []byte(removed)) {
+					t.Errorf("%s still names %s", filepath.Join(dir, entry.Name()), removed)
+				}
+			}
 		}
-		status, next := a.Apply(ctx, p, mutation, stage, qualify)
-		if status != reliablesubmit.OperationalOwnCommitConfirmed {
-			t.Fatalf("historical stamp uncertainty=%d", status)
+		format, err := os.ReadFile("reliable_submit_operational_format.go")
+		if err != nil || checked < 20 || !bytes.Contains(format, []byte("operational_local_"+"v2")) {
+			t.Fatalf("control: production sources were not read (%d files, err=%v)", checked, err)
 		}
-		return operationalReadProjection(next).withWrite(reliablesubmit.OperationalStamp, status)
-	}
-	p = apply(p, stage)
-	mutation, err := reliablesubmit.NewOperationalMutation()
-	if err != nil {
-		t.Fatal(err)
-	}
-	marker, err := a.BindOperationalMarker(p, mutation, stage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := job.request(job.carrierForMarker(d.keys.key.bytes, p, marker.Ref()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ack operationalAck
-	status, current := a.ApplyFirstMarker(ctx, p, mutation, marker, qualify, func(applied reliablesubmit.OperationalProjection) {
-		if applied.Revision() != 5 {
-			t.Fatal("historical marker callback lacked committed marker")
-		}
-		prepared, err := d.provider.prepareExchange(ctx, http.MethodPost, "/v1/jobs", body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer prepared.cancel()
-		ack = d.provider.register(prepared)
 	})
-	if status != reliablesubmit.OperationalMarkerDirect || ack.refused || ack.collision || ack.reason != reliablesubmit.OperationalReasonNone {
-		t.Fatalf("historical direct marker/POST=%d ack=%+v", status, ack)
-	}
-	return d.reconcileOperational(ctx, a, current, job, ack)
 }
 
 func TestOperationalAdmissionCaptureIsSameResolution(t *testing.T) {
@@ -1026,25 +1136,123 @@ func TestOperationalAdmissionCaptureIsSameResolution(t *testing.T) {
 	if original.resolved.provenanceRecord != f.expectedEvidence || evidenceReads.Load() != 1 {
 		t.Fatalf("same-resolution full record capture: evidence reads=%d", evidenceReads.Load())
 	}
-	legacy := original.resolved
-	legacy.provenanceRecord = ""
-	if !reflect.DeepEqual(original.resolved.plan, legacy.plan) ||
-		!reflect.DeepEqual(original.resolved.material, legacy.material) ||
-		!reflect.DeepEqual(original.resolved.host, legacy.host) {
-		t.Fatal("provenance carrier entered plan, PB1 material, or host")
+	// An independent second resolution of the same request reads the evidence
+	// once more and yields the same plan, PB1 material, host and record.
+	again, failure := f.service.resolveExecutionForSubmit(context.Background(), original.delivery.request)
+	if failure != nil {
+		t.Fatalf("independent resolution: %s", failure.Code)
 	}
-	if strings.Contains(reflect.TypeOf(original.resolved).String(), "ArtifactEvidence") {
+	if !reflect.DeepEqual(original.resolved.plan, again.plan) || !reflect.DeepEqual(original.resolved.material, again.material) ||
+		!reflect.DeepEqual(original.resolved.host, again.host) || again.provenanceRecord != f.expectedEvidence ||
+		evidenceReads.Load() != 2 {
+		t.Fatalf("independent resolution differs from the captured one: evidence reads=%d", evidenceReads.Load())
+	}
+	// The carrier is one string beside them. No value inside the plan, the PB1
+	// material or the host holds the record or its signature.
+	var signed evidencev1.ArtifactEvidence
+	if err := json.Unmarshal([]byte(f.expectedEvidence), &signed); err != nil || signed.Seal.Signature == "" {
+		t.Fatalf("signed evidence fixture: %v", err)
+	}
+	needles := []string{f.expectedEvidence, signed.Seal.Signature}
+	for name, value := range map[string]any{"plan": original.resolved.plan, "PB1 material": original.resolved.material,
+		"host": original.resolved.host} {
+		if operationalValueCarries(reflect.ValueOf(value), needles, map[uintptr]bool{}) {
+			t.Fatalf("provenance carrier entered %s", name)
+		}
+	}
+	if !operationalValueCarries(reflect.ValueOf(original.resolved), needles, map[uintptr]bool{}) {
+		t.Fatal("control: the walk did not find the carrier in the resolution that holds it")
+	}
+	// The resolution carries the record as an immutable string, never as the
+	// typed, mutable evidence value.
+	typed := reflect.TypeOf(evidencev1.ArtifactEvidence{})
+	if operationalTypeHolds(reflect.TypeOf(original.resolved), typed, map[reflect.Type]bool{}) {
 		t.Fatal("resolved carrier aliases typed mutable evidence")
 	}
-	mutatedCopy := []byte(original.resolved.provenanceRecord)
-	mutatedCopy[0] ^= 1
-	if original.resolved.provenanceRecord != f.expectedEvidence {
-		t.Fatal("retained immutable record aliased a caller byte slice")
+	if !operationalTypeHolds(reflect.TypeOf(struct {
+		held []*evidencev1.ArtifactEvidence
+	}{}), typed, map[reflect.Type]bool{}) {
+		t.Fatal("control: the type walk did not find typed evidence where it is held")
 	}
 	if fmt.Sprintf("%+v", original) != privateExecutionValueRedaction ||
 		fmt.Sprintf("%+v", preparedArtifact{provenanceRecord: original.resolved.provenanceRecord}) != privateExecutionValueRedaction {
 		t.Fatal("full signed evidence escaped private formatting")
 	}
+}
+
+// operationalValueCarries reports whether any string or byte slice reachable
+// from v contains one of the needles. It reads unexported fields.
+func operationalValueCarries(v reflect.Value, needles []string, seen map[uintptr]bool) bool {
+	holds := func(text string) bool {
+		for _, needle := range needles {
+			if strings.Contains(text, needle) {
+				return true
+			}
+		}
+		return false
+	}
+	switch v.Kind() {
+	case reflect.String:
+		return holds(v.String())
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return false
+		}
+		if v.Kind() == reflect.Pointer {
+			if seen[v.Pointer()] {
+				return false
+			}
+			seen[v.Pointer()] = true
+		}
+		return operationalValueCarries(v.Elem(), needles, seen)
+	case reflect.Slice, reflect.Array:
+		if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.Uint8 {
+			return holds(string(v.Bytes()))
+		}
+		for i := 0; i < v.Len(); i++ {
+			if operationalValueCarries(v.Index(i), needles, seen) {
+				return true
+			}
+		}
+	case reflect.Map:
+		for iter := v.MapRange(); iter.Next(); {
+			if operationalValueCarries(iter.Key(), needles, seen) || operationalValueCarries(iter.Value(), needles, seen) {
+				return true
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if operationalValueCarries(v.Field(i), needles, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// operationalTypeHolds reports whether target is reachable from t through
+// fields, pointers, slices, arrays and maps.
+func operationalTypeHolds(t, target reflect.Type, seen map[reflect.Type]bool) bool {
+	if t == target {
+		return true
+	}
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return operationalTypeHolds(t.Elem(), target, seen)
+	case reflect.Map:
+		return operationalTypeHolds(t.Key(), target, seen) || operationalTypeHolds(t.Elem(), target, seen)
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if operationalTypeHolds(t.Field(i).Type, target, seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type admissionCountTransport func(*http.Request) (*http.Response, error)
@@ -1053,8 +1261,10 @@ func (f admissionCountTransport) RoundTrip(r *http.Request) (*http.Response, err
 
 // A retry after the current admission inputs change is evaluated against the
 // newly commissioned authority at the first remaining cut. Denial leaves the
-// retained claim exactly where it was, and a later allowed retry still
-// completes, so a denial neither advances nor poisons the claim.
+// retained claim exactly where it was. The Service that still holds the old
+// generation is fenced and judges nothing. A later generation that allows the
+// claim completes it, so a denial before staging neither advances nor poisons
+// the claim.
 func TestPR12RetryAfterPolicyChange(t *testing.T) {
 	for _, seed := range []struct {
 		name         string
@@ -1100,16 +1310,1323 @@ func TestPR12RetryAfterPolicyChange(t *testing.T) {
 				denying := operationalProofService(t, f, func(s *Service) { change.configure(t, f, s) })
 				denied := denying.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
 				assertOperationalNoFurtherEffect(t, f, seeded, denied)
-				if after := operationalPrestageStateAt(t, f); denied.reason != reliablesubmit.OperationalUnavailable ||
+				if after := operationalPrestageStateAt(t, f); denied.reason != reliablesubmit.OperationalDenied ||
 					after != seeded {
 					t.Fatalf("denied retry: result=%+v before=%+v after=%+v", denied, seeded, after)
 				}
-				allowed := f.service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
+				f.evaluated.Store(0)
+				fenced := f.service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
+				assertOperationalRefusal(t, f, seeded, fenced, reliablesubmit.OperationalUnavailable)
+				if f.evaluated.Load() != 0 {
+					t.Fatal("a fenced Service judged the claim under content the domain has replaced")
+				}
+				allowing := operationalProofService(t, f, nil)
+				allowed := allowing.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
 				if state := operationalPrestageStateAt(t, f); allowed.kind != operationalAccepted || allowed.run == "" ||
-					state.Revision != 6 || !state.Marker || state.Posts != 1 {
-					t.Fatalf("allowed retry after denial: result=%+v state=%+v", allowed, state)
+					state.Revision != 6 || !state.Marker || state.Posts != 1 || operationalAdmissionRowAt(t, f).Generation != 3 {
+					t.Fatalf("allowed retry after denial: %s state=%+v", operationalResultText(allowed), state)
 				}
 			})
 		}
+	}
+}
+
+// ---- Durable admission generation: helpers ----
+
+// operationalSeedAt stops a fresh delivery right after the named writer
+// commits, leaving one claim at that writer's revision and no later effect.
+func operationalSeedAt(t *testing.T, fault reliablesubmit.OperationalOperation) (*operationalFixture, operationalHandoffResult, operationalPrestageState) {
+	t.Helper()
+	f := makeOperationalFixture(t, "")
+	if err := f.domain.custody.ConfigureOperationalCommitFaultForProof(fault, false); err != nil {
+		t.Fatal(err)
+	}
+	first := f.submit()
+	state := operationalPrestageStateAt(t, f)
+	want := map[reliablesubmit.OperationalOperation]int{reliablesubmit.OperationalEstablish: 1, reliablesubmit.OperationalAssign: 2,
+		reliablesubmit.OperationalIntent: 3, reliablesubmit.OperationalStamp: 4}[fault]
+	if want == 0 || first.operation != fault || first.write != reliablesubmit.OperationalOwnCommitConfirmed ||
+		state.Claims != 1 || state.Revision != want || state.Marker || state.Posts != 0 || f.egs.count() != 1 {
+		t.Fatalf("seed after writer %d: %s state=%+v trust requests=%d", fault, operationalResultText(first), state, f.egs.count())
+	}
+	f.required.Store(0)
+	f.evaluated.Store(0)
+	return f, first, state
+}
+
+func operationalFixtureEvidence(t *testing.T, f *operationalFixture) evidencev1.ArtifactEvidence {
+	t.Helper()
+	var record evidencev1.ArtifactEvidence
+	if err := json.Unmarshal([]byte(f.expectedEvidence), &record); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+// operationalContentChange is one way a restarted Service's admission content
+// can differ from the content the domain was commissioned with.
+type operationalContentChange struct {
+	name      string
+	denies    bool
+	configure func(*testing.T, *operationalFixture, *Service)
+}
+
+func operationalContentChanges() []operationalContentChange {
+	return []operationalContentChange{
+		{"configured literal denial", true, func(_ *testing.T, _ *operationalFixture, s *Service) {
+			configureConfiguredStaticScriptLiteralDenyService(s, "policy-fixture-ok")
+		}},
+		{"artifact revoked", true, func(t *testing.T, f *operationalFixture, s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				operationalFixtureEvidence(t, f).Claims.Package.Identity.ArtifactDigest)
+		}},
+		{"signer revoked", true, func(t *testing.T, f *operationalFixture, s *Service) {
+			s.trustModel.SignerPolicy.RevokedSigners = append(s.trustModel.SignerPolicy.RevokedSigners,
+				operationalFixtureEvidence(t, f).Seal.KeyID)
+		}},
+		{"signer no longer allowed", true, func(_ *testing.T, _ *operationalFixture, s *Service) {
+			s.trustModel.SignerPolicy.AllowedSigners = []string{"another-signer"}
+		}},
+		{"changed verifier", true, func(t *testing.T, _ *operationalFixture, s *Service) {
+			public, _, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.provenanceVerifier.publicKey = public
+		}},
+		{"unrelated revocation", false, func(_ *testing.T, _ *operationalFixture, s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				"sha256:"+strings.Repeat("e", 64))
+		}},
+	}
+}
+
+// operationalAllowingChange is content that allows the fixture's claim and
+// differs from every entry of operationalContentChanges and from the
+// fixture's own content, so it can always advance the domain.
+func operationalAllowingChange(s *Service) {
+	s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+		"sha256:"+strings.Repeat("c", 64))
+}
+
+// lateClock arms the proof seam of the fixture Service's view: once the
+// returned flag is set, every later sample sees the confirmation deadline
+// passed. It can only add elapsed time.
+func (f *operationalFixture) lateClock() *atomic.Bool {
+	late := new(atomic.Bool)
+	f.service.operationalAdmission.proof.skew = func() time.Duration {
+		if late.Load() {
+			return operationalAdmissionConfirmationLimit
+		}
+		return 0
+	}
+	return late
+}
+
+func operationalSealedObjects(t *testing.T, f *operationalFixture) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(f.root, "objects", "v1"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
+
+// operationalRawWithKey is the fixture's request under another submit key, so
+// that it is a different fresh delivery on the same domain.
+func operationalRawWithKey(t *testing.T, f *operationalFixture, fill byte) []byte {
+	t.Helper()
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(f.raw, &request); err != nil {
+		t.Fatal(err)
+	}
+	key, err := json.Marshal(map[string]any{"contract": reliableSubmitContractV1,
+		"submit_key": base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{fill}, 32))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request["reliable_submit"] = key
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func assertOperationalCompleted(t *testing.T, f *operationalFixture, out operationalHandoffResult, what string) {
+	t.Helper()
+	if state := operationalPrestageStateAt(t, f); out.kind != operationalAccepted || out.run == "" || !out.receipt.Valid() ||
+		state.Revision != 6 || !state.Marker || !state.Receipt || state.Posts != 1 {
+		t.Fatalf("%s did not complete with exactly one POST: %s state=%+v", what, operationalResultText(out), state)
+	}
+}
+
+// ---- Two Services on one domain (design section 10; audit AF-8 and R1 (a)) ----
+
+func TestOperationalAdmissionGenerationsOnOneDomain(t *testing.T) {
+	ctx := context.Background()
+	for _, seed := range []struct {
+		name  string
+		fault reliablesubmit.OperationalOperation
+	}{
+		{"established", reliablesubmit.OperationalEstablish},
+		{"run assigned", reliablesubmit.OperationalAssign},
+		{"intent bound", reliablesubmit.OperationalIntent},
+	} {
+		for _, change := range operationalContentChanges() {
+			t.Run(seed.name+"/"+change.name, func(t *testing.T) {
+				f, _, seeded := operationalSeedAt(t, seed.fault)
+				b, bEGS := operationalProofServiceWithEGS(t, f, func(s *Service) { change.configure(t, f, s) })
+				if row := operationalAdmissionRowAt(t, f); row.Generation != 2 || row.State != 1 {
+					t.Fatalf("changed content did not advance the domain: %+v", row)
+				}
+				// Service A still holds generation 1. It is fenced: it judges
+				// nothing under its replaced content and it writes nothing.
+				fenced := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				assertOperationalRefusal(t, f, seeded, fenced, reliablesubmit.OperationalUnavailable)
+				if after := operationalPrestageStateAt(t, f); after != seeded || f.required.Load() != 0 || f.evaluated.Load() != 0 {
+					t.Fatalf("fenced Service judged or wrote: before=%+v after=%+v required=%d evaluated=%d", seeded, after,
+						f.required.Load(), f.evaluated.Load())
+				}
+				// Service B judges the in-flight claim under the content it
+				// advanced to, after exactly one confirmation.
+				second := b.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				if bEGS.count() != 1 {
+					t.Fatalf("advancing Service made %d trust requests, want one", bEGS.count())
+				}
+				if change.denies {
+					assertOperationalRefusal(t, f, seeded, second, reliablesubmit.OperationalDenied)
+					if after := operationalPrestageStateAt(t, f); after != seeded {
+						t.Fatalf("denied retry changed the claim: before=%+v after=%+v", seeded, after)
+					}
+				} else {
+					assertOperationalCompleted(t, f, second, "retry under changed content that still allows the claim")
+				}
+				// Service C advances again with allowing content. A denial is
+				// not terminal, and no path gives a second POST.
+				c := operationalProofService(t, f, operationalAllowingChange)
+				if row := operationalAdmissionRowAt(t, f); row.Generation != 3 || row.State != 1 {
+					t.Fatalf("allowing content did not advance the domain: %+v", row)
+				}
+				third := c.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				assertOperationalCompleted(t, f, third, "retry under a later allowing generation")
+				if !change.denies && (third.run != second.run || !third.receipt.Equal(second.receipt)) {
+					t.Fatal("a later generation did not return the receipt the earlier one recorded")
+				}
+			})
+		}
+	}
+}
+
+// The run-assignment cut (revision 1 to 2) is refused without a usable view,
+// and the establish gate stores nothing without one. Audit R1 (a) and (b);
+// red-team RT-10.
+func TestOperationalAdmissionRunAssignmentCutAndEstablishGate(t *testing.T) {
+	ctx := context.Background()
+	t.Run("run assignment/no view", func(t *testing.T) {
+		f, _, seeded := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
+		for name, service := range map[string]*Service{
+			"empty Service": {},
+			"restarted Service that was never commissioned": func() *Service {
+				s, _ := operationalUncommissionedService(t, f, nil)
+				return s
+			}(),
+		} {
+			out := service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+			assertOperationalRefusal(t, f, seeded, out, reliablesubmit.OperationalUnavailable)
+			if after := operationalPrestageStateAt(t, f); after != seeded {
+				t.Fatalf("%s assigned a run or changed the claim: before=%+v after=%+v", name, seeded, after)
+			}
+		}
+		assertOperationalCompleted(t, f, f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "allowed retry after refusals")
+	})
+	t.Run("run assignment/withdrawn domain", func(t *testing.T) {
+		f, _, seeded := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
+		joined := operationalProofService(t, f, nil)
+		if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+			t.Fatal("withdrawal was not confirmed")
+		}
+		for name, service := range map[string]*Service{"the Service that withdrew": f.service, "another Service on the domain": joined} {
+			out := service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+			assertOperationalRefusal(t, f, seeded, out, reliablesubmit.OperationalUnavailable)
+			if after := operationalPrestageStateAt(t, f); after != seeded {
+				t.Fatalf("%s assigned a run on a withdrawn domain: before=%+v after=%+v", name, seeded, after)
+			}
+		}
+		next := operationalProofService(t, f, operationalAllowingChange)
+		assertOperationalCompleted(t, f, next.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "retry after the domain was enabled at a new generation")
+	})
+	// A fresh delivery that is refused stores no claim, charges no reservation,
+	// seals no object and sends nothing.
+	nothing := func(t *testing.T, f *operationalFixture, out operationalHandoffResult, what string) {
+		t.Helper()
+		if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			out.run != "" || out.receipt.Valid() || state.Claims != 0 || state.Grants != 0 || state.StageEntries != 0 || state.Posts != 0 ||
+			operationalSealedObjects(t, f) != 0 {
+			t.Fatalf("%s: %s state=%+v sealed=%d", what, operationalResultText(out), state, operationalSealedObjects(t, f))
+		}
+	}
+	countEvidenceReads := func(f *operationalFixture) *atomic.Int32 {
+		var reads atomic.Int32
+		client := f.service.arsClient.client
+		base := client.Transport
+		client.Transport = admissionCountTransport(func(r *http.Request) (*http.Response, error) {
+			reads.Add(1)
+			return base.RoundTrip(r)
+		})
+		return &reads
+	}
+	t.Run("establish gate/never commissioned", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		reads := countEvidenceReads(f)
+		s, _ := operationalUncommissionedService(t, f, nil)
+		nothing(t, f, s.handoffOperational(ctx, f.domain, f.domain.caller, f.raw), "uncommissioned Service took a fresh delivery")
+		// The first sample refuses before the ordinary resolver is asked.
+		if reads.Load() != 0 {
+			t.Fatalf("a Service without a view resolved the request (%d dependency reads)", reads.Load())
+		}
+		if out := f.submit(); out.kind != operationalAccepted || reads.Load() == 0 {
+			t.Fatalf("control: the commissioned Service did not complete the same delivery: %s reads=%d", operationalResultText(out), reads.Load())
+		}
+	})
+	t.Run("establish gate/withdrawn before the first sample", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		reads := countEvidenceReads(f)
+		if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+			t.Fatal("withdrawal was not confirmed")
+		}
+		nothing(t, f, f.submit(), "withdrawn Service took a fresh delivery")
+		if reads.Load() != 0 {
+			t.Fatalf("a withdrawn Service resolved the request (%d dependency reads)", reads.Load())
+		}
+	})
+	t.Run("establish gate/withdrawn between the two samples", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		reached := false
+		f.domain.proof = &operationalHandoffProofHooks{beforeEstablish: func() {
+			reached = f.service.withdrawOperationalEffects(ctx, f.domain)
+		}}
+		nothing(t, f, f.submit(), "withdrawal between the samples still established")
+		if !reached {
+			t.Fatal("the hook between the two samples did not run")
+		}
+	})
+	t.Run("establish gate/deadline passes between the two samples", func(t *testing.T) {
+		// The row stays enabled at the held token, so only the second sample
+		// stands between an expired view and a stored claim.
+		f := makeOperationalFixture(t, "")
+		late := f.lateClock()
+		f.domain.proof = &operationalHandoffProofHooks{beforeEstablish: func() { late.Store(true) }}
+		nothing(t, f, f.submit(), "an expired view established a claim")
+		if row := operationalAdmissionRowAt(t, f); !late.Load() || row.State != 1 || row.Generation != 1 {
+			t.Fatalf("control: the domain is not still enabled at generation 1: %+v", row)
+		}
+		late.Store(false)
+		f.domain.proof = nil
+		assertOperationalCompleted(t, f, f.submit(), "the same delivery once the view is usable again")
+	})
+	t.Run("establish gate/fenced Service charges nothing", func(t *testing.T) {
+		// Design 4.3: the fenced process holds a view it believes current. The
+		// store refuses its token before a nonrefundable reservation is charged.
+		f := makeOperationalFixture(t, "")
+		next := operationalProofService(t, f, operationalAllowingChange)
+		f.confirm()
+		nothing(t, f, f.submit(), "fenced Service took a fresh delivery")
+		assertOperationalCompleted(t, f, next.handoffOperational(ctx, f.domain, f.domain.caller, f.raw), "the current generation taking the same delivery")
+		if state := operationalPrestageStateAt(t, f); state.Grants != 1 || operationalSealedObjects(t, f) != 1 {
+			t.Fatalf("control: an admitted delivery did not charge exactly one reservation: %+v", state)
+		}
+	})
+}
+
+// A denial that arrives inside a writer turn refuses that write. A denial that
+// arrives at the release qualifier, after COMMIT, keeps the write and
+// withholds its result. Audit R1 (c) and (d).
+func TestOperationalAdmissionDenialInsideEachWriter(t *testing.T) {
+	ctx := context.Background()
+	type shape struct {
+		revision                     int
+		intent, stage, stamp, marker bool
+	}
+	for _, w := range []struct {
+		name string
+		seed reliablesubmit.OperationalOperation
+		// arm names the proof hook after which evaluations are counted. Empty
+		// counts from the start, where evaluation 1 is the pre-check.
+		arm             string
+		op              reliablesubmit.OperationalOperation
+		inTurn, release int
+		refused, kept   shape
+	}{
+		{"run assignment", reliablesubmit.OperationalEstablish, "", reliablesubmit.OperationalAssign, 2, 3,
+			shape{revision: 1}, shape{revision: 2}},
+		{"intent", reliablesubmit.OperationalAssign, "", reliablesubmit.OperationalIntent, 2, 3,
+			shape{revision: 2}, shape{revision: 3, intent: true}},
+		{"stamp", reliablesubmit.OperationalIntent, "stamp", reliablesubmit.OperationalStamp, 1, 2,
+			shape{revision: 3, intent: true, stage: true}, shape{revision: 4, intent: true, stage: true, stamp: true}},
+		{"marker", reliablesubmit.OperationalIntent, "marker", reliablesubmit.OperationalMark, 1, 2,
+			shape{revision: 4, intent: true, stage: true, stamp: true}, shape{revision: 5, intent: true, stage: true, stamp: true, marker: true}},
+	} {
+		for _, cut := range []struct {
+			name      string
+			release   bool
+			withdrawn bool
+		}{
+			{"deadline passes inside the writer turn", false, false},
+			{"deadline passes at the release qualifier", true, false},
+			{"withdrawal at the release qualifier", true, true},
+		} {
+			t.Run(w.name+"/"+cut.name, func(t *testing.T) {
+				f, _, _ := operationalSeedAt(t, w.seed)
+				d := f.reopen()
+				late := f.lateClock()
+				armed, calls := w.arm == "", 0
+				d.proof = &operationalHandoffProofHooks{}
+				switch w.arm {
+				case "stamp":
+					d.proof.beforeStamp = func() { armed = true }
+				case "marker":
+					d.proof.beforeMarker = func() { armed = true }
+				}
+				at := w.inTurn
+				if cut.release {
+					at = w.release
+				}
+				f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+					if !armed || !allowed {
+						return
+					}
+					if calls++; calls != at {
+						return
+					}
+					if !cut.withdrawn {
+						late.Store(true)
+					} else if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+						// The release qualifier runs after COMMIT, outside the turn.
+						t.Error("withdrawal at the release qualifier was not confirmed")
+					}
+				}
+				out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+				state := operationalPrestageStateAt(t, f)
+				want, write := w.refused, reliablesubmit.OperationalRefused
+				if cut.release {
+					want, write = w.kept, reliablesubmit.OperationalAppliedReleaseFailed
+				}
+				got := shape{state.Revision, state.Intent, state.StageEntries != 0, state.Stamp, state.Marker}
+				if calls != at || got != want || state.Posts != 0 || out.kind != operationalUnavailable ||
+					out.reason != reliablesubmit.OperationalUnavailable || out.run != "" || out.receipt.Valid() ||
+					out.operation != w.op || out.write != write {
+					t.Fatalf("writer %d denied at evaluation %d: %s calls=%d state=%+v want=%+v", w.op, at, operationalResultText(out), calls, state, want)
+				}
+				// No later effect: the same Service stays stopped.
+				again := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				if after := operationalPrestageStateAt(t, f); after.Revision != state.Revision || after.Marker != state.Marker ||
+					after.Stamp != state.Stamp || after.Posts != 0 || again.receipt.Valid() || again.kind == operationalAccepted {
+					t.Fatalf("a stopped Service acted on a later call: %s before=%+v after=%+v", operationalResultText(again), state, after)
+				}
+			})
+		}
+	}
+	t.Run("pre-stage/deadline passes inside the turn", func(t *testing.T) {
+		f, _, seeded := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+		d := f.reopen()
+		late := f.lateClock()
+		armed, calls := false, 0
+		d.proof = &operationalHandoffProofHooks{beforePrestage: func() { armed = true }}
+		f.service.operationalAdmission.proof.evaluated = func(bool) {
+			if armed {
+				if calls++; calls == 1 {
+					late.Store(true)
+				}
+			}
+		}
+		out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+		assertOperationalRefusal(t, f, seeded, out, reliablesubmit.OperationalUnavailable)
+		if after := operationalPrestageStateAt(t, f); calls != 1 || after != seeded {
+			t.Fatalf("pre-stage denial created a stage or changed the claim: calls=%d before=%+v after=%+v", calls, seeded, after)
+		}
+	})
+}
+
+// A change of the domain's admission that lands between two writer turns is
+// seen by the next first-effect cut. One sender that is already past its
+// release re-read may still POST (design 5.4; red-team RT-4).
+func TestOperationalAdmissionChangeAtEachProofHook(t *testing.T) {
+	ctx := context.Background()
+	type row struct {
+		name, hook            string
+		wantRevision          int
+		wantStage, wantMarker bool
+	}
+	table := []row{
+		{"before prestage", "prestage", 3, false, false},
+		{"after stage create", "stamp", 3, true, false},
+		{"before marker", "marker", 4, true, false},
+		{"after marker before sender", "consume", 5, true, true},
+		{"final protected sample", "entry", 5, true, true},
+	}
+	install := func(d *operationalDomain, hook string, act func()) {
+		d.proof = &operationalHandoffProofHooks{}
+		switch hook {
+		case "prestage":
+			d.proof.beforePrestage = act
+		case "stamp":
+			d.proof.beforeStamp = act
+		case "marker":
+			d.proof.beforeMarker = act
+		case "consume":
+			d.proof.beforeConsume = func(*liveSender, *handoffOwner) { act() }
+		case "entry":
+			d.proof.beforeEntrySample = act
+		}
+	}
+	for _, change := range []struct {
+		name string
+		// local is true when the acting Service's own view stops, so even the
+		// final sample refuses. Otherwise only the durable row changes.
+		local bool
+		act   func(*testing.T, *operationalFixture, *atomic.Bool) func()
+	}{
+		{"another Service advances", false, func(t *testing.T, f *operationalFixture, _ *atomic.Bool) func() {
+			return func() { operationalProofService(t, f, operationalAllowingChange) }
+		}},
+		{"another Service withdraws the domain", false, func(t *testing.T, f *operationalFixture, _ *atomic.Bool) func() {
+			joined := operationalProofService(t, f, nil)
+			return func() {
+				if !joined.withdrawOperationalEffects(ctx, f.domain) {
+					t.Error("withdrawal by the second Service was not confirmed")
+				}
+			}
+		}},
+		{"the confirmation deadline passes", true, func(_ *testing.T, _ *operationalFixture, late *atomic.Bool) func() {
+			return func() { late.Store(true) }
+		}},
+	} {
+		for _, tc := range table {
+			t.Run(change.name+"/"+tc.name, func(t *testing.T) {
+				f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+				d := f.reopen()
+				late := f.lateClock()
+				act := change.act(t, f, late)
+				reached := false
+				install(d, tc.hook, func() { reached = true; act() })
+				out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+				state := operationalPrestageStateAt(t, f)
+				if !reached {
+					t.Fatal("the proof hook did not run")
+				}
+				if !change.local && (tc.hook == "consume" || tc.hook == "entry") {
+					// The marker is committed and its release re-read has
+					// passed: this one sender proceeds.
+					assertOperationalCompleted(t, f, out, "sender already past its release re-read")
+					// No later first-effect write commits on the domain for
+					// the Service that was fenced or stopped.
+					other := operationalRawWithKey(t, f, 0x32)
+					later := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, other)
+					if after := operationalPrestageStateAt(t, f); later.kind != operationalUnavailable ||
+						later.reason != reliablesubmit.OperationalUnavailable || after.Claims != 1 || after.Posts != 1 || after.Grants != state.Grants {
+						t.Fatalf("a later first effect committed after the change: %s state=%+v", operationalResultText(later), after)
+					}
+					return
+				}
+				if out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable || out.run != "" ||
+					out.receipt.Valid() || state.Revision != tc.wantRevision || (state.StageEntries != 0) != tc.wantStage ||
+					state.Marker != tc.wantMarker || state.Posts != 0 {
+					t.Fatalf("change at %s was not seen by the next cut: %s state=%+v", tc.hook, operationalResultText(out), state)
+				}
+			})
+		}
+	}
+}
+
+// ---- Freshness (design 5.5 and section 10) ----
+
+func TestOperationalAdmissionConfirmationDeadlineArithmetic(t *testing.T) {
+	limit := operationalAdmissionConfirmationLimit
+	if limit != 30*time.Second {
+		t.Fatalf("confirmation limit is %s; the contract says 30 seconds", limit)
+	}
+	confirmed := time.Now()
+	wall := func(at time.Time, seconds int64) time.Time { return operationalShiftWallClock(t, at, seconds) }
+	skewed := func(d time.Duration) *operationalAdmissionProofHooks {
+		return &operationalAdmissionProofHooks{skew: func() time.Duration { return d }}
+	}
+	for _, tc := range []struct {
+		name      string
+		confirmed time.Time
+		now       time.Time
+		proof     *operationalAdmissionProofHooks
+		want      bool
+	}{
+		{"never confirmed", time.Time{}, confirmed, nil, false},
+		{"same instant", confirmed, confirmed, nil, true},
+		{"one nanosecond inside the limit", confirmed, confirmed.Add(limit - 1), nil, true},
+		{"exactly the limit", confirmed, confirmed.Add(limit), nil, false},
+		{"past the limit", confirmed, confirmed.Add(limit + time.Hour), nil, false},
+		{"both clocks before the confirmation", confirmed, confirmed.Add(-1), nil, false},
+		// The two clocks disagree: either one refuses alone.
+		{"wall clock at the limit, monotonic inside", confirmed, wall(confirmed.Add(time.Second), 29), nil, false},
+		{"wall clock inside, monotonic at the limit", confirmed, wall(confirmed.Add(limit), -29), nil, false},
+		{"wall clock moved backwards", confirmed, wall(confirmed.Add(time.Second), -2), nil, false},
+		{"control: both clocks inside after a wall step", confirmed, wall(confirmed.Add(time.Second), 28), nil, true},
+		// The proof seam only adds elapsed time.
+		{"skew just inside", confirmed, confirmed.Add(10 * time.Second), skewed(limit - 10*time.Second - 1), true},
+		{"skew reaches the limit", confirmed, confirmed.Add(10 * time.Second), skewed(limit - 10*time.Second), false},
+		{"skew reaches the limit on the wall clock only", confirmed, wall(confirmed.Add(time.Second), 9), skewed(limit - 10*time.Second), false},
+		{"skew beyond any limit", confirmed, confirmed, skewed(1<<63 - 1), false},
+		{"negative skew cannot buy time", confirmed, confirmed.Add(limit - 1), skewed(-time.Hour), false},
+		{"negative skew refuses even inside the limit", confirmed, confirmed, skewed(-1), false},
+		{"zero skew", confirmed, confirmed, skewed(0), true},
+		{"hooks without a skew", confirmed, confirmed, &operationalAdmissionProofHooks{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := operationalConfirmationFresh(tc.confirmed, tc.now, tc.proof); got != tc.want {
+				t.Fatalf("fresh=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// operationalShiftWallClock returns at with its wall-clock reading moved by
+// whole seconds and its monotonic reading untouched, which is what a stepped
+// or suspended host clock produces and what no time API will construct. It
+// checks its own result, so a change of the runtime's layout fails loudly.
+func operationalShiftWallClock(t *testing.T, at time.Time, seconds int64) time.Time {
+	t.Helper()
+	type layout struct {
+		wall uint64
+		ext  int64
+		loc  *time.Location
+	}
+	forged := at
+	if unsafe.Sizeof(forged) != unsafe.Sizeof(layout{}) {
+		t.Fatal("time.Time layout changed; rewrite this forgery")
+	}
+	fields := (*layout)(unsafe.Pointer(&forged))
+	if fields.wall>>63 != 1 {
+		t.Fatal("the time to forge carries no monotonic reading")
+	}
+	// With a monotonic reading present, wall seconds start at bit 30.
+	fields.wall = uint64(int64(fields.wall) + seconds<<30)
+	if forged.Sub(at) != 0 || forged.Round(0).Sub(at.Round(0)) != time.Duration(seconds)*time.Second {
+		t.Fatalf("forged time is not a pure wall-clock step: monotonic=%s wall=%s", forged.Sub(at), forged.Round(0).Sub(at.Round(0)))
+	}
+	return forged
+}
+
+func TestOperationalAdmissionFreshness(t *testing.T) {
+	ctx := context.Background()
+	changed := func(f *operationalFixture) egsmodel.RuntimeTrustPolicy {
+		trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+		trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("d", 64))
+		return trust
+	}
+	t.Run("one trust request per effect-capable invocation and none otherwise", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		// A fresh delivery passes all three confirmation points.
+		first := f.submit()
+		assertOperationalCompleted(t, f, first, "fresh delivery")
+		if f.egs.count() != 1 {
+			t.Fatalf("fresh delivery made %d trust requests, want one", f.egs.count())
+		}
+		replay := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+		recovered := f.service.recoverOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+		if replay.kind != operationalAccepted || recovered.kind != operationalAccepted || replay.run != first.run ||
+			recovered.run != first.run || f.egs.count() != 1 {
+			t.Fatalf("accepted replay or recovery asked EGS: replay=%s recovered=%s requests=%d", operationalResultText(replay),
+				operationalResultText(recovered), f.egs.count())
+		}
+		for _, fault := range []reliablesubmit.OperationalOperation{reliablesubmit.OperationalEstablish,
+			reliablesubmit.OperationalAssign, reliablesubmit.OperationalIntent} {
+			retained, _, _ := operationalSeedAt(t, fault)
+			recovery := retained.service.recoverOperational(ctx, retained.reopen(), retained.domain.caller, retained.raw)
+			if recovery.kind == operationalAccepted || retained.egs.count() != 1 {
+				t.Fatalf("recovery of an unfinished claim asked EGS or completed it: %s requests=%d", operationalResultText(recovery), retained.egs.count())
+			}
+			assertOperationalCompleted(t, retained, retained.service.handoffOperational(ctx, retained.reopen(), retained.domain.caller, retained.raw),
+				"retained continuation")
+			if retained.egs.count() != 2 {
+				t.Fatalf("continuation after writer %d made %d trust requests, want one", fault, retained.egs.count()-1)
+			}
+		}
+		marked := makeOperationalFixture(t, "")
+		if err := marked.domain.custody.ConfigureOperationalCommitFaultForProof(reliablesubmit.OperationalAccept, true); err != nil {
+			t.Fatal(err)
+		}
+		if seed := marked.submit(); seed.kind != operationalAmbiguous || marked.egs.count() != 1 {
+			t.Fatalf("marked seed: %s requests=%d", operationalResultText(seed), marked.egs.count())
+		}
+		reconciled := marked.service.handoffOperational(ctx, marked.reopen(), marked.domain.caller, marked.raw)
+		if reconciled.kind != operationalAccepted || marked.egs.count() != 1 || operationalPrestageStateAt(t, marked).Posts != 1 {
+			t.Fatalf("marked reconciliation asked EGS or sent again: %s requests=%d", operationalResultText(reconciled), marked.egs.count())
+		}
+	})
+	t.Run("different trust at EGS latches supersession", func(t *testing.T) {
+		for _, seed := range []string{"fresh delivery", "retained claim"} {
+			t.Run(seed, func(t *testing.T) {
+				var f *operationalFixture
+				if seed == "fresh delivery" {
+					f = makeOperationalFixture(t, "")
+				} else {
+					f, _, _ = operationalSeedAt(t, reliablesubmit.OperationalEstablish)
+				}
+				before := operationalPrestageStateAt(t, f)
+				requests := f.egs.count()
+				original := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+				f.egs.serve(changed(f))
+				out := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalUnavailable)
+				if after := operationalPrestageStateAt(t, f); after != before || f.evaluated.Load() != 0 || f.egs.count() != requests+1 {
+					t.Fatalf("superseded Service reached a cut: before=%+v after=%+v evaluated=%d", before, after, f.evaluated.Load())
+				}
+				// The latch outlives the cause: EGS reverts, the process stays
+				// stopped and does not ask again. Only a restart adopts trust.
+				f.egs.serve(original)
+				for i := 0; i < 2; i++ {
+					again := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+					assertOperationalRefusal(t, f, before, again, reliablesubmit.OperationalUnavailable)
+				}
+				if after := operationalPrestageStateAt(t, f); after != before || f.egs.count() != requests+1 {
+					t.Fatalf("a superseded Service resumed after EGS reverted: after=%+v requests=%d", after, f.egs.count()-requests)
+				}
+				// The domain itself is untouched: a restarted Service with the
+				// reverted content joins and completes.
+				restarted := operationalProofService(t, f, nil)
+				if row := operationalAdmissionRowAt(t, f); row.Generation != 1 || row.State != 1 {
+					t.Fatalf("supersession changed the durable row: %+v", row)
+				}
+				assertOperationalCompleted(t, f, restarted.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "restarted Service")
+			})
+		}
+	})
+	t.Run("a failed confirmation extends nothing", func(t *testing.T) {
+		for _, failure := range []string{"unreachable", "bad signature", "unverifiable key"} {
+			t.Run(failure, func(t *testing.T) {
+				f, _, seeded := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
+				held := f.service.operationalConfirmed
+				if held.IsZero() {
+					t.Fatal("control: the seeding invocation recorded no confirmation")
+				}
+				switch failure {
+				case "unreachable":
+					f.egs.failing(true)
+				case "bad signature":
+					f.egs.forging(true)
+				case "unverifiable key":
+					f.service.trustModelVerifier.keyID = "another-egs-key"
+				}
+				f.service.confirmOperationalAdmission(ctx)
+				if f.service.operationalConfirmed != held || f.service.operationalSuperseded || f.egs.count() != 2 {
+					t.Fatalf("a failed confirmation changed the Service: confirmed moved=%t superseded=%t requests=%d",
+						f.service.operationalConfirmed != held, f.service.operationalSuperseded, f.egs.count())
+				}
+				// Once the deadline of the last good confirmation has passed,
+				// every cut refuses, however often EGS is asked.
+				late := f.lateClock()
+				late.Store(true)
+				out := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+				assertOperationalRefusal(t, f, seeded, out, reliablesubmit.OperationalUnavailable)
+				if after := operationalPrestageStateAt(t, f); after != seeded || f.evaluated.Load() != 0 || f.egs.count() != 3 {
+					t.Fatalf("an unconfirmed Service reached a cut: after=%+v evaluated=%d requests=%d", after, f.evaluated.Load(), f.egs.count())
+				}
+				// Inside the deadline the earlier confirmation still serves.
+				late.Store(false)
+				assertOperationalCompleted(t, f, f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw),
+					"continuation inside the deadline of the last good confirmation")
+			})
+		}
+		t.Run("control: a good confirmation moves the deadline forward", func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			f.confirm()
+			first := f.service.operationalConfirmed
+			time.Sleep(2 * time.Millisecond)
+			f.confirm()
+			if second := f.service.operationalConfirmed; !second.After(first) || second.After(time.Now()) {
+				t.Fatalf("confirmation time did not advance: first=%s second=%s", first, second)
+			}
+		})
+		t.Run("the recorded time is sampled before the request is sent", func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			var during time.Time
+			f.egs.observe(func() {
+				time.Sleep(2 * time.Millisecond)
+				during = time.Now()
+			})
+			f.confirm()
+			if during.IsZero() || !f.service.operationalConfirmed.Before(during) {
+				t.Fatalf("confirmation time %s is not earlier than the request %s", f.service.operationalConfirmed, during)
+			}
+		})
+	})
+	t.Run("a Service that was never confirmed admits nothing", func(t *testing.T) {
+		f := makeOperationalFixture(t, "")
+		f.egs.failing(true)
+		if _, ok := f.service.currentOperationalAdmission(f.domain.realm); ok {
+			t.Fatal("a view without a confirmation is current")
+		}
+		out := f.submit()
+		if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			state.Claims != 0 || state.Grants != 0 || f.egs.count() != 1 {
+			t.Fatalf("an unconfirmed Service took a fresh delivery: %s state=%+v", operationalResultText(out), state)
+		}
+		f.egs.failing(false)
+		assertOperationalCompleted(t, f, f.submit(), "the same delivery after a first good confirmation")
+	})
+	t.Run("the confirmation never overlaps a writer turn", func(t *testing.T) {
+		probe := func(f *operationalFixture) error {
+			conn, err := f.db.Conn(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+				return err
+			}
+			_, err = conn.ExecContext(ctx, "ROLLBACK")
+			return err
+		}
+		for _, seed := range []reliablesubmit.OperationalOperation{0, reliablesubmit.OperationalEstablish,
+			reliablesubmit.OperationalAssign, reliablesubmit.OperationalIntent} {
+			var f *operationalFixture
+			if seed == 0 {
+				f = makeOperationalFixture(t, "")
+			} else {
+				f, _, _ = operationalSeedAt(t, seed)
+			}
+			probes, busy := 0, 0
+			f.egs.observe(func() {
+				probes++
+				if err := probe(f); err != nil {
+					busy++
+					t.Errorf("writer lock was held while EGS was asked (seed %d): %v", seed, err)
+				}
+			})
+			assertOperationalCompleted(t, f, f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "probed invocation")
+			if probes != 1 || busy != 0 {
+				t.Fatalf("seed %d: probes=%d busy=%d", seed, probes, busy)
+			}
+		}
+		// Control: the same probe fails when it runs inside a writer turn.
+		f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
+		calls := 0
+		var inside error
+		f.service.operationalAdmission.proof.evaluated = func(bool) {
+			if calls++; calls == 2 {
+				inside = probe(f)
+			}
+		}
+		assertOperationalCompleted(t, f, f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "control invocation")
+		if inside == nil {
+			t.Fatal("control: BEGIN IMMEDIATE succeeded inside the run-assignment writer turn")
+		}
+	})
+}
+
+// ---- Outcomes (design 5.6; red-team RT-2) ----
+
+// operationalFutureInputPolicy asks for an input class the retained path
+// cannot supply. No production path can commission it; the test installs it
+// in a view directly to reach the unsupported-input branch.
+type operationalFutureInputPolicy struct{}
+
+func (operationalFutureInputPolicy) RequiredInputClasses(AdmissionPolicyContext) []AdmissionPolicyInputClass {
+	return []AdmissionPolicyInputClass{"future_input"}
+}
+
+func (operationalFutureInputPolicy) Evaluate(context.Context, AdmissionPolicyContext) AdmissionPolicyDecision {
+	return DenyAdmissionPolicyDecision("unreachable", "unreachable", "unreachable")
+}
+
+// Every cause maps to its value-free reason at a first-effect cut, and none
+// discloses a run or a receipt or changes the claim.
+func TestOperationalAdmissionOutcomeMapping(t *testing.T) {
+	ctx := context.Background()
+	denied, unavailable, integrity := reliablesubmit.OperationalDenied, reliablesubmit.OperationalUnavailable, reliablesubmit.OperationalIntegrity
+	if denied == unavailable || denied == integrity || denied == reliablesubmit.OperationalReasonNone {
+		t.Fatal("OperationalDenied is not a reason of its own")
+	}
+	type arranged struct {
+		service *Service
+		domain  *operationalDomain
+	}
+	through := func(change string) func(*testing.T, *operationalFixture) arranged {
+		return func(t *testing.T, f *operationalFixture) arranged {
+			for _, candidate := range operationalContentChanges() {
+				if candidate.name == change {
+					return arranged{operationalProofService(t, f, func(s *Service) { candidate.configure(t, f, s) }), f.reopen()}
+				}
+			}
+			t.Fatalf("unknown content change %q", change)
+			return arranged{}
+		}
+	}
+	causes := []struct {
+		name    string
+		reason  reliablesubmit.OperationalReason
+		arrange func(*testing.T, *operationalFixture) arranged
+	}{
+		// Denied: the current content refuses this claim.
+		{"signer not allowed", denied, through("signer no longer allowed")},
+		{"signer revoked", denied, through("signer revoked")},
+		{"artifact revoked", denied, through("artifact revoked")},
+		{"built-in policy denies", denied, through("configured literal denial")},
+		{"retained evidence does not verify under the current verifier", denied, through("changed verifier")},
+		{"verifier key id rotated", denied, func(t *testing.T, f *operationalFixture) arranged {
+			return arranged{operationalProofService(t, f, func(s *Service) { s.provenanceVerifier.keyID = "rotated-provenance-key" }), f.reopen()}
+		}},
+		// Unavailable: this process cannot judge now.
+		{"no view", unavailable, func(_ *testing.T, f *operationalFixture) arranged { return arranged{&Service{}, f.reopen()} }},
+		{"token mismatch", unavailable, func(t *testing.T, f *operationalFixture) arranged {
+			operationalProofService(t, f, operationalAllowingChange)
+			return arranged{f.service, f.reopen()}
+		}},
+		{"withdrawn by this Service", unavailable, func(t *testing.T, f *operationalFixture) arranged {
+			if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+				t.Fatal("withdrawal was not confirmed")
+			}
+			return arranged{f.service, f.reopen()}
+		}},
+		{"withdrawn by another Service", unavailable, func(t *testing.T, f *operationalFixture) arranged {
+			if !operationalProofService(t, f, nil).withdrawOperationalEffects(ctx, f.domain) {
+				t.Fatal("withdrawal was not confirmed")
+			}
+			return arranged{f.service, f.reopen()}
+		}},
+		{"superseded", unavailable, func(_ *testing.T, f *operationalFixture) arranged {
+			trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+			trust.SignerPolicy.RevokedSigners = append(trust.SignerPolicy.RevokedSigners, "an-unrelated-signer")
+			f.egs.serve(trust)
+			return arranged{f.service, f.reopen()}
+		}},
+		{"deadline passed", unavailable, func(_ *testing.T, f *operationalFixture) arranged {
+			f.lateClock().Store(true)
+			return arranged{f.service, f.reopen()}
+		}},
+		{"unsupported input", unavailable, func(_ *testing.T, f *operationalFixture) arranged {
+			f.service.operationalAdmission.policy = admissionPolicySet{policies: []AdmissionPolicyEvaluator{operationalFutureInputPolicy{}}}
+			return arranged{f.service, f.reopen()}
+		}},
+		// Integrity: the stored original does not fit the domain reading it.
+		{"existing original read through another epoch", integrity, func(t *testing.T, f *operationalFixture) arranged {
+			return arranged{f.service, redTeamRealmDomain(t, f, func(r *operationalRealm) { r.epoch++ })}
+		}},
+		{"existing original read through another installation", integrity, func(t *testing.T, f *operationalFixture) arranged {
+			return arranged{f.service, redTeamRealmDomain(t, f, func(r *operationalRealm) { r.installation[7] ^= 0x40 })}
+		}},
+	}
+	for _, seed := range []struct {
+		name  string
+		fault reliablesubmit.OperationalOperation
+	}{{"at the run-assignment cut", reliablesubmit.OperationalEstablish}, {"at the pre-stage cut", reliablesubmit.OperationalIntent}} {
+		for _, cause := range causes {
+			t.Run(seed.name+"/"+cause.name, func(t *testing.T) {
+				f, _, seeded := operationalSeedAt(t, seed.fault)
+				with := cause.arrange(t, f)
+				out := with.service.handoffOperational(ctx, with.domain, with.domain.caller, f.raw)
+				assertOperationalRefusal(t, f, seeded, out, cause.reason)
+				if after := operationalPrestageStateAt(t, f); after != seeded {
+					t.Fatalf("refused cut changed the claim: before=%+v after=%+v", seeded, after)
+				}
+			})
+		}
+	}
+	t.Run("contradictory authenticated evidence is Integrity", func(t *testing.T) {
+		// The evidence vectors of TestOperationalRetainedAdmissionEvidenceV2 pin
+		// each contradiction; this pins the order: association before signature.
+		f := makeOperationalFixture(t, "")
+		f.confirm()
+		original := operationalV2Original(t, f)
+		forged := original
+		record := operationalFixtureEvidence(t, f)
+		record.Claims.Admission.Authorization.Derivation.OutputID = "other"
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forged.resolved.provenanceRecord = string(encoded)
+		if reason := f.service.qualifyOperationalRetained(ctx, forged, f.domain.realm); reason != integrity {
+			t.Fatalf("evidence that contradicts the original and no longer verifies: reason=%d, want Integrity", reason)
+		}
+		forged.resolved.provenanceRecord = "{"
+		if reason := f.service.qualifyOperationalRetained(ctx, forged, f.domain.realm); reason != integrity {
+			t.Fatalf("malformed evidence: reason=%d, want Integrity", reason)
+		}
+	})
+}
+
+// ---- Pins for the low audit items and red-team caveats (plan 4.7) ----
+
+// AF-6. When a call is both cancelled and refused by the authority, the
+// authority refusal is reported, because it withholds the run and Canceled
+// alone does not.
+func TestOperationalAdmissionRefusalPrecedesCancellation(t *testing.T) {
+	t.Run("final sender entry", func(t *testing.T) {
+		// Cancelled and withdrawn before the admission sample of the entry.
+		f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+		d := f.reopen()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		reached := false
+		d.proof = &operationalHandoffProofHooks{beforeEntrySample: func() {
+			reached = f.service.withdrawOperationalEffects(context.Background(), f.domain)
+			cancel()
+		}}
+		out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+		state := operationalPrestageStateAt(t, f)
+		if !reached || ctx.Err() == nil || out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			out.run != "" || out.receipt.Valid() || !state.Marker || state.Posts != 0 {
+			t.Fatalf("cancelled and refused entry: %s state=%+v", operationalResultText(out), state)
+		}
+	})
+	t.Run("reconcile", func(t *testing.T) {
+		// The entry is refused by the authority while the context is still
+		// live; the cancellation arrives before the result is reconciled.
+		f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+		d := f.reopen()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		armed, fired := false, false
+		f.service.operationalAdmission.proof.skew = func() time.Duration {
+			if !armed {
+				return 0
+			}
+			// This is the admission sample of the sender entry.
+			fired = true
+			cancel()
+			return operationalAdmissionConfirmationLimit
+		}
+		d.proof = &operationalHandoffProofHooks{beforeEntrySample: func() { armed = true }}
+		out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+		state := operationalPrestageStateAt(t, f)
+		if !fired || ctx.Err() == nil || out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			out.run != "" || out.receipt.Valid() || !state.Marker || state.Posts != 0 {
+			t.Fatalf("refused entry then cancellation: %s state=%+v", operationalResultText(out), state)
+		}
+	})
+	t.Run("control: cancellation alone returns the stored run", func(t *testing.T) {
+		f, first, _ := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+		d := f.reopen()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d.proof = &operationalHandoffProofHooks{beforeEntrySample: cancel}
+		out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+		state := operationalPrestageStateAt(t, f)
+		if out.reason != reliablesubmit.OperationalCanceled || out.run != first.run || out.kind != operationalAmbiguous ||
+			!state.Marker || state.Posts != 0 {
+			t.Fatalf("cancelled entry under an allowing authority: %s state=%+v", operationalResultText(out), state)
+		}
+	})
+}
+
+// AF-7. A denial never erases a committed write. The result has one write
+// slot, which reports the last writer attempted in that call.
+func TestOperationalAdmissionResultReportsLastAttemptedWriter(t *testing.T) {
+	for _, tc := range []struct {
+		hook         string
+		operation    reliablesubmit.OperationalOperation
+		write        reliablesubmit.OperationalDisposition
+		wantRevision int
+		wantStage    bool
+	}{
+		// Pre-stage writes nothing: the intent applied in this call is reported.
+		{"prestage", reliablesubmit.OperationalIntent, reliablesubmit.OperationalApplied, 3, false},
+		// The stamp writer is attempted and refused: it is reported, and the
+		// intent committed earlier in the same call stays committed.
+		{"stamp", reliablesubmit.OperationalStamp, reliablesubmit.OperationalRefused, 3, true},
+		// The marker writer is not attempted without a view: the stamp applied
+		// in this call is reported.
+		{"marker", reliablesubmit.OperationalStamp, reliablesubmit.OperationalApplied, 4, true},
+	} {
+		t.Run(tc.hook, func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			withdraw := func() {
+				if !f.service.withdrawOperationalEffects(context.Background(), f.domain) {
+					t.Error("withdrawal between turns was not confirmed")
+				}
+			}
+			f.domain.proof = &operationalHandoffProofHooks{}
+			switch tc.hook {
+			case "prestage":
+				f.domain.proof.beforePrestage = withdraw
+			case "stamp":
+				f.domain.proof.beforeStamp = withdraw
+			case "marker":
+				f.domain.proof.beforeMarker = withdraw
+			}
+			out := f.submit()
+			state := operationalPrestageStateAt(t, f)
+			if out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable || out.run != "" ||
+				out.operation != tc.operation || out.write != tc.write || state.Revision != tc.wantRevision ||
+				!state.Intent || (state.StageEntries != 0) != tc.wantStage || state.Marker || state.Posts != 0 {
+				t.Fatalf("same-call write then denial at %s: %s state=%+v", tc.hook, operationalResultText(out), state)
+			}
+		})
+	}
+}
+
+// AF-9 and RT-3. A refused first-effect cut returns a value-free result. An
+// entry that attempts no cut (recovery, a stamped retry) returns the stored
+// facts to the authenticated original caller under any authority, writes
+// nothing and asks EGS nothing. Withholding at a refused cut is a result-shape
+// rule, not a confidentiality boundary.
+func TestOperationalAdmissionEntriesWithoutACutReturnStoredFacts(t *testing.T) {
+	ctx := context.Background()
+	type authority struct {
+		name    string
+		arrange func(*testing.T, *operationalFixture) (*Service, func() int)
+	}
+	requests := func(egs *operationalTrustAuthority) func() int { return egs.count }
+	authorities := []authority{
+		{"allowing", func(_ *testing.T, f *operationalFixture) (*Service, func() int) { return f.service, requests(f.egs) }},
+		{"absent", func(*testing.T, *operationalFixture) (*Service, func() int) {
+			return &Service{}, func() int { return 0 }
+		}},
+		{"denying", func(t *testing.T, f *operationalFixture) (*Service, func() int) {
+			s, egs := operationalProofServiceWithEGS(t, f, func(s *Service) {
+				configureConfiguredStaticScriptLiteralDenyService(s, "policy-fixture-ok")
+			})
+			return s, requests(egs)
+		}},
+		{"fenced", func(t *testing.T, f *operationalFixture) (*Service, func() int) {
+			operationalProofService(t, f, operationalAllowingChange)
+			return f.service, requests(f.egs)
+		}},
+		{"withdrawn", func(t *testing.T, f *operationalFixture) (*Service, func() int) {
+			if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+				t.Fatal("withdrawal was not confirmed")
+			}
+			return f.service, requests(f.egs)
+		}},
+	}
+	for _, entry := range []struct {
+		name     string
+		fault    reliablesubmit.OperationalOperation
+		recovery bool
+		kind     operationalResultKind
+	}{
+		{"stamped retry", reliablesubmit.OperationalStamp, false, operationalPending},
+		{"recovery of a stamped claim", reliablesubmit.OperationalStamp, true, operationalPending},
+		{"recovery of a claim with a run and no stamp", reliablesubmit.OperationalIntent, true, operationalPending},
+	} {
+		for _, a := range authorities {
+			t.Run(entry.name+"/"+a.name, func(t *testing.T) {
+				f, first, seeded := operationalSeedAt(t, entry.fault)
+				if first.run == "" {
+					t.Fatal("seed assigned no run")
+				}
+				service, count := a.arrange(t, f)
+				before := count()
+				f.evaluated.Store(0)
+				out := service.operatePrivateHandoff(ctx, f.reopen(), f.domain.caller, f.raw, entry.recovery)
+				if after := operationalPrestageStateAt(t, f); out.kind != entry.kind || out.run != first.run || out.receipt.Valid() ||
+					out.operation != 0 || out.write != 0 || after != seeded || count() != before || f.evaluated.Load() != 0 {
+					t.Fatalf("entry without a cut: %s before=%+v after=%+v trust requests=%d evaluated=%d", operationalResultText(out), seeded, after,
+						count()-before, f.evaluated.Load())
+				}
+			})
+		}
+	}
+	// The other half of the rule: with the same claim one step earlier, the
+	// handoff entry attempts a cut, and a refusal there is value-free.
+	t.Run("control: a refused cut withholds the same run", func(t *testing.T) {
+		f, first, seeded := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+		out := (&Service{}).handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+		if first.run == "" {
+			t.Fatal("seed assigned no run")
+		}
+		assertOperationalRefusal(t, f, seeded, out, reliablesubmit.OperationalUnavailable)
+	})
+}
+
+// O-5 and RT-5. A denial before staging does not poison the claim: a later
+// allowing generation completes it (TestOperationalAdmissionGenerationsOnOneDomain).
+// After staging, the claim keeps its stage residue: no later retry sends it,
+// and the caller needs a new submit key.
+func TestOperationalAdmissionDenialAfterStagingKeepsResidue(t *testing.T) {
+	ctx := context.Background()
+	f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalIntent)
+	d := f.reopen()
+	late := f.lateClock()
+	d.proof = &operationalHandoffProofHooks{beforeStamp: func() { late.Store(true) }}
+	refused := f.service.handoffOperational(ctx, d, d.caller, f.raw)
+	staged := operationalPrestageStateAt(t, f)
+	if refused.kind != operationalUnavailable || refused.reason != reliablesubmit.OperationalUnavailable || staged.Revision != 3 ||
+		staged.StageEntries != 1 || staged.Stamp || staged.Posts != 0 {
+		t.Fatalf("denial at the stamp cut: %s state=%+v", operationalResultText(refused), staged)
+	}
+	late.Store(false)
+	// In this order: the later generation fences the fixture's own Service.
+	for _, name := range []string{"same generation", "later allowing generation"} {
+		service := f.service
+		if name == "later allowing generation" {
+			service = operationalProofService(t, f, operationalAllowingChange)
+		}
+		out := service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
+		if after := operationalPrestageStateAt(t, f); out.kind == operationalAccepted || out.receipt.Valid() ||
+			out.reason != reliablesubmit.OperationalOccupiedReason || after.Revision != 3 || after.StageEntries != 1 || after.Stamp ||
+			after.Marker || after.Posts != 0 {
+			t.Fatalf("%s retried a claim with stage residue: %s state=%+v", name, operationalResultText(out), after)
+		}
+	}
+	// A new submit key is a new claim and completes.
+	fresh := operationalRawWithKey(t, f, 0x33)
+	last := operationalProofService(t, f, func(s *Service) {
+		s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("b", 64))
+	})
+	out := last.handoffOperational(ctx, f.reopen(), f.domain.caller, fresh)
+	var claims, accepted int
+	if err := f.db.QueryRow("SELECT count(*), coalesce(sum(receipt_ref IS NOT NULL),0) FROM reliable_submit_claims").Scan(&claims, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if posts, _, _ := f.receiver.counts(); out.kind != operationalAccepted || claims != 2 || accepted != 1 || posts != 1 {
+		t.Fatalf("new submit key after residue: %s claims=%d accepted=%d posts=%d", operationalResultText(out), claims, accepted, posts)
+	}
+}
+
+// ---- The realm a view is bound to (red-team RT-10, the installation check) ----
+
+// The admission row and the token name one installation and one epoch. A
+// correctly commissioned and confirmed Service that is handed a domain
+// qualified for another installation or epoch holds a token the store would
+// accept, so only the comparison of the view with the domain's realm keeps it
+// from establishing a claim sealed for a realm the row does not name.
+func TestOperationalAdmissionViewIsBoundToTheDomainRealm(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(*operationalRealm){
+		"another epoch":        func(r *operationalRealm) { r.epoch++ },
+		"another installation": func(r *operationalRealm) { r.installation[5] ^= 0x10 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			var reads atomic.Int32
+			client := f.service.arsClient.client
+			base := client.Transport
+			client.Transport = admissionCountTransport(func(r *http.Request) (*http.Response, error) {
+				reads.Add(1)
+				return base.RoundTrip(r)
+			})
+			other := redTeamRealmDomain(t, f, change)
+			f.confirm()
+			row := operationalAdmissionRowAt(t, f)
+			out := f.service.handoffOperational(ctx, other, other.caller, f.raw)
+			if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+				out.run != "" || state.Claims != 0 || state.Grants != 0 || state.Posts != 0 || operationalSealedObjects(t, f) != 0 || reads.Load() != 0 {
+				t.Fatalf("a view acted through a domain of %s: %s state=%+v dependency reads=%d", name, operationalResultText(out), state, reads.Load())
+			}
+			// It cannot stop a domain it is not bound to either, and the refusal
+			// leaves it usable on its own.
+			if f.service.withdrawOperationalEffects(ctx, other) || operationalAdmissionRowAt(t, f) != row {
+				t.Fatalf("a view withdrew through a domain of %s", name)
+			}
+			if _, ok := f.service.currentOperationalAdmission(f.domain.realm); !ok {
+				t.Fatal("a refused withdrawal stopped the Service on its own domain")
+			}
+			// No restarted Service can be commissioned through that domain.
+			fresh, _ := operationalUncommissionedService(t, f, nil)
+			if err := fresh.commissionOperationalAdmission(ctx, other); err == nil || fresh.operationalAdmission != nil {
+				t.Fatalf("the store commissioned a view for %s", name)
+			}
+			if err := fresh.advanceOperationalAdmission(ctx, other, row.Generation); err == nil || fresh.operationalAdmission != nil ||
+				operationalAdmissionRowAt(t, f) != row {
+				t.Fatalf("the store advanced the domain for %s", name)
+			}
+			// Control: the same Service completes the same delivery on its own domain.
+			assertOperationalCompleted(t, f, f.submit(), "the delivery on the domain the view is bound to")
+			if reads.Load() == 0 {
+				t.Fatal("control: the resolver's dependency reads were not counted")
+			}
+		})
+	}
+}
+
+// ---- Two processes (design section 10) ----
+
+// A second process is commissioned at the domain's generation, binds the
+// intent of a retained claim and is held between two writer turns. This
+// process then changes the domain's admission row. The held process holds a
+// view it believes current; its next cut reads the row under the writer lock
+// and refuses, so it stages nothing and sends nothing.
+func TestOperationalAdmissionFencesAnotherProcess(t *testing.T) {
+	for _, change := range []string{"advance", "withdrawal"} {
+		t.Run(change, func(t *testing.T) {
+			// The other process has no resolver: it continues a retained claim.
+			f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalAssign)
+			fixture := f.childFixture()
+			fixture.HoldBeforePrestage = true
+			raw, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "held-process.json")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			child := startOperationalChild(t, ctx, path)
+			await := func(signal <-chan struct{}, what string) {
+				t.Helper()
+				select {
+				case <-signal:
+				case logs := <-child.result:
+					t.Fatalf("the other process stopped before %s:\n%s", what, logs)
+				case <-ctx.Done():
+					t.Fatalf("timeout before %s", what)
+				}
+			}
+			await(child.ready, "readiness")
+			if _, err := fmt.Fprintln(child.input, "go"); err != nil {
+				t.Fatal(err)
+			}
+			await(child.held, "its hold between the intent and the pre-stage turn")
+			held := operationalPrestageStateAt(t, f)
+			if row := operationalAdmissionRowAt(t, f); held.Claims != 1 || held.Revision != 3 || !held.Intent || held.StageEntries != 0 ||
+				held.Posts != 0 || row.Generation != 1 || row.State != 1 {
+				t.Fatalf("the other process is not held at a bound intent under generation 1: state=%+v row=%+v", held, row)
+			}
+			var next *Service
+			if change == "advance" {
+				next = operationalProofService(t, f, operationalAllowingChange)
+			} else if !f.service.withdrawOperationalEffects(ctx, f.domain) {
+				t.Fatal("withdrawal was not confirmed")
+			}
+			if _, err := fmt.Fprintln(child.input, "go"); err != nil {
+				t.Fatal(err)
+			}
+			var logs string
+			select {
+			case logs = <-child.result:
+			case <-ctx.Done():
+				t.Fatal("the held process did not finish")
+			}
+			var kind, reason, operation, write int
+			var run, receipt, found bool
+			for _, line := range strings.Split(logs, "\n") {
+				if rest, ok := strings.CutPrefix(line, "ES_OPERATIONAL_CHILD_HELD_RESULT "); ok {
+					if _, err := fmt.Sscan(rest, &kind, &reason, &operation, &write, &run, &receipt); err != nil {
+						t.Fatal(err)
+					}
+					found = true
+				}
+			}
+			if !found || !strings.Contains(logs, "--- PASS: TestOperationalHandoffChildProcess") {
+				t.Fatalf("the held process did not report a result:\n%s", logs)
+			}
+			after := operationalPrestageStateAt(t, f)
+			if operationalResultKind(kind) != operationalUnavailable || reliablesubmit.OperationalReason(reason) != reliablesubmit.OperationalUnavailable ||
+				run || receipt || after != held {
+				t.Fatalf("a process holding the replaced generation acted: kind=%d reason=%d operation=%d write=%d run=%t receipt=%t before=%+v after=%+v",
+					kind, reason, operation, write, run, receipt, held, after)
+			}
+			// The intent the held process committed in the same call stays
+			// reported; the pre-stage turn wrote nothing.
+			if reliablesubmit.OperationalOperation(operation) != reliablesubmit.OperationalIntent ||
+				reliablesubmit.OperationalDisposition(write) != reliablesubmit.OperationalApplied {
+				t.Fatalf("held process result: operation=%d write=%d", operation, write)
+			}
+			if next != nil {
+				assertOperationalCompleted(t, f, next.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw), "the generation that replaced it")
+			}
+		})
 	}
 }

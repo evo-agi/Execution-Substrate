@@ -8,6 +8,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1295,43 +1296,215 @@ func assertAdmissionFoundationOmitsAll(t *testing.T, label string, source string
 	}
 }
 
+// operationalCommissioningPrerequisites names what §8 of the owner contract
+// requires before production code may commission, advance or withdraw private
+// operational admission, or enter the private handoff. The documentation
+// contract test requires the same identifiers, in this order, in that table.
+// The list stays on one line.
+var operationalCommissioningPrerequisites = []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE"}
+
+// operationalCommissioningEntries are the Service methods that create, replace
+// or stop the admission view. None has a production caller.
+var operationalCommissioningEntries = []string{"commissionOperationalAdmission", "advanceOperationalAdmission", "withdrawOperationalEffects"}
+
+// validateOperationalCommissioningGate is the zero-reference rule of the
+// commissioning gate. A production reference fails it and prints the
+// prerequisites, so an edit that opens the gate has to name each of them.
+func validateOperationalCommissioningGate(entry string, references []typedReference) error {
+	if err := validateTypedReferenceInventory(entry, references, map[string]int{}, true); err != nil {
+		return fmt.Errorf("%w; a production reference to %s first requires the commissioning prerequisites of the owner contract §8: %s",
+			err, entry, strings.Join(operationalCommissioningPrerequisites, ", "))
+	}
+	return nil
+}
+
+type operationalMemberInventory struct {
+	typ, name string
+	want      map[string]int
+	closures  bool
+}
+
+// operationalAdmissionStoreMembers are the store operations that write the
+// admission row and the store's release proof hook. Each writer has exactly
+// one reference, from the Service method of the same purpose, which itself
+// has no production caller. The hook has none.
+func operationalAdmissionStoreMembers(admission string) []operationalMemberInventory {
+	return []operationalMemberInventory{
+		{"OperationalCustody", "CommissionOperationalAdmission", map[string]int{admission + "Service.commissionOperationalAdmission": 1}, false},
+		{"OperationalCustody", "AdvanceOperationalAdmission", map[string]int{admission + "Service.advanceOperationalAdmission": 1}, false},
+		{"OperationalCustody", "WithdrawOperationalAdmission", map[string]int{admission + "Service.withdrawOperationalEffects": 1}, true},
+		{"OperationalCustody", "ConfigureOperationalReleaseProofForProof", map[string]int{}, true},
+	}
+}
+
+// localVariable finds the one variable or parameter called name that is
+// declared inside the function at site.
+func (pkg *typedProductionPackage) localVariable(site string, name string) (*types.Var, error) {
+	var found []*types.Var
+	for fileName, file := range pkg.files {
+		parents := astParentMap(file)
+		ast.Inspect(file, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok || identifier.Name != name {
+				return true
+			}
+			variable, ok := pkg.info.Defs[identifier].(*types.Var)
+			if !ok || variable.IsField() {
+				return true
+			}
+			if function := enclosingFunction(parents, identifier); function != nil && typedFunctionSite(fileName, function) == site {
+				found = append(found, variable)
+			}
+			return true
+		})
+	}
+	if len(found) != 1 {
+		return nil, fmt.Errorf("%s declares %d variables named %s, want one", site, len(found), name)
+	}
+	return found[0], nil
+}
+
+// validateSiteReferenceKinds requires every reference to stay inside the
+// function at site, with exactly the listed kinds: "direct-call" or
+// "reference", each with "+closure" inside a function literal.
+func validateSiteReferenceKinds(label string, site string, references []typedReference, want map[string]int) error {
+	got := make(map[string]int)
+	for _, reference := range references {
+		if reference.site != site || reference.methodExpression || reference.referenceKind == "" {
+			return fmt.Errorf("%s left %s or is indirect: %v", label, site, reference)
+		}
+		got[reference.referenceKind]++
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("%s reference kinds changed: got %v want %v (references %v)", label, got, want, references)
+	}
+	return nil
+}
+
+// validateOperationalConfirmationInventory pins where the private path may
+// ask EGS. The confirmation has one reference, inside the once-per-invocation
+// closure of operatePrivateHandoff. That closure is invoked at exactly three
+// sites: once directly, before the first authority sample of a fresh
+// delivery, and through the pre-check of advanceOperational, which runs
+// before the run assignment and before the intent and pre-stage group.
+func validateOperationalConfirmationInventory(t *testing.T, pkg *typedProductionPackage, file string) error {
+	t.Helper()
+	operate, advance := file+"Service.operatePrivateHandoff", file+"Service.advanceOperational"
+	confirmation := requirePackageMethod(t, pkg, "Service", "confirmOperationalAdmission")
+	if err := validateSiteReferenceKinds("confirmation", operate, pkg.referencesTo(confirmation),
+		map[string]int{"direct-call+closure": 1}); err != nil {
+		return err
+	}
+	advanceMethod := requirePackageMethod(t, pkg, "Service", "advanceOperational")
+	if err := validateSiteReferenceKinds("advanceOperational", operate, pkg.referencesTo(advanceMethod),
+		map[string]int{"direct-call+closure": 1}); err != nil {
+		return err
+	}
+	var closure *types.Var
+	for _, local := range []struct {
+		site, name string
+		want       map[string]int
+	}{
+		// Called once directly and handed once to advanceOperational.
+		{operate, "confirm", map[string]int{"direct-call": 1, "reference+closure": 1}},
+		// The same closure as a parameter: called only by the pre-check.
+		{advance, "confirm", map[string]int{"direct-call+closure": 1}},
+		{advance, "precheck", map[string]int{"direct-call": 2}},
+	} {
+		variable, err := pkg.localVariable(local.site, local.name)
+		if err != nil {
+			return err
+		}
+		if closure == nil {
+			closure = variable
+		}
+		references := pkg.referencesMatching(func(object types.Object) bool { return object == variable })
+		if err := validateSiteReferenceKinds(local.site+" "+local.name, local.site, references, local.want); err != nil {
+			return err
+		}
+	}
+	// The parameter is that closure: the one call of advanceOperational passes
+	// it as its last argument.
+	calls, passed := 0, 0
+	for _, source := range pkg.files {
+		ast.Inspect(source, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+			if !ok || pkg.info.Uses[selector.Sel] != advanceMethod {
+				return true
+			}
+			calls++
+			if argument, ok := ast.Unparen(call.Args[len(call.Args)-1]).(*ast.Ident); ok && pkg.info.Uses[argument] == closure {
+				passed++
+			}
+			return true
+		})
+	}
+	if calls != 1 || passed != 1 {
+		return fmt.Errorf("advanceOperational must be called once with the confirmation closure: %d calls, %d with the closure", calls, passed)
+	}
+	return nil
+}
+
 func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) {
 	const admissionPath = "execution-substrate/es/admission"
 	const storagePath = admissionPath + "/internal/reliablesubmit"
 	const handoff = "es/admission/reliable_submit_operational_handoff.go:"
+	const admission = "es/admission/reliable_submit_operational_admission.go:"
 	const provider = "es/admission/reliable_submit_operational_provider.go:"
 	const storage = "es/admission/internal/reliablesubmit/operational_handoff.go:"
 	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
 	for _, view := range views {
 		pkg := requireTypedProductionPackage(t, view.packages, admissionPath)
-		for _, entry := range []string{"commissionOperationalAdmission", "withdrawOperationalEffects"} {
+		for _, entry := range operationalCommissioningEntries {
 			method := requirePackageMethod(t, pkg, "Service", entry)
-			if err := validateTypedReferenceInventory(entry, pkg.referencesTo(method), map[string]int{}, true); err != nil {
+			if err := validateOperationalCommissioningGate(entry, pkg.referencesTo(method)); err != nil {
 				t.Fatal(err)
 			}
 		}
 		for _, entry := range []string{"handoffOperational", "recoverOperational"} {
 			m := requirePackageMethod(t, pkg, "Service", entry)
-			if err := validateTypedReferenceInventory(entry, pkg.referencesTo(m), map[string]int{}, true); err != nil {
+			if err := validateOperationalCommissioningGate(entry, pkg.referencesTo(m)); err != nil {
 				t.Fatal(err)
 			}
 		}
 		for _, name := range []string{"newOperationalDomain", "newOperationalLoopbackProvider"} {
 			fn := requirePackageFunction(t, pkg, name)
-			if err := validateTypedReferenceInventory(name, pkg.referencesTo(fn), map[string]int{}, true); err != nil {
+			if err := validateOperationalCommissioningGate(name, pkg.referencesTo(fn)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := validateOperationalConfirmationInventory(t, pkg, handoff); err != nil {
+			t.Fatal(err)
+		}
+		for _, member := range []struct {
+			name string
+			want map[string]int
+		}{
+			{"installOperationalAdmission", map[string]int{
+				admission + "Service.commissionOperationalAdmission": 1, admission + "Service.advanceOperationalAdmission": 1}},
+			{"fetchVerifiedTrustModel", map[string]int{
+				"es/admission/service.go:Service.Initialize": 1, admission + "Service.confirmOperationalAdmission": 1}},
+			{"operatePrivateHandoff", map[string]int{
+				handoff + "Service.handoffOperational": 1, handoff + "Service.recoverOperational": 1}},
+		} {
+			method := requirePackageMethod(t, pkg, "Service", member.name)
+			if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, true); err != nil {
 				t.Fatal(err)
 			}
 		}
 		store := requireTypedProductionPackage(t, view.packages, storagePath)
-		for _, member := range []struct {
-			typ, name string
-			want      map[string]int
-			closures  bool
-		}{
+		for _, member := range append(operationalAdmissionStoreMembers(admission), []operationalMemberInventory{
 			{"", "OpenProvisionedOperationalCustody", map[string]int{}, true},
 			{"OperationalCustody", "ConfigureOperationalCommitFaultForProof", map[string]int{}, true},
 			{"OperationalCustody", "ConfigureOperationalPrestageProofForProof", map[string]int{}, true},
-			{"", "MatchOperationalOriginal", map[string]int{handoff + "Service.operatePrivateHandoff": 1, handoff + "Service.advanceOperational": 1}, false},
+			{"OperationalCustody", "EstablishOperational", map[string]int{handoff + "Service.operatePrivateHandoff": 1}, true},
+			{"OperationalAccess", "AdmissionHint", map[string]int{handoff + "Service.advanceOperational": 1}, false},
+			{"", "MatchOperationalOriginal", map[string]int{handoff + "Service.operatePrivateHandoff": 1, storage + "MatchAdmittedOperationalOriginal": 1}, false},
+			{"", "MatchAdmittedOperationalOriginal", map[string]int{handoff + "Service.advanceOperational": 1}, false},
 			{"OperationalAccess", "ApplyFirstMarker", map[string]int{handoff + "Service.advanceOperational": 1}, true},
 			{"OperationalAccess", "BindOperationalIntent", map[string]int{handoff + "Service.advanceOperational": 1}, true},
 			{"OperationalAccess", "BindOperationalStage", map[string]int{handoff + "Service.advanceOperational": 1}, true},
@@ -1342,7 +1515,7 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				handoff + "liveSender.consume": 1, storage + "OperationalAccess.BindOperationalMarker": 1,
 				storage + "OperationalAccess.applyOperational": 1, storage + "OperationalAccess.operationalReleaseQualified": 1,
 			}, false},
-		} {
+		}...) {
 			var ref types.Object
 			if member.typ == "" {
 				ref = requirePackageFunction(t, store, member.name)
@@ -1382,7 +1555,7 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				"verifiedOperationalObservation": provider + "operationalProvider.observe",
 				"liveSender":                     handoff + "Service.advanceOperational",
 				"handoffOwner":                   handoff + "Service.advanceOperational",
-				"operationalAdmissionSnapshot":   "es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission",
+				"operationalAdmissionSnapshot":   admission + "Service.installOperationalAdmission",
 			}},
 			{store, map[string]string{
 				"OperationalIntentInput":     storage + "OperationalAccess.BindOperationalIntent",
@@ -1404,11 +1577,14 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 }
 
 func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
-	for _, entry := range []string{"commissionOperationalAdmission", "withdrawOperationalEffects"} {
+	if !reflect.DeepEqual(operationalCommissioningEntries, []string{"commissionOperationalAdmission", "advanceOperationalAdmission", "withdrawOperationalEffects"}) {
+		t.Fatalf("commissioning entries changed: %v", operationalCommissioningEntries)
+	}
+	for _, entry := range operationalCommissioningEntries {
 		t.Run("zero-production-"+entry, func(t *testing.T) {
 			declarations := "package admission; type Service struct{}; func (*Service) " + entry + "(){}; "
 			baseline := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){}")
-			if err := validateTypedReferenceInventory(entry, baseline.referencesTo(requirePackageMethod(t, baseline, "Service", entry)), map[string]int{}, true); err != nil {
+			if err := validateOperationalCommissioningGate(entry, baseline.referencesTo(requirePackageMethod(t, baseline, "Service", entry))); err != nil {
 				t.Fatal(err)
 			}
 			for name, body := range map[string]string{
@@ -1419,13 +1595,107 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 			} {
 				t.Run(name, func(t *testing.T) {
 					mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){"+body+"}")
-					if err := validateTypedReferenceInventory(entry, mutant.referencesTo(requirePackageMethod(t, mutant, "Service", entry)), map[string]int{}, true); err == nil {
+					err := validateOperationalCommissioningGate(entry, mutant.referencesTo(requirePackageMethod(t, mutant, "Service", entry)))
+					if err == nil {
 						t.Fatal("non-test admission authority reference passed zero-reference rule")
+					}
+					if len(operationalCommissioningPrerequisites) != 5 {
+						t.Fatalf("commissioning prerequisites: %v", operationalCommissioningPrerequisites)
+					}
+					for _, prerequisite := range operationalCommissioningPrerequisites {
+						if !strings.Contains(err.Error(), prerequisite) {
+							t.Fatalf("the opened gate did not print prerequisite %s: %v", prerequisite, err)
+						}
 					}
 				})
 			}
 		})
 	}
+	t.Run("store admission writers and release hook", func(t *testing.T) {
+		const declarations = "package admission; type OperationalCustody struct{}; " +
+			"func (*OperationalCustody) CommissionOperationalAdmission(){}; func (*OperationalCustody) AdvanceOperationalAdmission(){}; " +
+			"func (*OperationalCustody) WithdrawOperationalAdmission(){}; func (*OperationalCustody) ConfigureOperationalReleaseProofForProof(){}; " +
+			"type Service struct{ custody *OperationalCustody }; func install(write func()){ write() }; "
+		const commission = "func (s *Service) commissionOperationalAdmission(){ install(func(){ s.custody.CommissionOperationalAdmission() }) }; "
+		const advance = "func (s *Service) advanceOperationalAdmission(){ install(func(){ s.custody.AdvanceOperationalAdmission() }) }; "
+		const withdraw = "func (s *Service) withdrawOperationalEffects(){ s.custody.WithdrawOperationalAdmission() }; "
+		validate := func(source string) error {
+			pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", source)
+			members := operationalAdmissionStoreMembers("fixture.go:")
+			if len(members) != 4 {
+				t.Fatalf("store admission members: %d", len(members))
+			}
+			for _, member := range members {
+				method := requirePackageMethod(t, pkg, member.typ, member.name)
+				if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, member.closures); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if err := validate(declarations + commission + advance + withdraw); err != nil {
+			t.Fatal(err)
+		}
+		for name, source := range map[string]string{
+			"second commission caller":   declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.CommissionOperationalAdmission() }",
+			"second advance caller":      declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.AdvanceOperationalAdmission() }",
+			"second withdrawal caller":   declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.WithdrawOperationalAdmission() }",
+			"commission from advance":    declarations + commission + strings.Replace(advance, "s.custody.AdvanceOperationalAdmission()", "s.custody.AdvanceOperationalAdmission(); s.custody.CommissionOperationalAdmission()", 1) + withdraw,
+			"withdrawal method value":    declarations + commission + advance + strings.Replace(withdraw, "s.custody.WithdrawOperationalAdmission()", "write := s.custody.WithdrawOperationalAdmission; write()", 1),
+			"withdrawal inside closure":  declarations + commission + advance + strings.Replace(withdraw, "s.custody.WithdrawOperationalAdmission()", "func(){ s.custody.WithdrawOperationalAdmission() }()", 1),
+			"commission method value":    declarations + strings.Replace(commission, "s.custody.CommissionOperationalAdmission()", "write := s.custody.CommissionOperationalAdmission; write()", 1) + advance + withdraw,
+			"commission never called":    declarations + strings.Replace(commission, "s.custody.CommissionOperationalAdmission()", "", 1) + advance + withdraw,
+			"release hook configuration": declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.ConfigureOperationalReleaseProofForProof() }",
+		} {
+			t.Run(name, func(t *testing.T) {
+				if err := validate(source); err == nil {
+					t.Fatal("changed store admission reference passed its inventory")
+				}
+			})
+		}
+	})
+	t.Run("confirmation call sites", func(t *testing.T) {
+		const declarations = "package admission; type Service struct{}; func (*Service) confirmOperationalAdmission(){}; "
+		const advance = "func (s *Service) advanceOperational(confirm func()){ precheck := func() bool { confirm(); return true }; if !precheck() { return }; if !precheck() { return } }; "
+		operate := func(body string) string {
+			return "func (s *Service) operatePrivateHandoff(){ confirmed := false; confirm := func(){ if !confirmed { confirmed = true; s.confirmOperationalAdmission() } }; " +
+				"with := func(){ s.advanceOperational(confirm) }; with(); " + body + " }; "
+		}
+		validate := func(source string) error {
+			return validateOperationalConfirmationInventory(t, typeCheckSyntheticProductionPackage(t, "fixture.go", source), "fixture.go:")
+		}
+		baseline := declarations + advance + operate("confirm()")
+		if err := validate(baseline); err != nil {
+			t.Fatal(err)
+		}
+		for name, source := range map[string]string{
+			"second direct confirmation":         declarations + advance + operate("confirm(); confirm()"),
+			"no direct confirmation":             declarations + advance + operate(""),
+			"confirmation outside the closure":   declarations + advance + operate("confirm(); s.confirmOperationalAdmission()"),
+			"confirmation from another function": baseline + "func other(s *Service){ s.confirmOperationalAdmission() }",
+			"confirmation as a method value":     strings.Replace(baseline, "s.confirmOperationalAdmission() }", "ask := s.confirmOperationalAdmission; ask() }", 1),
+			"closure kept":                       declarations + advance + operate("confirm(); kept := confirm; _ = kept"),
+			"another closure passed": declarations + advance + strings.Replace(operate("confirm()"),
+				"s.advanceOperational(confirm)", "kept := confirm; _ = kept; s.advanceOperational(func(){})", 1),
+			"third pre-check":                      strings.Replace(baseline, "if !precheck() { return } }; ", "if !precheck() { return }; if !precheck() { return } }; ", 1),
+			"single pre-check":                     strings.Replace(baseline, "if !precheck() { return }; if !precheck() { return } }; ", "if !precheck() { return } }; ", 1),
+			"confirmation beside the pre-check":    strings.Replace(baseline, "if !precheck() { return }; ", "confirm(); if !precheck() { return }; ", 1),
+			"pre-check without confirmation":       strings.Replace(baseline, "precheck := func() bool { confirm(); return true }", "precheck := func() bool { return true }; _ = confirm", 1),
+			"pre-check kept":                       strings.Replace(baseline, "if !precheck() { return }; ", "if !precheck() { return }; kept := precheck; _ = kept; ", 1),
+			"second advance caller":                baseline + "func other(s *Service){ s.advanceOperational(func(){}) }",
+			"advance outside the original turn":    declarations + advance + strings.Replace(operate("confirm()"), "with := func(){ s.advanceOperational(confirm) }; with(); ", "s.advanceOperational(confirm); ", 1),
+			"second confirmation closure variable": declarations + advance + operate("confirm(); { confirm := func(){}; confirm() }"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				if source == baseline {
+					t.Fatal("mutation anchor missing")
+				}
+				if err := validate(source); err == nil {
+					t.Fatal("changed confirmation call sites passed the inventory")
+				}
+			})
+		}
+	})
 	for _, expression := range []string{"&operationalAdmissionSnapshot{}", "new(operationalAdmissionSnapshot)"} {
 		t.Run("snapshot-construction/"+expression, func(t *testing.T) {
 			const declarations = "package admission; type operationalAdmissionSnapshot struct{ owner int }; "
@@ -1540,28 +1810,27 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 	})
 }
 
+// validateOperationalAuthorityConstruction requires that a value of each named
+// authority type comes to exist in exactly one way: one composite literal at
+// the expected site. Every other whole-value occurrence of the type (a second
+// literal, new, a zero-value declaration, a conversion from a same-shape
+// type, an overwrite or a copy) is refused.
 func validateOperationalAuthorityConstruction(pkg *typedProductionPackage, want map[string]string) error {
 	for name, expectedSite := range want {
-		got := make(map[string]int)
-		for fileName, file := range pkg.files {
-			parents := astParentMap(file)
-			ast.Inspect(file, func(node ast.Node) bool {
-				switch expr := node.(type) {
-				case *ast.CompositeLit:
-					if localNamedTypeName(pkg.info.TypeOf(expr)) == name {
-						got[typedFunctionSite(fileName, enclosingFunction(parents, expr))]++
-					}
-				case *ast.CallExpr:
-					if target, ok := expr.Fun.(*ast.Ident); ok && pkg.info.Uses[target] == types.Universe.Lookup("new") &&
-						len(expr.Args) == 1 && localNamedTypeName(pkg.info.TypeOf(expr.Args[0])) == name {
-						got[typedFunctionSite(fileName, enclosingFunction(parents, expr))]++
-					}
-				}
-				return true
-			})
+		declared, ok := pkg.pkg.Scope().Lookup(name).(*types.TypeName)
+		if !ok {
+			return fmt.Errorf("%s authority type was not found", name)
 		}
-		if len(got) != 1 || got[expectedSite] != 1 {
-			return fmt.Errorf("%s authority construction changed: got %v, want %s once", name, got, expectedSite)
+		structure, ok := declared.Type().Underlying().(*types.Struct)
+		if !ok {
+			return fmt.Errorf("%s authority type is not a struct", name)
+		}
+		got := make(map[string]int)
+		for _, reference := range pkg.wholeValueReferences(structure, nil, name) {
+			got[reference.site+"|"+reference.accessKind]++
+		}
+		if len(got) != 1 || got[expectedSite+"|initializer"] != 1 {
+			return fmt.Errorf("%s authority construction changed: got %v, want one literal in %s", name, got, expectedSite)
 		}
 	}
 	return nil

@@ -87,9 +87,33 @@ type operationalStoreFixture struct {
 	c          *OperationalCustody
 	base       durableClaimRecord
 	keys       PrivateReplayKeys
+	token      OperationalAdmissionToken
 }
 
+// The store fixture's admission identity. The installation equals the one
+// the fixture payload carries in its deployment leaf.
+var (
+	operationalStoreFixtureInstallation = [32]byte(bytes.Repeat([]byte{23}, 32))
+	operationalStoreFixtureDigest       = [32]byte(bytes.Repeat([]byte{41}, 32))
+)
+
+const operationalStoreFixtureEpoch uint64 = 1
+
+// newOperationalStoreFixture opens a provisioned domain and commissions its
+// admission row at generation 1.
 func newOperationalStoreFixture(t *testing.T, root string) *operationalStoreFixture {
+	t.Helper()
+	f := newUncommissionedOperationalStoreFixture(t, root)
+	token, err := f.c.CommissionOperationalAdmission(context.Background(), operationalStoreFixtureInstallation,
+		operationalStoreFixtureEpoch, operationalStoreFixtureDigest)
+	if err != nil || !token.Valid() {
+		t.Fatalf("commission fixture admission: %v", err)
+	}
+	f.token = token
+	return f
+}
+
+func newUncommissionedOperationalStoreFixture(t *testing.T, root string) *operationalStoreFixture {
 	t.Helper()
 	ctx := context.Background()
 	synthetic, err := OpenPrivateReplayCustody(ctx, root)
@@ -134,7 +158,7 @@ func operationalFixturePayload(t *testing.T, base durableClaimRecord, keys Priva
 	digest := bytes.Repeat([]byte{28}, 32)
 	f[5] = progressVectorObject([]byte("fixture@sha256:"+fmtHex(digest)), digest, []byte("owned-proof"), []byte{2}, realm[8])
 	prov := progressVectorFields(t, f[7])
-	prov[0] = []byte("operational_local_v1")
+	prov[0], prov[4] = []byte("operational_local_v2"), []byte(`{"claims":{},"seal":{}}`)
 	f[7] = progressVectorObject(prov...)
 	formats := progressVectorFields(t, f[8])
 	formats[3], formats[4] = []byte{0, 3}, []byte{0, 3}
@@ -149,12 +173,12 @@ func operationalFixturePayload(t *testing.T, base durableClaimRecord, keys Priva
 
 func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
 	f := newOperationalStoreFixture(t, fixtureReplayRoot(t))
-	legacy := operationalFixturePayload(t, f.base, f.keys, f.root)
-	if _, err := operationalOriginalView(context.Background(), legacy); err != nil {
-		t.Fatalf("historical v1 framing refused: %v", err)
+	current := operationalFixturePayload(t, f.base, f.keys, f.root)
+	if _, err := operationalOriginalView(context.Background(), current); err != nil {
+		t.Fatalf("fixture v2 framing refused: %v", err)
 	}
 	build := func(variant string, record []byte) []byte {
-		fields := progressVectorFields(t, legacy[14:])
+		fields := progressVectorFields(t, current[14:])
 		provenance := progressVectorFields(t, fields[7])
 		provenance[0], provenance[4] = []byte(variant), record
 		fields[7] = progressVectorObject(provenance...)
@@ -170,30 +194,34 @@ func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
 	if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, valid); err != nil {
 		t.Fatalf("v2 custody freeze refused: %v", err)
 	}
-	// The inherited custody grammar accepts a bounded v1 sequence. Admission
-	// alone enforces the historical empty sequence on the complete wire.
+	atCap := build("operational_local_v2", bytes.Repeat([]byte{'x'}, OperationalEvidenceLimit))
+	if _, err := operationalOriginalView(context.Background(), atCap); err != nil {
+		t.Fatalf("evidence at the shared cap refused by custody: %v", err)
+	}
+	// The published v1 layout: the v1 literal with an inherited provenance
+	// sequence, empty or not. Scope-3 custody refuses the literal itself.
+	publishedEmpty := binary.BigEndian.AppendUint16(nil, 0)
 	legacyMember := progressVectorObject([]byte("synthetic"), []byte("record"), []byte("owner"))
 	legacySequence := binary.BigEndian.AppendUint16(nil, 1)
 	legacySequence = binary.BigEndian.AppendUint32(legacySequence, uint32(len(legacyMember)))
 	legacySequence = append(legacySequence, legacyMember...)
-	legacyNonempty := build("operational_local_v1", legacySequence)
-	if _, err := operationalOriginalView(context.Background(), legacyNonempty); err != nil {
-		t.Fatalf("structurally valid nonempty v1 sequence refused by custody: %v", err)
-	}
-	if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, legacyNonempty); err != nil {
-		t.Fatalf("structurally valid nonempty v1 sequence could not be frozen: %v", err)
-	}
 	for name, raw := range map[string][]byte{
 		"empty leaf":                      build("operational_local_v2", nil),
 		"invalid UTF8":                    build("operational_local_v2", []byte{0xff}),
-		"over cap":                        build("operational_local_v2", bytes.Repeat([]byte{'x'}, 256*1024+1)),
+		"over cap":                        build("operational_local_v2", bytes.Repeat([]byte{'x'}, OperationalEvidenceLimit+1)),
 		"unknown variant":                 build("operational_local_v3", []byte("{}")),
+		"published v1 empty sequence":     build("operational_local_v1", publishedEmpty),
+		"v1 nonempty sequence":            build("operational_local_v1", legacySequence),
 		"v1 cannot carry opaque evidence": build("operational_local_v1", []byte("{}")),
 		"v1 sequence member framing":      build("operational_local_v1", []byte{0, 1, 0, 0, 0, 8}),
+		"fixture scope literal":           build("synthetic_progress_nonoperational_v1", []byte("{}")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := operationalOriginalView(context.Background(), raw); err == nil {
 				t.Fatal("invalid scope-3 provenance reached authenticated use")
+			}
+			if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, raw); err == nil {
+				t.Fatal("invalid scope-3 provenance could be frozen")
 			}
 		})
 	}
@@ -202,7 +230,7 @@ func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
 func (f *operationalStoreFixture) establish(base durableClaimRecord) OperationalDisposition {
 	f.t.Helper()
 	raw := operationalFixturePayload(f.t, base, f.keys, f.root)
-	return f.c.EstablishOperational(context.Background(), base.claim, base.plan, f.keys, raw).Disposition()
+	return f.c.EstablishOperational(context.Background(), base.claim, base.plan, f.keys, raw, f.token).Disposition()
 }
 
 func (f *operationalStoreFixture) borrow(c *OperationalCustody, base durableClaimRecord, use func(*OperationalAccess, OperationalProjection)) OperationalDisposition {
@@ -228,9 +256,18 @@ func operationalTestMutation(t *testing.T) OperationalMutation {
 	return m
 }
 
-func testOperationalQualification(a *OperationalAccess) func() (OperationalOriginalMatch, error) {
-	return func() (OperationalOriginalMatch, error) {
-		return OperationalOriginalMatch{claim: a.record.claim, plan: a.record.plan, digest: a.digest}, nil
+// testOperationalQualification models a process that holds whatever token
+// the store currently has. Tests of the fence present an explicit token with
+// testOperationalQualificationWith instead.
+func testOperationalQualification(a *OperationalAccess) OperationalQualification {
+	return func(current OperationalAdmissionToken) (OperationalOriginalMatch, error) {
+		return OperationalOriginalMatch{claim: a.record.claim, plan: a.record.plan, digest: a.digest, admission: current}, nil
+	}
+}
+
+func testOperationalQualificationWith(a *OperationalAccess, held OperationalAdmissionToken) OperationalQualification {
+	return func(OperationalAdmissionToken) (OperationalOriginalMatch, error) {
+		return OperationalOriginalMatch{claim: a.record.claim, plan: a.record.plan, digest: a.digest, admission: held}, nil
 	}
 }
 
@@ -626,9 +663,9 @@ func TestOperationalHandoffHeldWriterExcludesPrestage(t *testing.T) {
 		blocked, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
 		defer cancel()
 		stageAuthorizations := 0
-		cut := func() (OperationalOriginalMatch, error) {
+		cut := func(current OperationalAdmissionToken) (OperationalOriginalMatch, error) {
 			stageAuthorizations++
-			return admit()
+			return admit(current)
 		}
 		if k := a.Prestage(blocked, prepared, cut).Disposition(); k == OperationalNoChange || stageAuthorizations != 0 {
 			t.Fatalf("unsettled writer admitted a stage: %d %d", k, stageAuthorizations)

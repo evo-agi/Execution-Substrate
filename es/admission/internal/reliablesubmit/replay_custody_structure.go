@@ -452,11 +452,17 @@ func (v *replayStructure) assessment(f replayField) error {
 	})
 }
 
+// OperationalEvidenceLimit bounds the retained signed evidence record of a
+// scope-3 original. Custody and admission share this one value.
+const OperationalEvidenceLimit = 256 * 1024
+
 func (v *replayStructure) provenance(f replayField, scope byte) error {
 	return v.object(f, 6, 2, false, func(a []replayField) error {
 		variant := string(a[0].value)
+		// Scope 3 has exactly one provenance literal. Any other value,
+		// including the literal PR #12 first published, is refused here.
 		if scope == 2 && variant != "synthetic_progress_nonoperational_v1" ||
-			scope == 3 && variant != "operational_local_v1" && variant != "operational_local_v2" {
+			scope == 3 && variant != "operational_local_v2" {
 			return errReplayFormat
 		}
 		for i := 0; i < 4; i++ {
@@ -464,9 +470,9 @@ func (v *replayStructure) provenance(f replayField, scope byte) error {
 				return err
 			}
 		}
-		if scope == 3 && variant == "operational_local_v2" {
+		if scope == 3 {
 			if len(a[4].value) == 0 || !utf8.Valid(a[4].value) ||
-				v.scalar(a[4], 'x', 256*1024, false) != nil {
+				v.scalar(a[4], 'x', OperationalEvidenceLimit, false) != nil {
 				return errReplayFormat
 			}
 		} else {

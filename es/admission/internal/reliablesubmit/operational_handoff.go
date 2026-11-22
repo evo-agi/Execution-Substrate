@@ -386,6 +386,7 @@ type OperationalCustody struct {
 	mu            sync.RWMutex
 	fault         operationalCommitFault
 	prestageProof OperationalPrestageProofHooks
+	releaseProof  func(OperationalOperation)
 }
 
 // OperationalPrestageProofHooks observes only the read-only pre-stage turn. Its
@@ -457,6 +458,7 @@ func (c *OperationalCustody) Close() error {
 	fd, base := c.dbFD, c.base
 	c.dbFD, c.base = -1, nil
 	c.prestageProof = OperationalPrestageProofHooks{}
+	c.releaseProof = nil
 	return errors.Join(unix.Close(fd), base.Close())
 }
 
@@ -500,6 +502,9 @@ const (
 	OperationalHTTPRefusal
 	OperationalMalformed
 	OperationalContinuity
+	// OperationalDenied means the current admission content refuses this
+	// claim. It is distinct from an absent, fenced or stale authority.
+	OperationalDenied
 )
 
 type OperationalCheck struct {
@@ -633,9 +638,10 @@ func (v *OperationalOriginalView) Fields() ([]ProgressOriginalField, error) {
 
 type OperationalOriginalMatch struct {
 	privateReplayRedacted
-	claim  ClaimID
-	plan   BoundPlan
-	digest [32]byte
+	claim     ClaimID
+	plan      BoundPlan
+	digest    [32]byte
+	admission OperationalAdmissionToken
 }
 
 func MatchOperationalOriginal(claim ClaimID, plan BoundPlan, encoded []byte) (OperationalOriginalMatch, error) {
@@ -647,6 +653,29 @@ func MatchOperationalOriginal(claim ClaimID, plan BoundPlan, encoded []byte) (Op
 	}
 	return OperationalOriginalMatch{claim: claim.clone(), plan: plan.clone(), digest: sha256.Sum256(encoded)}, nil
 }
+
+// MatchAdmittedOperationalOriginal is the match a first-effect cut requires.
+// It carries the admission token the caller holds; the store compares that
+// token with the admission row it read for the same cut. A match built by
+// MatchOperationalOriginal carries none and can only serve a retained read.
+func MatchAdmittedOperationalOriginal(claim ClaimID, plan BoundPlan, encoded []byte,
+	admission OperationalAdmissionToken) (OperationalOriginalMatch, error) {
+	if !admission.Valid() {
+		return OperationalOriginalMatch{}, errClaimStoreUnavailable
+	}
+	match, err := MatchOperationalOriginal(claim, plan, encoded)
+	if err != nil {
+		return OperationalOriginalMatch{}, err
+	}
+	match.admission = admission
+	return match, nil
+}
+
+// OperationalQualification is the bounded local callback of a first-effect
+// cut. It receives the enabled admission token the store read for that cut,
+// or the zero token when the domain is uncommissioned or withdrawn, and
+// returns an admitted match. The store compares the returned token itself.
+type OperationalQualification func(current OperationalAdmissionToken) (OperationalOriginalMatch, error)
 
 type OperationalAccess struct {
 	privateReplayRedacted
@@ -952,7 +981,8 @@ func (c *OperationalCustody) operationalTurn(ctx context.Context, op Operational
 	return result
 }
 
-func (c *OperationalCustody) EstablishOperational(ctx context.Context, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, raw []byte) OperationalCheck {
+func (c *OperationalCustody) EstablishOperational(ctx context.Context, claim ClaimID, plan BoundPlan, keys PrivateReplayKeys, raw []byte,
+	admission OperationalAdmissionToken) OperationalCheck {
 	if c == nil || c.self != c {
 		return operationalRefusal(OperationalClosed)
 	}
@@ -969,6 +999,11 @@ func (c *OperationalCustody) EstablishOperational(ctx context.Context, claim Cla
 		return operationalRefusal(operationalFailureReason(ctx, OperationalIntegrity))
 	}
 	s := c.base.store
+	// A hint only: it keeps a process that does not know it is fenced from
+	// charging a nonrefundable reservation. The turn below is the authority.
+	if hint, ok := s.pooledOperationalAdmission(ctx); !ok || !admission.Valid() || hint != admission {
+		return operationalRefusal(operationalFailureReason(ctx, OperationalUnavailable))
+	}
 	permit, err := s.reserveReplaySealUseWithScope(ctx, keys, frozen.digest, false, &frozen)
 	if errors.Is(err, errOperationalOccupied) {
 		return OperationalCheck{disposition: OperationalOccupied, reason: OperationalOccupiedReason}
@@ -995,6 +1030,9 @@ func (c *OperationalCustody) EstablishOperational(ctx context.Context, claim Cla
 		}
 		if err != nil {
 			return operationalTurnResult{kind: OperationalRefused, reason: operationalStorageReason(ctx, err)}
+		}
+		if current, ok := operationalAdmissionForTurn(ctx, conn); !ok || !admission.Valid() || current != admission {
+			return operationalTurnResult{kind: OperationalRefused, reason: operationalFailureReason(ctx, OperationalUnavailable)}
 		}
 		if s.requireOperationalKeys(ctx, conn, keys, true) != nil {
 			return operationalTurnResult{kind: OperationalRefused, reason: operationalFailureReason(ctx, OperationalIntegrity)}
@@ -1256,12 +1294,16 @@ func (a *OperationalAccess) matchesOriginal(m OperationalOriginalMatch) bool {
 		witnessEqual(m.plan.Witness(), a.record.plan.Witness()) && hmac.Equal(m.digest[:], a.digest[:])
 }
 
-func (a *OperationalAccess) qualifiesOriginal(qualify func() (OperationalOriginalMatch, error)) bool {
+// qualifiesOriginal is the fence of a first-effect cut. current is the
+// enabled admission token read for this cut. The callback evaluates the
+// retained original locally and returns the token its process holds; the
+// store requires that token to equal the row.
+func (a *OperationalAccess) qualifiesOriginal(current OperationalAdmissionToken, qualify OperationalQualification) bool {
 	if qualify == nil {
 		return false
 	}
-	match, err := qualify()
-	return err == nil && a.matchesOriginal(match)
+	match, err := qualify(current)
+	return err == nil && a.matchesOriginal(match) && current.Valid() && match.admission == current
 }
 
 // OperationalPositiveProof is scoped to the active original and exact marker.
@@ -1337,7 +1379,7 @@ func (a *OperationalAccess) evidenceInput(p OperationalProjection, project, real
 	return append(buf, realm[:]...)
 }
 
-func (a *OperationalAccess) Prestage(ctx context.Context, projection OperationalProjection, qualify func() (OperationalOriginalMatch, error)) OperationalCheck {
+func (a *OperationalAccess) Prestage(ctx context.Context, projection OperationalProjection, qualify OperationalQualification) OperationalCheck {
 	if a == nil || a.self != a || !a.life.live() || qualify == nil || !a.busy.CompareAndSwap(false, true) {
 		return operationalRefusal(operationalFailureReason(ctx, OperationalClosed))
 	}
@@ -1348,7 +1390,11 @@ func (a *OperationalAccess) Prestage(ctx context.Context, projection Operational
 			return operationalTurnResult{kind: k, reason: operationalFailureReason(ctx, OperationalIntegrity)}
 		}
 		p, err := projectOperational(r, a.header)
-		if err != nil || !operationalProjectionEqual(p, projection) || r.revision != 3 || !a.qualifiesOriginal(qualify) {
+		if err != nil || !operationalProjectionEqual(p, projection) || r.revision != 3 {
+			return operationalTurnResult{kind: OperationalRefused, reason: operationalFailureReason(ctx, OperationalIntegrity)}
+		}
+		current, ok := operationalAdmissionForTurn(ctx, conn)
+		if !ok || !a.qualifiesOriginal(current, qualify) {
 			return operationalTurnResult{kind: OperationalRefused, reason: operationalFailureReason(ctx, OperationalIntegrity)}
 		}
 		return operationalTurnResult{kind: OperationalNoChange}
@@ -1361,12 +1407,12 @@ func (a *OperationalAccess) Prestage(ctx context.Context, projection Operational
 }
 
 func (a *OperationalAccess) Apply(ctx context.Context, p OperationalProjection, m OperationalMutation,
-	cmd OperationalCommand, qualify func() (OperationalOriginalMatch, error)) (OperationalDisposition, OperationalProjection) {
+	cmd OperationalCommand, qualify OperationalQualification) (OperationalDisposition, OperationalProjection) {
 	return a.applyOperational(ctx, p, m, cmd, qualify, nil)
 }
 
 func (a *OperationalAccess) ApplyFirstMarker(ctx context.Context, p OperationalProjection, m OperationalMutation, marker *OperationalMarkerCandidate,
-	qualify func() (OperationalOriginalMatch, error), onApplied func(OperationalProjection)) (OperationalDisposition, OperationalProjection) {
+	qualify OperationalQualification, onApplied func(OperationalProjection)) (OperationalDisposition, OperationalProjection) {
 	if marker == nil || onApplied == nil {
 		return OperationalRefused, OperationalProjection{}
 	}
@@ -1374,7 +1420,7 @@ func (a *OperationalAccess) ApplyFirstMarker(ctx context.Context, p OperationalP
 }
 
 func (a *OperationalAccess) applyOperational(ctx context.Context, p OperationalProjection, m OperationalMutation,
-	cmd OperationalCommand, qualify func() (OperationalOriginalMatch, error), onApplied func(OperationalProjection)) (OperationalDisposition, OperationalProjection) {
+	cmd OperationalCommand, qualify OperationalQualification, onApplied func(OperationalProjection)) (OperationalDisposition, OperationalProjection) {
 	if a == nil || a.self != a || !a.life.live() || !operationalNonzeroRef(m.value.ref.value) || !a.busy.CompareAndSwap(false, true) {
 		return OperationalRefused, OperationalProjection{}
 	}
@@ -1401,8 +1447,19 @@ func (a *OperationalAccess) applyOperational(ctx context.Context, p OperationalP
 			return operationalTurnResult{kind: k, record: r}
 		}
 		actual, err := projectOperational(r, a.header)
-		if err != nil || !operationalProjectionEqual(actual, p) || shape.op != OperationalAccept && !a.qualifiesOriginal(qualify) ||
-			shape.stage != nil && !shape.stage.Requalify() {
+		if err != nil || !operationalProjectionEqual(actual, p) {
+			return operationalTurnResult{kind: OperationalRefused}
+		}
+		if shape.op != OperationalAccept {
+			// Every first-effect writer compares the presented admission token
+			// with the row read through this turn's connection. Accept with
+			// receipt records a positive fact and is not an admission cut.
+			current, ok := operationalAdmissionForTurn(ctx, conn)
+			if !ok || !a.qualifiesOriginal(current, qualify) {
+				return operationalTurnResult{kind: OperationalRefused}
+			}
+		}
+		if shape.stage != nil && !shape.stage.Requalify() {
 			return operationalTurnResult{kind: OperationalRefused}
 		}
 		at := normalizeClaimTime(time.Now())
@@ -1444,6 +1501,9 @@ func (a *OperationalAccess) applyOperational(ctx context.Context, p OperationalP
 		}
 		return result.kind, OperationalProjection{}
 	case OperationalApplied, OperationalMarkerDirect, OperationalOwnCommitConfirmed:
+		if result.kind != OperationalOwnCommitConfirmed && a.issuer.releaseProof != nil {
+			a.issuer.releaseProof(shape.op)
+		}
 		if !a.operationalReleaseQualified(ctx, shape.op, qualify, shape.stage) {
 			if result.kind == OperationalOwnCommitConfirmed {
 				return OperationalUnknown, OperationalProjection{}
@@ -1468,14 +1528,24 @@ func (a *OperationalAccess) applyOperational(ctx context.Context, p OperationalP
 }
 
 func (a *OperationalAccess) operationalReleaseQualified(ctx context.Context, op OperationalOperation,
-	qualify func() (OperationalOriginalMatch, error), stage *OperationalStageProof) bool {
+	qualify OperationalQualification, stage *OperationalStageProof) bool {
 	if ctx.Err() != nil || a.issuer.qualify() != nil ||
 		a.issuer.base.store.checkOriginalReplayKeys(ctx, a.keys, op != OperationalAccept) != nil {
 		return false
 	}
 	_, header, err := a.authenticateObject(ctx)
-	return err == nil && hmac.Equal(header, a.header) &&
-		(op == OperationalAccept || a.qualifiesOriginal(qualify)) && (stage == nil || stage.Requalify()) && ctx.Err() == nil
+	if err != nil || !hmac.Equal(header, a.header) {
+		return false
+	}
+	if op != OperationalAccept {
+		// The admission row is read again beside the key state: an advance or a
+		// withdrawal committed after this write's COMMIT releases nothing.
+		current, ok := a.issuer.base.store.pooledOperationalAdmission(ctx)
+		if !ok || !a.qualifiesOriginal(current, qualify) {
+			return false
+		}
+	}
+	return (stage == nil || stage.Requalify()) && ctx.Err() == nil
 }
 
 type operationalStepShape struct {
@@ -1584,15 +1654,22 @@ SET phase_tag=?, run_ref=?, receipt_ref=?, revision=?, updated_at_unix_ns=?,
     last_mutation_ref=?, latest_operation_kind=?, latest_operation_input_digest=?
 WHERE claim_rowid=? AND codec_version=5 AND revision=? AND retention_state=1`
 
-func (s *sqliteClaimStore) updateOperationalRow(ctx context.Context, conn *sql.Conn,
-	before, next durableClaimRecord) (durableClaimRecord, error) {
+// operationalUpdateArgs binds one row update. It is separate from the
+// statement's execution so a test can present the same row to the store
+// triggers without the checks that precede it in a writer turn.
+func operationalUpdateArgs(before, next durableClaimRecord) []any {
 	f := next.effects
-	result, err := conn.ExecContext(ctx, sqliteUpdateOperationalSQL, int64(next.phase.tag), optionalOpaqueSQL(next.phase.run.ref),
+	return []any{int64(next.phase.tag), optionalOpaqueSQL(next.phase.run.ref),
 		optionalOpaqueSQL(next.phase.receipt.ref), int64(next.revision), next.updatedAt.UnixNano(), optionalTimeSQL(next.assignedAt),
 		optionalFactSQL(f.intent.ref), optionalTimeSQL(f.intent.at), optionalFactSQL(f.staging.ref), optionalTimeSQL(f.staging.at),
 		optionalFactSQL(f.dispatch.ref), optionalTimeSQL(f.dispatch.at), int64(f.provider.kind), optionalFactSQL(f.provider.fact.ref),
 		optionalTimeSQL(f.provider.fact.at), mutationRefBytes(next.lastMutation), operationKindSQL(next.latestOperation),
-		operationInputBindingSQL(next.latestOperation), before.progressRowID, int64(before.revision))
+		operationInputBindingSQL(next.latestOperation), before.progressRowID, int64(before.revision)}
+}
+
+func (s *sqliteClaimStore) updateOperationalRow(ctx context.Context, conn *sql.Conn,
+	before, next durableClaimRecord) (durableClaimRecord, error) {
+	result, err := conn.ExecContext(ctx, sqliteUpdateOperationalSQL, operationalUpdateArgs(before, next)...)
 	if err != nil {
 		return durableClaimRecord{}, mapSQLiteError(err)
 	}

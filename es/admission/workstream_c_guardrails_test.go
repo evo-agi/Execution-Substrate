@@ -2422,12 +2422,14 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "Service",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/admission/service.go:Service.Health":                                                       2,
-				"es/admission/service.go:Service.Initialize":                                                   5,
-				"es/admission/service.go:Service.currentTrustModel":                                            2,
-				"es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission": 2,
-				"es/admission/reliable_submit_operational_admission.go:Service.withdrawOperationalEffects":     2,
-				"es/admission/reliable_submit_operational_admission.go:Service.currentOperationalAdmission":    2,
+				"es/admission/service.go:NewService|zero-initializer":                                       1,
+				"es/admission/service.go:Service.Health":                                                    2,
+				"es/admission/service.go:Service.Initialize":                                                5,
+				"es/admission/service.go:Service.currentTrustModel":                                         2,
+				"es/admission/reliable_submit_operational_admission.go:Service.installOperationalAdmission": 4,
+				"es/admission/reliable_submit_operational_admission.go:Service.withdrawOperationalEffects":  3,
+				"es/admission/reliable_submit_operational_admission.go:Service.confirmOperationalAdmission": 4,
+				"es/admission/reliable_submit_operational_admission.go:Service.currentOperationalAdmission": 2,
 			},
 		},
 		{
@@ -2436,10 +2438,12 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "Service",
 			fieldName:  "trustModel",
 			want: map[string]int{
-				"es/admission/service.go:Service.Health":                                                       1,
-				"es/admission/service.go:Service.Initialize":                                                   1,
-				"es/admission/service.go:Service.currentTrustModel":                                            2,
-				"es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission": 4,
+				"es/admission/service.go:NewService|zero-initializer":                                       1,
+				"es/admission/service.go:Service.Health":                                                    1,
+				"es/admission/service.go:Service.Initialize":                                                1,
+				"es/admission/service.go:Service.currentTrustModel":                                         2,
+				"es/admission/reliable_submit_operational_admission.go:Service.installOperationalAdmission": 2,
+				"es/admission/reliable_submit_operational_admission.go:Service.operationalAdmissionContent": 4,
 			},
 		},
 		{
@@ -2448,10 +2452,11 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "App",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/app/app.go:App.Addr":     2,
-				"es/app/app.go:App.Shutdown": 2,
-				"es/app/app.go:App.Start":    2,
-				"es/app/app.go:App.Started":  2,
+				"es/app/app.go:New|zero-initializer": 1,
+				"es/app/app.go:App.Addr":             2,
+				"es/app/app.go:App.Shutdown":         2,
+				"es/app/app.go:App.Start":            2,
+				"es/app/app.go:App.Started":          2,
 			},
 		},
 		{
@@ -2460,9 +2465,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "App",
 			fieldName:  "started",
 			want: map[string]int{
-				"es/app/app.go:App.Shutdown": 1,
-				"es/app/app.go:App.Start":    1,
-				"es/app/app.go:App.Started":  1,
+				"es/app/app.go:New|zero-initializer": 1,
+				"es/app/app.go:App.Shutdown":         1,
+				"es/app/app.go:App.Start":            1,
+				"es/app/app.go:App.Started":          1,
 			},
 		},
 		{
@@ -2471,8 +2477,9 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "App",
 			fieldName:  "listener",
 			want: map[string]int{
-				"es/app/app.go:App.Addr":  2,
-				"es/app/app.go:App.Start": 1,
+				"es/app/app.go:New|zero-initializer": 1,
+				"es/app/app.go:App.Addr":             2,
+				"es/app/app.go:App.Start":            1,
 			},
 		},
 		{
@@ -2481,6 +2488,7 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "helperServer",
 			fieldName:  "mu",
 			want: map[string]int{
+				"es/runtimehelper/helper.go:runHelper|zero-initializer":      1,
 				"es/runtimehelper/helper.go:helperServer.currentToken":       2,
 				"es/runtimehelper/helper.go:helperServer.fetchAndStoreToken": 2,
 			},
@@ -2491,6 +2499,7 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "helperServer",
 			fieldName:  "token",
 			want: map[string]int{
+				"es/runtimehelper/helper.go:runHelper|zero-initializer":      1,
 				"es/runtimehelper/helper.go:helperServer.currentToken":       1,
 				"es/runtimehelper/helper.go:helperServer.fetchAndStoreToken": 1,
 			},
@@ -2501,11 +2510,14 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "OperationalCustody",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.Close":                                     2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.WithOperationalOriginal":                   2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":                      2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalCommitFaultForProof":   2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalPrestageProofForProof": 2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OpenProvisionedOperationalCustody|zero-initializer":            1,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.Close":                                      2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.WithOperationalOriginal":                    2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":                       2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalCommitFaultForProof":    2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.ConfigureOperationalPrestageProofForProof":  2,
+				"es/admission/internal/reliablesubmit/operational_admission.go:OperationalCustody.operationalAdmissionWrite":                2,
+				"es/admission/internal/reliablesubmit/operational_admission.go:OperationalCustody.ConfigureOperationalReleaseProofForProof": 2,
 			},
 		},
 		{
@@ -2514,11 +2526,12 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "OperationalAccess",
 			fieldName:  "busy",
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.Prestage":                           2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.applyOperational":                   2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.BindVerifiedOperationalObservation": 2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.VerifyOperationalReceipt":           2,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.canBind":                            2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.WithOperationalOriginal|zero-initializer": 1,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.Prestage":                                  2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.applyOperational":                          2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.BindVerifiedOperationalObservation":        2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.VerifyOperationalReceipt":                  2,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalAccess.canBind":                                   2,
 			},
 		},
 		{
@@ -2527,8 +2540,9 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "handoffOwner",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/admission/reliable_submit_operational_handoff.go:handoffOwner.close": 2,
-				"es/admission/reliable_submit_operational_handoff.go:liveSender.consume": 2,
+				"es/admission/reliable_submit_operational_handoff.go:Service.advanceOperational|zero-initializer": 1,
+				"es/admission/reliable_submit_operational_handoff.go:handoffOwner.close":                          2,
+				"es/admission/reliable_submit_operational_handoff.go:liveSender.consume":                          2,
 			},
 		},
 
@@ -2537,12 +2551,24 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			importPath: "execution-substrate/es/admission/internal/reliablesubmit",
 			typeName:   "PrivateReplaySealPermit",
 			fieldName:  "permit",
+			// The wrapper is returned, passed and embedded by value, so each such
+			// place is a whole-value occurrence listed with its kind.
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.ReserveSealUse":                  1,
-				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":              1,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.publishReplayOriginal":           4,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal": 2,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse":  1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.ReserveSealUse":                                  1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.ReserveSealUse|whole-declare":                    1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.ReserveSealUse|zero-initializer":                 3,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.PublishSealedSynthetic|whole-declare":            1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.PublishSealedSynthetic|whole-read":               1,
+				"es/admission/internal/reliablesubmit/operational_handoff.go:OperationalCustody.EstablishOperational":                              1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.publishReplayOriginal":                           4,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayCustody.publishReplayOriginal|whole-declare":             1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:<package>|whole-declare":                                              1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal":                 2,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal|whole-declare":   1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal|whole-read":      1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse":                  1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse|whole-declare":    1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse|zero-initializer": 4,
 			},
 		},
 		{
@@ -2551,8 +2577,11 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "ProgressSealPermit",
 			fieldName:  "permit",
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal": 3,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse":  1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal":                 3,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.PublishProgressOriginal|whole-declare":   1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse":                  1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse|whole-declare":    1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:PrivateReplayProgressCustody.ReserveProgressSealUse|zero-initializer": 4,
 			},
 		},
 		{
@@ -2561,9 +2590,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "privateSealPermit",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.consume":         2,
-				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.burn":            2,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:privateSealPermit.matchesAllocation": 2,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:sqliteClaimStore.reserveReplaySealUseWithScope|zero-initializer": 1,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.consume":                                       2,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.burn":                                          2,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:privateSealPermit.matchesAllocation":                               2,
 			},
 		},
 		{
@@ -2572,9 +2602,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "privateSealPermit",
 			fieldName:  "used",
 			want: map[string]int{
-				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.consume":         2,
-				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.burn":            1,
-				"es/admission/internal/reliablesubmit/replay_custody_file.go:privateSealPermit.matchesAllocation": 1,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:sqliteClaimStore.reserveReplaySealUseWithScope|zero-initializer": 1,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.consume":                                       2,
+				"es/admission/internal/reliablesubmit/replay_key_use_sqlite.go:privateSealPermit.burn":                                          1,
+				"es/admission/internal/reliablesubmit/replay_custody_file.go:privateSealPermit.matchesAllocation":                               1,
 			},
 		},
 	}
@@ -2594,33 +2625,76 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 		want        map[string]int
 	}
 	for _, field := range []accessInventory{
-		{"Service", "trustModelVerified", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1, service + "Service.Initialize|assignment": 1}},
-		{"Service", "trustModelOwner", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1, service + "Service.Initialize|assignment": 1}},
+		// The Service is created once, by the literal in NewService, which leaves
+		// every protected field at its zero value.
+		{"Service", "trustModelVerified", map[string]int{
+			service + "NewService|zero-initializer": 1, service + "Service.Initialize|assignment": 1,
+			admission + "Service.operationalAdmissionContent|read": 1, admission + "Service.installOperationalAdmission|read": 1,
+		}},
+		{"Service", "trustModelOwner", map[string]int{
+			service + "NewService|zero-initializer": 1, service + "Service.Initialize|assignment": 1,
+			admission + "Service.operationalAdmissionContent|read": 1, admission + "Service.installOperationalAdmission|read": 1,
+		}},
 		{"Service", "operationalAdmission", map[string]int{
-			admission + "Service.commissionOperationalAdmission|assignment": 1, admission + "Service.commissionOperationalAdmission|read": 1,
-			admission + "Service.currentOperationalAdmission|read": 1, admission + "Service.withdrawOperationalEffects|read": 2,
-			service + "Service.Initialize|read": 2,
+			service + "NewService|zero-initializer": 1, service + "Service.Initialize|read": 2,
+			admission + "Service.installOperationalAdmission|read": 2, admission + "Service.installOperationalAdmission|assignment": 1,
+			admission + "Service.withdrawOperationalEffects|read": 1, admission + "Service.confirmOperationalAdmission|read": 2,
+			admission + "Service.currentOperationalAdmission|read": 1,
 		}},
 		{"Service", "operationalWithdrawn", map[string]int{
-			admission + "Service.commissionOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
-			admission + "Service.withdrawOperationalEffects|assignment": 1, service + "Service.Initialize|read": 2,
+			service + "NewService|zero-initializer": 1, service + "Service.Initialize|read": 2,
+			admission + "Service.installOperationalAdmission|read": 2, admission + "Service.withdrawOperationalEffects|assignment": 1,
+			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
 		}},
-		{"Service", "operationalProof", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1}},
+		{"Service", "operationalSuperseded", map[string]int{
+			service + "NewService|zero-initializer": 1, admission + "Service.installOperationalAdmission|read": 2,
+			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.confirmOperationalAdmission|assignment": 1,
+			admission + "Service.currentOperationalAdmission|read": 1,
+		}},
+		{"Service", "operationalConfirmed", map[string]int{
+			service + "NewService|zero-initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
+			admission + "Service.confirmOperationalAdmission|assignment": 1, admission + "Service.currentOperationalAdmission|read": 1,
+		}},
+		{"Service", "operationalProof", map[string]int{service + "NewService|zero-initializer": 1, admission + "Service.installOperationalAdmission|read": 1}},
 		{"operationalAdmissionSnapshot", "owner", map[string]int{
-			admission + "Service.commissionOperationalAdmission|initializer": 1,
-			admission + "Service.currentOperationalAdmission|read":           1, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
 		}},
-		{"operationalAdmissionSnapshot", "installation", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1}},
-		{"operationalAdmissionSnapshot", "epoch", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1}},
-		{"operationalAdmissionSnapshot", "trust", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 1}},
-		{"operationalAdmissionSnapshot", "verifier", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 3}},
-		{"operationalAdmissionSnapshot", "policy", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 2}},
-		{"operationalAdmissionSnapshot", "proof", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 9}},
+		{"operationalAdmissionSnapshot", "installation", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
+		}},
+		{"operationalAdmissionSnapshot", "epoch", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
+		}},
+		// The token is read where it is presented to the store: at withdrawal,
+		// at establishment, and twice inside the qualifier that every
+		// first-effect cut calls, which is a function literal.
+		{"operationalAdmissionSnapshot", "token", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.confirmOperationalAdmission|read": 1, handoff + "Service.operatePrivateHandoff|read": 1,
+			handoff + "Service.advanceOperational|read+closure": 2,
+		}},
+		{"operationalAdmissionSnapshot", "trust", map[string]int{admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 1}},
+		{"operationalAdmissionSnapshot", "verifier", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
+			admission + "Service.qualifyOperationalRetained|read": 3,
+		}},
+		{"operationalAdmissionSnapshot", "policy", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
+			admission + "Service.qualifyOperationalRetained|read": 2,
+		}},
+		{"operationalAdmissionSnapshot", "proof", map[string]int{
+			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1,
+			admission + "Service.qualifyOperationalRetained|read": 9,
+		}},
 		{"handoffOwner", "service", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
 		{"handoffOwner", "admission", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
 		{"operationalAdmissionProofHooks", "required", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
 		{"operationalAdmissionProofHooks", "evaluated", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
 		{"operationalAdmissionProofHooks", "contextObserved", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
+		{"operationalAdmissionProofHooks", "skew", map[string]int{admission + "operationalConfirmationFresh|read": 2}},
 	} {
 		references := mergedProductionReferences(t, views, "execution-substrate/es/admission", func(pkg *typedProductionPackage) types.Object {
 			return requirePackageStructField(t, pkg, field.owner, field.name)
@@ -2734,6 +2808,21 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				{"builtin clear", "type Service struct{ value []int }; ", "value", "clear(s.value)", "write-through"},
 				{"builtin copy destination", "type Service struct{ value []int }; ", "value", "copy(s.value, []int{1})", "write-through"},
 				{"builtin close", "type Service struct{ value chan int }; ", "value", "close(s.value)", "write-through"},
+				{"builtin append first argument", "type Service struct{ value []int }; ", "value", "_ = append(s.value, 1)", "write-through"},
+				{"builtin append through a reslice", "type Service struct{ value []int }; ", "value", "_ = append(s.value[:0], 1)", "write-through"},
+				{"channel send", "type Service struct{ value chan int }; ", "value", "s.value <- 1", "write-through"},
+				{"channel send through an element", "type Service struct{ value []chan int }; ", "value", "s.value[0] <- 1", "write-through"},
+				{"conversion chain subfield assignment", inner + "type twin inner; type Service struct{ value *inner }; ", "value", "(*twin)(s.value).n = 1", "write-through"},
+				{"anonymous conversion chain assignment", inner + "type Service struct{ value *inner }; ", "value", "(*struct{ n int })(s.value).n = 1", "write-through"},
+				{"conversion chain element assignment", "type list []int; type Service struct{ value []int }; ", "value", "list(s.value)[0] = 1", "write-through"},
+				{"conversion chain clear", "type list []int; type Service struct{ value []int }; ", "value", "clear(list(s.value))", "write-through"},
+				{"type assertion chain assignment", inner + "type Service struct{ value any }; ", "value", "s.value.(*inner).n = 1", "write-through"},
+				{"type assertion chain element increment", "type Service struct{ value any }; ", "value", "s.value.([]int)[0]++", "write-through"},
+				{"builtin append later argument", "type Service struct{ value []int }; ", "value", "other := []int{}; _ = append(other, s.value...)", "read"},
+				{"channel receive", "type Service struct{ value chan int }; ", "value", "_ = <-s.value", "read"},
+				{"channel send value", "type Service struct{ value int }; ", "value", "other := make(chan int, 1); other <- s.value", "read"},
+				{"conversion read", "type Service struct{ value int }; ", "value", "_ = int64(s.value)", "read"},
+				{"type assertion read", inner + "type Service struct{ value any }; ", "value", "_ = s.value.(*inner).n", "read"},
 				{"builtin copy source", "type Service struct{ value []int }; ", "value", "dst := make([]int, 1); copy(dst, s.value)", "read"},
 				{"subfield read", inner + "type Service struct{ value inner }; ", "value", "_ = s.value.n", "read"},
 				{"element read", "type Service struct{ value []int }; ", "value", "_ = s.value[0]", "read"},
@@ -2769,6 +2858,289 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				})
 			}
 		})
+		t.Run("field access inside a function literal", func(t *testing.T) {
+			const declarations = "package admission; type Service struct{ value int }; "
+			for _, test := range []struct{ name, body, accessKind string }{
+				{"read", "func(){ _ = s.value }()", "read"},
+				{"assignment", "func(){ s.value = 1 }()", "assignment"},
+				{"deferred assignment", "defer func(){ s.value = 1 }()", "assignment"},
+				{"nested literal read", "func(){ func(){ _ = s.value }() }()", "read"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func (s *Service) commission(){"+test.body+"}")
+					references := pkg.referencesTo(requirePackageStructField(t, pkg, "Service", "value"))
+					if len(references) != 1 || !references[0].insideFuncLiteral || references[0].accessKind != test.accessKind {
+						t.Fatalf("closure occurrence: %v", references)
+					}
+					plain := map[string]int{"fixture.go:Service.commission|" + test.accessKind: 1}
+					if err := validateTypedFieldAccessInventory(test.name, references, plain); err == nil {
+						t.Fatal("an occurrence inside a function literal passed as an occurrence of the function body")
+					}
+					listed := map[string]int{"fixture.go:Service.commission|" + test.accessKind + "+closure": 1}
+					if err := validateTypedFieldAccessInventory(test.name, references, listed); err != nil {
+						t.Fatalf("listed closure occurrence refused: %v", err)
+					}
+				})
+			}
+		})
+		t.Run("unresolved selection is unclassified", func(t *testing.T) {
+			const source = "package admission; type inner struct{ n int }; type Service struct{ value inner }; func (s *Service) commission(){ s.value.n = 1 }"
+			pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", source)
+			field := requirePackageStructField(t, pkg, "Service", "value")
+			if references := pkg.referencesTo(field); len(references) != 1 || references[0].accessKind != "write-through" {
+				t.Fatalf("resolved control: %v", references)
+			}
+			// Forget what the outer selector resolved to, as an incomplete type
+			// check would. The chain can then no longer be followed.
+			removed := 0
+			for selector := range pkg.info.Selections {
+				if selector.Sel.Name == "n" {
+					delete(pkg.info.Selections, selector)
+					removed++
+				}
+			}
+			if removed != 1 {
+				t.Fatalf("removed %d selections", removed)
+			}
+			references := pkg.referencesTo(field)
+			if len(references) != 1 || references[0].accessKind != "unclassified" {
+				t.Fatalf("unresolved chain: %v", references)
+			}
+			for _, kind := range []string{"read", "write-through", "assignment"} {
+				if err := validateTypedFieldAccessInventory("unresolved", references, map[string]int{"fixture.go:Service.commission|" + kind: 1}); err == nil {
+					t.Fatalf("unresolved chain passed as %s", kind)
+				}
+			}
+		})
+		t.Run("whole-value occurrences of the owning struct", func(t *testing.T) {
+			const owner = "type Service struct{ value int; other int }; "
+			const twin = "type twin struct{ value int; other int }; "
+			const holder = "type holder struct{ inner Service; n int }; "
+			const held = "fixture.go:<package>|whole-declare"
+			for _, test := range []struct {
+				name, source string
+				want         map[string]int
+			}{
+				{"positional literal", "func f(){ _ = Service{1, 2} }", map[string]int{"fixture.go:f|initializer": 1}},
+				{"keyed literal naming the field", "func f(){ _ = Service{value: 1} }", map[string]int{"fixture.go:f|initializer": 1}},
+				{"keyed literal omitting the field", "func f(){ _ = Service{other: 1} }", map[string]int{"fixture.go:f|zero-initializer": 1}},
+				{"empty literal", "func f(){ _ = Service{} }", map[string]int{"fixture.go:f|zero-initializer": 1}},
+				{"empty pointer literal", "func f(){ _ = &Service{} }", map[string]int{"fixture.go:f|zero-initializer": 1}},
+				{"new", "func f(){ _ = new(Service) }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"zero-value declaration", "func f(){ var v Service; _ = &v }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"package variable", "var kept Service", map[string]int{"fixture.go:<package>|whole-declare": 1}},
+				{"overwrite through a pointer", "func f(s *Service){ *s = Service{value: 1} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|initializer": 1}},
+				{"overwrite with zero", "func f(s *Service){ *s = Service{} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}},
+				{"parenthesized overwrite", "func f(s *Service){ (*s) = Service{} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}},
+				{"copy between pointers", "func f(a, b *Service){ *a = *b }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1}},
+				{"range assignment target", "func f(list []Service, s *Service){ for _, *s = range list {} }", map[string]int{"fixture.go:f|whole-assign": 1}},
+				{"range definition", "func f(list []Service){ for _, v := range list { _ = &v } }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"conversion from a same-shape type", twin + "func f(t *twin){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
+				{"conversion from an anonymous struct", "func f(t *struct{ value int; other int }){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
+				{"conversion to a pointer", twin + "func f(t *twin){ _ = (*Service)(t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
+				{"conversion to a slice", "type listed []Service; func f(t []Service){ _ = listed(t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
+				{"defined type over the owner", "type second Service; func f(a *second){ *a = second{} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}},
+				{"conversion to a defined type over the owner", "type second Service; func f(s *Service){ _ = second(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1}},
+				{"by-value parameter", "func f(v Service){}", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"unnamed by-value parameter", "func f(Service){}", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"unnamed by-value result", "func f(s *Service) Service { return *s }", map[string]int{"fixture.go:f|whole-declare": 1, "fixture.go:f|whole-read": 1}},
+				{"named by-value result", "func f() (v Service) { return }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"value receiver", "func (v Service) get() int { return v.other }", map[string]int{"fixture.go:Service.get|whole-declare": 1}},
+				{"unnamed value receiver", "func (Service) get() {}", map[string]int{"fixture.go:Service.get|whole-declare": 1}},
+				{"function type result", "func f(g func() Service){}", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"type switch clause", "func f(x any){ switch v := x.(type) { case Service: _ = &v } }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"type assertion", "func f(x any){ _ = x.(Service) }", map[string]int{"fixture.go:f|whole-read": 1}},
+				{"call result", "func g() *Service { return nil }; func f(){ _ = *g() }", map[string]int{"fixture.go:f|whole-read": 1}},
+				{"array declaration", "func f(){ var list [2]Service; _ = &list }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"slice make", "func f(){ _ = make([]Service, 1) }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"map make", "func f(){ _ = make(map[string]Service) }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"channel make", "func f(){ _ = make(chan Service, 1) }", map[string]int{"fixture.go:f|whole-declare": 1}},
+				{"slice literal of spelled elements", "func f(){ _ = []Service{{value: 1}} }", map[string]int{"fixture.go:f|initializer": 1}},
+				{"slice literal of positional elements", "func f(){ _ = []Service{{1, 2}} }", map[string]int{"fixture.go:f|initializer": 1}},
+				{"slice literal of pointers", "func f(){ _ = []*Service{{other: 1}} }", map[string]int{"fixture.go:f|zero-initializer": 1}},
+				{"keyed slice literal", "func f(){ _ = []Service{3: {value: 1}} }", map[string]int{"fixture.go:f|zero-initializer": 1, "fixture.go:f|initializer": 1}},
+				{"short array literal", "func f(){ _ = [2]Service{{value: 1}} }", map[string]int{"fixture.go:f|zero-initializer": 1, "fixture.go:f|initializer": 1}},
+				{"full array literal", "func f(){ _ = [1]Service{{value: 1}} }", map[string]int{"fixture.go:f|initializer": 1}},
+				{"map literal element", "func f(){ _ = map[string]Service{\"k\": {other: 1}} }", map[string]int{"fixture.go:f|zero-initializer": 1}},
+				{"builtin copy", "func f(dst, src []Service){ copy(dst, src) }", map[string]int{"fixture.go:f|whole-copy": 1}},
+				{"builtin clear", "func f(list []Service){ clear(list) }", map[string]int{"fixture.go:f|whole-copy": 1}},
+				{"builtin append", "func f(list []Service, v *Service){ _ = append(list, *v) }", map[string]int{"fixture.go:f|whole-copy": 1, "fixture.go:f|whole-read": 1}},
+				{"slice element overwrite", "func f(list []Service){ list[0] = Service{value: 1} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|initializer": 1}},
+				{"map element overwrite", "func f(m map[string]Service, v *Service){ m[\"k\"] = *v }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1}},
+				{"channel send of a value", "func f(c chan Service, v *Service){ c <- *v }", map[string]int{"fixture.go:f|whole-read": 1}},
+				{"channel receive of a value", "func f(c chan Service, v *Service){ *v = <-c }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1}},
+				{"field holding the owner by value", holder, map[string]int{held: 1}},
+				{"holder literal leaving the owner implicit", holder + "func f(){ _ = holder{n: 1} }", map[string]int{held: 1, "fixture.go:f|zero-initializer": 1}},
+				{"empty holder literal", holder + "func f(){ _ = &holder{} }", map[string]int{held: 1, "fixture.go:f|zero-initializer": 1}},
+				{"holder literal spelling the owner", holder + "func f(){ _ = holder{inner: Service{value: 1}} }", map[string]int{held: 1, "fixture.go:f|initializer": 1}},
+				{"holder overwrite", holder + "func f(h *holder){ *h = holder{inner: Service{value: 1}} }", map[string]int{held: 1, "fixture.go:f|whole-assign": 1, "fixture.go:f|initializer": 1}},
+				{"owner overwrite inside a holder", holder + "func f(h *holder){ h.inner = Service{} }", map[string]int{held: 1, "fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}},
+				{"holder copy", holder + "func f(a, b *holder){ *a = *b }", map[string]int{held: 1, "fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1}},
+				{"pointer only", "func f(s *Service) *Service { return s }", map[string]int{}},
+				{"other field through a pointer", "func f(s *Service) int { return (*s).other }", map[string]int{}},
+				{"address of an element", "func f(list []Service) *Service { return &list[0] }", map[string]int{}},
+				{"other field of an element", "func f(list *[2]Service) int { return list[1].other }", map[string]int{}},
+				{"slice of pointers", "func f(){ var list []*Service; _ = list }", map[string]int{}},
+				{"reslice", "func f(list []Service) []Service { return list[1:] }", map[string]int{}},
+				{"holder through a pointer", "type link struct{ inner *Service }; func f(l *link){ *l = link{} }", map[string]int{}},
+				{"unrelated same-shape type", twin + "func f(t *twin){ *t = twin{} }", map[string]int{}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+owner+test.source)
+					field := requirePackageStructField(t, pkg, "Service", "value")
+					references := pkg.referencesTo(field)
+					if err := validateTypedFieldAccessInventory(test.name, references, test.want); err != nil {
+						t.Fatal(err)
+					}
+					// The same occurrences are refused by an inventory that knows only
+					// a read of the field, and by the object inventory of its sites.
+					if len(test.want) != 0 {
+						if err := validateTypedFieldAccessInventory(test.name, references, map[string]int{"fixture.go:f|read": 1}); err == nil {
+							t.Fatal("whole-value occurrence passed as a read")
+						}
+						if err := validateTypedObjectReferenceInventory(test.name, references, map[string]int{}, false); err == nil {
+							t.Fatal("whole-value occurrence passed an empty object inventory")
+						}
+					}
+				})
+			}
+			t.Run("identifier occurrences stay beside whole-value ones", func(t *testing.T) {
+				pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+owner+
+					"func f(s *Service, v Service) int { s.value = v.value; *s = v; return s.value }")
+				field := requirePackageStructField(t, pkg, "Service", "value")
+				references := pkg.referencesTo(field)
+				if err := validateTypedFieldAccessInventory("mixed", references, map[string]int{
+					"fixture.go:f|assignment": 1, "fixture.go:f|read": 2, "fixture.go:f|whole-declare": 1, "fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateTypedObjectReferenceInventory("mixed", references, map[string]int{
+					"fixture.go:f": 3, "fixture.go:f|whole-declare": 1, "fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1,
+				}, true); err != nil {
+					t.Fatal(err)
+				}
+				if err := validateTypedObjectReferenceInventory("mixed", references, map[string]int{"fixture.go:f": 3}, true); err == nil {
+					t.Fatal("object inventory ignored the whole-value occurrences")
+				}
+				if err := validateTypedObjectReferenceInventory("mixed", references, map[string]int{"fixture.go:f": 6}, true); err == nil {
+					t.Fatal("object inventory merged whole-value occurrences into the site count")
+				}
+			})
+			t.Run("whole-value occurrence inside a function literal", func(t *testing.T) {
+				pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+owner+"func f(s *Service){ func(){ *s = Service{} }() }")
+				field := requirePackageStructField(t, pkg, "Service", "value")
+				references := pkg.referencesTo(field)
+				if len(references) != 2 || !references[0].insideFuncLiteral || !references[1].insideFuncLiteral {
+					t.Fatalf("closure occurrences: %v", references)
+				}
+				if err := validateTypedFieldAccessInventory("closure", references, map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}); err == nil {
+					t.Fatal("whole-value occurrence inside a function literal passed the field inventory")
+				}
+				if err := validateTypedFieldAccessInventory("closure", references, map[string]int{"fixture.go:f|whole-assign+closure": 1, "fixture.go:f|zero-initializer+closure": 1}); err != nil {
+					t.Fatalf("listed closure occurrences refused: %v", err)
+				}
+				if err := validateTypedObjectReferenceInventory("closure", references, map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}, true); err == nil {
+					t.Fatal("whole-value occurrence inside a function literal passed the object inventory")
+				}
+			})
+		})
+	})
+}
+
+// operationalGuardImportInventory lists, for every production source file of
+// the guarded packages, the imports through which storage can be written
+// without any syntax the typed inventories classify.
+func operationalGuardImportInventory(sources map[string]string) (map[string][]string, error) {
+	inventory := make(map[string][]string)
+	for name, source := range sources {
+		file, err := parser.ParseFile(token.NewFileSet(), name, source, parser.ImportsOnly)
+		if err != nil {
+			return nil, err
+		}
+		for _, spec := range file.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return nil, err
+			}
+			if path == "reflect" || path == "unsafe" || path == "C" {
+				inventory[name] = append(inventory[name], path)
+			}
+		}
+		sort.Strings(inventory[name])
+	}
+	return inventory, nil
+}
+
+// The typed inventories cannot follow reflection, unsafe or cgo. This exact
+// inventory makes a new import of any of them in the admission package or its
+// store a visible, reviewed change. It reads every non-test source file in the
+// two directories, whatever its build constraints.
+func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
+	root := repositoryRootForAdmissionGuard(t)
+	sources := make(map[string]string)
+	for _, directory := range []string{"es/admission", "es/admission/internal/reliablesubmit"} {
+		entries, err := os.ReadDir(filepath.Join(root, directory))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			contents, err := os.ReadFile(filepath.Join(root, directory, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sources[directory+"/"+entry.Name()] = string(contents)
+		}
+	}
+	if len(sources) < 40 {
+		t.Fatalf("read only %d production sources", len(sources))
+	}
+	want := map[string][]string{"es/admission/execution_roots_darwin.go": {"unsafe"}}
+	got, err := operationalGuardImportInventory(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reflect, unsafe and cgo import inventory changed: got %v want %v", got, want)
+	}
+	for name, mutation := range map[string]string{
+		"reflect":         "package admission\nimport \"reflect\"\nvar _ = reflect.TypeOf\n",
+		"unsafe":          "package admission\nimport \"unsafe\"\nvar _ unsafe.Pointer\n",
+		"renamed unsafe":  "package admission\nimport hidden \"unsafe\"\nvar _ hidden.Pointer\n",
+		"blank unsafe":    "package admission\nimport _ \"unsafe\"\n",
+		"grouped reflect": "package admission\nimport (\n\t\"fmt\"\n\t\"reflect\"\n)\nvar _ = fmt.Sprint\nvar _ = reflect.TypeOf\n",
+		"cgo":             "package admission\nimport \"C\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := make(map[string]string, len(sources)+1)
+			for file, source := range sources {
+				mutated[file] = source
+			}
+			mutated["es/admission/added.go"] = mutation
+			got, err := operationalGuardImportInventory(mutated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.DeepEqual(got, want) {
+				t.Fatal("a new reflect, unsafe or cgo import passed the inventory")
+			}
+		})
+	}
+	t.Run("removed known import", func(t *testing.T) {
+		mutated := make(map[string]string, len(sources))
+		for file, source := range sources {
+			mutated[file] = source
+		}
+		delete(mutated, "es/admission/execution_roots_darwin.go")
+		got, err := operationalGuardImportInventory(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reflect.DeepEqual(got, want) {
+			t.Fatal("the inventory did not depend on the known unsafe import")
+		}
 	})
 }
 
@@ -2784,9 +3156,14 @@ func (s *Service) Write() { s.mu.Lock(); s.value = 1; s.mu.Unlock() }
 		"service.go:Service.Write": 1,
 	}
 	for name, mutation := range map[string]string{
-		"hidden helper":  `func hidden(s *Service) int { return s.value }`,
-		"nested closure": `func (s *Service) Escape() func() int { return func() int { return s.value } }`,
-		"second writer":  `func (s *Service) AlternateWrite() { s.value = 2 }`,
+		"hidden helper":       `func hidden(s *Service) int { return s.value }`,
+		"nested closure":      `func (s *Service) Escape() func() int { return func() int { return s.value } }`,
+		"second writer":       `func (s *Service) AlternateWrite() { s.value = 2 }`,
+		"whole overwrite":     `func (s *Service) Reset() { *s = Service{} }`,
+		"whole copy":          `func (s *Service) Copy() Service { return *s }`,
+		"second construction": `func another() *Service { return &Service{} }`,
+		"zero declaration":    `func another() *Service { var s Service; return &s }`,
+		"same-shape convert":  `type twin struct { mu sync.RWMutex; value int }; func another(t *twin) *Service { return (*Service)(t) }`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			pkg := typeCheckSyntheticProductionPackage(t, "service.go", base+mutation)
@@ -3234,6 +3611,7 @@ func mergedProductionReferences(t *testing.T, views []typedProductionView, impor
 				reference.referenceKind,
 				filepath.Clean(reference.position.Filename),
 				fmt.Sprintf("%d:%d:%t:%t:%t", reference.position.Line, reference.position.Column, reference.directCall, reference.methodExpression, reference.insideFuncLiteral),
+				reference.accessKind,
 			}, "|")
 			seen[key] = reference
 		}
@@ -3246,7 +3624,10 @@ func mergedProductionReferences(t *testing.T, views []typedProductionView, impor
 		if references[left].site != references[right].site {
 			return references[left].site < references[right].site
 		}
-		return references[left].position.Offset < references[right].position.Offset
+		if references[left].position.Offset != references[right].position.Offset {
+			return references[left].position.Offset < references[right].position.Offset
+		}
+		return references[left].accessKind < references[right].accessKind
 	})
 	return references
 }
@@ -3338,8 +3719,342 @@ func requirePackageStructField(t *testing.T, pkg *typedProductionPackage, typeNa
 	return nil
 }
 
+// referencesTo lists the identifier occurrences that resolve to target. For a
+// struct field it also lists every whole-value occurrence of the struct that
+// declares the field, because such an occurrence writes, creates or copies
+// the field without spelling it.
 func (pkg *typedProductionPackage) referencesTo(target types.Object) []typedReference {
-	return pkg.referencesMatching(func(object types.Object) bool { return object == target })
+	references := pkg.referencesMatching(func(object types.Object) bool { return object == target })
+	if field, ok := target.(*types.Var); ok && field.IsField() {
+		if owner := pkg.structDeclaring(field); owner != nil {
+			references = append(references, pkg.wholeValueReferences(owner, field, trancheB1ObjectIdentity(field))...)
+			sortTypedReferences(references)
+		}
+	}
+	return references
+}
+
+func sortTypedReferences(references []typedReference) {
+	sort.SliceStable(references, func(left int, right int) bool {
+		if references[left].site != references[right].site {
+			return references[left].site < references[right].site
+		}
+		return references[left].position.Offset < references[right].position.Offset
+	})
+}
+
+// structDeclaring finds the struct type whose field list holds field. A
+// defined type over another struct type shares that struct, so one result
+// stands for all of them.
+func (pkg *typedProductionPackage) structDeclaring(field *types.Var) *types.Struct {
+	seen := make(map[types.Type]bool)
+	var find func(types.Type) *types.Struct
+	find = func(t types.Type) *types.Struct {
+		if t == nil || seen[t] {
+			return nil
+		}
+		seen[t] = true
+		switch u := t.Underlying().(type) {
+		case *types.Struct:
+			for index := 0; index < u.NumFields(); index++ {
+				if u.Field(index) == field {
+					return u
+				}
+			}
+			for index := 0; index < u.NumFields(); index++ {
+				if found := find(u.Field(index).Type()); found != nil {
+					return found
+				}
+			}
+		case *types.Pointer:
+			return find(u.Elem())
+		case *types.Slice:
+			return find(u.Elem())
+		case *types.Array:
+			return find(u.Elem())
+		case *types.Chan:
+			return find(u.Elem())
+		case *types.Map:
+			if found := find(u.Key()); found != nil {
+				return found
+			}
+			return find(u.Elem())
+		}
+		return nil
+	}
+	identifiers := make([]*ast.Ident, 0)
+	for identifier, object := range pkg.info.Defs {
+		if _, ok := object.(*types.TypeName); ok {
+			identifiers = append(identifiers, identifier)
+		}
+	}
+	sort.Slice(identifiers, func(left int, right int) bool { return identifiers[left].Pos() < identifiers[right].Pos() })
+	for _, identifier := range identifiers {
+		if found := find(pkg.info.Defs[identifier].Type()); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// wholeValueReferences lists every place where a value of the owner struct, or
+// of a type that holds one by value, is created, overwritten, converted or
+// copied as a whole. No field is spelled at such a place, so identifier
+// occurrences alone do not see it.
+//
+// The access kinds are: "initializer" for a positional literal, which sets
+// every field (with a nil field, for any literal of the owner);
+// "zero-initializer" for a literal that leaves the field implicit; a keyed
+// literal that names the field is left to the identifier occurrence of its
+// key. "whole-assign" is an assignment or range target that is or holds the
+// owner by value. "whole-convert" is a conversion from another type to the
+// owner, or to a pointer or container of it. "whole-declare" is a declared
+// variable, parameter, result, receiver or struct field that is or holds the
+// owner by value, a type-switch clause for it, and new or make of it.
+// "whole-copy" is copy, clear or append over a container of it. "whole-read"
+// is any other use of such a value: it copies the field.
+func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, field *types.Var, identity string) []typedReference {
+	memo := make(map[types.Type]bool)
+	var holds func(types.Type) bool
+	holds = func(t types.Type) bool {
+		if t == nil {
+			return false
+		}
+		if known, ok := memo[t]; ok {
+			return known
+		}
+		// A type can only hold itself through a pointer, slice, map or channel,
+		// none of which holds by value.
+		memo[t] = false
+		result := false
+		switch u := t.Underlying().(type) {
+		case *types.Struct:
+			result = u == owner
+			for index := 0; !result && index < u.NumFields(); index++ {
+				result = holds(u.Field(index).Type())
+			}
+		case *types.Array:
+			result = holds(u.Elem())
+		}
+		memo[t] = result
+		return result
+	}
+	contains := func(t types.Type) bool {
+		if t == nil {
+			return false
+		}
+		switch u := t.Underlying().(type) {
+		case *types.Pointer:
+			return holds(u.Elem())
+		case *types.Slice:
+			return holds(u.Elem())
+		case *types.Chan:
+			return holds(u.Elem())
+		case *types.Map:
+			return holds(u.Key()) || holds(u.Elem())
+		}
+		return false
+	}
+	var references []typedReference
+	for fileName, file := range pkg.files {
+		parents := astParentMap(file)
+		add := func(node ast.Node, accessKind string) {
+			references = append(references, typedReference{
+				packagePath:       pkg.importPath,
+				site:              typedFunctionSite(fileName, enclosingFunction(parents, node)),
+				objectIdentity:    identity,
+				referenceKind:     "whole-value",
+				accessKind:        accessKind,
+				insideFuncLiteral: insideFunctionLiteral(parents, node),
+				position:          pkg.fset.Position(node.Pos()),
+			})
+		}
+		unnamed := func(list *ast.FieldList) {
+			if list == nil {
+				return
+			}
+			for _, entry := range list.List {
+				if len(entry.Names) == 0 && holds(pkg.info.TypeOf(entry.Type)) {
+					add(entry.Type, "whole-declare")
+				}
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch current := node.(type) {
+			case *ast.Ident:
+				if declared, ok := pkg.info.Defs[current].(*types.Var); ok && holds(declared.Type()) {
+					add(current, "whole-declare")
+				}
+			case *ast.FuncDecl:
+				unnamed(current.Recv)
+			case *ast.FuncType:
+				unnamed(current.Params)
+				unnamed(current.Results)
+			case *ast.TypeSwitchStmt:
+				if _, bound := current.Assign.(*ast.AssignStmt); bound {
+					for _, statement := range current.Body.List {
+						clause := statement.(*ast.CaseClause)
+						if len(clause.List) == 1 && holds(pkg.info.TypeOf(clause.List[0])) {
+							add(clause, "whole-declare")
+						}
+					}
+				}
+			case *ast.CallExpr:
+				if name, ok := ast.Unparen(current.Fun).(*ast.Ident); ok && len(current.Args) != 0 {
+					if builtin, ok := pkg.info.Uses[name].(*types.Builtin); ok {
+						first := pkg.info.TypeOf(current.Args[0])
+						switch builtin.Name() {
+						case "new":
+							if holds(first) {
+								add(current, "whole-declare")
+							}
+						case "make":
+							if contains(first) {
+								add(current, "whole-declare")
+							}
+						case "copy", "clear", "append":
+							if contains(first) {
+								add(current, "whole-copy")
+							}
+						}
+					}
+				}
+			}
+			expression, ok := node.(ast.Expr)
+			if !ok {
+				return true
+			}
+			if _, parenthesized := expression.(*ast.ParenExpr); parenthesized {
+				return true
+			}
+			value, ok := pkg.info.Types[expression]
+			if !ok || !value.IsValue() {
+				return true
+			}
+			if literal, ok := expression.(*ast.CompositeLit); ok {
+				if kind := wholeValueLiteralKind(pkg.info, literal, value.Type, owner, field, holds); kind != "" {
+					add(literal, kind)
+				}
+				return true
+			}
+			if call, ok := expression.(*ast.CallExpr); ok && len(call.Args) == 1 {
+				if converted, ok := pkg.info.Types[call.Fun]; ok && converted.IsType() &&
+					(holds(value.Type) || contains(value.Type)) && !types.Identical(value.Type, pkg.info.TypeOf(call.Args[0])) {
+					add(call, "whole-convert")
+					return true
+				}
+			}
+			if !holds(value.Type) {
+				return true
+			}
+			outer := expression
+			for {
+				parenthesis, ok := parents[outer].(*ast.ParenExpr)
+				if !ok {
+					break
+				}
+				outer = parenthesis
+			}
+			switch parent := parents[outer].(type) {
+			case *ast.SelectorExpr:
+				// The base of a selection is not copied, and a selected name is
+				// described by its selector expression.
+				return true
+			case *ast.UnaryExpr:
+				if parent.Op == token.AND {
+					return true
+				}
+			case *ast.IndexExpr:
+				if parent.X == outer {
+					return true
+				}
+			case *ast.SliceExpr:
+				if parent.X == outer {
+					return true
+				}
+			case *ast.AssignStmt:
+				for _, target := range parent.Lhs {
+					if target == outer {
+						add(expression, "whole-assign")
+						return true
+					}
+				}
+			case *ast.RangeStmt:
+				if parent.Key == outer || parent.Value == outer {
+					add(expression, "whole-assign")
+					return true
+				}
+			}
+			add(expression, "whole-read")
+			return true
+		})
+	}
+	sortTypedReferences(references)
+	return references
+}
+
+// wholeValueLiteralKind classifies a composite literal. The empty string means
+// the literal is not a whole-value occurrence of its own: either it has
+// nothing to do with the owner, or every value of the owner inside it is
+// spelled as an element, which is classified where it stands.
+func wholeValueLiteralKind(info *types.Info, literal *ast.CompositeLit, literalType types.Type, owner *types.Struct, field *types.Var,
+	holds func(types.Type) bool) string {
+	if pointer, ok := literalType.Underlying().(*types.Pointer); ok && literal.Type == nil {
+		// An elided &T{} element of a container of pointers.
+		literalType = pointer.Elem()
+	}
+	keyed := len(literal.Elts) != 0
+	for _, element := range literal.Elts {
+		if _, ok := element.(*ast.KeyValueExpr); !ok {
+			keyed = false
+		}
+	}
+	switch structure := literalType.Underlying().(type) {
+	case *types.Struct:
+		if structure == owner {
+			if field == nil {
+				return "initializer"
+			}
+			if len(literal.Elts) == 0 {
+				return "zero-initializer"
+			}
+			if !keyed {
+				return "initializer"
+			}
+			for _, element := range literal.Elts {
+				if key, ok := element.(*ast.KeyValueExpr).Key.(*ast.Ident); ok && info.Uses[key] == field {
+					return ""
+				}
+			}
+			return "zero-initializer"
+		}
+		if !holds(literalType) {
+			return ""
+		}
+		if len(literal.Elts) != 0 && !keyed {
+			return ""
+		}
+		named := make(map[types.Object]bool)
+		for _, element := range literal.Elts {
+			if key, ok := element.(*ast.KeyValueExpr).Key.(*ast.Ident); ok {
+				named[info.Uses[key]] = true
+			}
+		}
+		for index := 0; index < structure.NumFields(); index++ {
+			if holds(structure.Field(index).Type()) && !named[structure.Field(index)] {
+				return "zero-initializer"
+			}
+		}
+	case *types.Array:
+		if holds(structure.Elem()) && (keyed || int64(len(literal.Elts)) != structure.Len()) {
+			return "zero-initializer"
+		}
+	case *types.Slice:
+		if holds(structure.Elem()) && keyed {
+			return "zero-initializer"
+		}
+	}
+	return ""
 }
 
 func (pkg *typedProductionPackage) referencesToPackageFunction(importPath string, name string) []typedReference {
@@ -3416,8 +4131,10 @@ func (pkg *typedProductionPackage) referencesMatching(matches func(types.Object)
 // "initializer", taking the field's "address" (explicitly with & or implicitly
 // through slicing an addressable array or a pointer-receiver method on an
 // addressable value), or "write-through" when an assignment,
-// increment/decrement, range target, address-of or mutating builtin is applied
-// through a selector, index, slice or dereference chain rooted at the field.
+// increment/decrement, range target, address-of, channel send or mutating
+// builtin is applied through a selector, index, slice, type assertion,
+// conversion or dereference chain rooted at the field. A conversion is a
+// transparent step: the converted value still reaches the same storage.
 // Called functions and methods are not analyzed beyond Go's implicit
 // address-of. An unresolved selection in that chain is "unclassified".
 func typedReferenceAccessKind(info *types.Info, parents map[ast.Node]ast.Node, expression ast.Expr) string {
@@ -3500,9 +4217,14 @@ func typedStorageEffect(info *types.Info, parents map[ast.Node]ast.Node, locatio
 		}
 		if builtin, ok := info.Uses[name].(*types.Builtin); ok {
 			switch builtin.Name() {
-			case "clear", "close", "copy", "delete":
+			// append may write into the backing array its first argument shares.
+			case "append", "clear", "close", "copy", "delete":
 				return "builtin-write"
 			}
+		}
+	case *ast.SendStmt:
+		if parent.Chan == location {
+			return "builtin-write"
 		}
 	}
 	return ""
@@ -3521,6 +4243,12 @@ func typedLocationStep(info *types.Info, parents map[ast.Node]ast.Node, location
 		return parent, false, true, parent.X == location
 	case *ast.TypeAssertExpr:
 		return parent, false, true, parent.X == location
+	case *ast.CallExpr:
+		// A conversion T(location) still denotes what location reaches.
+		if converted, ok := info.Types[parent.Fun]; ok && converted.IsType() && len(parent.Args) == 1 && parent.Args[0] == location {
+			return parent, false, true, true
+		}
+		return nil, false, true, false
 	case *ast.SliceExpr:
 		if parent.X != location {
 			return nil, false, true, false
@@ -3561,15 +4289,23 @@ func typedUnderlying(t types.Type) types.Type {
 	return t.Underlying()
 }
 
+// validateTypedFieldAccessInventory counts occurrences by function site and
+// access kind. An occurrence inside a function literal runs when that literal
+// is called, not where it is written, so it is a kind of its own
+// ("site|kind+closure") and passes only where an inventory lists it.
 func validateTypedFieldAccessInventory(label string, references []typedReference, want map[string]int) error {
 	got := make(map[string]int)
 	for _, reference := range references {
 		if reference.packagePath == "" || reference.site == "" || reference.position.Filename == "" ||
 			reference.position.Line <= 0 || reference.position.Column <= 0 || reference.objectIdentity == "" ||
-			reference.insideFuncLiteral || reference.accessKind == "" {
-			return fmt.Errorf("%s contains an incomplete or escaped field reference: %v", label, reference)
+			reference.accessKind == "" {
+			return fmt.Errorf("%s contains an incomplete field reference: %v", label, reference)
 		}
-		got[reference.site+"|"+reference.accessKind]++
+		key := reference.site + "|" + reference.accessKind
+		if reference.insideFuncLiteral {
+			key += "+closure"
+		}
+		got[key]++
 	}
 	if !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("%s field access inventory changed: got %v want %v (references %v)", label, got, want, references)
@@ -3653,6 +4389,11 @@ func validateTypedReferenceInventory(label string, references []typedReference, 
 	return nil
 }
 
+// validateTypedObjectReferenceInventory counts identifier occurrences by
+// function site. A whole-value occurrence of the owning struct spells no
+// field, so it is counted under its site and access kind ("site|kind"): an
+// inventory names each place where the struct is created, copied or
+// overwritten as a whole, apart from the places that name the field.
 func validateTypedObjectReferenceInventory(label string, references []typedReference, want map[string]int, rejectClosures bool) error {
 	got := make(map[string]int)
 	for _, reference := range references {
@@ -3661,6 +4402,13 @@ func validateTypedObjectReferenceInventory(label string, references []typedRefer
 		}
 		if reference.methodExpression || (rejectClosures && reference.insideFuncLiteral) {
 			return fmt.Errorf("%s contains an indirect reference escape: %s", label, reference)
+		}
+		if reference.referenceKind == "whole-value" {
+			if reference.accessKind == "" {
+				return fmt.Errorf("%s contains an unclassified whole-value occurrence: %v", label, reference)
+			}
+			got[reference.site+"|"+reference.accessKind]++
+			continue
 		}
 		got[reference.site]++
 	}

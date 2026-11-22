@@ -18,20 +18,19 @@ import (
 func (s *Service) composeOperationalOriginal(ctx context.Context, delivery privateReplayDelivery, keys operationalOriginalKeys,
 	realm operationalRealm) (verifiedOperationalOriginal, error) {
 	resolved, resolveErr := s.resolveExecutionForSubmit(ctx, delivery.request)
-	if resolveErr != nil || resolved.provenanceRecord == "" ||
-		!validateOperationalPlan(delivery, resolved, realm) {
+	if resolveErr != nil || !validateOperationalPlan(delivery, resolved, realm) {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
 	}
 	assessment, err := buildReliableSubmitAdmissionBinding(resolved, delivery.family, keys.key)
 	if err != nil {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
 	}
+	// The encoder refuses a resolution that carries no evidence record.
 	wire, err := encodeOperationalOriginal(delivery, resolved, assessment, keys, realm)
 	if err != nil {
 		return verifiedOperationalOriginal{}, err
 	}
-	return verifiedOperationalOriginal{delivery: delivery, resolved: resolved, assessment: assessment,
-		wire: wire, variant: operationalOriginalV2}, nil
+	return verifiedOperationalOriginal{delivery: delivery, resolved: resolved, assessment: assessment, wire: wire}, nil
 }
 
 type operationalResultKind uint8
@@ -162,6 +161,15 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	outcome := operationalFailure(reliablesubmit.OperationalUnavailable)
+	// At most one confirmation with EGS per invocation, and only on a path
+	// that is about to attempt a retained first effect.
+	confirmed := false
+	confirm := func() {
+		if !confirmed {
+			confirmed = true
+			s.confirmOperationalAdmission(ctx)
+		}
+	}
 	withOriginal := func(read reliablesubmit.OperationalOriginalRead, advance, observe bool) reliablesubmit.OperationalCheck {
 		var original verifiedOperationalOriginal
 		return d.custody.WithOperationalOriginal(ctx, delivery.refs.claimID, d.keys.storage, canonical, read,
@@ -183,7 +191,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 				}
 				return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
 			}, func(access *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection) {
-				outcome = s.advanceOperational(ctx, d, access, p, original, advance, observe)
+				outcome = s.advanceOperational(ctx, d, access, p, original, advance, observe, confirm)
 			})
 	}
 	existing := withOriginal(reliablesubmit.OperationalRetainedRead, !recovery, true)
@@ -202,6 +210,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if !d.eligible() {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
+	confirm()
 	if _, ok := s.currentOperationalAdmission(d.realm); !ok {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
@@ -212,10 +221,13 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if err != nil {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
-	if _, ok := s.currentOperationalAdmission(d.realm); !ok {
+	view, ok := s.currentOperationalAdmission(d.realm)
+	if !ok {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
-	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire)
+	// The store compares this token with the admission row inside the
+	// establishment turn; a fenced process stores no claim.
+	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire, view.token)
 	if d.proof != nil && d.proof.afterEstablish != nil {
 		d.proof.afterEstablish()
 	}
@@ -261,10 +273,19 @@ func operationalReadProjection(p reliablesubmit.OperationalProjection) operation
 }
 
 func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, a *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection,
-	original verifiedOperationalOriginal, advance, observe bool) (out operationalHandoffResult) {
+	original verifiedOperationalOriginal, advance, observe bool, confirm func()) (out operationalHandoffResult) {
 	out = operationalReadProjection(p)
 	qualificationReason := reliablesubmit.OperationalReasonNone
-	qualify := func() (reliablesubmit.OperationalOriginalMatch, error) {
+	// qualify is what every first-effect cut asks. stored is the admission
+	// token the store read for that cut. The fence comes first: a process
+	// whose view does not carry the stored token judges nothing. The match it
+	// returns carries the token of the same view that judged the claim.
+	qualify := func(stored reliablesubmit.OperationalAdmissionToken) (reliablesubmit.OperationalOriginalMatch, error) {
+		view, ok := s.currentOperationalAdmission(d.realm)
+		if !ok || view.token != stored {
+			qualificationReason = reliablesubmit.OperationalUnavailable
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
 		qualificationReason = s.qualifyOperationalRetained(ctx, original, d.realm)
 		if qualificationReason != reliablesubmit.OperationalReasonNone {
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
@@ -273,7 +294,25 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 			qualificationReason = reliablesubmit.OperationalIntegrity
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
 		}
-		return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
+		if current, still := s.currentOperationalAdmission(d.realm); !still || current != view {
+			qualificationReason = reliablesubmit.OperationalUnavailable
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
+		return reliablesubmit.MatchAdmittedOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan,
+			original.wire, view.token)
+	}
+	// precheck refuses before a writer turn is requested. It confirms with
+	// EGS first, then asks the same question as the cut with the admission
+	// row read outside a turn. It grants nothing: the cut asks again.
+	precheck := func() bool {
+		confirm()
+		stored, ok := a.AdmissionHint(ctx)
+		if !ok {
+			qualificationReason = reliablesubmit.OperationalUnavailable
+			return false
+		}
+		_, err := qualify(stored)
+		return err == nil
 	}
 	refused := func(result operationalHandoffResult) operationalHandoffResult {
 		if qualificationReason != reliablesubmit.OperationalReasonNone {
@@ -282,13 +321,10 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		return result
 	}
 	if p.Revision() == 1 {
-		if original.variant == operationalOriginalV1 {
-			return out.withhold(reliablesubmit.OperationalUnavailable)
-		}
 		if !advance {
 			return out
 		}
-		if _, err := qualify(); err != nil {
+		if !precheck() {
 			return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 		}
 		m, err := reliablesubmit.NewOperationalMutation()
@@ -334,13 +370,10 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		}
 		return out
 	}
-	if original.variant == operationalOriginalV1 {
-		return out.withhold(reliablesubmit.OperationalUnavailable)
-	}
 	if !advance || stamp != [32]byte{} {
 		return out
 	}
-	if _, err := qualify(); err != nil {
+	if !precheck() {
 		return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 	}
 	if p.Revision() == 2 {

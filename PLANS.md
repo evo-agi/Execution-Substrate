@@ -2,6 +2,58 @@
 
 ## Status
 
+### PR #12 durable admission generation, freshness and v1 removal (2026-11-22)
+
+A fresh independent audit and a red-team review of the committed v2 repair
+`e544e0fbe4220dfdd2c2068e3267dcfa454a0cf9` over
+`8058561edc08356c46680c204586b3c7796c0ff3` did not accept it. No production
+hole was found in the candidate's own model, but that model stranded every
+unmarked claim whenever trust, verifier or policy changed, kept a v1 branch
+for originals no production caller could have created, left three admission
+checks unpinned by behaviour, and its typed guard accepted whole-value and
+conversion writes. The owner selected the proper fix on 2026-11-22: amend the
+unmerged migration 5 (decision D-1), add the freshness rule in this repair
+with a 30 second limit (D-2), and delete `operational_local_v1` (D-3). This
+is a **re-derivation** on the reliable-submit **Reopened redesign seam**.
+
+Select one durable **admission row** in schema 5: installation, epoch,
+admission generation, admission digest and an enabled or withdrawn state,
+with its own triggers, created by the amended migration 5. This reverses the
+"No SQL migration" statement of the 2026-11-20 entries for this one purpose;
+migrations 1 to 4, the 47 claim columns, codecs 1 to 4 and every stored
+encoding keep their meaning. Every codec-5 first-effect writer (establish,
+run assignment, intent, pre-stage, stamp and first marker) compares the
+presented **admission token** with that row under the SQLite writer lock, and
+the post-COMMIT release reads it again. Replacing trust, verifier or policy
+no longer changes the epoch: a restarted process advances the generation,
+in-flight claims are judged again by the new content, and a process holding
+an older token commits no further first-effect write. Withdrawal becomes
+durable and domain-wide. A process must have confirmed its trust with EGS
+within 30 seconds before any first-effect cut; a confirmation that differs
+latches the process closed, and a failed confirmation extends nothing. A
+refusal by the current rules reports the value-free `OperationalDenied`;
+an absent, fenced, withdrawn, superseded or stale authority reports
+`OperationalUnavailable`. Neither discloses a run.
+
+`operational_local_v1` is removed, not retained: no **Temporary compatibility
+edge** remains on this path. The 2026-11-20 and earlier 2026-11-22 entries
+below stay as history and are superseded where they select v1, forbid a
+migration, bind trust or policy replacement to a new epoch, or describe
+withdrawal as local to one Service. Commissioning, advance and withdrawal keep
+zero production callers; a maintained gate names the prerequisites
+(`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`)
+that must be answered before one is added. The typed protected-field guard
+now treats conversions as transparent, counts whole-value construction,
+assignment, conversion and declaration of an owning type, and names its
+remaining limits. Public keyed refusal, ordinary unkeyed Submit, what
+`Initialize` does, EGS, the original wire format, receipts, staging, the
+sender and the provider exchange are unchanged and remain **Current
+invariants** or **Bounded slice rules** as before. The precise table, token,
+cuts, deadline, outcomes and test obligations are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This candidate requires a fresh independent audit and red-team review of its
+complete committed bytes before it can resolve the PR #12 finding.
+
 ### PR #12 v2 field-access guard completion (2026-11-22)
 
 The consolidated v2 repair below, recovered unchanged as tree
@@ -18,6 +70,7 @@ repair's five added paths. Production Go code, the operating model, custody
 grammar, durable facts, sender and recovery behavior are unchanged. The
 candidate still requires a fresh independent audit and red-team review of its
 complete committed bytes before it can resolve the PR #12 finding.
+Superseded in part by the entry above: its guard is extended there.
 
 ### PR #12 v2 authority and evidence repair (2026-11-20)
 
@@ -38,6 +91,8 @@ test observation of the completed retained policy context immediately before
 the existing built-in evaluation. This repair is an unstaged writer candidate;
 it does not become independently accepted or resolve the PR finding until a
 new independent audit of its complete final bytes.
+Superseded in part by the 2026-11-22 durable admission generation entry:
+the historical-v1 evidence and the v1 empty-leaf check are removed with v1.
 
 ### PR #12 retained-current-admission v2 repair (2026-11-20)
 
@@ -66,6 +121,9 @@ selected. The precise format, locks, outcomes and test obligations are owned by
 [the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
 This unstaged repair candidate requires a new frozen validation generation and a
 fresh independent audit before any additive commit or PR update.
+Superseded in part by the 2026-11-22 durable admission generation entry: the
+v1 **Temporary compatibility edge**, "No SQL migration", the epoch-bound
+snapshot and Service-local withdrawal selected here are no longer in force.
 
 ### Pre-stage continuation and transport observation repair (2026-11-20)
 

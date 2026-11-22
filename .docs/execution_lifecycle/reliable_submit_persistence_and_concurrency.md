@@ -513,28 +513,46 @@ authorize dispatch or fallback to unkeyed submit.
 ### Selected codec-5 interpretation of §8
 
 The PR #12 refinement retains schema 5, codec 5, scope 3, the eleven-field
-`ESRSPAY3` envelope, all historical migrations and their literal hashes. It
-adds only a provenance variant discriminator and a bounded opaque full signed
-evidence leaf to new `operational_local_v2` originals. Scope-3 custody checks
-the finite variant and inherited bounded structural framing: a valid nonempty
-v1 provenance sequence may pass that storage layer. Admission alone requires
-the historical empty v1 leaf through exact whole-wire re-encoding and rejects
-a nonempty v1 sequence before an operational effect. Custody checks v2 as
-nonempty bounded opaque bytes; admission owns typed JSON, evidence associations,
-signature, current TrustModel and policy meaning. Existing sealed
-v1 bytes and receipts are never rewritten. V1 unmarked effects refuse, while
-v1/v2 accepted receipt reads and marked positive reconciliation remain
-available under exact caller/key/original rules. No durable policy decision,
-permit, table, migration or new shared kernel is introduced.
+`ESRSPAY3` envelope, and historical migrations 1–4 with their literal hashes.
+It amends the unmerged migration 5 literal, and therefore the schema-5 shape
+digest and ledger hash, to add one durable fact: the single-row STRICT table
+`reliable_submit_operational_admission` with its no-delete, insert and update
+triggers, and one clause in each of the two codec-5 claim triggers. A database
+carrying the schema-5 shape published at `8058561` is refused on open without
+change; no production opener exists. The original carries the provenance
+literal `operational_local_v2` and a bounded opaque full signed
+evidence leaf. Scope-3 custody accepts only that literal with the evidence
+checked as nonempty bounded opaque bytes; admission owns typed JSON, evidence
+associations, signature, current TrustModel and policy meaning.
+`operational_local_v1` is removed at both layers: custody refuses the literal
+and the reader refuses it, so no storage-layer or admission-layer v1 rule
+remains. Accepted receipt reads and marked positive reconciliation remain
+available under exact caller/key/original rules.
 
-For an unmarked v2 first effect, the existing checked writer rehydrates the
-same original and key state, then invokes only bounded local Service admission
+The admission row is the only new durable authority. It records which
+admission content the domain currently accepts (generation and digest) and
+whether first effects are enabled. It is not a durable policy decision about
+any claim: no Allow bit, permit or per-claim verdict is stored, and no new
+shared kernel is introduced. Three store functions write it (commission,
+advance, withdraw), each in one `BEGIN IMMEDIATE` transaction, so each is
+strictly ordered against every claim write. The claim triggers refuse a
+codec-5 insert, and a codec-5 update of any kind except accept with receipt,
+unless an enabled row exists; codecs 1–4 are unaffected.
+
+For an unmarked first effect, the existing checked writer rehydrates the
+same original and key state, reads the admission row through the same
+connection, and requires the presented admission token to equal it. It then
+invokes only bounded local Service admission
 over those retained bytes. Lock order is SQLite writer, brief Service read,
 then release of Service lock before bounded crypto/policy work. A second
-withdrawal/identity read completes each positive cut. The Service withdrawal
-writer never takes SQLite or custody locks. Post-COMMIT release and final
-one-use sender entry repeat their selected checks; neither a read-only
-observation nor a historical Allow bit confers a sender. The physical stage,
+latch, deadline and identity read completes each positive cut. Establishment
+compares the token inside its own turn as well. Commission, advance and
+withdrawal take the SQLite writer without the Service lock and are never
+called inside a writer turn; the EGS confirmation runs outside every lock and
+transaction. Post-COMMIT release re-reads the row on a pooled connection, and
+final one-use sender entry repeats its selected local checks; neither a
+read-only observation nor a historical Allow bit confers a sender. The
+physical stage,
 permanent marker, CAS, uncertainty and actual-write rules below are unchanged.
 
 Operational command operands bind the exact authenticated predecessor. Intent

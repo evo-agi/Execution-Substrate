@@ -4083,7 +4083,7 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob reliable-submit package files: %v", err)
 	}
-	if got, want := len(reliableSubmitFiles), 36; got != want {
+	if got, want := len(reliableSubmitFiles), 38; got != want {
 		t.Fatalf("reliable-submit package inventory has %d files: %v", got, reliableSubmitFiles)
 	}
 	assertContainsAll(t, "reliable-submit package current file set", strings.Join(reliableSubmitFiles, " "),
@@ -4099,6 +4099,8 @@ func TestReliableSubmitPersistenceAndConcurrencyADRDocsContract(t *testing.T) {
 		"es/admission/internal/reliablesubmit/sqlite_migrations.go",
 		"es/admission/internal/reliablesubmit/operational_handoff.go",
 		"es/admission/internal/reliablesubmit/operational_handoff_test.go",
+		"es/admission/internal/reliablesubmit/operational_admission.go",
+		"es/admission/internal/reliablesubmit/operational_admission_test.go",
 		"es/admission/internal/reliablesubmit/sqlite_operational_handoff_schema.go",
 		"es/admission/internal/reliablesubmit/sqlite_store.go",
 		"es/admission/internal/reliablesubmit/durable_record_test.go",
@@ -13908,9 +13910,18 @@ func TestOperationalSubmitHandoffContractSelection(t *testing.T) {
 	}
 
 	state := compactDocSection(t, owner, "## 2. Installation, scope and physical state", "## 3. Original, key cuts and encodings")
-	assertContainsAll(t, "retained state", state, "`operational_local_v1` / 3",
+	assertContainsAll(t, "retained state", state, "`operational_local_v2` / 3",
+		"including the removed `operational_local_v1` literal",
 		"Global caller/key occupation spans the table", "cannot be promoted, relabeled or republished as operational originals",
-		"Copy every field including physical rowid", "Marker is permanent", "No operations 6, 7, 9 or 10 on codec 5")
+		"Copy every field including physical rowid", "Marker is permanent", "No operations 6, 7, 9 or 10 on codec 5",
+		"`reliable_submit_operational_admission`, a STRICT table", "that can hold exactly one row",
+		"A codec-5 insert aborts unless an enabled admission row exists",
+		"operation kind is not 8 aborts unless an enabled admission row exists",
+		"Migration 5 copies the earlier rows before it creates any trigger",
+		"schema-5 shape published at `8058561` is refused on open")
+	if strings.Contains(state, "| 5 | 5 | `operational_local_v1` / 3 |") {
+		t.Fatal("the removed v1 scope row is still selected")
+	}
 	custody := compactDocSection(t, owner, "## 5. Exclusive staging and exact bindings", "## 6. Provider exchange and receipt")
 	assertContainsAll(t, "staging qualification", custody, "one exclusive descriptor-relative mkdir", "stamp without its live owner",
 		"No cross-invocation stamp authority", "Preserve every residue and capacity charge",
@@ -13988,16 +13999,37 @@ func TestOperationalSubmitHandoffContractRejectsUnsafeMutants(t *testing.T) {
 }
 
 func operationalCurrentAdmissionV2OwnerRule(owner string) bool {
-	return strings.Contains(owner, "An `operational_local_v1` original remains a **Temporary compatibility edge**.") &&
-		strings.Contains(owner, "Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,") &&
+	return strings.Contains(owner, "a first-effect cut proceeds only if the presented token equals") &&
+		strings.Contains(owner, "the enabled admission row read under the SQLite writer lock") &&
+		strings.Contains(owner, "The presented token equals the enabled row read through the turn's connection.") &&
+		strings.Contains(owner, "the returned match must carry a token equal to that row") &&
 		strings.Contains(owner, "only bounded local Service admission") &&
-		strings.Contains(owner, "Receipt-only") && strings.Contains(owner, "Accepted v1/v2 receipt")
+		strings.Contains(owner, "less than 30 seconds elapsed since it on both the monotonic and") &&
+		strings.Contains(owner, "a permanent local superseded latch is set") &&
+		strings.Contains(owner, "A fetch or verification failure changes nothing.") &&
+		strings.Contains(owner, "Receipt-only") && strings.Contains(owner, "but no view, token, confirmation,")
 }
 
-func operationalV1AttributionRule(owner string) bool {
-	return strings.Contains(owner, "custody keeps its inherited bounded sequence") &&
-		strings.Contains(owner, "can accept a structurally valid nonempty provenance sequence") &&
-		strings.Contains(owner, "Admission requires the historical empty sequence by exact whole-wire")
+func operationalV1RemovalRule(owner string) bool {
+	return strings.Contains(owner, "`operational_local_v1` is removed and is not a compatibility edge.") &&
+		strings.Contains(owner, "Scope-3 custody refuses the") &&
+		strings.Contains(owner, "the reader refuses it in its fail-closed default") &&
+		strings.Contains(owner, "refuses an empty evidence record instead of choosing a literal") &&
+		strings.Contains(owner, "no\nproduction source contains the v1 literal") &&
+		!strings.Contains(owner, "Temporary compatibility edge")
+}
+
+func operationalAdmissionOutcomeRule(owner string) bool {
+	return strings.Contains(owner, "| Signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
+		strings.Contains(owner, "| Retained evidence does not verify under the current verifier | `OperationalDenied`.") &&
+		strings.Contains(owner, "| No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |") &&
+		strings.Contains(owner, "an existing original whose realm is not the domain's | `OperationalIntegrity` | No |") &&
+		strings.Contains(owner, "the authority\nrefusal is reported, at reconciliation and at the final sender entry alike") &&
+		strings.Contains(owner, "reports the last writer\nattempted in that call") &&
+		strings.Contains(owner, "returns the stored run to the\nauthenticated original caller under any authority and sends no trust request") &&
+		strings.Contains(owner, "so before staging a denial does not poison the claim") &&
+		strings.Contains(owner, "it needs a new submit key") &&
+		strings.Contains(owner, "one\nsender already past its release re-read may still POST")
 }
 
 func operationalV2AssuranceOwnerRule(owner string) bool {
@@ -14011,7 +14043,69 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "Range-clause `=` key and value whole-field targets") &&
 		strings.Contains(owner, "Taking a field's address is an `address` access") &&
 		strings.Contains(owner, "is a `write-through` access") &&
+		strings.Contains(owner, "A conversion is a transparent step in that chain") &&
+		strings.Contains(owner, "A protected field can also be written without being spelled") &&
+		strings.Contains(owner, "occurrence of its owning struct type as its own access kind") &&
+		strings.Contains(owner, "a zero-value declaration and a same-shape") &&
+		strings.Contains(owner, "exact import inventory") &&
+		strings.Contains(owner, "exactly one reference to `Service.confirmOperationalAdmission`") &&
+		strings.Contains(owner, "Exactly three store functions contain a statement that") &&
 		strings.Contains(owner, "not a general proof of aliases or")
+}
+
+// operationalCommissioningPrerequisiteIDs reads the identifiers of the owner
+// contract's §8 commissioning gate table in document order.
+func operationalCommissioningPrerequisiteIDs(owner string) []string {
+	var ids []string
+	inTable := false
+	for _, line := range strings.Split(owner, "\n") {
+		if line == "| Identifier | Prerequisite |" {
+			inTable = true
+			continue
+		}
+		if !inTable {
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			break
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 3 {
+			break
+		}
+		id := strings.TrimSpace(cells[1])
+		if strings.HasPrefix(id, "`") && strings.HasSuffix(id, "`") && len(id) > 2 {
+			ids = append(ids, strings.Trim(id, "`"))
+		}
+	}
+	return ids
+}
+
+// operationalCommissioningGateIDs reads the same identifiers from the typed
+// gate beside the zero-reference inventory in the admission package.
+func operationalCommissioningGateIDs(source string) []string {
+	const open = "var operationalCommissioningPrerequisites = []string{"
+	start := strings.Index(source, open)
+	if start < 0 || strings.Count(source, open) != 1 {
+		return nil
+	}
+	body := source[start+len(open):]
+	end := strings.Index(body, "}")
+	if end < 0 {
+		return nil
+	}
+	var ids []string
+	for _, field := range strings.Split(body[:end], ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if len(field) < 3 || field[0] != '"' || field[len(field)-1] != '"' {
+			return nil
+		}
+		ids = append(ids, field[1:len(field)-1])
+	}
+	return ids
 }
 
 func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
@@ -14021,53 +14115,103 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 	persistence := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
 	recovery := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
 	boundary := mustRead(t, ".docs/system_overview/boundaries.md")
+	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
 	assertContainsAll(t, "selected v2 owner", owner,
 		"operational_local_v2", "Claims **and** Seal", "256 KiB", "same admission before it can release a sender",
-		"The withdrawal writer takes only `Service.mu`", "Accepted v1/v2 receipt", "Unknown variants fail closed")
+		"Commission, advance and withdrawal take the SQLite\nwriter without `Service.mu`",
+		"Unknown variants fail closed", "Re-derivation of the reliable-submit Reopened redesign seam",
+		"schema 5 is unmerged, stays on the reopened seam and is not a Current invariant")
+	assertContainsAll(t, "durable admission row and operations", owner,
+		"SHA-256 over the label `ESOHADM1`", "Only the store mints a nonzero token",
+		"| Commission | Empty table: insert generation 1 with this digest.",
+		"| Advance (expected generation g) | Row at generation g with a different digest, enabled or withdrawn",
+		"| Withdraw | Enabled row with the token's installation and epoch: write withdrawn.",
+		"Withdrawal sets the local latch first and then writes the durable row",
+		"advances the generation in the same epoch and does\nnot invalidate any original",
+		"None of the three operations may run\ninside a writer turn",
+		"The digest covers trust, verifier and policy configuration",
+		"Confirmation is attempted at\nmost once per invocation and only at three points",
+		"can only add a non-negative skew")
 	assertContainsAll(t, "authority and independent evidence obligations", owner,
 		"zero non-test references", "operationalAdmissionSnapshot` construction", "Exact protected-field reads",
 		"independently build the full scope-3 TLV and PB1", "valid signature but",
 		"Transparent parentheses enclosing a resolved field", "parenthesized reads",
 		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
 		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
-		"is a `write-through` access", "aggregate HEAD ceiling for PR #12 plus that repair is 42 files",
+		"is a `write-through` access", "ceiling for PR #12 plus both repairs is 46 files",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
-	assertContainsAll(t, "selected v2 plan", plans,
-		"PR #12 retained-current-admission v2 repair", "Temporary compatibility edge", "fresh independent audit",
-		"PR #12 v2 field-access guard completion", "red-team review of its")
+	assertContainsAll(t, "selected plan", plans,
+		"PR #12 retained-current-admission v2 repair", "fresh independent audit",
+		"PR #12 v2 field-access guard completion", "red-team review of its",
+		"PR #12 durable admission generation, freshness and v1 removal",
+		"amend the\nunmerged migration 5 (decision D-1)", "with a 30 second limit (D-2)",
+		"delete `operational_local_v1` (D-3)", "no **Temporary compatibility\nedge** remains on this path",
+		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`")
 	assertContainsAll(t, "separate evidence and policy ownership", admission,
-		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected")
-	assertContainsAll(t, "durable v2 scope", persistence,
-		"all historical migrations and their literal hashes", "bounded opaque full signed", "No durable policy decision")
-	assertContainsAll(t, "v1 owner-layer attribution", owner,
-		"custody keeps its inherited bounded sequence", "can accept a structurally valid nonempty provenance sequence",
-		"Admission requires the historical empty sequence by exact whole-wire")
-	assertContainsAll(t, "v1 persistence-layer attribution", persistence,
-		"valid nonempty", "v1 provenance sequence may pass that storage layer", "Admission alone requires")
+		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected",
+		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this")
+	assertContainsAll(t, "durable admission scope", persistence,
+		"historical migrations 1–4 with their literal hashes", "bounded opaque full signed",
+		"`reliable_submit_operational_admission`", "It is not a durable policy decision about",
+		"`operational_local_v1` is removed at both layers", "codecs 1–4 are unaffected",
+		"never\ncalled inside a writer turn")
 	assertContainsAll(t, "receipt exception", recovery,
-		"a committed accepted receipt is verified", "positive registration", "refuse new effect continuation")
+		"a committed accepted receipt is verified", "positive registration",
+		"`operational_local_v1` is removed and refused", "reports denied or unavailable",
+		"sends no\ntrust request")
 	assertContainsAll(t, "service boundary", boundary,
-		"ES alone owns current admission", "It does not move admission authority")
+		"ES alone owns current admission", "It does not move admission authority",
+		"Temporary compatibility edge: none. `operational_local_v1` is removed.",
+		"stores no per-claim decision")
+	assertContainsAll(t, "private confirmation note", implementation,
+		"confirms its commissioned trust with EGS before a retained first effect",
+		"ordinary Submit does not confirm")
 	if !operationalCurrentAdmissionV2OwnerRule(owner) {
-		t.Fatal("current-admission and legacy-refusal owner rule incomplete")
+		t.Fatal("current-admission owner rule incomplete")
 	}
-	if !operationalV1AttributionRule(owner) {
-		t.Fatal("v1 custody/admission attribution is incomplete")
+	if !operationalV1RemovalRule(owner) {
+		t.Fatal("v1 removal owner rule is incomplete")
+	}
+	if !operationalAdmissionOutcomeRule(owner) {
+		t.Fatal("outcome mapping owner rule is incomplete")
 	}
 	if !operationalV2AssuranceOwnerRule(owner) {
 		t.Fatal("v2 authority and independent vector obligations are incomplete")
+	}
+	for _, production := range []string{
+		"es/admission/reliable_submit_operational_admission.go", "es/admission/reliable_submit_operational_handoff.go",
+		"es/admission/reliable_submit_operational_format.go", "es/admission/service.go",
+		"es/admission/internal/reliablesubmit/operational_handoff.go",
+		"es/admission/internal/reliablesubmit/operational_admission.go",
+		"es/admission/internal/reliablesubmit/replay_custody_structure.go",
+	} {
+		if strings.Contains(mustRead(t, production), "operational_local_v1") {
+			t.Fatalf("%s still contains the removed v1 literal", production)
+		}
+	}
+
+	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE"}
+	docIDs := operationalCommissioningPrerequisiteIDs(owner)
+	gateIDs := operationalCommissioningGateIDs(mustRead(t, "es/admission/reliable_submit_guardrails_test.go"))
+	if !slices.Equal(docIDs, wantIDs) || !slices.Equal(gateIDs, wantIDs) {
+		t.Fatalf("commissioning prerequisites differ: owner %q, gate %q, want %q", docIDs, gateIDs, wantIDs)
 	}
 }
 
 func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testing.T) {
 	owner := mustRead(t, operationalHandoffOwnerDoc)
 	if !operationalCurrentAdmissionV2OwnerRule(owner) {
-		t.Fatal("real v2 owner rule incomplete")
+		t.Fatal("real owner rule incomplete")
 	}
 	for _, tc := range []struct{ name, from, to string }{
-		{"LegacyFirstEffect", "Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,", "Unmarked v1 may advance Assign/Intent, stage, stamp,"},
+		{"TokenComparedOutsideWriter", "the enabled admission row read under the SQLite writer lock", "a cached copy of the admission row"},
+		{"EstablishUnfenced", "The presented token equals the enabled row read through the turn's connection.", "The local view is sampled."},
+		{"MatchWithoutToken", "the returned match must carry a token equal to that row", "the returned match is accepted"},
 		{"WriterRemoteResolver", "only bounded local Service admission", "a current remote resolver"},
-		{"ReceiptPolicyGate", "Accepted v1/v2 receipt", "Current-policy-approved v1/v2 receipt"},
+		{"DeadlineLengthened", "less than 30 seconds elapsed since it on both the monotonic and", "less than 30 minutes elapsed since it on either the monotonic or"},
+		{"SupersessionForgiven", "a permanent local superseded latch is set", "the view adopts the fetched trust"},
+		{"FailedConfirmationExtends", "A fetch or verification failure changes nothing.", "A fetch or verification failure keeps the last confirmation current."},
+		{"ReceiptPolicyGate", "but no view, token, confirmation,", "and a current view, token and confirmation, but no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.Count(owner, tc.from) != 1 {
@@ -14079,16 +14223,44 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			}
 		})
 	}
-	t.Run("FalseStorageEmptyV1Attribution", func(t *testing.T) {
-		const accurate = "can accept a structurally valid nonempty provenance sequence"
-		if strings.Count(owner, accurate) != 1 {
-			t.Fatal("accurate custody/admission attribution is missing")
-		}
-		mutant := strings.Replace(owner, accurate, "rejects every nonempty v1 provenance sequence", 1)
-		if operationalV1AttributionRule(mutant) {
-			t.Fatal("false storage-layer mutation escaped owner wording guard")
-		}
-	})
+	if !operationalV1RemovalRule(owner) {
+		t.Fatal("real v1 removal rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"V1Retained", "`operational_local_v1` is removed and is not a compatibility edge.", "An `operational_local_v1` original remains a **Temporary compatibility edge**."},
+		{"CustodyAcceptsV1", "Scope-3 custody refuses the", "Scope-3 custody accepts the"},
+		{"ReaderAcceptsV1", "the reader refuses it in its fail-closed default", "the reader accepts it as a historical variant"},
+		{"EncoderFallsBack", "refuses an empty evidence record instead of choosing a literal", "falls back to the v1 literal for an empty evidence record"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalV1RemovalRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe v1 mutation survived")
+			}
+		})
+	}
+	if !operationalAdmissionOutcomeRule(owner) {
+		t.Fatal("real outcome rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"DenialReportedUnavailable", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalUnavailable` | No |"},
+		{"DenialDisclosesRun", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalDenied` | Yes |"},
+		{"FenceReportedDenied", "missing bounded payload | `OperationalUnavailable` | No |", "missing bounded payload | `OperationalDenied` | No |"},
+		{"CancellationWins", "at reconciliation and at the final sender entry alike", "except at reconciliation and at the final sender entry"},
+		{"DenialPoisonsEverywhere", "so before staging a denial does not poison the claim", "so a denial never poisons the claim"},
+		{"WithdrawalRetractsSender", "one\nsender already past its release re-read may still POST", "no sender can POST afterwards"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalAdmissionOutcomeRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe outcome mutation survived")
+			}
+		})
+	}
 	for _, tc := range []struct{ name, phrase string }{
 		{"MissingZeroCommissionInventory", "zero non-test references"},
 		{"MissingSnapshotConstructionOwner", "operationalAdmissionSnapshot` construction"},
@@ -14098,6 +14270,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingRangeAssignmentRule", "Range-clause `=` key and value whole-field targets"},
 		{"MissingAddressAccessRule", "Taking a field's address is an `address` access"},
 		{"MissingWriteThroughRule", "is a `write-through` access"},
+		{"MissingConversionStepRule", "A conversion is a transparent step in that chain"},
+		{"MissingWholeValueRule", "occurrence of its owning struct type as its own access kind"},
+		{"MissingConstructionEscapeRule", "a zero-value declaration and a same-shape"},
+		{"MissingImportInventory", "exact import inventory"},
+		{"MissingConfirmationInventory", "exactly one reference to `Service.confirmOperationalAdmission`"},
+		{"MissingAdmissionTableWriterInventory", "Exactly three store functions contain a statement that"},
 		{"MissingFiniteGuardLimit", "not a general proof of aliases or"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -14128,6 +14306,27 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		mutant := strings.Replace(owner, accurate, "remains a read", 1)
 		if operationalV2AssuranceOwnerRule(mutant) {
 			t.Fatal("write-through downgrade survived owner wording guard")
+		}
+	})
+	t.Run("PrerequisiteRemovedFromOwner", func(t *testing.T) {
+		const row = "| `CP-EPOCH` |"
+		if strings.Count(owner, row) != 1 {
+			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
+		}
+		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-EPOCH (answered) |", 1))
+		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 4 {
+			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PrerequisiteRemovedFromGate", func(t *testing.T) {
+		gate := mustRead(t, "es/admission/reliable_submit_guardrails_test.go")
+		const entry = "\"CP-ROLLBACK\", "
+		if strings.Count(gate, entry) != 1 {
+			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
+		}
+		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
+		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 4 {
+			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})
 }

@@ -1085,6 +1085,7 @@ Operator helper ownership in the current slice:
 - Runtime identity handling is reservation and path protection, not token ownership or endpoint implementation.
 - Authority handoff reporting is non-secret submit/status read evidence, not a live credential observer.
 - Runtime-trust loading is startup-time initialization rather than a live refresh path in the current slice.
+- The private operational handoff path, which has no production caller, confirms its commissioned trust with EGS before a retained first effect and refuses when the last confirmation is older than 30 seconds. It does not adopt new trust while running, and ordinary Submit does not confirm.
 - Aggregate evidence is the only first-class admission input for the published artifact path.
 
 These are active implementation choices, not automatically permanent design commitments.
