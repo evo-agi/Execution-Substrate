@@ -9,15 +9,26 @@ Needs the go command. Each check writes a module named "synth" into a
 temporary directory, runs the gate there exactly as the workflow runs it, and
 compares the exit status and the set of test functions that really executed.
 Every generated test function records that it ran by creating a marker file,
-so "skipped" and "ran" are observed, not read from go test output. A test
-binary that go test started for chosen tests, with -run, keeps its marker
-files apart from those of a run of a whole package. So the checks of the
-step "Listed tests still fail" see what ran in the go test of one entry and
-what ran in the run of its package.
+so "skipped" and "ran" are observed, not read from go test output. The name
+of a marker file is the name of its test in hexadecimal digits, so two tests
+whose names differ only in the case of a letter keep two files on a file
+system that does not tell such names apart, as the default one of macOS. A
+test binary that go test started for chosen tests, with -run, keeps its
+marker files apart from those of a run of a whole package. So the checks of
+the step "Listed tests still fail" see what ran in the go test of one entry
+and what ran in the run of its package.
 
-The gate's observed run needs the Go version that go_test_gate.py names in
-OBSERVED_GO_VERSION. With another go command the checks that have an entry
-for a subtest fail, and the output says why.
+The gate's observed run needs two things of the go command that comes first
+on PATH. With a go command that lacks one of them the checks that have an
+entry for a subtest fail, and the output says why.
+
+  - It has to be the Go version that go_test_gate.py names in
+    OBSERVED_GO_VERSION. The modules of the checks declare an older Go
+    version, so the go command does not switch to another toolchain for
+    them, as it does inside a module that asks for a newer one.
+  - It has to be installed outside the module cache. The go command does
+    not let -overlay replace a file beneath GOMODCACHE, and a toolchain that
+    the go command downloaded itself lies there.
 
 The last group reads ../workflows/go.yml beside this file. It holds that file
 as a whole by its SHA-256, so every edit of the workflow has to change the
@@ -50,12 +61,16 @@ EXIT = "exit"
 PREAMBLE = """package %(package)s
 
 import (
+	"encoding/hex"
 	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// The bodies of some generated tests use this package.
+var _ = strings.Repeat
 
 func ran(t *testing.T) {
 	t.Helper()
@@ -64,7 +79,9 @@ func ran(t *testing.T) {
 		// A go test for chosen tests, not a run of the whole package.
 		directory = filepath.Join(directory, "chosen")
 	}
-	name := "%(mark)s." + strings.ReplaceAll(t.Name(), "/", "__")
+	// In hexadecimal digits: the case of a letter must not decide whether
+	// two tests share one file.
+	name := "%(mark)s" + hex.EncodeToString([]byte(t.Name()))
 	if err := os.WriteFile(filepath.Join(directory, name), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +114,9 @@ func TestQuiet(t *testing.T) {
 	if flag.Lookup("test.run").Value.String() != "" {
 		directory += "/chosen"
 	}
-	descriptor, err := syscall.Open(directory+"/%(mark)s.TestQuiet", syscall.O_CREAT|syscall.O_WRONLY, 0o600)
+	// The name of the file is "TestQuiet" in hexadecimal digits, after those
+	// of the package, as in every other generated test.
+	descriptor, err := syscall.Open(directory+"/%(mark)s546573745175696574", syscall.O_CREAT|syscall.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +151,35 @@ NEVER_CALLS_RUN = """package %s
 import "testing"
 
 func TestMain(m *testing.M) {}
+"""
+
+# A test binary that runs none of its tests and writes a line of its own
+# that starts like the PASS line of the testing package.
+NEVER_CALLS_RUN_AND_WRITES_A_LINE = """package %s
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	os.Stdout.WriteString("PASS is the first word of this line\\n")
+}
+"""
+
+# A test binary that runs its tests and ends with status 0 whatever they
+# did. The testing package writes FAIL, not PASS, when one of them failed.
+HIDES_ITS_FAILURES = """package %s
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	m.Run()
+	os.Exit(0)
+}
 """
 
 # A test binary that runs its tests in a run of the whole package, and none
@@ -185,6 +233,11 @@ exit "$status"
 """
 # A failing "go test" ends with status 3 instead of 1.
 ODD_STATUS_GO = STAND_IN_GO % ('[ "$1" = test ] && [ "$status" -eq 1 ]', 3)
+# A "go test" that ran tests and passed ends with status 3 instead of 0.
+PASSING_ODD_STATUS_GO = STAND_IN_GO % (
+    '[ "$1" = test ] && [ "$2" != -list ] && [ "$status" -eq 0 ]',
+    3,
+)
 # "go list" prints the packages and fails.
 FAILING_LIST_GO = STAND_IN_GO % ('[ "$1" = list ]', 1)
 # "go test -list" fails, and every other "go test" is untouched.
@@ -202,6 +255,15 @@ exec "$GATE_SELFTEST_GO" "$@"
 # "go env" prints its answers and fails.
 FAILING_ENV_GO = STAND_IN_GO % ('[ "$1" = env ]', 1)
 # "go env GOVERSION GOROOT" names another Go version, and the real GOROOT.
+# The real go command with a module cache that holds its own toolchain, as
+# when the go command downloaded that toolchain itself. The modules of the
+# checks need no module from the cache.
+TOOLCHAIN_IN_THE_MODULE_CACHE_GO = """#!/bin/sh
+GOMODCACHE=$(dirname "$("$GATE_SELFTEST_GO" env GOROOT)")
+export GOMODCACHE
+exec "$GATE_SELFTEST_GO" "$@"
+"""
+
 OTHER_VERSION_GO = """#!/bin/sh
 if [ "$1" = env ] && [ "$2" = GOVERSION ]; then
     echo %s
@@ -663,7 +725,14 @@ def import_path(directory):
 
 
 def mark(directory):
-    return import_path(directory).replace("/", "__")
+    """The start of the name of every marker file of a package: its import
+    path and a "." in hexadecimal digits. The test name follows, the same way."""
+    return (import_path(directory) + ".").encode("utf-8").hex()
+
+
+def marked(name):
+    """The test that left the marker file name: "<import path>.<test path>"."""
+    return bytes.fromhex(name).decode("utf-8")
 
 
 def function(name, what, depth=0):
@@ -781,11 +850,11 @@ def run_gate(mode, packages, listing, files=None, arguments=None, runs=1, go=Non
                 stderr=subprocess.STDOUT,
             )
         whole = {
-            name.replace("__", "/")
+            marked(name)
             for name in os.listdir(marks)
             if os.path.join(marks, name) != chosen
         }
-        ran = Ran(name.replace("__", "/") for name in os.listdir(chosen))
+        ran = Ran(marked(name) for name in os.listdir(chosen))
         if mode == "still-failing":
             ran.whole = whole
         else:
@@ -1103,8 +1172,7 @@ class GateScopesEachEntryToItsPackage(GateCase):
 
     def test_go_test_that_ends_with_a_status_other_than_1_fails_the_gate(self):
         # Any status but 0 is a failure, in a package with entries and in one
-        # without. Every test here reports a verdict, so only the status of
-        # the go command shows that the run failed.
+        # without. A failing test ends the go command with status 3 here.
         listing = "synth/a TestListed\n"
         with_entries = {"a": {"TestListed": FAIL, "TestPortable": FAIL}}
         without_entries = {"a": {"TestListed": FAIL}, "b": {"TestOther": FAIL}}
@@ -1114,6 +1182,26 @@ class GateScopesEachEntryToItsPackage(GateCase):
                 self.assertEqual(status, 1, output)
                 self.assertNotIn("synth/a.TestListed", ran, output)
                 self.assertIn("test gate failed: ", output)
+        # The same where only the status of the go command shows that the
+        # run failed: every test passes and go test says so, and the go
+        # command ends with status 3. Once in the run of a package with
+        # entries, once in the run of the packages without entries.
+        for packages, listing, problem in (
+            ({"a": {"TestListed": FAIL, "TestPortable": PASS}}, "synth/a TestListed\n", "synth/a"),
+            (
+                {"a": {"TestPortable": PASS}, "b": {"TestOther": PASS}},
+                "",
+                "the packages without entries",
+            ),
+        ):
+            with self.subTest(packages=packages, only="status"):
+                status, ran, output = run_gate(
+                    "gate", packages, listing, go=PASSING_ODD_STATUS_GO
+                )
+                self.assertEqual(status, 1, output)
+                self.assertIn("synth/a.TestPortable", ran, output)
+                self.assertNotIn("--- FAIL", output)
+                self.assertIn("::error::test gate failed: " + problem + "\n", output)
 
     def test_test_that_skips_itself_has_run(self):
         # A test that calls t.Skip reported a verdict. It is not one of the
@@ -1607,6 +1695,34 @@ class GateShowsEveryTestItSkipped(GateCase):
         self.assertIn("::error::test gate failed: the observed run of synth/a\n", output)
         self.unskipped(output)
         self.unlisted(output)
+
+    def test_toolchain_beneath_the_module_cache_stops_the_gate(self):
+        # The go command does not build a test binary with a changed copy of
+        # a file that lies beneath GOMODCACHE, and a toolchain that it
+        # downloaded itself lies there. The first run of the package passes.
+        # The observed run cannot be made, so the gate fails and shows what
+        # the go command said. The step for the listed failures makes no
+        # observed run and is not affected.
+        output = self.check(
+            {"a": {"TestPreflight": PREFLIGHT}},
+            LISTED_SUBTEST,
+            1,
+            PREFLIGHT_RAN,
+            go=TOOLCHAIN_IN_THE_MODULE_CACHE_GO,
+        )
+        self.observed(output, "synth/a")
+        self.assertIn("src/testing/match.go. Files beneath GOMODCACHE (", output)
+        self.assertIn("must not be replaced.\n", output)
+        self.assertIn("::error::test gate failed: the observed run of synth/a\n", output)
+        self.assertNotIn("the observed run passed", output)
+        status, _, output = run_gate(
+            "still-failing",
+            {"a": {"TestPreflight": PREFLIGHT}},
+            LISTED_SUBTEST,
+            go=TOOLCHAIN_IN_THE_MODULE_CACHE_GO,
+        )
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("-overlay", output)
 
     def test_observed_run_has_to_run_every_test_that_is_not_listed(self):
         # TestPortable runs in the first run of the package. In the observed
@@ -2143,6 +2259,52 @@ class GateChecksWhatReallyRan(GateCase):
             "listed test is not defined in package synth/a: TestListed",
             files={"a/main_test.go": NEVER_CALLS_RUN % "a"},
         )
+        # Only the line "PASS" of the testing package counts, not a line
+        # that starts with that word.
+        output = self.check(
+            packages,
+            "synth/a TestListed\n",
+            1,
+            {"synth/a.TestPortable"},
+            files={"b/main_test.go": NEVER_CALLS_RUN_AND_WRITES_A_LINE % "b"},
+        )
+        self.assertIn("PASS is the first word of this line\n", output)
+        self.assertIn(
+            "::error::test gate failed: synth/b: the test binary ended without the PASS line",
+            output,
+        )
+
+    def test_test_binary_that_hides_its_failing_tests_fails_the_gate(self):
+        # The TestMain of the package ends the test binary with status 0
+        # although a test failed. go test then reports that the package
+        # passed, and the failing test has its verdict like every other. The
+        # testing package closed the run with FAIL, not with PASS, and that
+        # is what the gate goes by. Once in a package without entries, once
+        # in one with.
+        for directory, ran in (
+            ("b", {"synth/a.TestPortable", "synth/b.TestOther", "synth/b.TestFails"}),
+            ("a", {"synth/a.TestPortable", "synth/a.TestFails", "synth/b.TestOther"}),
+        ):
+            with self.subTest(package=directory):
+                packages = {
+                    "a": {"TestListed": FAIL, "TestPortable": PASS},
+                    "b": {"TestOther": PASS},
+                }
+                packages[directory]["TestFails"] = FAIL
+                status, got, output = run_gate(
+                    "gate",
+                    packages,
+                    "synth/a TestListed\n",
+                    files={directory + "/main_test.go": HIDES_ITS_FAILURES % directory},
+                )
+                self.assertEqual(status, 1, output)
+                self.assertEqual(got, ran, output)
+                self.assertIn("ok  \tsynth/" + directory, output)
+                self.assertIn(
+                    "::error::test gate failed: synth/%s: the test binary ended without the "
+                    "PASS line" % directory,
+                    output,
+                )
 
     def test_package_whose_test_files_hold_no_test_passes(self):
         # Such a package has nothing to run, and the testing package still
@@ -2727,6 +2889,29 @@ class ListedTestsMustStillFail(GateCase):
                 }
                 output = self.check(packages, listing, 0, everything, whole=everything)
                 self.package_runs(output, "synth/a", "-skip '^TestP$/^stops$' synth/a")
+
+    def test_two_listed_tests_that_stop_the_test_binary_one_after_the_other(self):
+        # TestStops ends the test binary in the first run of the package,
+        # and TestStopsToo in the second. The third run leaves out both.
+        # If it left out only the second, TestStops would end it again, and
+        # TestAfter would never be judged.
+        packages = {"a": {"TestStops": PANIC, "TestStopsToo": EXIT, "TestAfter": FAIL}}
+        listing = "synth/a TestStops\nsynth/a TestStopsToo\nsynth/a TestAfter\n"
+        everything = {"synth/a.TestStops", "synth/a.TestStopsToo", "synth/a.TestAfter"}
+        output = self.check(packages, listing, 0, everything, whole=everything)
+        self.stale(output)
+        self.together(output)
+        self.package_runs(
+            output,
+            "synth/a",
+            "-skip '^TestStops$' synth/a",
+            "-skip '^TestStops$|^TestStopsToo$' synth/a",
+        )
+        self.assertIn(
+            "::group::Run of synth/a without the 2 listed tests that stopped its "
+            "test binary, for the 1 listed tests that it did not get to\n",
+            output,
+        )
 
     def test_only_the_listed_test_that_stopped_the_test_binary_is_left_out(self):
         # TestAfter fails only after TestHostBound in the same process, and

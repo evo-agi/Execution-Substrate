@@ -129,7 +129,11 @@ tests are exactly the entries of that package. For that one run
 call that writes the name down. The installed toolchain is not changed, and no
 other run uses the copy. The gate makes the copy only from the file of the
 exact Go version that it names, so a change of the Go baseline has to review
-that file and change the gate in the same change.
+that file and change the gate in the same change. That run needs a Go
+installation outside the module cache, as `actions/setup-go` makes one on the
+runner: the `go` command does not let `-overlay` replace a file beneath
+`GOMODCACHE`, so with a toolchain that the `go` command downloaded itself the
+test step fails and shows that error.
 
 A second blocking step judges every entry twice: in a run of its whole package
 with nothing skipped, and in a `go test` of its own. It fails the run when an

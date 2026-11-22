@@ -978,6 +978,8 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"For that one run `go test -overlay` builds the test binary with a copy of `src/testing/match.go` of the Go standard library, to which the gate adds the call that writes the name down",
 		"The installed toolchain is not changed, and no other run uses the copy",
 		"The gate makes the copy only from the file of the exact Go version that it names, so a change of the Go baseline has to review that file and change the gate in the same change",
+		"That run needs a Go installation outside the module cache, as `actions/setup-go` makes one on the runner",
+		"the `go` command does not let `-overlay` replace a file beneath `GOMODCACHE`, so with a toolchain that the `go` command downloaded itself the test step fails and shows that error",
 		"A second blocking step judges every entry twice: in a run of its whole package with nothing skipped, and in a `go test` of its own",
 		"It fails the run when an entry no longer fails on the runner in one of the two",
 		"It also fails the run when the run of an entry for a subtest starts another test under the path of that entry",
