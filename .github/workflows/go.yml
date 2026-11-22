@@ -98,9 +98,11 @@ jobs:
 
       # Judges every entry twice: in a run of its whole package with nothing
       # skipped, and in a go test of its own. Fails when an entry does not
-      # fail in both on this runner: it passes, skips itself or does not run.
-      # Such an entry no longer belongs in the list, and its line has to be
-      # deleted. Also fails when the run of an entry for a subtest starts
-      # another test under the path of that entry.
+      # fail in both on this runner: it passes, skips itself, does not run
+      # or reports no failure before the test binary stops. Such an entry no
+      # longer belongs in the list, and its line has to be deleted. Fails
+      # when the run of a package stops before its end and no listed test
+      # reported a failure as it stopped. Also fails when the run of an
+      # entry for a subtest starts another test under the path of that entry.
       - name: Listed tests still fail
         run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"

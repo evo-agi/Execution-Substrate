@@ -138,8 +138,15 @@ test step fails and shows that error.
 A second blocking step judges every entry twice: in a run of its whole package
 with nothing skipped, and in a `go test` of its own. It fails the run when an
 entry no longer fails on the runner in one of the two, so an entry cannot
-outlive its reason. It also fails the run when the run of an entry for a
-subtest starts another test under the path of that entry.
+outlive its reason. An entry fails there only if the testing package reported
+its failure. A test that was running when the test binary stopped has reported
+none, so a test that ends the process without reporting, for example with
+`os.Exit` or `log.Fatal`, cannot be listed. The run of a package has to come
+to its end. When a listed test panics, the package runs again without it. The
+step fails when a run stops and no listed test reported a failure as it
+stopped: a test that is not listed, or the time limit of `go test`, stopped
+it. It also fails the run when the run of an entry for a subtest starts
+another test under the path of that entry.
 `.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before
 the tests. It also holds the workflow file by its SHA-256, so every edit of the
 workflow has to change that value in the same change.

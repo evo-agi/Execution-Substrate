@@ -87,12 +87,26 @@ still-failing
     another test covers more than itself. Each such entry is named, and the
     status is 1.
 
-    A listed test that stops the test binary, by a panic or by ending the
-    process, fails, and no test after it runs in that process. The entries
-    that the run of the package did not get to for that reason are judged in
-    one more run of the package, without the listed test that stopped it.
-    If more than one listed test was running when the test binary stopped,
-    the run does not show which of them fails there, and each is named.
+    An entry fails in a run only if the testing package reported its
+    failure there. A test that was running when the test binary stopped
+    has reported nothing: another test, a goroutine that an earlier test
+    left behind or the time limit of go test may have stopped the binary,
+    and the test might have passed. So a test that ends the process
+    without reporting, for example with os.Exit or log.Fatal, cannot be
+    listed.
+
+    The run of a package has to come to its end: the testing package writes
+    a closing line then. A run that does not was stopped. A listed test
+    that panics reports its failure and ends the process, so it accounts
+    for the stop if it reported its failure after the last test had started
+    or gone on. The package then runs once more without the listed tests
+    that did so, for the entries that have no verdict yet, and so on until
+    a run comes to its end. A run that stops with no such listed test fails
+    the step, whatever the entries reported before: something that the list
+    does not name stopped it. The gate cannot tell a panic of a listed test
+    from a stop that follows directly on its failure. In both the test
+    reported its own failure, and the run without it shows whether the
+    package still stops.
 
 The observed run
     go test decides in one place whether -skip drops a test: in the function
@@ -856,21 +870,21 @@ def subtests_note(path, verdicts, started):
     return " (its subtests: %s)" % ", ".join(counts) if counts else ""
 
 
-def judged(path, result, status):
+def judged(path, result):
     """Return how a listed test ended in a run: fail, pass, skip, or why not.
 
-    A test that started, was not waiting to run in parallel and has no
-    verdict counts as failing when go test failed: it stopped the test
-    binary before it could report, for example by exiting the process. A
-    parallel test that was still waiting then has not run its body.
+    Only a verdict that the testing package reported counts. A test that
+    started and has none waited to run in parallel, or was running, when the
+    test binary stopped. Whatever stopped it, the test did not report a
+    failure of its own.
     """
     found = result.verdicts.get(path)
     if found is not None:
         return found
     if path in result.waiting:
         return "waiting"
-    if path in result.started and status != 0:
-        return "fail"
+    if path in result.started:
+        return "unfinished"
     return "missing"
 
 
@@ -880,30 +894,39 @@ NOT_FAILING = {
     "skip": "it skips itself",
     "missing": "it did not run",
     "waiting": "it did not get to run: it waited to run in parallel when the test binary stopped",
+    "unfinished": (
+        "it reported no failure: the test binary stopped while it ran, and only a "
+        "failure that the testing package reports counts"
+    ),
 }
-# The same for a listed test that was one of several running when the test
-# binary stopped in the run of its package.
-RAN_BESIDE = (
-    "another listed test was running with it when the test binary stopped, and "
-    "nothing shows which of them stopped it"
-)
+# The same, in a few words, for the listed tests that a stopped run of their
+# package left without a verdict.
+NO_VERDICT = {
+    "missing": "did not run",
+    "waiting": "waited to run in parallel",
+    "unfinished": "was running",
+}
 
 
 def in_the_run_of_its_package(package, paths):
     """Judge every entry of a package in a run of that whole package.
 
-    Returns the entries that do not fail there, each with how it ended, or
-    None when no test of the package started.
+    Returns None when no test of the package started. Otherwise returns two
+    values. The first holds the entries that do not fail there, each with
+    how it ended. The second is None when the last run came to its end.
+    When that run stopped with no listed test to account for it, the second
+    holds the entries that it left without a verdict, each with its state,
+    and the first does not hold them.
 
-    The first run skips nothing. If a run does not come to its end, a test
-    stopped the test binary. A listed test did so if it was running at that
-    moment, or if it reported its failure after the last test had started or
-    gone on: a panic reports the test and ends the process. One such test
-    fails there, and the entries that the run did not get to are judged in
-    the next run, which skips the listed tests that stopped the earlier
-    ones. With more than one such test the run does not show which of them
-    stopped it, so none of them counts as failing there, and no further run
-    is made.
+    The first run skips nothing. A run that does not come to its end was
+    stopped: by a test that panicked or ended the process, by a goroutine
+    that a test left behind, or by the time limit of go test. A listed test
+    accounts for the stop if it reported its failure after the last test
+    had started or gone on, as a panic does: it reports the test and ends
+    the process. Then the package runs again without those listed tests,
+    for the entries that have no verdict yet. That goes on until a run
+    comes to its end, also when no entry is left to judge: only that run
+    shows that nothing else stops the package.
     """
     not_failing = []
     left = list(paths)
@@ -911,41 +934,44 @@ def in_the_run_of_its_package(package, paths):
     while True:
         if stopped:
             emit(
-                "::group::Run of %s without the %d listed tests that stopped its test "
-                "binary, for the %d listed tests that it did not get to"
-                % (package, len(stopped), len(left))
+                "::group::Run of %s without the %d listed tests that reported a failure "
+                "as its test binary stopped: it has to come to its end, and %d listed "
+                "tests have no verdict yet" % (package, len(stopped), len(left))
             )
-            status, runs = go_test_json(
-                ["-count=1", "-skip", exact_paths(stopped), package]
-            )
+            _, runs = go_test_json(["-count=1", "-skip", exact_paths(stopped), package])
         else:
             emit(
                 "::group::Run of %s with nothing skipped, for its %d listed tests"
                 % (package, len(paths))
             )
-            status, runs = go_test_json(["-count=1", package])
+            _, runs = go_test_json(["-count=1", package])
         emit("::endgroup::")
         result = one(runs, package)
-        if not result.started:
+        if not result.started and not stopped:
             # For example a build failure. The output above has the reason.
             return None
-        # The listed tests that failed with no test starting or going on
-        # after them, and the ones that this run did not get to.
-        last = []
+        # The entries that this run left without a verdict.
         later = []
         for path in left:
-            found = judged(path, result, status)
-            if found == "fail":
-                if result.reported.get(path, result.began + 1) > result.began:
-                    last.append(path)
-            elif found in ("missing", "waiting"):
-                later.append((path, NOT_FAILING[found]))
-            else:
+            found = judged(path, result)
+            if found in NO_VERDICT:
+                later.append((path, found))
+            elif found != "fail":
                 not_failing.append((path, NOT_FAILING[found]))
-        if not result.finished and len(last) > 1:
-            return not_failing + [(path, RAN_BESIDE) for path in last] + later
-        if result.finished or not last or not later:
-            return not_failing + later
+        if result.finished:
+            return not_failing + [(path, NOT_FAILING[found]) for path, found in later], None
+        # The listed tests of this run that failed with no test starting or
+        # going on after them. An entry that an earlier run judged can be
+        # one of them.
+        last = [
+            path
+            for path in paths
+            if path not in stopped
+            and result.verdicts.get(path) == "fail"
+            and result.reported[path] > result.began
+        ]
+        if not last:
+            return not_failing, [(path, NO_VERDICT[found]) for path, found in later]
         stopped.extend(last)
         left = [path for path, _ in later]
 
@@ -957,6 +983,7 @@ def still_failing(entries, skips, list_path):
 
     stale = []
     together = []
+    cut_short = []
     wide = []
     failed = []
     for package, paths in grouped.items():
@@ -965,18 +992,19 @@ def still_failing(entries, skips, list_path):
             failed.append("go test -list for " + package)
         # Alone, a listed test could fail only for want of what another test
         # of its package leaves behind.
-        not_failing = in_the_run_of_its_package(package, paths)
-        if not_failing is None:
+        judgement = in_the_run_of_its_package(package, paths)
+        if judgement is None:
             failed.append("no test of %s started" % package)
             continue
+        not_failing, no_verdict = judgement
         together.extend((package, path, reason) for path, reason in not_failing)
+        if no_verdict is not None:
+            cut_short.append((package, no_verdict))
         for path in paths:
             # One go test for each entry: another listed test in the same
             # process could change what this one does.
             emit("::group::Expected failure of the listed %s %s" % (package, path))
-            status, runs = go_test_json(
-                ["-count=1", "-run", exact_paths([path]), package]
-            )
+            _, runs = go_test_json(["-count=1", "-run", exact_paths([path]), package])
             emit("::endgroup::")
             alone = one(runs, package)
             verdicts, started = alone.verdicts, alone.started
@@ -985,7 +1013,7 @@ def still_failing(entries, skips, list_path):
                 # reason, and the other entries of the package would meet it too.
                 failed.append("no listed test of %s started" % package)
                 break
-            found = judged(path, alone, status)
+            found = judged(path, alone)
             if found == "fail":
                 emit(
                     "still fails: %s %s%s"
@@ -1009,6 +1037,19 @@ def still_failing(entries, skips, list_path):
             "The gate skips a test that would not fail there. Delete its line from "
             "%s, or correct the line." % (reason, package, path, list_path)
         )
+    for package, no_verdict in cut_short:
+        emit(
+            "::error::the run of %s stopped before its end, and no listed test "
+            "accounts for it: none reported a failure as the test binary stopped. A "
+            "test that is not listed, a test that ended the process without reporting "
+            "a failure, or the time limit of go test stopped it. The output of that "
+            "run is above. The step passes only if the run of every listed package "
+            "comes to its end. Listed tests that this run left without a verdict: %s."
+            % (
+                package,
+                ", ".join("%s (%s)" % entry for entry in no_verdict) or "none",
+            )
+        )
     for package, path, others in wide:
         emit(
             "::error::listed subtest is not the only test under its path: %s %s also "
@@ -1019,7 +1060,7 @@ def still_failing(entries, skips, list_path):
         )
     if failed:
         emit("::error::listed tests check failed: " + "; ".join(failed))
-    if stale or together or wide or failed:
+    if stale or together or cut_short or wide or failed:
         return 1
     emit(
         "all %d listed tests still fail on this host, each in a run of its own "

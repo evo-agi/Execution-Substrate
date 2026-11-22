@@ -50,7 +50,7 @@ GATE = os.path.join(HERE, "go_test_gate.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "0383a2f066da5490db36abb91f4896c076a7d5cc45410cec11f40b85201db8bf"
+WORKFLOW_SHA256 = "d8578b0e6b5901d06ae82f0ec4acf81390d48ff8831a574a76d8d57d1c58bd18"
 
 PASS = "pass"
 FAIL = "fail"
@@ -242,8 +242,12 @@ PASSING_ODD_STATUS_GO = STAND_IN_GO % (
 FAILING_LIST_GO = STAND_IN_GO % ('[ "$1" = list ]', 1)
 # "go test -list" fails, and every other "go test" is untouched.
 FAILING_TEST_LIST_GO = STAND_IN_GO % ('[ "$1" = test ] && [ "$2" = -list ]', 1)
-# Every "go test" that runs tests ends with status 0, whatever happened.
-ZERO_STATUS_GO = STAND_IN_GO % ('[ "$1" = test ] && [ "$2" != -list ]', 0)
+# The real go command with a time limit of five seconds for every test binary.
+SHORT_TIME_LIMIT_GO = """#!/bin/sh
+GOFLAGS="${GOFLAGS:+$GOFLAGS }-timeout=5s"
+export GOFLAGS
+exec "$GATE_SELFTEST_GO" "$@"
+"""
 # "go test -json" writes one line that is not JSON before its events.
 NOISY_GO = """#!/bin/sh
 if [ "$1" = test ] && [ "$2" = -json ]; then
@@ -254,7 +258,6 @@ exec "$GATE_SELFTEST_GO" "$@"
 
 # "go env" prints its answers and fails.
 FAILING_ENV_GO = STAND_IN_GO % ('[ "$1" = env ]', 1)
-# "go env GOVERSION GOROOT" names another Go version, and the real GOROOT.
 # The real go command with a module cache that holds its own toolchain, as
 # when the go command downloaded that toolchain itself. The modules of the
 # checks need no module from the cache.
@@ -264,6 +267,7 @@ export GOMODCACHE
 exec "$GATE_SELFTEST_GO" "$@"
 """
 
+# "go env GOVERSION GOROOT" names another Go version, and the real GOROOT.
 OTHER_VERSION_GO = """#!/bin/sh
 if [ "$1" = env ] && [ "$2" = GOVERSION ]; then
     echo %s
@@ -505,8 +509,8 @@ func TestAfter(t *testing.T) {
 }
 """
 
-# A parallel test that fails, and after it a test that ends the test binary
-# while the first still waits to go on.
+# A parallel test that fails, and after it a test that panics while the
+# first still waits to go on.
 STOPS_BEFORE_A_PARALLEL_TEST = """
 func TestParallel(t *testing.T) {
 	t.Parallel()
@@ -516,19 +520,19 @@ func TestParallel(t *testing.T) {
 
 func TestStops(t *testing.T) {
 	ran(t)
-	os.Exit(3)
+	panic("deliberate panic")
 }
 """
 
-# A test with a parallel subtest "stops" that ends the test binary when it
-# goes on, and a subtest "fails" that has failed before that.
+# A test with a parallel subtest "stops" that panics when it goes on, and a
+# subtest "fails" that has failed before that.
 STOPS_AFTER_A_SUBTEST_FAILED = """
 func TestP(t *testing.T) {
 	ran(t)
 	t.Run("stops", func(t *testing.T) {
 		t.Parallel()
 		ran(t)
-		os.Exit(3)
+		panic("deliberate panic")
 	})
 	t.Run("fails", func(t *testing.T) {
 		ran(t)
@@ -538,15 +542,20 @@ func TestP(t *testing.T) {
 """
 
 # Two parallel tests that are both running before either of them ends. In a
-# go test for chosen tests each fails at once.
+# go test for chosen tests, and in one that skips a test, each fails at once.
 RUN_SIDE_BY_SIDE = """
 var aRuns = make(chan struct{})
 var bRuns = make(chan struct{})
 
+func failsAtOnce() bool {
+	return flag.Lookup("test.run").Value.String() != "" ||
+		flag.Lookup("test.skip").Value.String() != ""
+}
+
 func TestSideA(t *testing.T) {
 	t.Parallel()
 	ran(t)
-	if flag.Lookup("test.run").Value.String() != "" {
+	if failsAtOnce() {
 		t.Fatal("deliberate failure")
 	}
 	close(aRuns)
@@ -557,7 +566,7 @@ func TestSideA(t *testing.T) {
 func TestSideB(t *testing.T) {
 	t.Parallel()
 	ran(t)
-	if flag.Lookup("test.run").Value.String() != "" {
+	if failsAtOnce() {
 		t.Fatal("deliberate failure")
 	}
 	close(bRuns)
@@ -587,6 +596,144 @@ func TestListed(t *testing.T) {
 	t.Parallel()
 	ran(t)
 	os.Exit(3)
+}
+"""
+
+# A test with a subtest that passes, a parallel subtest, and a subtest that
+# panics while the parallel one still waits to go on.
+PANICS_WHILE_A_SUBTEST_WAITS = """
+func TestWhole(t *testing.T) {
+	ran(t)
+	t.Run("first", func(t *testing.T) { ran(t) })
+	t.Run("waits", func(t *testing.T) {
+		t.Parallel()
+		ran(t)
+	})
+	t.Run("stops", func(t *testing.T) {
+		ran(t)
+		panic("deliberate panic")
+	})
+}
+"""
+
+# A parallel test TestListed that fails in a go test of its own. In the run
+# of its package it is running, and has not failed, when the parallel test
+# TestUnlisted stops the test binary: %s is how.
+STOPPED_BY_A_TEST_BESIDE_IT = """
+var listedRuns = make(chan struct{})
+
+func TestListed(t *testing.T) {
+	t.Parallel()
+	ran(t)
+	if flag.Lookup("test.run").Value.String() != "" {
+		t.Fatal("fails only in a go test of its own")
+	}
+	close(listedRuns)
+	select {}
+}
+
+func TestUnlisted(t *testing.T) {
+	t.Parallel()
+	ran(t)
+	<-listedRuns
+	%s
+}
+"""
+
+# A test that fails in a go test of its own. In the run of its package it is
+# running, and has not failed, when a goroutine that the test before it left
+# behind ends the process.
+STOPPED_BY_WHAT_AN_EARLIER_TEST_LEFT_BEHIND = """
+var listedRuns = make(chan struct{})
+
+func TestAStarts(t *testing.T) {
+	ran(t)
+	go func() {
+		<-listedRuns
+		os.Exit(3)
+	}()
+}
+
+func TestListed(t *testing.T) {
+	ran(t)
+	if flag.Lookup("test.run").Value.String() != "" {
+		t.Fatal("fails only in a go test of its own")
+	}
+	close(listedRuns)
+	select {}
+}
+"""
+
+# A parallel subtest "listed" that fails in a go test of its own. In the run
+# of its package it is running, and has not failed, when the parallel
+# subtest "sibling" panics.
+STOPPED_BY_ITS_SIBLING = """
+var listedRuns = make(chan struct{})
+
+func TestGroup(t *testing.T) {
+	ran(t)
+	t.Run("listed", func(t *testing.T) {
+		t.Parallel()
+		ran(t)
+		if flag.Lookup("test.run").Value.String() != "" {
+			t.Fatal("fails only in a go test of its own")
+		}
+		close(listedRuns)
+		select {}
+	})
+	t.Run("sibling", func(t *testing.T) {
+		t.Parallel()
+		ran(t)
+		<-listedRuns
+		panic("deliberate panic")
+	})
+}
+"""
+
+# A test that fails in a go test of its own and never ends in the run of its
+# package, so that only the time limit of go test stops that run.
+NEVER_ENDS_IN_THE_RUN_OF_ITS_PACKAGE = """
+func TestListed(t *testing.T) {
+	ran(t)
+	if flag.Lookup("test.run").Value.String() != "" {
+		t.Fatal("fails only in a go test of its own")
+	}
+	select {}
+}
+"""
+
+# A test with a subtest "listed", which does what %s says. After that the
+# test itself panics, with no other test started in between.
+PANICS_AFTER_ITS_SUBTEST = """
+func TestP(t *testing.T) {
+	ran(t)
+	t.Run("listed", func(t *testing.T) {
+		ran(t)
+		%s
+	})
+	panic("deliberate panic")
+}
+"""
+
+# Three tests in this order. TestFirst fails, and in a run that skips a test
+# it panics instead. TestStops panics. TestAfter fails.
+FAILS_AND_PANICS_IN_A_LATER_RUN = """
+func TestFirst(t *testing.T) {
+	ran(t)
+	if flag.Lookup("test.skip").Value.String() != "" {
+		panic("deliberate panic in a run that skips a test")
+	}
+	t.Fatal("deliberate failure")
+}
+
+func TestStops(t *testing.T) {
+	ran(t)
+	panic("deliberate panic")
+}
+
+func TestAfter(t *testing.T) {
+	ran(t)
+	t.Fatal("deliberate failure")
 }
 """
 
@@ -917,6 +1064,25 @@ class GateCase(unittest.TestCase):
             output.count("::error::listed test does not fail in the run of its package"),
             output,
         )
+
+    def cut_short(self, output, *lines):
+        """Require exactly the given runs of whole packages to be named as stopped
+        before their end with no listed test to account for it, in that order.
+        A line is (package, the listed tests that the run left without a
+        verdict, as the message names them)."""
+        named = re.findall(
+            r"^::error::the run of (\S+) stopped before its end, and no listed test "
+            r"accounts for it: none reported a failure as the test binary stopped\. A "
+            r"test that is not listed, a test that ended the process without reporting "
+            r"a failure, or the time limit of go test stopped it\. The output of that "
+            r"run is above\. The step passes only if the run of every listed package "
+            r"comes to its end\. Listed tests that this run left without a verdict: "
+            r"(.*)\.$",
+            output,
+            re.M,
+        )
+        self.assertEqual(named, list(lines), output)
+        self.assertEqual(len(named), output.count("::error::the run of "), output)
 
     def package_runs(self, output, *commands):
         """Require exactly the given runs of whole packages, in that order. A
@@ -2727,16 +2893,19 @@ class ListedTestsMustStillFail(GateCase):
         )
         self.assertIn("still fails: synth/a TestListed\n", output)
         self.wide(output)
-        # A subtest that stops the test binary reports no verdict.
-        stops = {"a": {"TestWhole": [("first", PASS), ("stops", EXIT)]}}
+        # A subtest that panics reports its failure, and so does the listed
+        # test above it. A parallel subtest that still waited to go on then
+        # has no verdict.
         output = self.check(
-            stops,
+            {"a": {}},
             "synth/a TestWhole\n",
             0,
             {"synth/a.TestWhole", "synth/a.TestWhole/first", "synth/a.TestWhole/stops"},
+            files={"a/whole_test.go": raw_test_file("a", PANICS_WHILE_A_SUBTEST_WAITS)},
         )
         self.assertIn(
-            "still fails: synth/a TestWhole (its subtests: 1 pass, 1 unfinished)\n", output
+            "still fails: synth/a TestWhole (its subtests: 1 pass, 1 fail, 1 unfinished)\n",
+            output,
         )
 
     def test_list_without_entries(self):
@@ -2846,56 +3015,56 @@ class ListedTestsMustStillFail(GateCase):
         self.assertIn("still fails: synth/a TestPreflight/rejects_missing_tool\n", output)
 
     def test_listed_test_that_stops_the_test_binary_does_not_hide_the_next(self):
-        # A panic or an exit ends the test binary. Every entry has a run of
-        # its own, so the entries after it are judged all the same. The run
-        # of the package does not get to them, so the package runs once
-        # more, without the listed test that stopped it.
-        for how in (PANIC, EXIT):
-            with self.subTest(how=how):
-                packages = {"a": {"TestStops": how, "TestAfter": FAIL, "TestLast": PASS}}
-                listing = "synth/a TestStops\nsynth/a TestAfter\nsynth/a TestLast\n"
-                everything = {"synth/a.TestStops", "synth/a.TestAfter", "synth/a.TestLast"}
-                output = self.check(packages, listing, 1, everything, whole=everything)
-                self.stale(output, ("it passes", "synth/a TestLast"))
-                self.together(output, ("it passes", "synth/a TestLast"))
-                self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
-                self.assertIn(
-                    "::group::Run of synth/a without the 1 listed tests that stopped its "
-                    "test binary, for the 2 listed tests that it did not get to\n",
-                    output,
-                )
-                self.assertIn("still fails: synth/a TestStops\n", output)
-                self.assertIn("still fails: synth/a TestAfter\n", output)
-                packages = {"a": {"TestStops": how, "TestAfter": FAIL}}
-                output = self.check(
-                    packages,
-                    "synth/a TestStops\nsynth/a TestAfter\n",
-                    0,
-                    {"synth/a.TestStops", "synth/a.TestAfter"},
-                )
-                self.stale(output)
-                self.together(output)
-                self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
-            with self.subTest(how=how, stops="a listed subtest"):
-                # "first" failed before "stops" started. It did not stop
-                # the test binary, and the second run does not leave it out.
-                packages = {"a": {"TestP": [("first", FAIL), ("stops", how)], "TestAfter": FAIL}}
-                listing = "synth/a TestP/first\nsynth/a TestP/stops\nsynth/a TestAfter\n"
-                everything = {
-                    "synth/a.TestP",
-                    "synth/a.TestP/first",
-                    "synth/a.TestP/stops",
-                    "synth/a.TestAfter",
-                }
-                output = self.check(packages, listing, 0, everything, whole=everything)
-                self.package_runs(output, "synth/a", "-skip '^TestP$/^stops$' synth/a")
+        # A panic ends the test binary. Every entry has a run of its own, so
+        # the entries after it are judged all the same. The run of the
+        # package does not get to them, so the package runs once more,
+        # without the listed test that panicked.
+        packages = {"a": {"TestStops": PANIC, "TestAfter": FAIL, "TestLast": PASS}}
+        listing = "synth/a TestStops\nsynth/a TestAfter\nsynth/a TestLast\n"
+        everything = {"synth/a.TestStops", "synth/a.TestAfter", "synth/a.TestLast"}
+        output = self.check(packages, listing, 1, everything, whole=everything)
+        self.stale(output, ("it passes", "synth/a TestLast"))
+        self.together(output, ("it passes", "synth/a TestLast"))
+        self.cut_short(output)
+        self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
+        self.assertIn(
+            "::group::Run of synth/a without the 1 listed tests that reported a failure "
+            "as its test binary stopped: it has to come to its end, and 2 listed tests "
+            "have no verdict yet\n",
+            output,
+        )
+        self.assertIn("still fails: synth/a TestStops\n", output)
+        self.assertIn("still fails: synth/a TestAfter\n", output)
+        packages = {"a": {"TestStops": PANIC, "TestAfter": FAIL}}
+        output = self.check(
+            packages,
+            "synth/a TestStops\nsynth/a TestAfter\n",
+            0,
+            {"synth/a.TestStops", "synth/a.TestAfter"},
+        )
+        self.stale(output)
+        self.together(output)
+        self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
+        # A listed subtest panics. "first" failed before "stops" started,
+        # so it does not account for the stop, and the second run does not
+        # leave it out.
+        packages = {"a": {"TestP": [("first", FAIL), ("stops", PANIC)], "TestAfter": FAIL}}
+        listing = "synth/a TestP/first\nsynth/a TestP/stops\nsynth/a TestAfter\n"
+        everything = {
+            "synth/a.TestP",
+            "synth/a.TestP/first",
+            "synth/a.TestP/stops",
+            "synth/a.TestAfter",
+        }
+        output = self.check(packages, listing, 0, everything, whole=everything)
+        self.package_runs(output, "synth/a", "-skip '^TestP$/^stops$' synth/a")
 
     def test_two_listed_tests_that_stop_the_test_binary_one_after_the_other(self):
-        # TestStops ends the test binary in the first run of the package,
-        # and TestStopsToo in the second. The third run leaves out both.
-        # If it left out only the second, TestStops would end it again, and
-        # TestAfter would never be judged.
-        packages = {"a": {"TestStops": PANIC, "TestStopsToo": EXIT, "TestAfter": FAIL}}
+        # TestStops panics in the first run of the package, and TestStopsToo
+        # in the second. The third run leaves out both. If it left out only
+        # the second, TestStops would end it again, and TestAfter would
+        # never be judged.
+        packages = {"a": {"TestStops": PANIC, "TestStopsToo": PANIC, "TestAfter": FAIL}}
         listing = "synth/a TestStops\nsynth/a TestStopsToo\nsynth/a TestAfter\n"
         everything = {"synth/a.TestStops", "synth/a.TestStopsToo", "synth/a.TestAfter"}
         output = self.check(packages, listing, 0, everything, whole=everything)
@@ -2908,36 +3077,36 @@ class ListedTestsMustStillFail(GateCase):
             "-skip '^TestStops$|^TestStopsToo$' synth/a",
         )
         self.assertIn(
-            "::group::Run of synth/a without the 2 listed tests that stopped its "
-            "test binary, for the 1 listed tests that it did not get to\n",
+            "::group::Run of synth/a without the 2 listed tests that reported a failure "
+            "as its test binary stopped: it has to come to its end, and 1 listed tests "
+            "have no verdict yet\n",
             output,
         )
 
     def test_only_the_listed_test_that_stopped_the_test_binary_is_left_out(self):
         # TestAfter fails only after TestHostBound in the same process, and
-        # TestStops between them ends the test binary. The second run of the
-        # package leaves out TestStops alone. If it also left out
-        # TestHostBound, which failed before, TestAfter would pass there.
+        # TestStops between them panics. The second run of the package
+        # leaves out TestStops alone. If it also left out TestHostBound,
+        # which failed before, TestAfter would pass there.
         listing = "synth/a TestHostBound\nsynth/a TestStops\nsynth/a TestAfter\n"
         everything = {"synth/a.TestHostBound", "synth/a.TestStops", "synth/a.TestAfter"}
-        for how in (PANIC, EXIT):
-            with self.subTest(how=how):
-                body = STOPS_BETWEEN_TWO_THAT_SHARE_STATE % BODY[how].strip()
-                output = self.check(
-                    {"a": {}},
-                    listing,
-                    1,
-                    everything,
-                    files={"a/stops_test.go": raw_test_file("a", body)},
-                    whole=everything,
-                )
-                self.together(output)
-                self.stale(output, ("it passes", "synth/a TestAfter"))
-                self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
+        body = STOPS_BETWEEN_TWO_THAT_SHARE_STATE % BODY[PANIC].strip()
+        output = self.check(
+            {"a": {}},
+            listing,
+            1,
+            everything,
+            files={"a/stops_test.go": raw_test_file("a", body)},
+            whole=everything,
+        )
+        self.together(output)
+        self.cut_short(output)
+        self.stale(output, ("it passes", "synth/a TestAfter"))
+        self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
 
     def test_listed_test_that_waited_when_the_test_binary_stopped_is_judged_in_the_next_run(self):
-        # TestParallel stops to run in parallel later, and TestStops ends
-        # the test binary before it goes on.
+        # TestParallel stops to run in parallel later, and TestStops panics
+        # before it goes on.
         output = self.check(
             {"a": {}},
             "synth/a TestParallel\nsynth/a TestStops\n",
@@ -2948,16 +3117,17 @@ class ListedTestsMustStillFail(GateCase):
         )
         self.package_runs(output, "synth/a", "-skip '^TestStops$' synth/a")
         self.assertIn(
-            "::group::Run of synth/a without the 1 listed tests that stopped its test "
-            "binary, for the 1 listed tests that it did not get to\n",
+            "::group::Run of synth/a without the 1 listed tests that reported a failure "
+            "as its test binary stopped: it has to come to its end, and 1 listed tests "
+            "have no verdict yet\n",
             output,
         )
 
     def test_listed_test_that_failed_before_another_went_on_did_not_stop_the_test_binary(self):
         # "stops" waits to run in parallel, "fails" fails, and then "stops"
-        # goes on and ends the test binary. "fails" reported after the last
-        # test had started and before the last one went on. Only "stops"
-        # stopped the run, and both entries fail there.
+        # goes on and panics. "fails" reported after the last test had
+        # started and before the last one went on. Only "stops" accounts
+        # for the stop, so the second run leaves out "stops" alone.
         everything = {"synth/a.TestP", "synth/a.TestP/stops", "synth/a.TestP/fails"}
         output = self.check(
             {"a": {}},
@@ -2967,8 +3137,83 @@ class ListedTestsMustStillFail(GateCase):
             files={"a/parallel_test.go": raw_test_file("a", STOPS_AFTER_A_SUBTEST_FAILED)},
             whole=everything,
         )
-        self.package_runs(output, "synth/a")
+        self.package_runs(output, "synth/a", "-skip '^TestP$/^stops$' synth/a")
         self.assertIn("still fails: synth/a TestP/stops\n", output)
+
+    def test_package_runs_again_until_a_run_comes_to_its_end(self):
+        # The only test of the package is listed and panics. It has its
+        # verdict after the first run. The package still runs once more
+        # without it. That run has no test left, and it comes to its end.
+        output = self.check(
+            {"a": {"TestListed": PANIC}},
+            "synth/a TestListed\n",
+            0,
+            {"synth/a.TestListed"},
+            whole={"synth/a.TestListed"},
+        )
+        self.package_runs(output, "synth/a", "-skip '^TestListed$' synth/a")
+        self.assertIn(
+            "::group::Run of synth/a without the 1 listed tests that reported a failure "
+            "as its test binary stopped: it has to come to its end, and 0 listed tests "
+            "have no verdict yet\n",
+            output,
+        )
+        # "listed" fails, and then the test above it, which is not listed,
+        # panics with no test started in between. In the first run "listed"
+        # looks like the test that stopped the test binary. The run without
+        # it stops as well, and there no listed test accounts for it.
+        everything = {"synth/a.TestP", "synth/a.TestP/listed"}
+        body = PANICS_AFTER_ITS_SUBTEST % BODY[FAIL].strip()
+        output = self.check(
+            {"a": {}},
+            "synth/a TestP/listed\n",
+            1,
+            everything,
+            files={"a/parent_test.go": raw_test_file("a", body)},
+            whole=everything,
+        )
+        self.cut_short(output, ("synth/a", "none"))
+        self.together(output)
+        self.stale(output)
+        self.assertIn("still fails: synth/a TestP/listed\n", output)
+        self.assertNotIn("all 1 listed tests still fail", output)
+        self.package_runs(output, "synth/a", "-skip '^TestP$/^listed$' synth/a")
+        # The same with a subtest "listed" that passes. Only a test that
+        # reported a failure can account for a stop, so no second run is
+        # made.
+        output = self.check(
+            {"a": {}},
+            "synth/a TestP/listed\n",
+            1,
+            everything,
+            files={"a/parent_test.go": raw_test_file("a", PANICS_AFTER_ITS_SUBTEST % "")},
+            whole=everything,
+        )
+        self.cut_short(output, ("synth/a", "none"))
+        self.together(output, ("it passes", "synth/a TestP/listed"))
+        self.stale(output, ("it passes", "synth/a TestP/listed"))
+        self.package_runs(output, "synth/a")
+
+    def test_listed_test_that_an_earlier_run_judged_accounts_for_a_later_stop(self):
+        # TestFirst fails in the first run, where TestStops panics. In the
+        # second run, without TestStops, TestFirst panics. It has its
+        # verdict already, and it still accounts for that stop, so the third
+        # run leaves out both and judges TestAfter.
+        everything = {"synth/a.TestFirst", "synth/a.TestStops", "synth/a.TestAfter"}
+        output = self.check(
+            {"a": {}},
+            "synth/a TestFirst\nsynth/a TestStops\nsynth/a TestAfter\n",
+            0,
+            everything,
+            files={"a/later_test.go": raw_test_file("a", FAILS_AND_PANICS_IN_A_LATER_RUN)},
+            whole=everything,
+        )
+        self.package_runs(
+            output,
+            "synth/a",
+            "-skip '^TestStops$' synth/a",
+            "-skip '^TestStops$|^TestFirst$' synth/a",
+        )
 
     def test_two_listed_tests_that_ran_side_by_side(self):
         listing = "synth/a TestSideA\nsynth/a TestSideB\n"
@@ -2981,26 +3226,33 @@ class ListedTestsMustStillFail(GateCase):
         }
         output = self.check({"a": {}}, listing, 0, everything, files=files, whole=everything)
         self.package_runs(output, "synth/a")
-        # TestSideA ends the test binary while TestSideB is running. The
-        # run does not show which of the two stopped it, so it does not
-        # show that either of them fails there. Both are named.
+        # TestSideA panics while TestSideB is running. TestSideA reported
+        # its failure. TestSideB reported nothing, so it is judged in a
+        # second run, without TestSideA, and fails there.
+        files["a/side_test.go"] = raw_test_file(
+            "a", RUN_SIDE_BY_SIDE % (BODY[PANIC].strip(), "select {}")
+        )
+        output = self.check({"a": {}}, listing, 0, everything, files=files, whole=everything)
+        self.package_runs(output, "synth/a", "-skip '^TestSideA$' synth/a")
+        # TestSideA ends the process while TestSideB is running. Neither
+        # reported a failure, so the run shows of neither that it fails
+        # there, and no listed test accounts for the stop.
         files["a/side_test.go"] = raw_test_file(
             "a", RUN_SIDE_BY_SIDE % (BODY[EXIT].strip(), "select {}")
         )
         output = self.check({"a": {}}, listing, 1, everything, files=files, whole=everything)
-        beside = (
-            "another listed test was running with it when the test binary stopped, and "
-            "nothing shows which of them stopped it"
+        self.cut_short(
+            output, ("synth/a", "TestSideA (was running), TestSideB (was running)")
         )
-        self.together(output, (beside, "synth/a TestSideA"), (beside, "synth/a TestSideB"))
+        self.together(output)
         self.stale(output)
         self.package_runs(output, "synth/a")
 
     def test_test_binary_stopped_by_a_test_that_is_not_listed(self):
-        # The run of the package does not get to TestAfter, and no listed
-        # test stopped it: TestListed failed before TestStops started.
-        # Nothing shows that TestAfter fails there, so it is named. The
-        # gating step fails on TestStops in any case.
+        # TestStops, which is not listed, stops the run of the package after
+        # TestListed failed and before TestAfter started. No listed test
+        # accounts for the stop, so the step fails, and TestAfter is named
+        # as left without a verdict. No further run is made.
         for how in (PANIC, EXIT):
             with self.subTest(how=how):
                 packages = {"a": {"TestListed": FAIL, "TestStops": how, "TestAfter": FAIL}}
@@ -3011,9 +3263,107 @@ class ListedTestsMustStillFail(GateCase):
                     {"synth/a.TestListed", "synth/a.TestAfter"},
                     whole={"synth/a.TestListed", "synth/a.TestStops"},
                 )
-                self.together(output, ("it did not run", "synth/a TestAfter"))
+                self.cut_short(output, ("synth/a", "TestAfter (did not run)"))
+                self.together(output)
                 self.stale(output)
                 self.package_runs(output, "synth/a")
+            with self.subTest(how=how, entries="all have failed before"):
+                # The only entry reported its failure before TestStops
+                # started. The run was stopped all the same, and that
+                # fails the step.
+                output = self.check(
+                    {"a": {"TestListed": FAIL, "TestStops": how}},
+                    "synth/a TestListed\n",
+                    1,
+                    {"synth/a.TestListed"},
+                    whole={"synth/a.TestListed", "synth/a.TestStops"},
+                )
+                self.cut_short(output, ("synth/a", "none"))
+                self.together(output)
+                self.stale(output)
+                self.assertIn("still fails: synth/a TestListed\n", output)
+                self.assertNotIn("all 1 listed tests still fail", output)
+                self.package_runs(output, "synth/a")
+
+    def test_listed_test_that_ran_when_something_else_stopped_the_test_binary(self):
+        # In each module the entry fails in a go test of its own. In the
+        # run of its package it is running, and has not failed, when
+        # something that is not listed stops the test binary. The run does
+        # not show that the entry fails there, so the step fails.
+        beside = {"synth/a.TestListed", "synth/a.TestUnlisted"}
+        group = {"synth/a.TestGroup", "synth/a.TestGroup/listed"}
+        cases = (
+            (
+                "a test beside it ends the process",
+                STOPPED_BY_A_TEST_BESIDE_IT % BODY[EXIT].strip(),
+                "TestListed",
+                {"synth/a.TestListed"},
+                beside,
+            ),
+            (
+                "a test beside it panics",
+                STOPPED_BY_A_TEST_BESIDE_IT % BODY[PANIC].strip(),
+                "TestListed",
+                {"synth/a.TestListed"},
+                beside,
+            ),
+            (
+                "a goroutine that an earlier test left behind ends the process",
+                STOPPED_BY_WHAT_AN_EARLIER_TEST_LEFT_BEHIND,
+                "TestListed",
+                {"synth/a.TestListed"},
+                {"synth/a.TestAStarts", "synth/a.TestListed"},
+            ),
+            (
+                "the sibling of a listed subtest panics",
+                STOPPED_BY_ITS_SIBLING,
+                "TestGroup/listed",
+                group,
+                group | {"synth/a.TestGroup/sibling"},
+            ),
+        )
+        for what, body, test, alone, whole in cases:
+            with self.subTest(what=what):
+                output = self.check(
+                    {"a": {}},
+                    "synth/a %s\n" % test,
+                    1,
+                    alone,
+                    files={
+                        "a/main_test.go": TWO_AT_A_TIME,
+                        "a/stopped_test.go": raw_test_file("a", body),
+                    },
+                    whole=whole,
+                )
+                self.cut_short(output, ("synth/a", "%s (was running)" % test))
+                self.together(output)
+                self.stale(output)
+                self.assertIn("still fails: synth/a %s\n" % test, output)
+                self.assertNotIn("all 1 listed tests still fail", output)
+                self.package_runs(output, "synth/a")
+
+    def test_run_of_the_package_that_the_time_limit_of_go_test_stops(self):
+        # The entry fails in a go test of its own and never ends in the run
+        # of its package. The time limit of go test stops that run, and no
+        # test has a verdict then. The step fails.
+        output = self.check(
+            {"a": {}},
+            "synth/a TestListed\n",
+            1,
+            {"synth/a.TestListed"},
+            files={
+                "a/never_test.go": raw_test_file("a", NEVER_ENDS_IN_THE_RUN_OF_ITS_PACKAGE)
+            },
+            go=SHORT_TIME_LIMIT_GO,
+            whole={"synth/a.TestListed"},
+        )
+        self.assertIn("panic: test timed out after 5s", output)
+        self.cut_short(output, ("synth/a", "TestListed (was running)"))
+        self.together(output)
+        self.stale(output)
+        self.assertIn("still fails: synth/a TestListed\n", output)
+        self.assertNotIn("all 1 listed tests still fail", output)
+        self.package_runs(output, "synth/a")
 
     def test_listed_test_that_passes_in_the_run_of_its_package_is_named(self):
         # Alone, TestListed fails for want of what TestAPrepares leaves
@@ -3101,33 +3451,52 @@ class ListedTestsMustStillFail(GateCase):
             "::error::listed tests check failed: no listed test of synth/a started\n", output
         )
 
-    def test_listed_test_without_a_verdict_fails_only_if_go_test_failed(self):
-        # A test that stops the test binary reports no verdict. It counts as
-        # failing because the go command fails with it. If the go command
-        # reported success, nothing would show a failure.
-        packages = {"a": {"TestListed": EXIT}}
-        listing = "synth/a TestListed\n"
-        output = self.check(packages, listing, 0, {"synth/a.TestListed"})
-        self.assertIn("still fails: synth/a TestListed\n", output)
-        # It stopped the run of the package too, and no entry is left for a
-        # second run.
-        self.package_runs(output, "synth/a")
-        # The same for a parallel test that ends the test binary after it
-        # has gone on. It is not one that still waited.
-        output = self.check(
-            {"a": {}},
-            listing,
-            0,
-            {"synth/a.TestListed"},
-            files={"a/parallel_test.go": raw_test_file("a", STOPS_AFTER_IT_WENT_ON)},
-            whole={"synth/a.TestListed"},
+    def test_listed_test_that_ends_the_process_is_not_seen_failing(self):
+        # A test that ends the process reports no verdict. Nothing tells it
+        # from a test that was running when something else stopped the test
+        # binary. So it does not count as failing, in a go test of its own
+        # or in the run of its package, and it cannot be listed.
+        unfinished = (
+            "it reported no failure: the test binary stopped while it ran, and only a "
+            "failure that the testing package reports counts"
         )
-        self.assertIn("still fails: synth/a TestListed\n", output)
-        status, ran, output = run_gate("still-failing", packages, listing, go=ZERO_STATUS_GO)
-        self.assertEqual(status, 1, output)
-        self.assertEqual(ran, {"synth/a.TestListed"}, output)
-        self.stale(output, ("it did not run", "synth/a TestListed"))
-        self.together(output, ("it did not run", "synth/a TestListed"))
+        listing = "synth/a TestListed\n"
+        cases = (
+            ({"a": {"TestListed": EXIT}}, None),
+            # A parallel test that ends the process after it has gone on.
+            # It is not one that still waited.
+            ({"a": {}}, {"a/parallel_test.go": raw_test_file("a", STOPS_AFTER_IT_WENT_ON)}),
+        )
+        for packages, files in cases:
+            with self.subTest(parallel=files is not None):
+                output = self.check(
+                    packages,
+                    listing,
+                    1,
+                    {"synth/a.TestListed"},
+                    files=files,
+                    whole={"synth/a.TestListed"},
+                )
+                self.stale(output, (unfinished, "synth/a TestListed"))
+                self.together(output)
+                self.cut_short(output, ("synth/a", "TestListed (was running)"))
+                self.assertNotIn("still fails: ", output)
+                self.package_runs(output, "synth/a")
+        # A listed subtest that ends the process, after a listed subtest
+        # that failed.
+        everything = {"synth/a.TestP", "synth/a.TestP/first", "synth/a.TestP/stops"}
+        output = self.check(
+            {"a": {"TestP": [("first", FAIL), ("stops", EXIT)]}},
+            "synth/a TestP/first\nsynth/a TestP/stops\n",
+            1,
+            everything,
+            whole=everything,
+        )
+        self.stale(output, (unfinished, "synth/a TestP/stops"))
+        self.together(output)
+        self.cut_short(output, ("synth/a", "TestP/stops (was running)"))
+        self.assertIn("still fails: synth/a TestP/first\n", output)
+        self.package_runs(output, "synth/a")
 
     def test_every_run_executes_the_listed_tests_again(self):
         # Without -count=1 the second run would replay the stored result of

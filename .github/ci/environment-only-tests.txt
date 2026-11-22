@@ -24,6 +24,11 @@
 # outlive its reason: a change that makes a listed test pass on the runner,
 # by porting it or otherwise, has to delete its line in the same change.
 #
+# Only a failure that the testing package reports counts: t.Fatal, t.Error
+# or a panic. A test that ends the process without reporting, for example
+# with os.Exit or log.Fatal, cannot be listed, because nothing tells it from
+# a test that was running when something else stopped the test binary.
+#
 # Name the narrowest thing that fails. Where one subtest fails and its
 # siblings pass on the runner, the entry names that subtest, so the siblings
 # stay in the gate. A change that adds a test which can only pass off the
