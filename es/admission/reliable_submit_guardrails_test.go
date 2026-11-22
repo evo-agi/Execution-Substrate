@@ -1457,28 +1457,28 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 	const provider = "es/admission/reliable_submit_operational_provider.go:"
 	const storage = "es/admission/internal/reliablesubmit/operational_handoff.go:"
 	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
-	for _, view := range views {
-		pkg := requireTypedProductionPackage(t, view.packages, admissionPath)
+	validate := func(packages []*typedProductionPackage) error {
+		pkg := requireTypedProductionPackage(t, packages, admissionPath)
 		for _, entry := range operationalCommissioningEntries {
 			method := requirePackageMethod(t, pkg, "Service", entry)
 			if err := validateOperationalCommissioningGate(entry, pkg.referencesTo(method)); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
 		for _, entry := range []string{"handoffOperational", "recoverOperational"} {
 			m := requirePackageMethod(t, pkg, "Service", entry)
 			if err := validateOperationalCommissioningGate(entry, pkg.referencesTo(m)); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
 		for _, name := range []string{"newOperationalDomain", "newOperationalLoopbackProvider"} {
 			fn := requirePackageFunction(t, pkg, name)
 			if err := validateOperationalCommissioningGate(name, pkg.referencesTo(fn)); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
 		if err := validateOperationalConfirmationInventory(t, pkg, handoff); err != nil {
-			t.Fatal(err)
+			return err
 		}
 		for _, member := range []struct {
 			name string
@@ -1493,10 +1493,10 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 		} {
 			method := requirePackageMethod(t, pkg, "Service", member.name)
 			if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, true); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
-		store := requireTypedProductionPackage(t, view.packages, storagePath)
+		store := requireTypedProductionPackage(t, packages, storagePath)
 		for _, member := range append(operationalAdmissionStoreMembers(admission), []operationalMemberInventory{
 			{"", "OpenProvisionedOperationalCustody", map[string]int{}, true},
 			{"OperationalCustody", "ConfigureOperationalCommitFaultForProof", map[string]int{}, true},
@@ -1522,14 +1522,8 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 			} else {
 				ref = requirePackageMethod(t, store, member.typ, member.name)
 			}
-			var refs []typedReference
-			for _, p := range view.packages {
-				refs = append(refs, p.referencesMatching(func(candidate types.Object) bool {
-					return trancheB1ObjectIdentity(candidate) == trancheB1ObjectIdentity(ref)
-				})...)
-			}
-			if err := validateTypedReferenceInventory(member.name, refs, member.want, member.closures); err != nil {
-				t.Fatal(err)
+			if err := validateTypedReferenceInventory(member.name, operationalMemberReferences(packages, ref), member.want, member.closures); err != nil {
+				return err
 			}
 		}
 		for _, member := range []struct {
@@ -1544,7 +1538,7 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 		} {
 			method := requirePackageMethod(t, pkg, member.typ, member.name)
 			if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, true); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
 		for _, inventory := range []struct {
@@ -1565,15 +1559,130 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 			}},
 		} {
 			if err := validateOperationalAuthorityConstruction(inventory.pkg, inventory.want); err != nil {
-				t.Fatal(err)
+				return err
 			}
 		}
 		consume := requirePackageMethod(t, pkg, "liveSender", "consume")
 		if err := validateTypedReferenceInventory("synchronous operational marker continuation", pkg.referencesTo(consume),
 			map[string]int{handoff + "Service.advanceOperational": 1}, false); err != nil {
+			return err
+		}
+		return nil
+	}
+	for _, view := range views {
+		if err := validate(view.packages); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// The same inventories over the real packages with probe functions added
+	// in memory beside the gated methods. Each probe stores the receiver in an
+	// interface that declares one of those methods, with the signature as
+	// written, and selects the method from it. That reaches the method without
+	// a reference to it.
+	t.Run("gated entries reached through an interface in the real packages", func(t *testing.T) {
+		view := views[len(views)-1]
+		for _, probe := range []struct {
+			importPath, receiver string
+			methods              []string
+		}{
+			{admissionPath, "Service", append(append([]string{}, operationalCommissioningEntries...), "handoffOperational", "recoverOperational")},
+			{storagePath, "OperationalCustody", []string{"CommissionOperationalAdmission", "AdvanceOperationalAdmission", "WithdrawOperationalAdmission",
+				"ConfigureOperationalReleaseProofForProof", "EstablishOperational"}},
+		} {
+			pkg := requireTypedProductionPackage(t, view.packages, probe.importPath)
+			control := make(map[string]string)
+			dispatch := make(map[string]string)
+			for _, method := range probe.methods {
+				fileName, signature := productionMethodSignatureText(t, pkg, probe.receiver, method)
+				if _, started := control[fileName]; !started {
+					control[fileName], dispatch[fileName] = pkg.sources[fileName]+"\n", pkg.sources[fileName]+"\n"
+				}
+				control[fileName] += "func zzGuardProbeDispatch" + method + "(target *" + probe.receiver + ") { _ = target }\n"
+				dispatch[fileName] += "func zzGuardProbeDispatch" + method + "(target *" + probe.receiver + ") { var gate interface { " +
+					method + signature + " } = target; _ = gate." + method + " }\n"
+			}
+			overlaid := func(overlay map[string]string) []*typedProductionPackage {
+				packages := []*typedProductionPackage{view.metadata.typeCheckWithOverlay(t, probe.importPath, overlay)}
+				for _, other := range view.packages {
+					if other.importPath != probe.importPath {
+						packages = append(packages, other)
+					}
+				}
+				return packages
+			}
+			// Control: functions that only keep the pointer change no inventory.
+			if err := validate(overlaid(control)); err != nil {
+				t.Fatalf("control probes beside %s changed an inventory: %v", probe.receiver, err)
+			}
+			packages := overlaid(dispatch)
+			if err := validate(packages); err == nil || !strings.Contains(err.Error(), "zzGuardProbeDispatch") {
+				t.Fatalf("interface probes beside %s: %v", probe.receiver, err)
+			}
+			for _, method := range probe.methods {
+				target := requirePackageMethod(t, packages[0], probe.receiver, method)
+				got := make(map[string]int)
+				var probed []typedReference
+				for _, reference := range operationalMemberReferences(packages, target) {
+					if strings.HasSuffix(reference.site, ":zzGuardProbeDispatch"+method) {
+						got[reference.referenceKind]++
+						probed = append(probed, reference)
+					}
+				}
+				if want := map[string]int{"interface-method": 1, "interface-selection": 1}; !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s.%s probe occurrences: got %v want %v", probe.receiver, method, got, want)
+				}
+				// No inventory can list such an occurrence: it is refused whatever
+				// count the inventory expects at that site.
+				for _, reference := range probed {
+					err := validateTypedReferenceInventory(method, []typedReference{reference}, map[string]int{reference.site: 1}, false)
+					if err == nil || !strings.Contains(err.Error(), "indirect reference escape") {
+						t.Fatalf("%s.%s %s occurrence was accepted by an inventory that lists its site: %v", probe.receiver, method, reference.referenceKind, err)
+					}
+				}
+			}
+		}
+	})
+}
+
+// operationalMemberReferences lists the references to one store member from
+// every loaded package, together with the places that reach a method without
+// naming it.
+func operationalMemberReferences(packages []*typedProductionPackage, member types.Object) []typedReference {
+	var references []typedReference
+	for _, pkg := range packages {
+		references = append(references, pkg.referencesMatching(func(candidate types.Object) bool {
+			return trancheB1ObjectIdentity(candidate) == trancheB1ObjectIdentity(member)
+		})...)
+		if method, ok := member.(*types.Func); ok {
+			references = append(references, pkg.dynamicMethodReferences(method)...)
+		}
+	}
+	return references
+}
+
+// productionMethodSignatureText returns the file that declares the method and
+// its parameter and result lists, as written.
+func productionMethodSignatureText(t *testing.T, pkg *typedProductionPackage, receiverName string, methodName string) (string, string) {
+	t.Helper()
+	for fileName, file := range pkg.files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 || function.Name.Name != methodName {
+				continue
+			}
+			receiver := function.Recv.List[0].Type
+			if star, ok := receiver.(*ast.StarExpr); ok {
+				receiver = star.X
+			}
+			if named, ok := receiver.(*ast.Ident); !ok || named.Name != receiverName {
+				continue
+			}
+			source := pkg.sources[fileName]
+			return fileName, source[pkg.fset.Position(function.Type.Params.Pos()).Offset:pkg.fset.Position(function.Type.End()).Offset]
+		}
+	}
+	t.Fatalf("%s.%s.%s declaration was not found", pkg.importPath, receiverName, methodName)
+	return "", ""
 }
 
 func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
@@ -1609,6 +1718,45 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 					}
 				})
 			}
+			// Dynamic dispatch: the entry is reached through an interface or a
+			// constraint that declares a method of its name. No reference to the
+			// entry is spelled, so the gate counts the declaration and the
+			// selection themselves.
+			through := "interface{ " + entry + "() }"
+			for name, source := range map[string]string{
+				"interface-dispatch":   "func owner(s *Service){ var gate " + through + " = s; gate." + entry + "() }",
+				"interface-conversion": "func owner(s *Service){ _ = " + through + "(s) }",
+				"interface-assertion":  "func owner(s *Service){ any(s).(" + through + ")." + entry + "() }",
+				"named-interface":      "type gate " + through + "; func owner(s *Service){}",
+				"embedded-interface":   "type inner " + through + "; type outer interface{ inner }; func owner(s *Service){ var gate outer = s; gate." + entry + "() }",
+				"constraint":           "func call[T " + through + "](v T){ v." + entry + "() }; func owner(s *Service){ call(s) }",
+				"interface-parameter":  "func call(gate " + through + "){ gate." + entry + "() }; func owner(s *Service){ call(s) }",
+			} {
+				t.Run(name, func(t *testing.T) {
+					mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+source)
+					err := validateOperationalCommissioningGate(entry, mutant.referencesTo(requirePackageMethod(t, mutant, "Service", entry)))
+					if err == nil {
+						t.Fatal("dynamic dispatch of an admission authority entry passed the zero-reference rule")
+					}
+					for _, prerequisite := range operationalCommissioningPrerequisites {
+						if !strings.Contains(err.Error(), prerequisite) {
+							t.Fatalf("the opened gate did not print prerequisite %s: %v", prerequisite, err)
+						}
+					}
+				})
+			}
+			for name, source := range map[string]string{
+				"same name on another type":     "type other struct{}; func (other) " + entry + "(){}; func owner(s *Service){ other{}." + entry + "() }",
+				"interface with another method": "func (*Service) unrelated(){}; func owner(s *Service){ var gate interface{ unrelated() } = s; gate.unrelated() }",
+				"function of the same name":     "func owner(s *Service){ " + entry + " := func(){}; " + entry + "() }",
+			} {
+				t.Run(name, func(t *testing.T) {
+					unrelated := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+source)
+					if err := validateOperationalCommissioningGate(entry, unrelated.referencesTo(requirePackageMethod(t, unrelated, "Service", entry))); err != nil {
+						t.Fatalf("an occurrence that cannot reach the entry was refused: %v", err)
+					}
+				})
+			}
 		})
 	}
 	t.Run("store admission writers and release hook", func(t *testing.T) {
@@ -1627,7 +1775,7 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 			}
 			for _, member := range members {
 				method := requirePackageMethod(t, pkg, member.typ, member.name)
-				if err := validateTypedReferenceInventory(member.name, pkg.referencesTo(method), member.want, member.closures); err != nil {
+				if err := validateTypedReferenceInventory(member.name, operationalMemberReferences([]*typedProductionPackage{pkg}, method), member.want, member.closures); err != nil {
 					return err
 				}
 			}
@@ -1635,6 +1783,10 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 		}
 		if err := validate(declarations + commission + advance + withdraw); err != nil {
 			t.Fatal(err)
+		}
+		if err := validate(declarations + commission + advance + withdraw + "type other struct{}; func (other) CommissionOperationalAdmission(){}; " +
+			"func unrelated(s *Service){ var gate interface{ Close() }; _ = gate; other{}.CommissionOperationalAdmission() }"); err != nil {
+			t.Fatalf("an occurrence that cannot reach a store writer was refused: %v", err)
 		}
 		for name, source := range map[string]string{
 			"second commission caller":   declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.CommissionOperationalAdmission() }",
@@ -1646,6 +1798,14 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 			"commission method value":    declarations + strings.Replace(commission, "s.custody.CommissionOperationalAdmission()", "write := s.custody.CommissionOperationalAdmission; write()", 1) + advance + withdraw,
 			"commission never called":    declarations + strings.Replace(commission, "s.custody.CommissionOperationalAdmission()", "", 1) + advance + withdraw,
 			"release hook configuration": declarations + commission + advance + withdraw + "func other(s *Service){ s.custody.ConfigureOperationalReleaseProofForProof() }",
+			"commission through an interface": declarations + commission + advance + withdraw +
+				"func other(s *Service){ var gate interface{ CommissionOperationalAdmission() } = s.custody; gate.CommissionOperationalAdmission() }",
+			"advance through a named interface": declarations + commission + advance + withdraw +
+				"type gate interface{ AdvanceOperationalAdmission() }; func other(s *Service){ gate(s.custody).AdvanceOperationalAdmission() }",
+			"withdrawal through a constraint": declarations + commission + advance + withdraw +
+				"func call[T interface{ WithdrawOperationalAdmission() }](v T){ v.WithdrawOperationalAdmission() }; func other(s *Service){ call(s.custody) }",
+			"release hook stored in an interface": declarations + commission + advance + withdraw +
+				"func other(s *Service){ _ = interface{ ConfigureOperationalReleaseProofForProof() }(s.custody) }",
 		} {
 			t.Run(name, func(t *testing.T) {
 				if err := validate(source); err == nil {

@@ -75,6 +75,16 @@ func (r operationalHandoffResult) withhold(reason reliablesubmit.OperationalReas
 	return r
 }
 
+// withholdAt is withhold for a step that an ended context makes fail. The
+// store refuses every read and binding of a borrow whose context has ended,
+// so such a failure reports the cancellation and not the step's own reason.
+func (r operationalHandoffResult) withholdAt(ctx context.Context, reason reliablesubmit.OperationalReason) operationalHandoffResult {
+	if ctx.Err() != nil {
+		reason = reliablesubmit.OperationalCanceled
+	}
+	return r.withhold(reason)
+}
+
 // Tests can order real collaborators and model the observed cleanup result.
 // A nil hook is the ordinary path; none can grant authority.
 type operationalHandoffProofHooks struct {
@@ -88,6 +98,8 @@ type operationalHandoffProofHooks struct {
 	afterStageClose   func(error) error
 	beforeConsume     func(*liveSender, *handoffOwner)
 	beforeEntrySample func()
+	beforeReceipt     func()
+	beforeObservation func()
 }
 
 type operationalDomain struct {
@@ -308,7 +320,12 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		confirm()
 		stored, ok := a.AdmissionHint(ctx)
 		if !ok {
+			// The hint refuses an ended context: the row was not read, so
+			// nothing was judged and the cancellation is the answer.
 			qualificationReason = reliablesubmit.OperationalUnavailable
+			if ctx.Err() != nil {
+				qualificationReason = reliablesubmit.OperationalCanceled
+			}
 			return false
 		}
 		_, err := qualify(stored)
@@ -352,10 +369,13 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		return out.withhold(reliablesubmit.OperationalIntegrity)
 	}
 	if p.Receipt().Valid() {
+		if d.proof != nil && d.proof.beforeReceipt != nil {
+			d.proof.beforeReceipt()
+		}
 		if a.VerifyOperationalReceipt(p, job.project, job.locator) {
 			return operationalHandoffResult{kind: operationalAccepted, run: runID, receipt: p.Receipt()}
 		}
-		return operationalFailure(reliablesubmit.OperationalIntegrity)
+		return operationalFailureAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	originalRef, intent, stamp, marker, _ := p.Bindings()
 	wantIntent := append([]byte("ESOHINT1"), originalRef[:]...)
@@ -383,7 +403,7 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		}
 		command, err := a.BindOperationalIntent(p, job.locator)
 		if err != nil {
-			return out.withhold(reliablesubmit.OperationalIntegrity)
+			return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 		}
 		status, current := a.Apply(ctx, p, m, command, qualify)
 		if status != reliablesubmit.OperationalApplied {
@@ -442,7 +462,7 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 		return measureOperationalStage(held, original.resolved.material, originalRef, runID, intentRef, job.project, &parentLinks, false)
 	})
 	if err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+		return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	move, err := reliablesubmit.NewOperationalMutation()
 	if err != nil {
@@ -463,7 +483,7 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 	}
 	candidate, err := a.BindOperationalMarker(p, move, stage)
 	if err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+		return out.withholdAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
 	_, _, stamp, _, _ = p.Bindings()
 	marker = candidate.Ref()
@@ -548,8 +568,17 @@ func (d *operationalDomain) reconcileOperational(ctx context.Context, a *reliabl
 		}
 		return out
 	}
+	if d.proof != nil && d.proof.beforeObservation != nil {
+		d.proof.beforeObservation()
+	}
 	proof, err := result.bindOperationalObservation(d.provider, a, p, job, d.keys.key.bytes)
 	if err != nil {
+		// The marker is durable. As at the entry of this function, a
+		// cancellation alone keeps the stored run.
+		if ctx.Err() != nil {
+			out.reason = reliablesubmit.OperationalCanceled
+			return out
+		}
 		return out.withhold(reliablesubmit.OperationalIntegrity)
 	}
 	m, err := reliablesubmit.NewOperationalMutation()

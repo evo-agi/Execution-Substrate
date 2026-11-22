@@ -247,13 +247,17 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		out := service.handoffOperational(context.Background(), f.reopen(), f.domain.caller, f.raw)
 		assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalDenied)
 	})
+	// A first delivery that ordinary resolution refuses stores nothing and
+	// answers OperationalUnavailable whatever the cause. OperationalDenied is
+	// the answer of the re-judgment of a retained original only.
 	t.Run("fresh ordinary policy denial", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
 		configureConfiguredStaticScriptLiteralDenyService(f.service, "policy-fixture-ok")
 		out := f.submit()
 		state := operationalPrestageStateAt(t, f)
-		if out.kind != operationalUnavailable || state.Claims != 0 || state.Posts != 0 {
-			t.Fatalf("ordinary fresh denial: result=%+v state=%+v", out, state)
+		if out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalUnavailable ||
+			out.run != "" || out.receipt.Valid() || state.Claims != 0 || state.Posts != 0 {
+			t.Fatalf("ordinary fresh denial: %s state=%+v", operationalResultText(out), state)
 		}
 	})
 	t.Run("fresh ordinary revocation denial", func(t *testing.T) {
@@ -269,8 +273,10 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		f.service.trustModel.ArtifactPolicy.RevokedArtifacts = append(f.service.trustModel.ArtifactPolicy.RevokedArtifacts,
 			delivery.originalIntent.artifactDigest)
 		out := f.submit()
-		if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable || state.Claims != 0 || state.Posts != 0 {
-			t.Fatalf("fresh ordinary revocation: result=%+v state=%+v", out, state)
+		if state := operationalPrestageStateAt(t, f); out.kind != operationalUnavailable ||
+			out.reason != reliablesubmit.OperationalUnavailable || out.run != "" || out.receipt.Valid() ||
+			state.Claims != 0 || state.Posts != 0 {
+			t.Fatalf("fresh ordinary revocation: %s state=%+v", operationalResultText(out), state)
 		}
 	})
 }
@@ -3020,4 +3026,370 @@ func TestOperationalAdmissionFencesAnotherProcess(t *testing.T) {
 			}
 		})
 	}
+}
+
+// operationalEndedCall is one call whose context a hook ends part way. at is
+// the stored state when the context ended, entered whether the final sender
+// entry had been reached by then.
+type operationalEndedCall struct {
+	f       *operationalFixture
+	d       *operationalDomain
+	ctx     context.Context
+	cancel  context.CancelFunc
+	ended   bool
+	entered bool
+	at      operationalPrestageState
+	end     func()
+}
+
+// operationalEndableCall prepares a call at the given starting state: zero is
+// a first delivery, any other value the state operationalSeedAt leaves.
+func operationalEndableCall(t *testing.T, seed reliablesubmit.OperationalOperation) *operationalEndedCall {
+	t.Helper()
+	c := &operationalEndedCall{}
+	if seed == 0 {
+		c.f = makeOperationalFixture(t, "")
+	} else {
+		c.f, _, _ = operationalSeedAt(t, seed)
+	}
+	c.d = c.f.reopen()
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+	t.Cleanup(c.cancel)
+	reached := false
+	c.d.proof = &operationalHandoffProofHooks{beforeEntrySample: func() { reached = true }}
+	c.at = operationalPrestageStateAt(t, c.f)
+	c.end = func() {
+		if !c.ended {
+			c.ended, c.entered = true, reached
+			c.at = operationalPrestageStateAt(t, c.f)
+			c.cancel()
+		}
+	}
+	return c
+}
+
+func (c *operationalEndedCall) run() operationalHandoffResult {
+	return c.f.service.handoffOperational(c.ctx, c.d, c.d.caller, c.f.raw)
+}
+
+// assertCanceled checks the answer of a call whose context ended: the reason,
+// nothing written or sent after the end, and no run or receipt unless the
+// call had already reached the final sender entry, where a cancellation alone
+// returns the stored run.
+func (c *operationalEndedCall) assertCanceled(t *testing.T, out operationalHandoffResult) {
+	t.Helper()
+	after := operationalPrestageStateAt(t, c.f)
+	if c.ctx.Err() == nil || out.reason != reliablesubmit.OperationalCanceled || out.receipt.Valid() || after != c.at {
+		t.Fatalf("cancelled call: %s ended=%t at=%+v after=%+v", operationalResultText(out), c.ctx.Err() != nil, c.at, after)
+	}
+	if c.entered {
+		if out.kind != operationalAmbiguous || out.run == "" || !c.at.Marker {
+			t.Fatalf("cancelled at the sender entry: %s at=%+v", operationalResultText(out), c.at)
+		}
+		return
+	}
+	if out.kind != operationalUnavailable || out.run != "" {
+		t.Fatalf("cancelled before the sender entry: %s at=%+v", operationalResultText(out), c.at)
+	}
+}
+
+// A2-8. A call whose context has ended answers OperationalCanceled wherever
+// the admission returned no refusal of its own: the store refuses every read,
+// binding and writer turn of an ended call, so the failed step reports the
+// cancellation and not Unavailable or Integrity. Nothing is written or sent
+// after the context ended.
+func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
+	starts := []struct {
+		name string
+		seed reliablesubmit.OperationalOperation
+	}{
+		{"first delivery", 0},
+		{"after establishment", reliablesubmit.OperationalEstablish},
+		{"after run assignment", reliablesubmit.OperationalAssign},
+		{"after intent", reliablesubmit.OperationalIntent},
+	}
+	t.Run("while EGS answers the confirmation", func(t *testing.T) {
+		for _, start := range starts {
+			t.Run(start.name, func(t *testing.T) {
+				c := operationalEndableCall(t, start.seed)
+				before := c.f.egs.count()
+				// The handler runs on another goroutine; no write precedes
+				// the confirmation, so the state before the call stands.
+				c.f.egs.observe(c.cancel)
+				out := c.run()
+				c.assertCanceled(t, out)
+				if c.f.egs.count() != before+1 {
+					t.Fatalf("cancelled confirmation: trust requests=%d, want %d", c.f.egs.count(), before+1)
+				}
+				// A retry refuses at its pre-check, before any writer turn.
+				if start.seed != 0 && (out.operation != 0 || out.write != 0) {
+					t.Fatalf("cancelled confirmation of a retry: %s", operationalResultText(out))
+				}
+			})
+		}
+		t.Run("control: an unreadable admission row under a live context is Unavailable", func(t *testing.T) {
+			c := operationalEndableCall(t, reliablesubmit.OperationalAssign)
+			if _, err := c.f.db.Exec("DROP TABLE reliable_submit_operational_admission"); err != nil {
+				t.Fatal(err)
+			}
+			before := operationalPrestageStateAt(t, c.f)
+			out := c.run()
+			if c.ctx.Err() != nil {
+				t.Fatal("the control must not end the context")
+			}
+			assertOperationalRefusal(t, c.f, before, out, reliablesubmit.OperationalUnavailable)
+		})
+	})
+	t.Run("at every freshness sample", func(t *testing.T) {
+		for _, start := range starts {
+			t.Run(start.name, func(t *testing.T) {
+				ended := 0
+				for k := 1; ; k++ {
+					c := operationalEndableCall(t, start.seed)
+					samples := 0
+					c.f.service.operationalAdmission.proof.skew = func() time.Duration {
+						if samples++; samples == k {
+							c.end()
+						}
+						return 0
+					}
+					out := c.run()
+					if samples < k {
+						// The call takes fewer samples than k: it was not
+						// ended and completes.
+						assertOperationalCompleted(t, c.f, out, "a call that is not cancelled")
+						break
+					}
+					c.assertCanceled(t, out)
+					ended++
+				}
+				if ended == 0 {
+					t.Fatal("no sample ended the context")
+				}
+			})
+		}
+	})
+	t.Run("during the evaluation", func(t *testing.T) {
+		for _, start := range starts[1:] {
+			t.Run(start.name, func(t *testing.T) {
+				ended := 0
+				for k := 1; ; k++ {
+					c := operationalEndableCall(t, start.seed)
+					evaluations := 0
+					c.f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+						if !allowed {
+							t.Errorf("evaluation %d refused a claim the rules allow", evaluations+1)
+						}
+						if evaluations++; evaluations == k {
+							c.end()
+						}
+					}
+					out := c.run()
+					if evaluations < k {
+						assertOperationalCompleted(t, c.f, out, "a call that is not cancelled")
+						break
+					}
+					c.assertCanceled(t, out)
+					// The first evaluation of a retry is the pre-check's. A
+					// cancellation during it requests no writer turn.
+					if k == 1 && (out.operation != 0 || out.write != 0) {
+						t.Fatalf("cancelled during the pre-check's evaluation: %s", operationalResultText(out))
+					}
+					ended++
+				}
+				if ended == 0 {
+					t.Fatal("no evaluation ended the context")
+				}
+			})
+		}
+	})
+	// The bindings between the cuts have no sample of their own. Each one is
+	// refused by the store once the context has ended.
+	t.Run("before the staged tree is bound to the stamp", func(t *testing.T) {
+		c := operationalEndableCall(t, reliablesubmit.OperationalIntent)
+		c.d.proof.beforeStamp = c.end
+		out := c.run()
+		c.assertCanceled(t, out)
+		// The stage this call created stays as charged residue, whatever
+		// stopped the call: the claim cannot stage again.
+		if !c.ended || c.at.Revision != 3 || c.at.StageEntries != 1 || c.at.Stamp || out.operation != 0 || out.write != 0 {
+			t.Fatalf("cancelled before the stamp: %s at=%+v", operationalResultText(out), c.at)
+		}
+		again := c.f.submit()
+		if after := operationalPrestageStateAt(t, c.f); again.reason != reliablesubmit.OperationalOccupiedReason ||
+			again.receipt.Valid() || after != c.at {
+			t.Fatalf("retry after a cancelled staging: %s before=%+v after=%+v", operationalResultText(again), c.at, after)
+		}
+	})
+	t.Run("before the marker is bound", func(t *testing.T) {
+		c := operationalEndableCall(t, reliablesubmit.OperationalIntent)
+		c.d.proof.beforeMarker = c.end
+		out := c.run()
+		c.assertCanceled(t, out)
+		if !c.ended || c.at.Revision != 4 || !c.at.Stamp || c.at.Marker ||
+			out.operation != reliablesubmit.OperationalStamp || out.write != reliablesubmit.OperationalApplied {
+			t.Fatalf("cancelled before the marker: %s at=%+v", operationalResultText(out), c.at)
+		}
+	})
+	t.Run("before an accepted receipt is verified", func(t *testing.T) {
+		c := operationalEndableCall(t, 0)
+		first := c.f.submit()
+		assertOperationalCompleted(t, c.f, first, "the first delivery")
+		c.d.proof.beforeReceipt = c.end
+		out := c.run()
+		c.entered = false // the entry belongs to the first call
+		c.assertCanceled(t, out)
+		if !c.ended || !c.at.Receipt || out.operation != 0 || out.write != 0 {
+			t.Fatalf("cancelled before the receipt: %s at=%+v", operationalResultText(out), c.at)
+		}
+		again := c.f.submit()
+		assertOperationalCompleted(t, c.f, again, "the retry after the cancelled call")
+		if again.run != first.run || !again.receipt.Equal(first.receipt) {
+			t.Fatal("the retry after the cancelled call returned another run or receipt")
+		}
+	})
+	t.Run("before a completed observation is bound", func(t *testing.T) {
+		c := operationalEndableCall(t, 0)
+		c.d.proof.beforeObservation = c.end
+		out := c.run()
+		// The marker is durable and the request was sent: as at the sender
+		// entry, a cancellation alone keeps the stored run.
+		c.assertCanceled(t, out)
+		if !c.ended || !c.entered || c.at.Revision != 5 || c.at.Posts != 1 || c.at.Receipt ||
+			out.operation != reliablesubmit.OperationalMark || out.write != reliablesubmit.OperationalMarkerDirect {
+			t.Fatalf("cancelled before the observation was bound: %s at=%+v", operationalResultText(out), c.at)
+		}
+		again := c.f.submit()
+		assertOperationalCompleted(t, c.f, again, "the retry after the cancelled call")
+		if again.run != out.run {
+			t.Fatal("the retry after the cancelled call returned another run")
+		}
+	})
+	// Controls under a live context. The same steps fail for a reason of
+	// their own and report that reason, so the cancellation is not the
+	// answer of every binding that fails.
+	t.Run("control: a staged tree that drifted before the marker is an integrity failure", func(t *testing.T) {
+		c := operationalEndableCall(t, reliablesubmit.OperationalIntent)
+		path := c.d.stage.path
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(path, info.Mode().Perm()); err != nil {
+				t.Error(err)
+			}
+		})
+		drifted := false
+		c.d.proof.beforeMarker = func() {
+			if err := os.Chmod(path, info.Mode().Perm()|0o020); err != nil {
+				t.Fatal(err)
+			}
+			drifted = true
+		}
+		out := c.run()
+		after := operationalPrestageStateAt(t, c.f)
+		if !drifted || c.ctx.Err() != nil || out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalIntegrity ||
+			out.run != "" || out.receipt.Valid() || after.Revision != 4 || !after.Stamp || after.Marker || after.Posts != 0 {
+			t.Fatalf("drift before the marker under a live context: %s drifted=%t after=%+v", operationalResultText(out), drifted, after)
+		}
+	})
+	t.Run("control: an accepted receipt that does not verify is an integrity failure", func(t *testing.T) {
+		c := operationalEndableCall(t, 0)
+		first := c.f.submit()
+		assertOperationalCompleted(t, c.f, first, "the first delivery")
+		// The receipt binds the provider's projection of the job, and the
+		// region is part of that projection. The reopened domain shares the
+		// fixture's provider, so the region is restored before the retry.
+		provider := c.d.provider
+		region := provider.realm.region
+		provider.realm.region = region + "-other"
+		reached := false
+		c.d.proof.beforeReceipt = func() { reached = true }
+		out := c.run()
+		provider.realm.region = region
+		if !reached || c.ctx.Err() != nil || out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalIntegrity ||
+			out.run != "" || out.receipt.Valid() {
+			t.Fatalf("a receipt that does not verify under a live context: %s reached=%t", operationalResultText(out), reached)
+		}
+		again := c.f.submit()
+		assertOperationalCompleted(t, c.f, again, "the retry with the provider's own region")
+		if again.run != first.run || !again.receipt.Equal(first.receipt) {
+			t.Fatal("the retry returned another run or receipt")
+		}
+	})
+	t.Run("control: an observation that does not bind is an integrity failure", func(t *testing.T) {
+		c := operationalEndableCall(t, 0)
+		// The witness of the observation is made with this key, and the store
+		// checks it with its own copy.
+		key := &c.d.keys.key.bytes
+		saved := *key
+		t.Cleanup(func() { *key = saved })
+		changed := false
+		c.d.proof.beforeObservation = func() {
+			key[0] ^= 1
+			changed = true
+		}
+		out := c.run()
+		*key = saved
+		after := operationalPrestageStateAt(t, c.f)
+		if !changed || c.ctx.Err() != nil || out.kind != operationalUnavailable || out.reason != reliablesubmit.OperationalIntegrity ||
+			out.run != "" || out.receipt.Valid() || after.Revision != 5 || !after.Marker || after.Receipt || after.Posts != 1 {
+			t.Fatalf("an observation that does not bind under a live context: %s changed=%t after=%+v", operationalResultText(out), changed, after)
+		}
+	})
+}
+
+// The audit's 7.5. Two parts of the digest are constant in every content a
+// Service can commission today: the verifier's algorithm, and the id and
+// entry count of the configured policy. Behaviour cannot tell whether they
+// are hashed, so the function is asked directly: two inputs that differ only
+// there must not share a digest.
+func TestOperationalAdmissionDigestFramesItsConstantParts(t *testing.T) {
+	f := makeOperationalFixture(t, "")
+	view := f.service.operationalAdmission
+	digest := func(verifier ed25519Verifier, policy admissionPolicySet) [32]byte {
+		t.Helper()
+		sum, ok := operationalAdmissionDigest(view.trust, verifier, policy)
+		if !ok || sum == [32]byte{} {
+			t.Fatal("digest input was refused")
+		}
+		return sum
+	}
+	if digest(view.verifier, view.policy) != digest(view.verifier, view.policy) {
+		t.Fatal("control: equal inputs gave different digests")
+	}
+	t.Run("verifier algorithm", func(t *testing.T) {
+		other := view.verifier
+		other.algorithm = "ed448"
+		if digest(view.verifier, view.policy) == digest(other, view.policy) {
+			t.Fatal("two verifiers that differ only in the algorithm share a digest")
+		}
+		// The algorithm and the key id are framed apart.
+		left, right := view.verifier, view.verifier
+		left.algorithm, left.keyID = "ab", "c"
+		right.algorithm, right.keyID = "a", "bc"
+		if digest(left, view.policy) == digest(right, view.policy) {
+			t.Fatal("the algorithm and the key id are not framed apart")
+		}
+	})
+	t.Run("configured policy id and entry count", func(t *testing.T) {
+		entry := configuredStaticScriptLiteralDenyEntry{id: "entry", literal: "literal"}
+		empty := configuredStaticScriptLiteralDenyPolicy{}
+		one := configuredStaticScriptLiteralDenyPolicy{entries: []configuredStaticScriptLiteralDenyEntry{entry}}
+		// The same entries in the same order, divided differently between
+		// two configured policies: only the counts tell them apart.
+		first := admissionPolicySet{policies: []AdmissionPolicyEvaluator{empty, one}}
+		second := admissionPolicySet{policies: []AdmissionPolicyEvaluator{one, empty}}
+		if digest(view.verifier, first) == digest(view.verifier, second) {
+			t.Fatal("two policy sets that differ only in their entry counts share a digest")
+		}
+		// A configured policy without entries and the selected policy differ
+		// only in the id.
+		selected := admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}
+		configured := admissionPolicySet{policies: []AdmissionPolicyEvaluator{empty}}
+		if digest(view.verifier, selected) == digest(view.verifier, configured) {
+			t.Fatal("two policies that differ only in the id share a digest")
+		}
+	})
 }

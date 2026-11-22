@@ -194,7 +194,9 @@ func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
 	if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, valid); err != nil {
 		t.Fatalf("v2 custody freeze refused: %v", err)
 	}
-	atCap := build("operational_local_v2", bytes.Repeat([]byte{'x'}, OperationalEvidenceLimit))
+	// The lengths are written out: the cap is 262,144 bytes (256 KiB), and these
+	// two vectors are what pins the value of OperationalEvidenceLimit.
+	atCap := build("operational_local_v2", bytes.Repeat([]byte{'x'}, 262144))
 	if _, err := operationalOriginalView(context.Background(), atCap); err != nil {
 		t.Fatalf("evidence at the shared cap refused by custody: %v", err)
 	}
@@ -208,7 +210,7 @@ func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
 	for name, raw := range map[string][]byte{
 		"empty leaf":                      build("operational_local_v2", nil),
 		"invalid UTF8":                    build("operational_local_v2", []byte{0xff}),
-		"over cap":                        build("operational_local_v2", bytes.Repeat([]byte{'x'}, OperationalEvidenceLimit+1)),
+		"over cap":                        build("operational_local_v2", bytes.Repeat([]byte{'x'}, 262145)),
 		"unknown variant":                 build("operational_local_v3", []byte("{}")),
 		"published v1 empty sequence":     build("operational_local_v1", publishedEmpty),
 		"v1 nonempty sequence":            build("operational_local_v1", legacySequence),

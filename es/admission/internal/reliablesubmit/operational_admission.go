@@ -135,6 +135,8 @@ func (a *OperationalAccess) AdmissionHint(ctx context.Context) (OperationalAdmis
 // lock and either writes once or reports that the wanted row already exists.
 // An unknown COMMIT outcome is an error: the caller stays closed and calls
 // again, which is safe because each operation is idempotent by content.
+// It holds the custody lock in read mode, which is not reentrant: it must not
+// be reached from a callback of a borrow on the same handle.
 func (c *OperationalCustody) operationalAdmissionWrite(ctx context.Context,
 	step func(conn *sql.Conn, row operationalAdmissionRow, now int64) (operationalAdmissionRow, bool, error)) (out operationalAdmissionRow, outErr error) {
 	if c == nil || c.self != c {
@@ -190,7 +192,11 @@ func (c *OperationalCustody) operationalAdmissionWrite(ctx context.Context,
 		return operationalAdmissionRow{}, errClaimStoreUnavailable
 	}
 	commitAttempted = true
-	if err := commit(ctx, conn); err != nil {
+	attempt := commit
+	if c.admissionCommit != nil {
+		attempt = c.admissionCommit
+	}
+	if err := attempt(ctx, conn); err != nil {
 		_ = discardUncertainSQLiteConn(conn)
 		return operationalAdmissionRow{}, errClaimStoreCommitUnknown
 	}

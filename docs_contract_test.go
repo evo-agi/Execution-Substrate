@@ -14020,8 +14020,14 @@ func operationalV1RemovalRule(owner string) bool {
 }
 
 func operationalAdmissionOutcomeRule(owner string) bool {
-	return strings.Contains(owner, "| Signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
+	return strings.Contains(owner, "| Retained original: signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
 		strings.Contains(owner, "| Retained evidence does not verify under the current verifier | `OperationalDenied`.") &&
+		strings.Contains(owner, "| First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |") &&
+		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No |") &&
+		strings.Contains(owner, "`OperationalDenied` is the answer of the re-judgment only.") &&
+		strings.Contains(owner, "an ended context reports the cancellation and not `OperationalUnavailable` or") &&
+		strings.Contains(owner, "also when the\ncontext has ended meanwhile") &&
+		strings.Contains(owner, "That holds whatever stopped the call between staging and the stamp") &&
 		strings.Contains(owner, "| No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |") &&
 		strings.Contains(owner, "an existing original whose realm is not the domain's | `OperationalIntegrity` | No |") &&
 		strings.Contains(owner, "the authority\nrefusal is reported, at reconciliation and at the final sender entry alike") &&
@@ -14030,6 +14036,105 @@ func operationalAdmissionOutcomeRule(owner string) bool {
 		strings.Contains(owner, "so before staging a denial does not poison the claim") &&
 		strings.Contains(owner, "it needs a new submit key") &&
 		strings.Contains(owner, "one\nsender already past its release re-read may still POST")
+}
+
+// operationalAdmissionLockRule holds the statements about which locks the
+// admission operations and the confirmation hold, and refuses the three
+// sentences the code never matched.
+func operationalAdmissionLockRule(owner string) bool {
+	return strings.Contains(owner, "handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.") &&
+		strings.Contains(owner, "must therefore be called outside every borrow of the same handle") &&
+		strings.Contains(owner, "Confirmation runs outside every writer turn and every transaction, and holds\nneither `Service.mu` nor the owner mutex while it fetches.") &&
+		strings.Contains(owner, "pre-checks it runs inside the borrow of the original, so the custody handle's\nread lock is held across the request") &&
+		strings.Contains(owner, "The confirmation of a\nfresh delivery holds no lock.") &&
+		!strings.Contains(owner, "outside every lock") &&
+		!strings.Contains(owner, "takes no lock") &&
+		!strings.Contains(owner, "never custody")
+}
+
+// operationalCustodyLockHolders lists the methods of OperationalCustody in
+// the store package's non-test sources that lock or read-lock its mutex.
+func operationalCustodyLockHolders(t *testing.T) []string {
+	t.Helper()
+	const directory = "es/admission/internal/reliablesubmit"
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holders []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(directory, name), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || len(function.Recv.List) != 1 || function.Body == nil {
+				continue
+			}
+			pointer, ok := function.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok || len(function.Recv.List[0].Names) != 1 {
+				continue
+			}
+			if owner, ok := pointer.X.(*ast.Ident); !ok || owner.Name != "OperationalCustody" {
+				continue
+			}
+			receiver := function.Recv.List[0].Names[0].Name
+			locks := false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				method, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || (method.Sel.Name != "Lock" && method.Sel.Name != "RLock") {
+					return true
+				}
+				field, ok := method.X.(*ast.SelectorExpr)
+				if !ok || field.Sel.Name != "mu" {
+					return true
+				}
+				if base, ok := field.X.(*ast.Ident); ok && base.Name == receiver {
+					locks = true
+				}
+				return true
+			})
+			if locks {
+				holders = append(holders, function.Name.Name)
+			}
+		}
+	}
+	slices.Sort(holders)
+	return holders
+}
+
+// operationalCustodyLockRowHolders reads the methods the admission model's
+// lock inventory row names for OperationalCustody.mu.
+func operationalCustodyLockRowHolders(admission string) []string {
+	const prefix = "| Lock | `es/admission/internal/reliablesubmit:OperationalCustody.mu:sync.RWMutex` |"
+	var holders []string
+	for _, line := range strings.Split(admission, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 7 {
+			return nil
+		}
+		for _, cell := range cells[4:6] {
+			for _, match := range regexp.MustCompile("`OperationalCustody\\.([A-Za-z0-9_]+)`").FindAllStringSubmatch(cell, -1) {
+				if !slices.Contains(holders, match[1]) {
+					holders = append(holders, match[1])
+				}
+			}
+		}
+	}
+	slices.Sort(holders)
+	return holders
 }
 
 func operationalV2AssuranceOwnerRule(owner string) bool {
@@ -14047,6 +14152,12 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "A protected field can also be written without being spelled") &&
 		strings.Contains(owner, "occurrence of its owning struct type as its own access kind") &&
 		strings.Contains(owner, "a zero-value declaration and a same-shape") &&
+		strings.Contains(owner, "a conversion in either direction") &&
+		strings.Contains(owner, "is listed as well (`whole-instantiate`)") &&
+		strings.Contains(owner, "(`interface-selection`), are references to the method") &&
+		strings.Contains(owner, "is compiled for none of them") &&
+		strings.Contains(owner, "Their scope is these two\npackages") &&
+		strings.Contains(owner, "a statement assembled at run time is not seen") &&
 		strings.Contains(owner, "exact import inventory") &&
 		strings.Contains(owner, "exactly one reference to `Service.confirmOperationalAdmission`") &&
 		strings.Contains(owner, "Exactly three store functions contain a statement that") &&
@@ -14118,7 +14229,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 	implementation := mustRead(t, ".docs/execution_lifecycle/implementation.md")
 	assertContainsAll(t, "selected v2 owner", owner,
 		"operational_local_v2", "Claims **and** Seal", "256 KiB", "same admission before it can release a sender",
-		"Commission, advance and withdrawal take the SQLite\nwriter without `Service.mu`",
+		"Commission, advance and withdrawal take the custody\nhandle's lock in read mode and then the SQLite writer, without `Service.mu`",
 		"Unknown variants fail closed", "Re-derivation of the reliable-submit Reopened redesign seam",
 		"schema 5 is unmerged, stays on the reopened seam and is not a Current invariant")
 	assertContainsAll(t, "durable admission row and operations", owner,
@@ -14144,6 +14255,10 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 retained-current-admission v2 repair", "fresh independent audit",
 		"PR #12 v2 field-access guard completion", "red-team review of its",
 		"PR #12 durable admission generation, freshness and v1 removal",
+		"PR #12 durable admission: corrections after the second audit",
+		"refusal of a retained original by the current rules reports the value-free",
+		"ordinary resolution refuses, which stores nothing",
+		"so those two have no re-read",
 		"amend the\nunmerged migration 5 (decision D-1)", "with a 30 second limit (D-2)",
 		"delete `operational_local_v1` (D-3)", "no **Temporary compatibility\nedge** remains on this path",
 		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`")
@@ -14154,7 +14269,8 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"historical migrations 1–4 with their literal hashes", "bounded opaque full signed",
 		"`reliable_submit_operational_admission`", "It is not a durable policy decision about",
 		"`operational_local_v1` is removed at both layers", "codecs 1–4 are unaffected",
-		"never\ncalled inside a writer turn")
+		"never\ncalled inside a writer turn", "must be called outside every borrow of the\nsame custody handle",
+		"at the two\npre-checks it runs under the custody read lock of the borrow")
 	assertContainsAll(t, "receipt exception", recovery,
 		"a committed accepted receipt is verified", "positive registration",
 		"`operational_local_v1` is removed and refused", "reports denied or unavailable",
@@ -14165,6 +14281,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"stores no per-claim decision")
 	assertContainsAll(t, "private confirmation note", implementation,
 		"confirms its commissioned trust with EGS before a retained first effect",
+		"refuses unless the last confirmation is less than 30 seconds old",
 		"ordinary Submit does not confirm")
 	if !operationalCurrentAdmissionV2OwnerRule(owner) {
 		t.Fatal("current-admission owner rule incomplete")
@@ -14174,6 +14291,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 	}
 	if !operationalAdmissionOutcomeRule(owner) {
 		t.Fatal("outcome mapping owner rule is incomplete")
+	}
+	if !operationalAdmissionLockRule(owner) {
+		t.Fatal("lock statements of the admission operations and the confirmation are incomplete")
+	}
+	// The lock inventory row names exactly the methods that take the lock.
+	if code, row := operationalCustodyLockHolders(t), operationalCustodyLockRowHolders(admission); len(code) == 0 || !slices.Equal(code, row) {
+		t.Fatalf("OperationalCustody.mu holders differ: code %q, admission model row %q", code, row)
 	}
 	if !operationalV2AssuranceOwnerRule(owner) {
 		t.Fatal("v2 authority and independent vector obligations are incomplete")
@@ -14246,6 +14370,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 	}
 	for _, tc := range []struct{ name, from, to string }{
 		{"DenialReportedUnavailable", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalUnavailable` | No |"},
+		{"DenialNotLimitedToRetainedOriginals", "| Retained original: signer not allowed or revoked", "| Signer not allowed or revoked"},
+		{"FirstDeliveryReportedDenied", "an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |", "an unavailable dependency | `OperationalDenied`. Nothing is stored. | No |"},
+		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled` | No |", "returned no refusal of its own in this call | `OperationalUnavailable` | No |"},
+		{"CancelledStepReportsItsOwnReason", "an ended context reports the cancellation and not `OperationalUnavailable` or", "an ended context reports its own reason, `OperationalUnavailable` or"},
+		{"CancellationBeatsDenial", "also when the\ncontext has ended meanwhile", "unless the\ncontext has ended meanwhile"},
+		{"ResidueOnlyAfterDenial", "That holds whatever stopped the call between staging and the stamp", "That holds only for a denial between staging and the stamp"},
 		{"DenialDisclosesRun", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalDenied` | Yes |"},
 		{"FenceReportedDenied", "missing bounded payload | `OperationalUnavailable` | No |", "missing bounded payload | `OperationalDenied` | No |"},
 		{"CancellationWins", "at reconciliation and at the final sender entry alike", "except at reconciliation and at the final sender entry"},
@@ -14261,6 +14391,38 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			}
 		})
 	}
+	if !operationalAdmissionLockRule(owner) {
+		t.Fatal("real lock rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"ConfirmationOutsideEveryLock", "Confirmation runs outside every writer turn and every transaction, and holds\nneither `Service.mu` nor the owner mutex while it fetches.", "Confirmation runs outside every lock and every transaction."},
+		{"ConfirmationTakesNoLock", "pre-checks it runs inside the borrow of the original, so the custody handle's\nread lock is held across the request", "pre-checks it takes no lock while it fetches"},
+		{"OperationsNeverTakeCustodyLock", "handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.", "handle's SQLite writer and never custody locks."},
+		{"OperationsAllowedInsideBorrow", "must therefore be called outside every borrow of the same handle", "may be called inside a borrow of the same handle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalAdmissionLockRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("unsafe lock statement survived")
+			}
+		})
+	}
+	t.Run("LockInventoryRowOmitsAHolder", func(t *testing.T) {
+		admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+		const entry = "`OperationalCustody.operationalAdmissionWrite`, "
+		if strings.Count(admission, entry) != 1 {
+			t.Fatalf("lock row anchor count %d", strings.Count(admission, entry))
+		}
+		code := operationalCustodyLockHolders(t)
+		if row := operationalCustodyLockRowHolders(strings.Replace(admission, entry, "", 1)); slices.Equal(code, row) {
+			t.Fatalf("a row without operationalAdmissionWrite still equals the code: %q", row)
+		}
+		if row := operationalCustodyLockRowHolders(admission); !slices.Contains(code, "operationalAdmissionWrite") || !slices.Equal(code, row) {
+			t.Fatalf("real lock row differs from the code: code %q row %q", code, row)
+		}
+	})
 	for _, tc := range []struct{ name, phrase string }{
 		{"MissingZeroCommissionInventory", "zero non-test references"},
 		{"MissingSnapshotConstructionOwner", "operationalAdmissionSnapshot` construction"},
@@ -14273,6 +14435,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingConversionStepRule", "A conversion is a transparent step in that chain"},
 		{"MissingWholeValueRule", "occurrence of its owning struct type as its own access kind"},
 		{"MissingConstructionEscapeRule", "a zero-value declaration and a same-shape"},
+		{"MissingConversionAwayRule", "a conversion in either direction"},
+		{"MissingInstantiationRule", "is listed as well (`whole-instantiate`)"},
+		{"MissingDynamicDispatchRule", "(`interface-selection`), are references to the method"},
+		{"MissingFileSetRule", "is compiled for none of them"},
+		{"MissingPackageScopeLimit", "Their scope is these two\npackages"},
+		{"MissingRunTimeStatementLimit", "a statement assembled at run time is not seen"},
 		{"MissingImportInventory", "exact import inventory"},
 		{"MissingConfirmationInventory", "exactly one reference to `Service.confirmOperationalAdmission`"},
 		{"MissingAdmissionTableWriterInventory", "Exactly three store functions contain a statement that"},

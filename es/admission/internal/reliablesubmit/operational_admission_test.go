@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -124,6 +125,57 @@ func operationalWrongTokens(held OperationalAdmissionToken) []operationalWrongTo
 // operationalCut is one first-effect cut after establishment. The pre-stage
 // turn has no operation number: it reads under the writer lock and commits
 // nothing.
+type operationalForeignMatch struct {
+	name  string
+	match OperationalOriginalMatch
+}
+
+// operationalForeignMatches lists matches that are well formed and differ
+// from the borrowed original in exactly one of the four things a match names:
+// the claim, the plan binding, the plan witness and the payload digest.
+func operationalForeignMatches(t *testing.T, a *OperationalAccess) []operationalForeignMatch {
+	t.Helper()
+	own := func() OperationalOriginalMatch {
+		return OperationalOriginalMatch{claim: a.record.claim, plan: a.record.plan, digest: a.digest}
+	}
+	claim, binding, witness, digest := own(), own(), own(), own()
+	claim.claim = mustPrivateClaimID(t, a.record.claim.caller, mustPrivateSubmitKeyRef(t, bytes.Repeat([]byte{77}, 32)))
+	binding.plan = mustPrivateBoundPlan(t, mustPrivatePlanBinding(t, []byte("another-plan-binding")), a.record.plan.Witness())
+	// The other witness marks the first category that allows it as explicitly
+	// inapplicable; the fixture's witness resolves every category.
+	entries := make([]EffectivePlanCategoryCompleteness, 0, len(allEffectivePlanCategories))
+	changed := false
+	for _, category := range allEffectivePlanCategories {
+		entry, err := ResolvedCategory(category)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inapplicable, err := ExplicitlyInapplicableCategory(category); err == nil && !changed {
+			entry, changed = inapplicable, true
+		}
+		entries = append(entries, entry)
+	}
+	other, err := NewEffectivePlanWitness(entries...)
+	if err != nil || !changed {
+		t.Fatalf("another complete witness: changed=%t error=%v", changed, err)
+	}
+	witness.plan = mustPrivateBoundPlan(t, a.record.plan.Binding(), other)
+	digest.digest[0] ^= 1
+	matches := []operationalForeignMatch{
+		{"match for another claim", claim}, {"match for another plan binding", binding},
+		{"match for another plan witness", witness}, {"match for another payload digest", digest},
+	}
+	for _, foreign := range matches {
+		if !foreign.match.claim.Valid() || !foreign.match.plan.Valid() || a.matchesOriginal(foreign.match) {
+			t.Fatalf("%s is not a valid match for another original", foreign.name)
+		}
+	}
+	if !a.matchesOriginal(own()) {
+		t.Fatal("the borrowed original does not match itself")
+	}
+	return matches
+}
+
 type operationalCut struct {
 	name     string
 	op       OperationalOperation
@@ -167,7 +219,12 @@ func (cut operationalCut) command(t *testing.T, a *OperationalAccess, p Operatio
 func (cut operationalCut) attempt(t *testing.T, a *OperationalAccess, p OperationalProjection,
 	qualify OperationalQualification, senders *int) (OperationalDisposition, OperationalProjection) {
 	t.Helper()
-	ctx := context.Background()
+	return cut.attemptWith(context.Background(), t, a, p, qualify, senders)
+}
+
+func (cut operationalCut) attemptWith(ctx context.Context, t *testing.T, a *OperationalAccess, p OperationalProjection,
+	qualify OperationalQualification, senders *int) (OperationalDisposition, OperationalProjection) {
+	t.Helper()
 	if cut.op == 0 {
 		return a.Prestage(ctx, p, qualify).Disposition(), OperationalProjection{}
 	}
@@ -1011,6 +1068,18 @@ func TestOperationalAdmissionTokenAtEveryCut(t *testing.T) {
 				for _, wrong := range operationalWrongTokens(f.token) {
 					refused(wrong.name, testOperationalQualificationWith(a, wrong.token))
 				}
+				// A valid match that carries the stored token but describes another
+				// original: the cut belongs to the borrowed original only.
+				for _, foreign := range operationalForeignMatches(t, a) {
+					refused(foreign.name, func(current OperationalAdmissionToken) (OperationalOriginalMatch, error) {
+						if current != f.token {
+							t.Errorf("%s: the cut did not present the stored token", foreign.name)
+						}
+						match := foreign.match
+						match.admission = current
+						return match, nil
+					})
+				}
 				if err := other.WithdrawOperationalAdmission(ctx, f.token); err != nil {
 					t.Fatal(err)
 				}
@@ -1414,14 +1483,18 @@ func TestOperationalAdmissionPublishedSchema5ShapeRefused(t *testing.T) {
 	if store, err := openSQLiteClaimStore(ctx, sqliteClaimStoreOptions{path: path}); store != nil || !errors.Is(err, errClaimStoreUnsupported) {
 		t.Fatalf("the migrating opener accepted the published shape: %v", err)
 	}
-	if c, err := OpenPrivateReplayCustody(ctx, root); c != nil || err == nil {
-		t.Fatal("the fixture custody opener accepted the published shape")
+	// Each opener answers with its own refusal of a foreign schema: the three
+	// that report the store's reason say the format is unsupported, and the
+	// operational opener, which reports one reason for every failed open, says
+	// unavailable. Any other error would be a failure of the fixture.
+	if c, err := OpenPrivateReplayCustody(ctx, root); c != nil || !errors.Is(err, errClaimStoreUnsupported) {
+		t.Fatalf("the fixture custody opener did not refuse the published shape as unsupported: %v", err)
 	}
-	if c, err := OpenPrivateReplayProgressCustody(ctx, root); c != nil || err == nil {
-		t.Fatal("the progress custody opener accepted the published shape")
+	if c, err := OpenPrivateReplayProgressCustody(ctx, root); c != nil || !errors.Is(err, errClaimStoreUnsupported) {
+		t.Fatalf("the progress custody opener did not refuse the published shape as unsupported: %v", err)
 	}
-	if c, err := OpenProvisionedOperationalCustody(ctx, root); c != nil || err == nil {
-		t.Fatal("the operational custody opener accepted the published shape")
+	if c, err := OpenProvisionedOperationalCustody(ctx, root); c != nil || !errors.Is(err, errClaimStoreUnavailable) {
+		t.Fatalf("the operational custody opener did not refuse the published shape as unavailable: %v", err)
 	}
 	if after := physical(t, path); !reflect.DeepEqual(before, after) {
 		t.Fatal("a refused open changed the database files")
@@ -1443,11 +1516,332 @@ func TestOperationalAdmissionPublishedSchema5ShapeRefused(t *testing.T) {
 	if err := store.close(); err != nil {
 		t.Fatal(err)
 	}
+	fixture, err := OpenPrivateReplayCustody(ctx, root)
+	if err != nil {
+		t.Fatalf("the fixture custody opener refused the current shape: %v", err)
+	}
+	if err := fixture.Close(); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := OpenPrivateReplayProgressCustody(ctx, root)
+	if err != nil {
+		t.Fatalf("the progress custody opener refused the current shape: %v", err)
+	}
+	if err := progress.Close(); err != nil {
+		t.Fatal(err)
+	}
 	c, err := OpenProvisionedOperationalCustody(ctx, root)
 	if err != nil {
 		t.Fatalf("the operational custody opener refused the current shape: %v", err)
 	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type operationalAdmissionWriteCase struct {
+	name string
+	// empty starts from a domain that has no admission row.
+	empty bool
+	run   func(ctx context.Context, f *operationalStoreFixture) (OperationalAdmissionToken, error)
+	// generation is the token a successful call returns; 0 for the
+	// withdrawal, which returns none. stored is the row it leaves.
+	generation uint64
+	stored     string
+}
+
+func operationalAdmissionWriteCases() []operationalAdmissionWriteCase {
+	return []operationalAdmissionWriteCase{
+		{"commission", true, func(ctx context.Context, f *operationalStoreFixture) (OperationalAdmissionToken, error) {
+			return f.c.CommissionOperationalAdmission(ctx, operationalStoreFixtureInstallation, operationalStoreFixtureEpoch, operationalStoreFixtureDigest)
+		}, 1, fmt.Sprintf("generation=1 digest=%x state=1 ", operationalStoreFixtureDigest)},
+		{"advance", false, func(ctx context.Context, f *operationalStoreFixture) (OperationalAdmissionToken, error) {
+			return f.c.AdvanceOperationalAdmission(ctx, operationalStoreFixtureInstallation, operationalStoreFixtureEpoch,
+				operationalStoreFixtureDigestB, 1)
+		}, 2, fmt.Sprintf("generation=2 digest=%x state=1 ", operationalStoreFixtureDigestB)},
+		{"withdrawal", false, func(ctx context.Context, f *operationalStoreFixture) (OperationalAdmissionToken, error) {
+			return OperationalAdmissionToken{}, f.c.WithdrawOperationalAdmission(ctx, f.token)
+		}, 0, fmt.Sprintf("generation=1 digest=%x state=2 ", operationalStoreFixtureDigest)},
+	}
+}
+
+func (test operationalAdmissionWriteCase) fixture(t *testing.T) *operationalStoreFixture {
+	t.Helper()
+	if test.empty {
+		return newUncommissionedOperationalStoreFixture(t, fixtureReplayRoot(t))
+	}
+	return newOperationalStoreFixture(t, fixtureReplayRoot(t))
+}
+
+// requireWritten runs the operation and requires success, the wanted token
+// and the wanted stored row.
+func (test operationalAdmissionWriteCase) requireWritten(t *testing.T, f *operationalStoreFixture, label string) string {
+	t.Helper()
+	token, err := test.run(context.Background(), f)
+	snapshot := f.admissionSnapshot()
+	if err != nil || token.Valid() != (test.generation != 0) || token.generation != test.generation || !strings.Contains(snapshot, test.stored) {
+		t.Fatalf("%s: error=%v token generation=%d stored=%s", label, err, token.generation, snapshot)
+	}
+	return snapshot
+}
+
+// An admission write whose COMMIT answer is lost reports an unknown outcome,
+// whether the row was written or not. The same call again converges on the
+// wanted row, and it does not write a second time.
+func TestOperationalAdmissionCommitAnswerLost(t *testing.T) {
+	lost := errors.New("the COMMIT answer was lost")
+	for _, test := range operationalAdmissionWriteCases() {
+		for _, written := range []bool{true, false} {
+			name := test.name + "/row not written"
+			if written {
+				name = test.name + "/row written"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := test.fixture(t)
+				before := f.admissionSnapshot()
+				attempts := 0
+				f.c.admissionCommit = func(ctx context.Context, conn *sql.Conn) error {
+					attempts++
+					if written {
+						if err := commit(ctx, conn); err != nil {
+							t.Errorf("the real COMMIT failed: %v", err)
+						}
+					}
+					return lost
+				}
+				token, err := test.run(context.Background(), f)
+				f.c.admissionCommit = nil
+				if !errors.Is(err, errClaimStoreCommitUnknown) || token.Valid() || attempts != 1 {
+					t.Fatalf("lost answer: want the unknown-outcome error and no token, got valid=%t error=%v attempts=%d", token.Valid(), err, attempts)
+				}
+				after := f.admissionSnapshot()
+				if written == (after == before) {
+					t.Fatalf("stored row: written=%t before=%s after=%s", written, before, after)
+				}
+				if written && !strings.Contains(after, test.stored) {
+					t.Fatalf("the committed row is not the wanted one: %s", after)
+				}
+				// Another handle on the same files sees the same row and converges
+				// the same way as the caller that lost the answer.
+				converged := test.requireWritten(t, f, "the same call again")
+				if written && converged != after {
+					t.Fatalf("the second call wrote again: %s then %s", after, converged)
+				}
+				if again := test.requireWritten(t, f, "a third call"); again != converged {
+					t.Fatalf("a third call wrote: %s then %s", converged, again)
+				}
+			})
+		}
+	}
+}
+
+// operationalEndingContext reports its end through Err only. Its Done channel
+// is nil, so neither database/sql nor the driver watches it, and the looks of
+// the store's own code are the only instants at which its end can be seen.
+// The first live looks see a live context and every later one an ended one.
+type operationalEndingContext struct {
+	context.Context
+	live  int64
+	looks atomic.Int64
+}
+
+func (c *operationalEndingContext) Err() error {
+	if c.looks.Add(1) > c.live {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A context that ends after the written row was read back commits nothing:
+// the writer turn looks at the context once more immediately before COMMIT,
+// rolls back and reports the store as unavailable. A call that finds the
+// wanted row writes nothing and takes the same looks as a writing call up to
+// its step, so the next look of a writing call is the one before COMMIT.
+func TestOperationalAdmissionWriteLooksAtTheContextBeforeCommit(t *testing.T) {
+	for _, test := range operationalAdmissionWriteCases() {
+		t.Run(test.name, func(t *testing.T) {
+			settled := test.fixture(t)
+			wanted := test.requireWritten(t, settled, "the call that writes")
+			unchanged := &operationalEndingContext{Context: context.Background(), live: math.MaxInt64}
+			if _, err := test.run(unchanged, settled); err != nil || settled.admissionSnapshot() != wanted || unchanged.looks.Load() == 0 {
+				t.Fatalf("the call that finds the wanted row: error=%v looks=%d stored=%s", err, unchanged.looks.Load(), settled.admissionSnapshot())
+			}
+			prefix := unchanged.looks.Load()
+
+			f := test.fixture(t)
+			before := f.admissionSnapshot()
+			var attempts, looksAtCommit int64
+			var current *operationalEndingContext
+			f.c.admissionCommit = func(ctx context.Context, conn *sql.Conn) error {
+				attempts++
+				looksAtCommit = current.looks.Load()
+				return commit(ctx, conn)
+			}
+			defer func() { f.c.admissionCommit = nil }()
+			// The context ends after the looks of the step: the write was made
+			// and read back, and the look before COMMIT finds the context ended.
+			current = &operationalEndingContext{Context: context.Background(), live: prefix}
+			token, err := test.run(current, f)
+			if !errors.Is(err, errClaimStoreUnavailable) || token.Valid() || attempts != 0 || current.looks.Load() != prefix+1 {
+				t.Fatalf("context ended before COMMIT: want the unavailable error, no token and no COMMIT, got valid=%t error=%v attempts=%d looks=%d of %d",
+					token.Valid(), err, attempts, current.looks.Load(), prefix+1)
+			}
+			if after := f.admissionSnapshot(); after != before {
+				t.Fatalf("a call whose context ended before COMMIT changed the row: %s then %s", before, after)
+			}
+			// One live look more and the same call commits. The look before
+			// COMMIT is therefore the only one between the step and COMMIT.
+			current = &operationalEndingContext{Context: context.Background(), live: prefix + 1}
+			token, err = test.run(current, f)
+			after := f.admissionSnapshot()
+			if err != nil || attempts != 1 || looksAtCommit != prefix+1 || token.generation != test.generation || !strings.Contains(after, test.stored) {
+				t.Fatalf("one look more: error=%v attempts=%d looks at COMMIT=%d of %d token generation=%d stored=%s",
+					err, attempts, looksAtCommit, prefix+1, token.generation, after)
+			}
+		})
+	}
+}
+
+// The writer turn of a cut does the same. The context ends one look later in
+// each attempt until the cut commits. The last attempt that commits nothing is
+// stopped by the turn itself: its step had completed, it rolled back and it
+// reports that nothing was applied, where an earlier end is a refusal of the
+// step.
+func TestOperationalHandoffCutLooksAtTheContextBeforeCommit(t *testing.T) {
+	for _, cut := range operationalCuts {
+		if cut.op == 0 {
+			continue // the pre-stage turn writes nothing
+		}
+		t.Run(cut.name, func(t *testing.T) {
+			f := newOperationalStoreFixture(t, fixtureReplayRoot(t))
+			if f.establish(f.base) != OperationalApplied {
+				t.Fatal("establish")
+			}
+			committed := false
+			if f.borrow(f.c, f.base, func(a *OperationalAccess, p OperationalProjection) {
+				p = operationalDriveTo(t, a, p, cut.revision, f.token)
+				senders := 0
+				previous := OperationalRefused
+				for live := int64(0); live < 1000; live++ {
+					ctx := &operationalEndingContext{Context: context.Background(), live: live}
+					status, _ := cut.attemptWith(ctx, t, a, p, testOperationalQualificationWith(a, f.token), &senders)
+					if f.revision() != cut.revision {
+						if previous != OperationalDefinitelyNotApplied || f.revision() != cut.revision+1 {
+							t.Fatalf("the cut committed with %d live looks, and with one fewer it answered %d (stored revision %d)",
+								live, previous, f.revision())
+						}
+						committed = true
+						return
+					}
+					if senders != 0 {
+						t.Fatalf("an attempt that committed nothing reached the sender with %d live looks", live)
+					}
+					previous = status
+				}
+			}) != OperationalCurrent || !committed {
+				t.Fatalf("borrow: committed=%t", committed)
+			}
+		})
+	}
+}
+
+// A process whose clock is behind the time another process stored keeps the
+// stored time. The row's time never goes back, so the trigger that forbids a
+// regression is not reached and the write is not refused for the clock.
+func TestOperationalAdmissionStoredTimeAheadOfTheClock(t *testing.T) {
+	ctx := context.Background()
+	f := newUncommissionedOperationalStoreFixture(t, fixtureReplayRoot(t))
+	ahead := time.Now().Add(24 * time.Hour).UnixNano()
+	if _, err := f.c.base.store.db.Exec(`INSERT INTO reliable_submit_operational_admission
+(singleton, installation, epoch, generation, admission_digest, state, updated_at_unix_ns)
+VALUES (1, ?, ?, 1, ?, 1, ?)`, operationalStoreFixtureInstallation[:], int64(operationalStoreFixtureEpoch), operationalStoreFixtureDigest[:], ahead); err != nil {
+		t.Fatal(err)
+	}
+	want := func(label string, generation int, state int) {
+		t.Helper()
+		if got := f.admissionSnapshot(); !strings.Contains(got, fmt.Sprintf("generation=%d ", generation)) ||
+			!strings.HasSuffix(got, fmt.Sprintf(" state=%d updated=%d", state, ahead)) {
+			t.Fatalf("%s: stored row %s, want generation %d, state %d and the stored time %d", label, got, generation, state, ahead)
+		}
+	}
+	token, err := f.c.CommissionOperationalAdmission(ctx, operationalStoreFixtureInstallation, operationalStoreFixtureEpoch, operationalStoreFixtureDigest)
+	if err != nil || token.generation != 1 {
+		t.Fatalf("adopting the seeded row: generation=%d error=%v", token.generation, err)
+	}
+	want("adopted", 1, 1)
+	next, err := f.advance(f.c, operationalStoreFixtureDigestB, 1)
+	if err != nil || next.generation != 2 {
+		t.Fatalf("advance with a clock behind the stored time: generation=%d error=%v", next.generation, err)
+	}
+	want("advanced", 2, 1)
+	if err := f.c.WithdrawOperationalAdmission(ctx, next); err != nil {
+		t.Fatalf("withdrawal with a clock behind the stored time: %v", err)
+	}
+	want("withdrawn", 2, 2)
+}
+
+// The write verifies inside its transaction that the database still has the
+// current schema. A database that has moved on is refused by all three
+// operations, and nothing is written.
+func TestOperationalAdmissionWriteRequiresCurrentStore(t *testing.T) {
+	for _, test := range operationalAdmissionWriteCases() {
+		t.Run(test.name, func(t *testing.T) {
+			f := test.fixture(t)
+			before := f.admissionSnapshot()
+			version := func(value int) {
+				t.Helper()
+				if _, err := f.c.base.store.db.Exec(fmt.Sprintf("PRAGMA user_version=%d", value)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			version(sqliteClaimStoreSchemaVersion + 1)
+			token, err := test.run(context.Background(), f)
+			if !errors.Is(err, errClaimStoreUnavailable) || token.Valid() {
+				t.Fatalf("a newer schema version: want unavailable and no token, got valid=%t error=%v", token.Valid(), err)
+			}
+			if after := f.admissionSnapshot(); after != before {
+				t.Fatalf("a refused write changed the row: %s then %s", before, after)
+			}
+			// Control: with the version restored the same call writes, so the
+			// refusal above came from the version and nothing else.
+			version(sqliteClaimStoreSchemaVersion)
+			test.requireWritten(t, f, "control with the current version")
+		})
+	}
+}
+
+// Before COMMIT the write function reads the row back and requires it to
+// equal what the step reported. A step that reports another row than the one
+// it stored is refused and rolled back.
+func TestOperationalAdmissionWriteReadsBackBeforeCommit(t *testing.T) {
+	ctx := context.Background()
+	f := newOperationalStoreFixture(t, fixtureReplayRoot(t))
+	before := f.admissionSnapshot()
+	withdraw := func(honest bool) (operationalAdmissionRow, error) {
+		return f.c.operationalAdmissionWrite(ctx, func(conn *sql.Conn, row operationalAdmissionRow, now int64) (operationalAdmissionRow, bool, error) {
+			result, err := conn.ExecContext(ctx, `UPDATE reliable_submit_operational_admission
+SET state=2, updated_at_unix_ns=? WHERE singleton=1 AND state=1`, now)
+			if err != nil {
+				return operationalAdmissionRow{}, false, err
+			}
+			if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+				t.Errorf("the step's own write: affected=%d error=%v", affected, err)
+			}
+			row.updatedAt = now
+			if honest {
+				row.state = operationalAdmissionWithdrawn
+			}
+			return row, true, nil
+		})
+	}
+	if row, err := withdraw(false); !errors.Is(err, errClaimStoreUnavailable) || row != (operationalAdmissionRow{}) {
+		t.Fatalf("a step that misreports its write: row present=%t error=%v", row.present, err)
+	}
+	if after := f.admissionSnapshot(); after != before {
+		t.Fatalf("the refused write was not rolled back: %s then %s", before, after)
+	}
+	row, err := withdraw(true)
+	if err != nil || row.state != operationalAdmissionWithdrawn || !strings.Contains(f.admissionSnapshot(), " state=2 ") {
+		t.Fatalf("control: state=%d error=%v stored=%s", row.state, err, f.admissionSnapshot())
 	}
 }

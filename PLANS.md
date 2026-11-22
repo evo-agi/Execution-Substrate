@@ -2,6 +2,35 @@
 
 ## Status
 
+### PR #12 durable admission: corrections after the second audit (2026-11-22)
+
+A fresh independent audit of the durable-admission candidate
+`b6d2f7787ec8254134cb48fcae0da72bac0fd02c` accepted its production code and
+did not accept the candidate. The typed guard still let a protected field be
+written through a pointer converted away from its owning type, and seven low
+findings showed documents, tests and code apart. This entry corrects the
+candidate inside the same selected design; it selects nothing new.
+
+The typed guard lists a conversion in either direction between an owning type
+(or a pointer to or container of it) and any other type, and an instantiation
+of a generic function or type with such a type argument. A method inventory
+counts a same-named interface or constraint method and its selections as
+indirect references, so a gated entry cannot be reached through an interface
+of the two packages. A file-set check fails when a production file of the two
+packages is compiled for none of the three guarded targets. A cancelled call
+answers `OperationalCanceled` wherever the admission returned no refusal of
+its own. `OperationalDenied` is stated as what it is, the answer of the
+re-judgment of a retained original; a first delivery that ordinary resolution
+refuses stores nothing and answers `OperationalUnavailable`, and what a first
+delivery tells its caller stays with the public mapping, a later gate. The
+store's admission write gains the COMMIT fault seam the claim writers have.
+The lock statements now say that the three admission operations and the two
+pre-check confirmations hold the custody handle's read lock. The precise
+rules are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This candidate requires a fresh independent audit of its complete committed
+bytes, and the red-team review of the combined PR #12 after it.
+
 ### PR #12 durable admission generation, freshness and v1 removal (2026-11-22)
 
 A fresh independent audit and a red-team review of the committed v2 repair
@@ -24,16 +53,22 @@ migrations 1 to 4, the 47 claim columns, codecs 1 to 4 and every stored
 encoding keep their meaning. Every codec-5 first-effect writer (establish,
 run assignment, intent, pre-stage, stamp and first marker) compares the
 presented **admission token** with that row under the SQLite writer lock, and
-the post-COMMIT release reads it again. Replacing trust, verifier or policy
+the post-COMMIT release of a run assignment, intent, stamp or first marker
+reads it again; establishment releases nothing and the pre-stage turn is
+followed by the stamp turn, so those two have no re-read. Replacing trust, verifier or policy
 no longer changes the epoch: a restarted process advances the generation,
 in-flight claims are judged again by the new content, and a process holding
 an older token commits no further first-effect write. Withdrawal becomes
 durable and domain-wide. A process must have confirmed its trust with EGS
-within 30 seconds before any first-effect cut; a confirmation that differs
+less than 30 seconds before every first-effect cut after establishment,
+measured inside that cut's writer turn; establishment samples the
+confirmation just before its turn, and its turn compares the token only. A
+confirmation that differs
 latches the process closed, and a failed confirmation extends nothing. A
-refusal by the current rules reports the value-free `OperationalDenied`;
-an absent, fenced, withdrawn, superseded or stale authority reports
-`OperationalUnavailable`. Neither discloses a run.
+refusal of a retained original by the current rules reports the value-free
+`OperationalDenied`; an absent, fenced, withdrawn, superseded or stale
+authority reports `OperationalUnavailable`, and so does a first delivery that
+ordinary resolution refuses, which stores nothing. Neither discloses a run.
 
 `operational_local_v1` is removed, not retained: no **Temporary compatibility
 edge** remains on this path. The 2026-11-20 and earlier 2026-11-22 entries

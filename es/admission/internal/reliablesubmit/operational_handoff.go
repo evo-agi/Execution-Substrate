@@ -387,6 +387,10 @@ type OperationalCustody struct {
 	fault         operationalCommitFault
 	prestageProof OperationalPrestageProofHooks
 	releaseProof  func(OperationalOperation)
+	// admissionCommit replaces the COMMIT of an admission write in the store's
+	// own tests of an unknown COMMIT outcome. It is nil everywhere else and no
+	// function sets it.
+	admissionCommit func(context.Context, *sql.Conn) error
 }
 
 // OperationalPrestageProofHooks observes only the read-only pre-stage turn. Its

@@ -288,7 +288,11 @@ func TestRedTeamPR13HoldsDenialMatrixAcrossCrashPoints(t *testing.T) {
 // built the same way, is accepted), so the refusal comes only from the two
 // authority samples around Establish. Removing both samples passed the whole
 // es/admission suite at e544e0f. The second case withdraws between the two
-// samples and so pins the later one on its own.
+// samples. Withdrawal is durable since the admission row exists, so the
+// store's own comparison in the establish turn refuses that delivery too and
+// this case does not pin the later sample on its own. The subtest "establish
+// gate/deadline passes between the two samples", where the row stays
+// enabled, does.
 func TestRedTeamPR13HoldsNoNewClaimAfterWithdrawal(t *testing.T) {
 	control := makeOperationalFixture(t, "")
 	if out := control.submit(); out.kind != operationalAccepted || operationalPrestageStateAt(t, control).Claims != 1 {

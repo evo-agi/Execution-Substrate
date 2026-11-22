@@ -547,9 +547,13 @@ over those retained bytes. Lock order is SQLite writer, brief Service read,
 then release of Service lock before bounded crypto/policy work. A second
 latch, deadline and identity read completes each positive cut. Establishment
 compares the token inside its own turn as well. Commission, advance and
-withdrawal take the SQLite writer without the Service lock and are never
-called inside a writer turn; the EGS confirmation runs outside every lock and
-transaction. Post-COMMIT release re-reads the row on a pooled connection, and
+withdrawal take the custody handle's lock in read mode and then the SQLite
+writer, without the Service lock, are never
+called inside a writer turn, and must be called outside every borrow of the
+same custody handle. The EGS confirmation runs outside every writer turn and
+transaction and without the Service lock or the owner mutex; at the two
+pre-checks it runs under the custody read lock of the borrow.
+Post-COMMIT release re-reads the row on a pooled connection, and
 final one-use sender entry repeats its selected local checks; neither a
 read-only observation nor a historical Allow bit confers a sender. The
 physical stage,

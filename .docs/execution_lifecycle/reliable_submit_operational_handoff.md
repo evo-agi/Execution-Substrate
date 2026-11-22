@@ -419,6 +419,15 @@ claim it denies is refused as denied. None of the three operations may run
 inside a writer turn, and none holds `Service.mu` across its store call; the
 view or latch changes only outside the transaction.
 
+Each of the three operations runs its one transaction under the custody
+handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.
+That lock is not reentrant. A call made from a callback of a borrow on the
+same handle takes the read lock a second time on one goroutine, and that
+deadlocks when a `Close` is waiting between the two. The three operations
+must therefore be called outside every borrow of the same handle. No
+production code calls them at all (§8). The proof hooks of the tests do call
+them inside a borrow, and run no concurrent `Close`.
+
 #### Where the token is checked
 
 | Cut | Check | Serialized with the claim write |
@@ -454,7 +463,12 @@ comparison does.
 
 The process records the time of its last successful confirmation.
 Commissioning and advancing record none, so the first use must confirm.
-Confirmation runs outside every lock and every transaction. It performs the
+Confirmation runs outside every writer turn and every transaction, and holds
+neither `Service.mu` nor the owner mutex while it fetches. At the two
+pre-checks it runs inside the borrow of the original, so the custody handle's
+read lock is held across the request and `OperationalCustody.Close` waits for
+a request in flight, bounded by the EGS client timeout. The confirmation of a
+fresh delivery holds no lock. It performs the
 same fetch and signature verification as `Service.Initialize`, computes the
 admission digest with the fetched trust, and compares it with the view.
 Equal: the confirmation time becomes the instant sampled before the request
@@ -507,6 +521,13 @@ Exactly three store functions contain a statement that
 writes the admission table, and no production statement updates its
 installation or epoch column. The same gate carries the prerequisite
 identifiers of §8 and prints them when a production reference appears.
+A method inventory also counts dynamic dispatch. A method of the same name
+that an interface or constraint of the two packages declares
+(`interface-method`), and a selection of that name on an interface or
+type-parameter value (`interface-selection`), are references to the method.
+Neither is a direct call, so each is refused as an indirect reference even
+where its site is listed: a gated entry cannot be reached through an
+interface, a constraint or an embedded interface of these packages.
 Exact protected-field reads, assignments and keyed initializers cover verified
 trust ownership, installed view/withdrawal/supersession/confirmation, view
 identity/token/content, the handoff owner links and proof hooks; mutex
@@ -536,14 +557,24 @@ protected field the inventory therefore also lists each whole-value
 occurrence of its owning struct type as its own access kind: a positional
 literal element (`initializer`), a keyed literal that omits the field
 (`zero-initializer`), an assignment or range `=` target that is or contains the
-owning type by value (`whole-assign`), a conversion to the owning type or to
-a pointer to or container of it
-(`whole-convert`), a declared variable, parameter, result, receiver or field
+owning type by value (`whole-assign`), a conversion in either direction
+between the owning type, or a pointer to or container of it, and any other
+type (`whole-convert`), a declared variable, parameter, result, receiver or field
 that is or contains it by value, a type-switch clause for it, a `new` or
 `make` of it (`whole-declare`), a `copy`, `clear`
 or `append` over a container of it (`whole-copy`), and any other use of such a
 value, which copies the field (`whole-read`). A defined type over the owning
-struct counts as the owning type. The construction inventory
+struct counts as the owning type. A conversion away from a pointer to the
+owning type is the one Go allows between pointers to structs of the same
+shape. It gives the same storage a second type, through which the field can
+be written without any occurrence of the owning type, so it is listed like a
+conversion to the owning type. One conversion away is exempt: to an interface
+type that is not a type parameter. Of a value it is a copy, which
+`whole-read` lists; of a pointer it is an alias, the first limit below. An
+instantiation of a generic function or type whose type argument is, contains
+or points to the owning type is listed as well (`whole-instantiate`), written
+or inferred, because the generic body can convert, copy or overwrite the
+value where no inventory reads it. The construction inventory
 counts the same forms, so a zero-value declaration and a same-shape
 conversion of an authority type are refused like a second literal. The older
 site-count inventories of lock and lock-protected fields list the whole-value
@@ -552,10 +583,22 @@ counts.
 
 Limits that remain, by name: values reached through an alias or pointer that
 was itself obtained at an inventoried site; the bodies of called functions
-and methods, generic ones included, beyond Go's implicit address-of;
+and methods beyond Go's implicit address-of, where a generic one is listed
+only at an instantiation that names an owning type;
 reflection; `unsafe`; and cgo. For the last three an exact import inventory
 covers every non-test source file of `es/admission` and the store package, so
-a new `reflect`, `unsafe` or `C` import fails a test. The maintained guarantee is exact syntactic
+a new `reflect`, `unsafe` or `C` import fails a test. The typed inventories
+read the Go files that three build targets (darwin/arm64, linux/amd64 and
+linux/arm64) compile with default build tags. A file-set check fails when a
+non-test Go file of the two packages is compiled for none of them, as behind
+a custom build tag or for another operating system or architecture, and when
+either package holds an assembly, C or object file, so no production file of
+the two packages is outside the inventories. Their scope is these two
+packages: a whole-value write of an exported owning type from another
+package, such as `*service = admission.Service{}`, is not listed, and yields
+a Service without a view, which admits nothing. The table-writer inventory
+reads SQL statement literals; a statement assembled at run time is not seen
+by it, and the triggers of §2, not that inventory, are the barrier. The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
 runtime safety. `Service.mu` owns the mutable Service state, while
 the installed view is immutable and bound to its original Service.
@@ -574,9 +617,11 @@ state, release the Service lock, run bounded local evidence verification,
 trust and built-in `RequiredInputClasses`/`Evaluate`, then sample the view,
 latches, deadline and identity again before positive return. No resolver,
 ARS/EGS read, arbitrary evaluator, filesystem materialization or provider I/O
-runs in this callback. Commission, advance and withdrawal take the SQLite
-writer without `Service.mu` and never custody, stage or owner locks; the
-confirmation takes no lock while it fetches. The final sender lock order is
+runs in this callback. Commission, advance and withdrawal take the custody
+handle's lock in read mode and then the SQLite writer, without `Service.mu`
+and without a stage or owner lock; the confirmation holds neither
+`Service.mu` nor the owner mutex while it fetches, and at the two pre-checks
+it runs under the custody read lock of the borrow. The final sender lock order is
 owner mutex then a brief Service read; no reverse path is allowed.
 Post-COMMIT release rechecks the
 same admission before it can release a sender. Final owner-protected entry
@@ -585,15 +630,40 @@ supersession, the confirmation deadline, original/marker/stage/request and
 existing key eligibility before direct transport. No Service lock spans
 transport.
 
+The first four rows are the judgment of a retained original, at a pre-check
+or a first-effect cut.
+
 | Cause | Reason | Run disclosed |
 | --- | --- | --- |
-| Signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |
+| Retained original: signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |
 | Retained evidence does not verify under the current verifier | `OperationalDenied`. The original is already authenticated, so this means the verifier was replaced. | No |
 | No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |
 | Malformed or contradictory authenticated evidence; an existing original whose realm is not the domain's | `OperationalIntegrity` | No |
-| Cancellation | `OperationalCanceled` | No |
+| First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |
+| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No |
 
 Every row is value-free and withholds run and receipt at the refused cut.
+`OperationalDenied` is the answer of the re-judgment only. A first delivery is
+judged by ordinary resolution, whose typed error is not carried into this
+result; what a first delivery tells its caller belongs to the public mapping,
+a later gate, and the handoff has no production caller.
+
+A cancelled call answers `OperationalCanceled` unless the admission returned
+a refusal of its own in the same call. The store refuses every read, binding
+and writer turn of a call whose context has ended, so a step that fails under
+an ended context reports the cancellation and not `OperationalUnavailable` or
+`OperationalIntegrity`: the pre-check's read of the row, the binding of the
+intent, of the staged tree and of the marker, the verification of an accepted
+receipt and the binding of a completed observation. Every writer turn checks
+the context immediately before its COMMIT and the sender entry checks it
+before its request, so a call found ended there commits no claim write and
+sends no request. The fence, the view and a
+completed judgment come first. A pre-check or cut that has read the row
+reports a missing view or a differing token as `OperationalUnavailable`, and
+a denial that its evaluation returned as `OperationalDenied`, also when the
+context has ended meanwhile. A cancellation that arrives during an evaluation
+that allows is reported as the cancellation, and from a pre-check no writer
+turn is then requested.
 When one call is both cancelled and refused by the authority, the authority
 refusal is reported, at reconciliation and at the final sender entry alike,
 because it withholds the run and a cancellation alone does not.
@@ -620,6 +690,12 @@ run assignment or intent, without advancing or disclosing the claim. A later
 generation that allows the claim lets a retry complete with exactly one POST,
 so before staging a denial does not poison the claim. After staging the claim
 keeps its charged residue and cannot stage again; it needs a new submit key.
+That holds whatever stopped the call between staging and the stamp: a denial,
+a fence, a confirmation deadline that passed while the tree was staged, or a
+cancelled call. No confirmation is attempted between the pre-check and the
+stamp, and a confirmation counts from the instant before its request was
+sent, so a slow EGS answer followed by slow staging can use up the 30
+seconds.
 
 Receipt-only verification is outside current admission. Accepted receipt
 verification needs exact caller, authenticated historical realm/original and

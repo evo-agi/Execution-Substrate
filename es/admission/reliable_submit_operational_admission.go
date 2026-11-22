@@ -274,7 +274,9 @@ func (s *Service) withdrawOperationalEffects(ctx context.Context, d *operational
 // holds. Equal content records the time sampled before the request was sent.
 // Different content latches supersession for the life of the process. A
 // failed request changes nothing, so the deadline keeps running. It performs
-// network I/O and is called outside every lock and every writer turn.
+// network I/O and is called outside every writer turn, Service.mu and the
+// owner mutex. At the two pre-checks the caller holds the custody read lock
+// of the borrow across it.
 func (s *Service) confirmOperationalAdmission(ctx context.Context) {
 	if s == nil {
 		return
