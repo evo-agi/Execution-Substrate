@@ -31,23 +31,22 @@
 #   - A subtest that has subtests of its own, or a neighbour whose name
 #     starts with its name and a "/". go test reads a test path as the start
 #     of a path, so the skip for TestA/x also covers every test whose path
-#     starts with "TestA/x/". The step "Listed tests still fail" fails the
-#     run when the run of an entry starts such a test. Where that test is a
-#     subtest of the listed one and it is what fails, the entry can name it
-#     instead.
+#     starts with "TestA/x/". Both steps check this.
 #
-# What that step cannot see: a test under the path of a listed subtest x of
-# TestA that does not start while x fails. A subtest that x itself would
-# start after the point where it fails here is part of x, and nothing but x
-# is lost with it. The other kind is a test of its own: a subtest named
-# "x/..." that TestA starts only when x did not fail, for example after
+#     The step "Test" runs a package that has an entry for a subtest a
+#     second time and has go test write down every test that it skips
+#     there. The step fails unless those tests are exactly the entries of
+#     the package. So it names a neighbour that an entry takes with it,
+#     also one that the test starts only when the listed subtest did not
+#     fail, and it names an entry that skipped nothing.
 #
-#     if !t.Run("x", ...) { return }
+#     The step "Listed tests still fail" fails the run when the run of an
+#     entry starts another test under the path of that entry. Where that
+#     test is a subtest of the listed one and it is what fails, the entry
+#     can name it instead.
 #
-# The listed x fails here, so that subtest never starts in the run of the
-# entry, and the gate skips it together with x. No pattern of go test skips
-# x and not "x/...". Before listing a subtest, read its test. If the test
-# stops or changes course when that subtest fails, list the whole test.
+# A subtest that a listed subtest x would start itself does not start while
+# x is skipped. It is part of x, and nothing but x is lost with it.
 #
 # The way to shorten this list is to port a test so that it passes on a Linux
 # runner without weakening it.

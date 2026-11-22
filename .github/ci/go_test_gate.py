@@ -43,9 +43,17 @@ gate
     entries runs on its own with its own entries skipped. The gate then
     checks that every top-level test that is not an entry ran there, and
     writes which tests ran beside each listed subtest. All other packages
-    run with nothing skipped. Exits 0 only if every run and every check
-    passes. A skipped test leaves no trace, so this mode cannot tell what
-    else an entry for a subtest skips. still-failing does that.
+    run with nothing skipped.
+
+    A test that go test skips leaves no trace in its output. So a package
+    with an entry for a subtest, once it has passed, runs a second time with
+    the same entries skipped: the observed run described below. That run
+    has to pass like the first, and the tests that go test skipped in it
+    have to be exactly the entries of that package, each of them once. A
+    skipped test that is not an entry is named, and so is an entry that was
+    not skipped.
+
+    Exits 0 only if every run and every check passes.
 
 still-failing
     Checks the list, then runs every entry in a go test of its own, in the
@@ -55,33 +63,55 @@ still-failing
     starts another test covers more than itself. Each such entry is named,
     and the status is 1.
 
-What no run can show: a test under the path of a listed subtest x of TestA
-that does not start while x fails. There are two kinds.
+The observed run
+    go test decides in one place whether -skip drops a test: in the function
+    fullName in src/testing/match.go of the Go standard library. Every
+    test and every subtest goes through it before it starts. For the
+    observed run the gate copies that file and adds one call at the place
+    where a test is dropped, and the function that the call names. The
+    function appends the name of the dropped test to a file. go test gets
+    the copy through -overlay, so the test binary of that one run is built
+    with it. The installed toolchain is not changed, and no other run uses
+    the copy.
 
-A subtest that x itself would start after the point where x fails on this
-host. It is part of x, and nothing but x is lost with it.
+    The copy is made from the file of the toolchain that runs the tests.
+    That toolchain has to be the Go version in OBSERVED_GO_VERSION, and its
+    file has to have the SHA-256 in MATCH_GO_SHA256. Otherwise the gate
+    stops with status 1 before any test runs. So a new Go version needs a
+    review of how its testing package skips tests, and new values here in
+    the same change.
 
-A subtest named "x/..." that TestA starts only when x did not fail, for
-example after
+    This is what makes an entry for a subtest stand for that subtest alone.
+    No pattern of go test skips TestA/x and not a neighbour named "x/...",
+    and no run of x can show a neighbour that TestA starts only when x did
+    not fail, for example after
 
-    if !t.Run("x", ...) { return }
+        if !t.Run("x", ...) { return }
 
-That one is a test of its own. A listed x fails on this host, so it never
-starts in the run of the entry, and the gate skips it together with x. No
-pattern of go test skips x and not "x/...". An entry for a subtest is
-therefore safe only in a test that goes on in the same way whether or not
-that subtest fails. Where a test does not, list the whole test.
+    In the gate x is skipped, so TestA goes on and reaches that neighbour,
+    go test drops it with x, and the observed run writes its name down.
+    What a test does not start is not skipped. A subtest that the listed x
+    would start itself is part of x, and x does not run in the gate.
+
+    The gate takes the record, like the output of go test, as the testing
+    package wrote it. A test binary that a test starts with a -test.skip of
+    its own writes into the same record, and the gate then fails. Nothing
+    here is a defence against a test that forges the record or that output.
 
 Exit status: 0 on success, 1 when a Go command or a check of a run fails, 2
 when the list or the command line is wrong. No test has run when the status
 is 2.
 """
 
+import hashlib
 import json
+import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 
 # One entry: a package import path, one space, a test path. Every part of the
 # test path is letters, digits and underscores (a part after the first may
@@ -97,6 +127,47 @@ MODES = ("gate", "still-failing")
 
 # The actions with which "go test -json" reports the end of a test.
 VERDICTS = ("pass", "fail", "skip")
+
+# The observed run. See "The observed run" above.
+#
+# The Go version whose testing package was read for it, and the SHA-256 of
+# src/testing/match.go in that version.
+OBSERVED_GO_VERSION = "go1.26.5"
+MATCH_GO_SHA256 = "f28418759ed48c72821b5ecc3700041b74151108557618f50d355ea98a1bbebe"
+# The one place in that file where a test is dropped because -skip matches
+# it, and the same place with the recording call added.
+SKIP_BRANCH = "\tif skip && !partialSkip {\n\t\treturn name, false, false\n\t}\n"
+RECORDING_SKIP_BRANCH = (
+    "\tif skip && !partialSkip {\n"
+    "\t\tgoTestGateRecordSkipped(name)\n"
+    "\t\treturn name, false, false\n"
+    "\t}\n"
+)
+# The environment variable that names the file for the dropped names. The
+# test binary reads it once, when it starts, so a test that changes its
+# environment does not switch the recording off. The file has to exist: a
+# name that cannot be written ends the test binary.
+SKIPPED_NAMES = "GO_TEST_GATE_SKIPPED_NAMES"
+RECORDER = """
+// Added by .github/ci/go_test_gate.py for its observed run. Not part of Go.
+var goTestGateSkippedNames = os.Getenv("%s")
+
+func goTestGateRecordSkipped(name string) {
+	if goTestGateSkippedNames == "" {
+		return
+	}
+	file, err := os.OpenFile(goTestGateSkippedNames, os.O_WRONLY|os.O_APPEND, 0)
+	if err == nil {
+		_, err = file.WriteString(name + "\\n")
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		panic("go_test_gate: cannot record the skipped test " + name + ": " + err.Error())
+	}
+}
+""" % SKIPPED_NAMES
 
 
 class ListError(Exception):
@@ -190,18 +261,22 @@ def exact_paths(paths):
     subtest of A with another name. It does match every test whose path
     starts with "A/b/": go test splits the path of a test at "/" as well
     and compares only as many parts as the pattern has. No pattern is
-    narrower than that, which is why still-failing has to show that no such
-    test starts. The reading of "|" is why entries of one package must not
-    overlap: go test stops at the first alternative that matches even in
-    part.
+    narrower than that, which is why the gate has an observed run that
+    shows what the pattern dropped. The reading of "|" is why entries of
+    one package must not overlap: go test stops at the first alternative
+    that matches even in part.
     """
     return "|".join(
         "/".join("^" + part + "$" for part in path.split("/")) for path in paths
     )
 
 
-def show(command):
-    emit("+ " + shlex.join(command))
+def show(command, variables=None):
+    """Write a command to the log, after the variables set for it alone."""
+    settings = [
+        "%s=%s" % (name, shlex.quote(value)) for name, value in sorted((variables or {}).items())
+    ]
+    emit("+ " + " ".join(settings + [shlex.join(command)]))
 
 
 def run(command):
@@ -217,18 +292,23 @@ def capture(command):
     return done.returncode, done.stdout.decode("utf-8", "replace")
 
 
-def go_test_json(arguments):
+def go_test_json(arguments, variables=None):
     """Run "go test -json" with the given arguments.
 
     Writes to the log what plain "go test" would: everything that belongs to
     no test, and the output of every top-level test that does not end with
     pass or skip, its subtests included. Returns the exit status, the verdict
     (pass, fail or skip) of every test and subtest that reported one, and the
-    set of tests and subtests that started.
+    set of tests and subtests that started. variables holds environment
+    variables to set for this command alone.
     """
     command = ["go", "test", "-json"] + arguments
-    show(command)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE)
+    show(command, variables)
+    environment = None
+    if variables:
+        environment = dict(os.environ)
+        environment.update(variables)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, env=environment)
     verdicts = {}
     started = set()
     pending = {}
@@ -324,15 +404,16 @@ def check_list(grouped, packages):
     return listings
 
 
-def check_gated_run(package, paths, listed, verdicts):
+def check_gated_run(package, paths, listed, verdicts, beside=True):
     """Compare what ran in a passing gated run of a package with the list.
 
-    Returns the problems found. Writes one line per listed subtest saying
-    which tests ran beside it: the tests with the same nearest test above
-    them among those that ran. A part of a listed path need not be a test,
-    because the name of a subtest may itself hold a "/". So only the
-    top-level test of a listed subtest is required to have run here.
-    still-failing requires the listed subtest itself to start.
+    Returns the problems found. Unless "beside" is false, writes one line
+    per listed subtest saying which tests ran beside it: the tests with the
+    same nearest test above them among those that ran. A part of a listed
+    path need not be a test, because the name of a subtest may itself hold
+    a "/". So only the top-level test of a listed subtest is required to
+    have run here. The observed run requires the listed subtest itself to
+    be reached, and still-failing requires it to start.
     """
     problems = []
     whole = {path for path in paths if "/" not in path}
@@ -343,12 +424,12 @@ def check_gated_run(package, paths, listed, verdicts):
         problems.append(
             "%s: tests that are not listed did not run: %s" % (package, ", ".join(missing))
         )
-    for path in paths:
+    for path in paths if beside else ():
         parent = nearest_above(path, verdicts)
         if parent is None:
             # A whole test, or a subtest of a test reported as missing above.
             continue
-        beside = sorted(
+        neighbours = sorted(
             test for test in verdicts if nearest_above(test, verdicts) == parent
         )
         emit(
@@ -358,7 +439,7 @@ def check_gated_run(package, paths, listed, verdicts):
                 parent,
                 path[len(parent) + 1 :],
                 ", ".join(
-                    "%s %s" % (test[len(parent) + 1 :], verdicts[test]) for test in beside
+                    "%s %s" % (test[len(parent) + 1 :], verdicts[test]) for test in neighbours
                 )
                 or "nothing",
             )
@@ -366,10 +447,147 @@ def check_gated_run(package, paths, listed, verdicts):
     return problems
 
 
-def gate(entries):
+def recording_overlay(directory):
+    """Write what the observed run needs into the directory.
+
+    Returns the path of the overlay file for go test. It puts a copy of
+    src/testing/match.go that records every test dropped by -skip in the
+    place of the file of the toolchain. Raises GoError unless the toolchain
+    is the one this was written against.
+    """
+    status, output = capture(["go", "env", "GOVERSION", "GOROOT"])
+    answers = output.split("\n")
+    if status != 0 or len(answers) != 3 or answers[2] != "" or not os.path.isabs(answers[1]):
+        raise GoError("go env GOVERSION GOROOT failed")
+    version, goroot = answers[0], answers[1]
+    if version != OBSERVED_GO_VERSION:
+        raise GoError(
+            "the observed run is written against %s, and the go command is %s. Review "
+            "how the testing package of that version skips tests, then set "
+            "OBSERVED_GO_VERSION and MATCH_GO_SHA256 in go_test_gate.py"
+            % (OBSERVED_GO_VERSION, version)
+        )
+    stock = os.path.join(goroot, "src", "testing", "match.go")
+    try:
+        with open(stock, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        raise GoError("cannot read %s: %s" % (stock, error.strerror))
+    found = hashlib.sha256(raw).hexdigest()
+    if found != MATCH_GO_SHA256:
+        raise GoError(
+            "%s is not the file of %s that the observed run is written against: its "
+            "SHA-256 is %s, not %s" % (stock, OBSERVED_GO_VERSION, found, MATCH_GO_SHA256)
+        )
+    text = raw.decode("utf-8")
+    if text.count(SKIP_BRANCH) != 1:
+        raise GoError("%s does not drop skipped tests in exactly one place" % stock)
+    changed = os.path.join(directory, "match.go")
+    with open(changed, "wb") as handle:
+        handle.write((text.replace(SKIP_BRANCH, RECORDING_SKIP_BRANCH) + RECORDER).encode("utf-8"))
+    overlay = os.path.join(directory, "overlay.json")
+    with open(overlay, "w") as handle:
+        json.dump({"Replace": {stock: changed}}, handle)
+    return overlay
+
+
+def observed_run(package, paths, listed, overlay, record, list_path):
+    """Run a package with entries once more and check what go test skipped.
+
+    The test binary of this run writes the name of every test that -skip
+    drops into the file "record". Returns the problems found: the run or
+    its checks fail, or the names are not exactly the entries, each once.
+    """
+    with open(record, "wb"):
+        pass
+    emit("%s: observed run, with every test that -skip drops written down" % package)
+    status, verdicts, _ = go_test_json(
+        ["-count=1", "-overlay", overlay, "-skip", exact_paths(paths), package],
+        {SKIPPED_NAMES: record},
+    )
+    if status != 0:
+        return ["the observed run of " + package]
+    problems = [
+        "observed run: " + problem
+        for problem in check_gated_run(package, paths, listed, verdicts, beside=False)
+    ]
+    try:
+        with open(record, "rb") as handle:
+            names = handle.read().decode("utf-8", "replace").split("\n")
+    except OSError as error:
+        return problems + [
+            "the record of the observed run of %s cannot be read: %s"
+            % (package, error.strerror)
+        ]
+    # Every name is written with a line end after it.
+    if names.pop() != "":
+        return problems + ["the record of the observed run of %s ends inside a name" % package]
+    unlisted = sorted({name for name in names if name not in paths})
+    for name in unlisted:
+        entry = nearest_above(name, paths)
+        if entry is None:
+            # Not a test that an entry of this run can drop. A test binary
+            # that a test starts with a -test.skip of its own writes into
+            # the same record.
+            emit(
+                "::error::the gate skipped a test that is not listed: %s %s. No "
+                "entry covers it. A test of this package ran a test binary with "
+                "a -test.skip of its own." % (package, name)
+            )
+            continue
+        emit(
+            "::error::the gate skipped a test that is not listed: %s %s. The entry "
+            "%s covers it as well, because go test reads a test path as the start "
+            "of a path. An entry for a subtest must be the only test whose path "
+            "starts with its own. In %s, name a narrower subtest, or list the "
+            "whole test %s." % (package, name, entry, list_path, name.split("/")[0])
+        )
+    unskipped = [path for path in paths if path not in names]
+    for path in unskipped:
+        emit(
+            "::error::the gate did not skip the listed %s %s: the observed run did "
+            "not reach a test of that name, so the line skipped nothing. Correct "
+            "the line in %s, or delete it." % (package, path, list_path)
+        )
+    repeated = sorted({name for name in names if names.count(name) != 1})
+    if repeated:
+        emit(
+            "::error::the observed run of %s wrote down a skipped test more than "
+            "once: %s" % (package, ", ".join(repeated))
+        )
+    if unlisted or unskipped or repeated:
+        problems.append(
+            "%s: the tests that go test skipped are not exactly the listed ones" % package
+        )
+    if not problems:
+        emit(
+            "%s: the observed run passed; go test skipped exactly the listed tests "
+            "of this package (%d), each once" % (package, len(paths))
+        )
+    return problems
+
+
+def gate(entries, list_path):
     packages = module_packages()
     grouped = by_package(entries)
     listings = check_list(grouped, packages)
+
+    scratch = None
+    if any("/" in path for _, path in entries):
+        scratch = tempfile.mkdtemp(prefix="go-test-gate-")
+    try:
+        return gated_runs(packages, grouped, listings, scratch, list_path, len(entries))
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def gated_runs(packages, grouped, listings, scratch, list_path, count):
+    """Run every package as "gate" describes. scratch is a directory of the
+    gate's own, given when the list has an entry for a subtest."""
+    overlay = None
+    if scratch is not None:
+        overlay = recording_overlay(scratch)
 
     failed = []
     for package, paths in grouped.items():
@@ -382,8 +600,20 @@ def gate(entries):
         )
         if status != 0:
             failed.append(package)
-        elif listed is not None:
-            failed.extend(check_gated_run(package, paths, listed, verdicts))
+            continue
+        if listed is None:
+            continue
+        problems = check_gated_run(package, paths, listed, verdicts)
+        if not problems and any("/" in path for path in paths):
+            problems = observed_run(
+                package,
+                paths,
+                listed,
+                overlay,
+                os.path.join(scratch, "skipped-names.txt"),
+                list_path,
+            )
+        failed.extend(problems)
 
     others = [package for package in packages if package not in grouped]
     if len(others) + len(grouped) != len(packages):
@@ -396,7 +626,7 @@ def gate(entries):
         return 1
     emit(
         "test gate passed: %d packages, %d of them with skipped entries (%d entries)"
-        % (len(packages), len(grouped), len(entries))
+        % (len(packages), len(grouped), count)
     )
     return 0
 
@@ -503,7 +733,7 @@ def main(arguments):
         raise ListError("usage: go_test_gate.py gate|still-failing LIST")
     entries = read_entries(arguments[1])
     if arguments[0] == "gate":
-        return gate(entries)
+        return gate(entries, arguments[1])
     return still_failing(entries, arguments[1])
 
 

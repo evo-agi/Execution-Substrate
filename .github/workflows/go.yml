@@ -76,14 +76,19 @@ jobs:
         run: python3 -I -B .github/ci/go_test_gate_selftest.py
 
       # Runs every package. A package with entries runs with its own entries
-      # skipped; every other package runs with nothing skipped.
+      # skipped; every other package runs with nothing skipped. A package with
+      # an entry for a subtest then runs a second time, with a test binary
+      # that writes down every test that go test skips, and the step fails
+      # unless those are exactly the entries. Only that test binary is built
+      # with a changed copy of one file of the Go standard library, which
+      # go_test_gate.py describes. The installed toolchain is not changed.
       - name: Test
         run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
 
       # Runs every entry in a go test of its own. Fails when an entry does not
       # fail on this runner: it passes, skips itself or does not run. Such an
       # entry no longer belongs in the list, and its line has to be deleted.
-      # Also fails when the run of an entry for a subtest starts any other
-      # test, because the step above skips that test together with the entry.
+      # Also fails when the run of an entry for a subtest starts another test
+      # under the path of that entry.
       - name: Listed tests still fail
         run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"

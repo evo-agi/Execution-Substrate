@@ -11,6 +11,10 @@ compares the exit status and the set of test functions that really executed.
 Every generated test function records that it ran by creating a marker file,
 so "skipped" and "ran" are observed, not read from go test output.
 
+The gate's observed run needs the Go version that go_test_gate.py names in
+OBSERVED_GO_VERSION. With another go command the checks that have an entry
+for a subtest fail, and the output says why.
+
 The last group reads ../workflows/go.yml beside this file. It holds that file
 as a whole by its SHA-256, so every edit of the workflow has to change the
 value in this file in the same change, and it checks some properties of the
@@ -31,7 +35,7 @@ GATE = os.path.join(HERE, "go_test_gate.py")
 WORKFLOW = os.path.join(HERE, os.pardir, "workflows", "go.yml")
 # SHA-256 of that file as it was last reviewed. See
 # test_the_workflow_file_is_the_text_that_was_reviewed.
-WORKFLOW_SHA256 = "3bdcd062217b2373a2fda21d92fd678f44e51ad3df466ef84a466be26a5567b5"
+WORKFLOW_SHA256 = "1f8937e0ffef39ec7a30b02f75b4e43c981e50c8a89bcd0eceaca453261ee126"
 
 PASS = "pass"
 FAIL = "fail"
@@ -133,6 +137,43 @@ fi
 exec "$GATE_SELFTEST_GO" "$@"
 """
 
+# "go env" prints its answers and fails.
+FAILING_ENV_GO = STAND_IN_GO % ('[ "$1" = env ]', 1)
+# "go env GOVERSION GOROOT" names another Go version, and the real GOROOT.
+OTHER_VERSION_GO = """#!/bin/sh
+if [ "$1" = env ] && [ "$2" = GOVERSION ]; then
+    echo go1.0.0
+    exec "$GATE_SELFTEST_GO" env GOROOT
+fi
+exec "$GATE_SELFTEST_GO" "$@"
+"""
+# "go env GOVERSION GOROOT" names the real Go version, and as GOROOT the
+# directory testdata/goroot of the module.
+OTHER_GOROOT_GO = """#!/bin/sh
+if [ "$1" = env ] && [ "$2" = GOVERSION ]; then
+    "$GATE_SELFTEST_GO" env GOVERSION
+    echo "$PWD/testdata/goroot"
+    exit 0
+fi
+exec "$GATE_SELFTEST_GO" "$@"
+"""
+# Every go command runs without "-overlay" and the argument after it, so the
+# test binary of the observed run is built with the stock testing package.
+NO_OVERLAY_GO = """#!/bin/sh
+drop=
+for argument in "$@"; do
+    shift
+    if [ -n "$drop" ]; then
+        drop=
+    elif [ "$argument" = -overlay ]; then
+        drop=1
+    else
+        set -- "$@" "$argument"
+    fi
+done
+exec "$GATE_SELFTEST_GO" "$@"
+"""
+
 # A test whose subtest "reg" starts a subtest of its own, "custody", after
 # the point where "reg" can fail.
 STARTS_ITS_SUBTEST_LATE = """
@@ -185,6 +226,141 @@ func TestStop(t *testing.T) {
 		ran(t)
 		t.Fatal("deliberate failure in the subtest that the entry hides")
 	})
+}
+"""
+
+# A test whose second subtest, "reg/custody", starts only when "reg" got
+# past the point where it can fail.
+STARTS_AFTER_REG_GOT_THROUGH = """
+func TestShared(t *testing.T) {
+	ran(t)
+	through := false
+	t.Run("reg", func(t *testing.T) {
+		ran(t)
+		%s
+		through = true
+	})
+	if through {
+		t.Run("reg/custody", func(t *testing.T) {
+			ran(t)
+		})
+	}
+	t.Run("other", func(t *testing.T) {
+		ran(t)
+	})
+}
+"""
+
+# A test with a failing subtest "reg" and a neighbour "reg/custody". Between
+# them a subtest takes the variable of the observed run out of the
+# environment, as a test does that clears its environment.
+CLEARS_THE_VARIABLE = """
+func TestClears(t *testing.T) {
+	ran(t)
+	t.Run("reg", func(t *testing.T) {
+		ran(t)
+		t.Fatal("deliberate failure")
+	})
+	t.Run("clears", func(t *testing.T) {
+		ran(t)
+		os.Unsetenv("GO_TEST_GATE_SKIPPED_NAMES")
+	})
+	t.Run("reg/custody", func(t *testing.T) {
+		ran(t)
+	})
+}
+"""
+
+# A test whose subtest "meddles" does something to the record of the observed
+# run, which no test has a reason to do. Other subtests stand before and
+# after it.
+MEDDLES_WITH_THE_RECORD = """
+func TestMeddles(t *testing.T) {
+	ran(t)
+%(before)s	t.Run("meddles", func(t *testing.T) {
+		ran(t)
+		record := os.Getenv("GO_TEST_GATE_SKIPPED_NAMES")
+		if record == "" {
+			return
+		}
+		%(deed)s
+	})
+%(after)s}
+"""
+REMOVES_THE_RECORD = """if err := os.Remove(record); err != nil {
+			t.Fatal(err)
+		}"""
+ENDS_THE_RECORD_INSIDE_A_NAME = """file, err := os.OpenFile(record, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("TestMeddles/half"); err != nil {
+			t.Fatal(err)
+		}
+		file.Close()"""
+
+# A test that runs its own test binary once more, with a -test.run and a
+# -test.skip of its own, as tests with helper processes do.
+RUNS_ITS_OWN_BINARY = """package a
+
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
+
+func TestSpawns(t *testing.T) {
+	ran(t)
+	if os.Getenv("GATE_SELFTEST_CHILD") != "" {
+		return
+	}
+	command := exec.Command(os.Args[0], "-test.run=%s", "-test.skip=%s")
+	command.Env = append(os.Environ(), "GATE_SELFTEST_CHILD=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%%v: %%s", err, output)
+	}
+}
+"""
+
+# A test that passes once in a module and fails from then on.
+PASSES_ONCE = """package a
+
+import (
+	"os"
+	"testing"
+)
+
+func TestOnce(t *testing.T) {
+	ran(t)
+	if _, err := os.Stat("once.marker"); err == nil {
+		t.Fatal("this is not the first run")
+	}
+	if err := os.WriteFile("once.marker", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+"""
+
+# A test binary that runs every test in its first run in a module, and from
+# then on only TestPreflight. Listing the tests does not count as a run.
+RUNS_LESS_THE_SECOND_TIME = """package a
+
+import (
+	"flag"
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if flag.Lookup("test.list").Value.String() == "" {
+		if _, err := os.Stat("second.marker"); err == nil {
+			flag.Set("test.run", "^TestPreflight$")
+		} else if err := os.WriteFile("second.marker", nil, 0o600); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
 }
 """
 
@@ -276,13 +452,14 @@ def write_module(root, packages, files):
             handle.write(text)
 
 
-def run_gate(mode, packages, listing, files=None, arguments=None, runs=1, go=None):
+def run_gate(mode, packages, listing, files=None, arguments=None, runs=1, go=None, gate=None):
     """Run the gate in a new module. Return (exit status, tests that ran, output).
 
     With runs above 1 the gate runs again in the same module, and the result
     is that of the last run alone. go is the text of a script that stands in
     for the go command; it finds the real one in GATE_SELFTEST_GO. An
-    argument "{list}" stands for the path of the list file.
+    argument "{list}" stands for the path of the list file. gate is the text
+    of a gate to run in the place of go_test_gate.py.
     """
     with tempfile.TemporaryDirectory() as root:
         module = os.path.join(root, "module")
@@ -303,6 +480,11 @@ def run_gate(mode, packages, listing, files=None, arguments=None, runs=1, go=Non
             os.chmod(os.path.join(tools, "go"), 0o755)
             environment["GATE_SELFTEST_GO"] = shutil.which("go") or ""
             environment["PATH"] = tools + os.pathsep + environment.get("PATH", "")
+        program = GATE
+        if gate is not None:
+            program = os.path.join(root, "go_test_gate.py")
+            with open(program, "w") as handle:
+                handle.write(gate)
         if arguments is None:
             arguments = [mode, list_path]
         arguments = [list_path if argument == "{list}" else argument for argument in arguments]
@@ -310,7 +492,7 @@ def run_gate(mode, packages, listing, files=None, arguments=None, runs=1, go=Non
             for name in os.listdir(marks):
                 os.unlink(os.path.join(marks, name))
             done = subprocess.run(
-                [sys.executable, "-I", "-B", GATE] + arguments,
+                [sys.executable, "-I", "-B", program] + arguments,
                 cwd=module,
                 env=environment,
                 stdout=subprocess.PIPE,
@@ -363,6 +545,61 @@ class GateCase(unittest.TestCase):
             re.M,
         )
         self.assertEqual(sorted(named), sorted(lines), output)
+
+    def unlisted(self, output, *lines):
+        """Require exactly the given tests to be named as skipped although not listed.
+
+        A line is (package and test, the entry that covers it, its top-level
+        test), or (package and test, None, None) where no entry covers it.
+        """
+        named = re.findall(
+            r"^::error::the gate skipped a test that is not listed: (\S+ \S+)\. (?:The "
+            r"entry (\S+) covers it as well, because go test reads a test path as the "
+            r"start of a path\. An entry for a subtest must be the only test whose path "
+            r"starts with its own\. In \S+, name a narrower subtest, or list the whole "
+            r"test (\S+)\.|No entry covers it\. A test of this package ran a test binary "
+            r"with a -test\.skip of its own\.)$",
+            output,
+            re.M,
+        )
+        named = [(test, entry or None, top or None) for test, entry, top in named]
+        self.assertEqual(sorted(named, key=repr), sorted(lines, key=repr), output)
+        self.assertEqual(
+            len(named), output.count("::error::the gate skipped a test that is not listed"), output
+        )
+
+    def unskipped(self, output, *lines):
+        """Require exactly the given entries to be named as not skipped by the gate."""
+        named = re.findall(
+            r"^::error::the gate did not skip the listed (\S+ \S+): the observed run did "
+            r"not reach a test of that name, so the line skipped nothing\. Correct the "
+            r"line in \S+, or delete it\.$",
+            output,
+            re.M,
+        )
+        self.assertEqual(sorted(named), sorted(lines), output)
+        self.assertEqual(
+            len(named), output.count("::error::the gate did not skip the listed"), output
+        )
+
+    def observed(self, output, *packages):
+        """Require an observed run of exactly the given packages, in that order.
+
+        What the gate wrote for those runs must be gone when it has ended.
+        """
+        runs = re.findall(
+            r"(?m)^\+ GO_TEST_GATE_SKIPPED_NAMES=(\S+) go test -json -count=1 "
+            r"-overlay (\S+) -skip \S+ (\S+)$",
+            output,
+        )
+        self.assertEqual([package for _, _, package in runs], list(packages), output)
+        self.assertEqual(output.count("-overlay"), len(packages), output)
+        self.assertEqual(
+            output.count("+ go env GOVERSION GOROOT\n"), min(1, len(packages)), output
+        )
+        for record, overlay, _ in runs:
+            self.assertEqual(os.path.dirname(record), os.path.dirname(overlay), output)
+            self.assertFalse(os.path.exists(os.path.dirname(record)), output)
 
 
 class GateScopesEachEntryToItsPackage(GateCase):
@@ -553,6 +790,14 @@ class GateSkipsExactlyTheListedSubtest(GateCase):
             "beside it ran: accepts_exact_tool pass, rejects_wrong_tool pass\n",
             output,
         )
+        self.assertEqual(output.count("ran without the listed"), 1, output)
+        self.observed(output, "synth/a")
+        self.assertIn(
+            "synth/a: the observed run passed; go test skipped exactly the listed tests "
+            "of this package (1), each once\n",
+            output,
+        )
+        self.assertNotIn("::error::", output)
 
     def test_failing_sibling_of_a_listed_subtest_fails_the_gate(self):
         subtests = [
@@ -650,25 +895,35 @@ class GateSkipsExactlyTheListedSubtest(GateCase):
         self.check({"a": {"TestPreflight": subtests}}, listing, 0, PREFLIGHT_RAN)
 
     def test_entry_for_a_subtest_that_does_not_exist_skips_nothing(self):
-        # The still-failing step is what rejects such an entry.
+        # The subtest that the line was meant for runs, and fails the gate.
         ran = PREFLIGHT_RAN | {"synth/a.TestPreflight/rejects_missing_tool"}
         self.check({"a": {"TestPreflight": PREFLIGHT}}, "synth/a TestPreflight/no_such\n", 1, ran)
 
-    def test_entry_under_a_path_that_is_not_a_test_skips_nothing(self):
+    def test_entry_that_skips_nothing_is_named(self):
         # A part of a listed path need not be a test, because the name of a
-        # subtest may hold a "/". So this step cannot refuse the line. The
-        # still-failing step does: the entry does not run.
-        output = self.check(
-            {"a": {"TestPreflight": [("other", PASS)]}},
-            "synth/a TestPreflight/absent/inner\n",
-            0,
-            {"synth/a.TestPreflight", "synth/a.TestPreflight/other"},
-        )
-        self.assertIn(
-            "synth/a: TestPreflight ran without the listed absent/inner; "
-            "beside it ran: other pass\n",
-            output,
-        )
+        # subtest may hold a "/". So the line cannot be refused before the
+        # tests run, and every test passes. The observed run shows that the
+        # line skipped nothing.
+        for line in ("TestPreflight/absent/inner", "TestPreflight/no_such"):
+            with self.subTest(line=line):
+                output = self.check(
+                    {"a": {"TestPreflight": [("other", PASS)]}},
+                    "synth/a %s\n" % line,
+                    1,
+                    {"synth/a.TestPreflight", "synth/a.TestPreflight/other"},
+                )
+                self.assertIn(
+                    "synth/a: TestPreflight ran without the listed %s; "
+                    "beside it ran: other pass\n" % line.split("/", 1)[1],
+                    output,
+                )
+                self.unskipped(output, "synth/a " + line)
+                self.unlisted(output)
+                self.assertIn(
+                    "::error::test gate failed: synth/a: the tests that go test skipped "
+                    "are not exactly the listed ones\n",
+                    output,
+                )
 
     def test_tests_that_ran_beside_a_listed_subtest_are_the_nearest_ones(self):
         # The line names what ran at the level of the listed subtest, not
@@ -738,11 +993,21 @@ class GateSkipsExactlyTheListedSubtest(GateCase):
             "synth/a: TestP/reg ran without the listed custody; beside it ran: nothing\n", output
         )
 
-    def test_this_step_cannot_see_what_else_an_entry_for_a_subtest_skips(self):
-        # go test reads the entry as the start of a path, so the subtests
-        # named "reg/custody" and "reg/identity" are skipped with "reg", and
-        # a skipped test leaves no trace. The still-failing step is what
-        # refuses these lines (ListedSubtestStandsForItselfAlone).
+
+class GateShowsEveryTestItSkipped(GateCase):
+    """The gate must skip the entries of a package and no other test.
+
+    go test reads a test path as the start of a path. The skip for TestP/reg
+    also covers every test whose path starts with "TestP/reg/", and a
+    skipped test leaves no trace in the output of go test. The observed run
+    of the gate writes down every test that go test skips, and the gate
+    fails unless those are exactly the entries.
+    """
+
+    def test_neighbours_named_like_subtests_of_the_listed_subtest(self):
+        # "reg/custody" and "reg/identity" are subtests of TestP, not of
+        # "reg". go test skips them with "reg". Whether the hidden one
+        # passes or holds a regression, the gate fails and names both.
         for custody in (PASS, FAIL):
             with self.subTest(custody=custody):
                 subtests = [
@@ -754,13 +1019,426 @@ class GateSkipsExactlyTheListedSubtest(GateCase):
                 output = self.check(
                     {"a": {"TestP": subtests}},
                     "synth/a TestP/reg\n",
-                    0,
+                    1,
                     {"synth/a.TestP", "synth/a.TestP/other"},
                 )
                 self.assertIn(
                     "synth/a: TestP ran without the listed reg; beside it ran: other pass\n",
                     output,
                 )
+                self.unlisted(
+                    output,
+                    ("synth/a TestP/reg/custody", "TestP/reg", "TestP"),
+                    ("synth/a TestP/reg/identity", "TestP/reg", "TestP"),
+                )
+                self.unskipped(output)
+                self.assertIn(
+                    "::error::test gate failed: synth/a: the tests that go test skipped "
+                    "are not exactly the listed ones\n",
+                    output,
+                )
+                self.assertNotIn("test gate passed", output)
+
+    def test_neighbour_that_starts_only_when_the_listed_subtest_did_not_fail(self):
+        # TestStop returns when its subtest "reg" fails, and only otherwise
+        # starts its subtest "reg/custody". The listed "reg" fails here, so
+        # no run of "reg" can show "reg/custody": the still-failing step
+        # passes. In the gate "reg" is skipped, TestStop goes on, and go
+        # test skips "reg/custody" with it. The observed run names it.
+        failing = {"a/stop_test.go": raw_test_file("a", STOPS_AFTER_REG % BODY[FAIL])}
+        listing = "synth/a TestStop/reg\n"
+        status, ran, output = run_gate("still-failing", {"a": {}}, listing, files=failing)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran, {"synth/a.TestStop", "synth/a.TestStop/reg"}, output)
+        output = self.check({"a": {}}, listing, 1, {"synth/a.TestStop"}, files=failing)
+        self.unlisted(output, ("synth/a TestStop/reg/custody", "TestStop/reg", "TestStop"))
+        self.unskipped(output)
+        # The hidden subtest is real: where "reg" passes it runs, and fails.
+        passing = {"a/stop_test.go": raw_test_file("a", STOPS_AFTER_REG % BODY[PASS])}
+        self.check(
+            {"a": {}},
+            "",
+            1,
+            {"synth/a.TestStop", "synth/a.TestStop/reg", "synth/a.TestStop/reg/custody"},
+            files=passing,
+        )
+
+    def test_subtest_added_under_an_existing_entry(self):
+        # What the third audit planted on the real tree: one more subtest
+        # whose name begins with the name of the listed subtest and "/".
+        subtests = PREFLIGHT + [("rejects missing tool/planted second subtest", FAIL)]
+        output = self.check({"a": {"TestPreflight": subtests}}, LISTED_SUBTEST, 1, PREFLIGHT_RAN)
+        self.unlisted(
+            output,
+            (
+                "synth/a TestPreflight/rejects_missing_tool/planted_second_subtest",
+                "TestPreflight/rejects_missing_tool",
+                "TestPreflight",
+            ),
+        )
+        self.unskipped(output)
+
+    def test_entry_that_names_no_test_and_covers_two(self):
+        # No subtest is called "reg". Two are called "reg/custody" and
+        # "reg/identity", and go test skips both for the line.
+        subtests = [("reg/custody", FAIL), ("reg/identity", PASS), ("other", PASS)]
+        output = self.check(
+            {"a": {"TestP": subtests}},
+            "synth/a TestP/reg\n",
+            1,
+            {"synth/a.TestP", "synth/a.TestP/other"},
+        )
+        self.unlisted(
+            output,
+            ("synth/a TestP/reg/custody", "TestP/reg", "TestP"),
+            ("synth/a TestP/reg/identity", "TestP/reg", "TestP"),
+        )
+        self.unskipped(output, "synth/a TestP/reg")
+
+    def test_neighbour_of_a_subtest_whose_own_name_holds_a_slash(self):
+        routes = [
+            ("get/v1", FAIL),
+            ("get/v1/jobs", FAIL),
+            ("get/v1/jobs/id", PASS),
+            ("get/v2", PASS),
+        ]
+        output = self.check(
+            {"a": {"TestRoutes": routes}},
+            "synth/a TestRoutes/get/v1\n",
+            1,
+            {"synth/a.TestRoutes", "synth/a.TestRoutes/get/v2"},
+        )
+        self.unlisted(
+            output,
+            ("synth/a TestRoutes/get/v1/jobs", "TestRoutes/get/v1", "TestRoutes"),
+            ("synth/a TestRoutes/get/v1/jobs/id", "TestRoutes/get/v1", "TestRoutes"),
+        )
+
+    def test_only_the_entries_that_cover_other_tests_are_named(self):
+        subtests = [("reg", FAIL), ("reg/custody", PASS), ("gov", FAIL), ("other", PASS)]
+        output = self.check(
+            {"a": {"TestP": subtests, "TestListed": FAIL}, "b": {"TestListed": FAIL}},
+            "synth/a TestP/reg\nsynth/a TestP/gov\nsynth/a TestListed\nsynth/b TestListed\n",
+            1,
+            {"synth/a.TestP", "synth/a.TestP/other"},
+        )
+        self.unlisted(output, ("synth/a TestP/reg/custody", "TestP/reg", "TestP"))
+        self.unskipped(output)
+
+    def test_what_a_test_does_not_start_is_not_skipped(self):
+        # TestShared starts "reg/custody" only when "reg" got past the point
+        # where it fails on this host. With "reg" skipped, and with "reg"
+        # failing, TestShared does not start it. No test is skipped that the
+        # list does not name, so both steps pass, as they would if go test
+        # could skip "reg" alone. Where "reg" passes, "reg/custody" runs.
+        shared = STARTS_AFTER_REG_GOT_THROUGH
+        failing = {"a/shared_test.go": raw_test_file("a", shared % BODY[FAIL])}
+        listing = "synth/a TestShared/reg\n"
+        output = self.check(
+            {"a": {}}, listing, 0, {"synth/a.TestShared", "synth/a.TestShared/other"}, files=failing
+        )
+        self.observed(output, "synth/a")
+        status, ran, output = run_gate("still-failing", {"a": {}}, listing, files=failing)
+        self.assertEqual(status, 0, output)
+        self.assertEqual(ran, {"synth/a.TestShared", "synth/a.TestShared/reg"}, output)
+        passing = {"a/shared_test.go": raw_test_file("a", shared % BODY[PASS])}
+        self.check(
+            {"a": {}},
+            "",
+            0,
+            {
+                "synth/a.TestShared",
+                "synth/a.TestShared/reg",
+                "synth/a.TestShared/reg/custody",
+                "synth/a.TestShared/other",
+            },
+            files=passing,
+        )
+
+    def test_subtests_of_a_listed_subtest_are_part_of_it(self):
+        # "reg" does not run in the gate, so its own subtests do not start
+        # and are not skipped. The still-failing step is what makes such an
+        # entry name the subtest that fails (ListedSubtestStandsForItselfAlone).
+        subtests = [("reg", [("custody", FAIL), ("identity", PASS)]), ("other", PASS)]
+        output = self.check(
+            {"a": {"TestP": subtests}},
+            "synth/a TestP/reg\n",
+            0,
+            {"synth/a.TestP", "synth/a.TestP/other"},
+        )
+        self.observed(output, "synth/a")
+
+    def test_only_a_package_with_an_entry_for_a_subtest_has_an_observed_run(self):
+        packages = {
+            "a": {"TestPreflight": PREFLIGHT, "TestListed": FAIL},
+            "b": {"TestListed": FAIL, "TestOther": PASS},
+            "c": {"TestPreflight": PREFLIGHT[:2]},
+            "d": {"TestOther": PASS},
+        }
+        ran = PREFLIGHT_RAN | {
+            "synth/b.TestOther",
+            "synth/c.TestPreflight",
+            "synth/c.TestPreflight/rejects_wrong_tool",
+            "synth/d.TestOther",
+        }
+        listing = (
+            LISTED_SUBTEST
+            + "synth/a TestListed\n"
+            + "synth/b TestListed\n"
+            + "synth/c TestPreflight/rejects_missing_tool\n"
+        )
+        output = self.check(packages, listing, 0, ran)
+        self.observed(output, "synth/a", "synth/c")
+        self.assertIn(
+            "synth/a: the observed run passed; go test skipped exactly the listed tests "
+            "of this package (2), each once\n",
+            output,
+        )
+        # A list without an entry for a subtest needs no observed run, and
+        # the gate does not ask which toolchain it runs on.
+        output = self.check(BASE, "synth/a TestListed\n", 0, BASE_RAN)
+        self.observed(output)
+
+    def test_observed_run_has_to_pass(self):
+        # TestOnce passes in the first run of the package and fails in the
+        # observed run. A run that fails is not taken as a record of what
+        # was skipped.
+        files = {"a/once_test.go": PASSES_ONCE}
+        output = self.check(
+            {"a": {"TestPreflight": PREFLIGHT}},
+            LISTED_SUBTEST,
+            1,
+            PREFLIGHT_RAN | {"synth/a.TestOnce"},
+            files=files,
+        )
+        self.observed(output, "synth/a")
+        self.assertIn("--- FAIL: TestOnce", output)
+        self.assertIn("::error::test gate failed: the observed run of synth/a\n", output)
+        self.unskipped(output)
+        self.unlisted(output)
+
+    def test_observed_run_has_to_run_every_test_that_is_not_listed(self):
+        # TestPortable runs in the first run of the package. In the observed
+        # run the test binary leaves it out. The entry is skipped there as
+        # listed, and still the run does not show that nothing else was
+        # skipped: a test that did not run reached none of its subtests.
+        packages = {"a": {"TestPreflight": PREFLIGHT, "TestPortable": PASS}}
+        output = self.check(
+            packages,
+            LISTED_SUBTEST,
+            1,
+            PREFLIGHT_RAN | {"synth/a.TestPortable"},
+            files={"a/main_test.go": RUNS_LESS_THE_SECOND_TIME},
+        )
+        self.observed(output, "synth/a")
+        self.assertIn(
+            "::error::test gate failed: observed run: synth/a: tests that are not listed "
+            "did not run: TestPortable\n",
+            output,
+        )
+        self.unskipped(output)
+        self.unlisted(output)
+
+    def test_every_run_of_the_gate_observes_again(self):
+        # Without -count=1 go test could replay the stored result of the
+        # observed run of the first gate run. A replayed run skips nothing
+        # and writes nothing down.
+        files = {"a/quiet_test.go": QUIET % {"package": "a", "mark": mark("a")}}
+        output = self.check(
+            {"a": {"TestPreflight": PREFLIGHT}},
+            LISTED_SUBTEST,
+            0,
+            PREFLIGHT_RAN | {"synth/a.TestQuiet"},
+            files=files,
+            runs=2,
+        )
+        self.observed(output, "synth/a")
+        self.assertNotIn("(cached)", output)
+
+    def test_test_binary_built_without_the_recording_fails_the_gate(self):
+        # If go test did not build the test binary with the changed file,
+        # nothing would be written down. The gate then fails for every
+        # entry, so a recording that does not work cannot pass for a run
+        # that skipped nothing else.
+        packages = {"a": {"TestPreflight": PREFLIGHT, "TestListed": FAIL}}
+        listing = LISTED_SUBTEST + "synth/a TestListed\n"
+        status, ran, output = run_gate("gate", packages, listing, go=NO_OVERLAY_GO)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(ran, PREFLIGHT_RAN, output)
+        self.unskipped(
+            output, "synth/a TestPreflight/rejects_missing_tool", "synth/a TestListed"
+        )
+        self.unlisted(output)
+
+    def test_another_toolchain_is_refused_before_any_test_runs(self):
+        packages = {"a": {"TestPreflight": PREFLIGHT}}
+        status, ran, output = run_gate("gate", packages, LISTED_SUBTEST, go=OTHER_VERSION_GO)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(ran, set(), output)
+        self.assertRegex(
+            output,
+            r"(?m)^::error::test gate: the observed run is written against go\S+, and the "
+            r"go command is go1\.0\.0\. Review ",
+        )
+        # The same Go version with another src/testing/match.go.
+        real = subprocess.run(
+            ["go", "env", "GOROOT"], stdout=subprocess.PIPE, check=True
+        ).stdout.decode("utf-8").strip()
+        with open(os.path.join(real, "src", "testing", "match.go")) as handle:
+            changed = handle.read() + "\n// One more line.\n"
+        status, ran, output = run_gate(
+            "gate",
+            packages,
+            LISTED_SUBTEST,
+            files={"testdata/goroot/src/testing/match.go": changed},
+            go=OTHER_GOROOT_GO,
+        )
+        self.assertEqual(status, 1, output)
+        self.assertEqual(ran, set(), output)
+        self.assertRegex(
+            output,
+            r"(?m)^::error::test gate: \S+/testdata/goroot/src/testing/match\.go is not the "
+            r"file of go\S+ that the observed run is written against: its SHA-256 is ",
+        )
+        # A go command that fails when asked is not taken at its word.
+        status, ran, output = run_gate("gate", packages, LISTED_SUBTEST, go=FAILING_ENV_GO)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(ran, set(), output)
+        self.assertIn("::error::test gate: go env GOVERSION GOROOT failed\n", output)
+        # A list without an entry for a subtest does not depend on that file.
+        for go in (OTHER_VERSION_GO, OTHER_GOROOT_GO, FAILING_ENV_GO):
+            with self.subTest(go=go):
+                status, ran, output = run_gate("gate", BASE, "synth/a TestListed\n", go=go)
+                self.assertEqual(status, 0, output)
+                self.assertEqual(ran, BASE_RAN, output)
+
+    def test_held_file_has_to_drop_skipped_tests_in_exactly_one_place(self):
+        # The gate adds its call by replacing one exact piece of text. The
+        # SHA-256 that it holds is that of a file with exactly one such
+        # place, so this cannot happen with the gate as it is. It is for the
+        # day that value is set for the file of another Go version. A file
+        # without that place would be built with no call in it, and a file
+        # with two of them with a call that the review did not see. The gate
+        # stops before any test runs.
+        with open(GATE) as handle:
+            gate = handle.read()
+        held = re.findall(r'(?m)^MATCH_GO_SHA256 = "([0-9a-f]{64})"$', gate)
+        self.assertEqual(len(held), 1, held)
+        real = subprocess.run(
+            ["go", "env", "GOROOT"], stdout=subprocess.PIPE, check=True
+        ).stdout.decode("utf-8").strip()
+        with open(os.path.join(real, "src", "testing", "match.go")) as handle:
+            stock = handle.read()
+        place = "\tif skip && !partialSkip {\n\t\treturn name, false, false\n\t}\n"
+        self.assertEqual(stock.count(place), 1)
+        again = (
+            "\nfunc again(skip, partialSkip bool, name string) (string, bool, bool) {\n"
+            + place
+            + "\treturn name, true, false\n}\n"
+        )
+        packages = {"a": {"TestPreflight": PREFLIGHT}}
+        for places, changed in (
+            (0, stock.replace(place, place.replace("skip &&", "skip && true &&"))),
+            (1, stock + "\n// One more line.\n"),
+            (2, stock + again),
+        ):
+            with self.subTest(places=places):
+                self.assertEqual(changed.count(place), places)
+                digest = hashlib.sha256(changed.encode("utf-8")).hexdigest()
+                status, ran, output = run_gate(
+                    "gate",
+                    packages,
+                    LISTED_SUBTEST,
+                    files={"testdata/goroot/src/testing/match.go": changed},
+                    go=OTHER_GOROOT_GO,
+                    gate=gate.replace(held[0], digest),
+                )
+                if places == 1:
+                    # The gate takes the file whose hash it holds. The go
+                    # command still builds with its own file, so the overlay
+                    # replaces nothing and no entry is written down.
+                    self.assertEqual(status, 1, output)
+                    self.assertEqual(ran, PREFLIGHT_RAN, output)
+                    self.unskipped(output, "synth/a TestPreflight/rejects_missing_tool")
+                    continue
+                self.assertEqual(status, 1, output)
+                self.assertEqual(ran, set(), output)
+                self.assertRegex(
+                    output,
+                    r"(?m)^::error::test gate: \S+/testdata/goroot/src/testing/match\.go does "
+                    r"not drop skipped tests in exactly one place$",
+                )
+
+    def test_test_that_changes_its_environment_does_not_stop_the_recording(self):
+        # The test binary reads the name of the record once, when it starts.
+        files = {"a/clears_test.go": raw_test_file("a", CLEARS_THE_VARIABLE)}
+        output = self.check(
+            {"a": {}},
+            "synth/a TestClears/reg\n",
+            1,
+            {"synth/a.TestClears", "synth/a.TestClears/clears"},
+            files=files,
+        )
+        self.unlisted(output, ("synth/a TestClears/reg/custody", "TestClears/reg", "TestClears"))
+        self.unskipped(output)
+
+    def test_test_binary_started_by_a_test_writes_into_the_same_record(self):
+        # A test that runs its own test binary hands it the environment. If
+        # it also hands it a -test.skip, what that binary skips is written
+        # down too. The gate does not guess which names came from where.
+        packages = {"a": {"TestP": [("reg", FAIL), ("other", PASS)]}}
+        ran = {"synth/a.TestP", "synth/a.TestP/other", "synth/a.TestSpawns"}
+        listing = "synth/a TestP/reg\n"
+        files = {"a/spawn_test.go": RUNS_ITS_OWN_BINARY % ("^TestSpawns$", "^TestSpawns$")}
+        output = self.check(packages, listing, 1, ran, files=files)
+        self.unlisted(output, ("synth/a TestSpawns", None, None))
+        self.unskipped(output)
+        files = {"a/spawn_test.go": RUNS_ITS_OWN_BINARY % ("^TestP$", "^TestP$/^reg$")}
+        output = self.check(packages, listing, 1, ran, files=files)
+        self.unlisted(output)
+        self.unskipped(output)
+        self.assertIn(
+            "::error::the observed run of synth/a wrote down a skipped test more than "
+            "once: TestP/reg\n",
+            output,
+        )
+        # Without a -test.skip of its own that binary writes nothing down.
+        files = {"a/spawn_test.go": RUNS_ITS_OWN_BINARY % ("^TestP$/^other$", "")}
+        output = self.check(packages, listing, 0, ran, files=files)
+        self.observed(output, "synth/a")
+
+    def test_record_that_a_test_meddled_with_is_not_taken(self):
+        reg = function("reg", FAIL, 1)
+        deeds = (
+            # The record is removed after "reg/custody" was written down and
+            # before "reg" is. The next name cannot be written, which ends
+            # the test binary. A record that started again at that point
+            # would hold "reg" alone.
+            (
+                function("reg/custody", FAIL, 1),
+                REMOVES_THE_RECORD,
+                reg,
+                "the observed run of synth/a",
+            ),
+            # The record ends with text that has no line end after it.
+            (
+                reg,
+                ENDS_THE_RECORD_INSIDE_A_NAME,
+                "",
+                "the record of the observed run of synth/a ends inside a name",
+            ),
+        )
+        for before, deed, after, problem in deeds:
+            with self.subTest(problem=problem):
+                body = MEDDLES_WITH_THE_RECORD % {"before": before, "deed": deed, "after": after}
+                output = self.check(
+                    {"a": {}},
+                    "synth/a TestMeddles/reg\n",
+                    1,
+                    {"synth/a.TestMeddles", "synth/a.TestMeddles/meddles"},
+                    files={"a/meddles_test.go": raw_test_file("a", body)},
+                )
+                self.assertIn("::error::test gate failed: " + problem + "\n", output)
 
 
 class GateChecksWhatReallyRan(GateCase):
@@ -1249,12 +1927,14 @@ class ListedTestsMustStillFail(GateCase):
 
 
 class ListedSubtestStandsForItselfAlone(GateCase):
-    """An entry for a subtest must not take any other test out of the gate.
+    """An entry for a subtest must be the only test under its path.
 
     go test reads a test path as the start of a path. The skip for TestP/reg
     also covers every test whose path starts with "TestP/reg/". The gating
-    step cannot see that (GateSkipsExactlyTheListedSubtest), so this step
-    refuses the entry when its run starts any such test.
+    step fails when it skips such a test (GateShowsEveryTestItSkipped). This
+    step refuses the entry when its own run starts one. That also holds for
+    the subtests of the listed subtest itself, which do not start in the
+    gate: the entry has to name the narrowest test that fails.
     """
 
     mode = "still-failing"
@@ -1451,36 +2131,9 @@ class ListedSubtestStandsForItselfAlone(GateCase):
         self.wide(output, ("synth/a TestP/reg", "TestP/reg/custody", "TestP"))
         self.stale(output)
 
-    def test_limit_a_neighbour_that_starts_only_when_the_listed_subtest_passes(self):
-        # What no run can show, stated in go_test_gate.py and in the list.
-        # TestStop returns when its subtest "reg" fails, and only otherwise
-        # starts its subtest "reg/custody". The listed "reg" fails here, so
-        # "reg/custody" never starts in the run of the entry, and the gate
-        # skips it with "reg". Both steps pass. This case holds the limit
-        # down in the open: it fails on the day a run can show that subtest.
-        failing = {"a/stop_test.go": raw_test_file("a", STOPS_AFTER_REG % BODY[FAIL])}
-        listing = "synth/a TestStop/reg\n"
-        for mode, ran in (
-            ("gate", {"synth/a.TestStop"}),
-            ("still-failing", {"synth/a.TestStop", "synth/a.TestStop/reg"}),
-        ):
-            with self.subTest(mode=mode):
-                status, got_ran, output = run_gate(mode, {"a": {}}, listing, files=failing)
-                self.assertEqual(status, 0, output)
-                self.assertEqual(got_ran, ran, output)
-        # The hidden subtest is real: where "reg" passes it runs, and fails.
-        passing = {"a/stop_test.go": raw_test_file("a", STOPS_AFTER_REG % BODY[PASS])}
-        status, got_ran, output = run_gate("gate", {"a": {}}, "", files=passing)
-        self.assertEqual(status, 1, output)
-        self.assertEqual(
-            got_ran,
-            {"synth/a.TestStop", "synth/a.TestStop/reg", "synth/a.TestStop/reg/custody"},
-            output,
-        )
-
     def test_subtests_that_a_listed_subtest_does_not_reach_are_part_of_it(self):
-        # The harmless kind of what no run can show. The listed "reg" fails
-        # before it starts its own subtest "custody". That subtest is part of
+        # The listed "reg" fails before it starts its own subtest "custody",
+        # so the run of the entry does not show that subtest. It is part of
         # "reg": nothing but "reg" is lost with it, as for a whole listed
         # test, and the rest of TestLate stays in the gate.
         failing = {"a/late_test.go": raw_test_file("a", STARTS_ITS_SUBTEST_LATE % BODY[FAIL])}

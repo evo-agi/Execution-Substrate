@@ -963,12 +963,16 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
 		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes",
 		"`.github/ci/go_test_gate.py` skips those entries, each only in the package it names",
+		"`go test` reads a test path as the start of a path, so the skip for a listed subtest also covers every test whose path starts with the path of that entry",
+		"a skipped test leaves no trace in the output",
+		"runs a package that has an entry for a subtest a second time, with a test binary that writes down every test that `-skip` drops",
+		"It fails the run unless those tests are exactly the entries of that package",
+		"For that one run `go test -overlay` builds the test binary with a copy of `src/testing/match.go` of the Go standard library, to which the gate adds the call that writes the name down",
+		"The installed toolchain is not changed, and no other run uses the copy",
+		"The gate makes the copy only from the file of the exact Go version that it names, so a change of the Go baseline has to review that file and change the gate in the same change",
 		"A second blocking step runs every entry in a `go test` of its own",
 		"It fails the run when an entry no longer fails on the runner",
-		"It also fails the run when the run of an entry for a subtest starts any other test",
-		"`go test` reads a test path as the start of a path and would skip that test together with the entry",
-		"No run can show a subtest that a test starts only when its listed subtest did not fail",
-		"The list file states that limit and the rule that covers it",
+		"It also fails the run when the run of an entry for a subtest starts another test under the path of that entry",
 		"`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before the tests",
 		"It also holds the workflow file by its SHA-256, so every edit of the workflow has to change that value in the same change",
 		"A green run is validation evidence for the committed tree on that runner image",
@@ -1006,6 +1010,13 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+ciWorkflowHold) {
 		t.Fatalf("the CI self-check does not hold .github/workflows/go.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(ciWorkflowHold))
 	}
+	// The observed run of the CI gate is written against one Go version and
+	// one file of its standard library. A change of the Go baseline has to
+	// come to this test, and so to these two values.
+	assertContainsAll(t, "Go CI gate observed-run toolchain", mustRead(t, ".github/ci/go_test_gate.py"),
+		"\nOBSERVED_GO_VERSION = \"go1.26.5\"\n",
+		"\nMATCH_GO_SHA256 = \"f28418759ed48c72821b5ecc3700041b74151108557618f50d355ea98a1bbebe\"\n",
+	)
 	for _, path := range []string{
 		".github/ci/environment-only-tests.txt",
 		".github/ci/go_test_gate.py",
