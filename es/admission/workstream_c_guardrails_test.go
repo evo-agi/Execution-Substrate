@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3724,11 +3725,14 @@ func productionStructDeclarationText(t *testing.T, pkg *typedProductionPackage, 
 }
 
 // repositoryProductionListings lists the files of every directory of the
-// repository from which the go command builds a package of this module, and
-// reads the non-test Go sources among them, whatever their build constraints.
-// The go command builds nothing from a directory named testdata or from one
-// whose name begins with a dot or an underscore, so those are left out; a
-// vendor directory or a nested module is not, and fails the file-set check.
+// repository and reads the non-test Go sources among them, whatever their
+// build constraints. No directory name is left out except .git, whose content
+// no commit can carry. A wildcard pattern such as ./... does not match a
+// directory named testdata or one whose name begins with a dot or an
+// underscore, but the go command compiles a package from such a directory as
+// soon as another package imports it, so those are read like every other. A
+// vendor directory or a nested module is read as well and fails the tree
+// check.
 func repositoryProductionListings(t *testing.T, root string) (map[string][]string, map[string]string) {
 	t.Helper()
 	listings := make(map[string][]string)
@@ -3743,7 +3747,7 @@ func repositoryProductionListings(t *testing.T, root string) (map[string][]strin
 		}
 		relative = filepath.ToSlash(relative)
 		if entry.IsDir() {
-			if name := entry.Name(); path != root && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+			if path != root && entry.Name() == ".git" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -3789,11 +3793,29 @@ func operationalGuardImportInventory(sources map[string]string) (map[string][]st
 	return inventory, nil
 }
 
+// operationalGuardImportPins names, for every production source file that
+// imports reflect, unsafe or C, those imports and the SHA-256 of the file. The
+// imports alone say which files can write storage past the typed inventories,
+// not what those files do with it. The hash makes every change to such a file
+// a change of this inventory.
+func operationalGuardImportPins(sources map[string]string) (map[string]string, error) {
+	inventory, err := operationalGuardImportInventory(sources)
+	if err != nil {
+		return nil, err
+	}
+	pins := make(map[string]string, len(inventory))
+	for name, imports := range inventory {
+		pins[name] = fmt.Sprintf("%s sha256:%x", strings.Join(imports, ","), sha256.Sum256([]byte(sources[name])))
+	}
+	return pins, nil
+}
+
 // The typed inventories cannot follow reflection, unsafe or cgo. This exact
 // inventory makes a new import of any of them a visible, reviewed change in
 // every production package of the module: a package that holds a pointer to an
 // owning type can write its storage through any of the three. It reads every
-// non-test source file, whatever its build constraints.
+// non-test source file of every directory of the repository, whatever its
+// build constraints, and holds each listed file by the hash of its content.
 func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 	_, sources := repositoryProductionListings(t, repositoryRootForAdmissionGuard(t))
 	if len(sources) < 100 {
@@ -3804,16 +3826,16 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 			t.Fatalf("%s was not read", name)
 		}
 	}
-	want := map[string][]string{
-		"es/admission/execution_roots_darwin.go": {"unsafe"},
-		"es/runtimehelper/privilege_linux.go":    {"unsafe"},
+	want := map[string]string{
+		"es/admission/execution_roots_darwin.go": "unsafe sha256:ef4eb848684af759689740b9c7526dccff3a8c063fb3cf55485fa60ecd78531c",
+		"es/runtimehelper/privilege_linux.go":    "unsafe sha256:e7c05914ec8734e71d23147c99ed7a3c330110130f470a252c3835806e9f8c60",
 	}
-	got, err := operationalGuardImportInventory(sources)
+	got, err := operationalGuardImportPins(sources)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("reflect, unsafe and cgo import inventory changed: got %v want %v", got, want)
+		t.Fatalf("reflect, unsafe and cgo import inventory changed, or a listed file did: got %v want %v", got, want)
 	}
 	mutations := map[string]string{
 		"reflect":         "package admission\nimport \"reflect\"\nvar _ = reflect.TypeOf\n",
@@ -3824,16 +3846,18 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 		"cgo":             "package admission\nimport \"C\"\n",
 	}
 	for name, mutation := range mutations {
-		// In a guarded package, and in two packages that hold a pointer to an
-		// owning type without declaring one.
-		for _, added := range []string{"es/admission/added.go", "es/app/added.go", "cmd/es/added.go"} {
+		// In a guarded package, in two packages that hold a pointer to an
+		// owning type without declaring one, and in the directories that no
+		// wildcard pattern matches.
+		for _, added := range []string{"es/admission/added.go", "es/app/added.go", "cmd/es/added.go",
+			"es/app/testdata/added/added.go", "es/app/_added/added.go", "es/app/.added/added.go"} {
 			t.Run(name+" in "+filepath.Dir(added), func(t *testing.T) {
 				mutated := make(map[string]string, len(sources)+1)
 				for file, source := range sources {
 					mutated[file] = source
 				}
 				mutated[added] = mutation
-				got, err := operationalGuardImportInventory(mutated)
+				got, err := operationalGuardImportPins(mutated)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -3850,7 +3874,7 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 				mutated[file] = source
 			}
 			delete(mutated, known)
-			got, err := operationalGuardImportInventory(mutated)
+			got, err := operationalGuardImportPins(mutated)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3858,7 +3882,49 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 				t.Fatal("the inventory did not depend on the known unsafe import")
 			}
 		})
+		// The import list of the file is unchanged in both cases: only the hash
+		// can tell.
+		for name, change := range map[string]func(string) string{
+			"a function added to": func(source string) string { return source + "\nfunc zzAdded() {}\n" },
+			"one byte changed in": func(source string) string { return source + " " },
+		} {
+			t.Run(name+" "+known, func(t *testing.T) {
+				mutated := make(map[string]string, len(sources))
+				for file, source := range sources {
+					mutated[file] = source
+				}
+				mutated[known] = change(sources[known])
+				inventory, err := operationalGuardImportInventory(mutated)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(inventory[known], []string{"unsafe"}) {
+					t.Fatalf("the change altered the import list: %v", inventory[known])
+				}
+				got, err := operationalGuardImportPins(mutated)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reflect.DeepEqual(got, want) {
+					t.Fatal("a changed file that imports unsafe passed the inventory")
+				}
+			})
+		}
 	}
+	t.Run("a change to a file without such an import", func(t *testing.T) {
+		mutated := make(map[string]string, len(sources))
+		for file, source := range sources {
+			mutated[file] = source
+		}
+		mutated["es/app/app.go"] += "\nfunc zzAdded() {}\n"
+		got, err := operationalGuardImportPins(mutated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("a file without such an import is held by a hash: %v", got)
+		}
+	})
 }
 
 // validateGuardedProductionFileSet compares the entries of one directory with
@@ -3893,13 +3959,84 @@ func validateGuardedProductionFileSet(directory string, entries []string, loaded
 	return nil
 }
 
-// The typed inventories read the files go list selects for three build
-// targets. This test makes sure that is every production file of the module:
-// a file behind any other build constraint, a Go file in a directory go list
-// selects no package from, and an assembly, C or object file, fail it.
-func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
-	root := repositoryRootForAdmissionGuard(t)
-	views := loadTypedProductionPackages(t, "./...")
+// validateGuardedProductionTree applies the file-set check to every listed
+// directory of a repository, in both directions, and refuses the two files
+// that make the go command compile a module from somewhere else: a workspace
+// file, and a go.mod below the root, which a replace line or a workspace
+// turns into part of the build.
+func validateGuardedProductionTree(listings map[string][]string, loaded map[string]bool) error {
+	for directory, entries := range listings {
+		for _, name := range entries {
+			if name == "go.work" || name == "go.work.sum" {
+				return fmt.Errorf("%s/%s is a workspace file: it changes which modules the go command compiles", directory, name)
+			}
+			if name == "go.mod" && directory != "." {
+				return fmt.Errorf("%s/go.mod declares a nested module, which no pattern of this module matches", directory)
+			}
+		}
+		if directory == "." {
+			// The repository root holds tests and documents only. Its paths
+			// have no directory part.
+			for _, name := range entries {
+				if err := validateGuardedProductionFileSet(".", []string{name}, map[string]bool{}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := validateGuardedProductionFileSet(directory, entries, loaded); err != nil {
+			return err
+		}
+	}
+	for name := range loaded {
+		if directory := filepath.ToSlash(filepath.Dir(name)); listings[directory] == nil {
+			return fmt.Errorf("%s was type-checked but its directory was not listed", name)
+		}
+	}
+	return nil
+}
+
+// goModDirectiveKinds returns the distinct keywords of the directives of a
+// go.mod file, sorted. A replace, exclude, toolchain, godebug, tool or ignore
+// directive changes what the go command compiles or how, so the kinds a
+// go.mod uses are held as an exact list.
+func goModDirectiveKinds(contents string) []string {
+	kinds := make(map[string]bool)
+	block := ""
+	for _, line := range strings.Split(contents, "\n") {
+		if comment := strings.Index(line, "//"); comment >= 0 {
+			line = line[:comment]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if block != "" {
+			if strings.HasPrefix(line, ")") {
+				block = ""
+				continue
+			}
+			kinds[block] = true
+			continue
+		}
+		keyword := line
+		if end := strings.IndexAny(line, " \t("); end >= 0 {
+			keyword = line[:end]
+		}
+		kinds[keyword] = true
+		if rest := strings.TrimSpace(strings.TrimPrefix(line, keyword)); strings.HasPrefix(rest, "(") && !strings.Contains(rest, ")") {
+			block = keyword
+		}
+	}
+	sorted := make([]string, 0, len(kinds))
+	for kind := range kinds {
+		sorted = append(sorted, kind)
+	}
+	sort.Strings(sorted)
+	return sorted
+}
+
+func typedProductionFileSet(views []typedProductionView) map[string]bool {
 	loaded := make(map[string]bool)
 	for _, view := range views {
 		for _, pkg := range view.packages {
@@ -3908,6 +4045,63 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 			}
 		}
 	}
+	return loaded
+}
+
+// writeGuardProbeModule writes a small module to a new directory and returns
+// its root with symbolic links resolved, as the go command reports it. The
+// files are named by their slash-separated path. A go.mod is added unless one
+// is given.
+func writeGuardProbeModule(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = filepath.Join(root, "module")
+	if _, ok := files["go.mod"]; !ok {
+		files["go.mod"] = guardProbeGoMod(t, "")
+	}
+	for name, contents := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// guardProbeGoMod is the go.mod of a probe module, with the go line of the
+// repository's own go.mod and the given further lines.
+func guardProbeGoMod(t *testing.T, more string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(repositoryRootForAdmissionGuard(t), "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		if strings.HasPrefix(line, "go ") {
+			return "module guardprobe\n\n" + line + "\n" + more
+		}
+	}
+	t.Fatal("the repository's go.mod has no go line")
+	return ""
+}
+
+// The typed inventories read the packages the go command compiles from the
+// repository for three build targets. This test makes sure that is every
+// production file in it: a file behind any other build constraint, a Go file
+// that no compiled package holds, whatever its directory is called, and an
+// assembly, C or object file, fail it. So do the forms that make the go
+// command compile from somewhere the inventories do not read: a directive of
+// go.mod other than the listed kinds, a workspace file and a nested module.
+func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
+	root := repositoryRootForAdmissionGuard(t)
+	views := loadTypedProductionPackages(t, "./...")
+	loaded := typedProductionFileSet(views)
 	listings, sources := repositoryProductionListings(t, root)
 	// The floor only shows that both sides were read at all. The comparison is
 	// the file-set check below, in both directions.
@@ -3915,30 +4109,21 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 		t.Fatalf("the typed loader read %d production sources, the listing holds %d", len(loaded), len(sources))
 	}
 	validate := func(listings map[string][]string) error {
-		for directory, entries := range listings {
-			if directory == "." {
-				// The repository root holds tests and documents only. Its paths
-				// have no directory part.
-				for _, name := range entries {
-					if err := validateGuardedProductionFileSet(".", []string{name}, map[string]bool{}); err != nil {
-						return err
-					}
-				}
-				continue
-			}
-			if err := validateGuardedProductionFileSet(directory, entries, loaded); err != nil {
-				return err
-			}
-		}
-		for name := range loaded {
-			if directory := filepath.ToSlash(filepath.Dir(name)); listings[directory] == nil {
-				return fmt.Errorf("%s was type-checked but its directory was not listed", name)
-			}
-		}
-		return nil
+		return validateGuardedProductionTree(listings, loaded)
 	}
 	if err := validate(listings); err != nil {
 		t.Fatal(err)
+	}
+	// A replace line makes the go command compile a module from a local
+	// directory or from another origin, an exclude line changes which version
+	// of a dependency it selects, and the other kinds change the toolchain or
+	// its settings. None exists today, so each is a reviewed change here.
+	goMod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := goModDirectiveKinds(string(goMod)), []string{"go", "module", "require"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("directive kinds of go.mod: got %v want %v", got, want)
 	}
 	for _, directory := range []string{"es/admission", "es/admission/internal/reliablesubmit", "es/app", "cmd/es"} {
 		if len(listings[directory]) == 0 {
@@ -3954,8 +4139,10 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 		return changed
 	}
 	// In a guarded package, in a package that holds a pointer to an owning
-	// type, in the repository root and in a directory without any package.
-	for _, directory := range []string{"es/admission", "es/app", ".", "es/admission/zzadded"} {
+	// type, in the repository root, in a directory without any package, and in
+	// the directories that no wildcard pattern matches.
+	for _, directory := range []string{"es/admission", "es/app", ".", "es/admission/zzadded",
+		"es/app/testdata/zzadded", "es/app/_zzadded", "es/app/.zzadded", "vendor/example.com/zzadded"} {
 		for name, added := range map[string]string{
 			"file behind a custom build tag": "zz_tagged.go",
 			"file for another platform":      "zz_windows.go",
@@ -4008,12 +4195,13 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 			t.Fatal("a listing without a type-checked directory passed")
 		}
 	})
-	t.Run("directories the go command does not build from", func(t *testing.T) {
-		// The rule is about the directories below the root. A checkout whose
-		// own directory has such a name is read like any other.
-		for _, rootName := range []string{"checkout", "_checkout", ".checkout", "testdata"} {
+	t.Run("every directory but .git is listed", func(t *testing.T) {
+		// A checkout whose own directory has any of these names is read like
+		// any other: only a .git below the root is left out.
+		for _, rootName := range []string{"checkout", "_checkout", ".checkout", "testdata", ".git"} {
 			scratch := filepath.Join(t.TempDir(), rootName)
-			for _, name := range []string{"pkg/kept.go", "pkg/kept_test.go", "pkg/testdata/fixture.go", "pkg/.hidden/hidden.go", "pkg/_ignored/ignored.go", "pkg/vendor/dep/dep.go", "top.go"} {
+			for _, name := range []string{"pkg/kept.go", "pkg/kept_test.go", "pkg/testdata/fixture.go", "pkg/.hidden/hidden.go", "pkg/_ignored/ignored.go",
+				"pkg/vendor/dep/dep.go", "pkg/.git/planted.go", ".git/planted/planted.go", "top.go"} {
 				if err := os.MkdirAll(filepath.Join(scratch, filepath.Dir(name)), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -4022,12 +4210,296 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 				}
 			}
 			listings, sources := repositoryProductionListings(t, scratch)
-			if want := map[string][]string{".": {"top.go"}, "pkg": {"kept.go", "kept_test.go"}, "pkg/vendor/dep": {"dep.go"}}; !reflect.DeepEqual(listings, want) {
+			if want := map[string][]string{".": {"top.go"}, "pkg": {"kept.go", "kept_test.go"}, "pkg/testdata": {"fixture.go"},
+				"pkg/.hidden": {"hidden.go"}, "pkg/_ignored": {"ignored.go"}, "pkg/vendor/dep": {"dep.go"}}; !reflect.DeepEqual(listings, want) {
 				t.Fatalf("root %s: listings: got %v want %v", rootName, listings, want)
 			}
-			if want := map[string]string{"top.go": "package p\n", "pkg/kept.go": "package p\n", "pkg/vendor/dep/dep.go": "package p\n"}; !reflect.DeepEqual(sources, want) {
+			if want := map[string]string{"top.go": "package p\n", "pkg/kept.go": "package p\n", "pkg/testdata/fixture.go": "package p\n",
+				"pkg/.hidden/hidden.go": "package p\n", "pkg/_ignored/ignored.go": "package p\n", "pkg/vendor/dep/dep.go": "package p\n"}; !reflect.DeepEqual(sources, want) {
 				t.Fatalf("root %s: sources: got %v want %v", rootName, sources, want)
 			}
+		}
+	})
+	t.Run("workspace files and nested modules", func(t *testing.T) {
+		for name, test := range map[string]struct {
+			directory, added string
+			refused          bool
+		}{
+			"workspace file at the root":          {".", "go.work", true},
+			"workspace sum at the root":           {".", "go.work.sum", true},
+			"workspace file below the root":       {"es/app", "go.work", true},
+			"nested module":                       {"es/app/testdata/zzmod", "go.mod", true},
+			"nested module in a production place": {"es/app", "go.mod", true},
+			"the module's own go.mod":             {".", "go.mod", false},
+			"the module's own go.sum":             {".", "go.sum", false},
+			"a go.sum below the root":             {"es/app", "go.sum", false},
+		} {
+			t.Run(name, func(t *testing.T) {
+				err := validate(with(test.directory, test.added))
+				if test.refused && err == nil {
+					t.Fatalf("%s/%s passed the tree check", test.directory, test.added)
+				}
+				if !test.refused && err != nil {
+					t.Fatalf("%s/%s was refused: %v", test.directory, test.added, err)
+				}
+			})
+		}
+	})
+	t.Run("directive kinds of go.mod", func(t *testing.T) {
+		const head = "module m\n\ngo 1.26\n\nrequire a v1.0.0\n"
+		for name, test := range map[string]struct {
+			contents string
+			want     []string
+		}{
+			"today's kinds":                  {head, []string{"go", "module", "require"}},
+			"require block":                  {head + "require (\n\tb v1.0.0\n\tc v1.0.0 // indirect\n)\n", []string{"go", "module", "require"}},
+			"replace line":                   {head + "replace a => ./local\n", []string{"go", "module", "replace", "require"}},
+			"replace line to another origin": {head + "replace a => example.com/fork v1.0.1\n", []string{"go", "module", "replace", "require"}},
+			"replace block":                  {head + "replace (\n\ta => ./local\n)\n", []string{"go", "module", "replace", "require"}},
+			"replace block without a space":  {head + "replace(\n\ta => ./local\n)\n", []string{"go", "module", "replace", "require"}},
+			"indented replace line":          {head + "\treplace a => ./local\n", []string{"go", "module", "replace", "require"}},
+			"replace line after a block":     {head + "require (\n\tb v1.0.0\n)\nreplace a => ./local\n", []string{"go", "module", "replace", "require"}},
+			"exclude line":                   {head + "exclude a v1.0.0\n", []string{"exclude", "go", "module", "require"}},
+			"toolchain line":                 {head + "toolchain go1.26.5\n", []string{"go", "module", "require", "toolchain"}},
+			"godebug line":                   {head + "godebug default=go1.21\n", []string{"go", "godebug", "module", "require"}},
+			"tool line":                      {head + "tool example.com/cmd\n", []string{"go", "module", "require", "tool"}},
+			"ignore line":                    {head + "ignore ./es/app\n", []string{"go", "ignore", "module", "require"}},
+			"retract line":                   {head + "retract v1.0.0\n", []string{"go", "module", "require", "retract"}},
+			"replace in a comment only":      {head + "// replace a => ./local\nrequire b v1.0.0 // replace\n", []string{"go", "module", "require"}},
+			"windows line ends":              {"module m\r\ngo 1.26\r\nreplace a => ./local\r\n", []string{"go", "module", "replace"}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				if got := goModDirectiveKinds(test.contents); !reflect.DeepEqual(got, test.want) {
+					t.Fatalf("got %v want %v", got, test.want)
+				}
+			})
+		}
+	})
+	t.Run("packages are selected by their directory", func(t *testing.T) {
+		const repository, cache = "/work/repository", "/home/go/pkg/mod"
+		closure := map[string]goListProductionPackage{
+			"fmt":                             {ImportPath: "fmt", Dir: "/usr/local/go/src/fmt", Standard: true, DepOnly: true},
+			"example.com/dep":                 {ImportPath: "example.com/dep", Dir: cache + "/example.com/dep@v1.0.0", DepOnly: true},
+			"m/es/app":                        {ImportPath: "m/es/app", Dir: repository + "/es/app"},
+			"m/es/app/testdata/hidden":        {ImportPath: "m/es/app/testdata/hidden", Dir: repository + "/es/app/testdata/hidden", DepOnly: true},
+			"m/es/app/_hidden":                {ImportPath: "m/es/app/_hidden", Dir: repository + "/es/app/_hidden", DepOnly: true},
+			"m/es/app/.hidden":                {ImportPath: "m/es/app/.hidden", Dir: repository + "/es/app/.hidden", DepOnly: true},
+			"nested/other":                    {ImportPath: "nested/other", Dir: repository + "/es/app/testdata/nested/other", DepOnly: true},
+			"m":                               {ImportPath: "m", Dir: repository},
+			"m/matched/by/a/narrower/pattern": {ImportPath: "m/dep", Dir: repository + "/dep", DepOnly: true},
+		}
+		names := func(selected []goListProductionPackage) []string {
+			var paths []string
+			for _, item := range selected {
+				paths = append(paths, item.ImportPath)
+			}
+			return paths
+		}
+		selected, err := selectCompiledRepositoryPackages(repository, cache, closure)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := names(selected), []string{"m", "m/dep", "m/es/app", "m/es/app/.hidden", "m/es/app/_hidden", "m/es/app/testdata/hidden", "nested/other"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("selected: got %v want %v", got, want)
+		}
+		for name, outside := range map[string]goListProductionPackage{
+			"a directory beside the repository":       {ImportPath: "other/pkg", Dir: "/work/other/pkg", DepOnly: true},
+			"a directory whose name extends the root": {ImportPath: "other/pkg", Dir: repository + "-copy/pkg", DepOnly: true},
+			"a directory above the repository":        {ImportPath: "other/pkg", Dir: "/work", DepOnly: true},
+			"no directory":                            {ImportPath: "other/pkg", DepOnly: true},
+			"a matched package outside":               {ImportPath: "m/outside", Dir: "/elsewhere/outside"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				changed := map[string]goListProductionPackage{"other/pkg": outside}
+				for path, item := range closure {
+					changed[path] = item
+				}
+				if selected, err := selectCompiledRepositoryPackages(repository, cache, changed); err == nil {
+					t.Fatalf("a package outside the repository and the module cache was accepted: %v", names(selected))
+				}
+			})
+		}
+		t.Run("a module cache inside the repository is not read", func(t *testing.T) {
+			inside := repository + "/.cache/mod"
+			changed := map[string]goListProductionPackage{"example.com/dep": {ImportPath: "example.com/dep", Dir: inside + "/example.com/dep@v1.0.0", DepOnly: true}}
+			for path, item := range closure {
+				if path != "example.com/dep" {
+					changed[path] = item
+				}
+			}
+			selected, err := selectCompiledRepositoryPackages(repository, inside, changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := names(selected); len(got) != 7 {
+				t.Fatalf("selected: %v", got)
+			}
+		})
+	})
+	// The rule on the real go command: a small module on disk whose ordinary
+	// package imports packages from the directories that no wildcard pattern
+	// matches. Each of them is compiled, so each has to be read by the loader,
+	// by the whole-value inventory of the other packages, by the import
+	// inventory and by the tree check.
+	const probeOwner = "package owner\n\ntype Service struct {\n\tlatch bool\n\tview  *int\n}\n\nfunc New() *Service { return &Service{} }\n"
+	const probeApp = "package app\n\nimport (\n\tdot \"guardprobe/app/.dot\"\n\tunder \"guardprobe/app/_under\"\n\t\"guardprobe/app/testdata/td\"\n\t\"guardprobe/owner\"\n)\n\nfunc Run(s *owner.Service) {\n\ttd.Reopen(s)\n\tunder.Keep(s)\n\tdot.Keep(s)\n}\n"
+	probeFiles := func() map[string]string {
+		return map[string]string{
+			"owner/owner.go": probeOwner,
+			"app/app.go":     probeApp,
+			// With reflect and unsafe.
+			"app/testdata/td/td.go": "package td\n\nimport (\n\t\"reflect\"\n\t\"unsafe\"\n\n\t\"guardprobe/owner\"\n)\n\nfunc Reopen(s *owner.Service) {\n\t_ = reflect.TypeOf(s)\n\t_ = unsafe.Pointer(s)\n\t*s = owner.Service{}\n}\n",
+			// Without either: a saved and restored whole value.
+			"app/_under/under.go": "package under\n\nimport \"guardprobe/owner\"\n\nfunc Keep(s *owner.Service) {\n\tsaved := *s\n\t*s = saved\n}\n",
+			// Without either: a holder by value.
+			"app/.dot/dot.go": "package dot\n\nimport \"guardprobe/owner\"\n\ntype holder struct{ value owner.Service }\n\nfunc Keep(s *owner.Service) { _ = holder{value: *s} }\n",
+		}
+	}
+	importPaths := func(view typedProductionView) []string {
+		var paths []string
+		for _, pkg := range view.packages {
+			paths = append(paths, pkg.importPath)
+		}
+		return paths
+	}
+	t.Run("packages compiled from directories that no pattern matches", func(t *testing.T) {
+		probeRoot := writeGuardProbeModule(t, probeFiles())
+		probeViews := loadTypedProductionPackagesAt(t, probeRoot, "./...")
+		if len(probeViews) != 3 {
+			t.Fatalf("loaded %d build targets", len(probeViews))
+		}
+		for _, view := range probeViews {
+			if got, want := importPaths(view), []string{"guardprobe/app", "guardprobe/app/.dot", "guardprobe/app/_under", "guardprobe/app/testdata/td", "guardprobe/owner"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s: selected %v want %v", view.target, got, want)
+			}
+		}
+		references := mergedForeignOwningStructReferences(t, probeViews, "guardprobe/owner", "Service")
+		if err := validateTypedFieldAccessInventory("probe Service outside its package", references, map[string]int{
+			// The conversion is the one to unsafe.Pointer.
+			"app/testdata/td/td.go:Reopen|whole-assign": 1, "app/testdata/td/td.go:Reopen|initializer": 1, "app/testdata/td/td.go:Reopen|whole-convert": 1,
+			"app/_under/under.go:Keep|whole-declare": 1, "app/_under/under.go:Keep|whole-read": 2, "app/_under/under.go:Keep|whole-assign": 1,
+			"app/.dot/dot.go:<package>|whole-declare": 1, "app/.dot/dot.go:Keep|whole-read": 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		probeListings, probeSources := repositoryProductionListings(t, probeRoot)
+		imports, err := operationalGuardImportInventory(probeSources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string][]string{"app/testdata/td/td.go": {"reflect", "unsafe"}}; !reflect.DeepEqual(imports, want) {
+			t.Fatalf("import inventory of the probe module: got %v want %v", imports, want)
+		}
+		if err := validateGuardedProductionTree(probeListings, typedProductionFileSet(probeViews)); err != nil {
+			t.Fatalf("the probe module, whose every file is compiled, was refused: %v", err)
+		}
+	})
+	t.Run("a Go file that no compiled package holds", func(t *testing.T) {
+		for _, added := range []string{"app/testdata/fixture/fixture.go", "app/_fixture/fixture.go", "app/.fixture/fixture.go", "app/testdata/td/zz_tagged.go"} {
+			files := probeFiles()
+			files[added] = "//go:build zzcustom\n\npackage fixture\n"
+			if strings.HasSuffix(added, "fixture.go") {
+				files[added] = "package fixture\n"
+			}
+			probeRoot := writeGuardProbeModule(t, files)
+			probeViews := loadTypedProductionPackagesAt(t, probeRoot, "./...")
+			probeListings, _ := repositoryProductionListings(t, probeRoot)
+			if err := validateGuardedProductionTree(probeListings, typedProductionFileSet(probeViews)); err == nil ||
+				!strings.Contains(err.Error(), added+" is built for none of the guarded targets") {
+				t.Fatalf("%s is read by no inventory and passed the tree check: %v", added, err)
+			}
+		}
+	})
+	t.Run("a nested module behind a replace line", func(t *testing.T) {
+		files := probeFiles()
+		files["go.mod"] = guardProbeGoMod(t, "\nrequire nested v0.0.0\n\nreplace nested => ./app/testdata/nested\n")
+		files["app/testdata/nested/go.mod"] = strings.Replace(guardProbeGoMod(t, "\nrequire guardprobe v0.0.0\n\nreplace guardprobe => ../../..\n"), "module guardprobe", "module nested", 1)
+		files["app/testdata/nested/nested.go"] = "package nested\n\nimport \"guardprobe/owner\"\n\nfunc Reopen(s *owner.Service) { *s = owner.Service{} }\n"
+		files["app/app.go"] = strings.Replace(strings.Replace(probeApp, "\t\"guardprobe/owner\"\n", "\t\"guardprobe/owner\"\n\t\"nested\"\n", 1), "\tdot.Keep(s)\n", "\tdot.Keep(s)\n\tnested.Reopen(s)\n", 1)
+		probeRoot := writeGuardProbeModule(t, files)
+		probeViews := loadTypedProductionPackagesAt(t, probeRoot, "./...")
+		for _, view := range probeViews {
+			if got, want := importPaths(view), []string{"guardprobe/app", "guardprobe/app/.dot", "guardprobe/app/_under", "guardprobe/app/testdata/td", "guardprobe/owner", "nested"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s: selected %v want %v", view.target, got, want)
+			}
+		}
+		count := 0
+		for _, reference := range mergedForeignOwningStructReferences(t, probeViews, "guardprobe/owner", "Service") {
+			if strings.HasPrefix(reference.site, "app/testdata/nested/nested.go:") {
+				count++
+			}
+		}
+		if count != 2 {
+			t.Fatalf("the nested module's overwrite of the owner is listed %d times, want 2", count)
+		}
+		probeListings, _ := repositoryProductionListings(t, probeRoot)
+		if err := validateGuardedProductionTree(probeListings, typedProductionFileSet(probeViews)); err == nil || !strings.Contains(err.Error(), "nested module") {
+			t.Fatalf("the nested module passed the tree check: %v", err)
+		}
+		if got, want := goModDirectiveKinds(files["go.mod"]), []string{"go", "module", "replace", "require"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("directive kinds: got %v want %v", got, want)
+		}
+	})
+	t.Run("a workspace file above the repository", func(t *testing.T) {
+		probeRoot := writeGuardProbeModule(t, probeFiles())
+		target := productionBuildTarget{goos: "linux", goarch: "amd64"}
+		if moduleCache, err := guardModuleCache(probeRoot, target); err != nil || !filepath.IsAbs(moduleCache) {
+			t.Fatalf("the probe module without a workspace: module cache %q: %v", moduleCache, err)
+		}
+		probeViews := loadTypedProductionPackagesAt(t, probeRoot, "./...")
+		workFile := filepath.Join(filepath.Dir(probeRoot), "go.work")
+		goLine := strings.SplitN(strings.SplitN(guardProbeGoMod(t, ""), "\n\n", 2)[1], "\n", 2)[0]
+		if err := os.WriteFile(workFile, []byte(goLine+"\n\nuse ./module\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := guardModuleCache(probeRoot, target); err == nil || !strings.Contains(err.Error(), "workspace mode through "+workFile) {
+			t.Fatalf("a workspace file above the repository was accepted: %v", err)
+		}
+		// The tree check cannot see it: it lists the repository only. That is
+		// why the loader asks the go command.
+		probeListings, _ := repositoryProductionListings(t, probeRoot)
+		if err := validateGuardedProductionTree(probeListings, typedProductionFileSet(probeViews)); err != nil {
+			t.Fatalf("the tree check saw a workspace file outside the repository: %v", err)
+		}
+		for name, test := range map[string]struct {
+			workspace string
+			refused   bool
+		}{
+			"none":           {"", false},
+			"switched off":   {"off", false},
+			"a file":         {"/work/go.work", true},
+			"a relative one": {"go.work", true},
+		} {
+			if err := validateGuardWorkspace(test.workspace); (err != nil) != test.refused {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+	})
+	t.Run("a package directory that is a symbolic link", func(t *testing.T) {
+		files := probeFiles()
+		probeRoot := writeGuardProbeModule(t, files)
+		target := filepath.Join(filepath.Dir(probeRoot), "elsewhere")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "linked.go"), []byte("package linked\n\nimport \"guardprobe/owner\"\n\nfunc Reopen(s *owner.Service) { *s = owner.Service{} }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(probeRoot, "app", "linked")); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+		app := strings.Replace(strings.Replace(probeApp, "\t\"guardprobe/owner\"\n", "\t\"guardprobe/app/linked\"\n\t\"guardprobe/owner\"\n", 1), "\tdot.Keep(s)\n", "\tdot.Keep(s)\n\tlinked.Reopen(s)\n", 1)
+		if err := os.WriteFile(filepath.Join(probeRoot, "app", "app.go"), []byte(app), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		probeViews := loadTypedProductionPackagesAt(t, probeRoot, "./...")
+		probeListings, _ := repositoryProductionListings(t, probeRoot)
+		if !typedProductionFileSet(probeViews)["app/linked/linked.go"] {
+			t.Fatal("the package behind the symbolic link was not read")
+		}
+		if err := validateGuardedProductionTree(probeListings, typedProductionFileSet(probeViews)); err == nil ||
+			!strings.Contains(err.Error(), "app/linked/linked.go was type-checked but its directory was not listed") {
+			t.Fatalf("a package compiled through a symbolic link passed the tree check: %v", err)
 		}
 	})
 }
@@ -4192,6 +4664,7 @@ type goListProductionPackage struct {
 	GoFiles     []string
 	TestGoFiles []string
 	DepOnly     bool
+	Standard    bool
 	Error       *struct {
 		Err string
 	}
@@ -4276,6 +4749,13 @@ func repositoryRootForAdmissionGuard(t *testing.T) string {
 
 func loadTypedProductionPackages(t *testing.T, patterns ...string) []typedProductionView {
 	t.Helper()
+	return loadTypedProductionPackagesAt(t, repositoryRootForAdmissionGuard(t), patterns...)
+}
+
+// loadTypedProductionPackagesAt loads the module rooted at one directory. The
+// guards read the repository; their self-tests read a small module on disk.
+func loadTypedProductionPackagesAt(t *testing.T, repositoryRoot string, patterns ...string) []typedProductionView {
+	t.Helper()
 	targets := []productionBuildTarget{
 		{goos: "darwin", goarch: "arm64"},
 		{goos: "linux", goarch: "amd64"},
@@ -4283,7 +4763,7 @@ func loadTypedProductionPackages(t *testing.T, patterns ...string) []typedProduc
 	}
 	views := make([]typedProductionView, 0, len(targets))
 	for _, target := range targets {
-		metadata := loadTypedProductionMetadata(t, target, patterns...)
+		metadata := loadTypedProductionMetadataAt(t, repositoryRoot, target, patterns...)
 		views = append(views, typedProductionView{
 			target:   target,
 			packages: metadata.typeCheckSelected(t),
@@ -4414,7 +4894,87 @@ func loadTypedProductionPackageView(t *testing.T, target productionBuildTarget, 
 
 func loadTypedProductionMetadata(t *testing.T, target productionBuildTarget, patterns ...string) *typedProductionMetadata {
 	t.Helper()
-	repositoryRoot := repositoryRootForAdmissionGuard(t)
+	return loadTypedProductionMetadataAt(t, repositoryRootForAdmissionGuard(t), target, patterns...)
+}
+
+// pathIsWithin reports whether a path is the directory or lies below it.
+func pathIsWithin(directory string, path string) bool {
+	relative, err := filepath.Rel(directory, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// selectCompiledRepositoryPackages names what the typed inventories read out
+// of one go list -deps closure: every package the go command compiles from a
+// directory of the repository. That is decided by the package's directory
+// alone. Whether a pattern matched the package (DepOnly) and what its import
+// path is do not count: a package in a testdata, dot or underscore directory
+// is matched by no wildcard pattern and is compiled when it is imported, and a
+// nested module behind a replace line has an import path of its own. A package
+// of the standard library or of the module cache is a dependency and is not
+// read. A package whose directory is anywhere else is refused, because
+// nothing would read it.
+func selectCompiledRepositoryPackages(repositoryRoot string, moduleCache string, closure map[string]goListProductionPackage) ([]goListProductionPackage, error) {
+	selected := make([]goListProductionPackage, 0)
+	for _, item := range closure {
+		switch {
+		case item.Standard:
+		case item.Dir == "":
+			return nil, fmt.Errorf("go list reports no directory for %s", item.ImportPath)
+		case pathIsWithin(moduleCache, item.Dir):
+		case pathIsWithin(repositoryRoot, item.Dir):
+			selected = append(selected, item)
+		default:
+			return nil, fmt.Errorf("%s is compiled from %s, which is neither in the repository nor in the module cache: the typed inventories do not read it", item.ImportPath, item.Dir)
+		}
+	}
+	sort.Slice(selected, func(left int, right int) bool { return selected[left].ImportPath < selected[right].ImportPath })
+	return selected, nil
+}
+
+// guardModuleCache asks the go command, in the environment the typed loader
+// uses, for the module cache directory it applies in a directory. It fails
+// when the go command is in workspace mode there.
+func guardModuleCache(directory string, target productionBuildTarget) (string, error) {
+	command := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "env", "-json", "GOMODCACHE", "GOWORK")
+	command.Dir = directory
+	command.Env = productionGoListEnvironment(target)
+	output, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	var values struct {
+		GOMODCACHE string
+		GOWORK     string
+	}
+	if err := json.Unmarshal(output, &values); err != nil {
+		return "", err
+	}
+	if err := validateGuardWorkspace(values.GOWORK); err != nil {
+		return "", err
+	}
+	if values.GOMODCACHE == "" {
+		return "", errors.New("the go command reports no module cache directory")
+	}
+	return values.GOMODCACHE, nil
+}
+
+// validateGuardWorkspace refuses a build in workspace mode. The go command
+// applies a go.work file of the repository or of any directory above it, or
+// the one the GOWORK variable names, and then compiles the modules that file
+// lists. The tree check sees only a workspace file inside the repository.
+func validateGuardWorkspace(workspace string) error {
+	if workspace != "" && workspace != "off" {
+		return fmt.Errorf("the go command is in workspace mode through %s: a workspace changes which modules it compiles", workspace)
+	}
+	return nil
+}
+
+func loadTypedProductionMetadataAt(t *testing.T, repositoryRoot string, target productionBuildTarget, patterns ...string) *typedProductionMetadata {
+	t.Helper()
+	moduleCache, err := guardModuleCache(repositoryRoot, target)
+	if err != nil {
+		t.Fatalf("read the go environment for %s: %v", target, err)
+	}
 	args := append([]string{"list", "-deps", "-export", "-json"}, patterns...)
 	goBinary := filepath.Join(runtime.GOROOT(), "bin", "go")
 	command := exec.Command(goBinary, args...)
@@ -4445,13 +5005,10 @@ func loadTypedProductionMetadata(t *testing.T, target productionBuildTarget, pat
 		metadata[item.ImportPath] = item
 	}
 
-	selected := make([]goListProductionPackage, 0)
-	for _, item := range metadata {
-		if !item.DepOnly && strings.HasPrefix(item.ImportPath, "execution-substrate/") {
-			selected = append(selected, item)
-		}
+	selected, err := selectCompiledRepositoryPackages(repositoryRoot, moduleCache, metadata)
+	if err != nil {
+		t.Fatalf("select production packages for %s: %v", target, err)
 	}
-	sort.Slice(selected, func(left int, right int) bool { return selected[left].ImportPath < selected[right].ImportPath })
 	if len(selected) == 0 {
 		t.Fatalf("no production packages selected for %v", patterns)
 	}

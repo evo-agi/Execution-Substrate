@@ -14023,7 +14023,10 @@ func operationalAdmissionOutcomeRule(owner string) bool {
 	return strings.Contains(owner, "| Retained original: signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
 		strings.Contains(owner, "| Retained evidence does not verify under the current verifier | `OperationalDenied`.") &&
 		strings.Contains(owner, "| First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |") &&
-		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |") &&
+		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled`. `OperationalTimeout` where the deadline of the call passes while the provider is asked about the job (below) | No, except while a durable marker is reconciled, where the stored run is returned (below) |") &&
+		strings.Contains(owner, "When the deadline of the call passes while the provider\nis asked about the job, the exchange reports `OperationalTimeout`") &&
+		strings.Contains(owner, "the result is the same\nambiguous one with the run") &&
+		strings.Contains(owner, "At the other three points, and before the marker,\na passed deadline answers `OperationalCanceled` like a cancellation.") &&
 		strings.Contains(owner, "The first five rows are value-free and withhold run and receipt at the\nrefused cut.") &&
 		strings.Contains(owner, "A cancelled call returns the stored run only while it reconciles a durable\nmarker: at the reconciliation entry, at the final sender entry, whose answer\narrives at that entry, during the observation of the job and at the binding\nof a completed observation.") &&
 		strings.Contains(owner, "a binding before the marker is value-free. So is the one from the\nverification of an accepted receipt, although run and receipt are durable") &&
@@ -14172,6 +14175,16 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "non-test Go file of the module is compiled for none of them") &&
 		strings.Contains(owner, "a statement assembled at run time is not seen") &&
 		strings.Contains(owner, "exact import inventory\ncovers every non-test source file of the module") &&
+		strings.Contains(owner, "A production package is chosen by the\ndirectory the go command compiles it from, not by a pattern or by its import\npath") &&
+		strings.Contains(owner, "compiles such a package when another one imports it, so it is read like every\nother") &&
+		strings.Contains(owner, "in the Go root nor in the module cache fails the loader") &&
+		strings.Contains(owner, "It reads every non-test Go file in every directory of the repository\nexcept `.git`, whatever the directory is called.") &&
+		strings.Contains(owner, "holds each file that has such an import by the SHA-256 of its content") &&
+		strings.Contains(owner, "The check lists every\ndirectory of the repository except `.git`") &&
+		strings.Contains(owner, "a directive of\n`go.mod` outside the exact list `go`, `module` and `require`, which refuses a\n`replace` line") &&
+		strings.Contains(owner, "a `go.work` file anywhere in the repository or above it") &&
+		strings.Contains(owner, "a `go.mod` below the repository root") &&
+		strings.Contains(owner, "the flags `-modfile` and `-overlay`") &&
 		!strings.Contains(owner, "only at an instantiation that names an owning type") &&
 		!strings.Contains(owner, "Their scope is these two") &&
 		!strings.Contains(owner, "of the two packages is compiled") &&
@@ -14273,6 +14286,11 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission generation, freshness and v1 removal",
 		"PR #12 durable admission: corrections after the second audit",
 		"PR #12 durable admission: corrections after the third audit",
+		"PR #12 durable admission: corrections after the fourth audit",
+		"The guard now chooses what it reads by the directory a package is compiled\nfrom",
+		"Its file-set check and its import inventory read every directory of the\nrepository except `.git`",
+		"is held in\nthe import inventory by the SHA-256 of its content",
+		"the answer is\n`OperationalTimeout` with the stored run",
 		"It lists every struct type written in the module whose field names,\norder and embedding equal an owning type's (`whole-mirror`)",
 		"at its declaration\n(`whole-constrain`)",
 		"which the\ncommissioning gate names as the prerequisite `CP-PUBLIC-MAPPING`",
@@ -14393,8 +14411,12 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"DenialReportedUnavailable", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalUnavailable` | No |"},
 		{"DenialNotLimitedToRetainedOriginals", "| Retained original: signer not allowed or revoked", "| Signer not allowed or revoked"},
 		{"FirstDeliveryReportedDenied", "an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |", "an unavailable dependency | `OperationalDenied`. Nothing is stored. | No |"},
-		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled` | No, except", "returned no refusal of its own in this call | `OperationalUnavailable` | No, except"},
-		{"CancelledAnswerNeverReturnsTheRun", "| `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |", "| `OperationalCanceled` | No |"},
+		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled`. `OperationalTimeout` where", "returned no refusal of its own in this call | `OperationalUnavailable`. `OperationalTimeout` where"},
+		{"CancelledAnswerNeverReturnsTheRun", "is asked about the job (below) | No, except while a durable marker is reconciled, where the stored run is returned (below) |", "is asked about the job (below) | No |"},
+		{"DeadlineAtTheObservationReportedCanceled", "`OperationalCanceled`. `OperationalTimeout` where the deadline of the call passes while the provider is asked about the job (below) |", "`OperationalCanceled` |"},
+		{"DeadlineAtTheObservationNotStated", "is asked about the job, the exchange reports `OperationalTimeout`", "is asked about the job, the exchange reports `OperationalCanceled`"},
+		{"DeadlineAtTheObservationWithholdsTheRun", "the result is the same\nambiguous one with the run", "the result is\nvalue-free"},
+		{"DeadlineReportedAsTimeoutEverywhere", "a passed deadline answers `OperationalCanceled` like a cancellation.", "a passed deadline answers `OperationalTimeout`."},
 		{"EveryRowValueFree", "The first five rows are value-free and withhold run and receipt at the\nrefused cut.", "Every row is value-free and withholds run and receipt at the refused cut."},
 		{"CancelledAnswerAlwaysReturnsTheRun", "returns the stored run only while it reconciles a durable\nmarker", "returns the stored run wherever a\nmarker"},
 		{"CancelledObservationBindingWithholdsTheRun", "during the observation of the job and at the binding\nof a completed observation.", "and during the observation of the job."},
@@ -14476,6 +14498,16 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingFileSetRule", "non-test Go file of the module is compiled for none of them"},
 		{"MissingRunTimeStatementLimit", "a statement assembled at run time is not seen"},
 		{"MissingImportInventory", "exact import inventory\ncovers every non-test source file of the module"},
+		{"MissingSelectionByDirectory", "A production package is chosen by the\ndirectory the go command compiles it from"},
+		{"MissingUnmatchedDirectoryRule", "so it is read like every\nother"},
+		{"MissingOutsideDirectoryRefusal", "in the Go root nor in the module cache fails the loader"},
+		{"MissingEveryDirectoryImportReading", "It reads every non-test Go file in every directory of the repository\nexcept `.git`"},
+		{"MissingContentPin", "holds each file that has such an import by the SHA-256 of its content"},
+		{"MissingEveryDirectoryFileSet", "The check lists every\ndirectory of the repository except `.git`"},
+		{"MissingDirectiveKindList", "outside the exact list `go`, `module` and `require`"},
+		{"MissingWorkspaceRefusal", "a `go.work` file anywhere in the repository or above it"},
+		{"MissingNestedModuleRefusal", "a `go.mod` below the repository root"},
+		{"MissingBuildInputLimit", "the flags `-modfile` and `-overlay`"},
 		{"MissingConfirmationInventory", "exactly one reference to `Service.confirmOperationalAdmission`"},
 		{"MissingAdmissionTableWriterInventory", "Exactly three store functions contain a statement that"},
 		{"MissingFiniteGuardLimit", "not a general proof of aliases or"},
@@ -14496,6 +14528,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"FileSetScopedToTwoPackages", "non-test Go file of the module is compiled for none of them", "non-test Go file of the two packages is compiled for none of them"},
 		{"ImportInventoryScopedToTwoPackages", "covers every non-test source file of the module", "covers every non-test source file of `es/admission` and the store package"},
 		{"MirrorRuleLimitedToFieldTypes", "whatever its field types and\ntags", "where its field types and\ntags are the owner's"},
+		{"PackagesChosenByPattern", "directory the go command compiles it from, not by a pattern or by its import\npath", "pattern `./...`, not by the directory the go command compiles it from"},
+		{"UnmatchedDirectoriesNotRead", "so it is read like every\nother", "and it is not\nread"},
+		{"ImportInventorySkipsDirectories", "in every directory of the repository\nexcept `.git`, whatever the directory is called", "in every directory that `./...` matches"},
+		{"ImportedFilesHeldByNameOnly", "by the SHA-256 of its content", "by its name"},
+		{"FileSetSkipsDirectories", "The check lists every\ndirectory of the repository except `.git`", "The check lists every\ndirectory that `./...` matches"},
+		{"ReplaceLineAllowed", "which refuses a\n`replace` line", "which allows a\n`replace` line"},
+		{"WorkspaceOnlyInsideTheRepository", "anywhere in the repository or above it", "at the repository root"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.Count(owner, tc.from) != 1 {

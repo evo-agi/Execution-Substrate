@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -3031,6 +3032,38 @@ func TestOperationalAdmissionFencesAnotherProcess(t *testing.T) {
 // operationalEndedCall is one call whose context a hook ends part way. at is
 // the stored state when the context ended, entered whether the final sender
 // entry had been reached by then.
+// operationalExpiringContext is a context with a deadline that a test lets
+// pass at a point of its choosing. Until then it is live. From then on it is
+// done and reports context.DeadlineExceeded, as a context made by
+// context.WithDeadline does once its time has come.
+type operationalExpiringContext struct {
+	context.Context
+	deadline time.Time
+	done     chan struct{}
+	expired  atomic.Bool
+}
+
+func newOperationalExpiringContext() *operationalExpiringContext {
+	return &operationalExpiringContext{Context: context.Background(), deadline: time.Now().Add(time.Hour), done: make(chan struct{})}
+}
+
+func (c *operationalExpiringContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func (c *operationalExpiringContext) Done() <-chan struct{} { return c.done }
+
+func (c *operationalExpiringContext) Err() error {
+	if c.expired.Load() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (c *operationalExpiringContext) expire() {
+	if c.expired.CompareAndSwap(false, true) {
+		close(c.done)
+	}
+}
+
 type operationalEndedCall struct {
 	f       *operationalFixture
 	d       *operationalDomain
@@ -3265,6 +3298,86 @@ func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
 			t.Fatal("the retry after the cancelled call returned another run")
 		}
 	})
+	// The fourth point where an ended call keeps the stored run: the marker
+	// is durable, the request was sent, and the context ends while the
+	// provider is asked about the job. This point alone tells a deadline from
+	// a cancellation, because the exchange reports which of the two ended it.
+	t.Run("during the observation of the job", func(t *testing.T) {
+		t.Run("cancelled", func(t *testing.T) {
+			c := operationalEndableCall(t, 0)
+			provider := c.d.provider
+			gets := 0
+			provider.exchangeEntry = func(method string) {
+				if method == http.MethodGet {
+					gets++
+					c.end()
+				}
+			}
+			defer func() { provider.exchangeEntry = nil }()
+			out := c.run()
+			provider.exchangeEntry = nil
+			c.assertCanceled(t, out)
+			if !c.ended || !c.entered || gets != 1 || c.at.Revision != 5 || c.at.Posts != 1 || c.at.Receipt ||
+				out.operation != reliablesubmit.OperationalMark || out.write != reliablesubmit.OperationalMarkerDirect {
+				t.Fatalf("cancelled during the observation: %s gets=%d at=%+v", operationalResultText(out), gets, c.at)
+			}
+			again := c.f.submit()
+			assertOperationalCompleted(t, c.f, again, "the retry after the cancelled call")
+			if again.run != out.run {
+				t.Fatal("the retry after the cancelled call returned another run")
+			}
+		})
+		t.Run("deadline passed", func(t *testing.T) {
+			c := operationalEndableCall(t, 0)
+			// The provider's answer is held back until the caller is gone, so
+			// the exchange cannot complete before the passed deadline reaches
+			// the request.
+			setMode := func(mode string) {
+				c.f.receiver.mu.Lock()
+				defer c.f.receiver.mu.Unlock()
+				c.f.receiver.mode = mode
+			}
+			setMode("observation-timeout")
+			ctx := newOperationalExpiringContext()
+			provider := c.d.provider
+			gets := 0
+			var at operationalPrestageState
+			provider.exchangeEntry = func(method string) {
+				if method == http.MethodGet {
+					gets++
+					at = operationalPrestageStateAt(t, c.f)
+					ctx.expire()
+				}
+			}
+			defer func() { provider.exchangeEntry = nil }()
+			started := time.Now()
+			out := c.f.service.handoffOperational(ctx, c.d, c.d.caller, c.f.raw)
+			elapsed := time.Since(started)
+			provider.exchangeEntry = nil
+			after := operationalPrestageStateAt(t, c.f)
+			// Whether the provider saw the request before the passed deadline
+			// reached it is not fixed; nothing else may differ.
+			after.Gets = at.Gets
+			// The provider bounds the exchange by itself after five seconds and
+			// reports that as a timeout too. This answer came earlier.
+			if !errors.Is(ctx.Err(), context.DeadlineExceeded) || elapsed >= 4*time.Second || gets != 1 {
+				t.Fatalf("the deadline did not end the exchange: err=%v elapsed=%s gets=%d", ctx.Err(), elapsed, gets)
+			}
+			if out.kind != operationalAmbiguous || out.reason != reliablesubmit.OperationalTimeout || out.run == "" || out.receipt.Valid() ||
+				out.operation != reliablesubmit.OperationalMark || out.write != reliablesubmit.OperationalMarkerDirect {
+				t.Fatalf("deadline passed during the observation: %s", operationalResultText(out))
+			}
+			if after != at || at.Revision != 5 || !at.Marker || at.Posts != 1 || at.Receipt {
+				t.Fatalf("deadline passed during the observation: at=%+v after=%+v", at, after)
+			}
+			setMode("")
+			again := c.f.submit()
+			assertOperationalCompleted(t, c.f, again, "the retry after the deadline")
+			if again.run != out.run {
+				t.Fatal("the retry after the deadline returned another run")
+			}
+		})
+	})
 	// Controls under a live context. The same steps fail for a reason of
 	// their own and report that reason, so the cancellation is not the
 	// answer of every binding that fails.
@@ -3340,11 +3453,6 @@ func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
 	})
 }
 
-// The audit's 7.5. Two parts of the digest are constant in every content a
-// Service can commission today: the verifier's algorithm, and the id and
-// entry count of the configured policy. Behaviour cannot tell whether they
-// are hashed, so the function is asked directly: two inputs that differ only
-// there must not share a digest.
 // operationalRefusingFromPolicy allows a claim until evaluation number from of
 // one call and refuses it from then on. It stands for rules that refuse a
 // retained claim at one chosen evaluation: the pre-check's, a cut's, or the one
@@ -3514,6 +3622,11 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 	})
 }
 
+// The audit's 7.5. Two parts of the digest are constant in every content a
+// Service can commission today: the verifier's algorithm, and the id and
+// entry count of the configured policy. Behaviour cannot tell whether they
+// are hashed, so the function is asked directly: two inputs that differ only
+// there must not share a digest.
 func TestOperationalAdmissionDigestFramesItsConstantParts(t *testing.T) {
 	f := makeOperationalFixture(t, "")
 	view := f.service.operationalAdmission

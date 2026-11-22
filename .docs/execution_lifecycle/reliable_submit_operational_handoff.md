@@ -606,7 +606,16 @@ today the one of `replayPresence`, so a new generic function or type there
 fails a test until it is listed.
 
 Each owning type is read in every production package of the module, not only
-in the package that declares it. Another package knows the owning type by its
+in the package that declares it. A production package is chosen by the
+directory the go command compiles it from, not by a pattern or by its import
+path: every package in the dependency closure of the module's packages whose
+directory lies inside the repository is read. A wildcard pattern such as
+`./...` does not match a package in a `testdata` directory or in a directory
+whose name begins with a dot or an underscore, and the go command still
+compiles such a package when another one imports it, so it is read like every
+other. A closure package compiled from a directory that is neither in the
+repository, in the Go root nor in the module cache fails the loader, because
+no inventory would read it. Another package knows the owning type by its
 shape. Every protected field is unexported, which a test holds, so another
 package cannot spell one: it can only declare, copy, convert, overwrite or
 instantiate with a whole value, and each of those is listed there under the
@@ -627,7 +636,16 @@ declaration or at its instantiation by the rules above;
 reflection; `unsafe`; and cgo. For the last three an exact import inventory
 covers every non-test source file of the module, so
 a new `reflect`, `unsafe` or `C` import in any production package fails a
-test. Reflection inside a called library function, on a pointer or container
+test. It reads every non-test Go file in every directory of the repository
+except `.git`, whatever the directory is called. The inventory
+holds each file that has such an import by the SHA-256 of its content, so
+every change to such a file fails a test until the inventory is updated. The
+import names which files can write storage past the typed inventories, and
+the hash shows that such a file is the one that was reviewed; neither reads
+what the file does. A `//go:linkname` directive, which reaches an unexported
+function of another package without naming it in Go syntax, is accepted by
+the compiler only in a file that imports `unsafe`, so it is held by the same
+inventory. Reflection inside a called library function, on a pointer or container
 passed to it as an interface value, is such a called body: it cannot set an
 unexported field by itself, and it can move or overwrite a whole value. The
 typed inventories
@@ -636,7 +654,19 @@ linux/arm64) compile with default build tags. A file-set check fails when a
 non-test Go file of the module is compiled for none of them, as behind
 a custom build tag or for another operating system or architecture, and when
 a production directory holds an assembly, C or object file, so no production
-file of the module is outside the inventories. Code outside the module, the
+file of the module is outside the inventories. The check lists every
+directory of the repository except `.git`, so a Go file that no compiled
+package holds fails it in a `testdata`, dot, underscore or `vendor` directory
+as anywhere else. Three forms make the go command compile a module from a
+place the inventories do not read, and each fails a test: a directive of
+`go.mod` outside the exact list `go`, `module` and `require`, which refuses a
+`replace` line; a `go.work` file anywhere in the repository or above it, and
+a workspace named by `GOWORK`; and a `go.mod` below the repository root. What
+a test of the repository cannot see is a build made with other inputs than
+the repository: the flags `-modfile` and `-overlay`, which `GOFLAGS` can
+carry as well, and a toolchain or a module cache whose content is not the
+published one. Code
+outside the module, the
 standard library and third-party dependencies, is not read. The table-writer inventory
 reads SQL statement literals; a statement assembled at run time is not seen
 by it, and the triggers of §2, not that inventory, are the barrier. The maintained guarantee is exact syntactic
@@ -681,7 +711,7 @@ or a first-effect cut.
 | No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |
 | Malformed or contradictory authenticated evidence; an existing original whose realm is not the domain's | `OperationalIntegrity` | No |
 | First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |
-| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |
+| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled`. `OperationalTimeout` where the deadline of the call passes while the provider is asked about the job (below) | No, except while a durable marker is reconciled, where the stored run is returned (below) |
 
 The first five rows are value-free and withhold run and receipt at the
 refused cut. The last row is value-free except at the points named below.
@@ -715,7 +745,12 @@ A cancelled call returns the stored run only while it reconciles a durable
 marker: at the reconciliation entry, at the final sender entry, whose answer
 arrives at that entry, during the observation of the job and at the binding
 of a completed observation. The result there is the ambiguous one, with the
-run and `OperationalCanceled`. A cancelled answer from a pre-check, a cut or
+run and `OperationalCanceled`. One of the four points tells a passed deadline
+from a cancellation. When the deadline of the call passes while the provider
+is asked about the job, the exchange reports `OperationalTimeout`, as it does
+when its own bound on that exchange passes, and the result is the same
+ambiguous one with the run. At the other three points, and before the marker,
+a passed deadline answers `OperationalCanceled` like a cancellation. A cancelled answer from a pre-check, a cut or
 a binding before the marker is value-free. So is the one from the
 verification of an accepted receipt, although run and receipt are durable
 there: the retry under a live context returns both.

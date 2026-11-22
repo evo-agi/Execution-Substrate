@@ -2,6 +2,43 @@
 
 ## Status
 
+### PR #12 durable admission: corrections after the fourth audit (2026-11-22)
+
+A fresh independent audit of the third repair
+`faacf16b9d5cd5ddc28b79da5c6c30f2bca6c124` accepted its production code and
+every correction of the third audit, and did not accept the candidate. The
+typed guard read only the packages that the pattern `./...` matches. The go
+command compiles a package from a `testdata` directory, or from a directory
+whose name begins with a dot or an underscore, as soon as another package
+imports it, so the statement of the entry below, that every production
+package and file of the module is read, did not hold for those. This entry
+corrects the candidate inside the same selected design; it selects nothing
+new and changes no production code.
+
+The guard now chooses what it reads by the directory a package is compiled
+from. It reads every package in the dependency closure of the module's
+packages whose directory lies inside the repository, whatever the directory
+is called and whatever the import path, and it fails on a closure package
+compiled from anywhere but the repository, the Go root and the module cache.
+Its file-set check and its import inventory read every directory of the
+repository except `.git`. Three forms that make the go command compile a
+module from an unread place fail a test: a directive of `go.mod` outside the
+exact list `go`, `module` and `require`, which refuses a `replace` line; a
+workspace file in the repository or above it; and a `go.mod` below the
+repository root. A file that imports `reflect`, `unsafe` or `C` is held in
+the import inventory by the SHA-256 of its content, so a change inside such a
+file is a reviewed change like a new import.
+
+One detail of the cancellation rules is stated and tested: when the deadline
+of a call passes while the provider is asked about the job, the answer is
+`OperationalTimeout` with the stored run, where a cancellation answers
+`OperationalCanceled` with the stored run.
+
+The precise rules are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This candidate requires a fresh independent audit of its complete committed
+bytes, and the red-team review of the combined PR #12 after it.
+
 ### PR #12 durable admission: corrections after the third audit (2026-11-22)
 
 A fresh independent audit of the second repair
