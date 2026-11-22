@@ -1,0 +1,78 @@
+# Build, vet and test the Go module on Linux.
+#
+# A pull_request run uses this file as it appears in the pull request's merge
+# commit, so a pull request can be checked before this file reaches its base.
+# Push runs cover trunk_dev after a merge.
+name: go
+
+on:
+  pull_request:
+  push:
+    branches:
+      - trunk_dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build, vet and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Use exactly the toolchain installed from go.mod and the committed
+      # go.sum; never download a different toolchain or rewrite go.mod.
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Show toolchain
+        run: go version
+
+      - name: Verify module downloads
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # TODO: port the environment-only tests below so they pass on a Linux
+      # runner without weakening them. In a non-root Linux simulation of this
+      # job they fail for host reasons, not code reasons:
+      #   es/admission/internal/reliablesubmit (need historical opener binaries
+      #   built from older trees plus an external probe overlay):
+      #     TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation (ES_REPLAY_SCHEMA3_PROBE)
+      #     TestSQLiteV3OldBinaryRefusesWithoutMutation (ES_REPLAY_PB1_PROBE)
+      #   execution-substrate root package, Remote Alpha operator-host tests
+      #   (macOS paths such as /private/tmp, the ds operator account,
+      #   root-owned witnesses or sudo-visible SPIRE paths):
+      #     TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+      #     TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+      #     TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+      #     TestRemoteAlphaOperatorByteStableUnicodeDelimiterMatrix
+      #     TestRemoteAlphaOperatorByteStableFalsePositiveMatrix
+      #     TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection
+      #     TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+      #     TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
+      #     TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+      #     TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+      #     TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+      #     TestRemoteAlphaESConfigTLSPrepRecordsDSSecurityWarningsWithoutFailing
+      - name: Test
+        run: go test -count=1 ./...
