@@ -2407,7 +2407,10 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 }
 
 func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *testing.T) {
-	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
+	// Every production package of the module is loaded: the field inventories
+	// read the package that declares each owning type, and the whole-value
+	// inventory of each owning type is read in all the others as well.
+	views := loadTypedProductionPackages(t, "./...")
 	type fieldInventory struct {
 		label      string
 		importPath string
@@ -2708,25 +2711,126 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 		{"operationalAdmissionProofHooks", "contextObserved", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
 		{"operationalAdmissionProofHooks", "skew", map[string]int{admission + "operationalConfirmationFresh|read": 2}},
 	}
+	const storePath = "execution-substrate/es/admission/internal/reliablesubmit"
+	const storeAdmission = "es/admission/internal/reliablesubmit/operational_admission.go:"
+	const storeHandoff = "es/admission/internal/reliablesubmit/operational_handoff.go:"
+	storeAccessInventories := []accessInventory{
+		// The seam that replaces the COMMIT of an admission write in the store's
+		// own tests. No production code sets it: the one place that makes a
+		// custody leaves it nil, and the admission write reads it twice.
+		{"OperationalCustody", "admissionCommit", map[string]int{
+			storeHandoff + "OpenProvisionedOperationalCustody|zero-initializer":  1,
+			storeAdmission + "OperationalCustody.operationalAdmissionWrite|read": 2,
+		}},
+	}
 	validateObject := func(views []typedProductionView, inventory fieldInventory) error {
 		references := mergedProductionReferences(t, views, inventory.importPath, func(pkg *typedProductionPackage) types.Object {
 			return requirePackageStructField(t, pkg, inventory.typeName, inventory.fieldName)
 		})
 		return validateTypedObjectReferenceInventory(inventory.label, references, inventory.want, true)
 	}
-	validateAccess := func(views []typedProductionView, field accessInventory) error {
-		references := mergedProductionReferences(t, views, admissionPath, func(pkg *typedProductionPackage) types.Object {
+	validateAccess := func(views []typedProductionView, importPath string, field accessInventory) error {
+		references := mergedProductionReferences(t, views, importPath, func(pkg *typedProductionPackage) types.Object {
 			return requirePackageStructField(t, pkg, field.owner, field.name)
 		})
 		return validateTypedFieldAccessInventory(field.owner+"."+field.name, references, field.want)
+	}
+	// An owning type is a struct with an inventoried field. The same rules
+	// hold for each of them.
+	type owner struct{ importPath, typeName string }
+	type accessOwner struct {
+		importPath string
+		field      accessInventory
+	}
+	var owners []owner
+	var accessFields []accessOwner
+	listed := make(map[owner]bool)
+	addOwner := func(key owner, fieldName string) {
+		if err := validateProtectedFieldName(key.importPath, key.typeName, fieldName); err != nil {
+			t.Fatal(err)
+		}
+		if !listed[key] {
+			listed[key] = true
+			owners = append(owners, key)
+		}
+	}
+	for _, inventory := range inventories {
+		addOwner(owner{inventory.importPath, inventory.typeName}, inventory.fieldName)
+	}
+	for _, field := range accessInventories {
+		addOwner(owner{admissionPath, field.owner}, field.name)
+		accessFields = append(accessFields, accessOwner{admissionPath, field})
+	}
+	for _, field := range storeAccessInventories {
+		addOwner(owner{storePath, field.owner}, field.name)
+		accessFields = append(accessFields, accessOwner{storePath, field})
+	}
+	// What the other packages of the module do with a whole value of an owning
+	// type. A type that is not named here has no such occurrence anywhere.
+	const replayPrivate = "es/admission/reliable_submit_replay_private.go:"
+	foreignInventories := map[owner]map[string]int{
+		// The admission package receives a seal permit from the store by value
+		// and hands it back to the store's publication call.
+		{storePath, "PrivateReplaySealPermit"}: {
+			replayPrivate + "Service.admitPrivateSyntheticReplay|whole-declare": 1, replayPrivate + "Service.admitPrivateSyntheticReplay|whole-read": 1,
+			replayPrivate + "Service.admitPrivateProgressReplay|whole-declare": 1, replayPrivate + "Service.admitPrivateProgressReplay|whole-read": 1,
+		},
+		// The progress permit holds a seal permit by value, so its one
+		// occurrence is listed for both.
+		{storePath, "ProgressSealPermit"}: {
+			replayPrivate + "Service.admitPrivateProgressReplay|whole-declare": 1, replayPrivate + "Service.admitPrivateProgressReplay|whole-read": 1,
+		},
+	}
+	validateForeign := func(views []typedProductionView, key owner) error {
+		want := foreignInventories[key]
+		if want == nil {
+			want = map[string]int{}
+		}
+		references := mergedForeignOwningStructReferences(t, views, key.importPath, key.typeName)
+		return validateTypedFieldAccessInventory(key.typeName+" outside "+key.importPath, references, want)
+	}
+	// The type parameters declared in the packages that declare an owning
+	// type. A generic body is the one place where code handles a value without
+	// naming its type, so each is a listed, reviewed declaration.
+	genericInventories := map[string][]string{
+		admissionPath: {"es/admission/reliable_submit_replay_intent.go:<package> type replayPresence[T any]"},
+	}
+	validateGenerics := func(views []typedProductionView, importPath string) error {
+		want := genericInventories[importPath]
+		if got := mergedTypeParameterDeclarations(t, views, importPath); !reflect.DeepEqual(got, append([]string{}, want...)) {
+			return fmt.Errorf("type parameter declarations of %s changed: got %q want %q", importPath, got, want)
+		}
+		return nil
 	}
 	for _, inventory := range inventories {
 		if err := validateObject(views, inventory); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, field := range accessInventories {
-		if err := validateAccess(views, field); err != nil {
+	for _, field := range accessFields {
+		if err := validateAccess(views, field.importPath, field.field); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for key := range foreignInventories {
+		if !listed[key] {
+			t.Fatalf("%s.%s has an inventory for other packages but no protected field", key.importPath, key.typeName)
+		}
+	}
+	declaringPackages := make(map[string]bool)
+	for _, key := range owners {
+		declaringPackages[key.importPath] = true
+		if err := validateForeign(views, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for importPath := range genericInventories {
+		if !declaringPackages[importPath] {
+			t.Fatalf("%s has a type parameter inventory but declares no owning type", importPath)
+		}
+	}
+	for _, importPath := range sortedStringSet(declaringPackages) {
+		if err := validateGenerics(views, importPath); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2736,21 +2840,6 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 	// without spelling a field or a value of it. The anonymous mirror is the
 	// text of the struct's own declaration, so it follows every change of it.
 	t.Run("storage aliases added to the real packages", func(t *testing.T) {
-		type owner struct{ importPath, typeName string }
-		var owners []owner
-		listed := make(map[owner]bool)
-		for _, inventory := range inventories {
-			if key := (owner{inventory.importPath, inventory.typeName}); !listed[key] {
-				listed[key] = true
-				owners = append(owners, key)
-			}
-		}
-		for _, field := range accessInventories {
-			if key := (owner{admissionPath, field.owner}); !listed[key] {
-				listed[key] = true
-				owners = append(owners, key)
-			}
-		}
 		view := views[len(views)-1]
 		control := make(map[string]map[string]string)
 		probes := make(map[string]map[string]string)
@@ -2770,20 +2859,40 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			declaredIn[key] = fileName
 			name := strings.ToUpper(key.typeName[:1]) + key.typeName[1:]
 			appendTo(control, pkg, fileName, fmt.Sprintf("func zzGuardProbeKeep%s(target *%s) *%s { return target }\n", name, key.typeName, key.typeName))
+			// Constrained names the owner only in a constraint, and Shape only
+			// writes a type of its shape: each is one rule on its own. Reach is
+			// the form of the third audit: a generic function that converts its
+			// type parameter, with no instantiation in the package.
 			appendTo(probes, pkg, fileName, fmt.Sprintf(
 				"func zzGuardProbeMirror%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); _ = mirror }\n"+
 					"func zzGuardProbeOverwrite%[1]s(target *%[2]s) { *(*%[3]s)(target) = %[3]s{} }\n"+
 					"func zzGuardProbeZero%[1]s[T any](v *T) { var z T; *v = z }\n"+
-					"func zzGuardProbeGeneric%[1]s(target *%[2]s) { zzGuardProbeZero%[1]s(target) }\n",
+					"func zzGuardProbeGeneric%[1]s(target *%[2]s) { zzGuardProbeZero%[1]s(target) }\n"+
+					"func zzGuardProbeConstrained%[1]s[S interface{ *%[2]s }](target S) S { return target }\n"+
+					"func zzGuardProbeShape%[1]s() { type shaped %[3]s; var _ *shaped }\n"+
+					"func zzGuardProbeReach%[1]s[S interface{ *%[2]s }](target S) { mirror := (*%[3]s)(target); _ = mirror }\n",
 				name, key.typeName, mirror))
-			// The two forms the second audit ran end to end against b6d2f77.
+			// The forms the second audit ran end to end against b6d2f77 (Write),
+			// and the generic forms the third audit ran against c41e177: one
+			// that clears the latches of the Service, one that reaches its view
+			// and one that rewrites the view, and one that clears the command
+			// latch of a store access. None is instantiated in its package.
 			switch key {
 			case owner{admissionPath, "operationalAdmissionSnapshot"}:
-				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%s(target *%s) { mirror := (*%s)(target); "+
+				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); "+
+					"mirror.trust.SignerPolicy.RevokedSigners = nil; mirror.trust.ArtifactPolicy.RevokedArtifacts = nil }\n"+
+					"func zzGuardProbeClear%[1]s[V interface{ *%[2]s }](target V) { mirror := (*%[3]s)(target); "+
 					"mirror.trust.SignerPolicy.RevokedSigners = nil; mirror.trust.ArtifactPolicy.RevokedArtifacts = nil }\n", name, key.typeName, mirror))
 			case owner{admissionPath, "Service"}:
-				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%s(target *%s) { mirror := (*%s)(target); "+
-					"mirror.operationalWithdrawn = false; mirror.operationalSuperseded = false; mirror.operationalConfirmed = time.Now() }\n", name, key.typeName, mirror))
+				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); "+
+					"mirror.operationalWithdrawn = false; mirror.operationalSuperseded = false; mirror.operationalConfirmed = time.Now() }\n"+
+					"func zzGuardProbeReopen%[1]s[S interface{ *%[2]s }](target S) { mirror := (*%[3]s)(target); "+
+					"mirror.operationalWithdrawn = false; mirror.operationalSuperseded = false; mirror.operationalConfirmed = time.Now() }\n"+
+					"func zzGuardProbeView%[1]s[S interface{ *%[2]s }](target S) *operationalAdmissionSnapshot { return (*%[3]s)(target).operationalAdmission }\n",
+					name, key.typeName, mirror))
+			case owner{storePath, "OperationalAccess"}:
+				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeIdle%[1]s[A interface{ *%[2]s }](target A) { (*%[3]s)(target).busy.Store(false) }\n",
+					name, key.typeName, mirror))
 			}
 		}
 		overlaid := func(overlays map[string]map[string]string) []typedProductionView {
@@ -2800,8 +2909,8 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				t.Fatalf("control probe changed an inventory: %v", err)
 			}
 		}
-		for _, field := range accessInventories {
-			if err := validateAccess(kept, field); err != nil {
+		for _, field := range accessFields {
+			if err := validateAccess(kept, field.importPath, field.field); err != nil {
 				t.Fatalf("control probe changed an inventory: %v", err)
 			}
 		}
@@ -2820,12 +2929,32 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				}
 			}
 			want := map[string]int{
-				"zzGuardProbeMirror" + name + "|whole-convert":      1,
-				"zzGuardProbeOverwrite" + name + "|whole-convert":   1,
-				"zzGuardProbeGeneric" + name + "|whole-instantiate": 1,
+				"zzGuardProbeMirror" + name + "|whole-convert":        1,
+				"zzGuardProbeMirror" + name + "|whole-mirror":         1,
+				"zzGuardProbeOverwrite" + name + "|whole-convert":     1,
+				"zzGuardProbeOverwrite" + name + "|whole-mirror":      2,
+				"zzGuardProbeGeneric" + name + "|whole-instantiate":   1,
+				"zzGuardProbeConstrained" + name + "|whole-constrain": 1,
+				"zzGuardProbeShape" + name + "|whole-mirror":          1,
+				"zzGuardProbeReach" + name + "|whole-constrain":       1,
+				"zzGuardProbeReach" + name + "|whole-mirror":          1,
 			}
-			if key == (owner{admissionPath, "operationalAdmissionSnapshot"}) || key == (owner{admissionPath, "Service"}) {
+			var forms []string
+			switch key {
+			case owner{admissionPath, "operationalAdmissionSnapshot"}:
 				want["zzGuardProbeWrite"+name+"|whole-convert"] = 1
+				forms = []string{"Write", "Clear"}
+			case owner{admissionPath, "Service"}:
+				want["zzGuardProbeWrite"+name+"|whole-convert"] = 1
+				forms = []string{"Write", "Reopen", "View"}
+			case owner{storePath, "OperationalAccess"}:
+				forms = []string{"Idle"}
+			}
+			for _, form := range forms {
+				want["zzGuardProbe"+form+name+"|whole-mirror"] = 1
+				if form != "Write" {
+					want["zzGuardProbe"+form+name+"|whole-constrain"] = 1
+				}
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s probe occurrences: got %v want %v", label, got, want)
@@ -2834,8 +2963,108 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 		for _, inventory := range inventories {
 			requireRefused(inventory.label, owner{inventory.importPath, inventory.typeName}, inventory.fieldName, validateObject(aliased, inventory))
 		}
-		for _, field := range accessInventories {
-			requireRefused(field.owner+"."+field.name, owner{admissionPath, field.owner}, field.name, validateAccess(aliased, field))
+		for _, field := range accessFields {
+			requireRefused(field.field.owner+"."+field.field.name, owner{field.importPath, field.field.owner}, field.field.name, validateAccess(aliased, field.importPath, field.field))
+		}
+		// The probes declare type parameters, so the type parameter inventory
+		// of each package refuses them as well; the control declares none.
+		for _, importPath := range sortedStringSet(declaringPackages) {
+			if err := validateGenerics(kept, importPath); err != nil {
+				t.Fatalf("control probe changed the type parameter inventory: %v", err)
+			}
+			if err := validateGenerics(aliased, importPath); err == nil {
+				t.Fatalf("type parameter inventory of %s passed with generic probes in the package", importPath)
+			}
+		}
+	})
+	// The third audit reached an owning type from another package: a generic
+	// function declared beside the type and instantiated elsewhere, and a
+	// whole value written elsewhere. Probes of the second kind are added in
+	// memory to a package that imports the owner's.
+	t.Run("whole values of owning types added to other packages", func(t *testing.T) {
+		view := views[len(views)-1]
+		for _, host := range []struct {
+			owner                         owner
+			importPath, fileName, spelled string
+		}{
+			{owner{admissionPath, "Service"}, "execution-substrate/es/app", "es/app/app.go", "admission.Service"},
+			{owner{storePath, "OperationalCustody"}, admissionPath, "es/admission/reliable_submit_operational_handoff.go", "reliablesubmit.OperationalCustody"},
+			{owner{storePath, "OperationalAccess"}, admissionPath, "es/admission/reliable_submit_operational_handoff.go", "reliablesubmit.OperationalAccess"},
+			{owner{storePath, "PrivateReplaySealPermit"}, admissionPath, "es/admission/reliable_submit_operational_handoff.go", "reliablesubmit.PrivateReplaySealPermit"},
+		} {
+			t.Run(host.owner.typeName, func(t *testing.T) {
+				hostPackage := requireTypedProductionPackage(t, view.packages, host.importPath)
+				source, ok := hostPackage.sources[host.fileName]
+				if !ok {
+					t.Fatalf("%s is not a file of %s", host.fileName, host.importPath)
+				}
+				overlaid := func(text string) []typedProductionView {
+					packages := []*typedProductionPackage{view.metadata.typeCheckWithOverlay(t, host.importPath, map[string]string{host.fileName: source + "\n" + text})}
+					for _, pkg := range view.packages {
+						if pkg.importPath != host.importPath {
+							packages = append(packages, pkg)
+						}
+					}
+					return []typedProductionView{{target: view.target, packages: packages}}
+				}
+				kept := overlaid(fmt.Sprintf("func zzGuardProbeForeignKeep(target *%[1]s) *%[1]s { return target }\n", host.spelled))
+				if err := validateForeign(kept, host.owner); err != nil {
+					t.Fatalf("control probe changed the inventory: %v", err)
+				}
+				probed := overlaid(fmt.Sprintf(
+					"func zzGuardProbeForeignOverwrite(target *%[1]s) { *target = %[1]s{} }\n"+
+						"func zzGuardProbeForeignRestore(target *%[1]s) { saved := *target; *target = saved }\n"+
+						"func zzGuardProbeForeignZero[T any](v *T) { var z T; *v = z }\n"+
+						"func zzGuardProbeForeignGeneric(target *%[1]s) { zzGuardProbeForeignZero(target) }\n"+
+						"func zzGuardProbeForeignConstrained[S interface{ *%[1]s }](target S) S { return target }\n"+
+						"func zzGuardProbeForeignDefined(target *%[1]s) { type defined %[1]s; _ = (*defined)(target) }\n"+
+						"type zzGuardProbeForeignHolder struct{ inner %[1]s }\n",
+					host.spelled))
+				if err := validateForeign(probed, host.owner); err == nil {
+					t.Fatalf("whole values of %s in %s passed", host.spelled, host.importPath)
+				}
+				got := make(map[string]int)
+				for _, reference := range mergedForeignOwningStructReferences(t, probed, host.owner.importPath, host.owner.typeName) {
+					if strings.Contains(reference.site, ":zzGuardProbeForeign") {
+						got[strings.TrimPrefix(reference.site, host.fileName+":")+"|"+reference.accessKind]++
+					} else if reference.accessKind == "whole-declare" && strings.HasSuffix(reference.site, ":<package>") && filepath.Base(reference.position.Filename) == filepath.Base(host.fileName) {
+						got["<package>|"+reference.accessKind]++
+					}
+				}
+				want := map[string]int{
+					"zzGuardProbeForeignOverwrite|whole-assign":      1,
+					"zzGuardProbeForeignOverwrite|initializer":       1,
+					"zzGuardProbeForeignRestore|whole-declare":       1,
+					"zzGuardProbeForeignRestore|whole-read":          2,
+					"zzGuardProbeForeignRestore|whole-assign":        1,
+					"zzGuardProbeForeignGeneric|whole-instantiate":   1,
+					"zzGuardProbeForeignConstrained|whole-constrain": 1,
+					"zzGuardProbeForeignDefined|whole-convert":       1,
+					"<package>|whole-declare":                        1,
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("probe occurrences: got %v want %v", got, want)
+				}
+			})
+		}
+	})
+	t.Run("a protected field is unexported", func(t *testing.T) {
+		if err := validateProtectedFieldName("synthetic/admission", "Service", "trustModelVerified"); err != nil {
+			t.Fatalf("an unexported protected field was refused: %v", err)
+		}
+		for _, name := range []string{"TrustModelVerified", "Äußeres"} {
+			if err := validateProtectedFieldName("synthetic/admission", "Service", name); err == nil {
+				t.Fatalf("the exported protected field %s passed", name)
+			}
+		}
+	})
+	t.Run("an owning type has a field", func(t *testing.T) {
+		pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; type Service struct{ value int }; type Marker struct{}")
+		if err := validateOwningStructShape(pkg.importPath, "Service", owningStructShapeOf(pkg.importPath, requirePackageStruct(t, pkg, "Service"))); err != nil {
+			t.Fatalf("an owning type with a field was refused: %v", err)
+		}
+		if err := validateOwningStructShape(pkg.importPath, "Marker", owningStructShapeOf(pkg.importPath, requirePackageStruct(t, pkg, "Marker"))); err == nil {
+			t.Fatal("an owning type without fields passed")
 		}
 	})
 	t.Run("protected admission field access kinds", func(t *testing.T) {
@@ -3053,6 +3282,12 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			const holder = "type holder struct{ inner Service; n int }; "
 			const held = "fixture.go:<package>|whole-declare"
 			const zero = "func zero[T any](v *T){ var z T; *v = z }; "
+			// A type of another shape: it has one field name the owner has not.
+			const unrelated = "type unrelated struct{ value int; third int }; "
+			const phantom = "type phantom[T any] struct{ n int }; "
+			const mirrored = "fixture.go:<package>|whole-mirror"
+			const mirror = "fixture.go:f|whole-mirror"
+			const constrained = "fixture.go:f|whole-constrain"
 			for _, test := range []struct {
 				name, source string
 				want         map[string]int
@@ -3071,40 +3306,102 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				{"copy between pointers", "func f(a, b *Service){ *a = *b }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|whole-read": 1}},
 				{"range assignment target", "func f(list []Service, s *Service){ for _, *s = range list {} }", map[string]int{"fixture.go:f|whole-assign": 1}},
 				{"range definition", "func f(list []Service){ for _, v := range list { _ = &v } }", map[string]int{"fixture.go:f|whole-declare": 1}},
-				{"conversion from a same-shape type", twin + "func f(t *twin){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"conversion from an anonymous struct", "func f(t *struct{ value int; other int }){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"conversion to a pointer", twin + "func f(t *twin){ _ = (*Service)(t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
+				{"conversion from a same-shape type", twin + "func f(t *twin){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"conversion from an anonymous struct", "func f(t *struct{ value int; other int }){ _ = Service(*t) }", map[string]int{"fixture.go:f|whole-convert": 1, mirror: 1}},
+				{"conversion to a pointer", twin + "func f(t *twin){ _ = (*Service)(t) }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
 				{"conversion to a slice", "type listed []Service; func f(t []Service){ _ = listed(t) }", map[string]int{"fixture.go:f|whole-convert": 1}},
 				{"defined type over the owner", "type second Service; func f(a *second){ *a = second{} }", map[string]int{"fixture.go:f|whole-assign": 1, "fixture.go:f|zero-initializer": 1}},
 				{"conversion to a defined type over the owner", "type second Service; func f(s *Service){ _ = second(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1}},
 				// A conversion away from the owner. From a pointer it gives the same
 				// storage another type's field names; none of these spells a field
-				// or a value of the owner.
-				{"pointer conversion to a same-shape type", twin + "func f(s *Service){ (*twin)(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion to an anonymous struct", "func f(s *Service){ (*struct{ value int; other int })(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion to a tagged struct", "func f(s *Service){ (*struct{ value int `k:\"v\"`; other int })(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion kept in a variable", "func f(s *Service){ p := (*struct{ value int; other int })(s); p.value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"whole overwrite through a converted pointer", twin + "func f(s *Service){ *(*twin)(s) = twin{} }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion to a named pointer type", twin + "type twinPointer *twin; func f(s *Service){ twinPointer((*twin)(s)).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion from a named pointer type", twin + "type servicePointer *Service; func f(s servicePointer){ (*twin)((*Service)(s)).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 2}},
-				{"pointer conversion of a defined type over the owner", "type second Service; " + twin + "func f(s *second){ (*twin)(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"pointer conversion of the owner inside a holder", holder + twin + "func f(h *holder){ (*twin)(&h.inner).value = 1 }", map[string]int{held: 1, "fixture.go:f|whole-convert": 1}},
+				// or a value of the owner. Each needs a type of the owner's shape,
+				// which is listed where it is written, with or without the
+				// conversion.
+				{"pointer conversion to a same-shape type", twin + "func f(s *Service){ (*twin)(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"pointer conversion to an anonymous struct", "func f(s *Service){ (*struct{ value int; other int })(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirror: 1}},
+				{"pointer conversion to a tagged struct", "func f(s *Service){ (*struct{ value int `k:\"v\"`; other int })(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirror: 1}},
+				{"pointer conversion kept in a variable", "func f(s *Service){ p := (*struct{ value int; other int })(s); p.value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirror: 1}},
+				{"whole overwrite through a converted pointer", twin + "func f(s *Service){ *(*twin)(s) = twin{} }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"pointer conversion to a named pointer type", twin + "type twinPointer *twin; func f(s *Service){ twinPointer((*twin)(s)).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"pointer conversion from a named pointer type", twin + "type servicePointer *Service; func f(s servicePointer){ (*twin)((*Service)(s)).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 2, mirrored: 1}},
+				{"pointer conversion of a defined type over the owner", "type second Service; " + twin + "func f(s *second){ (*twin)(s).value = 1 }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"pointer conversion of the owner inside a holder", holder + twin + "func f(h *holder){ (*twin)(&h.inner).value = 1 }", map[string]int{held: 1, "fixture.go:f|whole-convert": 1, mirrored: 1}},
 				{"pointer conversion of a holder", holder + "func f(h *holder){ (*struct{ inner Service; n int })(h).inner.other = 1 }", map[string]int{held: 1, "fixture.go:f|whole-convert": 1, "fixture.go:f|whole-declare": 1}},
-				{"pointer conversion at package level", twin + "var kept *Service; var alias = (*twin)(kept)", map[string]int{"fixture.go:<package>|whole-convert": 1}},
-				{"pointer conversion to a type parameter", twin + "func f[T interface{ *twin }](s *Service) T { return T(s) }", map[string]int{"fixture.go:f|whole-convert": 1}},
-				{"conversion away by value", twin + "func f(s *Service){ _ = twin(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1}},
-				{"conversion away by value to an anonymous struct", "func f(s *Service){ _ = struct{ value int; other int }(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1}},
+				{"pointer conversion at package level", twin + "var kept *Service; var alias = (*twin)(kept)", map[string]int{"fixture.go:<package>|whole-convert": 1, mirrored: 1}},
+				{"pointer conversion to a type parameter", twin + "func f[T interface{ *twin }](s *Service) T { return T(s) }", map[string]int{"fixture.go:f|whole-convert": 1, mirrored: 1}},
+				{"conversion away by value", twin + "func f(s *Service){ _ = twin(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1, mirrored: 1}},
+				{"conversion away by value to an anonymous struct", "func f(s *Service){ _ = struct{ value int; other int }(*s) }", map[string]int{"fixture.go:f|whole-convert": 1, "fixture.go:f|whole-read": 1, mirror: 1}},
 				{"conversion of a value to an interface", "func f(s *Service) any { return any(*s) }", map[string]int{"fixture.go:f|whole-read": 1}},
 				// A generic body writes a value of its type parameter without spelling
 				// the owner. The instantiation is the place that names it.
 				{"generic function instantiated by inference", zero + "func f(s *Service){ zero(s) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
 				{"generic function instantiated explicitly", zero + "func f(s *Service){ zero[Service](s) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				// An instantiation is listed where the generic is named, called or
+				// not, and whether its type argument is written or inferred.
+				{"generic function taken as a value with a written type argument", zero + "func f() func(*Service) { return zero[Service] }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				{"generic function taken as a value with an inferred type argument", zero + "func f() func(*Service) { var h func(*Service) = zero; return h }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
 				{"generic function value instantiated by assignment", zero + "func f(s *Service){ var g func(*Service) = zero; g(s) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
-				{"generic function instantiated with a pointer to the owner", twin + "func away[S interface{ *Service }](s S) *twin { return (*twin)(s) }; func f(s *Service){ away(s).value = 1 }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				{"generic function instantiated with a pointer to the owner", twin + "func away[S interface{ *Service }](s S) *twin { return (*twin)(s) }; func f(s *Service){ away(s).value = 1 }", map[string]int{"fixture.go:f|whole-instantiate": 1, "fixture.go:away|whole-constrain": 1, mirrored: 1}},
 				{"generic function instantiated with a pointer to a pointer", zero + "func f(s **Service){ zero(s) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
 				{"generic function instantiated with a container of the owner", "func first[L ~[]E, E any](l L) *E { return &l[0] }; func f(list []Service){ _ = first(list) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
 				{"generic type instantiated with the owner", "type cell[T any] struct{ p *T }; func (c cell[T]) zero(){ var z T; *c.p = z }; func f(s *Service){ cell[Service]{p: s}.zero() }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
 				{"generic type instantiated with the owner at package level", "type cell[T any] struct{ p *T }; var kept cell[Service]", map[string]int{"fixture.go:<package>|whole-instantiate": 1}},
+				// Every type argument is read, not only the first or the last.
+				{"generic function with the owner as its first type argument only", "func pair[A, B any](a *A, b *B){}; func f(s *Service, n *int){ pair(s, n) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				{"generic function with the owner as its second type argument only", "func pair[A, B any](a *A, b *B){}; func f(s *Service, n *int){ pair(n, s) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				{"generic function with the owner as its middle type argument only", "func triple[A, B, C any](a *A, b *B, c *C){}; func f(s *Service, n *int){ triple(n, s, n) }", map[string]int{"fixture.go:f|whole-instantiate": 1}},
+				// A type parameter whose constraint names the owner. Its body
+				// handles the owner under the parameter's name, and the
+				// instantiation that names the owner can be written in any other
+				// package, so the parameter is listed where it is declared. None
+				// of these is instantiated here.
+				{"type parameter converted to a same-shape type", twin + "func f[S interface{ *Service }](s S) *twin { return (*twin)(s) }", map[string]int{constrained: 1, mirrored: 1}},
+				{"type parameter converted to an anonymous struct", "func f[S interface{ *Service }](s S){ _ = (*struct{ value int; other int })(s) }", map[string]int{constrained: 1, mirror: 1}},
+				{"type parameter converted with a write through it", "func f[S interface{ *Service }](s S){ (*struct{ value int; other int })(s).value = 1 }", map[string]int{constrained: 1, mirror: 1}},
+				{"type parameter converted with a whole overwrite through it", twin + "func f[S interface{ *Service }](s S){ *(*twin)(s) = twin{} }", map[string]int{constrained: 1, mirrored: 1}},
+				{"type parameter converted to a type parameter", twin + "func f[S interface{ *Service }, T interface{ *twin }](s S) T { return T(s) }", map[string]int{constrained: 1, mirrored: 1}},
+				{"generic type with a converting method", twin + "type box[S interface{ *Service }] struct{ s S }; func (b box[S]) away() *twin { return (*twin)(b.s) }", map[string]int{"fixture.go:<package>|whole-constrain": 1, "fixture.go:box.away|whole-constrain": 1, mirrored: 1}},
+				{"chain of two generic functions", twin + "func inner[S interface{ *Service }](s S) *twin { return (*twin)(s) }; func f[S interface{ *Service }](s S){ inner(s).value = 1 }", map[string]int{constrained: 1, "fixture.go:inner|whole-constrain": 1, mirrored: 1}},
+				{"type parameter constrained to the owner by value", "func f[S interface{ Service }](s *S){ var z S; *s = z }", map[string]int{constrained: 1}},
+				{"type parameter with an approximate pointer term", "func f[S interface{ ~*Service }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with an implicit constraint", "func f[S *Service](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with the owner in a union", unrelated + "func f[S interface{ *unrelated | *Service }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with a named constraint", "type pointing interface{ *Service }; func f[S pointing](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with an embedded constraint", "type pointing interface{ *Service }; func f[S interface{ comparable; pointing }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with a generic constraint", "type pointing[T any] interface{ *T }; func f[S pointing[Service]](s S) S { return s }", map[string]int{constrained: 1, "fixture.go:f|whole-instantiate": 1}},
+				{"second type parameter constrained to the owner", "func f[A any, S interface{ *Service }](a A, s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter constrained through another type parameter", "func f[T interface{ Service }, P interface{ *T }](p P){ var z T; *p = z }", map[string]int{constrained: 2}},
+				{"type parameter constrained to a slice of the owner", "func f[L interface{ ~[]Service }](l L) L { return l }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a pointer to a pointer", "func f[S interface{ **Service }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a map of pointers", "func f[M interface{ ~map[string]*Service }](m M) M { return m }", map[string]int{constrained: 1}},
+				{"type parameter constrained to an array of pointers", "func f[A interface{ ~[2]*Service }](a A) A { return a }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a channel of pointers", "func f[C interface{ ~chan *Service }](c C) C { return c }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a map keyed by pointers", "func f[M interface{ ~map[*Service]bool }](m M) M { return m }", map[string]int{constrained: 1}},
+				{"type parameter with the owner first in a union", unrelated + "func f[S interface{ *Service | *unrelated }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter with the owner in the middle of a union", unrelated + "func f[S interface{ *unrelated | *Service | *int }](s S) S { return s }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a struct that points to the owner", "func f[L interface{ struct{ inner *Service } }](l L) L { return l }", map[string]int{constrained: 1}},
+				{"type parameter constrained to a holder", holder + "func f[H interface{ *holder }](h H) H { return h }", map[string]int{held: 1, constrained: 1}},
+				{"type parameter of a generic type", "type box[S interface{ *Service }] struct{ s S }", map[string]int{"fixture.go:<package>|whole-constrain": 1}},
+				// A type argument is followed although the generic type does not
+				// use it: the instance still names the owner.
+				{"type parameter constrained to an instance that only names the owner", phantom + "func f[P interface{ *phantom[*Service] }](p P) P { return p }", map[string]int{constrained: 1, "fixture.go:f|whole-instantiate": 1}},
+				{"type parameter constrained to an alias of such an instance", phantom + "type aliased = phantom[*Service]; func f[P interface{ *aliased }](p P) P { return p }", map[string]int{constrained: 1, "fixture.go:<package>|whole-instantiate": 1}},
+				// A type that refers to itself is followed once.
+				{"type parameter constrained to a recursive type that points to the owner", "type node struct{ next *node; s *Service }; func f[N interface{ *node }](n N) N { return n }", map[string]int{constrained: 1}},
+				{"type parameter of a local generic function type", "func f(){ type local[S interface{ *Service }] struct{ s S }; var _ *local[*Service] }", map[string]int{constrained: 1, "fixture.go:f|whole-instantiate": 1}},
+				// A type of the owner's shape is listed where it is written,
+				// whether anything converts to it or not.
+				{"same-shape type on its own", twin + "func f(t *twin){ *t = twin{} }", map[string]int{mirrored: 1}},
+				{"pointer conversion between two same-shape types", twin + "type third struct{ value int; other int }; func f(t *twin){ (*third)(t).value = 1 }", map[string]int{mirrored: 2}},
+				{"same-shape type with other field types", "type near struct{ value string; other bool }", map[string]int{mirrored: 1}},
+				{"same-shape type with tags", "type near struct{ value int `k:\"v\"`; other int `k:\"w\"` }", map[string]int{mirrored: 1}},
+				{"generic same-shape type", "type near[T any] struct{ value T; other int }", map[string]int{mirrored: 1}},
+				{"generic same-shape type reached from a type parameter", "type near[T any] struct{ value T; other int }; func f[S interface{ *Service }](s S){ (*near[int])(s).value = 1 }", map[string]int{mirrored: 1, constrained: 1}},
+				{"same-shape type declared inside a function", "func f(){ type local struct{ value int; other int }; var _ *local }", map[string]int{mirror: 1}},
+				{"same-shape type as a field type", "type wrap struct{ inner *struct{ value int; other int } }", map[string]int{mirrored: 1}},
+				{"same-shape type as a parameter type", "func f(t *struct{ value int; other int }){}", map[string]int{mirror: 1}},
+				{"same-shape type in a constraint", "func f[T interface{ *struct{ value int; other int } }](s *Service) T { return T(s) }", map[string]int{mirror: 1, "fixture.go:f|whole-convert": 1}},
+				{"same-shape type in an alias declaration", "type near = struct{ value int; other int }", map[string]int{mirrored: 1}},
 				{"by-value parameter", "func f(v Service){}", map[string]int{"fixture.go:f|whole-declare": 1}},
 				{"unnamed by-value parameter", "func f(Service){}", map[string]int{"fixture.go:f|whole-declare": 1}},
 				{"unnamed by-value result", "func f(s *Service) Service { return *s }", map[string]int{"fixture.go:f|whole-declare": 1, "fixture.go:f|whole-read": 1}},
@@ -3147,10 +3444,22 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				{"slice of pointers", "func f(){ var list []*Service; _ = list }", map[string]int{}},
 				{"reslice", "func f(list []Service) []Service { return list[1:] }", map[string]int{}},
 				{"holder through a pointer", "type link struct{ inner *Service }; func f(l *link){ *l = link{} }", map[string]int{}},
-				{"unrelated same-shape type", twin + "func f(t *twin){ *t = twin{} }", map[string]int{}},
-				{"pointer conversion between unrelated same-shape types", twin + "type third struct{ value int; other int }; func f(t *twin){ (*third)(t).value = 1 }", map[string]int{}},
+				{"type of another shape", unrelated + "func f(t *unrelated){ *t = unrelated{} }", map[string]int{}},
+				{"pointer conversion between two types of another shape", unrelated + "type third struct{ value int; third int }; func f(t *unrelated){ (*third)(t).value = 1 }", map[string]int{}},
+				{"struct with the fields in another order", "type near struct{ other int; value int }", map[string]int{}},
+				{"struct with one field more", "type near struct{ value int; other int; more int }", map[string]int{}},
+				{"struct with one field fewer", "type near struct{ value int }", map[string]int{}},
+				{"struct with an embedded field of the same name", "type value int; type near struct{ value; other int }", map[string]int{}},
+				{"struct without fields", "type near struct{}", map[string]int{}},
+				{"alias of the owner", "type same = Service; func f(s *same) *Service { return s }", map[string]int{}},
 				{"pointer conversion to an interface", "func f(s *Service) any { return any(s) }", map[string]int{}},
-				{"generic function instantiated with another type", twin + zero + "func f(t *twin){ zero(t) }", map[string]int{}},
+				{"generic function instantiated with another type", unrelated + zero + "func f(t *unrelated){ zero(t) }", map[string]int{}},
+				{"type parameter without a type term", "func f[S any](s S) S { return s }", map[string]int{}},
+				{"type parameter constrained to another type", unrelated + "func f[S interface{ *unrelated }](s S) S { return s }", map[string]int{}},
+				{"type parameter constrained to a recursive type", "type ring struct{ next *ring }; func f[R interface{ *ring }](r R) R { return r }", map[string]int{}},
+				{"type parameter constrained to an instance that names another type", unrelated + phantom + "func f[P interface{ *phantom[*unrelated] }](p P) P { return p }", map[string]int{}},
+				{"type parameter constrained by a method that takes the owner", "func f[S interface{ take(*Service) }](s S) S { return s }", map[string]int{}},
+				{"type parameter constrained to a function type", "func f[F interface{ ~func(*Service) }](g F) F { return g }", map[string]int{}},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+owner+test.source)
@@ -3211,6 +3520,178 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				}
 			})
 		})
+		t.Run("whole-value occurrences of an owning struct in another package", func(t *testing.T) {
+			// The declaring package: an owning type with unexported fields, as
+			// every protected type has; one whose field names are all exported;
+			// and a generic type of the first one's shape, which that package's
+			// own inventory lists as a mirror.
+			declaring := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+
+				"type Service struct{ value int; other int }; type Open struct{ Value int; Other int }; type Pair[T any] struct{ value T; other int }")
+			const header = "package app; import admission \"synthetic/admission\"; var _ *admission.Service; "
+			const zero = "func zero[T any](v *T){ var z T; *v = z }; "
+			const holder = "type holder struct{ inner admission.Service; n int }; "
+			const held = "app.go:<package>|whole-declare"
+			const mirrored = "app.go:<package>|whole-mirror"
+			for _, test := range []struct {
+				name, owner, source string
+				want                map[string]int
+			}{
+				{"overwrite through a pointer", "Service", "func f(s *admission.Service){ *s = admission.Service{} }", map[string]int{"app.go:f|whole-assign": 1, "app.go:f|initializer": 1}},
+				{"saved and restored", "Service", "func f(s *admission.Service){ saved := *s; *s = saved }", map[string]int{"app.go:f|whole-declare": 1, "app.go:f|whole-read": 2, "app.go:f|whole-assign": 1}},
+				{"copy between pointers", "Service", "func f(a, b *admission.Service){ *a = *b }", map[string]int{"app.go:f|whole-assign": 1, "app.go:f|whole-read": 1}},
+				{"package variable", "Service", "var kept admission.Service", map[string]int{held: 1}},
+				{"new", "Service", "func f() *admission.Service { return new(admission.Service) }", map[string]int{"app.go:f|whole-declare": 1}},
+				{"pointer literal", "Service", "func f() *admission.Service { return &admission.Service{} }", map[string]int{"app.go:f|initializer": 1}},
+				{"by-value parameter", "Service", "func f(v admission.Service){}", map[string]int{"app.go:f|whole-declare": 1}},
+				{"field holding the owner by value", "Service", holder, map[string]int{held: 1}},
+				{"holder overwrite", "Service", holder + "func f(h *holder){ *h = holder{} }", map[string]int{held: 1, "app.go:f|whole-assign": 1, "app.go:f|zero-initializer": 1}},
+				{"embedded by value", "Service", "type outer struct{ admission.Service }", map[string]int{held: 1}},
+				{"slice make", "Service", "func f() []admission.Service { return make([]admission.Service, 1) }", map[string]int{"app.go:f|whole-declare": 1}},
+				{"builtin clear", "Service", "func f(list []admission.Service){ clear(list) }", map[string]int{"app.go:f|whole-copy": 1}},
+				{"conversion of a value to an interface", "Service", "func f(s *admission.Service) any { return *s }", map[string]int{"app.go:f|whole-read": 1}},
+				{"generic function instantiated with the owner", "Service", zero + "func f(s *admission.Service){ zero(s) }", map[string]int{"app.go:f|whole-instantiate": 1}},
+				{"generic type of the declaring package instantiated with the owner", "Service", "var kept *admission.Pair[admission.Service]", map[string]int{"app.go:<package>|whole-instantiate": 1}},
+				{"type parameter constrained to the owner", "Service", "func f[S interface{ *admission.Service }](s S) S { return s }", map[string]int{"app.go:f|whole-constrain": 1}},
+				{"defined type over the owner", "Service", "type second admission.Service; func f(s *admission.Service) *second { return (*second)(s) }", map[string]int{"app.go:f|whole-convert": 1}},
+				{"defined type over the owner by value", "Service", "type second admission.Service; var kept second", map[string]int{held: 1}},
+				// The declaring package's generic type has the owner's shape, so a
+				// pointer to the owner converts to a pointer to an instance of it.
+				{"pointer conversion to an instance of a generic same-shape type", "Service", "func f(s *admission.Service) *admission.Pair[int] { return (*admission.Pair[int])(s) }", map[string]int{"app.go:f|whole-convert": 1}},
+				// Another package can write a struct type of an owner's shape only
+				// when every field name of the owner is exported.
+				{"same-shape type of an owner with exported fields", "Open", "type twin struct{ Value int; Other int }", map[string]int{mirrored: 1}},
+				{"pointer conversion to a same-shape type of an owner with exported fields", "Open", "type twin struct{ Value int; Other int }; func f(o *admission.Open){ (*twin)(o).Value = 1 }", map[string]int{mirrored: 1, "app.go:f|whole-convert": 1}},
+				{"pointer conversion to an anonymous struct of an owner with exported fields", "Open", "func f(o *admission.Open){ (*struct{ Value int; Other int })(o).Value = 1 }", map[string]int{"app.go:f|whole-mirror": 1, "app.go:f|whole-convert": 1}},
+				{"unexported field names of another package", "Service", "type twin struct{ value int; other int }", map[string]int{}},
+				{"exported field names in another order", "Open", "type near struct{ Other int; Value int }", map[string]int{}},
+				{"pointer only", "Service", "func f(s *admission.Service) *admission.Service { return s }", map[string]int{}},
+				{"slice of pointers", "Service", "func f(list []*admission.Service) int { return len(list) }", map[string]int{}},
+				{"holder through a pointer", "Service", "type link struct{ inner *admission.Service }; func f(l *link){ *l = link{} }", map[string]int{}},
+				{"another type of the declaring package", "Service", "var kept admission.Open", map[string]int{}},
+				{"another owner of the declaring package", "Open", "var kept admission.Service", map[string]int{}},
+				{"generic function instantiated with another type", "Service", zero + "func f(o *admission.Open){ zero(o) }", map[string]int{}},
+				{"type parameter constrained to another type", "Service", "func f[S interface{ *admission.Open }](s S) S { return s }", map[string]int{}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					foreign := typeCheckSyntheticImportingPackage(t, "synthetic/app", "app.go", header+test.source, declaring)
+					target := owningStruct{shape: owningStructShapeOf(declaring.importPath, requirePackageStruct(t, declaring, test.owner))}
+					references := foreign.wholeValueOccurrences(target, nil, "synthetic/admission."+test.owner)
+					if err := validateTypedFieldAccessInventory(test.name, references, test.want); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+			// In the declaring package the shape alone does not make a value the
+			// owner's: only the owner's own struct does.
+			t.Run("the declaring package knows the owner by identity", func(t *testing.T) {
+				references := declaring.referencesTo(requirePackageStructField(t, declaring, "Service", "value"))
+				if err := validateTypedFieldAccessInventory("declaring", references, map[string]int{"fixture.go:<package>|whole-mirror": 1}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			// An owning struct without fields has no storage to reach, so no
+			// written struct type is its mirror, here or in another package.
+			t.Run("an owning struct without fields", func(t *testing.T) {
+				empty := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+
+					"type Marker struct{}; type other struct{}; var kept struct{}; func f(m *Marker) *other { return (*other)(m) }")
+				marker := requirePackageStruct(t, empty, "Marker")
+				if err := validateTypedFieldAccessInventory("declaring", empty.wholeValueReferences(marker, nil, "Marker"),
+					map[string]int{"fixture.go:f|whole-convert": 1}); err != nil {
+					t.Fatal(err)
+				}
+				foreign := typeCheckSyntheticImportingPackage(t, "synthetic/app", "app.go",
+					"package app; import admission \"synthetic/admission\"; var _ *admission.Marker; type twin struct{}; var kept struct{}", empty)
+				target := owningStruct{shape: owningStructShapeOf(empty.importPath, marker)}
+				if references := foreign.wholeValueOccurrences(target, nil, "synthetic/admission.Marker"); len(references) != 0 {
+					t.Fatalf("an owner without fields matched %v", references)
+				}
+			})
+			// What cannot be compared is not known to differ: a written struct
+			// type for which the type checker recorded no type is listed.
+			t.Run("a struct type without a recorded type", func(t *testing.T) {
+				const source = "package admission; type Service struct{ value int; other int }; type unrelated struct{ n int }"
+				recorded := typeCheckSyntheticProductionPackage(t, "fixture.go", source)
+				if err := validateTypedFieldAccessInventory("recorded", recorded.wholeValueReferences(requirePackageStruct(t, recorded, "Service"), nil, "Service"),
+					map[string]int{}); err != nil {
+					t.Fatal(err)
+				}
+				unrecorded := typeCheckSyntheticProductionPackage(t, "fixture.go", source)
+				removed := 0
+				for _, file := range unrecorded.files {
+					ast.Inspect(file, func(node ast.Node) bool {
+						if written, ok := node.(*ast.StructType); ok && len(written.Fields.List) == 1 {
+							delete(unrecorded.info.Types, written)
+							removed++
+						}
+						return true
+					})
+				}
+				if removed != 1 {
+					t.Fatalf("removed the recorded type of %d struct types, want 1", removed)
+				}
+				if err := validateTypedFieldAccessInventory("unrecorded", unrecorded.wholeValueReferences(requirePackageStruct(t, unrecorded, "Service"), nil, "Service"),
+					map[string]int{"fixture.go:<package>|whole-mirror": 1}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			// The inventory is the union over the build targets: an occurrence
+			// that one target alone compiles is listed, and one that every
+			// target compiles is listed once.
+			t.Run("an occurrence under one build target only", func(t *testing.T) {
+				clean := typeCheckSyntheticImportingPackage(t, "synthetic/app", "app.go", header, declaring)
+				written := typeCheckSyntheticImportingPackage(t, "synthetic/app", "app.go", header+"var kept admission.Service", declaring)
+				without := typedProductionView{packages: []*typedProductionPackage{declaring, clean}}
+				with := typedProductionView{packages: []*typedProductionPackage{declaring, written}}
+				for name, views := range map[string][]typedProductionView{
+					"first target": {with, without, without}, "middle target": {without, with, without}, "last target": {without, without, with},
+					"every target": {with, with, with},
+				} {
+					references := mergedForeignOwningStructReferences(t, views, "synthetic/admission", "Service")
+					if err := validateTypedFieldAccessInventory(name, references, map[string]int{held: 1}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if references := mergedForeignOwningStructReferences(t, []typedProductionView{without, without}, "synthetic/admission", "Service"); len(references) != 0 {
+					t.Fatalf("a package without an occurrence lists %v", references)
+				}
+			})
+		})
+		t.Run("type parameter declarations", func(t *testing.T) {
+			pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; type Service struct{ value int }; "+
+				"func plain(v int) int { return v }; func one[T any](v T) T { return v }; func two[K comparable, V interface{ *Service }](k K, v V){}; "+
+				"type cell[T any] struct{ v T }; func (c cell[T]) get() T { return c.v }; func (c *cell[T]) set(v T){ c.v = v }; "+
+				"func outer(){ type local[E any] []E; var _ local[int] }; type plainType struct{ v cell[int] }")
+			want := []string{
+				"fixture.go:<package> type cell[T any]",
+				"fixture.go:cell.get[T any]",
+				"fixture.go:cell.set[T any]",
+				"fixture.go:one[T any]",
+				"fixture.go:outer type local[E any]",
+				"fixture.go:two[K comparable]",
+				"fixture.go:two[V interface{*Service}]",
+			}
+			if got := pkg.typeParameterDeclarations(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("type parameter declarations: got %q want %q", got, want)
+			}
+			plain := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; type Service struct{ value int }; func plain(){}")
+			if got := plain.typeParameterDeclarations(); len(got) != 0 {
+				t.Fatalf("a package without type parameters lists %q", got)
+			}
+			// The inventory is the union over the build targets.
+			without := typedProductionView{packages: []*typedProductionPackage{plain}}
+			with := typedProductionView{packages: []*typedProductionPackage{pkg}}
+			for name, views := range map[string][]typedProductionView{
+				"first target": {with, without, without}, "middle target": {without, with, without}, "last target": {without, without, with},
+				"every target": {with, with, with},
+			} {
+				if got := mergedTypeParameterDeclarations(t, views, "synthetic/admission"); !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: type parameter declarations: got %q want %q", name, got, want)
+				}
+			}
+			if got := mergedTypeParameterDeclarations(t, []typedProductionView{without, without}, "synthetic/admission"); len(got) != 0 {
+				t.Fatalf("targets without type parameters list %q", got)
+			}
+		})
 	})
 }
 
@@ -3242,9 +3723,51 @@ func productionStructDeclarationText(t *testing.T, pkg *typedProductionPackage, 
 	return "", ""
 }
 
+// repositoryProductionListings lists the files of every directory of the
+// repository from which the go command builds a package of this module, and
+// reads the non-test Go sources among them, whatever their build constraints.
+// The go command builds nothing from a directory named testdata or from one
+// whose name begins with a dot or an underscore, so those are left out; a
+// vendor directory or a nested module is not, and fails the file-set check.
+func repositoryProductionListings(t *testing.T, root string) (map[string][]string, map[string]string) {
+	t.Helper()
+	listings := make(map[string][]string)
+	sources := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if entry.IsDir() {
+			if name := entry.Name(); path != root && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		directory := filepath.ToSlash(filepath.Dir(relative))
+		listings[directory] = append(listings[directory], entry.Name())
+		if strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sources[relative] = string(contents)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listings, sources
+}
+
 // operationalGuardImportInventory lists, for every production source file of
-// the guarded packages, the imports through which storage can be written
-// without any syntax the typed inventories classify.
+// the module, the imports through which storage can be written without any
+// syntax the typed inventories classify.
 func operationalGuardImportInventory(sources map[string]string) (map[string][]string, error) {
 	inventory := make(map[string][]string)
 	for name, source := range sources {
@@ -3267,32 +3790,24 @@ func operationalGuardImportInventory(sources map[string]string) (map[string][]st
 }
 
 // The typed inventories cannot follow reflection, unsafe or cgo. This exact
-// inventory makes a new import of any of them in the admission package or its
-// store a visible, reviewed change. It reads every non-test source file in the
-// two directories, whatever its build constraints.
+// inventory makes a new import of any of them a visible, reviewed change in
+// every production package of the module: a package that holds a pointer to an
+// owning type can write its storage through any of the three. It reads every
+// non-test source file, whatever its build constraints.
 func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
-	root := repositoryRootForAdmissionGuard(t)
-	sources := make(map[string]string)
-	for _, directory := range []string{"es/admission", "es/admission/internal/reliablesubmit"} {
-		entries, err := os.ReadDir(filepath.Join(root, directory))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-				continue
-			}
-			contents, err := os.ReadFile(filepath.Join(root, directory, entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			sources[directory+"/"+entry.Name()] = string(contents)
-		}
-	}
-	if len(sources) < 40 {
+	_, sources := repositoryProductionListings(t, repositoryRootForAdmissionGuard(t))
+	if len(sources) < 100 {
 		t.Fatalf("read only %d production sources", len(sources))
 	}
-	want := map[string][]string{"es/admission/execution_roots_darwin.go": {"unsafe"}}
+	for _, name := range []string{"es/admission/service.go", "es/admission/internal/reliablesubmit/operational_handoff.go", "es/app/app.go", "cmd/es/main.go"} {
+		if _, ok := sources[name]; !ok {
+			t.Fatalf("%s was not read", name)
+		}
+	}
+	want := map[string][]string{
+		"es/admission/execution_roots_darwin.go": {"unsafe"},
+		"es/runtimehelper/privilege_linux.go":    {"unsafe"},
+	}
 	got, err := operationalGuardImportInventory(sources)
 	if err != nil {
 		t.Fatal(err)
@@ -3300,51 +3815,58 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reflect, unsafe and cgo import inventory changed: got %v want %v", got, want)
 	}
-	for name, mutation := range map[string]string{
+	mutations := map[string]string{
 		"reflect":         "package admission\nimport \"reflect\"\nvar _ = reflect.TypeOf\n",
 		"unsafe":          "package admission\nimport \"unsafe\"\nvar _ unsafe.Pointer\n",
 		"renamed unsafe":  "package admission\nimport hidden \"unsafe\"\nvar _ hidden.Pointer\n",
 		"blank unsafe":    "package admission\nimport _ \"unsafe\"\n",
 		"grouped reflect": "package admission\nimport (\n\t\"fmt\"\n\t\"reflect\"\n)\nvar _ = fmt.Sprint\nvar _ = reflect.TypeOf\n",
 		"cgo":             "package admission\nimport \"C\"\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			mutated := make(map[string]string, len(sources)+1)
+	}
+	for name, mutation := range mutations {
+		// In a guarded package, and in two packages that hold a pointer to an
+		// owning type without declaring one.
+		for _, added := range []string{"es/admission/added.go", "es/app/added.go", "cmd/es/added.go"} {
+			t.Run(name+" in "+filepath.Dir(added), func(t *testing.T) {
+				mutated := make(map[string]string, len(sources)+1)
+				for file, source := range sources {
+					mutated[file] = source
+				}
+				mutated[added] = mutation
+				got, err := operationalGuardImportInventory(mutated)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if reflect.DeepEqual(got, want) {
+					t.Fatal("a new reflect, unsafe or cgo import passed the inventory")
+				}
+			})
+		}
+	}
+	for known := range want {
+		t.Run("removed known import "+known, func(t *testing.T) {
+			mutated := make(map[string]string, len(sources))
 			for file, source := range sources {
 				mutated[file] = source
 			}
-			mutated["es/admission/added.go"] = mutation
+			delete(mutated, known)
 			got, err := operationalGuardImportInventory(mutated)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if reflect.DeepEqual(got, want) {
-				t.Fatal("a new reflect, unsafe or cgo import passed the inventory")
+				t.Fatal("the inventory did not depend on the known unsafe import")
 			}
 		})
 	}
-	t.Run("removed known import", func(t *testing.T) {
-		mutated := make(map[string]string, len(sources))
-		for file, source := range sources {
-			mutated[file] = source
-		}
-		delete(mutated, "es/admission/execution_roots_darwin.go")
-		got, err := operationalGuardImportInventory(mutated)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if reflect.DeepEqual(got, want) {
-			t.Fatal("the inventory did not depend on the known unsafe import")
-		}
-	})
 }
 
-// validateGuardedProductionFileSet compares the entries of one guarded
-// directory with the files the typed loader read for it under its build
-// targets. A Go file that no target includes stands behind a build constraint
-// the guards do not evaluate, so nothing in it is inventoried while a build
-// with that constraint compiles it. A source file of another language is
-// compiled into the package without the type checker reading it.
+// validateGuardedProductionFileSet compares the entries of one directory with
+// the files the typed loader read for it under its build targets. A Go file
+// that no target includes stands behind a build constraint the guards do not
+// evaluate, so nothing in it is inventoried while a build with that constraint
+// compiles it. A source file of another language is compiled into the package
+// without the type checker reading it.
 func validateGuardedProductionFileSet(directory string, entries []string, loaded map[string]bool) error {
 	present := make(map[string]bool, len(entries))
 	for _, name := range entries {
@@ -3372,68 +3894,95 @@ func validateGuardedProductionFileSet(directory string, entries []string, loaded
 }
 
 // The typed inventories read the files go list selects for three build
-// targets. This test makes sure that is every production file of the two
-// guarded packages: a file behind any other build constraint, and an
-// assembly, C or object file, fail it.
+// targets. This test makes sure that is every production file of the module:
+// a file behind any other build constraint, a Go file in a directory go list
+// selects no package from, and an assembly, C or object file, fail it.
 func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 	root := repositoryRootForAdmissionGuard(t)
-	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
-	directories := map[string]string{
-		"es/admission":                         "execution-substrate/es/admission",
-		"es/admission/internal/reliablesubmit": "execution-substrate/es/admission/internal/reliablesubmit",
-	}
+	views := loadTypedProductionPackages(t, "./...")
 	loaded := make(map[string]bool)
 	for _, view := range views {
-		for _, importPath := range directories {
-			for fileName := range requireTypedProductionPackage(t, view.packages, importPath).files {
+		for _, pkg := range view.packages {
+			for fileName := range pkg.files {
 				loaded[fileName] = true
 			}
 		}
 	}
-	listings := make(map[string][]string)
-	for directory := range directories {
-		entries, err := os.ReadDir(filepath.Join(root, directory))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				listings[directory] = append(listings[directory], entry.Name())
+	listings, sources := repositoryProductionListings(t, root)
+	// The floor only shows that both sides were read at all. The comparison is
+	// the file-set check below, in both directions.
+	if len(loaded) < 100 || len(sources) < 100 {
+		t.Fatalf("the typed loader read %d production sources, the listing holds %d", len(loaded), len(sources))
+	}
+	validate := func(listings map[string][]string) error {
+		for directory, entries := range listings {
+			if directory == "." {
+				// The repository root holds tests and documents only. Its paths
+				// have no directory part.
+				for _, name := range entries {
+					if err := validateGuardedProductionFileSet(".", []string{name}, map[string]bool{}); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if err := validateGuardedProductionFileSet(directory, entries, loaded); err != nil {
+				return err
 			}
 		}
-		if err := validateGuardedProductionFileSet(directory, listings[directory], loaded); err != nil {
-			t.Fatal(err)
+		for name := range loaded {
+			if directory := filepath.ToSlash(filepath.Dir(name)); listings[directory] == nil {
+				return fmt.Errorf("%s was type-checked but its directory was not listed", name)
+			}
+		}
+		return nil
+	}
+	if err := validate(listings); err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{"es/admission", "es/admission/internal/reliablesubmit", "es/app", "cmd/es"} {
+		if len(listings[directory]) == 0 {
+			t.Fatalf("%s was not listed", directory)
 		}
 	}
-	if len(loaded) < 40 {
-		t.Fatalf("the typed loader read only %d production sources", len(loaded))
+	with := func(directory string, added string) map[string][]string {
+		changed := make(map[string][]string, len(listings)+1)
+		for name, entries := range listings {
+			changed[name] = entries
+		}
+		changed[directory] = append(append([]string{}, listings[directory]...), added)
+		return changed
 	}
-	const directory = "es/admission"
-	for name, added := range map[string]string{
-		"file behind a custom build tag": "zz_tagged.go",
-		"file for another platform":      "zz_windows.go",
-		"assembly file":                  "zz_amd64.s",
-		"preprocessed assembly file":     "zz_amd64.S",
-		"C file":                         "zz.c",
-		"object file":                    "zz.syso",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := validateGuardedProductionFileSet(directory, append(append([]string{}, listings[directory]...), added), loaded); err == nil {
-				t.Fatalf("%s passed the file-set check", added)
-			}
-		})
-	}
-	for name, added := range map[string]string{
-		"test file behind a custom build tag": "zz_tagged_test.go",
-		"document":                            "README.md",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := validateGuardedProductionFileSet(directory, append(append([]string{}, listings[directory]...), added), loaded); err != nil {
-				t.Fatalf("%s was refused: %v", added, err)
-			}
-		})
+	// In a guarded package, in a package that holds a pointer to an owning
+	// type, in the repository root and in a directory without any package.
+	for _, directory := range []string{"es/admission", "es/app", ".", "es/admission/zzadded"} {
+		for name, added := range map[string]string{
+			"file behind a custom build tag": "zz_tagged.go",
+			"file for another platform":      "zz_windows.go",
+			"assembly file":                  "zz_amd64.s",
+			"preprocessed assembly file":     "zz_amd64.S",
+			"C file":                         "zz.c",
+			"object file":                    "zz.syso",
+		} {
+			t.Run(name+" in "+directory, func(t *testing.T) {
+				if err := validate(with(directory, added)); err == nil {
+					t.Fatalf("%s passed the file-set check", added)
+				}
+			})
+		}
+		for name, added := range map[string]string{
+			"test file behind a custom build tag": "zz_tagged_test.go",
+			"document":                            "README.md",
+		} {
+			t.Run(name+" in "+directory, func(t *testing.T) {
+				if err := validate(with(directory, added)); err != nil {
+					t.Fatalf("%s was refused: %v", added, err)
+				}
+			})
+		}
 	}
 	t.Run("type-checked file missing from the listing", func(t *testing.T) {
+		const directory = "es/admission"
 		var shortened []string
 		removed := false
 		for _, name := range listings[directory] {
@@ -3446,8 +3995,39 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 		if !removed {
 			t.Fatal("no type-checked file in the listing")
 		}
-		if err := validateGuardedProductionFileSet(directory, shortened, loaded); err == nil {
+		changed := with(directory, "README.md")
+		changed[directory] = shortened
+		if err := validate(changed); err == nil {
 			t.Fatal("a listing without a type-checked file passed")
+		}
+	})
+	t.Run("type-checked directory missing from the listing", func(t *testing.T) {
+		changed := with("es/app", "README.md")
+		delete(changed, "es/app")
+		if err := validate(changed); err == nil {
+			t.Fatal("a listing without a type-checked directory passed")
+		}
+	})
+	t.Run("directories the go command does not build from", func(t *testing.T) {
+		// The rule is about the directories below the root. A checkout whose
+		// own directory has such a name is read like any other.
+		for _, rootName := range []string{"checkout", "_checkout", ".checkout", "testdata"} {
+			scratch := filepath.Join(t.TempDir(), rootName)
+			for _, name := range []string{"pkg/kept.go", "pkg/kept_test.go", "pkg/testdata/fixture.go", "pkg/.hidden/hidden.go", "pkg/_ignored/ignored.go", "pkg/vendor/dep/dep.go", "top.go"} {
+				if err := os.MkdirAll(filepath.Join(scratch, filepath.Dir(name)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(scratch, name), []byte("package p\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			listings, sources := repositoryProductionListings(t, scratch)
+			if want := map[string][]string{".": {"top.go"}, "pkg": {"kept.go", "kept_test.go"}, "pkg/vendor/dep": {"dep.go"}}; !reflect.DeepEqual(listings, want) {
+				t.Fatalf("root %s: listings: got %v want %v", rootName, listings, want)
+			}
+			if want := map[string]string{"top.go": "package p\n", "pkg/kept.go": "package p\n", "pkg/vendor/dep/dep.go": "package p\n"}; !reflect.DeepEqual(sources, want) {
+				t.Fatalf("root %s: sources: got %v want %v", rootName, sources, want)
+			}
 		}
 	})
 }
@@ -4127,6 +4707,137 @@ func requirePackageStructField(t *testing.T, pkg *typedProductionPackage, typeNa
 	return nil
 }
 
+// validateProtectedFieldName refuses an exported protected field. Another
+// package cannot spell an unexported field, and reflection inside a called
+// library function cannot set one, so what another package can do to an owning
+// type is what the whole-value inventory of that package lists.
+func validateProtectedFieldName(importPath string, typeName string, fieldName string) error {
+	if token.IsExported(fieldName) {
+		return fmt.Errorf("protected field %s.%s.%s is exported", importPath, typeName, fieldName)
+	}
+	return nil
+}
+
+// validateOwningStructShape refuses an owning type without fields. No written
+// struct type is the mirror of such a type, so the inventory of the other
+// packages would say nothing about it.
+func validateOwningStructShape(importPath string, typeName string, shape owningStructShape) error {
+	if len(shape.fields) == 0 {
+		return fmt.Errorf("owning type %s.%s has no field", importPath, typeName)
+	}
+	return nil
+}
+
+func requirePackageStruct(t *testing.T, pkg *typedProductionPackage, typeName string) *types.Struct {
+	t.Helper()
+	object, ok := pkg.pkg.Scope().Lookup(typeName).(*types.TypeName)
+	if !ok {
+		t.Fatalf("struct type %s.%s was not found", pkg.importPath, typeName)
+	}
+	structure, ok := object.Type().Underlying().(*types.Struct)
+	if !ok {
+		t.Fatalf("type %s.%s is not a struct", pkg.importPath, typeName)
+	}
+	return structure
+}
+
+// mergedForeignOwningStructReferences lists the whole-value occurrences of one
+// owning type in every loaded package other than the one that declares it.
+// Such a package cannot spell an unexported field, so all it can do to the
+// type's storage is listed here: declare, copy, overwrite or convert a whole
+// value, instantiate a generic with the type, constrain a type parameter to
+// it, or write a struct type of its shape.
+func mergedForeignOwningStructReferences(t *testing.T, views []typedProductionView, importPath string, typeName string) []typedReference {
+	t.Helper()
+	seen := make(map[string]typedReference)
+	for _, view := range views {
+		declaring := requireTypedProductionPackage(t, view.packages, importPath)
+		target := owningStruct{shape: owningStructShapeOf(importPath, requirePackageStruct(t, declaring, typeName))}
+		if err := validateOwningStructShape(importPath, typeName, target.shape); err != nil {
+			t.Fatal(err)
+		}
+		for _, pkg := range view.packages {
+			if pkg.importPath == importPath {
+				continue
+			}
+			for _, reference := range pkg.wholeValueOccurrences(target, nil, importPath+"."+typeName) {
+				key := strings.Join([]string{
+					reference.packagePath,
+					reference.site,
+					filepath.Clean(reference.position.Filename),
+					fmt.Sprintf("%d:%d:%t", reference.position.Line, reference.position.Column, reference.insideFuncLiteral),
+					reference.accessKind,
+				}, "|")
+				seen[key] = reference
+			}
+		}
+	}
+	references := make([]typedReference, 0, len(seen))
+	for _, reference := range seen {
+		references = append(references, reference)
+	}
+	sort.Slice(references, func(left int, right int) bool {
+		if references[left].site != references[right].site {
+			return references[left].site < references[right].site
+		}
+		if references[left].position.Offset != references[right].position.Offset {
+			return references[left].position.Offset < references[right].position.Offset
+		}
+		return references[left].accessKind < references[right].accessKind
+	})
+	return references
+}
+
+// typeParameterDeclarations lists every type parameter the package declares:
+// those of a generic function, of a generic type, and of the receiver of a
+// method of a generic type. Each entry names the file, the declaration and the
+// parameter with its constraint.
+func (pkg *typedProductionPackage) typeParameterDeclarations() []string {
+	var declarations []string
+	for fileName, file := range pkg.files {
+		parents := astParentMap(file)
+		ast.Inspect(file, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			declared, ok := pkg.info.Defs[identifier].(*types.TypeName)
+			if !ok {
+				return true
+			}
+			parameter, ok := declared.Type().(*types.TypeParam)
+			if !ok {
+				return true
+			}
+			declaration := typedFunctionSite(fileName, enclosingFunction(parents, identifier))
+			for current := parents[identifier]; current != nil; current = parents[current] {
+				if spec, ok := current.(*ast.TypeSpec); ok {
+					declaration += " type " + spec.Name.Name
+					break
+				}
+			}
+			declarations = append(declarations, fmt.Sprintf("%s[%s %s]", declaration, identifier.Name,
+				types.TypeString(parameter.Constraint(), types.RelativeTo(pkg.pkg))))
+			return true
+		})
+	}
+	sort.Strings(declarations)
+	return declarations
+}
+
+// mergedTypeParameterDeclarations lists the type parameters one package
+// declares under any of the build targets.
+func mergedTypeParameterDeclarations(t *testing.T, views []typedProductionView, importPath string) []string {
+	t.Helper()
+	seen := make(map[string]bool)
+	for _, view := range views {
+		for _, declaration := range requireTypedProductionPackage(t, view.packages, importPath).typeParameterDeclarations() {
+			seen[declaration] = true
+		}
+	}
+	return sortedStringSet(seen)
+}
+
 // referencesTo lists the identifier occurrences that resolve to target. For a
 // struct field it also lists every whole-value occurrence of the struct that
 // declares the field, because such an occurrence writes, creates or copies
@@ -4264,10 +4975,84 @@ func (pkg *typedProductionPackage) structDeclaring(field *types.Var) *types.Stru
 	return nil
 }
 
-// wholeValueReferences lists every place where a value of the owner struct, or
+// owningStructShape is what a struct type needs to be convertible to an owning
+// struct: the same field names in the same order, embedded where the owner's
+// are, and, for an unexported name, declared in the owner's package. Field
+// types and tags are left out on purpose. Go converts between two struct types
+// only when their fields agree in all of this and in their types, so every
+// convertible type has this shape, and a generic struct has it whatever its
+// type arguments are.
+type owningStructShape struct {
+	importPath string
+	fields     []owningStructShapeField
+}
+
+type owningStructShapeField struct {
+	name     string
+	embedded bool
+}
+
+func owningStructShapeOf(importPath string, structure *types.Struct) owningStructShape {
+	shape := owningStructShape{importPath: importPath}
+	for index := 0; index < structure.NumFields(); index++ {
+		field := structure.Field(index)
+		shape.fields = append(shape.fields, owningStructShapeField{name: field.Name(), embedded: field.Embedded()})
+	}
+	return shape
+}
+
+// matches reports whether candidate has the shape. A struct without fields
+// has no storage to reach and matches nothing.
+func (shape owningStructShape) matches(candidate *types.Struct) bool {
+	if candidate == nil || len(shape.fields) == 0 || candidate.NumFields() != len(shape.fields) {
+		return false
+	}
+	for index, want := range shape.fields {
+		field := candidate.Field(index)
+		if field.Name() != want.name || field.Embedded() != want.embedded {
+			return false
+		}
+		if !field.Exported() && (field.Pkg() == nil || field.Pkg().Path() != shape.importPath) {
+			return false
+		}
+	}
+	return true
+}
+
+// owningStruct names an owning struct type inside one type-checked package. In
+// the package that declares the type, own is its struct and a value of it is
+// known by that identity. Any other package reads the type from export data,
+// as another object, so there own is nil and the struct is known by its shape.
+type owningStruct struct {
+	own   *types.Struct
+	shape owningStructShape
+}
+
+func (target owningStruct) is(candidate *types.Struct) bool {
+	if target.own != nil {
+		return candidate == target.own
+	}
+	return target.shape.matches(candidate)
+}
+
+// mirrors reports whether a struct type written in a source file is another
+// type of the owner's shape. Outside the declaring package every struct type
+// written with that shape is one.
+func (target owningStruct) mirrors(written *types.Struct) bool {
+	return written != target.own && target.shape.matches(written)
+}
+
+// wholeValueReferences lists the whole-value occurrences of the owner struct
+// in the package that declares it.
+func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, field *types.Var, identity string) []typedReference {
+	return pkg.wholeValueOccurrences(owningStruct{own: owner, shape: owningStructShapeOf(pkg.importPath, owner)}, field, identity)
+}
+
+// wholeValueOccurrences lists every place where a value of the owner struct, or
 // of a type that holds one by value, is created, overwritten, converted or
-// copied as a whole. No field is spelled at such a place, so identifier
-// occurrences alone do not see it.
+// copied as a whole, and every place that makes such a value reachable under
+// another type. No field is spelled at such a place, so identifier occurrences
+// alone do not see it.
 //
 // The access kinds are: "initializer" for a positional literal, which sets
 // every field (with a nil field, for any literal of the owner);
@@ -4288,7 +5073,16 @@ func (pkg *typedProductionPackage) structDeclaring(field *types.Var) *types.Stru
 // owner by value, a type-switch clause for it, and new or make of it.
 // "whole-copy" is copy, clear or append over a container of it. "whole-read"
 // is any other use of such a value: it copies the field.
-func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, field *types.Var, identity string) []typedReference {
+//
+// Two kinds do not wait for a use. "whole-mirror" is a struct type written
+// with the owner's shape, named, anonymous or generic: a pointer to the owner
+// converts only to a pointer to such a type, so where none is written no
+// conversion can give the owner's storage other field names, in this package
+// or in one that imports it. "whole-constrain" is a type parameter whose
+// constraint has a type term that is the owner or reaches it through pointers,
+// slices, arrays, channels, maps or struct fields: its body handles the owner
+// under the parameter's name and is instantiated from any package.
+func (pkg *typedProductionPackage) wholeValueOccurrences(target owningStruct, field *types.Var, identity string) []typedReference {
 	if pkg.info.Instances == nil {
 		panic("whole-value inventory needs the instance information of the typed package")
 	}
@@ -4307,7 +5101,7 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 		result := false
 		switch u := t.Underlying().(type) {
 		case *types.Struct:
-			result = u == owner
+			result = target.is(u)
 			for index := 0; !result && index < u.NumFields(); index++ {
 				result = holds(u.Field(index).Type())
 			}
@@ -4347,6 +5141,57 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 		}
 		return !types.IsInterface(result)
 	}
+	// reaches reports whether t is the owner or leads to it by value, through
+	// pointers and containers, or as a type term of a constraint, at any depth.
+	var reaches func(types.Type, map[types.Type]bool) bool
+	reaches = func(t types.Type, seen map[types.Type]bool) bool {
+		if t == nil || seen[t] {
+			return false
+		}
+		seen[t] = true
+		if holds(t) {
+			return true
+		}
+		if named, ok := types.Unalias(t).(*types.Named); ok {
+			for index := 0; index < named.TypeArgs().Len(); index++ {
+				if reaches(named.TypeArgs().At(index), seen) {
+					return true
+				}
+			}
+		}
+		switch u := t.Underlying().(type) {
+		case *types.Pointer:
+			return reaches(u.Elem(), seen)
+		case *types.Slice:
+			return reaches(u.Elem(), seen)
+		case *types.Array:
+			return reaches(u.Elem(), seen)
+		case *types.Chan:
+			return reaches(u.Elem(), seen)
+		case *types.Map:
+			return reaches(u.Key(), seen) || reaches(u.Elem(), seen)
+		case *types.Struct:
+			for index := 0; index < u.NumFields(); index++ {
+				if reaches(u.Field(index).Type(), seen) {
+					return true
+				}
+			}
+		case *types.Interface:
+			// The type terms of a constraint. Its methods name no storage.
+			for index := 0; index < u.NumEmbeddeds(); index++ {
+				if reaches(u.EmbeddedType(index), seen) {
+					return true
+				}
+			}
+		case *types.Union:
+			for index := 0; index < u.Len(); index++ {
+				if reaches(u.Term(index).Type(), seen) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	var references []typedReference
 	for fileName, file := range pkg.files {
 		parents := astParentMap(file)
@@ -4377,6 +5222,11 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 				if declared, ok := pkg.info.Defs[current].(*types.Var); ok && holds(declared.Type()) {
 					add(current, "whole-declare")
 				}
+				if declared, ok := pkg.info.Defs[current].(*types.TypeName); ok {
+					if parameter, ok := declared.Type().(*types.TypeParam); ok && reaches(parameter.Constraint(), make(map[types.Type]bool)) {
+						add(current, "whole-constrain")
+					}
+				}
 				if instance, ok := pkg.info.Instances[current]; ok {
 					for index := 0; index < instance.TypeArgs.Len(); index++ {
 						if argument := instance.TypeArgs.At(index); holds(argument) || contains(argument) {
@@ -4384,6 +5234,12 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 							break
 						}
 					}
+				}
+			case *ast.StructType:
+				// A struct type the type checker gave no type is listed as well:
+				// what cannot be compared is not known to differ.
+				if written, known := pkg.info.TypeOf(current).(*types.Struct); !known || target.mirrors(written) {
+					add(current, "whole-mirror")
 				}
 			case *ast.FuncDecl:
 				unnamed(current.Recv)
@@ -4432,7 +5288,7 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 				return true
 			}
 			if literal, ok := expression.(*ast.CompositeLit); ok {
-				if kind := wholeValueLiteralKind(pkg.info, literal, value.Type, owner, field, holds); kind != "" {
+				if kind := wholeValueLiteralKind(pkg.info, literal, value.Type, target, field, holds); kind != "" {
 					add(literal, kind)
 				}
 				return true
@@ -4498,7 +5354,7 @@ func (pkg *typedProductionPackage) wholeValueReferences(owner *types.Struct, fie
 // the literal is not a whole-value occurrence of its own: either it has
 // nothing to do with the owner, or every value of the owner inside it is
 // spelled as an element, which is classified where it stands.
-func wholeValueLiteralKind(info *types.Info, literal *ast.CompositeLit, literalType types.Type, owner *types.Struct, field *types.Var,
+func wholeValueLiteralKind(info *types.Info, literal *ast.CompositeLit, literalType types.Type, target owningStruct, field *types.Var,
 	holds func(types.Type) bool) string {
 	if pointer, ok := literalType.Underlying().(*types.Pointer); ok && literal.Type == nil {
 		// An elided &T{} element of a container of pointers.
@@ -4512,7 +5368,7 @@ func wholeValueLiteralKind(info *types.Info, literal *ast.CompositeLit, literalT
 	}
 	switch structure := literalType.Underlying().(type) {
 	case *types.Struct:
-		if structure == owner {
+		if target.is(structure) {
 			if field == nil {
 				return "initializer"
 			}
@@ -4921,6 +5777,27 @@ func validateTypedObjectReferenceInventory(label string, references []typedRefer
 
 func typeCheckSyntheticProductionPackage(t *testing.T, fileName string, source string) *typedProductionPackage {
 	t.Helper()
+	return typeCheckSyntheticImportingPackage(t, "synthetic/admission", fileName, source)
+}
+
+// syntheticImporter resolves the synthetic packages a synthetic package
+// imports, and everything else as the default importer does.
+type syntheticImporter struct {
+	packages map[string]*types.Package
+	fallback types.Importer
+}
+
+func (source syntheticImporter) Import(path string) (*types.Package, error) {
+	if pkg, ok := source.packages[path]; ok {
+		return pkg, nil
+	}
+	return source.fallback.Import(path)
+}
+
+// typeCheckSyntheticImportingPackage type-checks one synthetic package that can
+// import the given synthetic packages by their paths.
+func typeCheckSyntheticImportingPackage(t *testing.T, importPath string, fileName string, source string, imported ...*typedProductionPackage) *typedProductionPackage {
+	t.Helper()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, fileName, source, parser.AllErrors)
 	if err != nil {
@@ -4933,12 +5810,16 @@ func typeCheckSyntheticProductionPackage(t *testing.T, fileName string, source s
 		Selections: make(map[*ast.SelectorExpr]*types.Selection),
 		Instances:  make(map[*ast.Ident]types.Instance),
 	}
-	typedPackage, err := (&types.Config{Importer: importer.Default()}).Check("synthetic/admission", fset, []*ast.File{file}, info)
+	resolver := syntheticImporter{packages: make(map[string]*types.Package), fallback: importer.Default()}
+	for _, dependency := range imported {
+		resolver.packages[dependency.importPath] = dependency.pkg
+	}
+	typedPackage, err := (&types.Config{Importer: resolver}).Check(importPath, fset, []*ast.File{file}, info)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &typedProductionPackage{
-		importPath: "synthetic/admission",
+		importPath: importPath,
 		fset:       fset,
 		files:      map[string]*ast.File{fileName: file},
 		sources:    map[string]string{fileName: source},

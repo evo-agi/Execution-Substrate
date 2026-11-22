@@ -1201,6 +1201,14 @@ func receiverTypeName(expr ast.Expr) string {
 		return typed.Name
 	case *ast.StarExpr:
 		return receiverTypeName(typed.X)
+	case *ast.ParenExpr:
+		return receiverTypeName(typed.X)
+	case *ast.IndexExpr:
+		// The receiver of a method of a generic type: its type parameters are
+		// not part of the name.
+		return receiverTypeName(typed.X)
+	case *ast.IndexListExpr:
+		return receiverTypeName(typed.X)
 	default:
 		return ""
 	}
@@ -1301,7 +1309,7 @@ func assertAdmissionFoundationOmitsAll(t *testing.T, label string, source string
 // operational admission, or enter the private handoff. The documentation
 // contract test requires the same identifiers, in this order, in that table.
 // The list stays on one line.
-var operationalCommissioningPrerequisites = []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE"}
+var operationalCommissioningPrerequisites = []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-PUBLIC-MAPPING"}
 
 // operationalCommissioningEntries are the Service methods that create, replace
 // or stop the admission view. None has a production caller.
@@ -1708,7 +1716,7 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 					if err == nil {
 						t.Fatal("non-test admission authority reference passed zero-reference rule")
 					}
-					if len(operationalCommissioningPrerequisites) != 5 {
+					if len(operationalCommissioningPrerequisites) != 6 {
 						t.Fatalf("commissioning prerequisites: %v", operationalCommissioningPrerequisites)
 					}
 					for _, prerequisite := range operationalCommissioningPrerequisites {

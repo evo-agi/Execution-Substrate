@@ -3345,6 +3345,175 @@ func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
 // entry count of the configured policy. Behaviour cannot tell whether they
 // are hashed, so the function is asked directly: two inputs that differ only
 // there must not share a digest.
+// operationalRefusingFromPolicy allows a claim until evaluation number from of
+// one call and refuses it from then on. It stands for rules that refuse a
+// retained claim at one chosen evaluation: the pre-check's, a cut's, or the one
+// after a cut has committed.
+type operationalRefusingFromPolicy struct {
+	evaluations *int
+	from        int
+}
+
+func (operationalRefusingFromPolicy) RequiredInputClasses(AdmissionPolicyContext) []AdmissionPolicyInputClass {
+	return nil
+}
+
+func (p operationalRefusingFromPolicy) Evaluate(context.Context, AdmissionPolicyContext) AdmissionPolicyDecision {
+	if *p.evaluations++; *p.evaluations >= p.from {
+		return DenyAdmissionPolicyDecision("test-refusal", "test-refusal", "refused by the test policy")
+	}
+	return AllowAdmissionPolicyDecision()
+}
+
+// A3-2. The admission's own judgment wins over a cancellation. A refusal that
+// the judgment of a retained claim returned is reported as OperationalDenied
+// also when the context of the call ended while that judgment ran: at the
+// pre-check, inside a cut, and after a cut has committed. The run and the
+// receipt are withheld, and nothing is written or sent after the end. The
+// answer is the one the same refusal gets under a live context.
+func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T) {
+	t.Run("an evaluation that refuses", func(t *testing.T) {
+		for _, start := range []struct {
+			name string
+			seed reliablesubmit.OperationalOperation
+		}{
+			{"after run assignment", reliablesubmit.OperationalAssign},
+			{"after intent", reliablesubmit.OperationalIntent},
+		} {
+			t.Run(start.name, func(t *testing.T) {
+				// attempt makes evaluation number k of one call refuse. With
+				// end set, the hook of that evaluation ends the context before
+				// the refusal is returned.
+				attempt := func(k int, end bool) (*operationalEndedCall, int, operationalHandoffResult, operationalPrestageState) {
+					c := operationalEndableCall(t, start.seed)
+					evaluations := 0
+					c.f.service.operationalAdmission.policy = admissionPolicySet{
+						policies: []AdmissionPolicyEvaluator{operationalRefusingFromPolicy{evaluations: &evaluations, from: k}}}
+					c.f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+						if allowed == (evaluations >= k) {
+							t.Errorf("evaluation %d of a claim refused from evaluation %d: allowed=%t", evaluations, k, allowed)
+						}
+						if !allowed && end {
+							c.end()
+						}
+					}
+					out := c.run()
+					return c, evaluations, out, operationalPrestageStateAt(t, c.f)
+				}
+				preChecks, cuts, afterCommits := 0, 0, 0
+				for k := 1; ; k++ {
+					c, evaluations, out, after := attempt(k, true)
+					if evaluations < k {
+						// The call makes fewer evaluations than k: nothing
+						// refused it and it completes.
+						assertOperationalCompleted(t, c.f, out, "a call that no evaluation refuses")
+						break
+					}
+					if evaluations != k || !c.ended || c.ctx.Err() == nil {
+						t.Fatalf("evaluation %d did not refuse and end the call: evaluations=%d ended=%t", k, evaluations, c.ended)
+					}
+					if out.reason != reliablesubmit.OperationalDenied || out.kind != operationalUnavailable || out.run != "" ||
+						out.receipt.Valid() || after != c.at || after.Posts != 0 {
+						t.Fatalf("refused at evaluation %d under an ended context: %s at=%+v after=%+v", k, operationalResultText(out), c.at, after)
+					}
+					live, liveEvaluations, control, liveAfter := attempt(k, false)
+					if live.ended || live.ctx.Err() != nil || liveEvaluations != k {
+						t.Fatalf("control at evaluation %d: ended=%t evaluations=%d", k, live.ended, liveEvaluations)
+					}
+					if control.reason != out.reason || control.kind != out.kind || control.operation != out.operation ||
+						control.write != out.write || control.run != "" || control.receipt.Valid() || liveAfter != after {
+						t.Fatalf("evaluation %d: ended context %s after=%+v, live context %s after=%+v", k,
+							operationalResultText(out), after, operationalResultText(control), liveAfter)
+					}
+					switch {
+					case out.operation == 0 && out.write == 0:
+						preChecks++
+					case out.write == 0:
+						cuts++
+					default:
+						afterCommits++
+					}
+					// The first evaluation of a retry is the pre-check's.
+					if k == 1 && (out.operation != 0 || out.write != 0) {
+						t.Fatalf("refused at the pre-check: %s", operationalResultText(out))
+					}
+				}
+				if preChecks == 0 || cuts == 0 || afterCommits == 0 {
+					t.Fatalf("refusals reached: %d outside a cut, %d inside a cut, %d after a cut committed", preChecks, cuts, afterCommits)
+				}
+			})
+		}
+	})
+	// The two refusals before the evaluation have no hook of their own. The
+	// context is ended at the freshness sample that precedes them in the same
+	// judgment, after the judgment has looked at the context on entry.
+	endingAtSample := func(t *testing.T, proof *operationalAdmissionProofHooks) (context.Context, *int) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		samples := 0
+		proof.skew = func() time.Duration {
+			samples++
+			cancel()
+			return 0
+		}
+		return ctx, &samples
+	}
+	t.Run("a refusal by the trust content", func(t *testing.T) {
+		f := operationalSeedIntent(t)
+		original := operationalV2Original(t, f)
+		proof := &operationalAdmissionProofHooks{}
+		service := operationalProofService(t, f, func(s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				original.resolved.plan.artifactDigest)
+			s.operationalProof = proof
+		})
+		service.confirmOperationalAdmission(context.Background())
+		if reason := service.qualifyOperationalRetained(context.Background(), original, f.domain.realm); reason != reliablesubmit.OperationalDenied {
+			t.Fatalf("control under a live context: reason=%d", reason)
+		}
+		ctx, samples := endingAtSample(t, proof)
+		if reason := service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalDenied ||
+			ctx.Err() == nil || *samples == 0 {
+			t.Fatalf("revoked artifact under an ended context: reason=%d ended=%t samples=%d", reason, ctx.Err() != nil, *samples)
+		}
+	})
+	t.Run("a refusal by the verifier", func(t *testing.T) {
+		f := operationalSeedIntent(t)
+		original := operationalV2Original(t, f)
+		var tampered evidencev1.ArtifactEvidence
+		if err := json.Unmarshal([]byte(f.expectedEvidence), &tampered); err != nil {
+			t.Fatal(err)
+		}
+		tampered.Seal.Signature = strings.Repeat("A", len(tampered.Seal.Signature))
+		changed, err := json.Marshal(tampered)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original.resolved.provenanceRecord = string(changed)
+		f.confirm()
+		if reason := f.service.qualifyOperationalRetained(context.Background(), original, f.domain.realm); reason != reliablesubmit.OperationalDenied {
+			t.Fatalf("control under a live context: reason=%d", reason)
+		}
+		ctx, samples := endingAtSample(t, f.service.operationalAdmission.proof)
+		if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalDenied ||
+			ctx.Err() == nil || *samples == 0 {
+			t.Fatalf("refused seal under an ended context: reason=%d ended=%t samples=%d", reason, ctx.Err() != nil, *samples)
+		}
+	})
+	// The same ending with content that allows the claim is a cancellation: the
+	// judgment returned no refusal of its own.
+	t.Run("control: the same ending without a refusal is a cancellation", func(t *testing.T) {
+		f := operationalSeedIntent(t)
+		original := operationalV2Original(t, f)
+		f.confirm()
+		ctx, samples := endingAtSample(t, f.service.operationalAdmission.proof)
+		if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalCanceled ||
+			ctx.Err() == nil || *samples == 0 {
+			t.Fatalf("allowed claim under an ended context: reason=%d ended=%t samples=%d", reason, ctx.Err() != nil, *samples)
+		}
+	})
+}
+
 func TestOperationalAdmissionDigestFramesItsConstantParts(t *testing.T) {
 	f := makeOperationalFixture(t, "")
 	view := f.service.operationalAdmission

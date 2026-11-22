@@ -2,6 +2,42 @@
 
 ## Status
 
+### PR #12 durable admission: corrections after the third audit (2026-11-22)
+
+A fresh independent audit of the second repair
+`c41e177f0d264318de3d799d8b28e7f494b18c74` accepted its production code and
+every correction of the second audit, and did not accept the candidate. The
+typed guard still missed a protected field written through a generic function
+that another package instantiates, and four low findings showed tests and
+documents short of the code. This entry corrects the candidate inside the same
+selected design; it selects nothing new and changes no production code.
+
+The three escapes of the typed guard found in review (a whole-value
+conversion, a pointer conversion, a generic body) each gave the storage of an
+owning type a second set of field names through a struct type of the same
+shape. The guard now refuses that class by default instead of one more form
+of it. It lists every struct type written in the module whose field names,
+order and embedding equal an owning type's (`whole-mirror`), and every type
+parameter whose constraint reaches an owning type, at its declaration
+(`whole-constrain`). It holds an exact inventory of the type parameters
+declared in a package that declares an owning type. It reads the whole-value
+occurrences of each owning type in every production package of the module,
+not only in the package that declares it, and its file-set check and its
+`reflect`, `unsafe` and cgo import inventory cover every production file of
+the module. The guard remains a search over source forms with named limits,
+not a proof of aliases or dataflow.
+
+A denial that an evaluation returned under a context that ended meanwhile is
+pinned as `OperationalDenied`. The commissioning gate gains a sixth
+prerequisite, `CP-PUBLIC-MAPPING`: the public mapping of the handoff's
+reasons, which includes what a refused first delivery tells its caller, must
+be selected before the handoff or commissioning has a production caller. The
+outcome table now says where a cancelled call still returns the stored run.
+The precise rules are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This candidate requires a fresh independent audit of its complete committed
+bytes, and the red-team review of the combined PR #12 after it.
+
 ### PR #12 durable admission: corrections after the second audit (2026-11-22)
 
 A fresh independent audit of the durable-admission candidate
@@ -22,7 +58,8 @@ answers `OperationalCanceled` wherever the admission returned no refusal of
 its own. `OperationalDenied` is stated as what it is, the answer of the
 re-judgment of a retained original; a first delivery that ordinary resolution
 refuses stores nothing and answers `OperationalUnavailable`, and what a first
-delivery tells its caller stays with the public mapping, a later gate. The
+delivery tells its caller stays with the public mapping, which the
+commissioning gate names as the prerequisite `CP-PUBLIC-MAPPING`. The
 store's admission write gains the COMMIT fault seam the claim writers have.
 The lock statements now say that the three admission operations and the two
 pre-check confirmations hold the custody handle's read lock. The precise
@@ -76,8 +113,8 @@ below stay as history and are superseded where they select v1, forbid a
 migration, bind trust or policy replacement to a new epoch, or describe
 withdrawal as local to one Service. Commissioning, advance and withdrawal keep
 zero production callers; a maintained gate names the prerequisites
-(`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`)
-that must be answered before one is added. The typed protected-field guard
+(`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,
+`CP-PUBLIC-MAPPING`) that must be answered before one is added. The typed protected-field guard
 now treats conversions as transparent, counts whole-value construction,
 assignment, conversion and declaration of an owning type, and names its
 remaining limits. Public keyed refusal, ordinary unkeyed Submit, what

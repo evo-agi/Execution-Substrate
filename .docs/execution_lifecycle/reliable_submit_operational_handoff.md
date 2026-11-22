@@ -574,29 +574,70 @@ type that is not a type parameter. Of a value it is a copy, which
 instantiation of a generic function or type whose type argument is, contains
 or points to the owning type is listed as well (`whole-instantiate`), written
 or inferred, because the generic body can convert, copy or overwrite the
-value where no inventory reads it. The construction inventory
+value where no inventory reads it. Every type argument is read. The
+construction inventory
 counts the same forms, so a zero-value declaration and a same-shape
 conversion of an authority type are refused like a second literal. The older
 site-count inventories of lock and lock-protected fields list the whole-value
 occurrences of their owning struct in the same way, beside their identifier
 counts.
 
+Two more kinds are listed where a type is written, not where a value is
+used, so that a form of use the inventories do not know fails by default.
+Each escape found in review (a whole-value conversion, a pointer conversion,
+a generic body) reached a protected field through a second struct type of the
+owner's shape. Between pointer types, Go converts a pointer to the owning
+type only to a pointer to a struct type with the same fields, and an
+unexported field name can be written only in the owner's package. Where no such type is written, no
+conversion gives the owner's storage a second set of field names. The
+inventory therefore lists every written struct type whose field names, in
+the same order and embedded where the owner's are, equal the owning type's
+(`whole-mirror`): named, anonymous, local or generic, in a declaration, an
+alias, a constraint, a field or a parameter, whatever its field types and
+tags. No such type exists today. A type parameter defers the choice of a
+type to an instantiation, which can be in a package that declares no owning
+type. The inventory therefore lists, at its declaration, every type parameter
+whose constraint has a type term that is the owning type or reaches it
+through pointers, slices, arrays, channels, maps or struct fields: directly,
+in a union, or through a named or embedded constraint (`whole-constrain`).
+No such type parameter exists today. Beside both, an exact inventory holds
+every type parameter declared in a package that declares an owning type,
+today the one of `replayPresence`, so a new generic function or type there
+fails a test until it is listed.
+
+Each owning type is read in every production package of the module, not only
+in the package that declares it. Another package knows the owning type by its
+shape. Every protected field is unexported, which a test holds, so another
+package cannot spell one: it can only declare, copy, convert, overwrite or
+instantiate with a whole value, and each of those is listed there under the
+kinds above. Today the only such occurrences are the seal permits that
+`es/admission` receives from the store by value. A whole-value write is
+listed and not named as a limit because it is not fail closed in every form:
+a zeroed Service has no view and a copy of a commissioned Service holds a
+view bound to the original, so both admit nothing, and a copied or zeroed
+store handle fails its self-pointer check, but a saved whole value written
+back to the same Service restores the fields it held, the latches and the
+confirmation included.
+
 Limits that remain, by name: values reached through an alias or pointer that
 was itself obtained at an inventoried site; the bodies of called functions
-and methods beyond Go's implicit address-of, where a generic one is listed
-only at an instantiation that names an owning type;
+and methods beyond Go's implicit address-of, which is a limit of dataflow
+and no longer one of generics, because a generic is listed at its
+declaration or at its instantiation by the rules above;
 reflection; `unsafe`; and cgo. For the last three an exact import inventory
-covers every non-test source file of `es/admission` and the store package, so
-a new `reflect`, `unsafe` or `C` import fails a test. The typed inventories
+covers every non-test source file of the module, so
+a new `reflect`, `unsafe` or `C` import in any production package fails a
+test. Reflection inside a called library function, on a pointer or container
+passed to it as an interface value, is such a called body: it cannot set an
+unexported field by itself, and it can move or overwrite a whole value. The
+typed inventories
 read the Go files that three build targets (darwin/arm64, linux/amd64 and
 linux/arm64) compile with default build tags. A file-set check fails when a
-non-test Go file of the two packages is compiled for none of them, as behind
+non-test Go file of the module is compiled for none of them, as behind
 a custom build tag or for another operating system or architecture, and when
-either package holds an assembly, C or object file, so no production file of
-the two packages is outside the inventories. Their scope is these two
-packages: a whole-value write of an exported owning type from another
-package, such as `*service = admission.Service{}`, is not listed, and yields
-a Service without a view, which admits nothing. The table-writer inventory
+a production directory holds an assembly, C or object file, so no production
+file of the module is outside the inventories. Code outside the module, the
+standard library and third-party dependencies, is not read. The table-writer inventory
 reads SQL statement literals; a statement assembled at run time is not seen
 by it, and the triggers of §2, not that inventory, are the barrier. The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
@@ -640,13 +681,16 @@ or a first-effect cut.
 | No view, token not equal to the row, withdrawn, superseded, deadline passed, unsupported required input or missing bounded payload | `OperationalUnavailable` | No |
 | Malformed or contradictory authenticated evidence; an existing original whose realm is not the domain's | `OperationalIntegrity` | No |
 | First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |
-| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No |
+| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |
 
-Every row is value-free and withholds run and receipt at the refused cut.
+The first five rows are value-free and withhold run and receipt at the
+refused cut. The last row is value-free except at the points named below.
 `OperationalDenied` is the answer of the re-judgment only. A first delivery is
 judged by ordinary resolution, whose typed error is not carried into this
-result; what a first delivery tells its caller belongs to the public mapping,
-a later gate, and the handoff has no production caller.
+result. What a first delivery tells its caller belongs to the public mapping.
+That mapping is not selected and the handoff has no production caller. The
+commissioning gate of §8 names it as the prerequisite `CP-PUBLIC-MAPPING`, so
+the test that fails on the first production caller names that decision.
 
 A cancelled call answers `OperationalCanceled` unless the admission returned
 a refusal of its own in the same call. The store refuses every read, binding
@@ -667,6 +711,14 @@ turn is then requested.
 When one call is both cancelled and refused by the authority, the authority
 refusal is reported, at reconciliation and at the final sender entry alike,
 because it withholds the run and a cancellation alone does not.
+A cancelled call returns the stored run only while it reconciles a durable
+marker: at the reconciliation entry, at the final sender entry, whose answer
+arrives at that entry, during the observation of the job and at the binding
+of a completed observation. The result there is the ambiguous one, with the
+run and `OperationalCanceled`. A cancelled answer from a pre-check, a cut or
+a binding before the marker is value-free. So is the one from the
+verification of an accepted receipt, although run and receipt are durable
+there: the retry under a live context returns both.
 The durable write is never erased: denial after an acknowledged intent, stamp
 or marker leaves it committed, and an unknown response is not upgraded. The
 result carries one operation and write slot and reports the last writer
@@ -1298,7 +1350,9 @@ HTTP status, DTO field, producer declaration or configuration spelling is
 selected. Current finite inventories enumerate the private typed references in the local candidate.
 
 Commissioning gate. Commission, advance and withdrawal have zero production
-callers. A maintained gate fails on the first non-test reference to any of
+callers, and so have the two private handoff entries and the domain and
+provider constructors. A maintained gate fails on the first non-test
+reference to any of
 them and prints the prerequisites below, which must each be answered before
 such a reference is added. The gate's identifiers are pinned against this
 list, so the gate and this document cannot drift apart.
@@ -1310,6 +1364,7 @@ list, so the gate and this document cannot drift apart.
 | `CP-POLICY-CUSTODY` | Who may commission, advance and withdraw, and where the installation policy is stored. |
 | `CP-NATIVE` | The native prerequisites of the paragraph above. |
 | `CP-RELEASE` | One qualified release per domain is enforced, or the admission digest covers the release. The digest covers configuration, not the compiled behaviour of the built-in policies. |
+| `CP-PUBLIC-MAPPING` | The public mapping of the handoff's results and reasons is selected: what each private reason tells a caller of the public keyed path. It includes what a first delivery that ordinary resolution refuses tells its caller. The private result answers `OperationalUnavailable` there, whatever the cause, while ordinary Submit names a refusal by the rules (`signer_revoked`, `artifact_revoked`). |
 
 ## 9. Future integrated proof and bounded path map
 

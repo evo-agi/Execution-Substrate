@@ -14023,7 +14023,13 @@ func operationalAdmissionOutcomeRule(owner string) bool {
 	return strings.Contains(owner, "| Retained original: signer not allowed or revoked, artifact revoked, built-in policy denies | `OperationalDenied` | No |") &&
 		strings.Contains(owner, "| Retained evidence does not verify under the current verifier | `OperationalDenied`.") &&
 		strings.Contains(owner, "| First delivery that ordinary resolution refuses, whatever the cause: the rules, an unsupported request or an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |") &&
-		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No |") &&
+		strings.Contains(owner, "| The context of the call has ended and the admission returned no refusal of its own in this call | `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |") &&
+		strings.Contains(owner, "The first five rows are value-free and withhold run and receipt at the\nrefused cut.") &&
+		strings.Contains(owner, "A cancelled call returns the stored run only while it reconciles a durable\nmarker: at the reconciliation entry, at the final sender entry, whose answer\narrives at that entry, during the observation of the job and at the binding\nof a completed observation.") &&
+		strings.Contains(owner, "a binding before the marker is value-free. So is the one from the\nverification of an accepted receipt, although run and receipt are durable") &&
+		strings.Contains(owner, "names it as the prerequisite `CP-PUBLIC-MAPPING`") &&
+		!strings.Contains(owner, "Every row is value-free") &&
+		!strings.Contains(owner, "a later gate, and the handoff has no production caller") &&
 		strings.Contains(owner, "`OperationalDenied` is the answer of the re-judgment only.") &&
 		strings.Contains(owner, "an ended context reports the cancellation and not `OperationalUnavailable` or") &&
 		strings.Contains(owner, "also when the\ncontext has ended meanwhile") &&
@@ -14155,10 +14161,20 @@ func operationalV2AssuranceOwnerRule(owner string) bool {
 		strings.Contains(owner, "a conversion in either direction") &&
 		strings.Contains(owner, "is listed as well (`whole-instantiate`)") &&
 		strings.Contains(owner, "(`interface-selection`), are references to the method") &&
-		strings.Contains(owner, "is compiled for none of them") &&
-		strings.Contains(owner, "Their scope is these two\npackages") &&
+		strings.Contains(owner, "Every type argument is read.") &&
+		strings.Contains(owner, "equal the owning type's\n(`whole-mirror`)") &&
+		strings.Contains(owner, "whatever its field types and\ntags") &&
+		strings.Contains(owner, "through a named or embedded constraint (`whole-constrain`)") &&
+		strings.Contains(owner, "The inventory therefore lists, at its declaration, every type parameter") &&
+		strings.Contains(owner, "an exact inventory holds\nevery type parameter declared in a package that declares an owning type") &&
+		strings.Contains(owner, "Each owning type is read in every production package of the module") &&
+		strings.Contains(owner, "Every protected field is unexported, which a test holds") &&
+		strings.Contains(owner, "non-test Go file of the module is compiled for none of them") &&
 		strings.Contains(owner, "a statement assembled at run time is not seen") &&
-		strings.Contains(owner, "exact import inventory") &&
+		strings.Contains(owner, "exact import inventory\ncovers every non-test source file of the module") &&
+		!strings.Contains(owner, "only at an instantiation that names an owning type") &&
+		!strings.Contains(owner, "Their scope is these two") &&
+		!strings.Contains(owner, "of the two packages is compiled") &&
 		strings.Contains(owner, "exactly one reference to `Service.confirmOperationalAdmission`") &&
 		strings.Contains(owner, "Exactly three store functions contain a statement that") &&
 		strings.Contains(owner, "not a general proof of aliases or")
@@ -14256,12 +14272,17 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 v2 field-access guard completion", "red-team review of its",
 		"PR #12 durable admission generation, freshness and v1 removal",
 		"PR #12 durable admission: corrections after the second audit",
+		"PR #12 durable admission: corrections after the third audit",
+		"It lists every struct type written in the module whose field names,\norder and embedding equal an owning type's (`whole-mirror`)",
+		"at its declaration\n(`whole-constrain`)",
+		"which the\ncommissioning gate names as the prerequisite `CP-PUBLIC-MAPPING`",
+		"The commissioning gate gains a sixth\nprerequisite, `CP-PUBLIC-MAPPING`",
 		"refusal of a retained original by the current rules reports the value-free",
 		"ordinary resolution refuses, which stores nothing",
 		"so those two have no re-read",
 		"amend the\nunmerged migration 5 (decision D-1)", "with a 30 second limit (D-2)",
 		"delete `operational_local_v1` (D-3)", "no **Temporary compatibility\nedge** remains on this path",
-		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`")
+		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,\n`CP-PUBLIC-MAPPING`")
 	assertContainsAll(t, "separate evidence and policy ownership", admission,
 		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected",
 		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this")
@@ -14314,7 +14335,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		}
 	}
 
-	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE"}
+	wantIDs := []string{"CP-ROLLBACK", "CP-EPOCH", "CP-POLICY-CUSTODY", "CP-NATIVE", "CP-RELEASE", "CP-PUBLIC-MAPPING"}
 	docIDs := operationalCommissioningPrerequisiteIDs(owner)
 	gateIDs := operationalCommissioningGateIDs(mustRead(t, "es/admission/reliable_submit_guardrails_test.go"))
 	if !slices.Equal(docIDs, wantIDs) || !slices.Equal(gateIDs, wantIDs) {
@@ -14372,7 +14393,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"DenialReportedUnavailable", "built-in policy denies | `OperationalDenied` | No |", "built-in policy denies | `OperationalUnavailable` | No |"},
 		{"DenialNotLimitedToRetainedOriginals", "| Retained original: signer not allowed or revoked", "| Signer not allowed or revoked"},
 		{"FirstDeliveryReportedDenied", "an unavailable dependency | `OperationalUnavailable`. Nothing is stored. | No |", "an unavailable dependency | `OperationalDenied`. Nothing is stored. | No |"},
-		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled` | No |", "returned no refusal of its own in this call | `OperationalUnavailable` | No |"},
+		{"CancellationRowDropped", "returned no refusal of its own in this call | `OperationalCanceled` | No, except", "returned no refusal of its own in this call | `OperationalUnavailable` | No, except"},
+		{"CancelledAnswerNeverReturnsTheRun", "| `OperationalCanceled` | No, except while a durable marker is reconciled, where the stored run is returned (below) |", "| `OperationalCanceled` | No |"},
+		{"EveryRowValueFree", "The first five rows are value-free and withhold run and receipt at the\nrefused cut.", "Every row is value-free and withholds run and receipt at the refused cut."},
+		{"CancelledAnswerAlwaysReturnsTheRun", "returns the stored run only while it reconciles a durable\nmarker", "returns the stored run wherever a\nmarker"},
+		{"CancelledObservationBindingWithholdsTheRun", "during the observation of the job and at the binding\nof a completed observation.", "and during the observation of the job."},
+		{"CancelledReceiptReplayReturnsTheRun", "So is the one from the\nverification of an accepted receipt, although", "Not so the one from the\nverification of an accepted receipt, because"},
+		{"PublicMappingLeftToALaterGate", "names it as the prerequisite `CP-PUBLIC-MAPPING`", "leaves it to a later gate"},
 		{"CancelledStepReportsItsOwnReason", "an ended context reports the cancellation and not `OperationalUnavailable` or", "an ended context reports its own reason, `OperationalUnavailable` or"},
 		{"CancellationBeatsDenial", "also when the\ncontext has ended meanwhile", "unless the\ncontext has ended meanwhile"},
 		{"ResidueOnlyAfterDenial", "That holds whatever stopped the call between staging and the stamp", "That holds only for a denial between staging and the stamp"},
@@ -14438,10 +14465,17 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"MissingConversionAwayRule", "a conversion in either direction"},
 		{"MissingInstantiationRule", "is listed as well (`whole-instantiate`)"},
 		{"MissingDynamicDispatchRule", "(`interface-selection`), are references to the method"},
-		{"MissingFileSetRule", "is compiled for none of them"},
-		{"MissingPackageScopeLimit", "Their scope is these two\npackages"},
+		{"MissingEveryTypeArgumentRule", "Every type argument is read."},
+		{"MissingMirrorRule", "equal the owning type's\n(`whole-mirror`)"},
+		{"MissingMirrorFieldTypeRule", "whatever its field types and\ntags"},
+		{"MissingConstrainRule", "through a named or embedded constraint (`whole-constrain`)"},
+		{"MissingConstrainAtDeclarationRule", "The inventory therefore lists, at its declaration, every type parameter"},
+		{"MissingTypeParameterInventory", "an exact inventory holds\nevery type parameter declared in a package that declares an owning type"},
+		{"MissingModuleWideReading", "Each owning type is read in every production package of the module"},
+		{"MissingUnexportedFieldRule", "Every protected field is unexported, which a test holds"},
+		{"MissingFileSetRule", "non-test Go file of the module is compiled for none of them"},
 		{"MissingRunTimeStatementLimit", "a statement assembled at run time is not seen"},
-		{"MissingImportInventory", "exact import inventory"},
+		{"MissingImportInventory", "exact import inventory\ncovers every non-test source file of the module"},
 		{"MissingConfirmationInventory", "exactly one reference to `Service.confirmOperationalAdmission`"},
 		{"MissingAdmissionTableWriterInventory", "Exactly three store functions contain a statement that"},
 		{"MissingFiniteGuardLimit", "not a general proof of aliases or"},
@@ -14453,6 +14487,22 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			mutant := strings.Replace(owner, tc.phrase, "unmaintained", 1)
 			if operationalV2AssuranceOwnerRule(mutant) {
 				t.Fatal("unsafe owner deletion survived")
+			}
+		})
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"GenericListedOnlyAtInstantiation", "which is a limit of dataflow\nand no longer one of generics", "where a generic one is listed\nonly at an instantiation that names an owning type"},
+		{"InventoriesScopedToTwoPackages", "Each owning type is read in every production package of the module", "Their scope is these two packages"},
+		{"FileSetScopedToTwoPackages", "non-test Go file of the module is compiled for none of them", "non-test Go file of the two packages is compiled for none of them"},
+		{"ImportInventoryScopedToTwoPackages", "covers every non-test source file of the module", "covers every non-test source file of `es/admission` and the store package"},
+		{"MirrorRuleLimitedToFieldTypes", "whatever its field types and\ntags", "where its field types and\ntags are the owner's"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			if operationalV2AssuranceOwnerRule(strings.Replace(owner, tc.from, tc.to, 1)) {
+				t.Fatal("a corrected guard limit stated again survived")
 			}
 		})
 	}
@@ -14482,8 +14532,29 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
 		}
 		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-EPOCH (answered) |", 1))
-		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 4 {
+		if slices.Contains(ids, "CP-EPOCH") || len(ids) != 5 {
 			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PublicMappingRemovedFromOwner", func(t *testing.T) {
+		const row = "| `CP-PUBLIC-MAPPING` |"
+		if strings.Count(owner, row) != 1 {
+			t.Fatalf("prerequisite row anchor count %d", strings.Count(owner, row))
+		}
+		ids := operationalCommissioningPrerequisiteIDs(strings.Replace(owner, row, "| CP-PUBLIC-MAPPING (later) |", 1))
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+			t.Fatalf("a removed prerequisite was still read: %q", ids)
+		}
+	})
+	t.Run("PublicMappingRemovedFromGate", func(t *testing.T) {
+		gate := mustRead(t, "es/admission/reliable_submit_guardrails_test.go")
+		const entry = ", \"CP-PUBLIC-MAPPING\""
+		if strings.Count(gate, entry) != 1 {
+			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
+		}
+		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
+		if slices.Contains(ids, "CP-PUBLIC-MAPPING") || len(ids) != 5 {
+			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})
 	t.Run("PrerequisiteRemovedFromGate", func(t *testing.T) {
@@ -14493,7 +14564,7 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 			t.Fatalf("gate anchor count %d", strings.Count(gate, entry))
 		}
 		ids := operationalCommissioningGateIDs(strings.Replace(gate, entry, "", 1))
-		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 4 {
+		if slices.Contains(ids, "CP-ROLLBACK") || len(ids) != 5 {
 			t.Fatalf("a removed gate prerequisite was still read: %q", ids)
 		}
 	})
