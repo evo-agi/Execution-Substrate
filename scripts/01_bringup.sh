@@ -222,6 +222,7 @@ cmd_up() {
   ensure_control_plane_image "${LOGS_DIR}/control-plane-image-build.log"
   probe_control_plane_host_loopback
   verify_es_staging_invariant "${ES_CONFIG}"
+  verify_ars_storage_for_operator "${ARS_CONFIG}"
 
   start_managed_service "ars" "${SCRIPT_DIR}/02_start_ars.sh"
   wait_for_service_ready "artifact-registry" "${ARS_URL}" "$(resolve_value ARS_RESOLVE)" "${READY_TIMEOUT_SECONDS}"

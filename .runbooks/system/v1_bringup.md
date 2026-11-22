@@ -243,8 +243,12 @@ What this does:
 
 - regenerates `.out/Dockerfile` through `scripts/generate_control_plane_dockerfile.sh`, then rebuilds the shared service image used by the current bring-up path; that image currently bundles `ars`, `ags`, `egs`, `es`, `es-runtime-support`, and `cgs` even though the minimal operator path starts only ARS, EGS, AGS, and ES
 - proves that Docker host networking can actually reach host loopback from a container before continuing; on a user-namespace-remapped Docker daemon, Docker refuses host networking (`cannot share the host's network namespace when user namespaces are enabled`), so bring-up stops here before starting any service. Rootless Docker is untested and unsupported for bring-up
-- starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
-- starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
+- starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS; ARS runs in its container as your numeric UID and primary GID, with no supplementary groups. Before any service starts, bring-up checks ARS's storage and refuses unless:
+  - `storage.root_dir` and `storage.index_file` are absolute paths; a missing storage root is created as you
+  - the index file already exists, and you can write to its directory and read the file
+  - you can write to and search every directory under the storage root, and read every file there; storage that an earlier bring-up wrote as root fails this check, and the refusal prints the `sudo chown` command that hands it back to you
+- starts EGS and AGS and waits for their public health surfaces to report `"ready": true`; both run as your numeric UID and primary GID too
+- ARS, EGS and AGS read their config file and every file it names in a `*_file` setting (TLS certificate, key and client CA, and for AGS its ARS client certificate, key and root CA) as you, so each must be readable by your UID or your primary group; and because no service runs as root, every configured port must be 1024 or higher (the defaults are 8442 to 8445) unless your host allows unprivileged processes to bind lower ports
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`; without a supported-local roots profile, ES runs in its container as your numeric UID and primary GID (what `id -u` and `id -g` print), with no supplementary groups. ES refuses to start unless:
   - the configured staging and results roots are owned by your UID and your primary group; roots that carry another group, for example a shared project group or the group a setgid parent directory hands down, are refused
   - the retained-result key file is owned by you, has mode `0400` or `0600` and sits outside both roots
