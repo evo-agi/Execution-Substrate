@@ -246,7 +246,7 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 
 	// The staging root holds exactly the two successful run roots plus the one
 	// exclusive startup probe directory/symlink pair that ES retains by
-	// contract (.docs/execution_lifecycle/capability_probing.md); nothing else.
+	// contract (.docs/system_overview/capability_probing.md); nothing else.
 	runNames := retainedStageRunRoots(t, filepath.Join(stack.rootDir, "es-stage"))
 	if len(runNames) != 2 {
 		t.Fatalf("expected two successful stage roots to remain, found %d: %v", len(runNames), runNames)
