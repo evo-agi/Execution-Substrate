@@ -13,34 +13,64 @@ space and a test path:
     execution-substrate/es/app TestExample
     execution-substrate/es/app TestExample/rejects_a_missing_tool
 
-A test path is a top-level test name, or that name followed by one or more
-subtest names, joined by "/" and spelled as go test prints them (go test
-prints a space in a subtest name as "_"). Empty lines and lines whose first
-character is "#" are ignored. Every other line must be an entry.
+A test path is a top-level test name, or the path that go test prints for a
+subtest: that name and one or more further parts, joined by "/". go test
+prints a space in a subtest name as "_", and it joins a subtest to its
+parent with "/" whether or not the subtest's own name holds a "/". Empty
+lines and lines whose first character is "#" are ignored. Every other line
+must be an entry.
 
-A test name may hold only ASCII letters, digits and underscores, and a
-subtest name the same plus "-", so an entry can never act as a regular
-expression. An entry applies only to the package it names, and to exactly
-one test or subtest of it:
+A test name may hold only ASCII letters, digits and underscores, and every
+further part of a test path the same plus "-", so an entry can never act as
+a regular expression. An entry applies only to the package it names, and it
+stands for one test or one subtest of it:
 
   - the package must be a package of this module;
   - go test must list the top-level test name exactly once for that package.
     A name defined in both the internal and the external test package of one
     directory is listed twice, and one entry would skip both;
-  - no entry may lie inside another entry of the same package.
+  - no entry may lie inside another entry of the same package;
+  - an entry for a whole test stands for that test with all of its subtests;
+  - an entry for a subtest must stand for that subtest alone. go test reads
+    a test path as the start of a path. The skip for TestA/x therefore also
+    covers every test whose path starts with "TestA/x/": a subtest of x, and
+    a subtest of TestA whose own name is "x/...". So a listed subtest must
+    have no subtests of its own and no such neighbour. Otherwise the entry
+    has to name a narrower subtest, or the whole test.
 
 gate
     Checks the list, then runs every package of the module. A package with
-    entries runs on its own with exactly its own entries skipped. The gate
-    then checks what really ran there: every top-level test that is not an
-    entry, and the parent of every listed subtest. All other packages run
-    with nothing skipped. Exits 0 only if every run and every check passes.
+    entries runs on its own with its own entries skipped. The gate then
+    checks that every top-level test that is not an entry ran there, and
+    writes which tests ran beside each listed subtest. All other packages
+    run with nothing skipped. Exits 0 only if every run and every check
+    passes. A skipped test leaves no trace, so this mode cannot tell what
+    else an entry for a subtest skips. still-failing does that.
 
 still-failing
-    Checks the list, then runs exactly the entries, each in the package it
-    names. Exits 0 only if every entry fails. An entry that passes, skips
-    itself or does not run no longer belongs in the list. It is named, and
-    the status is 1.
+    Checks the list, then runs every entry in a go test of its own, in the
+    package it names. Exits 0 only if every entry fails and stands for
+    itself alone. An entry that passes, skips itself or does not run no
+    longer belongs in the list. An entry for a subtest whose run also
+    starts another test covers more than itself. Each such entry is named,
+    and the status is 1.
+
+What no run can show: a test under the path of a listed subtest x of TestA
+that does not start while x fails. There are two kinds.
+
+A subtest that x itself would start after the point where x fails on this
+host. It is part of x, and nothing but x is lost with it.
+
+A subtest named "x/..." that TestA starts only when x did not fail, for
+example after
+
+    if !t.Run("x", ...) { return }
+
+That one is a test of its own. A listed x fails on this host, so it never
+starts in the run of the entry, and the gate skips it together with x. No
+pattern of go test skips x and not "x/...". An entry for a subtest is
+therefore safe only in a test that goes on in the same way whether or not
+that subtest fails. Where a test does not, list the whole test.
 
 Exit status: 0 on success, 1 when a Go command or a check of a run fails, 2
 when the list or the command line is wrong. No test has run when the status
@@ -53,9 +83,10 @@ import shlex
 import subprocess
 import sys
 
-# One entry: a package import path, one space, a test path. Every element of
-# the test path is letters, digits and underscores (a subtest name may also
-# hold "-"), so it has no meaning as a regular expression beyond its own text.
+# One entry: a package import path, one space, a test path. Every part of the
+# test path is letters, digits and underscores (a part after the first may
+# also hold "-"), so it has no meaning as a regular expression beyond its own
+# text.
 # The package is accepted only if it is exactly one of the import paths that
 # "go list ./..." prints, so it cannot be a package pattern either.
 ENTRY = re.compile(
@@ -83,8 +114,26 @@ def emit(text):
 
 
 def inside(path, other):
-    """Report whether test path "path" is a subtest, at any depth, of "other"."""
+    """Report whether test path "path" starts with test path "other" and a "/".
+
+    That holds for a subtest of "other" at any depth, and for a test beside
+    "other" whose own name starts with the last part of "other" and a "/".
+    go test tells them apart no more than this does.
+    """
     return path.startswith(other + "/")
+
+
+def nearest_above(path, tests):
+    """Return the longest of the given test paths that "path" is inside of.
+
+    Returns None when there is none.
+    """
+    parts = path.split("/")
+    for length in range(len(parts) - 1, 0, -1):
+        candidate = "/".join(parts[:length])
+        if candidate in tests:
+            return candidate
+    return None
 
 
 def read_entries(path):
@@ -133,17 +182,21 @@ def by_package(entries):
 
 
 def exact_paths(paths):
-    """Return a pattern that matches exactly the given test paths.
+    """Return the narrowest pattern that go test has for the given test paths.
 
     go test splits a -run or -skip pattern at "|" into alternatives and each
-    alternative at "/" into one expression per level of the test path. Every
-    level is anchored here, so "^A$/^b$" matches subtest b of test A, not A
-    itself and not A's other subtests. That reading of "|" is why entries of
-    one package must not overlap: go test stops at the first alternative
-    that matches even in part.
+    alternative at "/" into one expression per part of the test path. Every
+    part is anchored here, so "^A$/^b$" does not match A itself and not a
+    subtest of A with another name. It does match every test whose path
+    starts with "A/b/": go test splits the path of a test at "/" as well
+    and compares only as many parts as the pattern has. No pattern is
+    narrower than that, which is why still-failing has to show that no such
+    test starts. The reading of "|" is why entries of one package must not
+    overlap: go test stops at the first alternative that matches even in
+    part.
     """
     return "|".join(
-        "/".join("^" + element + "$" for element in path.split("/")) for path in paths
+        "/".join("^" + part + "$" for part in path.split("/")) for path in paths
     )
 
 
@@ -275,7 +328,11 @@ def check_gated_run(package, paths, listed, verdicts):
     """Compare what ran in a passing gated run of a package with the list.
 
     Returns the problems found. Writes one line per listed subtest saying
-    which other subtests of its parent ran.
+    which tests ran beside it: the tests with the same nearest test above
+    them among those that ran. A part of a listed path need not be a test,
+    because the name of a subtest may itself hold a "/". So only the
+    top-level test of a listed subtest is required to have run here.
+    still-failing requires the listed subtest itself to start.
     """
     problems = []
     whole = {path for path in paths if "/" not in path}
@@ -287,34 +344,23 @@ def check_gated_run(package, paths, listed, verdicts):
             "%s: tests that are not listed did not run: %s" % (package, ", ".join(missing))
         )
     for path in paths:
-        if "/" not in path:
+        parent = nearest_above(path, verdicts)
+        if parent is None:
+            # A whole test, or a subtest of a test reported as missing above.
             continue
-        elements = path.split("/")
-        ancestors = ["/".join(elements[:depth]) for depth in range(1, len(elements))]
-        absent = [ancestor for ancestor in ancestors if ancestor not in verdicts]
-        if absent:
-            if absent[0] not in missing:
-                problems.append(
-                    "%s: %s did not run, so nothing shows that the subtests beside "
-                    "the listed %s ran" % (package, absent[0], path)
-                )
-            continue
-        parent = ancestors[-1]
-        siblings = sorted(
-            test
-            for test in verdicts
-            if inside(test, parent) and "/" not in test[len(parent) + 1 :]
+        beside = sorted(
+            test for test in verdicts if nearest_above(test, verdicts) == parent
         )
         emit(
-            "%s: %s ran without its listed subtest %s; its other subtests: %s"
+            "%s: %s ran without the listed %s; beside it ran: %s"
             % (
                 package,
                 parent,
-                elements[-1],
+                path[len(parent) + 1 :],
                 ", ".join(
-                    "%s %s" % (test[len(parent) + 1 :], verdicts[test]) for test in siblings
+                    "%s %s" % (test[len(parent) + 1 :], verdicts[test]) for test in beside
                 )
-                or "none",
+                or "nothing",
             )
         )
     return problems
@@ -355,20 +401,31 @@ def gate(entries):
     return 0
 
 
-def verdict_alone(package, path):
-    """Run one entry on its own and return its verdict, or None.
+def also_covered(path, started):
+    """Return the tests that an entry covers besides the one it names.
 
-    An entry that starts and stops the test binary before it reports, for
-    example by exiting the process, counts as failing.
+    "started" holds the tests that started in a run of that entry alone. An
+    entry for a whole test stands for the test and all of its subtests, and
+    its one anchored part can start nothing else. An entry for a subtest
+    stands for that subtest alone, so every other test that started inside
+    its path is one that the same pattern skips in the gate.
     """
-    status, verdicts, started = go_test_json(
-        ["-count=1", "-run", exact_paths([path]), package]
-    )
-    if path in verdicts:
-        return verdicts[path]
-    if path in started and status != 0:
-        return "fail"
-    return None
+    if "/" not in path:
+        return []
+    return sorted(test for test in started if inside(test, path))
+
+
+def subtests_note(path, verdicts, started):
+    """Return a note on how the subtests of a listed whole test ended, or ""."""
+    if "/" in path:
+        return ""
+    ended = [verdicts.get(test, "unfinished") for test in started if inside(test, path)]
+    counts = [
+        "%d %s" % (ended.count(how), how)
+        for how in VERDICTS + ("unfinished",)
+        if ended.count(how)
+    ]
+    return " (its subtests: %s)" % ", ".join(counts) if counts else ""
 
 
 def still_failing(entries, list_path):
@@ -377,35 +434,44 @@ def still_failing(entries, list_path):
     listings = check_list(grouped, packages)
 
     stale = []
+    wide = []
     failed = []
     for package, paths in grouped.items():
         if listings[package] is None:
-            # The run of this package below reports the reason.
+            # The runs of this package below report the reason.
             failed.append("go test -list for " + package)
-        emit("::group::Expected failures of the listed tests in " + package)
-        _, verdicts, started = go_test_json(
-            ["-count=1", "-run", exact_paths(paths), package]
-        )
-        found = {}
-        if started:
-            for path in paths:
-                # No verdict can mean that an earlier listed test stopped the
-                # test binary, so such an entry is asked again on its own.
-                found[path] = verdicts.get(path) or verdict_alone(package, path)
-        emit("::endgroup::")
-        if not started:
-            # For example a build failure. The output above has the reason.
-            failed.append("no listed test of %s started" % package)
-            continue
         for path in paths:
-            if found[path] == "fail":
-                emit("still fails: %s %s" % (package, path))
-            elif found[path] == "pass":
+            # One go test for each entry: another listed test in the same
+            # process could change what this one does.
+            emit("::group::Expected failure of the listed %s %s" % (package, path))
+            status, verdicts, started = go_test_json(
+                ["-count=1", "-run", exact_paths([path]), package]
+            )
+            emit("::endgroup::")
+            if not started:
+                # For example a build failure. The output above has the
+                # reason, and the other entries of the package would meet it too.
+                failed.append("no listed test of %s started" % package)
+                break
+            found = verdicts.get(path)
+            if found is None and path in started and status != 0:
+                # The entry stopped the test binary before it reported, for
+                # example by exiting the process.
+                found = "fail"
+            if found == "fail":
+                emit(
+                    "still fails: %s %s%s"
+                    % (package, path, subtests_note(path, verdicts, started))
+                )
+            elif found == "pass":
                 stale.append((package, path, "it passes"))
-            elif found[path] == "skip":
+            elif found == "skip":
                 stale.append((package, path, "it skips itself"))
             else:
                 stale.append((package, path, "it did not run"))
+            others = also_covered(path, started)
+            if others:
+                wide.append((package, path, others))
 
     for package, path, reason in stale:
         emit(
@@ -413,11 +479,22 @@ def still_failing(entries, list_path):
             "Delete its line from %s, or correct the line."
             % (reason, package, path, list_path)
         )
+    for package, path, others in wide:
+        emit(
+            "::error::listed subtest is not the only test under its path: %s %s also "
+            "covers %s. The gate skips them with it. An entry for a subtest must be "
+            "the only test whose path starts with its own. In %s, name such a "
+            "subtest, or list the whole test %s."
+            % (package, path, ", ".join(others), list_path, path.split("/")[0])
+        )
     if failed:
         emit("::error::listed tests check failed: " + "; ".join(failed))
-    if stale or failed:
+    if stale or wide or failed:
         return 1
-    emit("all %d listed tests still fail on this host" % len(entries))
+    emit(
+        "all %d listed tests still fail on this host, each in a run of its own"
+        % len(entries)
+    )
     return 0
 
 

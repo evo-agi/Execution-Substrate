@@ -962,9 +962,15 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"restores no build or module cache",
 		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
 		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes",
-		"`.github/ci/go_test_gate.py` skips exactly those entries, each only in the package it names",
-		"A second blocking step fails the run when an entry no longer fails on the runner",
-		"`.github/ci/go_test_gate_selftest.py` checks both behaviors on every run before the tests",
+		"`.github/ci/go_test_gate.py` skips those entries, each only in the package it names",
+		"A second blocking step runs every entry in a `go test` of its own",
+		"It fails the run when an entry no longer fails on the runner",
+		"It also fails the run when the run of an entry for a subtest starts any other test",
+		"`go test` reads a test path as the start of a path and would skip that test together with the entry",
+		"No run can show a subtest that a test starts only when its listed subtest did not fail",
+		"The list file states that limit and the rule that covers it",
+		"`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before the tests",
+		"It also holds the workflow file by its SHA-256, so every edit of the workflow has to change that value in the same change",
 		"A green run is validation evidence for the committed tree on that runner image",
 		"It is not design authority",
 		"It is not a macOS run, a race-detector run, a Linux runtime proof, a Remote Alpha proof, or a supported-local proof",
@@ -972,6 +978,7 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	)
 	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
 		"no CI system introduced",
+		"skips exactly those entries",
 	)
 	ciWorkflow := mustRead(t, ".github/workflows/go.yml")
 	assertContainsAll(t, "Go CI workflow matches the documented baseline", ciWorkflow,
@@ -991,6 +998,14 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
 		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
 	)
+	// The CI self-check holds the workflow file by its SHA-256. This test
+	// requires that value to be the hash of the file as it is, so an edit of
+	// the workflow is also caught by go test on any host, and not only by the
+	// workflow step that runs the self-check.
+	ciWorkflowHold := fmt.Sprintf("WORKFLOW_SHA256 = \"%x\"\n", sha256.Sum256([]byte(ciWorkflow)))
+	if !strings.Contains(mustRead(t, ".github/ci/go_test_gate_selftest.py"), "\n"+ciWorkflowHold) {
+		t.Fatalf("the CI self-check does not hold .github/workflows/go.yml as it is; review the whole workflow, then set %s", strings.TrimSpace(ciWorkflowHold))
+	}
 	for _, path := range []string{
 		".github/ci/environment-only-tests.txt",
 		".github/ci/go_test_gate.py",

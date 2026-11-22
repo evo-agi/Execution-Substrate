@@ -106,11 +106,17 @@ tests of every package of the module.
 
 `.github/ci/environment-only-tests.txt` is the single statement of what the
 test step excludes: tests and subtests that cannot pass on that runner for host
-reasons. `.github/ci/go_test_gate.py` skips exactly those entries, each only in
-the package it names. A second blocking step fails the run when an entry no
-longer fails on the runner, so an entry cannot outlive its reason.
-`.github/ci/go_test_gate_selftest.py` checks both behaviors on every run before
-the tests.
+reasons. `.github/ci/go_test_gate.py` skips those entries, each only in the
+package it names. A second blocking step runs every entry in a `go test` of its
+own. It fails the run when an entry no longer fails on the runner, so an entry
+cannot outlive its reason. It also fails the run when the run of an entry for a
+subtest starts any other test: `go test` reads a test path as the start of a
+path and would skip that test together with the entry. No run can show a
+subtest that a test starts only when its listed subtest did not fail. The list
+file states that limit and the rule that covers it.
+`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before
+the tests. It also holds the workflow file by its SHA-256, so every edit of the
+workflow has to change that value in the same change.
 
 A green run is validation evidence for the committed tree on that runner
 image. It is not design authority. It is not a macOS run, a race-detector run,

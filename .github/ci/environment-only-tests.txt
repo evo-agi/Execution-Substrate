@@ -1,26 +1,53 @@
 # Tests that cannot pass on the CI runner for host reasons, not code reasons.
 #
 # Format: one entry per line, holding exactly a package import path, one
-# space and a test path. A test path is a top-level test name, or that name
-# followed by "/" and a subtest name as go test prints it, any number of
-# times. Empty lines and lines whose first character is "#" are ignored. Any
-# other line is an error. .github/ci/go_test_gate.py reads this file and
-# documents the rules.
+# space and a test path. A test path is a top-level test name, or the path
+# that go test prints for a subtest. Empty lines and lines whose first
+# character is "#" are ignored. Any other line is an error.
+# .github/ci/go_test_gate.py reads this file and documents the rules.
 #
-# An entry applies only to the package it names, and to exactly one test or
-# subtest of it. The step "Test" skips exactly the entries and runs
+# An entry applies only to the package it names. An entry for a whole test
+# stands for that test with all of its subtests. An entry for a subtest
+# stands for that subtest alone. The step "Test" skips the entries and runs
 # everything else. Tests run unchanged everywhere else.
 #
 # Every entry must still fail on the runner. The step "Listed tests still
-# fail" runs exactly the entries and fails the run when one of them passes,
-# skips itself or does not run. So an entry cannot outlive its reason: a
-# change that makes a listed test pass on the runner, by porting it or
-# otherwise, has to delete its line in the same change.
+# fail" runs every entry in a go test of its own and fails the run when one
+# of them passes, skips itself or does not run. So an entry cannot outlive
+# its reason: a change that makes a listed test pass on the runner, by
+# porting it or otherwise, has to delete its line in the same change.
 #
 # Name the narrowest thing that fails. Where one subtest fails and its
 # siblings pass on the runner, the entry names that subtest, so the siblings
 # stay in the gate. A change that adds a test which can only pass off the
 # runner adds its entry here itself.
+#
+# Subtests that cannot be listed. For each of them, list the whole test:
+#
+#   - A subtest whose printed path has a part that is empty or that holds a
+#     character other than an ASCII letter, a digit, "_" or "-". go test
+#     prints a space as "_", and the parts are what stands between the "/".
+#   - A subtest that go test numbers with "#01" because its name repeats.
+#   - A subtest that has subtests of its own, or a neighbour whose name
+#     starts with its name and a "/". go test reads a test path as the start
+#     of a path, so the skip for TestA/x also covers every test whose path
+#     starts with "TestA/x/". The step "Listed tests still fail" fails the
+#     run when the run of an entry starts such a test. Where that test is a
+#     subtest of the listed one and it is what fails, the entry can name it
+#     instead.
+#
+# What that step cannot see: a test under the path of a listed subtest x of
+# TestA that does not start while x fails. A subtest that x itself would
+# start after the point where it fails here is part of x, and nothing but x
+# is lost with it. The other kind is a test of its own: a subtest named
+# "x/..." that TestA starts only when x did not fail, for example after
+#
+#     if !t.Run("x", ...) { return }
+#
+# The listed x fails here, so that subtest never starts in the run of the
+# entry, and the gate skips it together with x. No pattern of go test skips
+# x and not "x/...". Before listing a subtest, read its test. If the test
+# stops or changes course when that subtest fails, list the whole test.
 #
 # The way to shorten this list is to port a test so that it passes on a Linux
 # runner without weakening it.

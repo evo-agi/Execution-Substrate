@@ -33,20 +33,21 @@ jobs:
       GOFLAGS: -mod=readonly
       # Tests that cannot pass on this runner for host reasons. Each entry
       # names one package and one test or subtest. The file explains each
-      # entry.
+      # entry and says which subtests cannot be listed.
       ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
     steps:
       # Actions are pinned to full commit SHAs. The comment names the release
-      # tag that pointed at that commit when it was pinned.
+      # tag that pointed at that commit when it was pinned. Both releases
+      # target the Node.js 24 runtime.
       - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # No build or module cache is restored. Every run downloads the modules
       # that "go mod verify" then checks, and compiles everything from source.
       - name: Set up Go from go.mod
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: false
@@ -68,18 +69,21 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Proves on throwaway modules that the two steps below do what they say,
-      # and that this file still pins its actions and keeps both steps blocking.
+      # Proves on throwaway modules that the two steps below do what they say.
+      # It also holds this file by its SHA-256: an edit of this file fails
+      # here until the value in the self-check is changed in the same change.
       - name: Check the test gate
         run: python3 -I -B .github/ci/go_test_gate_selftest.py
 
-      # Runs every package. A package with entries runs with exactly its own
-      # entries skipped; every other package runs with nothing skipped.
+      # Runs every package. A package with entries runs with its own entries
+      # skipped; every other package runs with nothing skipped.
       - name: Test
         run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
 
-      # Runs exactly the entries and fails when one of them does not fail on
-      # this runner: it passes, skips itself or does not run. Such an entry no
-      # longer belongs in the list, and its line has to be deleted.
+      # Runs every entry in a go test of its own. Fails when an entry does not
+      # fail on this runner: it passes, skips itself or does not run. Such an
+      # entry no longer belongs in the list, and its line has to be deleted.
+      # Also fails when the run of an entry for a subtest starts any other
+      # test, because the step above skips that test together with the entry.
       - name: Listed tests still fail
         run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"
