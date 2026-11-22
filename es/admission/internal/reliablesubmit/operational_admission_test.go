@@ -582,7 +582,47 @@ func TestOperationalAdmissionTriggers(t *testing.T) {
 			{"time alone", "UPDATE reliable_submit_operational_admission SET updated_at_unix_ns=updated_at_unix_ns+1" + where, nil, transition},
 			{"time back", "UPDATE reliable_submit_operational_admission SET state=2, updated_at_unix_ns=updated_at_unix_ns-1" + where, nil, regression},
 			{"state out of range", "UPDATE reliable_submit_operational_admission SET state=3" + where, nil, transition},
+			// The identity and the time are refused inside a statement that is
+			// otherwise a selected transition, where no other rule applies.
+			{"installation inside a valid advance", "UPDATE reliable_submit_operational_admission SET installation=?, generation=generation+1, admission_digest=?, state=1" + where, []any{otherInst, digestA}, identity},
+			{"epoch inside a valid advance", "UPDATE reliable_submit_operational_admission SET epoch=epoch+1, generation=generation+1, admission_digest=?, state=1" + where, []any{digestA}, identity},
+			{"installation inside a valid withdrawal", "UPDATE reliable_submit_operational_admission SET installation=?, state=2" + where, []any{otherInst}, identity},
+			{"epoch inside a valid withdrawal", "UPDATE reliable_submit_operational_admission SET epoch=epoch+1, state=2" + where, nil, identity},
+			{"time back inside a valid advance", "UPDATE reliable_submit_operational_admission SET generation=generation+1, admission_digest=?, state=1, updated_at_unix_ns=updated_at_unix_ns-1" + where, []any{digestA}, regression},
 		})
+		// A connection that has turned recursive triggers off. REPLACE then
+		// removes the conflicting row without firing the delete trigger, so the
+		// insert guard is the only rule between these statements and the row.
+		ctx := context.Background()
+		before := f.admissionSnapshot()
+		raw, err := f.c.base.store.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.ExecContext(ctx, "PRAGMA recursive_triggers=OFF"); err != nil {
+			t.Fatal(err)
+		}
+		replace := strings.Replace(insert, "INSERT INTO", "INSERT OR REPLACE INTO", 1)
+		for _, s := range []statement{
+			{"replace with another installation, recursive triggers off", replace, []any{1, otherInst, 1, 1, digestA, 1, 5}, commission},
+			{"replace back to generation one, recursive triggers off", replace, []any{1, inst, 1, 1, digestA, 1, 5}, commission},
+		} {
+			if _, err := raw.ExecContext(ctx, s.sql, s.args...); err == nil || !strings.Contains(err.Error(), s.message) {
+				t.Errorf("%s: want %q, got %v", s.name, s.message, err)
+			}
+		}
+		// Control: the delete guard did not fire on this connection, so it is
+		// not what refused the two statements above.
+		var recursive int
+		if err := raw.QueryRowContext(ctx, "PRAGMA recursive_triggers").Scan(&recursive); err != nil || recursive != 0 {
+			t.Fatalf("control: recursive triggers were not off on the raw connection: %d %v", recursive, err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if after := f.admissionSnapshot(); after != before {
+			t.Fatalf("REPLACE without recursive triggers changed the row: %s", after)
+		}
 		// Controls: the two selected transitions are accepted by raw SQL too.
 		db := f.c.base.store.db
 		if _, err := db.Exec("UPDATE reliable_submit_operational_admission SET state=2" + where); err != nil {

@@ -54,6 +54,27 @@ func redTeamUncommissionedService(f *operationalFixture) *Service {
 	return service
 }
 
+// redTeamRewrittenViewService holds a state the store never issues: a
+// commissioned and confirmed view of the fixture's own content and current
+// token whose realm fields were then rewritten in memory. The red team built
+// such a view through commissioning, which the store now refuses for any
+// realm its admission row does not name, so the test writes the fields
+// itself to keep attacking with a view that names another realm.
+func redTeamRewrittenViewService(t *testing.T, f *operationalFixture, rewrite func(*operationalAdmissionSnapshot)) *Service {
+	t.Helper()
+	service := operationalProofService(t, f, nil)
+	service.confirmOperationalAdmission(context.Background())
+	if _, ok := service.currentOperationalAdmission(f.domain.realm); !ok {
+		t.Fatal("control: the view was not current before its realm was rewritten")
+	}
+	service.mu.Lock()
+	rewritten := *service.operationalAdmission
+	rewrite(&rewritten)
+	service.operationalAdmission = &rewritten
+	service.mu.Unlock()
+	return service
+}
+
 // redTeamRealmDomain opens the same custody and staging domain through a
 // provider qualified for a changed realm identity.
 func redTeamRealmDomain(t *testing.T, f *operationalFixture, change func(*operationalRealm)) *operationalDomain {
@@ -191,6 +212,15 @@ func TestRedTeamPR13HoldsDenialMatrixAcrossCrashPoints(t *testing.T) {
 			}
 			return s
 		}},
+		// The two arms above end without a view. These two keep the red team's
+		// original attacker: a current view that names another epoch or
+		// installation while it holds this domain's content and token.
+		{"view rewritten to name another epoch", func(t *testing.T, f *operationalFixture) *Service {
+			return redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) { view.epoch++ })
+		}},
+		{"view rewritten to name another installation", func(t *testing.T, f *operationalFixture) *Service {
+			return redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) { view.installation[0] ^= 0xff })
+		}},
 		{"authority commissioned and confirmed on another database", func(t *testing.T, f *operationalFixture) *Service {
 			// The one way left to hold a view for another installation: a
 			// Service that is generation 1 of its own database. Its fixture is
@@ -321,7 +351,17 @@ func TestRedTeamPR13HoldsCrossRealmIsolation(t *testing.T) {
 				if err := matching.commissionOperationalAdmission(context.Background(), domain); err == nil {
 					t.Fatal("the store commissioned an authority for a realm its admission row does not name")
 				}
-				for name, service := range map[string]*Service{"matching authority": matching, "original authority": f.service, "no authority": {}} {
+				// The red team's matching authority held a view for the changed
+				// realm. That state is rebuilt in memory: this domain's content
+				// and token under realm fields that name the changed realm.
+				rewritten := redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) {
+					view.installation, view.epoch = domain.realm.installation, domain.realm.epoch
+				})
+				if _, ok := rewritten.currentOperationalAdmission(domain.realm); !ok {
+					t.Fatal("control: the rewritten view is not current for the changed realm")
+				}
+				for name, service := range map[string]*Service{"matching authority": matching, "view rewritten to the changed realm": rewritten,
+					"original authority": f.service, "no authority": {}} {
 					for _, out := range []operationalHandoffResult{
 						service.handoffOperational(context.Background(), domain, domain.caller, f.raw),
 						service.recoverOperational(context.Background(), domain, domain.caller, f.raw),

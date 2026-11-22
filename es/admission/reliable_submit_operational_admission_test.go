@@ -648,6 +648,9 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if err := consistent.advanceOperationalAdmission(ctx, f.domain, 1); err != nil || operationalAdmissionRowAt(t, f).Generation != 2 {
 			t.Fatalf("control: consistently configured Service did not advance: %v", err)
 		}
+		// The two Services that hold generation 1 cannot take the domain back.
+		refused(t, f, f.service, "fixture Service after a later generation")
+		refused(t, f, precommission, "joined Service after a later generation")
 	})
 	t.Run("configured entries are private copies", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
@@ -719,6 +722,11 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if stopped := f.submit(); stopped.kind != operationalUnavailable || operationalPrestageStateAt(t, f).Claims != 0 {
 			t.Fatalf("withdrawn Service acted after the domain was enabled again: %s", operationalResultText(stopped))
 		}
+		// A Service that holds a view cannot move the row, even when it names
+		// the stored generation and its own content differs from the row's:
+		// the process that withdrew, and one that only joined generation 1.
+		refused(t, f, f.service, "withdrawn Service on a later generation")
+		refused(t, f, joined, "Service that holds the view of an earlier generation")
 		if done := next.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw); done.kind != operationalAccepted ||
 			operationalPrestageStateAt(t, f).Posts != 1 {
 			t.Fatalf("new generation after a withdrawal: %s state=%+v", operationalResultText(done), operationalPrestageStateAt(t, f))
@@ -779,6 +787,72 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		if row := operationalAdmissionRowAt(t, f); row.Generation != 1 || row.State != 1 {
 			t.Fatalf("raced commission changed the domain: %+v", row)
 		}
+	})
+	// installOperationalAdmission samples the Service, lets the store write run
+	// without Service.mu, and installs under the lock only what is still true.
+	// Each case changes one sampled fact from inside the store write.
+	t.Run("what changes during the store write is seen before a view is installed", func(t *testing.T) {
+		commission := func(f *operationalFixture, digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+			return f.domain.custody.CommissionOperationalAdmission(ctx, f.domain.realm.installation, f.domain.realm.epoch, digest)
+		}
+		t.Run("the same Service is commissioned by another caller", func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			s, _ := operationalUncommissionedService(t, f, nil)
+			var first *operationalAdmissionSnapshot
+			err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+				if err := s.commissionOperationalAdmission(ctx, f.domain); err != nil {
+					t.Fatalf("commission inside the outer store write: %v", err)
+				}
+				first = s.operationalAdmission
+				return commission(f, digest)
+			})
+			if first == nil || err == nil || s.operationalAdmission != first {
+				t.Fatalf("an installed view was replaced: first=%p now=%p err=%v", first, s.operationalAdmission, err)
+			}
+		})
+		for name, change := range map[string]func(*Service){
+			"the Service no longer owns its trust model": func(s *Service) { s.trustModelOwner = &Service{} },
+			"the trust model is no longer verified":      func(s *Service) { s.trustModelVerified = false },
+		} {
+			t.Run(name, func(t *testing.T) {
+				f := makeOperationalFixture(t, "")
+				s, _ := operationalUncommissionedService(t, f, nil)
+				changed := false
+				err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+					s.mu.Lock()
+					change(s)
+					s.mu.Unlock()
+					changed = true
+					return commission(f, digest)
+				})
+				if !changed || err == nil || s.operationalAdmission != nil {
+					t.Fatalf("a view was installed over trust the Service no longer holds: changed=%t err=%v", changed, err)
+				}
+			})
+		}
+		t.Run("the store returns a token for other content", func(t *testing.T) {
+			f := makeOperationalFixture(t, "")
+			// The row is advanced to other content first, so the store can return
+			// a real token of this domain that does not name this Service's content.
+			other := operationalProofService(t, f, func(s *Service) {
+				s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+					"sha256:"+strings.Repeat("d", 64))
+			})
+			row := operationalAdmissionRowAt(t, f)
+			s, _ := operationalUncommissionedService(t, f, nil)
+			asked := false
+			err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
+				asked = digest != row.Digest
+				return other.operationalAdmission.token, nil
+			})
+			if !asked || err == nil || s.operationalAdmission != nil || operationalAdmissionRowAt(t, f) != row {
+				t.Fatalf("a view was installed with a token that does not name its content: asked=%t err=%v", asked, err)
+			}
+			// Control: the returned token is a real one and names the stored content.
+			if !other.operationalAdmission.token.Names(f.domain.realm.installation, f.domain.realm.epoch, row.Digest) {
+				t.Fatal("control: the returned token does not name the stored content")
+			}
+		})
 	})
 	t.Run("a token from one database is refused by another", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
