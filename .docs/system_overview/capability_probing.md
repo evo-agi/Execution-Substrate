@@ -159,8 +159,11 @@ the selected service roots, while ES retains its later behavioral checks.
 The generic ES launcher runs ES as the caller's numeric effective UID and
 primary GID and does not inspect daemon labels; ES's startup checks, not the
 launcher, decide whether that identity owns the roots and can read the files
-its config names. On a user-namespace-remapped Docker daemon, Docker refuses
-the host networking that bring-up requires before any service starts.
+its config names. Those checks do not yet catch roots that inherit another
+group from a setgid parent directory: ES then reports ready, and staging
+fails at the first submission. On a user-namespace-remapped Docker daemon,
+Docker refuses the host networking that bring-up requires before any service
+starts.
 The fixed setup safe projection records only that static owner/mode check and
 explicitly leaves container capability unproved; retained proof evidence does
 not promote it into a behavioral result.
