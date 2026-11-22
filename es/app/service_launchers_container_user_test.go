@@ -86,6 +86,10 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 		// removes os.getxattr, as on hosts other than Linux, and
 		// "acl-read-error" makes it fail with EACCES.
 		pythonHook string
+		// storageParent, when set, puts the storage root one directory
+		// deeper, under this directory of the proof directory, so that
+		// arrange can change that parent's mode.
+		storageParent string
 	}
 	identityCases := []testCase{
 		{name: "caller's IDs", idMode: "real", wantUser: callerUser, wantEvents: launchEvents},
@@ -160,6 +164,76 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+			},
+		},
+		{
+			name: "index that is a directory refused", idMode: "real", wantEvents: storageRefusalEvents,
+			refusal: "ARS storage check failed: storage.index_file must be an existing regular file",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Remove(index); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(index, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			// The caller cannot search the index directory, so the check
+			// cannot reach the index; it refuses with the path instead of
+			// failing with a traceback.
+			name: "index the check cannot reach refused", idMode: "real", wantEvents: storageRefusalEvents,
+			refusal: "ARS storage check failed: cannot reach storage.index_file as you: ", needsNonRoot: true,
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Dir(index)
+				if err := os.Chmod(dir, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			},
+		},
+		{
+			name: "storage root the check cannot reach refused", idMode: "real", wantEvents: storageRefusalEvents,
+			refusal: "ARS storage check failed: cannot reach storage.root_dir as you: ", needsNonRoot: true, storageParent: "locked",
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Dir(storage)
+				if err := os.Chmod(dir, 0o000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			},
+		},
+		{
+			name: "missing storage root the caller cannot create refused", idMode: "real", wantEvents: storageRefusalEvents,
+			refusal: "ARS storage check failed: cannot create storage.root_dir as you: ", needsNonRoot: true, storageParent: "read-only",
+			arrange: func(t *testing.T, storage, index string) {
+				if err := os.Remove(storage); err != nil {
+					t.Fatal(err)
+				}
+				dir := filepath.Dir(storage)
+				if err := os.Chmod(dir, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			},
+		},
+		{
+			// Root in the container may search the directory, but the
+			// caller, who runs the check, cannot reach the file in it.
+			name: "storage entry the check cannot reach refused", idMode: "fake", fakeUID: "0", fakeGID: "0", wantEvents: storageRefusalEvents,
+			refusal: "ARS storage check failed: cannot reach this entry as you (Permission denied)", needsNonRoot: true, fix: "storage", hintUser: "0:0",
+			arrange: func(t *testing.T, storage, index string) {
+				dir := filepath.Join(storage, "sha256")
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "blob"), []byte("blob"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 			},
 		},
 		{
@@ -344,13 +418,13 @@ func TestServiceLaunchersContainerUser(t *testing.T) {
 					t.Fatal(err)
 				}
 				config := filepath.Join(proof, service.name+".json")
-				storage := filepath.Join(proof, "ars-storage")
+				storage := filepath.Join(proof, test.storageParent, "ars-storage")
 				indexDir := filepath.Join(proof, "ars-index")
 				index := filepath.Join(indexDir, "index.json")
 				settings := map[string]any{}
 				if service.name == "ars" {
 					for _, dir := range []string{storage, indexDir} {
-						if err := os.Mkdir(dir, 0o755); err != nil {
+						if err := os.MkdirAll(dir, 0o755); err != nil {
 							t.Fatal(err)
 						}
 					}
