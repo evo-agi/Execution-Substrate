@@ -2795,6 +2795,16 @@ print(json.dumps(results,sort_keys=True))
 	}
 }
 
+// The fixed child of this fixture exits at once and leaves one descendant in
+// its process group. The collector's cleanup holds until no process of that
+// group is visible, and a killed process stays visible until its parent reaps
+// it. So the descendant keeps a parent of its own: a keeper that leaves the
+// group before the cleanup can start, because it holds the child's output
+// pipes until then, and that reaps the descendant the moment it dies. As an
+// orphan the descendant would wait for whatever process adopts orphans on the
+// host, and a host that reaps them on a slow timer would decide the result.
+// The descendant ignores SIGTERM before it closes those pipes, so that the
+// cleanup always has to go on to SIGKILL.
 func runRemoteAlphaESStatusGroupFailureCase(t *testing.T, mode string) map[string]bool {
 	t.Helper()
 	const probe = `
@@ -2804,10 +2814,13 @@ spec=importlib.util.spec_from_file_location("group_failure_fixture",source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 root=pathlib.Path(root);child=root/"fixed-openssl";pidfile=root/"desc.pid";canonical=root/"canonical.json"
 canonical.write_bytes(b"previous generation\n")
-child.write_text("#!/usr/bin/python3\nimport os,signal,sys,time\npid=os.fork()\nif pid==0:\n"
-                 "    for fd in (0,1,2):\n        try:os.close(fd)\n        except OSError:pass\n"
-                 "    signal.signal(signal.SIGTERM,signal.SIG_IGN)\n    time.sleep(3)\n    os._exit(0)\n"
-                 "open(sys.argv[1],'w').write(str(pid))\n")
+child.write_text("#!/usr/bin/python3\nimport os,signal,sys,time\n"
+                 "def close_std():\n    for fd in (0,1,2):\n        try:os.close(fd)\n        except OSError:pass\n"
+                 "if os.fork()==0:\n    pid=os.fork()\n    if pid==0:\n"
+                 "        signal.signal(signal.SIGTERM,signal.SIG_IGN);close_std();time.sleep(3);os._exit(0)\n"
+                 "    os.setpgid(0,0);open(sys.argv[1],'w').write(str(pid));close_std()\n"
+                 "    try:os.waitpid(pid,0)\n    except OSError:pass\n"
+                 "    os._exit(0)\n")
 child.chmod(0o700);module.OPENSSL=str(child);module.CHILD_TIMEOUT=2.5;module.CHILD_GRACE=.15
 module.validate_process_capability=lambda: None
 module.PROCESS_CAPABILITY_READY=True
