@@ -102,12 +102,21 @@ migration, or storage repair because the tranche remains unwired.
 version that `go.mod` declares, with `GOTOOLCHAIN=local` and
 `GOFLAGS=-mod=readonly`, restores no build or module cache, and runs
 `go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the
-tests of every package of the module.
+tests of every package of the module. One more step runs
+`GOOS=darwin GOARCH=arm64 go vet ./...`. It type-checks the files that build
+only on macOS and runs no test.
 
 `.github/ci/environment-only-tests.txt` is the single statement of what the
-test step excludes: tests and subtests that cannot pass on that runner for host
-reasons. `.github/ci/go_test_gate.py` skips those entries, each only in the
-package it names.
+test step excludes and of which tests exclude themselves on that runner. It
+has two kinds of lines. An entry names a test or subtest that cannot pass on
+that runner for host reasons. `.github/ci/go_test_gate.py` skips those entries,
+each only in the package it names. A `skips-itself` line names a test or
+subtest that skips itself on that runner. The test step fails the run unless
+the tests that skipped themselves are exactly the tests that those lines name,
+so a test that skips itself on the runner needs a line, and a line cannot
+outlive its reason. The log of the step names every test that skipped itself.
+For every package the step also fails the run unless every top-level test that
+`go test` lists for the package, and that is not an entry, reported a verdict.
 
 `go test` reads a test path as the start of a path, so the skip for a listed
 subtest also covers every test whose path starts with the path of that entry,
@@ -122,10 +131,11 @@ other run uses the copy. The gate makes the copy only from the file of the
 exact Go version that it names, so a change of the Go baseline has to review
 that file and change the gate in the same change.
 
-A second blocking step runs every entry in a `go test` of its own. It fails the
-run when an entry no longer fails on the runner, so an entry cannot outlive its
-reason. It also fails the run when the run of an entry for a subtest starts
-another test under the path of that entry.
+A second blocking step judges every entry twice: in a run of its whole package
+with nothing skipped, and in a `go test` of its own. It fails the run when an
+entry no longer fails on the runner in one of the two, so an entry cannot
+outlive its reason. It also fails the run when the run of an entry for a
+subtest starts another test under the path of that entry.
 `.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before
 the tests. It also holds the workflow file by its SHA-256, so every edit of the
 workflow has to change that value in the same change.
@@ -133,7 +143,9 @@ workflow has to change that value in the same change.
 A green run is validation evidence for the committed tree on that runner
 image. It is not design authority. It is not a macOS run, a race-detector run,
 a Linux runtime proof, a Remote Alpha proof, or a supported-local proof, and it
-does not replace the exact-Go preflights of the supported scripts.
+does not replace the exact-Go preflights of the supported scripts. It does not
+show that a test named in the list passes: on that runner those tests fail or
+skip themselves.
 
 ## 11. Explicit Non-Claims
 

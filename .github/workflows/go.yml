@@ -31,9 +31,10 @@ jobs:
       # go.sum; never download a different toolchain or rewrite go.mod.
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
-      # Tests that cannot pass on this runner for host reasons. Each entry
-      # names one package and one test or subtest. The file explains each
-      # entry and says which subtests cannot be listed.
+      # Tests that cannot pass on this runner for host reasons, and tests that
+      # skip themselves on it. Each line names one package and one test or
+      # subtest. The file gives the reason for each line and says which
+      # subtests cannot be listed.
       ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
     steps:
       # Actions are pinned to full commit SHAs. The comment names the release
@@ -69,6 +70,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Some test files build only on macOS, and no other step compiles them
+      # on this runner. This step type-checks and vets every package as built
+      # for macOS. It runs no test.
+      - name: Vet for macOS
+        run: GOOS=darwin GOARCH=arm64 go vet ./...
+
       # Proves on throwaway modules that the two steps below do what they say.
       # It also holds this file by its SHA-256: an edit of this file fails
       # here until the value in the self-check is changed in the same change.
@@ -76,7 +83,11 @@ jobs:
         run: python3 -I -B .github/ci/go_test_gate_selftest.py
 
       # Runs every package. A package with entries runs with its own entries
-      # skipped; every other package runs with nothing skipped. A package with
+      # skipped; every other package runs with nothing skipped. For every
+      # package the step fails unless every test that go test lists for it,
+      # and that is not an entry, reported a verdict, and unless the tests
+      # that skipped themselves are exactly the "skips-itself" lines of the
+      # list. The log names every test that skipped itself. A package with
       # an entry for a subtest then runs a second time, with a test binary
       # that writes down every test that go test skips, and the step fails
       # unless those are exactly the entries. Only that test binary is built
@@ -85,10 +96,11 @@ jobs:
       - name: Test
         run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
 
-      # Runs every entry in a go test of its own. Fails when an entry does not
-      # fail on this runner: it passes, skips itself or does not run. Such an
-      # entry no longer belongs in the list, and its line has to be deleted.
-      # Also fails when the run of an entry for a subtest starts another test
-      # under the path of that entry.
+      # Judges every entry twice: in a run of its whole package with nothing
+      # skipped, and in a go test of its own. Fails when an entry does not
+      # fail in both on this runner: it passes, skips itself or does not run.
+      # Such an entry no longer belongs in the list, and its line has to be
+      # deleted. Also fails when the run of an entry for a subtest starts
+      # another test under the path of that entry.
       - name: Listed tests still fail
         run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"

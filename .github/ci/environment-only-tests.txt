@@ -1,10 +1,16 @@
-# Tests that cannot pass on the CI runner for host reasons, not code reasons.
+# Tests that cannot pass on the CI runner for host reasons, not code reasons,
+# and tests that skip themselves on it.
 #
-# Format: one entry per line, holding exactly a package import path, one
-# space and a test path. A test path is a top-level test name, or the path
-# that go test prints for a subtest. Empty lines and lines whose first
-# character is "#" are ignored. Any other line is an error.
+# Format: two kinds of lines. An entry names a test that fails on the runner.
+# It holds exactly a package import path, one space and a test path. A line
+# for a test that skips itself on the runner holds the word "skips-itself",
+# one space, and the same two things. A test path is a top-level test name,
+# or the path that go test prints for a subtest. Empty lines and lines whose
+# first character is "#" are ignored. Any other line is an error.
 # .github/ci/go_test_gate.py reads this file and documents the rules.
+#
+# The entries come first in this file, and the lines for tests that skip
+# themselves after them, under their own heading.
 #
 # An entry applies only to the package it names. An entry for a whole test
 # stands for that test with all of its subtests. An entry for a subtest
@@ -12,10 +18,11 @@
 # everything else. Tests run unchanged everywhere else.
 #
 # Every entry must still fail on the runner. The step "Listed tests still
-# fail" runs every entry in a go test of its own and fails the run when one
-# of them passes, skips itself or does not run. So an entry cannot outlive
-# its reason: a change that makes a listed test pass on the runner, by
-# porting it or otherwise, has to delete its line in the same change.
+# fail" judges every entry twice, in a run of its whole package with nothing
+# skipped and in a go test of its own, and fails the run when an entry
+# passes, skips itself or does not run in one of the two. So an entry cannot
+# outlive its reason: a change that makes a listed test pass on the runner,
+# by porting it or otherwise, has to delete its line in the same change.
 #
 # Name the narrowest thing that fails. Where one subtest fails and its
 # siblings pass on the runner, the entry names that subtest, so the siblings
@@ -95,3 +102,73 @@ execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation
 # repository (the ES_REPLAY_*_PROBE variables).
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
 execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRefusesWithoutMutation
+
+
+# Tests that skip themselves on the runner.
+#
+# A test that calls t.Skip takes itself out of the gate. The step "Test"
+# fails the run unless the tests that skipped themselves are exactly the
+# tests named below, each in the package of its line. So a test that skips
+# itself on the runner needs a line here with its reason, in the change that
+# adds the skip. And a line cannot outlive its reason: when the test passes
+# on the runner, fails there or no longer exists, its line has to go in the
+# same change. The log of the step names every test that skipped itself,
+# with what the test wrote.
+#
+# A line stands for exactly the test or subtest it names. A subtest that
+# skips itself needs a line of its own, and the name rules for subtests
+# above hold for it. A line must not name an entry, lie inside one or hold
+# one: what lies inside an entry does not run in the gate.
+#
+# These tests do not run in CI. The way to shorten this part of the list is
+# to give the runner what a test needs, or to port the test.
+
+# es/admission/internal/reliablesubmit: helper processes. Another test of the
+# package starts the test binary a second time with a variable set, and only
+# that process runs the body. Run as a test, each of the two has nothing to
+# do. They skip themselves on every host.
+skips-itself execution-substrate/es/admission/internal/reliablesubmit TestPrivateReplayObjectAllocatorHelperProcess
+skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLiteClaimStoreLockHelperProcess
+
+# es/app: integration tests that need a Nomad client backed by Docker. The
+# runner image has no nomad command.
+skips-itself execution-substrate/es/app TestBringupScriptUpCheckDownFullProfile
+skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathCancelSucceeds
+skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle
+skips-itself execution-substrate/es/app TestDiagnosticsScriptRunIDBundleCollectsLifecycleSignalsAndStaging
+skips-itself execution-substrate/es/app TestExecuteLoopScriptFailureSummary
+skips-itself execution-substrate/es/app TestExecuteLoopScriptSuccessAndDeterministicDigests
+skips-itself execution-substrate/es/app TestExecutionCancelRetainsStageRootForDebugging
+skips-itself execution-substrate/es/app TestExecutionCancelStopsNomadJob
+skips-itself execution-substrate/es/app TestExecutionLogsReturnConflictWhenAllocationNotReady
+skips-itself execution-substrate/es/app TestExecutionLogsReturnRealContainerOutput
+skips-itself execution-substrate/es/app TestExecutionLoopScriptSuccessRetainsDistinctStageRootsAcrossRepeatedRuns
+skips-itself execution-substrate/es/app TestExecutionResultBundleAndStageRetainedAcrossStatusAndRepeatFetch
+skips-itself execution-substrate/es/app TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput
+skips-itself execution-substrate/es/app TestExecutionStatusReflectsFailedAllocation
+skips-itself execution-substrate/es/app TestExecutionStatusReflectsNomadJobState
+skips-itself execution-substrate/es/app TestExecutionStatusRetainsFailedStageRootForDebugging
+skips-itself execution-substrate/es/app TestExecutionStatusRetainsSuccessfulStageRootAndLogsStillWork
+skips-itself execution-substrate/es/app TestExecutionStatusReturns503WhenNomadUnavailable
+skips-itself execution-substrate/es/app TestLifecycleScriptCategorizesExecutionFailure
+skips-itself execution-substrate/es/app TestLifecycleScriptObservesExecutionViaPublicRunID
+skips-itself execution-substrate/es/app TestRuntimeIdentityIntegrationCapabilityProbe
+skips-itself execution-substrate/es/app TestSubmitFlowAllowsConfiguredControlPlaneCallerHandoff
+skips-itself execution-substrate/es/app TestSubmitFlowDoesNotStartWorkloadBeforeHelperReadiness
+skips-itself execution-substrate/es/app TestSubmitFlowHelperDeathIsTaskFatal
+skips-itself execution-substrate/es/app TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks
+skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks
+skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity
+skips-itself execution-substrate/es/app TestSubmitFlowProvidesPlatformOwnedRuntimeIdentityThroughBoundedEndpoint
+skips-itself execution-substrate/es/app TestSubmitFlowRejectsRuntimeIdentityPassthroughRequests
+skips-itself execution-substrate/es/app TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry
+skips-itself execution-substrate/es/app TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction
+skips-itself execution-substrate/es/app TestSubmitFlowRunsStaticScriptInNomadDocker
+skips-itself execution-substrate/es/app TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled
+skips-itself execution-substrate/es/app TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize
+skips-itself execution-substrate/es/app TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead
+skips-itself execution-substrate/es/app TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt
+
+# es/app: the test needs the vault command, which the runner image does not
+# have.
+skips-itself execution-substrate/es/app TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget
