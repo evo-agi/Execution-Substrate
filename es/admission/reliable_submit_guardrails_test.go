@@ -1304,6 +1304,12 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
 	for _, view := range views {
 		pkg := requireTypedProductionPackage(t, view.packages, admissionPath)
+		for _, entry := range []string{"commissionOperationalAdmission", "withdrawOperationalEffects"} {
+			method := requirePackageMethod(t, pkg, "Service", entry)
+			if err := validateTypedReferenceInventory(entry, pkg.referencesTo(method), map[string]int{}, true); err != nil {
+				t.Fatal(err)
+			}
+		}
 		for _, entry := range []string{"handoffOperational", "recoverOperational"} {
 			m := requirePackageMethod(t, pkg, "Service", entry)
 			if err := validateTypedReferenceInventory(entry, pkg.referencesTo(m), map[string]int{}, true); err != nil {
@@ -1325,13 +1331,13 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 			{"", "OpenProvisionedOperationalCustody", map[string]int{}, true},
 			{"OperationalCustody", "ConfigureOperationalCommitFaultForProof", map[string]int{}, true},
 			{"OperationalCustody", "ConfigureOperationalPrestageProofForProof", map[string]int{}, true},
-			{"", "MatchOperationalOriginal", map[string]int{handoff + "Service.operatePrivateHandoff": 1, handoff + "operationalDomain.advanceOperational": 1}, false},
-			{"OperationalAccess", "ApplyFirstMarker", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
-			{"OperationalAccess", "BindOperationalIntent", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
-			{"OperationalAccess", "BindOperationalStage", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
-			{"OperationalAccess", "BindOperationalMarker", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"", "MatchOperationalOriginal", map[string]int{handoff + "Service.operatePrivateHandoff": 1, handoff + "Service.advanceOperational": 1}, false},
+			{"OperationalAccess", "ApplyFirstMarker", map[string]int{handoff + "Service.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalIntent", map[string]int{handoff + "Service.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalStage", map[string]int{handoff + "Service.advanceOperational": 1}, true},
+			{"OperationalAccess", "BindOperationalMarker", map[string]int{handoff + "Service.advanceOperational": 1}, true},
 			{"OperationalAccess", "BindVerifiedOperationalObservation", map[string]int{provider + "verifiedOperationalObservation.bindOperationalObservation": 1}, true},
-			{"OperationalMarkerCandidate", "Ref", map[string]int{handoff + "operationalDomain.advanceOperational": 1}, true},
+			{"OperationalMarkerCandidate", "Ref", map[string]int{handoff + "Service.advanceOperational": 1}, true},
 			{"OperationalStageProof", "Requalify", map[string]int{
 				handoff + "liveSender.consume": 1, storage + "OperationalAccess.BindOperationalMarker": 1,
 				storage + "OperationalAccess.applyOperational": 1, storage + "OperationalAccess.operationalReleaseQualified": 1,
@@ -1374,8 +1380,9 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 		}{
 			{pkg, map[string]string{
 				"verifiedOperationalObservation": provider + "operationalProvider.observe",
-				"liveSender":                     handoff + "operationalDomain.advanceOperational",
-				"handoffOwner":                   handoff + "operationalDomain.advanceOperational",
+				"liveSender":                     handoff + "Service.advanceOperational",
+				"handoffOwner":                   handoff + "Service.advanceOperational",
+				"operationalAdmissionSnapshot":   "es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission",
 			}},
 			{store, map[string]string{
 				"OperationalIntentInput":     storage + "OperationalAccess.BindOperationalIntent",
@@ -1390,13 +1397,70 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 		}
 		consume := requirePackageMethod(t, pkg, "liveSender", "consume")
 		if err := validateTypedReferenceInventory("synchronous operational marker continuation", pkg.referencesTo(consume),
-			map[string]int{handoff + "operationalDomain.advanceOperational": 1}, false); err != nil {
+			map[string]int{handoff + "Service.advanceOperational": 1}, false); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
+	for _, entry := range []string{"commissionOperationalAdmission", "withdrawOperationalEffects"} {
+		t.Run("zero-production-"+entry, func(t *testing.T) {
+			declarations := "package admission; type Service struct{}; func (*Service) " + entry + "(){}; "
+			baseline := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){}")
+			if err := validateTypedReferenceInventory(entry, baseline.referencesTo(requirePackageMethod(t, baseline, "Service", entry)), map[string]int{}, true); err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range map[string]string{
+				"direct":            "s." + entry + "()",
+				"method-value":      "indirect := s." + entry + "; indirect()",
+				"method-expression": "(*Service)." + entry + "(s)",
+				"closure":           "func(){s." + entry + "()}()",
+			} {
+				t.Run(name, func(t *testing.T) {
+					mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){"+body+"}")
+					if err := validateTypedReferenceInventory(entry, mutant.referencesTo(requirePackageMethod(t, mutant, "Service", entry)), map[string]int{}, true); err == nil {
+						t.Fatal("non-test admission authority reference passed zero-reference rule")
+					}
+				})
+			}
+		})
+	}
+	for _, expression := range []string{"&operationalAdmissionSnapshot{}", "new(operationalAdmissionSnapshot)"} {
+		t.Run("snapshot-construction/"+expression, func(t *testing.T) {
+			const declarations = "package admission; type operationalAdmissionSnapshot struct{ owner int }; "
+			const approved = "func commission() *operationalAdmissionSnapshot{return &operationalAdmissionSnapshot{owner:1}}; "
+			want := map[string]string{"operationalAdmissionSnapshot": "fixture.go:commission"}
+			if err := validateOperationalAuthorityConstruction(typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved), want); err != nil {
+				t.Fatal(err)
+			}
+			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved+"func alternate() *operationalAdmissionSnapshot{return "+expression+"}")
+			if err := validateOperationalAuthorityConstruction(mutant, want); err == nil {
+				t.Fatal("alternate snapshot construction passed exact inventory")
+			}
+		})
+	}
+	for name, mutation := range map[string]string{
+		"proof assignment":        "s.operationalProof = &hooks{}",
+		"proof keyed initializer": "_ = Service{operationalProof: &hooks{}}",
+		"extra protected read":    "_ = s.operationalProof",
+	} {
+		t.Run(name, func(t *testing.T) {
+			const declarations = "package admission; type hooks struct{}; type Service struct{ operationalProof *hooks }; "
+			const baseline = "func owner(s *Service){_ = s.operationalProof}"
+			want := map[string]int{"fixture.go:owner|read": 1}
+			positive := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+baseline)
+			field := requirePackageStructField(t, positive, "Service", "operationalProof")
+			if err := validateTypedFieldAccessInventory("proof", positive.referencesTo(field), want); err != nil {
+				t.Fatal(err)
+			}
+			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){_ = s.operationalProof; "+mutation+"}")
+			field = requirePackageStructField(t, mutant, "Service", "operationalProof")
+			if err := validateTypedFieldAccessInventory("proof", mutant.referencesTo(field), want); err == nil {
+				t.Fatal("non-test proof configuration or extra read passed exact access inventory")
+			}
+		})
+	}
 	for _, entry := range []string{"bindOperationalObservation", "register", "exchange"} {
 		for _, changed := range []string{"method-value", "method-expression", "closure", "alternate-site", "duplicate"} {
 			t.Run(entry+"/"+changed, func(t *testing.T) {
@@ -1435,6 +1499,45 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 			}
 		})
 	}
+	t.Run("same-site proof access kinds", func(t *testing.T) {
+		const declarations = "package admission; type hooks struct{}; type Service struct{ operationalProof *hooks }; "
+		for _, test := range []struct {
+			name, body, accessKind string
+		}{
+			{"read", "_ = s.operationalProof", "read"},
+			{"parenthesized read", "_ = (s.operationalProof)", "read"},
+			{"nested read", "_ = ((s.operationalProof))", "read"},
+			{"assignment", "s.operationalProof = nil", "assignment"},
+			{"parenthesized assignment", "(s.operationalProof) = nil", "assignment"},
+			{"nested assignment", "((s.operationalProof)) = nil", "assignment"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+"func owner(s *Service){"+test.body+"}")
+				field := requirePackageStructField(t, pkg, "Service", "operationalProof")
+				references := pkg.referencesTo(field)
+				if len(references) != 1 || references[0].site != "fixture.go:owner" {
+					t.Fatalf("same-site proof occurrence changed: %v", references)
+				}
+				if references[0].accessKind != test.accessKind {
+					t.Fatalf("proof access kind: got %q want %q", references[0].accessKind, test.accessKind)
+				}
+				allowedRead := map[string]int{"fixture.go:owner|read": 1}
+				readErr := validateTypedFieldAccessInventory("proof", references, allowedRead)
+				if test.accessKind == "read" {
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+				} else if readErr == nil || !strings.Contains(readErr.Error(), "field access inventory changed") ||
+					!strings.Contains(readErr.Error(), "|assignment") {
+					t.Fatalf("expected intended proof access-kind mismatch, got %v", readErr)
+				}
+				appropriate := map[string]int{"fixture.go:owner|" + test.accessKind: 1}
+				if err := validateTypedFieldAccessInventory("proof", references, appropriate); err != nil {
+					t.Fatalf("correctly classified proof access refused: %v", err)
+				}
+			})
+		}
+	})
 }
 
 func validateOperationalAuthorityConstruction(pkg *typedProductionPackage, want map[string]string) error {

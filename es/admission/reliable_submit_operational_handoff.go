@@ -18,7 +18,8 @@ import (
 func (s *Service) composeOperationalOriginal(ctx context.Context, delivery privateReplayDelivery, keys operationalOriginalKeys,
 	realm operationalRealm) (verifiedOperationalOriginal, error) {
 	resolved, resolveErr := s.resolveExecutionForSubmit(ctx, delivery.request)
-	if resolveErr != nil || !validateOperationalPlan(delivery, resolved, realm) {
+	if resolveErr != nil || resolved.provenanceRecord == "" ||
+		!validateOperationalPlan(delivery, resolved, realm) {
 		return verifiedOperationalOriginal{}, errPrivateReplayUnavailable
 	}
 	assessment, err := buildReliableSubmitAdmissionBinding(resolved, delivery.family, keys.key)
@@ -29,7 +30,8 @@ func (s *Service) composeOperationalOriginal(ctx context.Context, delivery priva
 	if err != nil {
 		return verifiedOperationalOriginal{}, err
 	}
-	return verifiedOperationalOriginal{delivery: delivery, resolved: resolved, assessment: assessment, wire: wire}, nil
+	return verifiedOperationalOriginal{delivery: delivery, resolved: resolved, assessment: assessment,
+		wire: wire, variant: operationalOriginalV2}, nil
 }
 
 type operationalResultKind uint8
@@ -181,7 +183,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 				}
 				return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
 			}, func(access *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection) {
-				outcome = d.advanceOperational(ctx, access, p, original, advance, observe)
+				outcome = s.advanceOperational(ctx, d, access, p, original, advance, observe)
 			})
 	}
 	existing := withOriginal(reliablesubmit.OperationalRetainedRead, !recovery, true)
@@ -200,11 +202,17 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	if !d.eligible() {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalIntegrity)
 	}
+	if _, ok := s.currentOperationalAdmission(d.realm); !ok {
+		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
+	}
 	if d.proof != nil && d.proof.beforeEstablish != nil {
 		d.proof.beforeEstablish()
 	}
 	original, err := s.composeOperationalOriginal(ctx, delivery, d.keys, d.realm)
 	if err != nil {
+		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
+	}
+	if _, ok := s.currentOperationalAdmission(d.realm); !ok {
 		return operationalFailureAt(ctx, reliablesubmit.OperationalUnavailable)
 	}
 	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire)
@@ -252,21 +260,36 @@ func operationalReadProjection(p reliablesubmit.OperationalProjection) operation
 	return operationalHandoffResult{kind: operationalPending, run: run}
 }
 
-func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection,
+func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, a *reliablesubmit.OperationalAccess, p reliablesubmit.OperationalProjection,
 	original verifiedOperationalOriginal, advance, observe bool) (out operationalHandoffResult) {
 	out = operationalReadProjection(p)
+	qualificationReason := reliablesubmit.OperationalReasonNone
 	qualify := func() (reliablesubmit.OperationalOriginalMatch, error) {
+		qualificationReason = s.qualifyOperationalRetained(ctx, original, d.realm)
+		if qualificationReason != reliablesubmit.OperationalReasonNone {
+			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
+		}
 		if !d.eligible() || !validateOperationalPlan(original.delivery, original.resolved, d.realm) {
+			qualificationReason = reliablesubmit.OperationalIntegrity
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
 		}
 		return reliablesubmit.MatchOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan, original.wire)
 	}
+	refused := func(result operationalHandoffResult) operationalHandoffResult {
+		if qualificationReason != reliablesubmit.OperationalReasonNone {
+			return result.withhold(qualificationReason)
+		}
+		return result
+	}
 	if p.Revision() == 1 {
+		if original.variant == operationalOriginalV1 {
+			return out.withhold(reliablesubmit.OperationalUnavailable)
+		}
 		if !advance {
 			return out
 		}
 		if _, err := qualify(); err != nil {
-			return out.withhold(reliablesubmit.OperationalIntegrity)
+			return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 		}
 		m, err := reliablesubmit.NewOperationalMutation()
 		if err != nil {
@@ -278,7 +301,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		}
 		status, current := a.Apply(ctx, p, m, command, qualify)
 		if status != reliablesubmit.OperationalApplied {
-			return stoppedOperational(ctx, reliablesubmit.OperationalAssign, status, current)
+			return refused(stoppedOperational(ctx, reliablesubmit.OperationalAssign, status, current))
 		}
 		p = current
 		out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalAssign, status)
@@ -311,11 +334,14 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		}
 		return out
 	}
+	if original.variant == operationalOriginalV1 {
+		return out.withhold(reliablesubmit.OperationalUnavailable)
+	}
 	if !advance || stamp != [32]byte{} {
 		return out
 	}
 	if _, err := qualify(); err != nil {
-		return out.withhold(reliablesubmit.OperationalIntegrity)
+		return refused(out.withhold(reliablesubmit.OperationalIntegrity))
 	}
 	if p.Revision() == 2 {
 		m, err := reliablesubmit.NewOperationalMutation()
@@ -328,7 +354,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		}
 		status, current := a.Apply(ctx, p, m, command, qualify)
 		if status != reliablesubmit.OperationalApplied {
-			return stoppedOperational(ctx, reliablesubmit.OperationalIntent, status, current)
+			return refused(stoppedOperational(ctx, reliablesubmit.OperationalIntent, status, current))
 		}
 		p = current
 		out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalIntent, status)
@@ -343,7 +369,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 		if reason == reliablesubmit.OperationalReasonNone {
 			reason = reliablesubmit.OperationalIntegrity
 		}
-		return out.withhold(reason)
+		return refused(out.withhold(reason))
 	}
 	if d.proof != nil && d.proof.beforeStageCreate != nil {
 		d.proof.beforeStageCreate()
@@ -391,7 +417,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	}
 	status, current := a.Apply(ctx, p, move, stage, qualify)
 	if status != reliablesubmit.OperationalApplied {
-		return stoppedOperational(ctx, reliablesubmit.OperationalStamp, status, current)
+		return refused(stoppedOperational(ctx, reliablesubmit.OperationalStamp, status, current))
 	}
 	p = current
 	out = operationalReadProjection(p).withWrite(reliablesubmit.OperationalStamp, status)
@@ -414,7 +440,11 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	}
 	binding := operationalDispatchBinding{original: originalRef, run: runID, stamp: stamp, marker: marker,
 		project: job.project, locator: job.locator, request: sha256.Sum256(body)}
-	owner := &handoffOwner{domain: d, stage: held, proof: stage, context: ctx, binding: binding, open: true}
+	admission, ok := s.currentOperationalAdmission(d.realm)
+	if !ok {
+		return out.withhold(reliablesubmit.OperationalUnavailable)
+	}
+	owner := &handoffOwner{domain: d, service: s, admission: admission, stage: held, proof: stage, context: ctx, binding: binding, open: true}
 	var ack operationalAck
 	status, current = a.ApplyFirstMarker(ctx, p, move, candidate, qualify, func(applied reliablesubmit.OperationalProjection) {
 		actualOriginal, _, stageRef, actual, _ := applied.Bindings()
@@ -432,7 +462,7 @@ func (d *operationalDomain) advanceOperational(ctx context.Context, a *reliables
 	})
 	owner.close()
 	if status != reliablesubmit.OperationalMarkerDirect {
-		return stoppedOperational(ctx, reliablesubmit.OperationalMark, status, current)
+		return refused(stoppedOperational(ctx, reliablesubmit.OperationalMark, status, current))
 	}
 	result := d.reconcileOperational(ctx, a, current, job, ack)
 	if result.operation == 0 {
@@ -468,6 +498,9 @@ func (d *operationalDomain) reconcileOperational(ctx context.Context, a *reliabl
 	job operationalJob, ack operationalAck) operationalHandoffResult {
 	out := operationalReadProjection(p)
 	if ack.collision || ack.refused || ctx.Err() != nil {
+		if ack.refused && ack.reason == reliablesubmit.OperationalUnavailable {
+			return out.withhold(reliablesubmit.OperationalUnavailable)
+		}
 		out.reason = ack.reason
 		if ctx.Err() != nil {
 			out.reason = reliablesubmit.OperationalCanceled
@@ -537,13 +570,15 @@ type operationalDispatchBinding struct {
 
 type handoffOwner struct {
 	privateExecutionValue
-	mu      sync.Mutex
-	domain  *operationalDomain
-	stage   *stagingCustody
-	proof   *reliablesubmit.OperationalStageProof
-	context context.Context
-	binding operationalDispatchBinding
-	open    bool
+	mu        sync.Mutex
+	domain    *operationalDomain
+	service   *Service
+	admission *operationalAdmissionSnapshot
+	stage     *stagingCustody
+	proof     *reliablesubmit.OperationalStageProof
+	context   context.Context
+	binding   operationalDispatchBinding
+	open      bool
 }
 
 func (o *handoffOwner) close() {
@@ -576,6 +611,7 @@ func (s *liveSender) consume(owner *handoffOwner) operationalAck {
 	}
 	owner.open = false
 	if err != nil || owner.stage == nil || !owner.domain.eligible() ||
+		!owner.domain.keys.key.validated ||
 		s.binding != owner.binding || owner.stage.runID != s.binding.run ||
 		s.binding.original == [32]byte{} || s.binding.stamp == [32]byte{} || s.binding.marker == [32]byte{} ||
 		s.binding.project == [32]byte{} || s.binding.locator == [32]byte{} || len(s.prepared) == 0 ||
@@ -584,6 +620,10 @@ func (s *liveSender) consume(owner *handoffOwner) operationalAck {
 	}
 	if proof := owner.domain.proof; proof != nil && proof.beforeEntrySample != nil {
 		proof.beforeEntrySample()
+	}
+	current, admitted := owner.service.currentOperationalAdmission(owner.domain.realm)
+	if !admitted || current != owner.admission {
+		return operationalAck{refused: true, reason: reliablesubmit.OperationalUnavailable}
 	}
 	if err := prepared.request.Context().Err(); err != nil {
 		return operationalAck{refused: true, reason: operationalExchangeFailure(err)}

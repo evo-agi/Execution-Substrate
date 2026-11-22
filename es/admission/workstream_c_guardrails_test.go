@@ -364,7 +364,7 @@ func TestTrancheB1FiniteSemanticShapeGuardrails(t *testing.T) {
 		{label: "host context constructor", name: "newHostMaterializationContext", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:privateReplayReader.placement": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
 		{label: "semantic plan constructor", name: "newResolvedExecutionPlan", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
 		{label: "typed command constructor", name: "newResolvedRuntimeCommand", want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1}},
-		{label: "run projection constructor", name: "newResolvedRunProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
+		{label: "run projection constructor", name: "newResolvedRunProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:Service.advanceOperational": 1}},
 		{label: "provider projection constructor", method: true, receiver: "resolvedRunProjection", name: "nomadJobProjection", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_provider.go:operationalProvider.project": 1}},
 		{label: "Nomad job builder", name: "buildNomadJobSpec", want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_provider.go:operationalProvider.project": 1}},
 		{label: "Nomad registration", method: true, receiver: "nomadClient", name: "submitJob", want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
@@ -1808,7 +1808,7 @@ func TestAdmissionProductionHasOneResolverAndOneMaterializationPath(t *testing.T
 		{
 			label:        "typed execution materializer",
 			functionName: "materializeExecutionInputs",
-			want:         map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1},
+			want:         map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:Service.advanceOperational": 1},
 		},
 		{
 			label:        "qualified staging descriptor transfer",
@@ -2332,9 +2332,14 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission/internal/reliablesubmit:recordReconciliationEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission/internal/reliablesubmit:recordStagingEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission:Service.mu:sync.RWMutex",
+		"execution-substrate/es/admission:Service.operationalAdmission:*admission.operationalAdmissionSnapshot",
+		"execution-substrate/es/admission:Service.trustModelOwner:*admission.Service",
+		"execution-substrate/es/admission:handoffOwner.admission:*admission.operationalAdmissionSnapshot",
 		"execution-substrate/es/admission:handoffOwner.mu:sync.Mutex",
+		"execution-substrate/es/admission:handoffOwner.service:*admission.Service",
 		"execution-substrate/es/admission:liveSender.owner:*admission.handoffOwner",
 		"execution-substrate/es/admission:liveSender.self:*admission.liveSender",
+		"execution-substrate/es/admission:operationalAdmissionSnapshot.owner:*admission.Service",
 		"execution-substrate/es/app:App.mu:sync.RWMutex",
 		"execution-substrate/es/runtimehelper:helperServer.mu:sync.RWMutex",
 	}
@@ -2417,9 +2422,12 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "Service",
 			fieldName:  "mu",
 			want: map[string]int{
-				"es/admission/service.go:Service.Health":            2,
-				"es/admission/service.go:Service.Initialize":        2,
-				"es/admission/service.go:Service.currentTrustModel": 2,
+				"es/admission/service.go:Service.Health":                                                       2,
+				"es/admission/service.go:Service.Initialize":                                                   5,
+				"es/admission/service.go:Service.currentTrustModel":                                            2,
+				"es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission": 2,
+				"es/admission/reliable_submit_operational_admission.go:Service.withdrawOperationalEffects":     2,
+				"es/admission/reliable_submit_operational_admission.go:Service.currentOperationalAdmission":    2,
 			},
 		},
 		{
@@ -2428,9 +2436,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			typeName:   "Service",
 			fieldName:  "trustModel",
 			want: map[string]int{
-				"es/admission/service.go:Service.Health":            1,
-				"es/admission/service.go:Service.Initialize":        1,
-				"es/admission/service.go:Service.currentTrustModel": 2,
+				"es/admission/service.go:Service.Health":                                                       1,
+				"es/admission/service.go:Service.Initialize":                                                   1,
+				"es/admission/service.go:Service.currentTrustModel":                                            2,
+				"es/admission/reliable_submit_operational_admission.go:Service.commissionOperationalAdmission": 4,
 			},
 		},
 		{
@@ -2577,6 +2586,190 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			t.Fatal(err)
 		}
 	}
+	const admission = "es/admission/reliable_submit_operational_admission.go:"
+	const service = "es/admission/service.go:"
+	const handoff = "es/admission/reliable_submit_operational_handoff.go:"
+	type accessInventory struct {
+		owner, name string
+		want        map[string]int
+	}
+	for _, field := range []accessInventory{
+		{"Service", "trustModelVerified", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1, service + "Service.Initialize|assignment": 1}},
+		{"Service", "trustModelOwner", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1, service + "Service.Initialize|assignment": 1}},
+		{"Service", "operationalAdmission", map[string]int{
+			admission + "Service.commissionOperationalAdmission|assignment": 1, admission + "Service.commissionOperationalAdmission|read": 1,
+			admission + "Service.currentOperationalAdmission|read": 1, admission + "Service.withdrawOperationalEffects|read": 2,
+			service + "Service.Initialize|read": 2,
+		}},
+		{"Service", "operationalWithdrawn", map[string]int{
+			admission + "Service.commissionOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
+			admission + "Service.withdrawOperationalEffects|assignment": 1, service + "Service.Initialize|read": 2,
+		}},
+		{"Service", "operationalProof", map[string]int{admission + "Service.commissionOperationalAdmission|read": 1}},
+		{"operationalAdmissionSnapshot", "owner", map[string]int{
+			admission + "Service.commissionOperationalAdmission|initializer": 1,
+			admission + "Service.currentOperationalAdmission|read":           1, admission + "Service.withdrawOperationalEffects|read": 1,
+		}},
+		{"operationalAdmissionSnapshot", "installation", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1}},
+		{"operationalAdmissionSnapshot", "epoch", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1}},
+		{"operationalAdmissionSnapshot", "trust", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 1}},
+		{"operationalAdmissionSnapshot", "verifier", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 3}},
+		{"operationalAdmissionSnapshot", "policy", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 2}},
+		{"operationalAdmissionSnapshot", "proof", map[string]int{admission + "Service.commissionOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 9}},
+		{"handoffOwner", "service", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
+		{"handoffOwner", "admission", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
+		{"operationalAdmissionProofHooks", "required", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
+		{"operationalAdmissionProofHooks", "evaluated", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
+		{"operationalAdmissionProofHooks", "contextObserved", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
+	} {
+		references := mergedProductionReferences(t, views, "execution-substrate/es/admission", func(pkg *typedProductionPackage) types.Object {
+			return requirePackageStructField(t, pkg, field.owner, field.name)
+		})
+		if err := validateTypedFieldAccessInventory(field.owner+"."+field.name, references, field.want); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("protected admission field access kinds", func(t *testing.T) {
+		const declarations = "package admission; type Service struct{ trustModelVerified bool }; "
+		const approved = "func (s *Service) Initialize(){s.trustModelVerified=true}; func (s *Service) commission(){_ = s.trustModelVerified}; "
+		want := map[string]int{"fixture.go:Service.Initialize|assignment": 1, "fixture.go:Service.commission|read": 1}
+		positive := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved)
+		field := requirePackageStructField(t, positive, "Service", "trustModelVerified")
+		if err := validateTypedFieldAccessInventory("synthetic trust verification", positive.referencesTo(field), want); err != nil {
+			t.Fatal(err)
+		}
+		for name, mutation := range map[string]string{
+			"extra same-site read": "func (s *Service) extra(){_ = s.trustModelVerified}",
+			"alternate assignment": "func (s *Service) extra(){s.trustModelVerified=true}",
+			"keyed initializer":    "func extra(){_ = Service{trustModelVerified:true}}",
+		} {
+			t.Run(name, func(t *testing.T) {
+				mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved+mutation)
+				field := requirePackageStructField(t, mutant, "Service", "trustModelVerified")
+				if err := validateTypedFieldAccessInventory("synthetic trust verification", mutant.referencesTo(field), want); err == nil {
+					t.Fatal("extra protected field access passed exact access inventory")
+				}
+			})
+		}
+		wrongKind := strings.Replace(approved, "_ = s.trustModelVerified", "s.trustModelVerified=false", 1)
+		mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+wrongKind)
+		field = requirePackageStructField(t, mutant, "Service", "trustModelVerified")
+		if err := validateTypedFieldAccessInventory("synthetic trust verification", mutant.referencesTo(field), want); err == nil {
+			t.Fatal("same-site protected write masqueraded as the allowed read")
+		}
+		t.Run("transparent parenthesized field access", func(t *testing.T) {
+			for _, test := range []struct {
+				name, declarations, fieldName, body, accessKind string
+			}{
+				{"read unwrapped", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "_ = s.trustModelVerified", "read"},
+				{"read parenthesized", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "_ = (s.trustModelVerified)", "read"},
+				{"read nested", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "_ = (((s.trustModelVerified)))", "read"},
+				{"read parenthesized RHS", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "value := (s.trustModelVerified); _ = value", "read"},
+				{"read parenthesized receiver", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "_ = ((s)).trustModelVerified", "read"},
+				{"assignment unwrapped", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "s.trustModelVerified = false", "assignment"},
+				{"assignment parenthesized", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "(s.trustModelVerified) = false", "assignment"},
+				{"assignment nested", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "(((s.trustModelVerified))) = false", "assignment"},
+				{"compound unwrapped", "type Service struct{ value int }; ", "value", "s.value += 1", "read-write"},
+				{"compound nested", "type Service struct{ value int }; ", "value", "((s.value)) += 1", "read-write"},
+				{"increment unwrapped", "type Service struct{ value int }; ", "value", "s.value++", "read-write"},
+				{"increment nested", "type Service struct{ value int }; ", "value", "((s.value))++", "read-write"},
+				{"decrement unwrapped", "type Service struct{ value int }; ", "value", "s.value--", "read-write"},
+				{"decrement nested", "type Service struct{ value int }; ", "value", "((s.value))--", "read-write"},
+				{"parallel LHS", "type Service struct{ value int }; ", "value", "other := 0; ((s.value)), other = 1, 2; _ = other", "assignment"},
+				{"parallel RHS", "type Service struct{ value int }; ", "value", "other := 0; next := 0; other, next = ((s.value)), 2; _, _ = other, next", "read"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+test.declarations+"func (s *Service) commission(){"+test.body+"}")
+					field := requirePackageStructField(t, pkg, "Service", test.fieldName)
+					references := pkg.referencesTo(field)
+					if len(references) != 1 || references[0].site != "fixture.go:Service.commission" {
+						t.Fatalf("same-site protected field occurrence changed: %v", references)
+					}
+					if references[0].accessKind != test.accessKind {
+						t.Fatalf("protected field access kind: got %q want %q", references[0].accessKind, test.accessKind)
+					}
+					allowedRead := map[string]int{"fixture.go:Service.commission|read": 1}
+					readErr := validateTypedFieldAccessInventory(test.name, references, allowedRead)
+					if test.accessKind == "read" {
+						if readErr != nil {
+							t.Fatal(readErr)
+						}
+					} else if readErr == nil || !strings.Contains(readErr.Error(), "field access inventory changed") ||
+						!strings.Contains(readErr.Error(), "|"+test.accessKind) {
+						t.Fatalf("expected intended access-kind mismatch, got %v", readErr)
+					}
+					appropriate := map[string]int{"fixture.go:Service.commission|" + test.accessKind: 1}
+					if err := validateTypedFieldAccessInventory(test.name, references, appropriate); err != nil {
+						t.Fatalf("correctly classified access refused: %v", err)
+					}
+				})
+			}
+		})
+		t.Run("write, address and write-through field access", func(t *testing.T) {
+			const inner = "type inner struct{ n int }; func (i *inner) bump(){ i.n++ }; func (i inner) get() int { return i.n }; "
+			for _, test := range []struct {
+				name, declarations, fieldName, body, accessKind string
+			}{
+				{"range key assignment", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "for s.trustModelVerified = range map[bool]int{false: 0} {}", "assignment"},
+				{"range value assignment", "type Service struct{ value int }; ", "value", "for _, s.value = range []int{1} {}", "assignment"},
+				{"range parenthesized key", "type Service struct{ value int }; ", "value", "for (s.value) = range 3 {}", "assignment"},
+				{"address-of", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "p := &s.trustModelVerified; *p = false", "address"},
+				{"address-of dereferenced assignment", "type Service struct{ trustModelVerified bool }; ", "trustModelVerified", "*(&(s.trustModelVerified)) = false", "address"},
+				{"pointer-receiver call on value", inner + "type Service struct{ value inner }; ", "value", "s.value.bump()", "address"},
+				{"pointer-receiver method value", inner + "type Service struct{ value inner }; ", "value", "bump := (s.value).bump; bump()", "address"},
+				{"array slice alias", "type Service struct{ value [2]int }; ", "value", "alias := s.value[:]; alias[0] = 1", "address"},
+				{"subfield assignment", inner + "type Service struct{ value inner }; ", "value", "s.value.n = 1", "write-through"},
+				{"parenthesized subfield assignment", inner + "type Service struct{ value inner }; ", "value", "((s.value).n) = 1", "write-through"},
+				{"subfield increment", inner + "type Service struct{ value inner }; ", "value", "s.value.n++", "write-through"},
+				{"subfield compound", inner + "type Service struct{ value inner }; ", "value", "s.value.n += 1", "write-through"},
+				{"subfield range target", inner + "type Service struct{ value inner }; ", "value", "for s.value.n = range 2 {}", "write-through"},
+				{"subfield address", inner + "type Service struct{ value inner }; ", "value", "p := &s.value.n; *p = 2", "write-through"},
+				{"slice element assignment", "type Service struct{ value []int }; ", "value", "s.value[0] = 1", "write-through"},
+				{"resliced element assignment", "type Service struct{ value []int }; ", "value", "s.value[1:][0] = 1", "write-through"},
+				{"array element increment", "type Service struct{ value [2]int }; ", "value", "s.value[0]++", "write-through"},
+				{"map element assignment", "type Service struct{ value map[string]int }; ", "value", "s.value[\"k\"] = 1", "write-through"},
+				{"pointer dereference assignment", "type Service struct{ value *int }; ", "value", "*s.value = 1", "write-through"},
+				{"pointer subfield assignment", inner + "type Service struct{ value *inner }; ", "value", "s.value.n = 1", "write-through"},
+				{"builtin delete", "type Service struct{ value map[string]int }; ", "value", "delete(s.value, \"k\")", "write-through"},
+				{"builtin clear", "type Service struct{ value []int }; ", "value", "clear(s.value)", "write-through"},
+				{"builtin copy destination", "type Service struct{ value []int }; ", "value", "copy(s.value, []int{1})", "write-through"},
+				{"builtin close", "type Service struct{ value chan int }; ", "value", "close(s.value)", "write-through"},
+				{"builtin copy source", "type Service struct{ value []int }; ", "value", "dst := make([]int, 1); copy(dst, s.value)", "read"},
+				{"subfield read", inner + "type Service struct{ value inner }; ", "value", "_ = s.value.n", "read"},
+				{"element read", "type Service struct{ value []int }; ", "value", "_ = s.value[0]", "read"},
+				{"index operand read", "type Service struct{ value int }; ", "value", "other := []int{1}; _ = other[s.value]", "read"},
+				{"value-receiver call", inner + "type Service struct{ value inner }; ", "value", "_ = s.value.get()", "read"},
+				{"pointer field method call", inner + "type Service struct{ value *inner }; ", "value", "s.value.bump()", "read"},
+				{"range over field", "type Service struct{ value []int }; ", "value", "for range s.value {}", "read"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					pkg := typeCheckSyntheticProductionPackage(t, "fixture.go", "package admission; "+test.declarations+"func (s *Service) commission(){"+test.body+"}")
+					field := requirePackageStructField(t, pkg, "Service", test.fieldName)
+					references := pkg.referencesTo(field)
+					if len(references) != 1 || references[0].site != "fixture.go:Service.commission" {
+						t.Fatalf("same-site protected field occurrence changed: %v", references)
+					}
+					if references[0].accessKind != test.accessKind {
+						t.Fatalf("protected field access kind: got %q want %q", references[0].accessKind, test.accessKind)
+					}
+					allowedRead := map[string]int{"fixture.go:Service.commission|read": 1}
+					readErr := validateTypedFieldAccessInventory(test.name, references, allowedRead)
+					if test.accessKind == "read" {
+						if readErr != nil {
+							t.Fatal(readErr)
+						}
+					} else if readErr == nil || !strings.Contains(readErr.Error(), "field access inventory changed") ||
+						!strings.Contains(readErr.Error(), "|"+test.accessKind) {
+						t.Fatalf("expected intended access-kind mismatch, got %v", readErr)
+					}
+					appropriate := map[string]int{"fixture.go:Service.commission|" + test.accessKind: 1}
+					if err := validateTypedFieldAccessInventory(test.name, references, appropriate); err != nil {
+						t.Fatalf("correctly classified access refused: %v", err)
+					}
+				})
+			}
+		})
+	})
 }
 
 func TestTypedObjectReferenceInventoryRejectsEscapes(t *testing.T) {
@@ -2720,6 +2913,7 @@ type typedReference struct {
 	site              string
 	objectIdentity    string
 	referenceKind     string
+	accessKind        string
 	directCall        bool
 	methodExpression  bool
 	insideFuncLiteral bool
@@ -3187,6 +3381,7 @@ func (pkg *typedProductionPackage) referencesMatching(matches func(types.Object)
 				referenceKind = "method-expression"
 			}
 			insideLiteral := insideFunctionLiteral(parents, identifier)
+			accessKind := typedReferenceAccessKind(pkg.info, parents, expression)
 			if insideLiteral {
 				referenceKind += "+closure"
 			}
@@ -3195,6 +3390,7 @@ func (pkg *typedProductionPackage) referencesMatching(matches func(types.Object)
 				site:              typedFunctionSite(fileName, enclosingFunction(parents, identifier)),
 				objectIdentity:    trancheB1ObjectIdentity(object),
 				referenceKind:     referenceKind,
+				accessKind:        accessKind,
 				directCall:        directCall,
 				methodExpression:  methodExpression,
 				insideFuncLiteral: insideLiteral,
@@ -3210,6 +3406,175 @@ func (pkg *typedProductionPackage) referencesMatching(matches func(types.Object)
 		return references[left].position.Offset < references[right].position.Offset
 	})
 	return references
+}
+
+// Field access is classified from the resolved identifier's syntax. This is
+// deliberately separate from call classification, which other guards use.
+//
+// The kind describes what the expression itself does to storage rooted at the
+// resolved field: "read", whole-field "assignment" or "read-write", a keyed
+// "initializer", taking the field's "address" (explicitly with & or implicitly
+// through slicing an addressable array or a pointer-receiver method on an
+// addressable value), or "write-through" when an assignment,
+// increment/decrement, range target, address-of or mutating builtin is applied
+// through a selector, index, slice or dereference chain rooted at the field.
+// Called functions and methods are not analyzed beyond Go's implicit
+// address-of. An unresolved selection in that chain is "unclassified".
+func typedReferenceAccessKind(info *types.Info, parents map[ast.Node]ast.Node, expression ast.Expr) string {
+	// Parentheses enclosing the whole resolved access are transparent to its
+	// syntactic role.
+	for {
+		parent, ok := parents[expression].(*ast.ParenExpr)
+		if !ok || parent.X != expression {
+			break
+		}
+		expression = parent
+	}
+	if pair, ok := parents[expression].(*ast.KeyValueExpr); ok && pair.Key == expression {
+		return "initializer"
+	}
+	switch typedStorageEffect(info, parents, expression) {
+	case "assign":
+		return "assignment"
+	case "read-write":
+		return "read-write"
+	case "address":
+		return "address"
+	case "builtin-write":
+		return "write-through"
+	}
+	location := expression
+	for {
+		next, implicitAddress, known, ok := typedLocationStep(info, parents, location)
+		if !known {
+			return "unclassified"
+		}
+		if implicitAddress {
+			if location == expression {
+				return "address"
+			}
+			return "write-through"
+		}
+		if !ok {
+			return "read"
+		}
+		location = next
+		if typedStorageEffect(info, parents, location) != "" {
+			return "write-through"
+		}
+	}
+}
+
+// typedStorageEffect reports a syntactic storage effect applied directly to
+// location by its parent node.
+func typedStorageEffect(info *types.Info, parents map[ast.Node]ast.Node, location ast.Expr) string {
+	switch parent := parents[location].(type) {
+	case *ast.AssignStmt:
+		for _, lhs := range parent.Lhs {
+			if lhs == location {
+				if parent.Tok == token.ASSIGN || parent.Tok == token.DEFINE {
+					return "assign"
+				}
+				return "read-write"
+			}
+		}
+	case *ast.IncDecStmt:
+		if parent.X == location {
+			return "read-write"
+		}
+	case *ast.RangeStmt:
+		if parent.Tok == token.ASSIGN && (parent.Key == location || parent.Value == location) {
+			return "assign"
+		}
+	case *ast.UnaryExpr:
+		if parent.Op == token.AND && parent.X == location {
+			return "address"
+		}
+	case *ast.CallExpr:
+		if len(parent.Args) == 0 || parent.Args[0] != location {
+			return ""
+		}
+		name, ok := ast.Unparen(parent.Fun).(*ast.Ident)
+		if !ok {
+			return ""
+		}
+		if builtin, ok := info.Uses[name].(*types.Builtin); ok {
+			switch builtin.Name() {
+			case "clear", "close", "copy", "delete":
+				return "builtin-write"
+			}
+		}
+	}
+	return ""
+}
+
+// typedLocationStep moves from location to the enclosing expression that
+// still denotes storage reached from it. known is false when a selector in
+// the chain has no recorded selection.
+func typedLocationStep(info *types.Info, parents map[ast.Node]ast.Node, location ast.Expr) (next ast.Expr, implicitAddress, known, ok bool) {
+	switch parent := parents[location].(type) {
+	case *ast.ParenExpr:
+		return parent, false, true, parent.X == location
+	case *ast.StarExpr:
+		return parent, false, true, parent.X == location
+	case *ast.IndexExpr:
+		return parent, false, true, parent.X == location
+	case *ast.TypeAssertExpr:
+		return parent, false, true, parent.X == location
+	case *ast.SliceExpr:
+		if parent.X != location {
+			return nil, false, true, false
+		}
+		if _, array := typedUnderlying(info.TypeOf(location)).(*types.Array); array {
+			return nil, true, true, false
+		}
+		return parent, false, true, true
+	case *ast.SelectorExpr:
+		if parent.X != location {
+			return nil, false, true, false
+		}
+		selection := info.Selections[parent]
+		if selection == nil {
+			return nil, false, false, false
+		}
+		switch selection.Kind() {
+		case types.FieldVal:
+			return parent, false, true, true
+		case types.MethodVal:
+			signature, isSignature := selection.Obj().Type().(*types.Signature)
+			if !isSignature || signature.Recv() == nil {
+				return nil, false, false, false
+			}
+			_, pointerReceiver := typedUnderlying(signature.Recv().Type()).(*types.Pointer)
+			_, pointerOperand := typedUnderlying(info.TypeOf(location)).(*types.Pointer)
+			return nil, pointerReceiver && !pointerOperand, true, false
+		}
+		return nil, false, false, false
+	}
+	return nil, false, true, false
+}
+
+func typedUnderlying(t types.Type) types.Type {
+	if t == nil {
+		return nil
+	}
+	return t.Underlying()
+}
+
+func validateTypedFieldAccessInventory(label string, references []typedReference, want map[string]int) error {
+	got := make(map[string]int)
+	for _, reference := range references {
+		if reference.packagePath == "" || reference.site == "" || reference.position.Filename == "" ||
+			reference.position.Line <= 0 || reference.position.Column <= 0 || reference.objectIdentity == "" ||
+			reference.insideFuncLiteral || reference.accessKind == "" {
+			return fmt.Errorf("%s contains an incomplete or escaped field reference: %v", label, reference)
+		}
+		got[reference.site+"|"+reference.accessKind]++
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("%s field access inventory changed: got %v want %v (references %v)", label, got, want, references)
+	}
+	return nil
 }
 
 func astParentMap(root ast.Node) map[ast.Node]ast.Node {
@@ -3836,6 +4201,7 @@ func validateTrancheB1SemanticProducerFreeze(pkg *typedProductionPackage, fixtur
 		planBindings: []string{
 			"es/admission/reliable_submit_binding_encoding.go:bindingEncodeCanonical",
 			"es/admission/reliable_submit_binding_encoding.go:bindingRecordFields",
+			"es/admission/reliable_submit_operational_admission.go:operationalEvidenceMatchesOriginal",
 			"es/admission/reliable_submit_operational_format.go:encodeOperationalOriginal",
 			"es/admission/reliable_submit_operational_format.go:validateOperationalPlan",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.provenance",
@@ -3852,6 +4218,7 @@ func validateTrancheB1SemanticProducerFreeze(pkg *typedProductionPackage, fixtur
 			"es/admission/reliable_submit_binding.go:bindingPrimaryValid",
 			"es/admission/reliable_submit_binding.go:bindingPrimaryValid",
 			"es/admission/reliable_submit_binding_encoding.go:bindingRecordFields",
+			"es/admission/reliable_submit_operational_admission.go:operationalEvidenceMatchesOriginal",
 			"es/admission/reliable_submit_operational_format.go:encodeOperationalOriginal",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.plan",
 			"es/admission/reliable_submit_replay_format.go:privateReplayEncoder.provenance",
@@ -5008,7 +5375,7 @@ func validateResolvedPlanSemanticCallFlow(pkg *typedProductionPackage) error {
 	}{
 		{label: "submit resolver", definition: semanticCallDefinition{receiver: "Service", name: "resolveExecutionForSubmit"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_replay_private.go:Service.composePrivateSyntheticReplay": 1, "es/admission/reliable_submit_operational_handoff.go:Service.composeOperationalOriginal": 1}},
 		{label: "execution locator", definition: semanticCallDefinition{name: "newExecutionLocator"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
-		{label: "run projection", definition: semanticCallDefinition{name: "newResolvedRunProjection"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
+		{label: "run projection", definition: semanticCallDefinition{name: "newResolvedRunProjection"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:Service.advanceOperational": 1}},
 		{label: "Nomad registration", definition: semanticCallDefinition{receiver: "nomadClient", name: "submitJob"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1}},
 		{label: "semantic plan freeze", definition: semanticCallDefinition{name: "newResolvedExecutionPlan"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
 		{label: "material freeze", definition: semanticCallDefinition{name: "newResolvedExecutionMaterial"}, want: map[string]int{"es/admission/resolved_execution_plan.go:Service.resolveExecutionForSubmit": 1, "es/admission/reliable_submit_replay_hydration.go:decodePrivateReplayOriginal": 1, "es/admission/reliable_submit_operational_format.go:verifyOperationalOriginal": 1}},
@@ -5181,7 +5548,7 @@ func validateTrancheASemanticCallFlow(pkg *typedProductionPackage) error {
 				"es/admission/submit.go:Service.Submit":                                                        1,
 			},
 		},
-		{label: "materialization entry point", definition: semanticCallDefinition{name: "materializeExecutionInputs"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:operationalDomain.advanceOperational": 1}},
+		{label: "materialization entry point", definition: semanticCallDefinition{name: "materializeExecutionInputs"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/reliable_submit_operational_handoff.go:Service.advanceOperational": 1}},
 		{label: "pre-handoff revalidation", definition: semanticCallDefinition{receiver: "stagingCustody", name: "revalidateBeforeHandoff"}, want: map[string]int{"es/admission/submit.go:Service.Submit": 1, "es/admission/staging_custody.go:measureOperationalStage": 2}},
 	} {
 		target, err := resolveSemanticCallTarget(pkg, inventory.definition)

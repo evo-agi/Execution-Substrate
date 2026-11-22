@@ -16,6 +16,22 @@ Authority for this document follows the repo-wide authority hierarchy:
 
 When prose and code disagree, code and tests win.
 
+### PR #12 private admission ownership
+
+ES alone owns current admission before a private retained first effect. ARS
+supplies artifact discovery, payload and signed evidence to the one ordinary
+fresh resolution; EGS supplies the startup-verified TrustModel. A separate
+owned full-evidence carrier inside ES transports that same successful record
+to a new authenticated v2 operational original. It does not move admission authority into the shared evidence contract, ARS, EGS, Nomad, Control Plane or
+the durable store. The private Service commissions a local immutable
+trust/verifier/built-in-policy snapshot for a qualified installation epoch and
+may only withdraw effect permission monotonically within that epoch. The
+SQLite writer invokes finite local qualification, never a fresh resolver,
+remote dependency or arbitrary policy plugin. Receipt replay and marked
+positive reconciliation use retained facts and their original caller/key
+authority, without granting a new effect. Installed commissioning, identity
+selection, public routing and policy distribution remain separate seams.
+
 ## 2. How to read this document
 
 - **Observed current boundary**: A service split or responsibility line that is implemented and visible in the current Go repo.

@@ -12607,8 +12607,8 @@ func TestPrivateReplayProgressSynchronizationInventoryDocsContract(t *testing.T)
 			}
 		}
 	}
-	if len(want) != 51 {
-		t.Fatalf("expected 51 exact structural fields, got %d", len(want))
+	if len(want) != 56 {
+		t.Fatalf("expected 56 exact structural fields, got %d", len(want))
 	}
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	section := docSection(t, admission, "### 7.4 Exact synchronized mutable-state inventory", "### 7.5 Rejected A3 topology inventory")
@@ -12696,7 +12696,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 			return fmt.Errorf("missing exact field %q", field)
 		}
 	}
-	if counts["Lock"] != 7 || counts["Atomic"] != 4 || counts["Reference"] != 40 {
+	if counts["Lock"] != 7 || counts["Atomic"] != 4 || counts["Reference"] != 45 {
 		return fmt.Errorf("synchronization category counts differ: %v", counts)
 	}
 	for field, roles := range permitRoles {
@@ -12707,7 +12707,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 	text := compactText(section)
 	for _, rule := range []string{
 		"non-test production source under `./es/...` and `./cmd/es/...`",
-		"51 structurally synchronization-bearing fields: seven direct lock fields, four `atomic.Bool` fields, and 40 transitive reference, request or wrapper fields",
+		"56 structurally synchronization-bearing fields: seven direct lock fields, four `atomic.Bool` fields, and 45 transitive reference, request or wrapper fields",
 		"private replay path remains runtime-unwired",
 		"SQLite owns committed claim, progress, key and grant/use state",
 		"no package-level synchronization authority",
@@ -13985,4 +13985,149 @@ func TestOperationalSubmitHandoffContractRejectsUnsafeMutants(t *testing.T) {
 			}
 		})
 	}
+}
+
+func operationalCurrentAdmissionV2OwnerRule(owner string) bool {
+	return strings.Contains(owner, "An `operational_local_v1` original remains a **Temporary compatibility edge**.") &&
+		strings.Contains(owner, "Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,") &&
+		strings.Contains(owner, "only bounded local Service admission") &&
+		strings.Contains(owner, "Receipt-only") && strings.Contains(owner, "Accepted v1/v2 receipt")
+}
+
+func operationalV1AttributionRule(owner string) bool {
+	return strings.Contains(owner, "custody keeps its inherited bounded sequence") &&
+		strings.Contains(owner, "can accept a structurally valid nonempty provenance sequence") &&
+		strings.Contains(owner, "Admission requires the historical empty sequence by exact whole-wire")
+}
+
+func operationalV2AssuranceOwnerRule(owner string) bool {
+	return strings.Contains(owner, "zero non-test references") &&
+		strings.Contains(owner, "operationalAdmissionSnapshot` construction") &&
+		strings.Contains(owner, "independently build the full scope-3 TLV and PB1") &&
+		strings.Contains(owner, "Transparent parentheses enclosing a resolved field") &&
+		strings.Contains(owner, "parenthesized reads") &&
+		strings.Contains(owner, "targets remain assignments") &&
+		strings.Contains(owner, "targets remain read-writes") &&
+		strings.Contains(owner, "Range-clause `=` key and value whole-field targets") &&
+		strings.Contains(owner, "Taking a field's address is an `address` access") &&
+		strings.Contains(owner, "is a `write-through` access") &&
+		strings.Contains(owner, "not a general proof of aliases or")
+}
+
+func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	plans := mustRead(t, "PLANS.md")
+	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
+	persistence := mustRead(t, ".docs/execution_lifecycle/reliable_submit_persistence_and_concurrency.md")
+	recovery := mustRead(t, ".docs/execution_lifecycle/submit_idempotency_correlation_and_recovery.md")
+	boundary := mustRead(t, ".docs/system_overview/boundaries.md")
+	assertContainsAll(t, "selected v2 owner", owner,
+		"operational_local_v2", "Claims **and** Seal", "256 KiB", "same admission before it can release a sender",
+		"The withdrawal writer takes only `Service.mu`", "Accepted v1/v2 receipt", "Unknown variants fail closed")
+	assertContainsAll(t, "authority and independent evidence obligations", owner,
+		"zero non-test references", "operationalAdmissionSnapshot` construction", "Exact protected-field reads",
+		"independently build the full scope-3 TLV and PB1", "valid signature but",
+		"Transparent parentheses enclosing a resolved field", "parenthesized reads",
+		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
+		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
+		"is a `write-through` access", "aggregate HEAD ceiling for PR #12 plus that repair is 42 files",
+		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
+	assertContainsAll(t, "selected v2 plan", plans,
+		"PR #12 retained-current-admission v2 repair", "Temporary compatibility edge", "fresh independent audit",
+		"PR #12 v2 field-access guard completion", "red-team review of its")
+	assertContainsAll(t, "separate evidence and policy ownership", admission,
+		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected")
+	assertContainsAll(t, "durable v2 scope", persistence,
+		"all historical migrations and their literal hashes", "bounded opaque full signed", "No durable policy decision")
+	assertContainsAll(t, "v1 owner-layer attribution", owner,
+		"custody keeps its inherited bounded sequence", "can accept a structurally valid nonempty provenance sequence",
+		"Admission requires the historical empty sequence by exact whole-wire")
+	assertContainsAll(t, "v1 persistence-layer attribution", persistence,
+		"valid nonempty", "v1 provenance sequence may pass that storage layer", "Admission alone requires")
+	assertContainsAll(t, "receipt exception", recovery,
+		"a committed accepted receipt is verified", "positive registration", "refuse new effect continuation")
+	assertContainsAll(t, "service boundary", boundary,
+		"ES alone owns current admission", "It does not move admission authority")
+	if !operationalCurrentAdmissionV2OwnerRule(owner) {
+		t.Fatal("current-admission and legacy-refusal owner rule incomplete")
+	}
+	if !operationalV1AttributionRule(owner) {
+		t.Fatal("v1 custody/admission attribution is incomplete")
+	}
+	if !operationalV2AssuranceOwnerRule(owner) {
+		t.Fatal("v2 authority and independent vector obligations are incomplete")
+	}
+}
+
+func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testing.T) {
+	owner := mustRead(t, operationalHandoffOwnerDoc)
+	if !operationalCurrentAdmissionV2OwnerRule(owner) {
+		t.Fatal("real v2 owner rule incomplete")
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"LegacyFirstEffect", "Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,", "Unmarked v1 may advance Assign/Intent, stage, stamp,"},
+		{"WriterRemoteResolver", "only bounded local Service admission", "a current remote resolver"},
+		{"ReceiptPolicyGate", "Accepted v1/v2 receipt", "Current-policy-approved v1/v2 receipt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Count(owner, tc.from) != 1 {
+				t.Fatalf("owner mutation anchor count %d", strings.Count(owner, tc.from))
+			}
+			mutated := strings.Replace(owner, tc.from, tc.to, 1)
+			if operationalCurrentAdmissionV2OwnerRule(mutated) {
+				t.Fatal("unsafe owner mutation survived")
+			}
+		})
+	}
+	t.Run("FalseStorageEmptyV1Attribution", func(t *testing.T) {
+		const accurate = "can accept a structurally valid nonempty provenance sequence"
+		if strings.Count(owner, accurate) != 1 {
+			t.Fatal("accurate custody/admission attribution is missing")
+		}
+		mutant := strings.Replace(owner, accurate, "rejects every nonempty v1 provenance sequence", 1)
+		if operationalV1AttributionRule(mutant) {
+			t.Fatal("false storage-layer mutation escaped owner wording guard")
+		}
+	})
+	for _, tc := range []struct{ name, phrase string }{
+		{"MissingZeroCommissionInventory", "zero non-test references"},
+		{"MissingSnapshotConstructionOwner", "operationalAdmissionSnapshot` construction"},
+		{"MissingIndependentBindingOracle", "independently build the full scope-3 TLV and PB1"},
+		{"MissingParenthesizedAssignmentRule", "targets remain assignments"},
+		{"MissingParenthesizedReadWriteRule", "targets remain read-writes"},
+		{"MissingRangeAssignmentRule", "Range-clause `=` key and value whole-field targets"},
+		{"MissingAddressAccessRule", "Taking a field's address is an `address` access"},
+		{"MissingWriteThroughRule", "is a `write-through` access"},
+		{"MissingFiniteGuardLimit", "not a general proof of aliases or"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(owner, tc.phrase) {
+				t.Fatal("owner contract anchor missing")
+			}
+			mutant := strings.Replace(owner, tc.phrase, "unmaintained", 1)
+			if operationalV2AssuranceOwnerRule(mutant) {
+				t.Fatal("unsafe owner deletion survived")
+			}
+		})
+	}
+	t.Run("ParenthesizedWriteDowngrade", func(t *testing.T) {
+		const accurate = "targets remain assignments"
+		if strings.Count(owner, accurate) != 1 {
+			t.Fatalf("parenthesized assignment owner anchor count %d", strings.Count(owner, accurate))
+		}
+		mutant := strings.Replace(owner, accurate, "targets become reads", 1)
+		if operationalV2AssuranceOwnerRule(mutant) {
+			t.Fatal("parenthesized write downgrade survived owner wording guard")
+		}
+	})
+	t.Run("WriteThroughDowngrade", func(t *testing.T) {
+		const accurate = "is a `write-through` access"
+		if strings.Count(owner, accurate) != 1 {
+			t.Fatalf("write-through owner anchor count %d", strings.Count(owner, accurate))
+		}
+		mutant := strings.Replace(owner, accurate, "remains a read", 1)
+		if operationalV2AssuranceOwnerRule(mutant) {
+			t.Fatal("write-through downgrade survived owner wording guard")
+		}
+	})
 }

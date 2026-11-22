@@ -512,6 +512,31 @@ authorize dispatch or fallback to unkeyed submit.
 
 ### Selected codec-5 interpretation of §8
 
+The PR #12 refinement retains schema 5, codec 5, scope 3, the eleven-field
+`ESRSPAY3` envelope, all historical migrations and their literal hashes. It
+adds only a provenance variant discriminator and a bounded opaque full signed
+evidence leaf to new `operational_local_v2` originals. Scope-3 custody checks
+the finite variant and inherited bounded structural framing: a valid nonempty
+v1 provenance sequence may pass that storage layer. Admission alone requires
+the historical empty v1 leaf through exact whole-wire re-encoding and rejects
+a nonempty v1 sequence before an operational effect. Custody checks v2 as
+nonempty bounded opaque bytes; admission owns typed JSON, evidence associations,
+signature, current TrustModel and policy meaning. Existing sealed
+v1 bytes and receipts are never rewritten. V1 unmarked effects refuse, while
+v1/v2 accepted receipt reads and marked positive reconciliation remain
+available under exact caller/key/original rules. No durable policy decision,
+permit, table, migration or new shared kernel is introduced.
+
+For an unmarked v2 first effect, the existing checked writer rehydrates the
+same original and key state, then invokes only bounded local Service admission
+over those retained bytes. Lock order is SQLite writer, brief Service read,
+then release of Service lock before bounded crypto/policy work. A second
+withdrawal/identity read completes each positive cut. The Service withdrawal
+writer never takes SQLite or custody locks. Post-COMMIT release and final
+one-use sender entry repeat their selected checks; neither a read-only
+observation nor a historical Allow bit confers a sender. The physical stage,
+permanent marker, CAS, uncertainty and actual-write rules below are unchanged.
+
 Operational command operands bind the exact authenticated predecessor. Intent
 and marker use the owner-specified preimages. Stamp and marker require a
 fresh matching held-stage measurement. Receipt CAS accepts the authenticated

@@ -4,8 +4,8 @@
 
 | Class | Scope |
 | --- | --- |
-| Current invariant | Published PR #11 is schema 4. Codecs 1/2, immutable codec 3, and fixture-only codec 4 retain their existing meanings. Structural public keyed-request refusal and ordinary unkeyed Submit remain current. ES owns its durable facts, Nomad its scheduling and execution observations, and Coordinator semantic acceptance. |
-| Selected target | Re-derivation of the reliable-submit Reopened redesign seam. A single private handoff across durable CAS, exclusive staging, one-use dispatch and positive receipt recovery. The private schema-5 source and maintained proof are under local implementation validation. Independent source acceptance and native qualification are separate later gates. |
+| Current invariant | Published PR #12 is schema 5. Codecs 1/2, immutable codec 3, fixture-only codec 4, structural public keyed-request refusal and ordinary unkeyed Submit retain their meanings. ES owns its durable facts, Nomad its scheduling and execution observations, and Coordinator semantic acceptance. |
+| Bounded slice refinement | Repair PR #12's supported retained-current-admission omission with a v2 signed-evidence original and one commissioned Service-owned local authority. The repair is a committed draft-PR candidate awaiting fresh independent audit and red-team review; native qualification remains separate. |
 | Proof only | Real local SQLite and actual descriptor-relative fixture staging with two independent handles/processes, provisioned test keys and a counting loopback provider through the same private composition. Four operational claim slots, 32 object names, and 32 aggregate nonrefundable reservations. |
 | Native prerequisite | Governed Ubuntu 24.04 Linux arm64 supported-local, one ES installation and exact authorized SPIFFE workload identity, default-off startup, private precommissioned state, qualified transport/provider and mounts, finite retained storage, and caller-scoped lifecycle authorization. |
 
@@ -66,7 +66,8 @@ ownership, provider, host, mount or durability claim.
 | Historical 1–4, readable unchanged in 5 | 1/2 | SQL NULL | Occupancy only / refuse / refuse |
 | 3–5 | 3 | `synthetic_nonoperational_v1` / 1 | Occupancy only / refuse / refuse |
 | 4–5 | 4 | `synthetic_progress_nonoperational_v1` / 2 | Occupancy only / refuse / refuse |
-| 5 | 5 | `operational_local_v1` / 3 | Exact verified original / governed operations / live sender only |
+| 5 | 5 | `operational_local_v1` / 3 | Exact receipt read or positive marked reconciliation only; no new first effect |
+| 5 | 5 | `operational_local_v2` / 3 | Exact verified original / current-admission-governed first effect / live sender only |
 | Wrong, partial or unknown tuple | Any | Any | Fail closed / refuse / refuse |
 
 Legacy and fixture APIs retain their current scopes and refuse codec 5
@@ -163,7 +164,8 @@ and leaf 4 is proof kind u8=2 (installed qualification for native, explicit
 fixture authority for proof), leaf 1 equals the digest-pinned resolved image,
 and issuer and topology equal qualified frozen facts. TLV 7 has exact qualified
 staging/results/SPIRE/datacenter strings and UID/GID. TLV 8 leaf 1 is the
-ASCII literal `operational_local_v1`. TLV 9 wrapper and payload leaves are
+ASCII literal `operational_local_v1` for existing originals or
+`operational_local_v2` for new originals. TLV 9 wrapper and payload leaves are
 u16=3. TLV 10 is u8=3. Each original and resolved plan contains zero additional
 mount items, network false and the exact selected mode/profile/job shape.
 
@@ -245,6 +247,168 @@ verification and positive-receipt CAS may use the exact ACTIVE or RETIRED
 pair with currently authorized caller and qualified retained original, and
 confer solely read/reconciliation authority. No mixing of keys from other
 objects or substitution of present resolver output for retained input.
+
+### PR #12 v2 retained evidence and current admission
+
+The repaired candidate keeps schema 5, codec 5, scope 3, eleven outer
+`ESRSPAY3` fields, and every wrapper, AAD, commitment, receipt, migration and
+SQL literal unchanged. TLV 8 provenance leaf 1 is the authenticated variant
+discriminator. New originals use `operational_local_v2`; leaf 5 is the complete
+signed `evidencev1.ArtifactEvidence` (Claims **and** Seal) encoded by compact
+`encoding/json.Marshal` without a newline. The field is nonempty valid UTF-8
+and at most 256 KiB within the existing 1 MiB original. Strict typed decoding
+refuses unknown members, multiple values, duplicate or noncanonical spellings,
+order and whitespace by requiring exact full-record re-encoding. The evidence
+contract's `CanonicalBytes` signs claims only and is not this full-record wire.
+Durable custody validates the v2 leaf only as bounded opaque bytes and keeps
+scope 1/2 grammar intact. Admission validates the evidence structure, signed
+claims, signature and frozen-plan associations. The common original reader
+must authenticate, decode, bind PB1 and re-encode either variant without
+requiring current Service trust or policy.
+For historical v1, scope-3 custody keeps its inherited bounded sequence
+grammar and can accept a structurally valid nonempty provenance sequence.
+Admission requires the historical empty sequence by exact whole-wire
+re-encoding and refuses a nonempty variant before any operational effect.
+Maintained inert vectors independently build the full scope-3 TLV and PB1
+preimage/MAC from the published `8058561` field layout, for both complete
+signed-v2 Claims+Seal bytes and the historical empty-sequence v1 bytes. The
+expected wire is compared in full with the production encoder; the common
+reader and retained qualifier consume that expectation. Validly re-signed
+claims mutations must first pass the configured synthetic verifier before an
+association refusal is attributed to binding. Claims-syntax refusals remain
+separate. A direct currently revoked signer still has a valid signature but
+cannot gain a first effect.
+The private full-record carriers on `preparedArtifact` and `resolvedExecution`
+use owned immutable strings and redacted formatting; they do not expose the
+signed record through ordinary result or provider projection formatting.
+
+One ordinary successful `resolveExecutionForSubmit` supplies the v2 evidence.
+`preparedArtifact` owns a redacted immutable full-evidence copy after its
+existing discovery/evidence/request/trust checks. `resolvedExecution` carries
+that copy separately from plan, material, host and PB1. The builder seals it
+before claim insert, with no second resolution, ARS read, lazy fetch or
+Service-wide last-evidence cache. The private 256 KiB cap does not narrow
+ordinary unkeyed Submit. Bind evidence artifact/payload digests, derivation,
+output, signed artifact type, target and network claims, runtime capabilities,
+argv, selected default profile and full retained payload bytes to the original
+intent and plan. Keep publication `IntentDigest` distinct from the reliable
+request-intent commitment. `imageIssuer` is not the artifact signer. Reject
+oversize or contradictory evidence before publication; do not make a new v1.
+
+The unexported Service-owned private authority is commissioned once for a
+nonzero qualified installation identity and selected epoch after startup has
+loaded and verified trust. It deep-copies trust lists, provenance verifier key
+bytes and validated built-in policy entries. The verified trust publication is
+bound to the original Service instance; a copied precommission Service cannot
+borrow it. The retained trust JSON representation must fit the existing
+256 KiB dependency response bound. Nil ordinary evaluator means its
+validated configured default. A nonnil evaluator must be an exact supported
+`admissionPolicySet` whose concrete members are inspected before any call;
+unknown, nested or arbitrary interface implementations cannot run under a
+writer. One Service cannot recommission, change realm or reenable after
+withdrawal. `Service.Initialize` cannot replace trust once commissioned,
+including a fetch racing commission. No production caller commissions this
+private authority. The local monotonic withdrawal is protected by the
+existing `Service.mu`; it is not cross-process revocation. Trust, verifier or
+policy replacement requires a new qualified epoch and withdrawal of old
+effect-enabled processes. Native policy-epoch consistency remains a separate
+commissioning prerequisite.
+
+Maintained typed production inventories enforce zero non-test references to
+`Service.commissionOperationalAdmission` and
+`Service.withdrawOperationalEffects`, zero non-test configuration of
+`Service.operationalProof` or its hook callbacks, and exactly one
+`operationalAdmissionSnapshot` construction in the commissioning method.
+Exact protected-field reads, assignments and keyed initializers cover verified
+trust ownership, installed snapshot/withdrawal, snapshot identity/content,
+the handoff owner links and proof hooks; mutex reference counts do not replace
+these access inventories. Transparent parentheses enclosing a resolved field
+selector do not change its access kind: parenthesized reads, including right-hand
+side and receiver/base evaluation, remain reads; parenthesized whole-field `=`
+targets remain assignments; parenthesized compound-assignment and
+increment/decrement whole-field targets remain read-writes; keyed literal field
+keys remain initializers. Range-clause `=` key and value whole-field targets
+are assignments. Taking a field's address is an `address` access, whether
+explicit with `&` or implicit through slicing an addressable array or calling a
+pointer-receiver method on an addressable field value. An assignment,
+increment/decrement, range target, address-of, `clear`, `close`, `delete` or
+`copy` destination applied through a selector, index, slice, type assertion or
+dereference chain rooted at the field is a `write-through` access. None of
+these is a read; an unresolved selection in such a chain is unclassified and
+fails the inventory. Called functions and methods are not analyzed beyond
+Go's implicit address-of. The maintained guarantee is exact syntactic
+occurrence, function site and access kind, not a general proof of aliases or
+runtime safety. `Service.mu` owns the mutable Service state, while
+the commissioned snapshot is immutable and bound to its original Service.
+The per-instance proof hooks are nil in production and non-authoritative.
+
+For unmarked v2, each run/intent writer, pre-stage checked writer, stamp writer
+and first-marker writer authenticates the exact current row, original, keys,
+revision and retained material, then checks complete current admission on that
+same original. This is only bounded local Service admission over retained
+bytes. Inside a SQLite writer the lock order is writer then a brief
+`Service.mu` read. Copy the immutable commissioned snapshot/withdrawal state,
+release the Service lock, run bounded local evidence verification, trust and
+built-in `RequiredInputClasses`/`Evaluate`, then sample withdrawal/identity
+again before positive return. No resolver, ARS/EGS read, arbitrary evaluator,
+filesystem materialization or provider I/O runs in this callback.
+The withdrawal writer takes only `Service.mu` and never takes SQLite, custody,
+stage or owner locks. The final sender lock order is owner mutex then a brief
+Service read; no reverse path is allowed. Post-COMMIT release rechecks the
+same admission before it can release a sender. Final owner-protected entry
+checks context, authority/Service/installation/epoch identity, withdrawal,
+original/marker/stage/request and existing key eligibility before direct
+transport. No Service lock spans transport.
+
+An unavailable or denied current authority, unsupported required input or
+missing bounded payload returns value-free `OperationalUnavailable` and
+withholds run/receipt; malformed or contradictory authenticated evidence
+returns `OperationalIntegrity`; cancellation returns `OperationalCanceled`.
+Preserve the exact prior operation and write disposition: denial after an
+acknowledged intent, stamp or marker does not erase the write, and an unknown
+response is not upgraded. A pre-stage denial creates no new stage; denial
+after legitimate staging may leave inert charged residue; a marker after
+withdrawal may remain but grants no sender. The complete
+`OperationalNoChange` **and** `OperationalReasonNone` pre-stage gate, exact
+revision CAS, permanent marker, direct-only one-use sender and no stage
+reattachment remain in force. A withdrawal observed before a cut stops its
+next action; a previous committed write or already-entered I/O cannot be
+retracted. A retry after a changed configured literal policy, artifact revocation or
+signer revocation is refused at its first remaining cut, after a committed
+run assignment or intent, without advancing or disclosing the claim; a later
+retry under an allowing authority still completes, so a denial does not
+poison the claim.
+
+An `operational_local_v1` original remains a **Temporary compatibility edge**.
+Unmarked or stamped-but-unmarked v1 cannot advance Assign/Intent, stage, stamp,
+marker or POST and cannot be relabeled or resealed. Accepted v1/v2 receipt
+verification needs exact caller, authenticated historical realm/original and
+eligible exact ACTIVE/RETIRED key pair, but no current Service authority,
+stage, resolver or provider. A marked v1/v2 claim may record only verified
+positive provider registration and immutable receipt, never dispatch again.
+Missing/revoked/mixed keys and unauthorized callers still refuse without
+disclosure. Unknown variants fail closed. Canonical public caller selection and
+installed lifecycle authorization remain outside this private injected proof.
+
+The maintained proof uses an independently constructed complete signed-v2
+outer wire and a historical v1 complete byte/commitment oracle derived from
+the published layout, rather than a producer/reader round trip as its expected
+value. Otherwise-valid signed contradictions isolate evidence-to-plan/material
+association from signature refusal. An eligible retained cut observes actual
+argv, artifact, profile, payload count and bounded text supplied to the
+selected built-in policy; a separately commissioned synthetic trust view
+isolates current signer revocation. These are local proof obligations, not
+new authorities or installed epoch-consensus claims.
+
+The existing per-instance `operationalAdmissionProofHooks` may carry one
+nil-default `contextObserved` callback for inert test observation. It receives
+only a detached `AdmissionPolicyContext` value with independently cloned argv,
+after retained inputs are complete and immediately before the existing built-in
+`Evaluate` call. It returns no decision and grants no permission, replacement
+evaluator, storage fact or output channel. Non-test source configures no proof
+hook. The exact call/read and configuration sites are maintained by typed
+inventories; ordinary admission and the private writer's policy algorithm
+remain unchanged.
 
 ## 4. Writer turn, sender and results
 
@@ -842,6 +1006,14 @@ reachable-caller inventories.
 | I/replay_custody_file_test.go | Conditional exact scope-aware opener inventory, preserving the inherited nonblocking FIFO controls. |
 | I/replay_custody_structure.go | Conditional shared reader bounds and exact operational TLV 11 validation. Synthetic document sizes, proofs and scope dispatch continue to use their own cases. |
 | A/reliable_submit_replay_private_test.go | Scope amendment to the finite typed PB1 producer caller inventory in TestPrivateReplayFiniteCallerAndNoRuntimeWiring, preserving both fixture sites and the direct-call, count, escape and no-runtime checks. |
+
+The PR #12 retained-current-admission v2 repair is a separate owner
+reconciliation at this gate. It adds exactly five paths outside the table:
+A/reliable_submit_operational_admission.go (new),
+A/reliable_submit_operational_admission_test.go (new), A/service.go,
+A/resolved_execution_plan.go and .docs/system_overview/boundaries.md. With
+them the aggregate HEAD ceiling for PR #12 plus that repair is 42 files. Any
+further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer
 `reserveReplaySealUseWithScope`, the sole constructor after confirmed COMMIT.

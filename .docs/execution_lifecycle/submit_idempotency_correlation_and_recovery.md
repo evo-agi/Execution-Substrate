@@ -962,6 +962,20 @@ Submit stay in force.
 
 ### 6C. Selected operational handoff and receipt-only recovery
 
+PR #12's current-admission repair makes new originals
+`operational_local_v2` with exact retained signed evidence from one ordinary
+resolution. Only an unmarked v2 claim under a commissioned Service authority
+can progress toward its first effect. Existing `operational_local_v1`
+unmarked or stamped-but-unmarked claims refuse new effect continuation without
+changing the old original, row or charge. For either variant, a committed accepted receipt is verified from the authenticated historical original and
+exact current caller/eligible ACTIVE or RETIRED original key pair, independently
+of current trust, verifier, policy, resolver, staging and provider. A marked
+claim without a receipt may reconcile only verified positive registration and
+record its immutable receipt; it cannot create another sender or POST. Wrong,
+missing, revoked or mixed keys and unauthorized callers remain nondisclosing
+refusals. A denied unmarked first-effect cut withholds run/receipt while its
+earlier acknowledged or uncertain write disposition remains accurate.
+
 The [Operational Handoff](reliable_submit_operational_handoff.md) defines the private candidate codec-5 original, exact
 caller scoping, private result projections and two distinct authorization
 paths. Current exact caller authorization precedes lookup. First effects

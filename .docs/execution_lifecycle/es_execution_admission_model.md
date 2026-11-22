@@ -31,6 +31,55 @@ Authority for this document follows the repo-wide authority hierarchy:
 If this document disagrees with current code and tests on implemented behavior,
 the code and tests win and this document must be realigned.
 
+### PR #12 private retained-admission refinement
+
+The published codec-5 handoff omitted current ES admission on retained first
+effects. Its repair is a **Bounded slice rule** on the reliable-submit
+**Reopened redesign seam**, owned by the
+[operational handoff contract](reliable_submit_operational_handoff.md). Ordinary
+unkeyed Submit and public keyed refusal remain **Current invariants**. Fresh
+admission still owns one effectful resolution and verifies ARS discovery, the
+complete signed artifact evidence, current startup-loaded EGS TrustModel and
+the ES local policy. A private immutable owned evidence carrier on
+`preparedArtifact` and separately on `resolvedExecution` transports the same
+successful record to the v2 original builder; it does not enter the plan,
+material, PB1, provider projection or ordinary public result. The carrier's
+256 KiB sealing limit applies only to new private operational originals.
+
+For retained unmarked v2 effects, Service owns a one-shot commissioned
+trust/verifier/built-in-policy snapshot bound to the qualified installation and
+policy epoch. The verified trust owner pointer prevents a copied Service from
+commissioning the same startup proof, and trust JSON remains within the
+existing 256 KiB dependency response bound. It is read under the existing Service lock and evaluated locally
+over authenticated frozen inputs at each protected cut. The ordinary
+replaceable `AdmissionPolicyEvaluator` remains available to ordinary
+admission; the private SQLite writer accepts only an exact inspected
+`admissionPolicySet` of supported built-ins, refusing unknown or nested
+implementations before calling them. Nil uses the validated configuration
+default. Only monotonic local effect withdrawal may change within the epoch;
+content change requires a new epoch and old-process withdrawal. There is no
+background trust refresh, cross-process withdrawal registry, public
+commissioner or external policy service. Receipt-only and positive marked
+reconciliation never consult mutable execution admission. The prior v1
+original is a **Temporary compatibility edge** limited to those reads.
+
+For the private v2 proof, exact typed production inventories require zero
+references to Service commissioning and withdrawal methods, zero non-test
+configuration of `Service.operationalProof` and its callbacks, and the sole
+`operationalAdmissionSnapshot` literal in commissioning. The protected
+Service trust-owner, verified, snapshot, withdrawn and proof fields, all
+snapshot identity/content/proof fields, and handoff-owner Service/snapshot
+links have exact typed read/write/initializer site inventories. The existing
+`Service.mu` protects mutable Service state; the snapshot is immutable after
+one-shot construction, and final owner entry samples it under the documented
+owner-to-Service lock order. A finite reference count alone is not a lock
+correctness proof. The nil-default `contextObserved` test hook sees a detached
+completed retained policy context immediately before the existing built-in
+evaluation; it cannot change inputs or a decision and has no non-test
+configuration caller. Independent signed-v2 and historical-v1 byte oracles,
+validly signed contradictions, populated policy-context observation and
+retained signer-revocation controls are maintained acceptance evidence.
+
 ## 2. Decision summary
 
 - C0 is the docs and docs-contract-test gate only. It makes no runtime
@@ -910,8 +959,8 @@ whole run-root reclamation, adoption, or alternate claim path is selected.
 ### 7.4 Exact synchronized mutable-state inventory
 
 The non-test production source under `./es/...` and `./cmd/es/...` contains
-51 structurally synchronization-bearing fields: seven direct lock fields,
-four `atomic.Bool` fields, and 40 transitive reference, request or wrapper
+56 structurally synchronization-bearing fields: seven direct lock fields,
+four `atomic.Bool` fields, and 45 transitive reference, request or wrapper
 fields. The private fixture code is included in this source inventory. The
 private replay path remains runtime-unwired.
 `OperationalCustody.prestageProof` and `operationalProvider.exchangeEntry` are
@@ -921,7 +970,7 @@ protects proof configuration.
 
 | Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
 | --- | --- | --- | --- | --- | --- |
-| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy` | `Service.Initialize` | `Service.Health`, `Service.currentTrustModel` | Admission service instance |
+| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy`, verified startup state, one-shot operational snapshot and monotonic withdrawal | `Service.Initialize`, `Service.commissionOperationalAdmission`, `Service.withdrawOperationalEffects` | `Service.Health`, `Service.currentTrustModel`, `Service.currentOperationalAdmission` | Admission service instance |
 | Lock | `es/app:App.mu:sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both. `App.Shutdown` writes `started`. | `App.Started` reads `started`. `App.Addr` reads `listener`. | App instance |
 | Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |
 | Lock | `es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` | One reservation and publication attempt |
@@ -951,6 +1000,11 @@ protects proof configuration.
 | Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.access:*reliablesubmit.OperationalAccess` | Binds the observation proof to the callback access and exact marker projection. |
 | Reference | `es/admission:liveSender.owner:*admission.handoffOwner` | Binds the single sender to its callback owner. |
 | Reference | `es/admission:liveSender.self:*admission.liveSender` | Rejects a copy of the marker continuation. |
+| Reference | `es/admission:Service.operationalAdmission:*admission.operationalAdmissionSnapshot` | Holds one local epoch authority under `Service.mu`. |
+| Reference | `es/admission:Service.trustModelOwner:*admission.Service` | Binds the verified startup trust publication to its original Service before private commissioning. |
+| Reference | `es/admission:handoffOwner.admission:*admission.operationalAdmissionSnapshot` | Binds the final sender to the sampled authority. |
+| Reference | `es/admission:handoffOwner.service:*admission.Service` | Samples that Service's withdrawal before transport entry. |
+| Reference | `es/admission:operationalAdmissionSnapshot.owner:*admission.Service` | Rejects copied or foreign Service authority. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody` | The issuer sets its own identity once at open. Close, lookup and qualification check it for that handle's lifetime. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit` | Carries the same operation-local burn latch through either scope. See the permit roles below. |
 | Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` | Authentication issues the access state. Progress consumption checks it during that callback. |
@@ -1019,7 +1073,7 @@ The [Operational Handoff](reliable_submit_operational_handoff.md) defines the bo
 private composition over the existing durable service, exclusive staging custody
 and typed provider boundary. `Service.composeOperationalOriginal` is one direct
 resolver caller. `verifyOperationalOriginal` directly reconstructs the plan,
-material and host context from the retained original. `operationalDomain.advanceOperational`
+material and host context from the retained original. `Service.advanceOperational`
 directly projects the run and materializes its inputs on a held stage, and
 `operationalDomain.createOperationalStage` directly claims that stage. The stage measurement
 directly calls the existing held-tree revalidation twice before recording or using the stamp.

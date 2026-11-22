@@ -113,6 +113,13 @@ type Service struct {
 
 	mu         sync.RWMutex
 	trustModel *egsmodel.RuntimeTrustPolicy
+	// Private operational authority is commissioned only by the unwired handoff.
+	// The existing Service lock protects its one-shot lifetime and withdrawal.
+	trustModelVerified   bool
+	trustModelOwner      *Service
+	operationalAdmission *operationalAdmissionSnapshot
+	operationalWithdrawn bool
+	operationalProof     *operationalAdmissionProofHooks
 }
 
 type dependencyClient struct {
@@ -157,10 +164,13 @@ type discoveredArtifact struct {
 }
 
 type preparedArtifact struct {
+	privateExecutionValue
 	manifest       Manifest
 	payloadDigest  string
 	targetPlatform string
 	networkAccess  bool
+	// Owned full signed record from the same successful artifact admission.
+	provenanceRecord string
 }
 
 type preparedAdmission struct {
@@ -283,6 +293,12 @@ func validateSPIREWorkloadAPISocketPathConfigShape(path string) error {
 }
 
 func (s *Service) Initialize(ctx context.Context) error {
+	s.mu.RLock()
+	commissioned := s.operationalAdmission != nil || s.operationalWithdrawn
+	s.mu.RUnlock()
+	if commissioned {
+		return fmt.Errorf("private operational authority is already commissioned or withdrawn")
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.egsClient.client.Timeout)
 	defer cancel()
 
@@ -315,7 +331,13 @@ func (s *Service) Initialize(ctx context.Context) error {
 	normalized := payload.RuntimeTrust.Normalized()
 
 	s.mu.Lock()
+	if s.operationalAdmission != nil || s.operationalWithdrawn {
+		s.mu.Unlock()
+		return fmt.Errorf("private operational authority was commissioned during trust load")
+	}
 	s.trustModel = &normalized
+	s.trustModelVerified = true
+	s.trustModelOwner = s
 	s.mu.Unlock()
 
 	return nil
@@ -434,7 +456,19 @@ func (s *Service) prepareArtifact(ctx context.Context, req PrepareRequest, trust
 	if err != nil {
 		return preparedArtifact{}, err
 	}
-	return s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	artifact, err := s.prepareArtifactFromDiscovery(req, trustModel, discovery)
+	if err != nil {
+		return preparedArtifact{}, err
+	}
+	// The successful ordinary resolution owns the exact typed record it used.
+	// This carrier is inert for ordinary Submit and never enters its plan.
+	fullRecord, marshalErr := json.Marshal(discovery.evidence)
+	if marshalErr != nil {
+		return preparedArtifact{}, &Error{Status: http.StatusForbidden, Code: codeArtifactEvidenceInvalid,
+			Message: "artifact evidence record cannot be represented"}
+	}
+	artifact.provenanceRecord = string(fullRecord)
+	return artifact, nil
 }
 
 func (s *Service) currentTrustModel() *egsmodel.RuntimeTrustPolicy {
@@ -637,7 +671,6 @@ func (s *Service) prepareArtifactFromEvidenceRecord(trustModel egsmodel.RuntimeT
 	if err := enforceTrustModel(trustModel, evidence.Seal.KeyID, artifactDigest); err != nil {
 		return preparedArtifact{}, err
 	}
-
 	return preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
 		payloadDigest:  strings.TrimSpace(discovery.Payload.Digest),

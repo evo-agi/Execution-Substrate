@@ -147,6 +147,58 @@ func operationalFixturePayload(t *testing.T, base durableClaimRecord, keys Priva
 	return append(header, body...)
 }
 
+func TestOperationalHandoffV2CustodyStructure(t *testing.T) {
+	f := newOperationalStoreFixture(t, fixtureReplayRoot(t))
+	legacy := operationalFixturePayload(t, f.base, f.keys, f.root)
+	if _, err := operationalOriginalView(context.Background(), legacy); err != nil {
+		t.Fatalf("historical v1 framing refused: %v", err)
+	}
+	build := func(variant string, record []byte) []byte {
+		fields := progressVectorFields(t, legacy[14:])
+		provenance := progressVectorFields(t, fields[7])
+		provenance[0], provenance[4] = []byte(variant), record
+		fields[7] = progressVectorObject(provenance...)
+		body := progressVectorObject(fields...)
+		header := binary.BigEndian.AppendUint16([]byte("ESRSPAY3"), 3)
+		header = binary.BigEndian.AppendUint32(header, uint32(len(body)))
+		return append(header, body...)
+	}
+	valid := build("operational_local_v2", []byte(`{"claims":{},"seal":{}}`))
+	if _, err := operationalOriginalView(context.Background(), valid); err != nil {
+		t.Fatalf("bounded opaque v2 leaf refused by custody: %v", err)
+	}
+	if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, valid); err != nil {
+		t.Fatalf("v2 custody freeze refused: %v", err)
+	}
+	// The inherited custody grammar accepts a bounded v1 sequence. Admission
+	// alone enforces the historical empty sequence on the complete wire.
+	legacyMember := progressVectorObject([]byte("synthetic"), []byte("record"), []byte("owner"))
+	legacySequence := binary.BigEndian.AppendUint16(nil, 1)
+	legacySequence = binary.BigEndian.AppendUint32(legacySequence, uint32(len(legacyMember)))
+	legacySequence = append(legacySequence, legacyMember...)
+	legacyNonempty := build("operational_local_v1", legacySequence)
+	if _, err := operationalOriginalView(context.Background(), legacyNonempty); err != nil {
+		t.Fatalf("structurally valid nonempty v1 sequence refused by custody: %v", err)
+	}
+	if _, err := freezeReplayOriginal(operationalReplayFormat, f.base.claim, f.base.plan, f.keys, legacyNonempty); err != nil {
+		t.Fatalf("structurally valid nonempty v1 sequence could not be frozen: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"empty leaf":                      build("operational_local_v2", nil),
+		"invalid UTF8":                    build("operational_local_v2", []byte{0xff}),
+		"over cap":                        build("operational_local_v2", bytes.Repeat([]byte{'x'}, 256*1024+1)),
+		"unknown variant":                 build("operational_local_v3", []byte("{}")),
+		"v1 cannot carry opaque evidence": build("operational_local_v1", []byte("{}")),
+		"v1 sequence member framing":      build("operational_local_v1", []byte{0, 1, 0, 0, 0, 8}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := operationalOriginalView(context.Background(), raw); err == nil {
+				t.Fatal("invalid scope-3 provenance reached authenticated use")
+			}
+		})
+	}
+}
+
 func (f *operationalStoreFixture) establish(base durableClaimRecord) OperationalDisposition {
 	f.t.Helper()
 	raw := operationalFixturePayload(f.t, base, f.keys, f.root)

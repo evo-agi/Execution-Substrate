@@ -2,6 +2,71 @@
 
 ## Status
 
+### PR #12 v2 field-access guard completion (2026-11-22)
+
+The consolidated v2 repair below, recovered unchanged as tree
+`433b4891a0e413aff2b0eb6adf316a033a544a24` over
+`8058561edc08356c46680c204586b3c7796c0ff3`, is now a committed draft-PR
+candidate. Writer review found that its typed protected-field access
+classifier still reported range-clause `=` targets, explicit or implicit
+address-of, and writes through a selector, index, slice or dereference chain
+rooted at a protected field as reads. This **Bounded slice rule refinement**
+on the reliable-submit **Reopened redesign seam** classifies those accesses as
+assignment, address or write-through, adds maintained same-site regressions,
+and reconciles the operational handoff contract's §9 path ceiling with the
+repair's five added paths. Production Go code, the operating model, custody
+grammar, durable facts, sender and recovery behavior are unchanged. The
+candidate still requires a fresh independent audit and red-team review of its
+complete committed bytes before it can resolve the PR #12 finding.
+
+### PR #12 v2 authority and evidence repair (2026-11-20)
+
+The fresh independent audit rejected the unstaged 18-path v2 candidate bound
+to manifest `ebf8e5a48ed2e4b36d7249abee813a70169d8f9bc1c33b5e1b09eb5d7a24a6b6`.
+The rejected predecessor had a source-level repair for eligible v2
+continuations but lacked maintained exact authority inventories and
+discriminating signed-v2/historical-v1 evidence; its persistence owner also
+misattributed strict v1 empty-leaf enforcement to storage. This consolidated
+**Bounded slice rule refinement** on the reliable-submit **Reopened redesign
+seam** adds exact typed guards and independently built complete v1/v2
+wire-and-commitment checks, validly signed association controls, actual retained
+policy-context observation, and assigns the historical empty-leaf check to
+admission. The selected operating model,
+custody grammar, durable facts, sender and recovery behavior remain in force.
+The only permitted production insertion is a nil-default, non-authoritative
+test observation of the completed retained policy context immediately before
+the existing built-in evaluation. This repair is an unstaged writer candidate;
+it does not become independently accepted or resolve the PR finding until a
+new independent audit of its complete final bytes.
+
+### PR #12 retained-current-admission v2 repair (2026-11-20)
+
+PR #12 published the private schema-5 operational handoff at
+`8058561edc08356c46680c204586b3c7796c0ff3`. Subsequent review comment
+`4644988778` identified an implementation omission: an unmarked retained
+original can proceed to its first effect without consulting the current ES
+admission owner. The earlier source acceptance applies to its published bytes;
+the finding remains unresolved and blocks merge. This is a **Bounded slice rule
+refinement** on the reliable-submit **Reopened redesign seam**. Public keyed
+refusal, ordinary unkeyed Submit, caller-before-lookup, original and receipt
+integrity, and fixture/effect separation remain **Current invariants**.
+
+Select an `operational_local_v2` original carrying the complete signed artifact
+evidence from the same successful ordinary resolution. A one-shot Service-owned
+snapshot of the loaded trust model, provenance verifier and supported built-in
+policy is commissioned for the qualified installation/policy epoch; only
+monotonic local effect withdrawal is mutable within that epoch. Bounded local
+current-admission qualification on the authenticated retained original governs
+unmarked run/intent progression, pre-stage, stamp, first marker, post-COMMIT
+release and final sender entry. The already sealed `operational_local_v1` is a
+**Temporary compatibility edge**: accepted receipts and positive marked
+reconciliation remain readable, while any v1 unmarked first effect refuses
+without resealing. No SQL migration, public/native wiring or policy platform is
+selected. The precise format, locks, outcomes and test obligations are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This unstaged repair candidate requires a new frozen validation generation and a
+fresh independent audit before any additive commit or PR update.
+
 ### Pre-stage continuation and transport observation repair (2026-11-20)
 
 Refine the private operational handoff **Bounded slice rule** on the
