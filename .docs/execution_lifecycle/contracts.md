@@ -1526,10 +1526,20 @@ config, service image and Dockerfile, root owner/mode/identity, and exact
 same-path read-write mounts before the ordinary operator's own write access is
 omitted from the readiness test. Generic callers without that profile retain
 their prior caller-writable check of existing roots; unknown profiles refuse.
-Readiness does not create roots or write staging-invariant evidence. This
-profile does not alter ES's natural `0750` per-run
+Readiness does not create roots or write staging-invariant evidence. The
+`service-root-v1` profile does not alter ES's natural `0750` per-run
 directory rule, prove the future container's identity or mapping, or approve
 rootless/non-root variants.
+The generic ES launcher runs the ES container as the caller's numeric
+effective UID and primary GID, so the natural result directories that ES
+creates carry the UID and GID of roots the caller created; it refuses before
+any image, root or container effect unless both IDs are numeric. Docker gives
+that container no supplementary groups, so the roots must carry the caller's
+UID and primary GID, and every file the ES config names must be readable by
+that UID or GID. The launcher does not branch on daemon labels. On a
+user-namespace-remapped daemon, Docker refuses the host networking that
+bring-up requires, so ES does not start; rootless Docker is untested and
+unsupported for bring-up.
 Within this bounded setup profile, the privileged helper checks each new
 fixed child against its held no-follow descriptor before owner/mode mutation,
 retains both held identities through a final visible pair and proof-root
