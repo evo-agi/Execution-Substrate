@@ -1,9 +1,11 @@
 # Probe only: runs on pushes to this probe branch. On a GitHub-hosted runner
-# with Nomad, Vault and SPIRE installed, it runs the launcher test as the
+# with Nomad, Vault and SPIRE installed, it runs the launcher tests as the
 # runner user and as a second user whose UID differs from its GID, the
-# bring-up test three times as the runner user and once as that second user,
-# the docs tests, the root package with PR #14's 11 environment-only skips,
-# and the whole es/app package. Not part of the change under review.
+# bring-up test three times as the runner user and once as that second user
+# (checking that ARS, EGS, AGS and ES all ran with that user's --user and that
+# no root-owned file is left in the test workspace), the docs tests, the root
+# package with PR #14's 11 environment-only skips, and the whole es/app
+# package. Not part of the change under review.
 name: probe-bringup
 
 on:
@@ -64,9 +66,9 @@ jobs:
           set -euo pipefail
           test -z "$(gofmt -l es/app)"
           go vet ./es/app
-          bash -n scripts/05_start_es.sh
+          for f in scripts/0[1-5]_*.sh scripts/internal/control_plane.sh; do bash -n "$f"; done
       - name: Launcher and supported-local script tests as the runner user
-        run: go test ./es/app -run '^(TestESLauncherContainerUser|TestSupportedLocalExecutionRoot.*)$' -count=1 -v 2>&1 | grep -E '^(\s*--- |ok|FAIL|PASS)|_test\.go:[0-9]+:'; exit "${PIPESTATUS[0]}"
+        run: go test ./es/app -run '^(TestESLauncherContainerUser|TestServiceLaunchersContainerUser|TestBringupUpChecksARSStorageBeforeStartingServices|TestSupportedLocalExecutionRoot.*)$' -count=1 -v 2>&1 | grep -E '^(\s*--- |ok|FAIL|PASS)|_test\.go:[0-9]+:'; exit "${PIPESTATUS[0]}"
       - name: Bring-up test as the runner user, 3 runs
         run: |
           set -uo pipefail
@@ -85,12 +87,17 @@ jobs:
             # carry the runner user's UID:GID.
             n=0
             for d in $(find .out -maxdepth 1 -name 'bringup-script-*' -newer "$RUNNER_TEMP/mark$i"); do
-              f="$d/bringup-state/logs/es.log"
-              [ -f "$f" ] || continue
-              grep -F -- "--user $(id -u):$(id -g) " "$f" | cut -c1-400 || true
-              if grep -qF -- "--user $(id -u):$(id -g) " "$f"; then n=$((n+1)); fi
+              all=1
+              for svc in ars egs ags es; do
+                f="$d/bringup-state/logs/$svc.log"
+                grep -F -- "--user $(id -u):$(id -g) " "$f" | cut -c1-300 || true
+                grep -qF -- "--user $(id -u):$(id -g) " "$f" || all=0
+              done
+              if [ "$all" = 1 ]; then n=$((n+1)); fi
+              echo "run $i: root-owned entries left in $d: $(sudo find "$d" -user root | wc -l)"
+              sudo find "$d" -user root | head -20 || true
             done
-            echo "run $i: es.log files with --user $(id -u):$(id -g): $n"
+            echo "run $i: workspaces whose four service logs show --user $(id -u):$(id -g): $n"
             echo "$rc $n" > "$RUNNER_TEMP/rc$i"
           done
       - name: Verdict for the runner-user bring-up runs
@@ -121,11 +128,17 @@ jobs:
           sudo grep -E '^(--- |ok|FAIL|panic)' /home/op/run-op.log || true
           sudo grep -E '^\s+\S+_test\.go:[0-9]+:' /home/op/run-op.log | cut -c1-3000 || true
           n=0
-          for f in $(sudo find /home/op/es/.out -maxdepth 4 -path '*/bringup-state/logs/es.log'); do
-            sudo grep -F -- "--user 2500:2600 " "$f" | cut -c1-400 || true
-            if sudo grep -qF -- "--user 2500:2600 " "$f"; then n=$((n+1)); fi
+          for d in $(sudo find /home/op/es/.out -maxdepth 1 -name 'bringup-script-*'); do
+            all=1
+            for svc in ars egs ags es; do
+              f="$d/bringup-state/logs/$svc.log"
+              sudo grep -F -- "--user 2500:2600 " "$f" | cut -c1-300 || true
+              sudo grep -qF -- "--user 2500:2600 " "$f" || all=0
+            done
+            if [ "$all" = 1 ]; then n=$((n+1)); fi
+            echo "root-owned entries left in $d: $(sudo find "$d" -user root | wc -l)"
           done
-          echo "es.log files with --user 2500:2600: $n"
+          echo "workspaces whose four service logs show --user 2500:2600: $n"
           test "$(sudo cat /home/op/rc-op)" = 0
           test "$n" = 1
       - name: Docs tests
