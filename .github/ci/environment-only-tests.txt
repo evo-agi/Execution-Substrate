@@ -1,25 +1,40 @@
 # Tests that cannot pass on the CI runner for host reasons, not code reasons.
 #
 # Format: one entry per line, holding exactly a package import path, one
-# space and a top-level test name. Empty lines and lines whose first
-# character is "#" are ignored. Any other line is an error.
-# .github/ci/go_test_gate.py reads this file and documents the rules.
+# space and a test path. A test path is a top-level test name, or that name
+# followed by "/" and a subtest name as go test prints it, any number of
+# times. Empty lines and lines whose first character is "#" are ignored. Any
+# other line is an error. .github/ci/go_test_gate.py reads this file and
+# documents the rules.
 #
-# An entry applies only to the package it names. The gating test step skips
-# exactly these tests and runs everything else. A second step runs exactly
-# these tests on every run without blocking. They run unchanged everywhere
-# else.
+# An entry applies only to the package it names, and to exactly one test or
+# subtest of it. The step "Test" skips exactly the entries and runs
+# everything else. Tests run unchanged everywhere else.
 #
-# Every entry must name a test that exists in its package. A change that adds
-# a test which can only pass off the runner adds its entry here itself.
+# Every entry must still fail on the runner. The step "Listed tests still
+# fail" runs exactly the entries and fails the run when one of them passes,
+# skips itself or does not run. So an entry cannot outlive its reason: a
+# change that makes a listed test pass on the runner, by porting it or
+# otherwise, has to delete its line in the same change.
 #
-# TODO: port each test so that it passes on a Linux runner without weakening
-# it, then delete its entry.
+# Name the narrowest thing that fails. Where one subtest fails and its
+# siblings pass on the runner, the entry names that subtest, so the siblings
+# stay in the gate. A change that adds a test which can only pass off the
+# runner adds its entry here itself.
+#
+# The way to shorten this list is to port a test so that it passes on a Linux
+# runner without weakening it.
 
 # Remote Alpha operator-host tests in the root package.
 
 # The test process must run as the account named "ds". The second test also
 # needs the macOS /private/tmp path for one subtest.
+#
+# The first two tests are listed whole on purpose, although some of their
+# subtests pass on the runner. The TLS status bootstrap refuses a caller that
+# is not "ds" at its first identity check, so a subtest that expects a
+# refusal passes there without reaching the custody check it is named for.
+# Keeping those subtests in the gate would claim a check that does not happen.
 execution-substrate TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
 execution-substrate TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
 execution-substrate TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
@@ -27,11 +42,6 @@ execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORe
 
 # The test stages under the macOS /private/tmp path.
 execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
-
-# The test's own fake sudo tries BSD "stat -f" before GNU "stat -c". On GNU
-# the first form prints filesystem details and fails, so the saved directory
-# mode is wrong.
-execution-substrate TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection
 
 # The host needs an account named "ds" and the macOS /private/tmp path.
 execution-substrate TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
@@ -48,9 +58,11 @@ execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWith
 execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
 
 # es/app: a go command in the system directories of the harness PATH defeats
-# the missing-Go fixture of one subtest in each test.
-execution-substrate/es/app TestSupportedLocalSetupExactGoPreflightBeforeMutation
-execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation
+# the missing-Go fixture of this one subtest in each test. The runner image
+# has such a go command. The three other subtests of each test stay in the
+# gate.
+execution-substrate/es/app TestSupportedLocalSetupExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
+execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
 
 # es/admission/internal/reliablesubmit: historical-opener probes. They need
 # test binaries built from older trees with an overlay kept outside this

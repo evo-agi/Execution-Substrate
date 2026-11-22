@@ -32,7 +32,8 @@ jobs:
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
       # Tests that cannot pass on this runner for host reasons. Each entry
-      # names one package and one test. The file explains each entry.
+      # names one package and one test or subtest. The file explains each
+      # entry.
       ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
     steps:
       # Actions are pinned to full commit SHAs. The comment names the release
@@ -42,11 +43,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # No build or module cache is restored. Every run downloads the modules
+      # that "go mod verify" then checks, and compiles everything from source.
       - name: Set up Go from go.mod
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
       - name: Show toolchain
         run: go version
@@ -65,8 +68,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Proves on throwaway modules that the gate below skips an entry only in
-      # the package it names, and refuses entries that are not plain names.
+      # Proves on throwaway modules that the two steps below do what they say,
+      # and that this file still pins its actions and keeps both steps blocking.
       - name: Check the test gate
         run: python3 -I -B .github/ci/go_test_gate_selftest.py
 
@@ -75,8 +78,8 @@ jobs:
       - name: Test
         run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
 
-      # Runs exactly the entries, each in its own package, so their results
-      # stay visible. Their failures do not block.
-      - name: Environment-only tests (non-blocking)
-        continue-on-error: true
-        run: python3 -I -B .github/ci/go_test_gate.py environment-only "$ENVIRONMENT_ONLY_TESTS"
+      # Runs exactly the entries and fails when one of them does not fail on
+      # this runner: it passes, skips itself or does not run. Such an entry no
+      # longer belongs in the list, and its line has to be deleted.
+      - name: Listed tests still fail
+        run: python3 -I -B .github/ci/go_test_gate.py still-failing "$ENVIRONMENT_ONLY_TESTS"

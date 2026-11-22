@@ -95,10 +95,32 @@ together. Rollback of the reliable-submit SQLite source is a separate
 source/dependency rollback and must not imply runtime-state migration, schema
 migration, or storage repair because the tranche remains unwired.
 
-## 10. Explicit Non-Claims
+## 10. Continuous Integration
+
+`.github/workflows/go.yml` runs on every pull request and on every push to
+`trunk_dev`, on a GitHub-hosted `ubuntu-24.04` runner. It installs the Go
+version that `go.mod` declares, with `GOTOOLCHAIN=local` and
+`GOFLAGS=-mod=readonly`, restores no build or module cache, and runs
+`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the
+tests of every package of the module.
+
+`.github/ci/environment-only-tests.txt` is the single statement of what the
+test step excludes: tests and subtests that cannot pass on that runner for host
+reasons. `.github/ci/go_test_gate.py` skips exactly those entries, each only in
+the package it names. A second blocking step fails the run when an entry no
+longer fails on the runner, so an entry cannot outlive its reason.
+`.github/ci/go_test_gate_selftest.py` checks both behaviors on every run before
+the tests.
+
+A green run is validation evidence for the committed tree on that runner
+image. It is not design authority. It is not a macOS run, a race-detector run,
+a Linux runtime proof, a Remote Alpha proof, or a supported-local proof, and it
+does not replace the exact-Go preflights of the supported scripts.
+
+## 11. Explicit Non-Claims
 
 - no runtime behavior change;
-- no CI system introduced;
+- no CI claim beyond section 10;
 - no vendoring;
 - no system-wide toolchain manager;
 - no Linux runtime proof;

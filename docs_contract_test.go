@@ -892,8 +892,9 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 	offline := compactDocSection(t, baselineDoc, "## 6. Offline Behavior", "## 7. Compatibility And Runtime Limits")
 	runtimeLimits := compactDocSection(t, baselineDoc, "## 7. Compatibility And Runtime Limits", "## 8. Database Dependency Scope")
 	databaseDependencyScope := compactDocSection(t, baselineDoc, "## 8. Database Dependency Scope", "## 9. Rollback")
-	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Explicit Non-Claims")
-	nonClaims := compactDocSection(t, baselineDoc, "## 10. Explicit Non-Claims", "")
+	rollback := compactDocSection(t, baselineDoc, "## 9. Rollback", "## 10. Continuous Integration")
+	continuousIntegration := compactDocSection(t, baselineDoc, "## 10. Continuous Integration", "## 11. Explicit Non-Claims")
+	nonClaims := compactDocSection(t, baselineDoc, "## 11. Explicit Non-Claims", "")
 	assertContainsAll(t, "Go baseline current status", currentStatus,
 		"Go 1.26.5 is the current Execution Substrate minimum Go version",
 		"supported scripted build/proof toolchain",
@@ -954,9 +955,54 @@ func TestGo1265ToolchainBaselineDocsAndBuildContract(t *testing.T) {
 		"Rollback of the reliable-submit SQLite source is a separate source/dependency rollback",
 		"runtime-state migration",
 	)
+	assertContainsAll(t, "Go baseline continuous integration", continuousIntegration,
+		"`.github/workflows/go.yml` runs on every pull request and on every push to `trunk_dev`",
+		"GitHub-hosted `ubuntu-24.04` runner",
+		"`GOTOOLCHAIN=local` and `GOFLAGS=-mod=readonly`",
+		"restores no build or module cache",
+		"`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the tests of every package of the module",
+		"`.github/ci/environment-only-tests.txt` is the single statement of what the test step excludes",
+		"`.github/ci/go_test_gate.py` skips exactly those entries, each only in the package it names",
+		"A second blocking step fails the run when an entry no longer fails on the runner",
+		"`.github/ci/go_test_gate_selftest.py` checks both behaviors on every run before the tests",
+		"A green run is validation evidence for the committed tree on that runner image",
+		"It is not design authority",
+		"It is not a macOS run, a race-detector run, a Linux runtime proof, a Remote Alpha proof, or a supported-local proof",
+		"does not replace the exact-Go preflights of the supported scripts",
+	)
+	assertContainsNone(t, "Go baseline stale CI denial", baselineDoc,
+		"no CI system introduced",
+	)
+	ciWorkflow := mustRead(t, ".github/workflows/go.yml")
+	assertContainsAll(t, "Go CI workflow matches the documented baseline", ciWorkflow,
+		"\n  pull_request:\n",
+		"\n  push:\n    branches:\n      - trunk_dev\n",
+		"runs-on: ubuntu-24.04",
+		"GOTOOLCHAIN: local",
+		"GOFLAGS: -mod=readonly",
+		"go-version-file: go.mod",
+		"cache: false",
+		"ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt",
+		"run: go mod download",
+		"run: go mod verify",
+		"run: go build ./...",
+		"run: go vet ./...",
+		"run: python3 -I -B .github/ci/go_test_gate_selftest.py",
+		"run: python3 -I -B .github/ci/go_test_gate.py gate \"$ENVIRONMENT_ONLY_TESTS\"",
+		"run: python3 -I -B .github/ci/go_test_gate.py still-failing \"$ENVIRONMENT_ONLY_TESTS\"",
+	)
+	for _, path := range []string{
+		".github/ci/environment-only-tests.txt",
+		".github/ci/go_test_gate.py",
+		".github/ci/go_test_gate_selftest.py",
+	} {
+		if strings.TrimSpace(mustRead(t, path)) == "" {
+			t.Fatalf("Go CI file %s is empty", path)
+		}
+	}
 	assertContainsAll(t, "Go baseline non-claims", nonClaims,
 		"no runtime behavior change",
-		"no CI system introduced",
+		"no CI claim beyond section 10",
 		"no vendoring",
 		"no system-wide toolchain manager",
 		"no Linux runtime proof",
