@@ -987,7 +987,17 @@ How Docker appears in the implementation:
   behavior under the active process mask using an exclusive synthetic child
   under the qualified results root. It never chowns or chmods the child and
   retains the fixture under the no-uncertain-unlink rule; genuinely
-  Submit-disabled service startup does not probe. The selected supported-local
+  Submit-disabled service startup does not probe. Startup also creates a
+  `nested` directory inside its exclusive staging probe directory, after that
+  directory is set to the stable `0750` stage mode, gives it the roots' owner
+  and that mode, and verifies both (`probeNestedStagingDirectory`), because
+  `stagingCustody.ensureDirectory` does the same inside each claimed run
+  staging root. The stage mode carries no setgid bit, so the new directory
+  gets ES's effective GID; when ES cannot change it to the roots' GID, for
+  example because the roots inherited a group ES is not a member of from a
+  setgid parent, startup refuses with `nested staging directory ownership is
+  unavailable`. The nested directory is retained with its probe directory.
+  The selected supported-local
   root-service profile provisions only the two fresh configured roots as
   UID:GID `0:0`, exact `0755` directory mode. Its static bring-up check does
   not replace this later behavioral probe or qualify a future container view.

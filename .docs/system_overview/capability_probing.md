@@ -141,7 +141,15 @@ Configured Submit startup also creates an exclusive synthetic directory under th
 results root and verifies its natural owner and exact `0750` mode without
 chown/chmod. A restrictive process mask or owner mismatch refuses configured
 Submit startup before work; the small probe directory remains in place because
-exact-object unlink ownership is not proven. A genuinely Submit-disabled service
+exact-object unlink ownership is not proven. Configured Submit startup also
+creates a `nested` directory inside its staging probe directory after setting
+that directory to the stable `0750` stage mode, gives it the roots' owner and
+that mode, and verifies both, as staging does inside each claimed run staging
+root. A process that cannot give that directory the roots' group, for example
+because the roots inherited a group it is not a member of from a setgid parent
+directory, refuses configured Submit startup with `nested staging directory
+ownership is unavailable`; probes that create entries directly in the roots
+cannot see that case. A genuinely Submit-disabled service
 does not run this configured-Submit startup probe. `BRINGUP_PROFILE=prepare-only`
 only changes orchestration; the supported-local generated ES configuration
 retains Submit fields, so key loading and root capability qualification still

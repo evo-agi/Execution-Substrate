@@ -773,6 +773,16 @@ prepared different candidates still follow the no-overwrite conflict rule.
 Configured Submit startup also qualifies natural `0750` result run-directory
 creation under its process mask, retaining its exclusive synthetic probe;
 failure refuses startup rather than repairing directory metadata.
+`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule): configured Submit startup
+also creates a `nested` directory inside its staging probe directory after
+setting that directory to the stable `0750` stage mode, gives it the roots'
+owner and that mode, and verifies both, as staging does inside each claimed run
+staging root. The stage mode carries no setgid bit, so the new directory gets
+ES's effective GID; a process that cannot change it to the roots' GID, for
+example because the roots inherited a group it is not a member of from a setgid
+parent directory, refuses startup with `nested staging directory ownership is
+unavailable` instead of reporting ready while every submission fails to stage.
+The nested directory is retained with its probe fixture.
 The isolated candidate's AUTH-01 exact-path correction also applies to
 transitive ancestry re-observation: a qualified key parent and descriptor
 presentation are reopened component for component, including whitespace in an

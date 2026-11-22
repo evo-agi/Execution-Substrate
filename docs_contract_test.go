@@ -13465,6 +13465,26 @@ func TestRetainedResultReview04ConsumerEntrypointAndOwnedScopeDocs(t *testing.T)
 	}
 }
 
+func TestNestedStagingOwnerProbeDocsContract(t *testing.T) {
+	checks := []struct {
+		path    string
+		phrases []string
+	}{
+		{"PLANS.md", []string{"`NESTED-STAGING-OWNER-PROBE-01` (bounded slice rule)", "as staging does inside each claimed run staging root", "inherited a group it is not a member of from a setgid parent directory", "`nested staging directory ownership is unavailable`"}},
+		{".docs/system_overview/capability_probing.md", []string{"creates a `nested` directory inside its staging probe directory", "as staging does inside each claimed run staging root", "`nested staging directory ownership is unavailable`"}},
+		{".docs/execution_lifecycle/implementation.md", []string{"(`probeNestedStagingDirectory`)", "`stagingCustody.ensureDirectory` does the same inside each claimed run staging root", "`nested staging directory ownership is unavailable`"}},
+		{"es/admission/execution_roots.go", []string{"roots.probeNestedStagingDirectory(stagingFD, owner)", "nested staging directory ownership is unavailable"}},
+	}
+	for _, check := range checks {
+		content := compactText(mustRead(t, check.path))
+		for _, phrase := range check.phrases {
+			if !strings.Contains(content, phrase) {
+				t.Fatalf("%s missing nested staging owner probe contract %q", check.path, phrase)
+			}
+		}
+	}
+}
+
 func TestRetainedResultReviewDocsContract(t *testing.T) {
 	checks := []struct {
 		path    string
