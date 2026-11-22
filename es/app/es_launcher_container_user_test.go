@@ -56,6 +56,7 @@ func TestESLauncherContainerUser(t *testing.T) {
 		{name: "generic path with a UID different from the GID", idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantUser: "4242:4343", wantEvents: genericEvents},
 		{name: "service-root-v1 profile", profile: true, idMode: "fake", fakeUID: "4242", fakeGID: "4343", wantEvents: "docker image\nroot-check check\ndocker rm\ndocker run\n"},
 		{name: "empty UID refused", idMode: "fake", fakeGID: "4343", wantEvents: idCalls, refusal: "id -u and id -g must print numeric IDs, got '' and 4343"},
+		{name: "user name with a digit refused", idMode: "fake", fakeUID: "staff1", fakeGID: "4343", wantEvents: idCalls, refusal: "id -u and id -g must print numeric IDs, got staff1 and 4343"},
 		{name: "group name with a digit refused", idMode: "fake", fakeUID: "4242", fakeGID: "staff1", wantEvents: idCalls, refusal: "id -u and id -g must print numeric IDs, got 4242 and staff1"},
 		{name: "UID with trailing characters refused", idMode: "fake", fakeUID: "4242x", fakeGID: "4343", wantEvents: idCalls, refusal: "id -u and id -g must print numeric IDs, got 4242x and 4343"},
 		{name: "GID with trailing characters refused", idMode: "fake", fakeUID: "4242", fakeGID: "4343x", wantEvents: idCalls, refusal: "id -u and id -g must print numeric IDs, got 4242 and 4343x"},
