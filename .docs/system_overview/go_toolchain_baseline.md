@@ -95,10 +95,73 @@ together. Rollback of the reliable-submit SQLite source is a separate
 source/dependency rollback and must not imply runtime-state migration, schema
 migration, or storage repair because the tranche remains unwired.
 
-## 10. Explicit Non-Claims
+## 10. Continuous Integration
+
+`.github/workflows/go.yml` runs on every pull request and on every push to
+`trunk_dev`, on a GitHub-hosted `ubuntu-24.04` runner. It installs the Go
+version that `go.mod` declares, with `GOTOOLCHAIN=local` and
+`GOFLAGS=-mod=readonly`, restores no build or module cache, and runs
+`go mod download`, `go mod verify`, `go build ./...`, `go vet ./...`, and the
+tests of every package of the module. One more step runs
+`GOOS=darwin GOARCH=arm64 go vet ./...`. It type-checks the files that build
+only on macOS and runs no test.
+
+`.github/ci/environment-only-tests.txt` is the single statement of what the
+test step excludes and of which tests exclude themselves on that runner. It
+has two kinds of lines. An entry names a test or subtest that cannot pass on
+that runner for host reasons. `.github/ci/go_test_gate.py` skips those entries,
+each only in the package it names. A `skips-itself` line names a test or
+subtest that skips itself on that runner. The test step fails the run unless
+the tests that skipped themselves are exactly the tests that those lines name,
+so a test that skips itself on the runner needs a line, and a line cannot
+outlive its reason. The log of the step names every test that skipped itself.
+For every package the step also fails the run unless every top-level test that
+`go test` lists for the package, and that is not an entry, reported a verdict.
+
+`go test` reads a test path as the start of a path, so the skip for a listed
+subtest also covers every test whose path starts with the path of that entry,
+and a skipped test leaves no trace in the output. The test step therefore runs
+a package that has an entry for a subtest a second time, with a test binary
+that writes down every test that `-skip` drops. It fails the run unless those
+tests are exactly the entries of that package. For that one run
+`go test -overlay` builds the test binary with a copy of
+`src/testing/match.go` of the Go standard library, to which the gate adds the
+call that writes the name down. The installed toolchain is not changed, and no
+other run uses the copy. The gate makes the copy only from the file of the
+exact Go version that it names, so a change of the Go baseline has to review
+that file and change the gate in the same change. That run needs a Go
+installation outside the module cache, as `actions/setup-go` makes one on the
+runner: the `go` command does not let `-overlay` replace a file beneath
+`GOMODCACHE`, so with a toolchain that the `go` command downloaded itself the
+test step fails and shows that error.
+
+A second blocking step judges every entry twice: in a run of its whole package
+with nothing skipped, and in a `go test` of its own. It fails the run when an
+entry no longer fails on the runner in one of the two, so an entry cannot
+outlive its reason. An entry fails there only if the testing package reported
+its failure. A test that was running when the test binary stopped has reported
+none, so a test that ends the process without reporting, for example with
+`os.Exit` or `log.Fatal`, cannot be listed. The run of a package has to come
+to its end. When a listed test panics, the package runs again without it. The
+step fails when a run stops and no listed test reported a failure as it
+stopped: a test that is not listed, or the time limit of `go test`, stopped
+it. It also fails the run when the run of an entry for a subtest starts
+another test under the path of that entry.
+`.github/ci/go_test_gate_selftest.py` checks these behaviors on every run before
+the tests. It also holds the workflow file by its SHA-256, so every edit of the
+workflow has to change that value in the same change.
+
+A green run is validation evidence for the committed tree on that runner
+image. It is not design authority. It is not a macOS run, a race-detector run,
+a Linux runtime proof, a Remote Alpha proof, or a supported-local proof, and it
+does not replace the exact-Go preflights of the supported scripts. It does not
+show that a test named in the list passes: on that runner those tests fail or
+skip themselves.
+
+## 11. Explicit Non-Claims
 
 - no runtime behavior change;
-- no CI system introduced;
+- no CI claim beyond section 10;
 - no vendoring;
 - no system-wide toolchain manager;
 - no Linux runtime proof;
