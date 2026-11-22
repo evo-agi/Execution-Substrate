@@ -244,16 +244,75 @@ echo "{\"status\":\"ok\",\"artifact_digest\":\"${EXEC_ARTIFACT_DIGEST}\"}"
 	secondStageRoot := filepath.Join(stack.rootDir, "es-stage", second.Summary.RunID)
 	requirePathExists(t, secondStageRoot)
 
-	stageEntries, err := os.ReadDir(filepath.Join(stack.rootDir, "es-stage"))
-	if err != nil {
-		t.Fatalf("read staging root: %v", err)
-	}
-	if len(stageEntries) != 2 {
-		t.Fatalf("expected two successful stage roots to remain, found %d", len(stageEntries))
+	// The staging root holds exactly the two successful run roots plus the one
+	// exclusive startup probe directory/symlink pair that ES retains by
+	// contract (.docs/execution_lifecycle/capability_probing.md); nothing else.
+	runNames := retainedStageRunRoots(t, filepath.Join(stack.rootDir, "es-stage"))
+	if len(runNames) != 2 {
+		t.Fatalf("expected two successful stage roots to remain, found %d: %v", len(runNames), runNames)
 	}
 	if firstStageRoot == secondStageRoot {
 		t.Fatal("repeated successful runs reused a staging root")
 	}
+	for _, runID := range []string{first.Summary.RunID, second.Summary.RunID} {
+		if _, ok := runNames[runID]; !ok {
+			t.Fatalf("retained stage roots %v lack run root %q", runNames, runID)
+		}
+	}
+}
+
+// retainedStageRunRoots reads the complete staging-root inventory and returns
+// the set of run roots. Every other entry must be the single exclusive startup
+// probe directory and its matching symlink; any other entry, a second probe
+// pair, a quarantine name or a non-directory run root fails the test.
+func retainedStageRunRoots(t *testing.T, stageRoot string) map[string]struct{} {
+	t.Helper()
+
+	entries, err := os.ReadDir(stageRoot)
+	if err != nil {
+		t.Fatalf("read staging root: %v", err)
+	}
+	runNamePattern := regexp.MustCompile(`^run-[0-9a-f]{16}$`)
+	probeNamePattern := regexp.MustCompile(`^\.execution-substrate-staging-probe-[0-9a-f]{32}$`)
+	runNames := make(map[string]struct{}, len(entries))
+	var probeName, probeLinkName string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.Contains(name, "quarantine") {
+			t.Fatalf("unexpected quarantine name %q", name)
+		}
+		info, err := os.Lstat(filepath.Join(stageRoot, name))
+		if err != nil {
+			t.Fatalf("lstat staging root entry: %v", err)
+		}
+		switch {
+		case runNamePattern.MatchString(name):
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("invalid retained run root %q", name)
+			}
+			runNames[name] = struct{}{}
+		case probeNamePattern.MatchString(name):
+			if probeName != "" || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("invalid retained staging probe directory %q", name)
+			}
+			probeName = name
+		case strings.HasSuffix(name, "-symlink") && probeNamePattern.MatchString(strings.TrimSuffix(name, "-symlink")):
+			if probeLinkName != "" || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("invalid retained staging probe symlink %q", name)
+			}
+			probeLinkName = name
+		default:
+			t.Fatalf("unexpected staging root entry %q", name)
+		}
+	}
+	if probeName == "" || probeLinkName != probeName+"-symlink" {
+		t.Fatalf("staging root lacks exactly one matching startup probe pair: probe=%q link=%q", probeName, probeLinkName)
+	}
+	linkTarget, err := os.Readlink(filepath.Join(stageRoot, probeLinkName))
+	if err != nil || linkTarget != probeName {
+		t.Fatalf("staging probe symlink target = %q, want %q: %v", linkTarget, probeName, err)
+	}
+	return runNames
 }
 
 func fetchExecutionStatus(t *testing.T, stack *submitStack, runID string) admission.ExecutionStatusResult {
