@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1388,12 +1389,14 @@ var operationalAdmissionStateSurface = []string{
 	"type State{}", "type Status{Confirmed,Superseded,View,Withdrawn}", "type Verifier{Algorithm,KeyID,PublicKey}", "type View{}",
 }
 
-// validateOperationalAdmissionStateSurface compares the exported names of the
-// package, the exported methods of each exported type and the exported fields
-// of each exported struct with the list.
-func validateOperationalAdmissionStateSurface(pkg *typedProductionPackage) error {
+// exportedSurfaceOf lists what a package exports, sorted: every exported
+// constant, variable, function and type of the package scope, every exported
+// method of an exported type, also one it gains from an embedded field, and
+// for an exported struct type its exported and its embedded fields. It is
+// what another package can name.
+func exportedSurfaceOf(pkg *types.Package) []string {
 	var got []string
-	scope := pkg.pkg.Scope()
+	scope := pkg.Scope()
 	for _, name := range scope.Names() {
 		object := scope.Lookup(name)
 		if !object.Exported() {
@@ -1430,12 +1433,103 @@ func validateOperationalAdmissionStateSurface(pkg *typedProductionPackage) error
 		}
 	}
 	sort.Strings(got)
-	want := append([]string{}, operationalAdmissionStateSurface...)
+	return got
+}
+
+// validateOperationalAdmissionStateSurface compares what the package exports
+// with the list, and the functions and methods among it with the call-site
+// inventories: each has exactly one, and no inventory names anything else.
+func validateOperationalAdmissionStateSurface(surface []string, listed []string, members []operationalMemberInventory) error {
+	want := append([]string{}, listed...)
 	sort.Strings(want)
-	if !reflect.DeepEqual(got, want) {
-		return fmt.Errorf("the exported surface of the admission state package changed: got %q want %q", got, want)
+	if !reflect.DeepEqual(surface, want) {
+		return fmt.Errorf("the exported surface of the admission state package changed: got %q want %q", surface, want)
+	}
+	var callable, inventoried []string
+	for _, entry := range surface {
+		if strings.HasPrefix(entry, "func ") || strings.HasPrefix(entry, "method ") {
+			callable = append(callable, entry)
+		}
+	}
+	for _, member := range members {
+		if member.typ == "" {
+			inventoried = append(inventoried, "func "+member.name)
+		} else {
+			inventoried = append(inventoried, "method "+member.typ+"."+member.name)
+		}
+	}
+	sort.Strings(inventoried)
+	if !reflect.DeepEqual(callable, inventoried) {
+		return fmt.Errorf("the call-site inventories of the admission state package do not cover its functions and methods once each: exported %q inventoried %q", callable, inventoried)
 	}
 	return nil
+}
+
+func TestOperationalAdmissionStateSurfaceIsAClosedList(t *testing.T) {
+	const handle = "type State struct{ s *state }; "
+	const rest = "package admissionstate; type state struct{ value int }; func New() State { return State{} }; func (h State) Current() bool { return true }; const Limit = 1; "
+	surface := func(source string) []string {
+		return exportedSurfaceOf(typeCheckSyntheticProductionPackage(t, "fixture.go", source).pkg)
+	}
+	base := []string{"const Limit", "func New", "method State.Current", "type State{}"}
+	if got := surface(rest + handle); !reflect.DeepEqual(got, base) {
+		t.Fatalf("the surface of the synthetic package differs: got %q want %q", got, base)
+	}
+	members := []operationalMemberInventory{{"", "New", nil, true}, {"State", "Current", nil, true}}
+	if err := validateOperationalAdmissionStateSurface(surface(rest+handle), base, members); err != nil {
+		t.Fatalf("the listed surface was refused: %v", err)
+	}
+	// Each addition is one new way to reach the state from another package.
+	for name, addition := range map[string]struct{ handle, added, entry, replaces string }{
+		"an exported function":                    {handle, "func Reopen(h State) {}", "func Reopen", ""},
+		"an exported method":                      {handle, "func (h State) Reopen() {}", "method State.Reopen", ""},
+		"an exported method on the pointer":       {handle, "func (h *State) Reopen() {}", "method State.Reopen", ""},
+		"an exported variable":                    {handle, "var Hook func(State)", "var Hook", ""},
+		"an exported constant":                    {handle, "const Other = 2", "const Other", ""},
+		"an exported struct type":                 {handle, "type Raw struct{ Value *state }", "type Raw{Value}", ""},
+		"an exported alias of the state":          {handle, "type Raw = state", "type Raw{}", ""},
+		"an exported defined type over the state": {handle, "type Raw state", "type Raw{}", ""},
+		"an exported type that is not a struct":   {handle, "type Raw func() *state", "type Raw{not a struct}", ""},
+		"an exported field of the handle":         {"type State struct{ s *state; Raw *state }; ", "", "type State{Raw}", "type State{}"},
+		"an embedded field of the handle":         {"type State struct{ *state }; ", "", "type State{state}", "type State{}"},
+		"a method the handle gains by embedding":  {"type State struct{ *state }; ", "func (s *state) Reopen() {}", "method State.Reopen", "type State{}"},
+	} {
+		got := surface(rest + addition.handle + addition.added)
+		if reflect.DeepEqual(got, base) || !slices.Contains(got, addition.entry) || (addition.replaces != "" && slices.Contains(got, addition.replaces)) {
+			t.Fatalf("%s is not listed as %q: %q", name, addition.entry, got)
+		}
+		if err := validateOperationalAdmissionStateSurface(got, base, members); err == nil {
+			t.Fatalf("%s passed the closed list", name)
+		}
+	}
+	// What another package cannot name is not part of the surface.
+	for name, added := range map[string]string{
+		"an unexported function": "func reopen(h State) {}",
+		"an unexported method":   "func (h State) reopen() {}",
+		"an unexported variable": "var hook func(State)",
+		"an unexported type":     "type raw struct{ Value int }",
+	} {
+		if got := surface(rest + handle + added); !reflect.DeepEqual(got, base) {
+			t.Fatalf("%s changed the surface: %q", name, got)
+		}
+	}
+	// A function or method without a call-site inventory, a second inventory
+	// of one, and an inventory of a name the package does not export.
+	for name, changed := range map[string][]operationalMemberInventory{
+		"a function without an inventory":   {{"State", "Current", nil, true}},
+		"a method without an inventory":     {{"", "New", nil, true}},
+		"no inventory at all":               nil,
+		"two inventories of one function":   {{"", "New", nil, true}, {"", "New", nil, true}, {"State", "Current", nil, true}},
+		"an inventory of an unknown method": {{"", "New", nil, true}, {"State", "Current", nil, true}, {"State", "Reopen", nil, true}},
+		"an inventory under the wrong type": {{"", "New", nil, true}, {"View", "Current", nil, true}},
+	} {
+		if err := validateOperationalAdmissionStateSurface(surface(rest+handle), base, changed); err == nil {
+			t.Fatalf("%s passed", name)
+		}
+	}
+	if err := validateOperationalAdmissionStateSurface(surface(rest+handle), append([]string{"func Reopen"}, base...), members); err == nil {
+		t.Fatal("a listed name the package does not export passed")
+	}
 }
 
 // localVariable finds the one variable or parameter called name that is
@@ -1560,6 +1654,31 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 	const storage = "es/admission/internal/reliablesubmit/operational_handoff.go:"
 	const stateFile = "es/admission/internal/admissionstate/state.go:"
 	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
+	// validateState holds the inventories of the admission state package: the
+	// call sites of every exported function and method, the exported surface,
+	// and the one place that makes a state and the one that makes a view.
+	validateState := func(packages []*typedProductionPackage) error {
+		state := requireTypedProductionPackage(t, packages, statePath)
+		members := operationalAdmissionStateMembers(admission, handoff, stateFile)
+		for _, member := range members {
+			var ref types.Object
+			if member.typ == "" {
+				ref = requirePackageFunction(t, state, member.name)
+			} else {
+				ref = requirePackageMethod(t, state, member.typ, member.name)
+			}
+			if err := validateTypedReferenceInventory("admissionstate "+member.typ+"."+member.name, operationalMemberReferences(packages, ref), member.want, member.closures); err != nil {
+				return err
+			}
+		}
+		if err := validateOperationalAdmissionStateSurface(exportedSurfaceOf(state.pkg), operationalAdmissionStateSurface, members); err != nil {
+			return err
+		}
+		return validateOperationalAuthorityConstruction(state, map[string]string{
+			"state": stateFile + "New",
+			"view":  stateFile + "State.Install",
+		})
+	}
 	validate := func(packages []*typedProductionPackage) error {
 		pkg := requireTypedProductionPackage(t, packages, admissionPath)
 		for _, entry := range operationalCommissioningEntries {
@@ -1629,19 +1748,7 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				return err
 			}
 		}
-		state := requireTypedProductionPackage(t, packages, statePath)
-		for _, member := range operationalAdmissionStateMembers(admission, handoff, stateFile) {
-			var ref types.Object
-			if member.typ == "" {
-				ref = requirePackageFunction(t, state, member.name)
-			} else {
-				ref = requirePackageMethod(t, state, member.typ, member.name)
-			}
-			if err := validateTypedReferenceInventory("admissionstate "+member.typ+"."+member.name, operationalMemberReferences(packages, ref), member.want, member.closures); err != nil {
-				return err
-			}
-		}
-		if err := validateOperationalAdmissionStateSurface(state); err != nil {
+		if err := validateState(packages); err != nil {
 			return err
 		}
 		for _, member := range []struct {
@@ -1667,12 +1774,6 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				"verifiedOperationalObservation": provider + "operationalProvider.observe",
 				"liveSender":                     handoff + "Service.advanceOperational",
 				"handoffOwner":                   handoff + "Service.advanceOperational",
-			}},
-			// The state and its one view are made inside the package that owns
-			// them, each by one literal.
-			{state, map[string]string{
-				"state": stateFile + "New",
-				"view":  stateFile + "State.Install",
 			}},
 			{store, map[string]string{
 				"OperationalIntentInput":     storage + "OperationalAccess.BindOperationalIntent",
@@ -1761,6 +1862,114 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 					if err == nil || !strings.Contains(err.Error(), "indirect reference escape") {
 						t.Fatalf("%s.%s %s occurrence was accepted by an inventory that lists its site: %v", probe.receiver, method, reference.referenceKind, err)
 					}
+				}
+			}
+		}
+	})
+	// The inventories of the admission state package (validateState, which the
+	// validation above runs as well) over the real
+	// packages with one function added in memory. A call is all another
+	// package can do to the state, so each added call, of each exported
+	// function and method, has to fail the inventory of exactly that member.
+	t.Run("calls of the admission state package added in the real packages", func(t *testing.T) {
+		const fileName = "es/admission/reliable_submit_operational_admission.go"
+		// One build target is enough here: the file has no build constraint,
+		// and a reference is the same on every target.
+		for _, view := range views[len(views)-1:] {
+			pkg := requireTypedProductionPackage(t, view.packages, admissionPath)
+			source, ok := pkg.sources[fileName]
+			if !ok || !strings.Contains(source, "\"execution-substrate/es/admission/internal/admissionstate\"") || !strings.Contains(source, "\n\t\"time\"\n") {
+				t.Fatalf("%s is not a file of %s that imports the admission state package and time", fileName, admissionPath)
+			}
+			overlaid := func(text string) []*typedProductionPackage {
+				packages := []*typedProductionPackage{view.metadata.typeCheckWithOverlay(t, admissionPath, map[string]string{fileName: source + "\n" + text + "\n"})}
+				for _, other := range view.packages {
+					if other.importPath != admissionPath {
+						packages = append(packages, other)
+					}
+				}
+				return packages
+			}
+			// Controls: a function that calls nothing of the package, and one
+			// that only holds and compares handles.
+			for name, text := range map[string]string{
+				"a function that keeps the Service": "func zzGuardProbeState(s *Service) *Service { return s }",
+				"handles held and compared":         "func zzGuardProbeState(a, b admissionstate.View) bool { kept := a; return kept == b }",
+			} {
+				if err := validateState(overlaid(text)); err != nil {
+					t.Fatalf("%s: control %q changed an inventory: %v", view.target, name, err)
+				}
+			}
+			probed := make(map[string]bool)
+			for _, probe := range []struct{ member, text, reason string }{
+				{".New", "func zzGuardProbeState(s *Service) admissionstate.State { return admissionstate.New(s) }", "reference inventory changed"},
+				{".Digest", "func zzGuardProbeState(c admissionstate.Content) bool { _, ok := admissionstate.Digest(c); return ok }", "reference inventory changed"},
+				{"State.Commissioned", "func zzGuardProbeState(s *Service) bool { return s.operational.Commissioned() }", "reference inventory changed"},
+				{"State.Installable", "func zzGuardProbeState(s *Service) bool { return s.operational.Installable(s) }", "reference inventory changed"},
+				{"State.Install", "func zzGuardProbeState(s *Service, token reliablesubmit.OperationalAdmissionToken) bool { return s.operational.Install(s, [32]byte{1}, 1, token, admissionstate.Content{}, nil, nil) }", "reference inventory changed"},
+				{"State.Withdraw", "func zzGuardProbeState(s *Service) bool { _, ok := s.operational.Withdraw(s, [32]byte{1}, 1); return ok }", "reference inventory changed"},
+				{"State.Confirmable", "func zzGuardProbeState(s *Service) bool { _, ok := s.operational.Confirmable(s); return ok }", "reference inventory changed"},
+				{"State.Confirm", "func zzGuardProbeState(s *Service, v admissionstate.View) { s.operational.Confirm(s, v, admissionstate.Content{}.Trust, time.Time{}) }", "reference inventory changed"},
+				{"State.Current", "func zzGuardProbeState(s *Service) bool { _, ok := s.operational.Current(s, [32]byte{1}, 1); return ok }", "reference inventory changed"},
+				{"State.Inspect", "func zzGuardProbeState(s *Service) bool { return s.operational.Inspect(s).Withdrawn }", "reference inventory changed"},
+				{"View.Installed", "func zzGuardProbeState(v admissionstate.View) bool { return v.Installed() }", "reference inventory changed"},
+				{"View.Token", "func zzGuardProbeState(v admissionstate.View) reliablesubmit.OperationalAdmissionToken { return v.Token() }", "reference inventory changed"},
+				{"View.Trust", "func zzGuardProbeState(v admissionstate.View) int { return len(v.Trust().SignerPolicy.AllowedSigners) }", "reference inventory changed"},
+				{"View.Verifier", "func zzGuardProbeState(v admissionstate.View) string { return v.Verifier().KeyID }", "reference inventory changed"},
+				{"View.Policies", "func zzGuardProbeState(v admissionstate.View) int { return len(v.Policies()) }", "reference inventory changed"},
+				{"View.Proof", "func zzGuardProbeState(v admissionstate.View) bool { return v.Proof() != nil }", "reference inventory changed"},
+				// A method reached without a call at the site, which an
+				// inventory cannot list at any count.
+				{"State.Inspect", "func zzGuardProbeState(s *Service) func(any) admissionstate.Status { return s.operational.Inspect }", "indirect reference escape"},
+				{"State.Withdraw", "func zzGuardProbeState() any { return admissionstate.State.Withdraw }", "indirect reference escape"},
+				{"State.Commissioned", "func zzGuardProbeState(s *Service) bool { var gate interface{ Commissioned() bool } = s.operational; return gate.Commissioned() }", "indirect reference escape"},
+				{"State.Install", "func zzGuardProbeState(s *Service) bool { install := func() bool { return s.operational.Installable(s) }; return install() }", ""},
+			} {
+				err := validateState(overlaid(probe.text))
+				label := "admissionstate " + probe.member + " "
+				if probe.reason == "" {
+					// A call inside a function literal is refused by the
+					// inventory of the member it calls.
+					label, probe.reason = "admissionstate State.Installable ", "indirect reference escape"
+				}
+				if err == nil || !strings.HasPrefix(err.Error(), label) || !strings.Contains(err.Error(), probe.reason) || !strings.Contains(err.Error(), "zzGuardProbeState") {
+					t.Fatalf("%s: a call of %s added to the real package: %v", view.target, probe.member, err)
+				}
+				probed[probe.member] = true
+			}
+			// Every member with a call-site inventory was probed.
+			for _, member := range operationalAdmissionStateMembers(admission, handoff, stateFile) {
+				if !probed[member.typ+"."+member.name] {
+					t.Fatalf("no added call of %s.%s was tried", member.typ, member.name)
+				}
+			}
+			// Inside the package, a second place that makes a state or a view
+			// fails the construction inventory.
+			const stateName = "es/admission/internal/admissionstate/state.go"
+			stateSource, ok := requireTypedProductionPackage(t, view.packages, statePath).sources[stateName]
+			if !ok {
+				t.Fatalf("%s is not a file of %s", stateName, statePath)
+			}
+			inState := func(text string) []*typedProductionPackage {
+				packages := []*typedProductionPackage{view.metadata.typeCheckWithOverlay(t, statePath, map[string]string{stateName: stateSource + "\n" + text + "\n"})}
+				for _, other := range view.packages {
+					if other.importPath != statePath {
+						packages = append(packages, other)
+					}
+				}
+				return packages
+			}
+			if err := validateState(inState("func zzGuardProbeState(h State) bool { return h.s != nil }")); err != nil {
+				t.Fatalf("%s: a control function in the state package changed an inventory: %v", view.target, err)
+			}
+			for name, text := range map[string]string{
+				"a second state literal": "func zzGuardProbeState(owner any) State { return State{s: &state{owner: owner}} }",
+				"a second view literal":  "func zzGuardProbeState(h State) { h.s.view = &view{} }",
+				"a view made by new":     "func zzGuardProbeState() View { return View{v: new(view)} }",
+				"a view declared":        "func zzGuardProbeState() View { var made view; return View{v: &made} }",
+			} {
+				if err := validateState(inState(text)); err == nil || !strings.Contains(err.Error(), "zzGuardProbeState") {
+					t.Fatalf("%s: %s in the state package: %v", view.target, name, err)
 				}
 			}
 		}

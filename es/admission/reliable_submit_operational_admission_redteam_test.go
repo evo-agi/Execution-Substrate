@@ -80,11 +80,7 @@ func redTeamRewrittenViewService(t *testing.T, f *operationalFixture, rewrite fu
 	}
 	settable := func(owner reflect.Value, name string) reflect.Value {
 		t.Helper()
-		field := owner.FieldByName(name)
-		if !field.IsValid() || !field.CanAddr() {
-			t.Fatalf("the admission state has no addressable field %q; rewrite this forgery", name)
-		}
-		return reflect.NewAt(field.Type(), field.Addr().UnsafePointer()).Elem()
+		return operationalStateField(t, owner, name)
 	}
 	state := settable(reflect.ValueOf(&service.operational).Elem(), "s").Elem()
 	view := settable(state, "view").Elem()

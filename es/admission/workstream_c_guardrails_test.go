@@ -3168,24 +3168,31 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 				{"the deadline arithmetic", "func zzRefused() { _ = admissionstate.fresh }", "fresh not exported by package admissionstate|undefined: admissionstate.fresh"},
 				{"the copy of the trust lists", "func zzRefused(c admissionstate.Content) { _ = admissionstate.cloneTrust(c.Trust) }", "cloneTrust not exported by package admissionstate|undefined: admissionstate.cloneTrust"},
 			} {
-				got := check(probe.text)
-				if len(got) == 0 {
-					t.Fatalf("%s: %q compiles outside the admission state package", view.target, probe.name)
+				if err := compileRefusal(check(probe.text), fileName, lines, probe.message); err != nil {
+					t.Fatalf("%s: %q outside the admission state package: %v", view.target, probe.name, err)
 				}
-				matched := false
-				for _, message := range got {
-					var line int
-					rest, found := strings.CutPrefix(message, fileName+":")
-					if _, err := fmt.Sscanf(rest, "%d:", &line); !found || err != nil || line <= lines {
-						t.Fatalf("%s: %q is refused by an error outside the added text: %q", view.target, probe.name, got)
-					}
-					for _, expected := range strings.Split(probe.message, "|") {
-						matched = matched || strings.Contains(message, expected)
-					}
-				}
-				if !matched {
-					t.Fatalf("%s: %q is refused for another reason than %q: %q", view.target, probe.name, probe.message, got)
-				}
+			}
+		}
+	})
+	t.Run("how a form that must not compile is judged", func(t *testing.T) {
+		const file = "es/admission/host.go"
+		if err := compileRefusal([]string{file + ":11: s.operational.s undefined (cannot refer to unexported field s)"}, file, 10, "unexported field s"); err != nil {
+			t.Fatalf("a refusal in the added text with the expected message was not accepted: %v", err)
+		}
+		if err := compileRefusal([]string{file + ":12: undefined: admissionstate.fresh"}, file, 10, "fresh not exported by package admissionstate|undefined: admissionstate.fresh"); err != nil {
+			t.Fatalf("the second of two expected messages was not accepted: %v", err)
+		}
+		for name, found := range map[string][]string{
+			"a form that compiles":                nil,
+			"an error for another reason":         {file + ":11: missing return"},
+			"an error in the last host line":      {file + ":10: unexported field s"},
+			"an error in another file":            {"es/admission/other.go:11: unexported field s"},
+			"an error without a line":             {file + ": unexported field s"},
+			"a second error in the host text":     {file + ":11: unexported field s", file + ":3: unexported field s"},
+			"an error of a file with this ending": {"x" + file + ":11: unexported field s"},
+		} {
+			if err := compileRefusal(found, file, 10, "unexported field s"); err == nil {
+				t.Fatalf("%s was judged a refusal of the added text", name)
 			}
 		}
 	})
@@ -5180,6 +5187,32 @@ func loadTypedProductionMetadata(t *testing.T, target productionBuildTarget, pat
 func pathIsWithin(directory string, path string) bool {
 	relative, err := filepath.Rel(directory, path)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// compileRefusal judges the type errors of one text added to a file. The text
+// is refused as expected when there is at least one error, every error lies
+// in the added lines of that file, and one of them carries one of the
+// expected messages, which are separated by "|". An error anywhere else
+// would say that the file did not compile for a reason of its own.
+func compileRefusal(found []string, fileName string, hostLines int, messages string) error {
+	if len(found) == 0 {
+		return errors.New("it compiles")
+	}
+	matched := false
+	for _, message := range found {
+		var line int
+		rest, inFile := strings.CutPrefix(message, fileName+":")
+		if _, err := fmt.Sscanf(rest, "%d:", &line); !inFile || err != nil || line <= hostLines {
+			return fmt.Errorf("it is refused by an error outside the added text: %q", found)
+		}
+		for _, expected := range strings.Split(messages, "|") {
+			matched = matched || strings.Contains(message, expected)
+		}
+	}
+	if !matched {
+		return fmt.Errorf("it is refused for another reason than %q: %q", messages, found)
+	}
+	return nil
 }
 
 // packagesCompiledBelow returns the loaded packages that are compiled from one

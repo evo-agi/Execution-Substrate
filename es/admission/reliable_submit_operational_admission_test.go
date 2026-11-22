@@ -24,6 +24,7 @@ import (
 
 	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
+	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
 
@@ -3594,6 +3595,52 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 
 // ---- The admission state package, with real tokens ----
 
+// operationalStateField returns an unexported field of the admission state as
+// a value a test may set. The fields live in the package admissionstate, so no
+// code here can name them: reflection turns the address of the field into a
+// settable value. A production file needs the reflect or the unsafe import for
+// the same, and the guard pins both.
+func operationalStateField(t *testing.T, owner reflect.Value, name string) reflect.Value {
+	t.Helper()
+	field := owner.FieldByName(name)
+	if !field.IsValid() || !field.CanAddr() {
+		t.Fatalf("the admission state has no addressable field %q; rewrite the test that sets it", name)
+	}
+	return reflect.NewAt(field.Type(), field.Addr().UnsafePointer()).Elem()
+}
+
+// A Service from NewService owns the admission state it holds: the state is
+// open for the first view of exactly that Service. Every other test here
+// builds its Service by hand, so this is the one test of that assignment.
+func TestOperationalAdmissionNewServiceOwnsItsState(t *testing.T) {
+	workspace := physicalTestTempDir(t)
+	cfg := newExecutionRootStartupTestConfig(t, filepath.Join(workspace, "stage"), filepath.Join(workspace, "results"))
+	cfg.Nomad = esconfig.NomadConfig{}
+	cfg.Execution = esconfig.ExecutionConfig{}
+	service, err := NewService(cfg)
+	if err != nil || service == nil {
+		t.Fatalf("control: a prepare-only Service was not constructed: %v", err)
+	}
+	if !service.operational.Installable(service) || service.operational.Commissioned() ||
+		service.operational.Inspect(service) != (admissionstate.Status{}) {
+		t.Fatal("NewService did not give its Service an open admission state of its own")
+	}
+	// Another Service that holds the same handle is not its owner, and a
+	// second Service gets a state of its own.
+	other := &Service{operational: service.operational}
+	if other.operational.Installable(other) {
+		t.Fatal("the state of one Service is open to another that holds its handle")
+	}
+	second, err := NewService(cfg)
+	if err != nil || second == nil {
+		t.Fatalf("control: a second Service was not constructed: %v", err)
+	}
+	if second.operational == service.operational || !second.operational.Installable(second) ||
+		second.operational.Installable(service) || service.operational.Installable(second) {
+		t.Fatal("two Services from NewService do not each own a state")
+	}
+}
+
 // A token that names a realm and a digest comes only from the store, so the
 // package admissionstate cannot test its own Install and its confirmation of
 // equal content. This test does, with the token and the content of the
@@ -3707,6 +3754,36 @@ func TestOperationalAdmissionState(t *testing.T) {
 			}
 			untouched(t, o, "another owner")
 		})
+	})
+	t.Run("a latched state without a view takes none", func(t *testing.T) {
+		// No method leaves a state latched without a view. Should it ever
+		// happen, Install refuses on the latch alone, with a token and content
+		// that an open state takes.
+		for _, latch := range []string{"withdrawn", "superseded"} {
+			t.Run(latch, func(t *testing.T) {
+				o := newOwned()
+				state := operationalStateField(t, reflect.ValueOf(&o.state).Elem(), "s").Elem()
+				lock := operationalStateField(t, state, "mu").Addr().Interface().(*sync.RWMutex)
+				set := func(value bool) {
+					lock.Lock()
+					defer lock.Unlock()
+					operationalStateField(t, state, latch).SetBool(value)
+				}
+				set(true)
+				if o.state.Installable(o.owner) {
+					t.Fatal("a latched state is open")
+				}
+				if o.state.Install(o.owner, realm.installation, realm.epoch, token, content, nil, nil) ||
+					o.state.Inspect(o.owner).View.Installed() {
+					t.Fatal("a latched state without a view took one")
+				}
+				// The control: without the latch the same call installs.
+				set(false)
+				if !o.state.Install(o.owner, realm.installation, realm.epoch, token, content, nil, nil) {
+					t.Fatal("control: the same state without its latch refused the view")
+				}
+			})
+		}
 	})
 	t.Run("the installed content is the state's own copy", func(t *testing.T) {
 		o := newOwned()
@@ -4002,6 +4079,44 @@ func TestOperationalAdmissionPolicyContent(t *testing.T) {
 			if built, ok := operationalPolicySet(content); !ok || len(built.policies) != len(content) {
 				t.Fatalf("control: %+v built no set", content)
 			}
+		}
+	})
+	// The admission state copies the content it installs. The steps before
+	// it copy too, so the set that is compared and the content that is named
+	// by the digest cannot change under a writer to the Service's own values.
+	// These copies are tested here on their own, because the copy at install
+	// would hide the loss of any one of them.
+	t.Run("each step before the install hands on a copy", func(t *testing.T) {
+		source := []configuredStaticScriptLiteralDenyEntry{{id: "rule-1", literal: "rm -rf /"}}
+		given := admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{},
+			configuredStaticScriptLiteralDenyPolicy{entries: source}}}
+		copied, ok := copyOperationalPolicySet(given)
+		if !ok {
+			t.Fatal("control: the set was not copied")
+		}
+		source[0] = configuredStaticScriptLiteralDenyEntry{id: "written-after-the-copy", literal: "written-after-the-copy"}
+		if got := copied.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries; len(got) != 1 ||
+			got[0] != (configuredStaticScriptLiteralDenyEntry{id: "rule-1", literal: "rm -rf /"}) {
+			t.Fatalf("the copied set shares its entries with the set it was copied from: %+v", got)
+		}
+
+		f := makeOperationalFixture(t, "")
+		service, _ := operationalUncommissionedService(t, f, nil)
+		content, digest, ok := service.operationalAdmissionContent()
+		if !ok || len(content.Verifier.PublicKey) == 0 || len(content.Trust.SignerPolicy.AllowedSigners) == 0 {
+			t.Fatal("control: the Service has no content with a key and an allowed signer")
+		}
+		key := bytes.Clone(service.provenanceVerifier.publicKey)
+		signers := append([]string(nil), service.trustModel.SignerPolicy.AllowedSigners...)
+		content.Verifier.PublicKey[0] ^= 0xff
+		content.Trust.SignerPolicy.AllowedSigners[0] = "written-after-the-copy"
+		if !bytes.Equal(service.provenanceVerifier.publicKey, key) ||
+			!reflect.DeepEqual(service.trustModel.SignerPolicy.AllowedSigners, signers) {
+			t.Fatal("the content shares memory with the verifier or the trust model of the Service")
+		}
+		if again, sameDigest, ok := service.operationalAdmissionContent(); !ok || sameDigest != digest ||
+			reflect.DeepEqual(again, content) {
+			t.Fatal("a write to content that was handed out reached what the Service would enforce")
 		}
 	})
 }

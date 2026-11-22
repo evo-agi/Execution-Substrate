@@ -562,6 +562,23 @@ func TestZeroAndForeignHandlesAreClosed(t *testing.T) {
 			t.Fatal("the questions of others changed the owner's view")
 		}
 	})
+	t.Run("a state without an owner serves nobody", func(t *testing.T) {
+		// New makes no such state. Should one ever exist, no owner matches
+		// it: the absent owner is not an identity that can be presented.
+		bare := State{s: &state{}}
+		allClosed(t, "a state without an owner and without a view, asked by no owner", bare, nil, installation, epoch)
+		allClosed(t, "a state without an owner and without a view, asked by an owner", bare, owner, installation, epoch)
+		h := State{s: &state{}}
+		installed(t, h, installation, epoch)
+		h.s.confirmed = time.Now()
+		allClosed(t, "a state without an owner, asked by no owner", h, nil, installation, epoch)
+		allClosed(t, "a state without an owner, asked by an owner", h, owner, installation, epoch)
+		// The control: the same state with an owner answers that owner.
+		h.s.owner = owner
+		if got, ok := h.Current(owner, installation, epoch); !ok || !got.Installed() {
+			t.Fatal("control: the same state with an owner does not answer its owner")
+		}
+	})
 }
 
 func TestStateLatchesAndRealm(t *testing.T) {
