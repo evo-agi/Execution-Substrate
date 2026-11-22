@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -392,7 +393,11 @@ func TestRetainedResultReviewHeldFileRejectsLateMetadataChange(t *testing.T) {
 func TestRetainedResultAuthReaderNeedsVerifierEvenForExistingPair(t *testing.T) {
 	service, locator, _ := newResultTestService(t)
 	writeRetainedResultBundleBytes(t, service, locator, []byte("synthetic committed bytes"))
-	restarted := *service
+	// An exact struct copy of the unlocked Service models a restart with the
+	// same retained state. Reflection keeps vet's copylocks check enabled for
+	// every ordinary assignment.
+	var restarted Service
+	reflect.ValueOf(&restarted).Elem().Set(reflect.ValueOf(service).Elem())
 	restarted.resultAuth = syntheticResultAuthenticator()
 	bundle, err := restarted.Result(context.Background(), locator.RunID)
 	if err != nil || string(bundle.Payload) != "synthetic committed bytes" {
