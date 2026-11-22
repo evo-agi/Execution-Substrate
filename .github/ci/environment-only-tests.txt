@@ -1,0 +1,59 @@
+# Tests that cannot pass on the CI runner for host reasons, not code reasons.
+#
+# Format: one entry per line, holding exactly a package import path, one
+# space and a top-level test name. Empty lines and lines whose first
+# character is "#" are ignored. Any other line is an error.
+# .github/ci/go_test_gate.py reads this file and documents the rules.
+#
+# An entry applies only to the package it names. The gating test step skips
+# exactly these tests and runs everything else. A second step runs exactly
+# these tests on every run without blocking. They run unchanged everywhere
+# else.
+#
+# Every entry must name a test that exists in its package. A change that adds
+# a test which can only pass off the runner adds its entry here itself.
+#
+# TODO: port each test so that it passes on a Linux runner without weakening
+# it, then delete its entry.
+
+# Remote Alpha operator-host tests in the root package.
+
+# The test process must run as the account named "ds". The second test also
+# needs the macOS /private/tmp path for one subtest.
+execution-substrate TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+execution-substrate TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+execution-substrate TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+
+# The test stages under the macOS /private/tmp path.
+execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
+
+# The test's own fake sudo tries BSD "stat -f" before GNU "stat -c". On GNU
+# the first form prints filesystem details and fails, so the saved directory
+# mode is wrong.
+execution-substrate TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection
+
+# The host needs an account named "ds" and the macOS /private/tmp path.
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+
+# The checker reads the host's real modprobe configuration, which the fixture
+# cannot replace. A host that already blocks algif_aead reports
+# mitigated_not_fixed.
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
+
+# The test assumes that /usr/bin and /bin hold no working systemctl.
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
+
+# es/app: a go command in the system directories of the harness PATH defeats
+# the missing-Go fixture of one subtest in each test.
+execution-substrate/es/app TestSupportedLocalSetupExactGoPreflightBeforeMutation
+execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation
+
+# es/admission/internal/reliablesubmit: historical-opener probes. They need
+# test binaries built from older trees with an overlay kept outside this
+# repository (the ES_REPLAY_*_PROBE variables).
+execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
+execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRefusesWithoutMutation

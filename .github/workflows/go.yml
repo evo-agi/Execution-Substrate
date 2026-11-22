@@ -15,8 +15,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: go-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request replaces that pull request's older run.
+  # Each push to trunk_dev has its own group, so every commit there keeps its
+  # own result.
+  group: go-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -28,69 +31,19 @@ jobs:
       # go.sum; never download a different toolchain or rewrite go.mod.
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
-      # Environment-only tests. They need the macOS operator host or binaries
-      # built outside this repository, so they fail on a GitHub Linux runner
-      # for host reasons, not code reasons. The gating test step skips exactly
-      # these names; the next step still runs exactly these names on every run
-      # without blocking, and they run unchanged everywhere else.
-      #
-      # TODO: port each test so it passes on a Linux runner without weakening
-      # it, then remove it from this list.
-      #
-      # execution-substrate (root package), Remote Alpha operator-host tests:
-      #   root-owned status witnesses and staged-leaf custody on the operator
-      #   host:
-      #     TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
-      #     TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
-      #     TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
-      #     TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
-      #   macOS /private/tmp staging path:
-      #     TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
-      #   sudo-visible SPIRE socket path on the operator host:
-      #     TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection
-      #   the ds operator account:
-      #     TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
-      #     TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
-      #     TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
-      #   host kernel mitigation state and installed host tools:
-      #     TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
-      #     TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
-      #     TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
-      # es/app, the runner image's own Go on the default PATH defeats the
-      # missing-Go fixture:
-      #     TestSupportedLocalSetupExactGoPreflightBeforeMutation
-      #     TestSupportedLocalProofExactGoPreflightBeforeMutation
-      # es/admission/internal/reliablesubmit, historical opener binaries built
-      # from older trees plus an external probe overlay (ES_REPLAY_*_PROBE):
-      #     TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
-      #     TestSQLiteV3OldBinaryRefusesWithoutMutation
-      #     TestOperationalHandoffSchema4BinaryRefusesSchema5 (added by PR #12)
-      ENVIRONMENT_ONLY_TESTS: >-
-        TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
-        TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
-        TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
-        TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
-        TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
-        TestRemoteAlphaOperatorRecoverySessionVaultWorkloadAuthBootstrapPrepareSpireBundleReadClassifiesTraversalAmbiguityWithSudoVisibleInspection
-        TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
-        TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
-        TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
-        TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
-        TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
-        TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
-        TestSupportedLocalSetupExactGoPreflightBeforeMutation
-        TestSupportedLocalProofExactGoPreflightBeforeMutation
-        TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
-        TestSQLiteV3OldBinaryRefusesWithoutMutation
-        TestOperationalHandoffSchema4BinaryRefusesSchema5
+      # Tests that cannot pass on this runner for host reasons. Each entry
+      # names one package and one test. The file explains each entry.
+      ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
     steps:
+      # Actions are pinned to full commit SHAs. The comment names the release
+      # tag that pointed at that commit when it was pinned.
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
       - name: Set up Go from go.mod
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -112,13 +65,18 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: |
-          pattern="^($(printf '%s' "$ENVIRONMENT_ONLY_TESTS" | tr -s ' ' '|'))\$"
-          go test -count=1 -skip "$pattern" ./...
+      # Proves on throwaway modules that the gate below skips an entry only in
+      # the package it names, and refuses entries that are not plain names.
+      - name: Check the test gate
+        run: python3 -I -B .github/ci/go_test_gate_selftest.py
 
+      # Runs every package. A package with entries runs with exactly its own
+      # entries skipped; every other package runs with nothing skipped.
+      - name: Test
+        run: python3 -I -B .github/ci/go_test_gate.py gate "$ENVIRONMENT_ONLY_TESTS"
+
+      # Runs exactly the entries, each in its own package, so their results
+      # stay visible. Their failures do not block.
       - name: Environment-only tests (non-blocking)
         continue-on-error: true
-        run: |
-          pattern="^($(printf '%s' "$ENVIRONMENT_ONLY_TESTS" | tr -s ' ' '|'))\$"
-          go test -count=1 -run "$pattern" ./...
+        run: python3 -I -B .github/ci/go_test_gate.py environment-only "$ENVIRONMENT_ONLY_TESTS"
