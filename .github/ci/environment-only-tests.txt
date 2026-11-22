@@ -1,0 +1,179 @@
+# Tests that cannot pass on the CI runner for host reasons, not code reasons,
+# and tests that skip themselves on it.
+#
+# Format: two kinds of lines. An entry names a test that fails on the runner.
+# It holds exactly a package import path, one space and a test path. A line
+# for a test that skips itself on the runner holds the word "skips-itself",
+# one space, and the same two things. A test path is a top-level test name,
+# or the path that go test prints for a subtest. Empty lines and lines whose
+# first character is "#" are ignored. Any other line is an error.
+# .github/ci/go_test_gate.py reads this file and documents the rules.
+#
+# The entries come first in this file, and the lines for tests that skip
+# themselves after them, under their own heading.
+#
+# An entry applies only to the package it names. An entry for a whole test
+# stands for that test with all of its subtests. An entry for a subtest
+# stands for that subtest alone. The step "Test" skips the entries and runs
+# everything else. Tests run unchanged everywhere else.
+#
+# Every entry must still fail on the runner. The step "Listed tests still
+# fail" judges every entry twice, in a run of its whole package with nothing
+# skipped and in a go test of its own, and fails the run when an entry
+# passes, skips itself or does not run in one of the two. So an entry cannot
+# outlive its reason: a change that makes a listed test pass on the runner,
+# by porting it or otherwise, has to delete its line in the same change.
+#
+# Only a failure that the testing package reports counts: t.Fatal, t.Error
+# or a panic. A test that ends the process without reporting, for example
+# with os.Exit or log.Fatal, cannot be listed, because nothing tells it from
+# a test that was running when something else stopped the test binary.
+#
+# Name the narrowest thing that fails. Where one subtest fails and its
+# siblings pass on the runner, the entry names that subtest, so the siblings
+# stay in the gate. A change that adds a test which can only pass off the
+# runner adds its entry here itself.
+#
+# Subtests that cannot be listed. For each of them, list the whole test:
+#
+#   - A subtest whose printed path has a part that is empty or that holds a
+#     character other than an ASCII letter, a digit, "_" or "-". go test
+#     prints a space as "_", and the parts are what stands between the "/".
+#   - A subtest that go test numbers with "#01" because its name repeats.
+#   - A subtest that has subtests of its own, or a neighbour whose name
+#     starts with its name and a "/". go test reads a test path as the start
+#     of a path, so the skip for TestA/x also covers every test whose path
+#     starts with "TestA/x/". Both steps check this.
+#
+#     The step "Test" runs a package that has an entry for a subtest a
+#     second time and has go test write down every test that it skips
+#     there. The step fails unless those tests are exactly the entries of
+#     the package. So it names a neighbour that an entry takes with it,
+#     also one that the test starts only when the listed subtest did not
+#     fail, and it names an entry that skipped nothing.
+#
+#     The step "Listed tests still fail" fails the run when the run of an
+#     entry starts another test under the path of that entry. Where that
+#     test is a subtest of the listed one and it is what fails, the entry
+#     can name it instead.
+#
+# A subtest that a listed subtest x would start itself does not start while
+# x is skipped. It is part of x, and nothing but x is lost with it.
+#
+# The way to shorten this list is to port a test so that it passes on a Linux
+# runner without weakening it.
+
+# Remote Alpha operator-host tests in the root package.
+
+# The test process must run as the account named "ds". The second test also
+# needs the macOS /private/tmp path for one subtest.
+#
+# The first two tests are listed whole on purpose, although some of their
+# subtests pass on the runner. The TLS status bootstrap refuses a caller that
+# is not "ds" at its first identity check, so a subtest that expects a
+# refusal passes there without reaching the custody check it is named for.
+# Keeping those subtests in the gate would claim a check that does not happen.
+execution-substrate TestRemoteAlphaESServiceTLSStatusFailureWitnessBootstrapOwnedTerminal
+execution-substrate TestRemoteAlphaESServiceTLSStatusRootLoadedStageCustody
+execution-substrate TestRemoteAlphaESServiceTLSStatusStageFIFOSubstitution
+execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusStageFIFORefusal
+
+# The test stages under the macOS /private/tmp path.
+execution-substrate TestRemoteAlphaOperatorRecoverySessionESTLSStatusRemoteWrapperTrap
+
+# The host needs an account named "ds" and the macOS /private/tmp path.
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticBootstrapLifecycleComposition
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticPriorReaderCloseSuppression
+execution-substrate TestRemoteAlphaP0tGrammarDiagnosticV2VersionedBootstrap
+
+# The checker reads the host's real modprobe configuration, which the fixture
+# cannot replace. A host that already blocks algif_aead reports
+# mitigated_not_fixed.
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431UnprovedMitigationStaysVulnerable
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCVE31431VulnerableWithoutMitigationBlocks
+
+# The test assumes that /usr/bin and /bin hold no working systemctl.
+execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayHonest
+
+# es/app: a go command in the system directories of the harness PATH defeats
+# the missing-Go fixture of this one subtest in each test. The runner image
+# has such a go command. The three other subtests of each test stay in the
+# gate.
+execution-substrate/es/app TestSupportedLocalSetupExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
+execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
+
+# es/admission/internal/reliablesubmit: historical-opener probes. They need
+# test binaries built from older trees with an overlay kept outside this
+# repository (the ES_REPLAY_*_PROBE variables).
+execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV4PreviousSchema3BinaryRefusesWithoutMutation
+execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRefusesWithoutMutation
+
+
+# Tests that skip themselves on the runner.
+#
+# A test that calls t.Skip takes itself out of the gate. The step "Test"
+# fails the run unless the tests that skipped themselves are exactly the
+# tests named below, each in the package of its line. So a test that skips
+# itself on the runner needs a line here with its reason, in the change that
+# adds the skip. And a line cannot outlive its reason: when the test passes
+# on the runner, fails there or no longer exists, its line has to go in the
+# same change. The log of the step names every test that skipped itself,
+# with what the test wrote.
+#
+# A line stands for exactly the test or subtest it names. A subtest that
+# skips itself needs a line of its own, and the name rules for subtests
+# above hold for it. A line must not name an entry, lie inside one or hold
+# one: what lies inside an entry does not run in the gate.
+#
+# These tests do not run in CI. The way to shorten this part of the list is
+# to give the runner what a test needs, or to port the test.
+
+# es/admission/internal/reliablesubmit: helper processes. Another test of the
+# package starts the test binary a second time with a variable set, and only
+# that process runs the body. Run as a test, each of the two has nothing to
+# do. They skip themselves on every host.
+skips-itself execution-substrate/es/admission/internal/reliablesubmit TestPrivateReplayObjectAllocatorHelperProcess
+skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLiteClaimStoreLockHelperProcess
+
+# es/app: integration tests that need a Nomad client backed by Docker. The
+# runner image has no nomad command.
+skips-itself execution-substrate/es/app TestBringupScriptUpCheckDownFullProfile
+skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathCancelSucceeds
+skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle
+skips-itself execution-substrate/es/app TestDiagnosticsScriptRunIDBundleCollectsLifecycleSignalsAndStaging
+skips-itself execution-substrate/es/app TestExecuteLoopScriptFailureSummary
+skips-itself execution-substrate/es/app TestExecuteLoopScriptSuccessAndDeterministicDigests
+skips-itself execution-substrate/es/app TestExecutionCancelRetainsStageRootForDebugging
+skips-itself execution-substrate/es/app TestExecutionCancelStopsNomadJob
+skips-itself execution-substrate/es/app TestExecutionLogsReturnConflictWhenAllocationNotReady
+skips-itself execution-substrate/es/app TestExecutionLogsReturnRealContainerOutput
+skips-itself execution-substrate/es/app TestExecutionLoopScriptSuccessRetainsDistinctStageRootsAcrossRepeatedRuns
+skips-itself execution-substrate/es/app TestExecutionResultBundleAndStageRetainedAcrossStatusAndRepeatFetch
+skips-itself execution-substrate/es/app TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput
+skips-itself execution-substrate/es/app TestExecutionStatusReflectsFailedAllocation
+skips-itself execution-substrate/es/app TestExecutionStatusReflectsNomadJobState
+skips-itself execution-substrate/es/app TestExecutionStatusRetainsFailedStageRootForDebugging
+skips-itself execution-substrate/es/app TestExecutionStatusRetainsSuccessfulStageRootAndLogsStillWork
+skips-itself execution-substrate/es/app TestExecutionStatusReturns503WhenNomadUnavailable
+skips-itself execution-substrate/es/app TestLifecycleScriptCategorizesExecutionFailure
+skips-itself execution-substrate/es/app TestLifecycleScriptObservesExecutionViaPublicRunID
+skips-itself execution-substrate/es/app TestRuntimeIdentityIntegrationCapabilityProbe
+skips-itself execution-substrate/es/app TestSubmitFlowAllowsConfiguredControlPlaneCallerHandoff
+skips-itself execution-substrate/es/app TestSubmitFlowDoesNotStartWorkloadBeforeHelperReadiness
+skips-itself execution-substrate/es/app TestSubmitFlowHelperDeathIsTaskFatal
+skips-itself execution-substrate/es/app TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks
+skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks
+skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity
+skips-itself execution-substrate/es/app TestSubmitFlowProvidesPlatformOwnedRuntimeIdentityThroughBoundedEndpoint
+skips-itself execution-substrate/es/app TestSubmitFlowRejectsRuntimeIdentityPassthroughRequests
+skips-itself execution-substrate/es/app TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry
+skips-itself execution-substrate/es/app TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction
+skips-itself execution-substrate/es/app TestSubmitFlowRunsStaticScriptInNomadDocker
+skips-itself execution-substrate/es/app TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled
+skips-itself execution-substrate/es/app TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize
+skips-itself execution-substrate/es/app TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead
+skips-itself execution-substrate/es/app TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt
+
+# es/app: the test needs the vault command, which the runner image does not
+# have.
+skips-itself execution-substrate/es/app TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget

@@ -928,12 +928,13 @@ func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
 		baseImage: "python:3.13-alpine",
 	})
 
+	entrypoint := archiveEntry{
+		Name: "entrypoint",
+		Mode: 0o755,
+		Body: []byte("#!/bin/sh\necho WORKLOAD-STARTED\n"),
+	}
 	publishSubmitArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{
-		{
-			Name: "entrypoint",
-			Mode: 0o755,
-			Body: []byte("#!/bin/sh\necho WORKLOAD-STARTED\n"),
-		},
+		entrypoint,
 		{
 			Name:     "escape",
 			Typeflag: tar.TypeSymlink,
@@ -942,24 +943,77 @@ func TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry(t *testing.T) {
 		},
 	}))
 
+	// A link entry anywhere in a static-script archive makes the required
+	// admission policy input unavailable: ES refuses before policy allow, run
+	// assignment, materialization or provider registration
+	// (.docs/execution_lifecycle/contracts.md, static-script policy input).
 	response := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d body=%s", response.StatusCode, strings.TrimSpace(string(mustReadBody(t, response.Body))))
+	body := strings.TrimSpace(string(mustReadBody(t, response.Body)))
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for symlink workload archive, got %d body=%s", response.StatusCode, body)
 	}
-	var payload admission.SubmitResult
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		t.Fatalf("decode submit response: %v", err)
+	var refusal admission.ErrorResponse
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&refusal); err != nil {
+		t.Fatalf("decode refusal body: %v body=%s", err, body)
+	}
+	if refusal.Success || refusal.Code != "admission_policy_input_unavailable" || refusal.Error != "admission policy input unavailable" {
+		t.Fatalf("unexpected refusal for symlink workload archive: %s", body)
+	}
+	if jobs := listNomadJobIDs(t, stack.nomad); len(jobs) != 0 {
+		t.Fatalf("symlink workload archive reached Nomad registration: jobs=%v", jobs)
+	}
+	stageEntries, err := os.ReadDir(filepath.Join(stack.rootDir, "es-stage"))
+	if err != nil {
+		t.Fatalf("read staging root: %v", err)
+	}
+	for _, entry := range stageEntries {
+		if strings.HasPrefix(entry.Name(), "run-") {
+			t.Fatalf("symlink workload archive was materialized into run root %q", entry.Name())
+		}
 	}
 
+	// Control: the same stack admits and runs the same archive without the link
+	// entry, so the refusal above is caused by the link entry alone.
+	publishSubmitArtifactArchive(t, stack, buildArchiveWithEntries(t, []archiveEntry{entrypoint}))
+	controlResponse := submitExecutionRequest(t, stack, buildSubmitRequestBody(t, stack))
+	defer controlResponse.Body.Close()
+	if controlResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 for the archive without the link entry, got %d body=%s", controlResponse.StatusCode, strings.TrimSpace(string(mustReadBody(t, controlResponse.Body))))
+	}
+	var payload admission.SubmitResult
+	if err := json.NewDecoder(controlResponse.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
 	alloc := stack.nomad.waitForTerminalExecutionAllocation(t, payload.RunID)
-	if alloc.ClientStatus != "failed" {
-		t.Fatalf("expected failed allocation for symlink workload archive, got %q", alloc.ClientStatus)
+	if logs := stack.nomad.allocLogs(t, alloc.ID); !strings.Contains(logs, "WORKLOAD-STARTED") {
+		t.Fatalf("expected the archive without the link entry to start, got status=%q logs=%q", alloc.ClientStatus, logs)
 	}
-	logs := stack.nomad.allocLogs(t, alloc.ID)
-	if strings.Contains(logs, "WORKLOAD-STARTED") {
-		t.Fatalf("did not expect workload start when workload archive contains a symlink entry, got %q", logs)
+}
+
+// listNomadJobIDs returns every job the test's own Nomad agent knows.
+func listNomadJobIDs(t *testing.T, harness *nomadHarness) []string {
+	t.Helper()
+
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(harness.baseURL() + "/v1/jobs")
+	if err != nil {
+		t.Fatalf("list Nomad jobs: %v", err)
 	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("list Nomad jobs: status %d", response.StatusCode)
+	}
+	var payload []nomadJobListEntry
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode Nomad job list: %v", err)
+	}
+	ids := make([]string, 0, len(payload))
+	for _, entry := range payload {
+		ids = append(ids, strings.TrimSpace(entry.ID))
+	}
+	return ids
 }
 
 func TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks(t *testing.T) {

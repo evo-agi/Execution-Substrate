@@ -4019,7 +4019,7 @@ case "${cmd}" in
 	      server_dir="${FAKE_REMOTE_ROOT}/run/spire/server"
 	      if [[ -d "${server_dir}" && ! -x "${server_dir}" ]]; then
 	        restore_path="${server_dir}"
-	        restore_mode="$(stat -f '%%Lp' "${server_dir}" 2>/dev/null || stat -c '%%a' "${server_dir}")"
+	        restore_mode="$(stat -c '%%a' "${server_dir}" 2>/dev/null || stat -f '%%Lp' "${server_dir}")"
 	        /bin/chmod u+x "${server_dir}"
 	      fi
 	    fi
