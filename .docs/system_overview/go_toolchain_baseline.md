@@ -106,6 +106,15 @@ tests of every package of the module. One more step runs
 `GOOS=darwin GOARCH=arm64 go vet ./...`. It type-checks the files that build
 only on macOS and runs no test.
 
+Before the tests, the workflow installs Nomad 2.1.1, Vault 2.2.2 and
+SPIRE 1.14.4 from release downloads that it checks against reviewed SHA-256
+values, and pulls the container images that the tests run by reviewed digest.
+So the `es/app` integration tests that start a Nomad agent with the Docker
+driver, and the supported-local setup test that runs Vault and SPIRE, run on
+that runner. The job sets `AWS_EC2_METADATA_DISABLED=true`: the runner's EC2
+metadata endpoint does not answer, and Nomad's AWS fingerprinter would
+otherwise fail the client of a test agent.
+
 `.github/ci/environment-only-tests.txt` is the single statement of what the
 test step excludes and of which tests exclude themselves on that runner. It
 has two kinds of lines. An entry names a test or subtest that cannot pass on
@@ -147,9 +156,10 @@ workflow has to change that value in the same change.
 A green run is validation evidence for the committed tree on that runner
 image. It is not design authority. It is not a macOS run, a race-detector run,
 a Linux runtime proof, a Remote Alpha proof, or a supported-local proof, and it
-does not replace the exact-Go preflights of the supported scripts. It does not
-show that a test named in the list passes: on that runner those tests fail or
-skip themselves.
+does not replace the exact-Go preflights of the supported scripts. The Nomad,
+Vault and SPIRE that a test starts there are throwaway test instances, not a
+deployment. It does not show that a test named in the list passes: on that
+runner those tests fail or skip themselves.
 
 ## 11. Explicit Non-Claims
 

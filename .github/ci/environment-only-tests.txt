@@ -97,6 +97,13 @@ execution-substrate TestRemoteAlphaRuntimeSecurityBoundaryCheckMissingToolsStayH
 execution-substrate/es/app TestSupportedLocalSetupExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
 execution-substrate/es/app TestSupportedLocalProofExactGoPreflightBeforeMutation/local_build_path_rejects_missing_Go_before_mutation
 
+# es/app: the mounted-source witness binds its evidence to a source-identity
+# envelope that an operator supplies from a governed source checkout, in the
+# four ES_MOUNT_WITNESS_* variables. The runner has no such checkout and no
+# such values, and the test fails on purpose when they are missing. Giving it
+# made-up values would make its evidence false.
+execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity
+
 # es/admission/internal/reliablesubmit: historical-opener probes. They need
 # test binaries built from older trees with an overlay kept outside this
 # repository (the ES_REPLAY_*_PROBE variables).
@@ -129,46 +136,3 @@ execution-substrate/es/admission/internal/reliablesubmit TestSQLiteV3OldBinaryRe
 # do. They skip themselves on every host.
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestPrivateReplayObjectAllocatorHelperProcess
 skips-itself execution-substrate/es/admission/internal/reliablesubmit TestSQLiteClaimStoreLockHelperProcess
-
-# es/app: integration tests that need a Nomad client backed by Docker. The
-# runner image has no nomad command.
-skips-itself execution-substrate/es/app TestBringupScriptUpCheckDownFullProfile
-skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathCancelSucceeds
-skips-itself execution-substrate/es/app TestControlPlaneStaticScriptAPIPathFetchesRetainedResultBundle
-skips-itself execution-substrate/es/app TestDiagnosticsScriptRunIDBundleCollectsLifecycleSignalsAndStaging
-skips-itself execution-substrate/es/app TestExecuteLoopScriptFailureSummary
-skips-itself execution-substrate/es/app TestExecuteLoopScriptSuccessAndDeterministicDigests
-skips-itself execution-substrate/es/app TestExecutionCancelRetainsStageRootForDebugging
-skips-itself execution-substrate/es/app TestExecutionCancelStopsNomadJob
-skips-itself execution-substrate/es/app TestExecutionLogsReturnConflictWhenAllocationNotReady
-skips-itself execution-substrate/es/app TestExecutionLogsReturnRealContainerOutput
-skips-itself execution-substrate/es/app TestExecutionLoopScriptSuccessRetainsDistinctStageRootsAcrossRepeatedRuns
-skips-itself execution-substrate/es/app TestExecutionResultBundleAndStageRetainedAcrossStatusAndRepeatFetch
-skips-itself execution-substrate/es/app TestExecutionResultReturns404ForTerminalExecutionWithoutResultOutput
-skips-itself execution-substrate/es/app TestExecutionStatusReflectsFailedAllocation
-skips-itself execution-substrate/es/app TestExecutionStatusReflectsNomadJobState
-skips-itself execution-substrate/es/app TestExecutionStatusRetainsFailedStageRootForDebugging
-skips-itself execution-substrate/es/app TestExecutionStatusRetainsSuccessfulStageRootAndLogsStillWork
-skips-itself execution-substrate/es/app TestExecutionStatusReturns503WhenNomadUnavailable
-skips-itself execution-substrate/es/app TestLifecycleScriptCategorizesExecutionFailure
-skips-itself execution-substrate/es/app TestLifecycleScriptObservesExecutionViaPublicRunID
-skips-itself execution-substrate/es/app TestRuntimeIdentityIntegrationCapabilityProbe
-skips-itself execution-substrate/es/app TestSubmitFlowAllowsConfiguredControlPlaneCallerHandoff
-skips-itself execution-substrate/es/app TestSubmitFlowDoesNotStartWorkloadBeforeHelperReadiness
-skips-itself execution-substrate/es/app TestSubmitFlowHelperDeathIsTaskFatal
-skips-itself execution-substrate/es/app TestSubmitFlowInjectsWorkloadIdentityEndpointAndLifecycleStillWorks
-skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleStillWorks
-skips-itself execution-substrate/es/app TestSubmitFlowMountsGovernedArtifactAndLifecycleWithInstalledSourceIdentity
-skips-itself execution-substrate/es/app TestSubmitFlowProvidesPlatformOwnedRuntimeIdentityThroughBoundedEndpoint
-skips-itself execution-substrate/es/app TestSubmitFlowRejectsRuntimeIdentityPassthroughRequests
-skips-itself execution-substrate/es/app TestSubmitFlowRejectsWorkloadArchiveWithSymlinkEntry
-skips-itself execution-substrate/es/app TestSubmitFlowRemovesRuntimeMountArchiveResidueAfterExtraction
-skips-itself execution-substrate/es/app TestSubmitFlowRunsStaticScriptInNomadDocker
-skips-itself execution-substrate/es/app TestSubmitFlowUsesBridgeNetworkWhenNetworkAccessEnabled
-skips-itself execution-substrate/es/app TestSubmitFlowUsesConfiguredRuntimeIdentityTmpfsSize
-skips-itself execution-substrate/es/app TestSubmitFlowUsesPlatformOwnedIdentityForVaultLoginAndSecretRead
-skips-itself execution-substrate/es/app TestSubmitValidOperatorCallerReturnsAcceptedSubmissionReceipt
-
-# es/app: the test needs the vault command, which the runner image does not
-# have.
-skips-itself execution-substrate/es/app TestSupportedLocalSetupScriptBootstrapsRealSPIREAndVaultDevTarget

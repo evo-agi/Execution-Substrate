@@ -36,6 +36,11 @@ jobs:
       # subtest. The file gives the reason for each line and says which
       # subtests cannot be listed.
       ENVIRONMENT_ONLY_TESTS: .github/ci/environment-only-tests.txt
+      # The runner is a cloud instance whose EC2 metadata endpoint does not
+      # answer. Nomad's env_aws fingerprinter would wait for it and fail the
+      # client of a test agent. This tells the AWS SDK inside Nomad not to
+      # ask. No code of this module reads it.
+      AWS_EC2_METADATA_DISABLED: "true"
     steps:
       # Actions are pinned to full commit SHAs. The comment names the release
       # tag that pointed at that commit when it was pinned. Both releases
@@ -75,6 +80,45 @@ jobs:
       # for macOS. It runs no test.
       - name: Vet for macOS
         run: GOOS=darwin GOARCH=arm64 go vet ./...
+
+      # The es/app integration tests start a Nomad agent with the Docker
+      # driver, the supported-local setup test runs Vault and SPIRE, and the
+      # runner image has none of them. Each download is checked against the
+      # SHA-256 that was reviewed before anything uses it: the HashiCorp
+      # files were checked against HashiCorp's signed SHA256SUMS, and the
+      # SPIRE file against the unsigned checksum file of its GitHub release.
+      - name: Install Nomad, Vault and SPIRE
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/bin" "$tools/download"
+          fetch() {
+            curl --fail --silent --show-error --location --retry 3 -o "$tools/download/$2" "$1"
+            echo "$3  $tools/download/$2" | sha256sum --check --strict
+          }
+          fetch https://releases.hashicorp.com/nomad/2.1.1/nomad_2.1.1_linux_amd64.zip nomad.zip 073084f7690fdaea756ff1eff8b669b25c3a6c17778f19ae0c47606973ed3f39
+          fetch https://releases.hashicorp.com/vault/2.2.2/vault_2.2.2_linux_amd64.zip vault.zip 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4
+          fetch https://github.com/spiffe/spire/releases/download/v1.14.4/spire-1.14.4-linux-amd64-musl.tar.gz spire.tar.gz 4482db434af8a3d2f4c5aeaef8912b21311411a175ce7daeb49ea17b776bcbf5
+          unzip -q "$tools/download/nomad.zip" nomad -d "$tools/bin"
+          unzip -q "$tools/download/vault.zip" vault -d "$tools/bin"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+          echo "SUPPORTED_LOCAL_TEST_SPIRE_TARBALL=$tools/download/spire.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Show Nomad and Vault
+        run: nomad version && vault version
+
+      # The images that the tests run, pulled by the digest that was reviewed
+      # and tagged with the name that the tests use, so no test pulls a tag.
+      - name: Pull test images by digest
+        run: |
+          set -euo pipefail
+          pull() {
+            docker pull --quiet "$1@$2"
+            docker tag "$1@$2" "$1:$3"
+          }
+          pull alpine sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc 3.20
+          pull python sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e 3.13-alpine
+          pull golang sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 1.26.5-alpine3.24
 
       # Proves on throwaway modules that the two steps below do what they say.
       # It also holds this file by its SHA-256: an edit of this file fails
