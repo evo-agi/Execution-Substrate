@@ -19,10 +19,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	egsmodel "execution-substrate/egs/model"
 
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
@@ -95,6 +95,24 @@ func operationalResultText(r operationalHandoffResult) string {
 		r.run != "", r.receipt.Valid())
 }
 
+// operationalInstalledView returns the view the admission state of the
+// Service holds, whether or not it may be used. Inspect exists for tests; the
+// guard pins that no production code references it.
+func operationalInstalledView(s *Service) admissionstate.View {
+	return s.operational.Inspect(s).View
+}
+
+// operationalViewContent returns a copy of the content a view enforces.
+func operationalViewContent(view admissionstate.View) admissionstate.Content {
+	return admissionstate.Content{Trust: view.Trust(), Verifier: view.Verifier(), Policies: view.Policies()}
+}
+
+// operationalHooks returns the proof hooks the installed view carries: the
+// hooks the Service held when the view was installed.
+func operationalHooks(s *Service) *operationalAdmissionProofHooks {
+	return operationalProofOf(operationalInstalledView(s))
+}
+
 // operationalUncommissionedService is a restarted process before it holds a
 // view: the fixture's configuration, a private copy of its trust and verifier,
 // and its own synthetic EGS serving whatever configure left in place.
@@ -109,6 +127,7 @@ func operationalUncommissionedService(t *testing.T, f *operationalFixture, confi
 		arsClient: f.service.arsClient, nomadClient: f.service.nomadClient,
 		workloadZoneVaultConfigRef: f.service.workloadZoneVaultConfigRef}
 	service.trustModelOwner = service
+	service.operational = admissionstate.New(service)
 	if configure != nil {
 		configure(service)
 	}
@@ -128,7 +147,7 @@ func operationalProofServiceWithEGS(t *testing.T, f *operationalFixture, configu
 	t.Helper()
 	ctx := context.Background()
 	service, egs := operationalUncommissionedService(t, f, configure)
-	_, _, _, digest, ok := service.operationalAdmissionContent()
+	_, digest, ok := service.operationalAdmissionContent()
 	if !ok {
 		t.Fatal("proof Service content cannot be commissioned")
 	}
@@ -143,7 +162,7 @@ func operationalProofServiceWithEGS(t *testing.T, f *operationalFixture, configu
 		t.Fatalf("commission selected synthetic policy: %v", err)
 	}
 	after := operationalAdmissionRowAt(t, f)
-	if after.State != 1 || after.Digest != digest || !service.operationalAdmission.token.Names(f.domain.realm.installation, f.domain.realm.epoch, digest) {
+	if after.State != 1 || after.Digest != digest || !operationalInstalledView(service).Token().Names(f.domain.realm.installation, f.domain.realm.epoch, digest) {
 		t.Fatalf("proof Service does not hold the stored admission: row=%+v", after)
 	}
 	return service, egs
@@ -240,8 +259,8 @@ func TestPR12RetainedAdmissionCuts(t *testing.T) {
 		service := operationalProofService(t, f, func(s *Service) {
 			s.trustModel.SignerPolicy.RevokedSigners = append(s.trustModel.SignerPolicy.RevokedSigners, record.Seal.KeyID)
 		})
-		if err := evidencev1.Verify(record, service.operationalAdmission.verifier.keyID,
-			service.operationalAdmission.verifier.algorithm, service.operationalAdmission.verifier.publicKey); err != nil {
+		verifier := operationalInstalledView(service).Verifier()
+		if err := evidencev1.Verify(record, verifier.KeyID, verifier.Algorithm, verifier.PublicKey); err != nil {
 			t.Fatalf("revoked signer signature precondition: %v", err)
 		}
 		before := operationalPrestageStateAt(t, f)
@@ -380,19 +399,19 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 	if reason := f.service.qualifyOperationalRetained(context.Background(), mutant, f.domain.realm); reason != reliablesubmit.OperationalDenied {
 		t.Fatalf("signature mutant reason=%d", reason)
 	}
-	verifier := f.service.operationalAdmission.verifier
+	verifier := operationalInstalledView(f.service).Verifier()
 	resign := func(record *evidencev1.ArtifactEvidence) string {
 		t.Helper()
 		canonical, err := record.Claims.CanonicalBytes()
 		if err != nil {
 			t.Fatalf("synthetic contradiction claims: %v", err)
 		}
-		record.Seal = evidencev1.NewSeal(canonical, verifier.keyID, verifier.algorithm,
+		record.Seal = evidencev1.NewSeal(canonical, verifier.KeyID, verifier.Algorithm,
 			base64.StdEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(f.signerPrivateKey), canonical)))
 		if err := record.Validate(); err != nil {
 			t.Fatalf("synthetic contradiction is not a valid record: %v", err)
 		}
-		if err := evidencev1.Verify(*record, verifier.keyID, verifier.algorithm, verifier.publicKey); err != nil {
+		if err := evidencev1.Verify(*record, verifier.KeyID, verifier.Algorithm, verifier.PublicKey); err != nil {
 			t.Fatalf("synthetic contradiction is not validly signed under retained verifier: %v", err)
 		}
 		encoded, err := json.Marshal(record)
@@ -490,7 +509,7 @@ func TestOperationalRetainedAdmissionEvidenceV2(t *testing.T) {
 			signed := positive
 			candidate.resolved.provenanceRecord = resign(&signed)
 			alter(&candidate)
-			if err := evidencev1.Verify(signed, verifier.keyID, verifier.algorithm, verifier.publicKey); err != nil {
+			if err := evidencev1.Verify(signed, verifier.KeyID, verifier.Algorithm, verifier.PublicKey); err != nil {
 				t.Fatalf("unchanged retained signature precondition: %v", err)
 			}
 			if operationalEvidenceMatchesOriginal(signed, candidate, f.domain.realm) {
@@ -541,48 +560,64 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 	refused := func(t *testing.T, f *operationalFixture, s *Service, what string) {
 		t.Helper()
 		before := operationalAdmissionRowAt(t, f)
-		held := s.operationalAdmission
+		// A copied Service is not the owner of the state its handle names, so
+		// it is shown nothing. Commissioned asks no owner and sees the state
+		// the copy shares with its original.
+		held, commissioned := operationalInstalledView(s), s.operational.Commissioned()
 		if err := s.commissionOperationalAdmission(ctx, f.domain); err == nil {
 			t.Fatalf("%s: commission accepted", what)
 		}
 		if err := s.advanceOperationalAdmission(ctx, f.domain, before.Generation); err == nil {
 			t.Fatalf("%s: advance accepted", what)
 		}
-		if after := operationalAdmissionRowAt(t, f); after != before || s.operationalAdmission != held {
+		if after := operationalAdmissionRowAt(t, f); after != before || operationalInstalledView(s) != held ||
+			s.operational.Commissioned() != commissioned {
 			t.Fatalf("%s: a refused commission changed the domain or the view: before=%+v after=%+v", what, before, after)
 		}
 	}
 	t.Run("view is a private copy bound to owner, installation and epoch", func(t *testing.T) {
 		f := makeOperationalFixture(t, "")
 		realm := f.domain.realm
-		view := f.service.operationalAdmission
+		view := operationalInstalledView(f.service)
 		row := operationalAdmissionRowAt(t, f)
-		digest, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
+		digest, ok := admissionstate.Digest(operationalViewContent(view))
 		if !ok || !row.Present || row.Generation != 1 || row.State != 1 || row.Digest != digest ||
-			!view.token.Names(realm.installation, realm.epoch, digest) {
+			!view.Token().Names(realm.installation, realm.epoch, digest) {
 			t.Fatalf("fixture commission is not generation 1 of the view's own content: %+v", row)
 		}
 		original := operationalV2Original(t, f)
-		initialTrust := snapshotRuntimeTrustModel(view.trust)
-		initialVerifier := bytes.Clone(view.verifier.publicKey)
+		initial := operationalViewContent(view)
 		// In-place changes reach a view that shares a backing array; an append
 		// alone would not.
 		f.service.trustModel.SignerPolicy.AllowedSigners[0] = "replaced-after-commission"
 		f.service.trustModel.ArtifactPolicy.RevokedArtifacts = append(f.service.trustModel.ArtifactPolicy.RevokedArtifacts,
 			original.resolved.plan.artifactDigest)
 		f.service.provenanceVerifier.publicKey[0] ^= 0xff
-		after, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
-		if !ok || after != digest || !reflect.DeepEqual(initialTrust, view.trust) ||
-			!bytes.Equal(initialVerifier, view.verifier.publicKey) || operationalAdmissionRowAt(t, f) != row {
+		after, ok := admissionstate.Digest(operationalViewContent(view))
+		if !ok || after != digest || !reflect.DeepEqual(initial, operationalViewContent(view)) || operationalAdmissionRowAt(t, f) != row {
 			t.Fatal("commissioned trust or verifier aliased caller input")
+		}
+		// What the view hands out is a copy as well: a write to it reaches
+		// neither the view nor a later copy.
+		handed := operationalViewContent(view)
+		handed.Trust.SignerPolicy.AllowedSigners[0] = "replaced-in-a-copy"
+		handed.Trust.ArtifactPolicy.RevokedArtifacts = append(handed.Trust.ArtifactPolicy.RevokedArtifacts, original.resolved.plan.artifactDigest)
+		handed.Verifier.PublicKey[0] ^= 0xff
+		handed.Policies[0].ID = "replaced-in-a-copy"
+		if after, ok := admissionstate.Digest(operationalViewContent(view)); !ok || after != digest ||
+			!reflect.DeepEqual(initial, operationalViewContent(view)) {
+			t.Fatal("a copy handed out by the view aliased the view")
 		}
 		f.confirm()
 		if reason := f.service.qualifyOperationalRetained(ctx, original, realm); reason != reliablesubmit.OperationalReasonNone {
 			t.Fatalf("a change to the Service's own lists changed the view's decision: %d", reason)
 		}
 		refused(t, f, f.service, "Service that already holds a view")
-		foreign := &Service{operationalAdmission: view, operationalConfirmed: time.Now()}
-		if _, ok := foreign.currentOperationalAdmission(realm); ok {
+		// A Service that holds the handle of this confirmed state is not its
+		// owner and is shown nothing. The control below is the same question
+		// asked by the owner.
+		foreign := &Service{operational: f.service.operational}
+		if _, ok := foreign.currentOperationalAdmission(realm); ok || operationalInstalledView(foreign).Installed() {
 			t.Fatal("foreign Service borrowed authority")
 		}
 		otherEpoch, otherInstallation := realm, realm
@@ -608,7 +643,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 			s.trustModel.SignerPolicy.AllowedSigners[0] = "  " + s.trustModel.SignerPolicy.AllowedSigners[0] + "\t"
 		})
 		if row := operationalAdmissionRowAt(t, f); row.Generation != 1 ||
-			padded.operationalAdmission.token != f.service.operationalAdmission.token {
+			operationalInstalledView(padded).Token() != operationalInstalledView(f.service).Token() {
 			t.Fatalf("equal normalized content did not join the stored generation: %+v", row)
 		}
 		padded.confirmOperationalAdmission(ctx)
@@ -637,7 +672,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				"sha256:"+strings.Repeat("c", 64))
 		}
 		other, _ := operationalUncommissionedService(t, f, changed)
-		if _, _, _, digest, ok := other.operationalAdmissionContent(); !ok || digest == operationalAdmissionRowAt(t, f).Digest {
+		if _, digest, ok := other.operationalAdmissionContent(); !ok || digest == operationalAdmissionRowAt(t, f).Digest {
 			t.Fatal("control: the changed candidate does not carry content of its own")
 		}
 		copiedOther := new(Service)
@@ -690,7 +725,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		// Controls: the unchanged candidate joins, and a consistently configured
 		// one advances, so each refusal above is the content check's.
 		if err := precommission.commissionOperationalAdmission(ctx, f.domain); err != nil ||
-			precommission.operationalAdmission.token != f.service.operationalAdmission.token {
+			operationalInstalledView(precommission).Token() != operationalInstalledView(f.service).Token() {
 			t.Fatalf("control: unchanged precommission Service did not join: %v", err)
 		}
 		consistent, _ := operationalUncommissionedService(t, f, func(s *Service) {
@@ -708,17 +743,24 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		configured := operationalProofService(t, f, func(s *Service) {
 			configureConfiguredStaticScriptLiteralDenyService(s, "immutable-marker")
 		})
-		view := configured.operationalAdmission
-		digest, ok := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
-		selected := view.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy)
+		view := operationalInstalledView(configured)
+		digest, ok := admissionstate.Digest(operationalViewContent(view))
+		selected := view.Policies()[1]
 		configured.cfg.AdmissionPolicy.ConfiguredStaticScriptLiteralDeny.Entries[0].Literal = "mutated-config"
 		outer := configured.admissionPolicyEvaluator.(admissionPolicySet)
 		aliased := outer.policies[1].(configuredStaticScriptLiteralDenyPolicy)
 		aliased.entries[0].literal = "mutated-evaluator"
-		after, afterOK := operationalAdmissionDigest(view.trust, view.verifier, view.policy)
-		if !ok || !afterOK || after != digest || selected.entries[0].literal != "immutable-marker" ||
-			view.policy.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[0].literal != "immutable-marker" {
-			t.Fatal("commissioned policy entries aliased config or ordinary evaluator")
+		// The copy the view handed out is the test's own.
+		selected.Entries[0].Literal = "mutated-copy"
+		after, afterOK := admissionstate.Digest(operationalViewContent(view))
+		if !ok || !afterOK || after != digest || view.Policies()[1].Entries[0].Literal != "immutable-marker" {
+			t.Fatal("commissioned policy entries aliased config, the ordinary evaluator or a copy handed out")
+		}
+		// The set the view enforces is built from that content.
+		enforced, built := operationalPolicySet(view.Policies())
+		if !built || len(enforced.policies) != 2 ||
+			enforced.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[0].literal != "immutable-marker" {
+			t.Fatal("the enforced set does not hold the commissioned entry")
 		}
 	})
 	// The digest decides whether a restarted process joins the stored generation
@@ -770,14 +812,14 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				}
 				row := operationalAdmissionRowAt(t, f)
 				candidate, _ := operationalUncommissionedService(t, f, tc.candidate)
-				_, _, _, digest, ok := candidate.operationalAdmissionContent()
+				_, digest, ok := candidate.operationalAdmissionContent()
 				if !ok {
 					t.Fatal("control: the candidate's content cannot be commissioned at all")
 				}
 				if digest == row.Digest {
 					t.Fatal("content that differs in this field carries the stored digest")
 				}
-				if err := candidate.commissionOperationalAdmission(ctx, f.domain); err == nil || candidate.operationalAdmission != nil ||
+				if err := candidate.commissionOperationalAdmission(ctx, f.domain); err == nil || operationalInstalledView(candidate).Installed() ||
 					operationalAdmissionRowAt(t, f) != row {
 					t.Fatalf("content that differs in this field joined the stored generation: err=%v", err)
 				}
@@ -792,7 +834,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				// the candidate's content joins the candidate's generation.
 				twin, _ := operationalUncommissionedService(t, f, tc.candidate)
 				if err := twin.commissionOperationalAdmission(ctx, f.domain); err != nil ||
-					twin.operationalAdmission.token != candidate.operationalAdmission.token || operationalAdmissionRowAt(t, f) != next {
+					operationalInstalledView(twin).Token() != operationalInstalledView(candidate).Token() || operationalAdmissionRowAt(t, f) != next {
 					t.Fatalf("control: equal content did not join its own generation: %v", err)
 				}
 			})
@@ -929,7 +971,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 			loaded = true
 			return f.domain.custody.CommissionOperationalAdmission(ctx, f.domain.realm.installation, f.domain.realm.epoch, digest)
 		})
-		if !loaded || err == nil || s.operationalAdmission != nil {
+		if !loaded || err == nil || operationalInstalledView(s).Installed() {
 			t.Fatalf("a view was installed over a trust model the store write did not cover: loaded=%t err=%v", loaded, err)
 		}
 		s.confirmOperationalAdmission(ctx)
@@ -950,16 +992,17 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 		t.Run("the same Service is commissioned by another caller", func(t *testing.T) {
 			f := makeOperationalFixture(t, "")
 			s, _ := operationalUncommissionedService(t, f, nil)
-			var first *operationalAdmissionSnapshot
+			var first admissionstate.View
 			err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
 				if err := s.commissionOperationalAdmission(ctx, f.domain); err != nil {
 					t.Fatalf("commission inside the outer store write: %v", err)
 				}
-				first = s.operationalAdmission
+				first = operationalInstalledView(s)
 				return commission(f, digest)
 			})
-			if first == nil || err == nil || s.operationalAdmission != first {
-				t.Fatalf("an installed view was replaced: first=%p now=%p err=%v", first, s.operationalAdmission, err)
+			if !first.Installed() || err == nil || operationalInstalledView(s) != first {
+				t.Fatalf("an installed view was replaced: first installed=%t same=%t err=%v", first.Installed(),
+					operationalInstalledView(s) == first, err)
 			}
 		})
 		for name, change := range map[string]func(*Service){
@@ -977,7 +1020,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 					changed = true
 					return commission(f, digest)
 				})
-				if !changed || err == nil || s.operationalAdmission != nil {
+				if !changed || err == nil || operationalInstalledView(s).Installed() {
 					t.Fatalf("a view was installed over trust the Service no longer holds: changed=%t err=%v", changed, err)
 				}
 			})
@@ -995,13 +1038,13 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 			asked := false
 			err := s.installOperationalAdmission(ctx, f.domain, func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error) {
 				asked = digest != row.Digest
-				return other.operationalAdmission.token, nil
+				return operationalInstalledView(other).Token(), nil
 			})
-			if !asked || err == nil || s.operationalAdmission != nil || operationalAdmissionRowAt(t, f) != row {
+			if !asked || err == nil || operationalInstalledView(s).Installed() || operationalAdmissionRowAt(t, f) != row {
 				t.Fatalf("a view was installed with a token that does not name its content: asked=%t err=%v", asked, err)
 			}
 			// Control: the returned token is a real one and names the stored content.
-			if !other.operationalAdmission.token.Names(f.domain.realm.installation, f.domain.realm.epoch, row.Digest) {
+			if !operationalInstalledView(other).Token().Names(f.domain.realm.installation, f.domain.realm.epoch, row.Digest) {
 				t.Fatal("control: the returned token does not name the stored content")
 			}
 		})
@@ -1016,7 +1059,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				t.Fatal("control: the two databases share an installation identity")
 			}
 			original := operationalV2Original(t, other)
-			foreign := f.service.operationalAdmission.token
+			foreign := operationalInstalledView(f.service).Token()
 			if got := other.domain.custody.EstablishOperational(ctx, original.delivery.refs.claimID, original.assessment.boundPlan,
 				other.domain.keys.storage, original.wire, foreign).Disposition(); got == reliablesubmit.OperationalApplied ||
 				got == reliablesubmit.OperationalOwnCommitConfirmed {
@@ -1029,7 +1072,7 @@ func TestOperationalAdmissionCommissioning(t *testing.T) {
 				t.Fatalf("a Service commissioned elsewhere acted on this database: %s state=%+v", operationalResultText(out), state)
 			}
 			if got := other.domain.custody.EstablishOperational(ctx, original.delivery.refs.claimID, original.assessment.boundPlan,
-				other.domain.keys.storage, original.wire, other.service.operationalAdmission.token).Disposition(); got != reliablesubmit.OperationalApplied {
+				other.domain.keys.storage, original.wire, operationalInstalledView(other.service).Token()).Disposition(); got != reliablesubmit.OperationalApplied {
 				t.Fatalf("control: the database's own token did not establish: %d", got)
 			}
 		})
@@ -1051,7 +1094,7 @@ func TestOperationalRetainedAdmissionInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const required = "observed := policyCtx\n\t\tobserved.InvocationArgv = slices.Clone(policyCtx.InvocationArgv)\n\t\tsnapshot.proof.contextObserved(observed)\n\t}\n\tdecision := snapshot.policy.Evaluate(ctx, policyCtx)"
+		const required = "observed := policyCtx\n\t\tobserved.InvocationArgv = slices.Clone(policyCtx.InvocationArgv)\n\t\tproof.contextObserved(observed)\n\t}\n\tdecision := policy.Evaluate(ctx, policyCtx)"
 		if !strings.Contains(string(data), required) {
 			t.Fatal("observer argv copy is not immediately before built-in evaluation")
 		}
@@ -1088,7 +1131,7 @@ func TestOperationalRetainedAdmissionInputs(t *testing.T) {
 		retained.required.Store(0)
 		retained.evaluated.Store(0)
 		var observations []AdmissionPolicyContext
-		retained.service.operationalAdmission.proof.contextObserved = func(value AdmissionPolicyContext) {
+		operationalHooks(retained.service).contextObserved = func(value AdmissionPolicyContext) {
 			copyOfValue := value
 			copyOfValue.InvocationArgv = append([]string(nil), value.InvocationArgv...)
 			observations = append(observations, copyOfValue)
@@ -1203,7 +1246,7 @@ func TestOperationalAdmissionWithdrawalCuts(t *testing.T) {
 		d := f.reopen()
 		armed, calls := false, 0
 		d.proof = &operationalHandoffProofHooks{beforeMarker: func() { armed = true }}
-		f.service.operationalAdmission.proof.evaluated = func(bool) {
+		operationalHooks(f.service).evaluated = func(bool) {
 			if armed {
 				calls++
 				// Evaluation 2 is the release qualifier, after COMMIT.
@@ -1262,7 +1305,7 @@ func TestOperationalV1Removed(t *testing.T) {
 	ctx := context.Background()
 	f := makeOperationalFixture(t, "")
 	original := operationalV2Original(t, f)
-	claim, plan, token := original.delivery.refs.claimID, original.assessment.boundPlan, f.service.operationalAdmission.token
+	claim, plan, token := original.delivery.refs.claimID, original.assessment.boundPlan, operationalInstalledView(f.service).Token()
 	// Control: the same independent builder reproduces the v2 wire, and both
 	// layers accept it, so each refusal below is about the v1 layout alone.
 	current := operationalVectorWire(t, f, original, f.expectedEvidence)
@@ -1640,9 +1683,9 @@ func operationalAllowingChange(s *Service) {
 // passed. It can only add elapsed time.
 func (f *operationalFixture) lateClock() *atomic.Bool {
 	late := new(atomic.Bool)
-	f.service.operationalAdmission.proof.skew = func() time.Duration {
+	operationalHooks(f.service).skew = func() time.Duration {
 		if late.Load() {
-			return operationalAdmissionConfirmationLimit
+			return admissionstate.ConfirmationLimit
 		}
 		return 0
 	}
@@ -1918,7 +1961,7 @@ func TestOperationalAdmissionDenialInsideEachWriter(t *testing.T) {
 				if cut.release {
 					at = w.release
 				}
-				f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+				operationalHooks(f.service).evaluated = func(allowed bool) {
 					if !armed || !allowed {
 						return
 					}
@@ -1959,7 +2002,7 @@ func TestOperationalAdmissionDenialInsideEachWriter(t *testing.T) {
 		late := f.lateClock()
 		armed, calls := false, 0
 		d.proof = &operationalHandoffProofHooks{beforePrestage: func() { armed = true }}
-		f.service.operationalAdmission.proof.evaluated = func(bool) {
+		operationalHooks(f.service).evaluated = func(bool) {
 			if armed {
 				if calls++; calls == 1 {
 					late.Store(true)
@@ -2067,83 +2110,10 @@ func TestOperationalAdmissionChangeAtEachProofHook(t *testing.T) {
 
 // ---- Freshness (design 5.5 and section 10) ----
 
-func TestOperationalAdmissionConfirmationDeadlineArithmetic(t *testing.T) {
-	limit := operationalAdmissionConfirmationLimit
-	if limit != 30*time.Second {
-		t.Fatalf("confirmation limit is %s; the contract says 30 seconds", limit)
-	}
-	confirmed := time.Now()
-	wall := func(at time.Time, seconds int64) time.Time { return operationalShiftWallClock(t, at, seconds) }
-	skewed := func(d time.Duration) *operationalAdmissionProofHooks {
-		return &operationalAdmissionProofHooks{skew: func() time.Duration { return d }}
-	}
-	for _, tc := range []struct {
-		name      string
-		confirmed time.Time
-		now       time.Time
-		proof     *operationalAdmissionProofHooks
-		want      bool
-	}{
-		{"never confirmed", time.Time{}, confirmed, nil, false},
-		{"same instant", confirmed, confirmed, nil, true},
-		{"one nanosecond inside the limit", confirmed, confirmed.Add(limit - 1), nil, true},
-		{"exactly the limit", confirmed, confirmed.Add(limit), nil, false},
-		{"past the limit", confirmed, confirmed.Add(limit + time.Hour), nil, false},
-		{"both clocks before the confirmation", confirmed, confirmed.Add(-1), nil, false},
-		// The two clocks disagree: either one refuses alone.
-		{"wall clock at the limit, monotonic inside", confirmed, wall(confirmed.Add(time.Second), 29), nil, false},
-		{"wall clock inside, monotonic at the limit", confirmed, wall(confirmed.Add(limit), -29), nil, false},
-		{"wall clock moved backwards", confirmed, wall(confirmed.Add(time.Second), -2), nil, false},
-		{"control: both clocks inside after a wall step", confirmed, wall(confirmed.Add(time.Second), 28), nil, true},
-		// The proof seam only adds elapsed time.
-		{"skew just inside", confirmed, confirmed.Add(10 * time.Second), skewed(limit - 10*time.Second - 1), true},
-		{"skew reaches the limit", confirmed, confirmed.Add(10 * time.Second), skewed(limit - 10*time.Second), false},
-		{"skew reaches the limit on the wall clock only", confirmed, wall(confirmed.Add(time.Second), 9), skewed(limit - 10*time.Second), false},
-		{"skew beyond any limit", confirmed, confirmed, skewed(1<<63 - 1), false},
-		{"negative skew cannot buy time", confirmed, confirmed.Add(limit - 1), skewed(-time.Hour), false},
-		{"negative skew refuses even inside the limit", confirmed, confirmed, skewed(-1), false},
-		{"zero skew", confirmed, confirmed, skewed(0), true},
-		{"hooks without a skew", confirmed, confirmed, &operationalAdmissionProofHooks{}, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := operationalConfirmationFresh(tc.confirmed, tc.now, tc.proof); got != tc.want {
-				t.Fatalf("fresh=%t, want %t", got, tc.want)
-			}
-		})
-	}
-}
-
-// operationalShiftWallClock returns at with its wall-clock reading moved by
-// whole seconds and its monotonic reading untouched, which is what a stepped
-// or suspended host clock produces and what no time API will construct. It
-// checks its own result, so a change of the runtime's layout fails loudly.
-func operationalShiftWallClock(t *testing.T, at time.Time, seconds int64) time.Time {
-	t.Helper()
-	type layout struct {
-		wall uint64
-		ext  int64
-		loc  *time.Location
-	}
-	forged := at
-	if unsafe.Sizeof(forged) != unsafe.Sizeof(layout{}) {
-		t.Fatal("time.Time layout changed; rewrite this forgery")
-	}
-	fields := (*layout)(unsafe.Pointer(&forged))
-	if fields.wall>>63 != 1 {
-		t.Fatal("the time to forge carries no monotonic reading")
-	}
-	// With a monotonic reading present, wall seconds start at bit 30.
-	fields.wall = uint64(int64(fields.wall) + seconds<<30)
-	if forged.Sub(at) != 0 || forged.Round(0).Sub(at.Round(0)) != time.Duration(seconds)*time.Second {
-		t.Fatalf("forged time is not a pure wall-clock step: monotonic=%s wall=%s", forged.Sub(at), forged.Round(0).Sub(at.Round(0)))
-	}
-	return forged
-}
-
 func TestOperationalAdmissionFreshness(t *testing.T) {
 	ctx := context.Background()
 	changed := func(f *operationalFixture) egsmodel.RuntimeTrustPolicy {
-		trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+		trust := snapshotRuntimeTrustModel(operationalInstalledView(f.service).Trust())
 		trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("d", 64))
 		return trust
 	}
@@ -2198,7 +2168,7 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 				}
 				before := operationalPrestageStateAt(t, f)
 				requests := f.egs.count()
-				original := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+				original := snapshotRuntimeTrustModel(operationalInstalledView(f.service).Trust())
 				f.egs.serve(changed(f))
 				out := f.service.handoffOperational(ctx, f.reopen(), f.domain.caller, f.raw)
 				assertOperationalRefusal(t, f, before, out, reliablesubmit.OperationalUnavailable)
@@ -2229,7 +2199,7 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 		for _, failure := range []string{"unreachable", "bad signature", "unverifiable key"} {
 			t.Run(failure, func(t *testing.T) {
 				f, _, seeded := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
-				held := f.service.operationalConfirmed
+				held := f.service.operational.Inspect(f.service).Confirmed
 				if held.IsZero() {
 					t.Fatal("control: the seeding invocation recorded no confirmation")
 				}
@@ -2242,9 +2212,9 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 					f.service.trustModelVerifier.keyID = "another-egs-key"
 				}
 				f.service.confirmOperationalAdmission(ctx)
-				if f.service.operationalConfirmed != held || f.service.operationalSuperseded || f.egs.count() != 2 {
+				if f.service.operational.Inspect(f.service).Confirmed != held || f.service.operational.Inspect(f.service).Superseded || f.egs.count() != 2 {
 					t.Fatalf("a failed confirmation changed the Service: confirmed moved=%t superseded=%t requests=%d",
-						f.service.operationalConfirmed != held, f.service.operationalSuperseded, f.egs.count())
+						f.service.operational.Inspect(f.service).Confirmed != held, f.service.operational.Inspect(f.service).Superseded, f.egs.count())
 				}
 				// Once the deadline of the last good confirmation has passed,
 				// every cut refuses, however often EGS is asked.
@@ -2264,10 +2234,10 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 		t.Run("control: a good confirmation moves the deadline forward", func(t *testing.T) {
 			f := makeOperationalFixture(t, "")
 			f.confirm()
-			first := f.service.operationalConfirmed
+			first := f.service.operational.Inspect(f.service).Confirmed
 			time.Sleep(2 * time.Millisecond)
 			f.confirm()
-			if second := f.service.operationalConfirmed; !second.After(first) || second.After(time.Now()) {
+			if second := f.service.operational.Inspect(f.service).Confirmed; !second.After(first) || second.After(time.Now()) {
 				t.Fatalf("confirmation time did not advance: first=%s second=%s", first, second)
 			}
 		})
@@ -2279,8 +2249,8 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 				during = time.Now()
 			})
 			f.confirm()
-			if during.IsZero() || !f.service.operationalConfirmed.Before(during) {
-				t.Fatalf("confirmation time %s is not earlier than the request %s", f.service.operationalConfirmed, during)
+			if during.IsZero() || !f.service.operational.Inspect(f.service).Confirmed.Before(during) {
+				t.Fatalf("confirmation time %s is not earlier than the request %s", f.service.operational.Inspect(f.service).Confirmed, during)
 			}
 		})
 	})
@@ -2292,7 +2262,7 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 		confirmedAt := func() time.Time {
 			f.service.mu.RLock()
 			defer f.service.mu.RUnlock()
-			return f.service.operationalConfirmed
+			return f.service.operational.Inspect(f.service).Confirmed
 		}
 		var requests atomic.Int32
 		entered, release := make(chan struct{}), make(chan struct{})
@@ -2328,7 +2298,7 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("the held confirmation did not finish")
 		}
-		if final := confirmedAt(); final != later || requests.Load() != 2 || f.service.operationalSuperseded {
+		if final := confirmedAt(); final != later || requests.Load() != 2 || f.service.operational.Inspect(f.service).Superseded {
 			t.Fatalf("the earlier confirmation changed the recorded time: later=%s final=%s requests=%d", later, final, requests.Load())
 		}
 	})
@@ -2384,7 +2354,7 @@ func TestOperationalAdmissionFreshness(t *testing.T) {
 		f, _, _ := operationalSeedAt(t, reliablesubmit.OperationalEstablish)
 		calls := 0
 		var inside error
-		f.service.operationalAdmission.proof.evaluated = func(bool) {
+		operationalHooks(f.service).evaluated = func(bool) {
 			if calls++; calls == 2 {
 				inside = probe(f)
 			}
@@ -2414,14 +2384,14 @@ func TestOperationalAdmissionDeadlineAtEverySample(t *testing.T) {
 	run := func(t *testing.T, at int) *observation {
 		t.Helper()
 		o := &observation{f: makeOperationalFixture(t, "")}
-		o.f.service.operationalAdmission.proof.skew = func() time.Duration {
+		operationalHooks(o.f.service).skew = func() time.Duration {
 			o.mu.Lock()
 			defer o.mu.Unlock()
 			if o.reads++; o.reads == at {
 				o.seen, o.at = true, operationalPrestageStateAt(t, o.f)
 			}
 			if o.seen {
-				return operationalAdmissionConfirmationLimit
+				return admissionstate.ConfirmationLimit
 			}
 			return 0
 		}
@@ -2481,7 +2451,7 @@ func TestOperationalAdmissionChangeDuringEvaluation(t *testing.T) {
 			}
 		}},
 		{"EGS serves other trust", func(t *testing.T, f *operationalFixture, _ *atomic.Bool) {
-			trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+			trust := snapshotRuntimeTrustModel(operationalInstalledView(f.service).Trust())
 			trust.ArtifactPolicy.RevokedArtifacts = append(trust.ArtifactPolicy.RevokedArtifacts, "sha256:"+strings.Repeat("d", 64))
 			f.egs.serve(trust)
 			requests := f.egs.count()
@@ -2497,7 +2467,7 @@ func TestOperationalAdmissionChangeDuringEvaluation(t *testing.T) {
 			f.confirm()
 			late := f.lateClock()
 			calls := 0
-			f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+			operationalHooks(f.service).evaluated = func(allowed bool) {
 				if calls++; calls != 2 {
 					return
 				}
@@ -2523,8 +2493,9 @@ func TestOperationalAdmissionChangeDuringEvaluation(t *testing.T) {
 // ---- Outcomes (design 5.6; red-team RT-2) ----
 
 // operationalFutureInputPolicy asks for an input class the retained path
-// cannot supply. No production path can commission it; the test installs it
-// in a view directly to reach the unsupported-input branch.
+// cannot supply. No production path can commission it; the test adds it
+// through the proof seam, behind the built-in set of the view, to reach the
+// unsupported-input branch.
 type operationalFutureInputPolicy struct{}
 
 func (operationalFutureInputPolicy) RequiredInputClasses(AdmissionPolicyContext) []AdmissionPolicyInputClass {
@@ -2591,7 +2562,7 @@ func TestOperationalAdmissionOutcomeMapping(t *testing.T) {
 			return arranged{f.service, f.reopen()}
 		}},
 		{"superseded", unavailable, func(_ *testing.T, f *operationalFixture) arranged {
-			trust := snapshotRuntimeTrustModel(f.service.operationalAdmission.trust)
+			trust := snapshotRuntimeTrustModel(operationalInstalledView(f.service).Trust())
 			trust.SignerPolicy.RevokedSigners = append(trust.SignerPolicy.RevokedSigners, "an-unrelated-signer")
 			f.egs.serve(trust)
 			return arranged{f.service, f.reopen()}
@@ -2601,7 +2572,7 @@ func TestOperationalAdmissionOutcomeMapping(t *testing.T) {
 			return arranged{f.service, f.reopen()}
 		}},
 		{"unsupported input", unavailable, func(_ *testing.T, f *operationalFixture) arranged {
-			f.service.operationalAdmission.policy = admissionPolicySet{policies: []AdmissionPolicyEvaluator{operationalFutureInputPolicy{}}}
+			operationalHooks(f.service).stricter = operationalFutureInputPolicy{}
 			return arranged{f.service, f.reopen()}
 		}},
 		// Integrity: the stored original does not fit the domain reading it.
@@ -2684,14 +2655,14 @@ func TestOperationalAdmissionRefusalPrecedesCancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		armed, fired := false, false
-		f.service.operationalAdmission.proof.skew = func() time.Duration {
+		operationalHooks(f.service).skew = func() time.Duration {
 			if !armed {
 				return 0
 			}
 			// This is the admission sample of the sender entry.
 			fired = true
 			cancel()
-			return operationalAdmissionConfirmationLimit
+			return admissionstate.ConfirmationLimit
 		}
 		d.proof = &operationalHandoffProofHooks{beforeEntrySample: func() { armed = true }}
 		out := f.service.handoffOperational(ctx, d, d.caller, f.raw)
@@ -2921,10 +2892,10 @@ func TestOperationalAdmissionViewIsBoundToTheDomainRealm(t *testing.T) {
 			}
 			// No restarted Service can be commissioned through that domain.
 			fresh, _ := operationalUncommissionedService(t, f, nil)
-			if err := fresh.commissionOperationalAdmission(ctx, other); err == nil || fresh.operationalAdmission != nil {
+			if err := fresh.commissionOperationalAdmission(ctx, other); err == nil || operationalInstalledView(fresh).Installed() {
 				t.Fatalf("the store commissioned a view for %s", name)
 			}
-			if err := fresh.advanceOperationalAdmission(ctx, other, row.Generation); err == nil || fresh.operationalAdmission != nil ||
+			if err := fresh.advanceOperationalAdmission(ctx, other, row.Generation); err == nil || operationalInstalledView(fresh).Installed() ||
 				operationalAdmissionRowAt(t, f) != row {
 				t.Fatalf("the store advanced the domain for %s", name)
 			}
@@ -3180,7 +3151,7 @@ func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
 				for k := 1; ; k++ {
 					c := operationalEndableCall(t, start.seed)
 					samples := 0
-					c.f.service.operationalAdmission.proof.skew = func() time.Duration {
+					operationalHooks(c.f.service).skew = func() time.Duration {
 						if samples++; samples == k {
 							c.end()
 						}
@@ -3209,7 +3180,7 @@ func TestOperationalAdmissionCancelledCallAnswersCanceled(t *testing.T) {
 				for k := 1; ; k++ {
 					c := operationalEndableCall(t, start.seed)
 					evaluations := 0
-					c.f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+					operationalHooks(c.f.service).evaluated = func(allowed bool) {
 						if !allowed {
 							t.Errorf("evaluation %d refused a claim the rules allow", evaluations+1)
 						}
@@ -3495,9 +3466,8 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 				attempt := func(k int, end bool) (*operationalEndedCall, int, operationalHandoffResult, operationalPrestageState) {
 					c := operationalEndableCall(t, start.seed)
 					evaluations := 0
-					c.f.service.operationalAdmission.policy = admissionPolicySet{
-						policies: []AdmissionPolicyEvaluator{operationalRefusingFromPolicy{evaluations: &evaluations, from: k}}}
-					c.f.service.operationalAdmission.proof.evaluated = func(allowed bool) {
+					operationalHooks(c.f.service).stricter = operationalRefusingFromPolicy{evaluations: &evaluations, from: k}
+					operationalHooks(c.f.service).evaluated = func(allowed bool) {
 						if allowed == (evaluations >= k) {
 							t.Errorf("evaluation %d of a claim refused from evaluation %d: allowed=%t", evaluations, k, allowed)
 						}
@@ -3602,7 +3572,7 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 		if reason := f.service.qualifyOperationalRetained(context.Background(), original, f.domain.realm); reason != reliablesubmit.OperationalDenied {
 			t.Fatalf("control under a live context: reason=%d", reason)
 		}
-		ctx, samples := endingAtSample(t, f.service.operationalAdmission.proof)
+		ctx, samples := endingAtSample(t, operationalHooks(f.service))
 		if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalDenied ||
 			ctx.Err() == nil || *samples == 0 {
 			t.Fatalf("refused seal under an ended context: reason=%d ended=%t samples=%d", reason, ctx.Err() != nil, *samples)
@@ -3614,7 +3584,7 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 		f := operationalSeedIntent(t)
 		original := operationalV2Original(t, f)
 		f.confirm()
-		ctx, samples := endingAtSample(t, f.service.operationalAdmission.proof)
+		ctx, samples := endingAtSample(t, operationalHooks(f.service))
 		if reason := f.service.qualifyOperationalRetained(ctx, original, f.domain.realm); reason != reliablesubmit.OperationalCanceled ||
 			ctx.Err() == nil || *samples == 0 {
 			t.Fatalf("allowed claim under an ended context: reason=%d ended=%t samples=%d", reason, ctx.Err() != nil, *samples)
@@ -3622,56 +3592,416 @@ func TestOperationalAdmissionDenialUnderAnEndedContextAnswersDenied(t *testing.T
 	})
 }
 
-// The audit's 7.5. Two parts of the digest are constant in every content a
-// Service can commission today: the verifier's algorithm, and the id and
-// entry count of the configured policy. Behaviour cannot tell whether they
-// are hashed, so the function is asked directly: two inputs that differ only
-// there must not share a digest.
-func TestOperationalAdmissionDigestFramesItsConstantParts(t *testing.T) {
+// ---- The admission state package, with real tokens ----
+
+// A token that names a realm and a digest comes only from the store, so the
+// package admissionstate cannot test its own Install and its confirmation of
+// equal content. This test does, with the token and the content of the
+// fixture's commissioned view, on states of its own.
+func TestOperationalAdmissionState(t *testing.T) {
 	f := makeOperationalFixture(t, "")
-	view := f.service.operationalAdmission
-	digest := func(verifier ed25519Verifier, policy admissionPolicySet) [32]byte {
+	realm := f.domain.realm
+	held := operationalInstalledView(f.service)
+	token, content := held.Token(), operationalViewContent(held)
+	digest, ok := admissionstate.Digest(content)
+	if !ok || !token.Names(realm.installation, realm.epoch, digest) {
+		t.Fatal("control: the fixture's token does not name its realm and content")
+	}
+	type owned struct {
+		owner *Service
+		state admissionstate.State
+	}
+	newOwned := func() owned {
+		owner := &Service{}
+		return owned{owner, admissionstate.New(owner)}
+	}
+	untouched := func(t *testing.T, o owned, what string) {
 		t.Helper()
-		sum, ok := operationalAdmissionDigest(view.trust, verifier, policy)
-		if !ok || sum == [32]byte{} {
-			t.Fatal("digest input was refused")
+		if got := o.state.Inspect(o.owner); got != (admissionstate.Status{}) || !o.state.Installable(o.owner) || o.state.Commissioned() {
+			t.Fatalf("%s: a refused install changed the state: %+v", what, got)
 		}
-		return sum
 	}
-	if digest(view.verifier, view.policy) != digest(view.verifier, view.policy) {
-		t.Fatal("control: equal inputs gave different digests")
-	}
-	t.Run("verifier algorithm", func(t *testing.T) {
-		other := view.verifier
-		other.algorithm = "ed448"
-		if digest(view.verifier, view.policy) == digest(other, view.policy) {
-			t.Fatal("two verifiers that differ only in the algorithm share a digest")
+	t.Run("a view that its token names is installed once", func(t *testing.T) {
+		o := newOwned()
+		type marker struct{ n int }
+		proof := &marker{1}
+		if !o.state.Install(o.owner, realm.installation, realm.epoch, token, content, proof, nil) {
+			t.Fatal("the store's own token and content were refused")
 		}
-		// The algorithm and the key id are framed apart.
-		left, right := view.verifier, view.verifier
-		left.algorithm, left.keyID = "ab", "c"
-		right.algorithm, right.keyID = "a", "bc"
-		if digest(left, view.policy) == digest(right, view.policy) {
-			t.Fatal("the algorithm and the key id are not framed apart")
+		status := o.state.Inspect(o.owner)
+		if !status.View.Installed() || status.View.Token() != token || status.View.Proof() != any(proof) ||
+			!reflect.DeepEqual(operationalViewContent(status.View), content) || status.Withdrawn || status.Superseded ||
+			!status.Confirmed.IsZero() || o.state.Installable(o.owner) || !o.state.Commissioned() {
+			t.Fatalf("status after install: %+v", status)
+		}
+		if _, ok := o.state.Current(o.owner, realm.installation, realm.epoch); ok {
+			t.Fatal("a view is current before its first confirmation")
+		}
+		// A second view is refused, with the same token and content and with
+		// those of a later generation.
+		later := operationalProofService(t, f, func(s *Service) {
+			s.trustModel.ArtifactPolicy.RevokedArtifacts = append(s.trustModel.ArtifactPolicy.RevokedArtifacts,
+				"sha256:"+strings.Repeat("e", 64))
+		})
+		next := operationalInstalledView(later)
+		if next.Token() == token {
+			t.Fatal("control: the later generation carries the same token")
+		}
+		if o.state.Install(o.owner, realm.installation, realm.epoch, token, content, nil, nil) ||
+			o.state.Install(o.owner, realm.installation, realm.epoch, next.Token(), operationalViewContent(next), nil, nil) ||
+			o.state.Inspect(o.owner).View != status.View {
+			t.Fatal("a second view was installed")
+		}
+		// Control: the later token and content are a pair a fresh state takes.
+		if other := newOwned(); !other.state.Install(other.owner, realm.installation, realm.epoch, next.Token(), operationalViewContent(next), nil, nil) {
+			t.Fatal("control: the later generation's own token and content were refused")
 		}
 	})
-	t.Run("configured policy id and entry count", func(t *testing.T) {
-		entry := configuredStaticScriptLiteralDenyEntry{id: "entry", literal: "literal"}
-		empty := configuredStaticScriptLiteralDenyPolicy{}
-		one := configuredStaticScriptLiteralDenyPolicy{entries: []configuredStaticScriptLiteralDenyEntry{entry}}
-		// The same entries in the same order, divided differently between
-		// two configured policies: only the counts tell them apart.
-		first := admissionPolicySet{policies: []AdmissionPolicyEvaluator{empty, one}}
-		second := admissionPolicySet{policies: []AdmissionPolicyEvaluator{one, empty}}
-		if digest(view.verifier, first) == digest(view.verifier, second) {
-			t.Fatal("two policy sets that differ only in their entry counts share a digest")
+	t.Run("what the token does not name is refused", func(t *testing.T) {
+		otherInstallation := realm.installation
+		otherInstallation[0] ^= 0xff
+		changed := func(change func(*admissionstate.Content)) admissionstate.Content {
+			c := operationalViewContent(held)
+			change(&c)
+			return c
 		}
-		// A configured policy without entries and the selected policy differ
-		// only in the id.
-		selected := admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}
-		configured := admissionPolicySet{policies: []AdmissionPolicyEvaluator{empty}}
-		if digest(view.verifier, selected) == digest(view.verifier, configured) {
-			t.Fatal("two policies that differ only in the id share a digest")
+		for name, tc := range map[string]struct {
+			installation [32]byte
+			epoch        uint64
+			token        reliablesubmit.OperationalAdmissionToken
+			content      admissionstate.Content
+		}{
+			"another installation": {otherInstallation, realm.epoch, token, content},
+			"a later epoch":        {realm.installation, realm.epoch + 1, token, content},
+			"no installation":      {[32]byte{}, realm.epoch, token, content},
+			"epoch zero":           {realm.installation, 0, token, content},
+			"no token":             {realm.installation, realm.epoch, reliablesubmit.OperationalAdmissionToken{}, content},
+			"another allowed signer": {realm.installation, realm.epoch, token, changed(func(c *admissionstate.Content) {
+				c.Trust.SignerPolicy.AllowedSigners = append(c.Trust.SignerPolicy.AllowedSigners, "one-more-signer")
+			})},
+			"another verifier key": {realm.installation, realm.epoch, token, changed(func(c *admissionstate.Content) {
+				c.Verifier.PublicKey[0] ^= 1
+			})},
+			"another policy": {realm.installation, realm.epoch, token, changed(func(c *admissionstate.Content) {
+				c.Policies = append(c.Policies, admissionstate.Policy{ID: string(configuredStaticScriptLiteralDenyPolicyID),
+					Entries: []admissionstate.PolicyEntry{{ID: "added", Literal: "added"}}})
+			})},
+			"content without a digest": {realm.installation, realm.epoch, token, changed(func(c *admissionstate.Content) {
+				c.Policies = nil
+			})},
+		} {
+			t.Run(name, func(t *testing.T) {
+				o := newOwned()
+				if o.state.Install(o.owner, tc.installation, tc.epoch, tc.token, tc.content, nil, nil) {
+					t.Fatal("installed")
+				}
+				untouched(t, o, name)
+			})
+		}
+		t.Run("another owner and no owner", func(t *testing.T) {
+			o := newOwned()
+			if o.state.Install(&Service{}, realm.installation, realm.epoch, token, content, nil, nil) ||
+				o.state.Install(nil, realm.installation, realm.epoch, token, content, nil, nil) ||
+				(admissionstate.State{}).Install(o.owner, realm.installation, realm.epoch, token, content, nil, nil) {
+				t.Fatal("installed")
+			}
+			untouched(t, o, "another owner")
+		})
+	})
+	t.Run("the installed content is the state's own copy", func(t *testing.T) {
+		o := newOwned()
+		given := operationalViewContent(held)
+		if !o.state.Install(o.owner, realm.installation, realm.epoch, token, given, nil, nil) {
+			t.Fatal("control: install refused")
+		}
+		given.Trust.SignerPolicy.AllowedSigners[0] = "written-after-install"
+		given.Verifier.PublicKey[0] ^= 0xff
+		given.Policies[0].ID = "written-after-install"
+		if got := operationalViewContent(o.state.Inspect(o.owner).View); !reflect.DeepEqual(got, content) {
+			t.Fatal("a write to the caller's content reached the installed view")
+		}
+	})
+	t.Run("confirmation, deadline and latches", func(t *testing.T) {
+		o := newOwned()
+		var skew time.Duration
+		if !o.state.Install(o.owner, realm.installation, realm.epoch, token, content, nil, func() time.Duration { return skew }) {
+			t.Fatal("control: install refused")
+		}
+		view, ok := o.state.Confirmable(o.owner)
+		if !ok || view != o.state.Inspect(o.owner).View {
+			t.Fatal("an installed view is not confirmable")
+		}
+		current := func() bool {
+			got, ok := o.state.Current(o.owner, realm.installation, realm.epoch)
+			if ok != got.Installed() || (ok && got != view) {
+				t.Fatal("Current returned a view it refused, or another view")
+			}
+			return ok
+		}
+		first := time.Now()
+		// Equal trust in another order is equal content.
+		reordered := operationalViewContent(view).Trust
+		for i, j := 0, len(reordered.SignerPolicy.AllowedSigners)-1; i < j; i, j = i+1, j-1 {
+			reordered.SignerPolicy.AllowedSigners[i], reordered.SignerPolicy.AllowedSigners[j] =
+				reordered.SignerPolicy.AllowedSigners[j], reordered.SignerPolicy.AllowedSigners[i]
+		}
+		o.state.Confirm(o.owner, view, reordered, first)
+		if got := o.state.Inspect(o.owner); !got.Confirmed.Equal(first) || got.Superseded || !current() {
+			t.Fatalf("equal trust did not confirm the view: %+v", got)
+		}
+		// The time only moves forward.
+		o.state.Confirm(o.owner, view, content.Trust, first.Add(-time.Second))
+		if got := o.state.Inspect(o.owner); !got.Confirmed.Equal(first) {
+			t.Fatal("an earlier confirmation moved the time back")
+		}
+		second := time.Now()
+		for !second.After(first) {
+			second = time.Now()
+		}
+		o.state.Confirm(o.owner, view, content.Trust, second)
+		if got := o.state.Inspect(o.owner); !got.Confirmed.Equal(second) {
+			t.Fatal("a later confirmation did not move the time forward")
+		}
+		// The deadline through the proof seam, and back.
+		skew = admissionstate.ConfirmationLimit
+		if current() {
+			t.Fatal("a view past its deadline is current")
+		}
+		skew = 0
+		if !current() {
+			t.Fatal("control: the view is not current again")
+		}
+		// Other trust latches, and equal trust does not open the state again.
+		other := operationalViewContent(view).Trust
+		other.SignerPolicy.RevokedSigners = append(other.SignerPolicy.RevokedSigners, "an-unrelated-signer")
+		o.state.Confirm(o.owner, view, other, time.Now())
+		if got := o.state.Inspect(o.owner); !got.Superseded || !got.Confirmed.Equal(second) || current() {
+			t.Fatalf("other trust did not latch supersession: %+v", got)
+		}
+		o.state.Confirm(o.owner, view, content.Trust, time.Now())
+		if _, ok := o.state.Confirmable(o.owner); ok || current() || !o.state.Inspect(o.owner).Superseded {
+			t.Fatal("equal trust opened a superseded state again")
+		}
+		// Withdrawal returns the token to withdraw in the store.
+		if got, ok := o.state.Withdraw(o.owner, realm.installation, realm.epoch); !ok || got != token {
+			t.Fatal("withdrawal refused, or it returned another token")
+		}
+		if got := o.state.Inspect(o.owner); !got.Withdrawn || !got.Superseded || got.View != view || o.state.Installable(o.owner) {
+			t.Fatalf("status after withdrawal: %+v", got)
+		}
+	})
+	// The third audit saved the latches of a Service before a withdrawal and
+	// wrote them back after it. What a Service can save now is its handle,
+	// and a handle names the state: it holds no latch and no view of its own.
+	t.Run("a handle put back restores nothing", func(t *testing.T) {
+		ctx := context.Background()
+		for _, stop := range []struct {
+			name string
+			stop func(t *testing.T, g *operationalFixture)
+			want func(admissionstate.Status) bool
+		}{
+			{"after a withdrawal", func(t *testing.T, g *operationalFixture) {
+				if !g.service.withdrawOperationalEffects(ctx, g.domain) {
+					t.Fatal("withdrawal unavailable")
+				}
+			}, func(status admissionstate.Status) bool { return status.Withdrawn && !status.Superseded }},
+			{"after a supersession", func(t *testing.T, g *operationalFixture) {
+				trust := operationalInstalledView(g.service).Trust()
+				trust.SignerPolicy.RevokedSigners = append(trust.SignerPolicy.RevokedSigners, "an-unrelated-signer")
+				g.egs.serve(trust)
+				g.service.confirmOperationalAdmission(ctx)
+			}, func(status admissionstate.Status) bool { return status.Superseded && !status.Withdrawn }},
+		} {
+			t.Run(stop.name, func(t *testing.T) {
+				g := makeOperationalFixture(t, "")
+				g.confirm()
+				realm := g.domain.realm
+				current := func() bool {
+					_, ok := g.service.currentOperationalAdmission(realm)
+					return ok
+				}
+				saved, view := g.service.operational, operationalInstalledView(g.service)
+				if !current() {
+					t.Fatal("control: the fixture's view is not current")
+				}
+				stop.stop(t, g)
+				if current() {
+					t.Fatal("control: the view is current after the stop")
+				}
+				g.service.operational = saved
+				if status := g.service.operational.Inspect(g.service); current() || !stop.want(status) || status.View != view {
+					t.Fatalf("the handle saved before the stop reopened the state: %+v", status)
+				}
+				// The other handles a Service can put in place of its own hold
+				// no view: the zero handle, and a new state. With a new state
+				// the process is one that was restarted, and it is judged like
+				// one.
+				row := operationalAdmissionRowAt(t, g)
+				g.service.operational = admissionstate.State{}
+				if current() || g.service.commissionOperationalAdmission(ctx, g.domain) == nil ||
+					g.service.advanceOperationalAdmission(ctx, g.domain, row.Generation) == nil || operationalAdmissionRowAt(t, g) != row {
+					t.Fatal("a Service with the zero handle is current or was commissioned")
+				}
+				g.service.operational = admissionstate.New(g.service)
+				if current() {
+					t.Fatal("a Service with a new state is current")
+				}
+				err := g.service.commissionOperationalAdmission(ctx, g.domain)
+				if row.State != 1 {
+					// The withdrawal is durable: the row refuses the same content
+					// again, by joining and by advancing.
+					if err == nil || g.service.advanceOperationalAdmission(ctx, g.domain, row.Generation) == nil ||
+						operationalInstalledView(g.service).Installed() || operationalAdmissionRowAt(t, g) != row {
+						t.Fatalf("a new state was commissioned on a withdrawn domain: %v", err)
+					}
+					return
+				}
+				// The supersession was this process's own finding and the row is
+				// still enabled, so the new state joins it like a restarted
+				// process. It admits nothing before its confirmation, and the
+				// confirmation finds what the old state found.
+				if err != nil || !operationalInstalledView(g.service).Installed() || current() || operationalAdmissionRowAt(t, g) != row {
+					t.Fatalf("a new state did not join the enabled row like a restarted process: %v", err)
+				}
+				g.service.confirmOperationalAdmission(ctx)
+				if status := g.service.operational.Inspect(g.service); current() || !status.Superseded {
+					t.Fatalf("a new state was confirmed against trust that differs: %+v", status)
+				}
+			})
+		}
+	})
+}
+
+// The view holds its policies as plain content, and the set it enforces is
+// built from that content for each judgment. The two directions are exact
+// inverses on every set a Service can commission, and each refuses what the
+// other cannot produce.
+func TestOperationalAdmissionPolicyContent(t *testing.T) {
+	selected := admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}}}
+	entries := []configuredStaticScriptLiteralDenyEntry{{id: "rule-1", literal: "rm -rf /"}, {id: "rule-2", literal: "curl | sh"}}
+	both := admissionPolicySet{policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{},
+		configuredStaticScriptLiteralDenyPolicy{entries: entries}}}
+	t.Run("the mapping covers every field of the built-in policies", func(t *testing.T) {
+		// The content names a policy by its id and its entries by id and
+		// literal. A new field in a built-in policy fails here until the
+		// content, the digest and both directions cover it.
+		for typ, want := range map[reflect.Type][]string{
+			reflect.TypeOf(selectedDestructiveShellCommandPolicy{}):   nil,
+			reflect.TypeOf(configuredStaticScriptLiteralDenyPolicy{}): {"entries"},
+			reflect.TypeOf(configuredStaticScriptLiteralDenyEntry{}):  {"id", "literal"},
+			reflect.TypeOf(admissionPolicySet{}):                      {"policies"},
+		} {
+			var got []string
+			for i := 0; i < typ.NumField(); i++ {
+				got = append(got, typ.Field(i).Name)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s fields are %v, want %v", typ, got, want)
+			}
+		}
+	})
+	t.Run("round trip", func(t *testing.T) {
+		for name, set := range map[string]admissionPolicySet{"selected": selected, "selected and configured": both} {
+			copied, ok := copyOperationalPolicySet(set)
+			if !ok {
+				t.Fatalf("%s: control: the set cannot be commissioned", name)
+			}
+			content, ok := operationalPolicyContent(copied)
+			if !ok || len(content) != len(set.policies) || content[0].ID != string(selectedDestructiveShellCommandPolicyID) ||
+				content[0].Entries != nil {
+				t.Fatalf("%s: content=%+v ok=%t", name, content, ok)
+			}
+			built, ok := operationalPolicySet(content)
+			if !ok || !reflect.DeepEqual(built, copied) || !operationalPolicyEquals(built, set) {
+				t.Fatalf("%s: the set built from the content is not the set it names: %+v", name, built)
+			}
+			again, ok := operationalPolicyContent(built)
+			if !ok || !reflect.DeepEqual(again, content) {
+				t.Fatalf("%s: the content of the built set differs", name)
+			}
+		}
+		content, _ := operationalPolicyContent(both)
+		want := []admissionstate.Policy{{ID: "execution-substrate.admission.selected-destructive-shell-command/v1"},
+			{ID: "execution-substrate.admission.configured-static-script-literal-deny/v1",
+				Entries: []admissionstate.PolicyEntry{{ID: "rule-1", Literal: "rm -rf /"}, {ID: "rule-2", Literal: "curl | sh"}}}}
+		if !reflect.DeepEqual(content, want) {
+			t.Fatalf("content of the configured set: %+v", content)
+		}
+		// The content does not share the entries of the set, and the built set
+		// does not share those of the content.
+		content[1].Entries[0].Literal = "written"
+		if entries[0].literal != "rm -rf /" {
+			t.Fatal("the content aliases the entries of the set")
+		}
+		built, _ := operationalPolicySet(want)
+		want[1].Entries[1].Literal = "written"
+		if built.policies[1].(configuredStaticScriptLiteralDenyPolicy).entries[1].literal != "curl | sh" {
+			t.Fatal("the built set aliases the entries of the content")
+		}
+	})
+	// The digest of the content is the digest the function before the move
+	// took over the set itself: a database written before is joined after.
+	t.Run("the digest through the mapping is the digest before the move", func(t *testing.T) {
+		key := make([]byte, 32)
+		for i := range key {
+			key[i] = byte(i + 1)
+		}
+		trust := egsmodel.RuntimeTrustPolicy{
+			SignerPolicy:   egsmodel.SignerPolicy{AllowedSigners: []string{"signer-a", "signer-b"}, RevokedSigners: []string{"signer-c"}},
+			ArtifactPolicy: egsmodel.ArtifactPolicy{RevokedArtifacts: []string{"sha256:" + strings.Repeat("0123456789abcdef", 4)}},
+		}
+		for name, tc := range map[string]struct {
+			set  admissionPolicySet
+			want string
+		}{
+			"selected":                {selected, "04560e9588865c202225325b34080e433ee6c9c840133499d783313c62d57f7d"},
+			"selected and configured": {both, "b6e2de007cf008905d2855b504dd14ba697b300643b0096a966c17c18c9a0c48"},
+		} {
+			policies, ok := operationalPolicyContent(tc.set)
+			digest, digestOK := admissionstate.Digest(admissionstate.Content{Trust: trust,
+				Verifier: admissionstate.Verifier{Algorithm: "ed25519", KeyID: "key-1", PublicKey: key}, Policies: policies})
+			if !ok || !digestOK || fmt.Sprintf("%x", digest) != tc.want {
+				t.Fatalf("%s: digest=%x, want %s", name, digest, tc.want)
+			}
+		}
+	})
+	t.Run("a set that cannot be named has no content", func(t *testing.T) {
+		for name, set := range map[string]admissionPolicySet{
+			"no policy":                      {},
+			"an unsupported policy":          {policies: []AdmissionPolicyEvaluator{selectedDestructiveShellCommandPolicy{}, &rejectAllPolicy{}}},
+			"a nested set":                   {policies: []AdmissionPolicyEvaluator{selected}},
+			"a pointer to a built-in policy": {policies: []AdmissionPolicyEvaluator{&selectedDestructiveShellCommandPolicy{}}},
+		} {
+			if content, ok := operationalPolicyContent(set); ok || content != nil {
+				t.Fatalf("%s: content=%+v ok=%t", name, content, ok)
+			}
+		}
+	})
+	t.Run("content that no set produces builds no set", func(t *testing.T) {
+		selectedID, configuredID := string(selectedDestructiveShellCommandPolicyID), string(configuredStaticScriptLiteralDenyPolicyID)
+		entry := []admissionstate.PolicyEntry{{ID: "rule", Literal: "literal"}}
+		for name, content := range map[string][]admissionstate.Policy{
+			"no policy list":                                 nil,
+			"empty policy list":                              {},
+			"three policies":                                 {{ID: selectedID}, {ID: configuredID, Entries: entry}, {ID: configuredID, Entries: entry}},
+			"an unknown id":                                  {{ID: selectedID}, {ID: "execution-substrate.admission.unknown/v1", Entries: entry}},
+			"an empty id":                                    {{ID: ""}},
+			"the selected policy with entries":               {{ID: selectedID, Entries: entry}},
+			"the selected policy second":                     {{ID: selectedID}, {ID: selectedID}},
+			"the configured policy first":                    {{ID: configuredID, Entries: entry}},
+			"two configured policies":                        {{ID: configuredID, Entries: entry}, {ID: configuredID, Entries: entry}},
+			"the configured policy without entries":          {{ID: selectedID}, {ID: configuredID}},
+			"the configured policy with an empty entry list": {{ID: selectedID}, {ID: configuredID, Entries: []admissionstate.PolicyEntry{}}},
+		} {
+			if built, ok := operationalPolicySet(content); ok || built.policies != nil {
+				t.Fatalf("%s: built=%+v ok=%t", name, built, ok)
+			}
+		}
+		// Controls: the two shapes a Service can commission.
+		for _, content := range [][]admissionstate.Policy{{{ID: selectedID}}, {{ID: selectedID}, {ID: configuredID, Entries: entry}}} {
+			if built, ok := operationalPolicySet(content); !ok || len(built.policies) != len(content) {
+				t.Fatalf("control: %+v built no set", content)
+			}
 		}
 	})
 }

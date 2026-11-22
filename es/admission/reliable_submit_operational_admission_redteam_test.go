@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
@@ -51,6 +53,7 @@ func redTeamUncommissionedService(f *operationalFixture) *Service {
 		provenanceVerifier: &ed25519Verifier{algorithm: old.algorithm, keyID: old.keyID,
 			publicKey: bytes.Clone(old.publicKey)}}
 	service.trustModelOwner = service
+	service.operational = admissionstate.New(service)
 	return service
 }
 
@@ -60,18 +63,48 @@ func redTeamUncommissionedService(f *operationalFixture) *Service {
 // such a view through commissioning, which the store now refuses for any
 // realm its admission row does not name, so the test writes the fields
 // itself to keep attacking with a view that names another realm.
-func redTeamRewrittenViewService(t *testing.T, f *operationalFixture, rewrite func(*operationalAdmissionSnapshot)) *Service {
+//
+// The fields live in the package admissionstate. No code outside it can name
+// them, and its Install refuses a view whose token does not name its realm
+// (TestOperationalAdmissionState). What is left
+// is a write through reflection, which is how this helper reaches them: it
+// turns the address of each unexported field into a value it may set. A
+// production file needs the reflect or the unsafe import for the same, and
+// the guard pins both.
+func redTeamRewrittenViewService(t *testing.T, f *operationalFixture, rewrite func(installation *[32]byte, epoch *uint64)) *Service {
 	t.Helper()
 	service := operationalProofService(t, f, nil)
 	service.confirmOperationalAdmission(context.Background())
 	if _, ok := service.currentOperationalAdmission(f.domain.realm); !ok {
 		t.Fatal("control: the view was not current before its realm was rewritten")
 	}
-	service.mu.Lock()
-	rewritten := *service.operationalAdmission
-	rewrite(&rewritten)
-	service.operationalAdmission = &rewritten
-	service.mu.Unlock()
+	settable := func(owner reflect.Value, name string) reflect.Value {
+		t.Helper()
+		field := owner.FieldByName(name)
+		if !field.IsValid() || !field.CanAddr() {
+			t.Fatalf("the admission state has no addressable field %q; rewrite this forgery", name)
+		}
+		return reflect.NewAt(field.Type(), field.Addr().UnsafePointer()).Elem()
+	}
+	state := settable(reflect.ValueOf(&service.operational).Elem(), "s").Elem()
+	view := settable(state, "view").Elem()
+	lock := settable(state, "mu").Addr().Interface().(*sync.RWMutex)
+	installation := settable(view, "installation").Addr().Interface().(*[32]byte)
+	epoch := settable(view, "epoch").Addr().Interface().(*uint64)
+	before := operationalInstalledView(service)
+	lock.Lock()
+	was := [2]any{*installation, *epoch}
+	rewrite(installation, epoch)
+	now := [2]any{*installation, *epoch}
+	lock.Unlock()
+	// The forgery checks its own result: the same view is installed, it names
+	// another realm than before, and it is no longer current for the old one.
+	if was == now || operationalInstalledView(service) != before {
+		t.Fatal("the view's realm fields were not rewritten in place")
+	}
+	if _, ok := service.currentOperationalAdmission(f.domain.realm); ok {
+		t.Fatal("the rewritten view is still current for the realm it no longer names")
+	}
 	return service
 }
 
@@ -216,10 +249,10 @@ func TestRedTeamPR13HoldsDenialMatrixAcrossCrashPoints(t *testing.T) {
 		// original attacker: a current view that names another epoch or
 		// installation while it holds this domain's content and token.
 		{"view rewritten to name another epoch", func(t *testing.T, f *operationalFixture) *Service {
-			return redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) { view.epoch++ })
+			return redTeamRewrittenViewService(t, f, func(_ *[32]byte, epoch *uint64) { *epoch++ })
 		}},
 		{"view rewritten to name another installation", func(t *testing.T, f *operationalFixture) *Service {
-			return redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) { view.installation[0] ^= 0xff })
+			return redTeamRewrittenViewService(t, f, func(installation *[32]byte, _ *uint64) { installation[0] ^= 0xff })
 		}},
 		{"authority commissioned and confirmed on another database", func(t *testing.T, f *operationalFixture) *Service {
 			// The one way left to hold a view for another installation: a
@@ -358,8 +391,8 @@ func TestRedTeamPR13HoldsCrossRealmIsolation(t *testing.T) {
 				// The red team's matching authority held a view for the changed
 				// realm. That state is rebuilt in memory: this domain's content
 				// and token under realm fields that name the changed realm.
-				rewritten := redTeamRewrittenViewService(t, f, func(view *operationalAdmissionSnapshot) {
-					view.installation, view.epoch = domain.realm.installation, domain.realm.epoch
+				rewritten := redTeamRewrittenViewService(t, f, func(installation *[32]byte, epoch *uint64) {
+					*installation, *epoch = domain.realm.installation, domain.realm.epoch
 				})
 				if _, ok := rewritten.currentOperationalAdmission(domain.realm); !ok {
 					t.Fatal("control: the rewritten view is not current for the changed realm")
@@ -740,7 +773,7 @@ func TestRedTeamPR13HoldsChangedEvidenceNeverQualifies(t *testing.T) {
 	// A sibling artifact with the same payload, validly signed by the same
 	// trusted signer and not itself revoked, must not stand in for the
 	// retained artifact.
-	verifier := f.service.operationalAdmission.verifier
+	verifier := operationalInstalledView(f.service).Verifier()
 	sibling := evidence
 	identity, err := evidencev1.NewArtifactIdentity(evidence.Claims.Package.Identity.PayloadDigest,
 		evidence.Claims.Package.Identity.ArtifactType, "sha256:"+strings.Repeat("5", 64))
@@ -752,9 +785,9 @@ func TestRedTeamPR13HoldsChangedEvidenceNeverQualifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sibling.Seal = evidencev1.NewSeal(siblingCanonical, verifier.keyID, verifier.algorithm,
+	sibling.Seal = evidencev1.NewSeal(siblingCanonical, verifier.KeyID, verifier.Algorithm,
 		base64.StdEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(f.signerPrivateKey), siblingCanonical)))
-	if err := evidencev1.Verify(sibling, verifier.keyID, verifier.algorithm, verifier.publicKey); err != nil ||
+	if err := evidencev1.Verify(sibling, verifier.KeyID, verifier.Algorithm, verifier.PublicKey); err != nil ||
 		sibling.Claims.Package.Identity.ArtifactDigest == evidence.Claims.Package.Identity.ArtifactDigest {
 		t.Fatalf("sibling artifact precondition: %v", err)
 	}
@@ -874,13 +907,13 @@ func TestRedTeamPR13GuardAccessInventoryEscapes(t *testing.T) {
 	for _, test := range []struct {
 		name, alternate string
 	}{
-		{"zero-value authority construction", "func alternate() *operationalAdmissionSnapshot{var forged operationalAdmissionSnapshot; return &forged}"},
-		{"same-shape conversion authority construction", "func alternate() *operationalAdmissionSnapshot{forged := operationalAdmissionSnapshot(struct{ owner int }{2}); return &forged}"},
+		{"zero-value authority construction", "func alternate() *view{var forged view; return &forged}"},
+		{"same-shape conversion authority construction", "func alternate() *view{forged := view(struct{ owner int }{2}); return &forged}"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			const declarations = "package admission; type operationalAdmissionSnapshot struct{ owner int }; "
-			const approved = "func commission() *operationalAdmissionSnapshot{return &operationalAdmissionSnapshot{owner:1}}; "
-			want := map[string]string{"operationalAdmissionSnapshot": "fixture.go:commission"}
+			const declarations = "package admission; type view struct{ owner int }; "
+			const approved = "func commission() *view{return &view{owner:1}}; "
+			want := map[string]string{"view": "fixture.go:commission"}
 			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved+test.alternate)
 			if err := validateOperationalAuthorityConstruction(mutant, want); err == nil {
 				t.Fatalf("alternate snapshot construction %q passed the exact construction inventory", test.alternate)

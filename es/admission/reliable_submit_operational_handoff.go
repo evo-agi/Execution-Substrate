@@ -12,6 +12,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"golang.org/x/sys/unix"
 
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -239,7 +240,7 @@ func (s *Service) operatePrivateHandoff(ctx context.Context, d *operationalDomai
 	}
 	// The store compares this token with the admission row inside the
 	// establishment turn; a fenced process stores no claim.
-	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire, view.token)
+	first := d.custody.EstablishOperational(ctx, delivery.refs.claimID, original.assessment.boundPlan, d.keys.storage, original.wire, view.Token())
 	if d.proof != nil && d.proof.afterEstablish != nil {
 		d.proof.afterEstablish()
 	}
@@ -294,7 +295,7 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 	// returns carries the token of the same view that judged the claim.
 	qualify := func(stored reliablesubmit.OperationalAdmissionToken) (reliablesubmit.OperationalOriginalMatch, error) {
 		view, ok := s.currentOperationalAdmission(d.realm)
-		if !ok || view.token != stored {
+		if !ok || view.Token() != stored {
 			qualificationReason = reliablesubmit.OperationalUnavailable
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
 		}
@@ -311,7 +312,7 @@ func (s *Service) advanceOperational(ctx context.Context, d *operationalDomain, 
 			return reliablesubmit.OperationalOriginalMatch{}, errPrivateReplayUnavailable
 		}
 		return reliablesubmit.MatchAdmittedOperationalOriginal(original.delivery.refs.claimID, original.assessment.boundPlan,
-			original.wire, view.token)
+			original.wire, view.Token())
 	}
 	// precheck refuses before a writer turn is requested. It confirms with
 	// EGS first, then asks the same question as the cut with the admission
@@ -635,7 +636,7 @@ type handoffOwner struct {
 	mu        sync.Mutex
 	domain    *operationalDomain
 	service   *Service
-	admission *operationalAdmissionSnapshot
+	admission admissionstate.View
 	stage     *stagingCustody
 	proof     *reliablesubmit.OperationalStageProof
 	context   context.Context

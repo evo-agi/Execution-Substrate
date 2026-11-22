@@ -12609,8 +12609,8 @@ func TestPrivateReplayProgressSynchronizationInventoryDocsContract(t *testing.T)
 			}
 		}
 	}
-	if len(want) != 56 {
-		t.Fatalf("expected 56 exact structural fields, got %d", len(want))
+	if len(want) != 55 {
+		t.Fatalf("expected 55 exact structural fields, got %d", len(want))
 	}
 	admission := mustRead(t, ".docs/execution_lifecycle/es_execution_admission_model.md")
 	section := docSection(t, admission, "### 7.4 Exact synchronized mutable-state inventory", "### 7.5 Rejected A3 topology inventory")
@@ -12698,7 +12698,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 			return fmt.Errorf("missing exact field %q", field)
 		}
 	}
-	if counts["Lock"] != 7 || counts["Atomic"] != 4 || counts["Reference"] != 45 {
+	if counts["Lock"] != 8 || counts["Atomic"] != 4 || counts["Reference"] != 43 {
 		return fmt.Errorf("synchronization category counts differ: %v", counts)
 	}
 	for field, roles := range permitRoles {
@@ -12709,7 +12709,7 @@ func checkPrivateReplayProgressSynchronizationInventory(section string, want map
 	text := compactText(section)
 	for _, rule := range []string{
 		"non-test production source under `./es/...` and `./cmd/es/...`",
-		"56 structurally synchronization-bearing fields: seven direct lock fields, four `atomic.Bool` fields, and 45 transitive reference, request or wrapper fields",
+		"55 structurally synchronization-bearing fields: eight direct lock fields, four `atomic.Bool` fields, and 43 transitive reference, request or wrapper fields",
 		"private replay path remains runtime-unwired",
 		"SQLite owns committed claim, progress, key and grant/use state",
 		"no package-level synchronization authority",
@@ -14148,7 +14148,26 @@ func operationalCustodyLockRowHolders(admission string) []string {
 
 func operationalV2AssuranceOwnerRule(owner string) bool {
 	return strings.Contains(owner, "zero non-test references") &&
-		strings.Contains(owner, "operationalAdmissionSnapshot` construction") &&
+		strings.Contains(owner, "exactly one view construction, in the install method of the state") &&
+		strings.Contains(owner, "exactly one construction of the\nadmission state, in its constructor, which `NewService` alone calls") &&
+		strings.Contains(owner, "`es/admission/internal/admissionstate`, under that package's own read-write\nlock. `Service.mu` does not cover them.") &&
+		strings.Contains(owner, "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O") &&
+		strings.Contains(owner, "Each is a struct whose only field is an unexported pointer\nto an unexported struct") &&
+		strings.Contains(owner, "A Service built any other way holds the zero handle, which is closed") &&
+		strings.Contains(owner, "It is copied on the way in and on every way out") &&
+		strings.Contains(owner, "Outside the package the following do not compile") &&
+		strings.Contains(owner, "compiling each form against the real packages for all three build targets") &&
+		strings.Contains(owner, "Two things remain possible outside the package, and the guard below holds\nboth by exact inventories") &&
+		strings.Contains(owner, "A call cannot clear a latch, move the\nconfirmation time back or install a second view") &&
+		strings.Contains(owner, "A\nhandle saved earlier names the same state and restores nothing") &&
+		strings.Contains(owner, "The package boundary does not hold against reflection or `unsafe`") &&
+		strings.Contains(owner, "Every exported\nfunction and method of the package has an exact list of the functions that\nreference it") &&
+		strings.Contains(owner, "and the inspection method and the question whether a handle names a view,\nwhich exist for tests, nowhere") &&
+		strings.Contains(owner, "The exported\nsurface of the package is a closed list") &&
+		strings.Contains(owner, "package is pinned by the SHA-256 hash of its bytes") &&
+		strings.Contains(owner, "Installing a view takes\n`Service.mu` and then the lock of the admission state") &&
+		!strings.Contains(owner, "operationalAdmissionSnapshot") &&
+		!strings.Contains(owner, "the latches and the\nconfirmation included") &&
 		strings.Contains(owner, "independently build the full scope-3 TLV and PB1") &&
 		strings.Contains(owner, "Transparent parentheses enclosing a resolved field") &&
 		strings.Contains(owner, "parenthesized reads") &&
@@ -14273,12 +14292,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"Confirmation is attempted at\nmost once per invocation and only at three points",
 		"can only add a non-negative skew")
 	assertContainsAll(t, "authority and independent evidence obligations", owner,
-		"zero non-test references", "operationalAdmissionSnapshot` construction", "Exact protected-field reads",
+		"zero non-test references", "exactly one view construction, in the install method of the state", "Exact protected-field reads",
 		"independently build the full scope-3 TLV and PB1", "valid signature but",
 		"Transparent parentheses enclosing a resolved field", "parenthesized reads",
 		"targets remain assignments", "targets remain read-writes", "not a general proof of aliases or",
 		"Range-clause `=` key and value whole-field targets", "Taking a field's address is an `address` access",
-		"is a `write-through` access", "ceiling for PR #12 plus both repairs is 46 files",
+		"is a `write-through` access", "ceiling for PR #12 plus its repairs is 48 files",
+		"A/internal/admissionstate/state.go (new) and\nA/internal/admissionstate/state_test.go (new)",
 		"A retry after a changed configured literal policy, artifact revocation or", "a denial does not")
 	assertContainsAll(t, "selected plan", plans,
 		"PR #12 retained-current-admission v2 repair", "fresh independent audit",
@@ -14287,6 +14307,13 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"PR #12 durable admission: corrections after the second audit",
 		"PR #12 durable admission: corrections after the third audit",
 		"PR #12 durable admission: corrections after the fourth audit",
+		"PR #12 durable admission: the admission state package",
+		"It is not added to\nthe commissioning gate as a seventh prerequisite",
+		"It changes no behaviour, no stored format and no public\ncontract",
+		"a\nnew package, `es/admission/internal/admissionstate`, under that package's\nown lock",
+		"Outside the package the compiler now refuses what the guard searched for",
+		"so the module-wide\n`reflect`, `unsafe` and cgo import inventory stays as it is",
+		"which can refuse a claim or\nrequire an input and cannot allow one",
 		"The guard now chooses what it reads by the directory a package is compiled\nfrom",
 		"Its file-set check and its import inventory read every directory of the\nrepository except `.git`",
 		"is held in\nthe import inventory by the SHA-256 of its content",
@@ -14303,13 +14330,17 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2Contract(t *testing.T) {
 		"`CP-ROLLBACK`, `CP-EPOCH`, `CP-POLICY-CUSTODY`, `CP-NATIVE`, `CP-RELEASE`,\n`CP-PUBLIC-MAPPING`")
 	assertContainsAll(t, "separate evidence and policy ownership", admission,
 		"separately on `resolvedExecution`", "private SQLite writer accepts only an exact inspected",
-		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this")
+		"one durable admission row", "does not change the epoch", "no compatibility edge is retained on this",
+		"The view is held by the admission\nstate package behind its own lock",
+		"naming, copying or restoring that state does not compile\noutside the package",
+		"the lock of the admission\nstate protects the latches and the confirmation time")
 	assertContainsAll(t, "durable admission scope", persistence,
 		"historical migrations 1–4 with their literal hashes", "bounded opaque full signed",
 		"`reliable_submit_operational_admission`", "It is not a durable policy decision about",
 		"`operational_local_v1` is removed at both layers", "codecs 1–4 are unaffected",
 		"never\ncalled inside a writer turn", "must be called outside every borrow of the\nsame custody handle",
-		"at the two\npre-checks it runs under the custody read lock of the borrow")
+		"at the two\npre-checks it runs under the custody read lock of the borrow",
+		"brief read of the\nadmission state under its own lock")
 	assertContainsAll(t, "receipt exception", recovery,
 		"a committed accepted receipt is verified", "positive registration",
 		"`operational_local_v1` is removed and refused", "reports denied or unavailable",
@@ -14474,7 +14505,24 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 	})
 	for _, tc := range []struct{ name, phrase string }{
 		{"MissingZeroCommissionInventory", "zero non-test references"},
-		{"MissingSnapshotConstructionOwner", "operationalAdmissionSnapshot` construction"},
+		{"MissingViewConstructionOwner", "exactly one view construction, in the install method of the state"},
+		{"MissingStateConstructionOwner", "admission state, in its constructor, which `NewService` alone calls"},
+		{"MissingStatePackageOwnsItsLock", "under that package's own read-write\nlock"},
+		{"MissingStatePackageImportRule", "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O"},
+		{"MissingOpaqueHandleRule", "Each is a struct whose only field is an unexported pointer\nto an unexported struct"},
+		{"MissingClosedZeroHandle", "holds the zero handle, which is closed"},
+		{"MissingContentCopyRule", "It is copied on the way in and on every way out"},
+		{"MissingCompileRefusalList", "Outside the package the following do not compile"},
+		{"MissingCompileRefusalTest", "compiling each form against the real packages for all three build targets"},
+		{"MissingRemainingRoads", "Two things remain possible outside the package"},
+		{"MissingCallLimits", "A call cannot clear a latch, move the\nconfirmation time back or install a second view"},
+		{"MissingSavedHandleRule", "names the same state and restores nothing"},
+		{"MissingReflectionLimitOfThePackage", "The package boundary does not hold against reflection or `unsafe`"},
+		{"MissingCallSiteInventory", "has an exact list of the functions that\nreference it"},
+		{"MissingInspectionInventory", "which exist for tests, nowhere"},
+		{"MissingClosedSurface", "surface of the package is a closed list"},
+		{"MissingStateFilePin", "package is pinned by the SHA-256 hash of its bytes"},
+		{"MissingInstallLockOrder", "`Service.mu` and then the lock of the admission state"},
 		{"MissingIndependentBindingOracle", "independently build the full scope-3 TLV and PB1"},
 		{"MissingParenthesizedAssignmentRule", "targets remain assignments"},
 		{"MissingParenthesizedReadWriteRule", "targets remain read-writes"},
@@ -14535,6 +14583,20 @@ func TestOperationalSubmitHandoffCurrentAdmissionV2RejectsUnsafeMutants(t *testi
 		{"FileSetSkipsDirectories", "The check lists every\ndirectory of the repository except `.git`", "The check lists every\ndirectory that `./...` matches"},
 		{"ReplaceLineAllowed", "which refuses a\n`replace` line", "which allows a\n`replace` line"},
 		{"WorkspaceOnlyInsideTheRepository", "anywhere in the repository or above it", "at the repository root"},
+		{"StateBackUnderTheServiceLock", "lock. `Service.mu` does not cover them.", "lock. `Service.mu` covers them as well."},
+		{"StatePackageMayReflect", "It imports neither `reflect`, `unsafe` nor `C` and performs no I/O", "It may import `reflect` and performs no I/O"},
+		{"HandleFieldExported", "whose only field is an unexported pointer\nto an unexported struct", "whose only field is an exported pointer\nto an unexported struct"},
+		{"ZeroHandleOpen", "holds the zero handle, which is closed", "holds the zero handle, which is commissioned on first use"},
+		{"ContentSharedWithTheCaller", "It is copied on the way in and on every way out", "It is shared with the caller on the way in"},
+		{"CompileRefusalsUntested", "compiling each form against the real packages for all three build targets", "reading the Go specification"},
+		{"CallsNotInventoried", "the guard below holds\nboth by exact inventories", "review holds\nboth"},
+		{"CallClearsALatch", "A call cannot clear a latch, move the\nconfirmation time back or install a second view", "A call can clear a latch"},
+		{"SavedHandleRestores", "names the same state and restores nothing", "restores the latches it held"},
+		{"PackageBoundaryHoldsReflection", "The package boundary does not hold against reflection or `unsafe`", "The package boundary holds against reflection and `unsafe`"},
+		{"InspectionUsedInProduction", "which exist for tests, nowhere", "in production diagnostics"},
+		{"SurfaceOpen", "surface of the package is a closed list", "surface of the package is open"},
+		{"StateFileHeldByNameOnly", "package is pinned by the SHA-256 hash of its bytes", "package is held by its name"},
+		{"InstallLockOrderReversed", "Installing a view takes\n`Service.mu` and then the lock of the admission state", "Installing a view takes\nthe lock of the admission state and then `Service.mu`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.Count(owner, tc.from) != 1 {

@@ -55,7 +55,8 @@ provenance verifier and the supported built-in policy entries. And the
 process must have confirmed that view's trust with EGS within 30 seconds.
 The verified trust owner pointer prevents a copied Service from
 commissioning the same startup proof, and trust JSON remains within the
-existing 256 KiB dependency response bound. The view is read under the existing Service lock and evaluated locally
+existing 256 KiB dependency response bound. The view is held by the admission
+state package behind its own lock, read under that lock and evaluated locally
 over authenticated frozen inputs at each protected cut, after the store has
 compared its token with the row under the SQLite writer lock. The ordinary
 replaceable `AdmissionPolicyEvaluator` remains available to ordinary
@@ -79,16 +80,22 @@ exactly one reference to each of the three store operations that write the
 admission row, from the Service method of the same purpose, zero non-test
 configuration of `Service.operationalProof` and its callbacks, one reference
 to the confirmation with three invocation sites, and the sole
-`operationalAdmissionSnapshot` literal in the one function that installs the
-view. The protected
-Service trust-owner, verified, view, withdrawn, superseded, confirmation and
-proof fields, all view identity/content/proof fields, and handoff-owner
+view construction in the install method of the admission state, which only
+the one function that installs the view calls. The view, the withdrawal and
+supersession latches and the confirmation time are one unexported struct of
+`es/admission/internal/admissionstate`. Other packages hold handles they
+cannot open, so naming, copying or restoring that state does not compile
+outside the package, and every exported function of the package has an exact
+call-site inventory. The protected
+Service trust-owner, verified, state-handle and proof fields, all state and
+view fields inside that package, and handoff-owner
 Service/view links have exact typed read/write/initializer site inventories,
 which also count whole-value construction, assignment, conversion and
 declaration of each owning type. The existing
-`Service.mu` protects mutable Service state; the view is immutable after
-one-shot construction, and final owner entry samples it under the documented
-owner-to-Service lock order. A finite reference count alone is not a lock
+`Service.mu` protects mutable Service state and the lock of the admission
+state protects the latches and the confirmation time; the view is immutable
+after one-shot construction, and final owner entry samples it under the
+documented owner-to-state lock order. A finite reference count alone is not a lock
 correctness proof. The nil-default `contextObserved` test hook sees a detached
 completed retained policy context immediately before the existing built-in
 evaluation; it cannot change inputs or a decision and has no non-test
@@ -977,8 +984,8 @@ whole run-root reclamation, adoption, or alternate claim path is selected.
 ### 7.4 Exact synchronized mutable-state inventory
 
 The non-test production source under `./es/...` and `./cmd/es/...` contains
-56 structurally synchronization-bearing fields: seven direct lock fields,
-four `atomic.Bool` fields, and 45 transitive reference, request or wrapper
+55 structurally synchronization-bearing fields: eight direct lock fields,
+four `atomic.Bool` fields, and 43 transitive reference, request or wrapper
 fields. The private fixture code is included in this source inventory. The
 private replay path remains runtime-unwired.
 `OperationalCustody.prestageProof` and `operationalProvider.exchangeEntry` are
@@ -988,7 +995,8 @@ protects proof configuration.
 
 | Category | Exact field and type | Protected fact | Writers | Readers | Lifetime |
 | --- | --- | --- | --- | --- | --- |
-| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy`, verified startup state, one-shot operational view, monotonic withdrawal and supersession latches, and the last confirmation time | `Service.Initialize`, `Service.installOperationalAdmission`, `Service.withdrawOperationalEffects`, `Service.confirmOperationalAdmission` | `Service.Health`, `Service.currentTrustModel`, `Service.currentOperationalAdmission`, `Service.installOperationalAdmission`, `Service.confirmOperationalAdmission` | Admission service instance |
+| Lock | `es/admission:Service.mu:sync.RWMutex` | `trustModel *egsmodel.RuntimeTrustPolicy`, verified startup state, and the order of a trust load against the install of the one-shot operational view | `Service.Initialize`, `Service.installOperationalAdmission` | `Service.Health`, `Service.currentTrustModel`, `Service.installOperationalAdmission` | Admission service instance |
+| Lock | `es/admission/internal/admissionstate:state.mu:sync.RWMutex` | The one-shot operational view of one Service, its monotonic withdrawal and supersession latches, and the last confirmation time | `State.Install`, `State.Withdraw`, `State.Confirm` | `State.Commissioned`, `State.Installable`, `State.Confirmable`, `State.Current`, `State.Inspect` | Admission service instance |
 | Lock | `es/app:App.mu:sync.RWMutex` | `started bool`, `listener net.Listener` | `App.Start` writes both. `App.Shutdown` writes `started`. | `App.Started` reads `started`. `App.Addr` reads `listener`. | App instance |
 | Lock | `es/runtimehelper:helperServer.mu:sync.RWMutex` | `token cachedToken` | `helperServer.fetchAndStoreToken` | `helperServer.currentToken` | Runtime-helper process |
 | Lock | `es/admission/internal/reliablesubmit:privateSealPermit.mu:sync.Mutex` | One permit's `used bool` burn latch | `privateSealPermit.consume`, `privateSealPermit.burn` | `privateSealPermit.consume`, `privateSealPermit.matchesAllocation` | One reservation and publication attempt |
@@ -1002,6 +1010,7 @@ protects proof configuration.
 
 | Category | Exact field and type | Reference target, creation and use |
 | --- | --- | --- |
+| Reference | `es/admission/internal/admissionstate:State.s:*admissionstate.state` | Names the admission state of one Service. The constructor sets it once for that Service, which rejects copied or foreign Service authority; the zero handle is closed. |
 | Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.access:*reliablesubmit.OperationalAccess` | Limits the intent input to its authenticated original. |
 | Reference | `es/admission/internal/reliablesubmit:OperationalIntentInput.self:*reliablesubmit.OperationalIntentInput` | Checks the original issued intent capsule. |
 | Reference | `es/admission/internal/reliablesubmit:OperationalStageProof.access:*reliablesubmit.OperationalAccess` | Limits the held stage proof to one access. |
@@ -1018,11 +1027,8 @@ protects proof configuration.
 | Reference | `es/admission/internal/reliablesubmit:OperationalPositiveProof.access:*reliablesubmit.OperationalAccess` | Binds the observation proof to the callback access and exact marker projection. |
 | Reference | `es/admission:liveSender.owner:*admission.handoffOwner` | Binds the single sender to its callback owner. |
 | Reference | `es/admission:liveSender.self:*admission.liveSender` | Rejects a copy of the marker continuation. |
-| Reference | `es/admission:Service.operationalAdmission:*admission.operationalAdmissionSnapshot` | Holds the one installed view of the admission row under `Service.mu`. |
 | Reference | `es/admission:Service.trustModelOwner:*admission.Service` | Binds the verified startup trust publication to its original Service before private commissioning. |
-| Reference | `es/admission:handoffOwner.admission:*admission.operationalAdmissionSnapshot` | Binds the final sender to the sampled authority. |
 | Reference | `es/admission:handoffOwner.service:*admission.Service` | Samples that Service's latches and confirmation deadline before transport entry. |
-| Reference | `es/admission:operationalAdmissionSnapshot.owner:*admission.Service` | Rejects copied or foreign Service authority. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplayProgressCustody.self:*reliablesubmit.PrivateReplayProgressCustody` | The issuer sets its own identity once at open. Close, lookup and qualification check it for that handle's lifetime. |
 | Reference | `es/admission/internal/reliablesubmit:PrivateReplaySealPermit.permit:*reliablesubmit.privateSealPermit` | Carries the same operation-local burn latch through either scope. See the permit roles below. |
 | Reference | `es/admission/internal/reliablesubmit:ProgressAccess.state:*reliablesubmit.progressAccessState` | Authentication issues the access state. Progress consumption checks it during that callback. |

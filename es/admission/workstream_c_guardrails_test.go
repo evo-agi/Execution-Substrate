@@ -2287,6 +2287,8 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission:reservedRuntimeEnvKeys:map[string]struct{}",
 	}
 	wantSynchronizationFields := []string{
+		"execution-substrate/es/admission/internal/admissionstate:State.s:*admissionstate.state",
+		"execution-substrate/es/admission/internal/admissionstate:state.mu:sync.RWMutex",
 		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.busy:atomic.Bool",
 		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.issuer:*reliablesubmit.OperationalCustody",
 		"execution-substrate/es/admission/internal/reliablesubmit:OperationalAccess.life:*reliablesubmit.progressOriginalLifetime",
@@ -2333,14 +2335,11 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		"execution-substrate/es/admission/internal/reliablesubmit:recordReconciliationEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission/internal/reliablesubmit:recordStagingEvidenceRequest.progress:*reliablesubmit.progressAccessState",
 		"execution-substrate/es/admission:Service.mu:sync.RWMutex",
-		"execution-substrate/es/admission:Service.operationalAdmission:*admission.operationalAdmissionSnapshot",
 		"execution-substrate/es/admission:Service.trustModelOwner:*admission.Service",
-		"execution-substrate/es/admission:handoffOwner.admission:*admission.operationalAdmissionSnapshot",
 		"execution-substrate/es/admission:handoffOwner.mu:sync.Mutex",
 		"execution-substrate/es/admission:handoffOwner.service:*admission.Service",
 		"execution-substrate/es/admission:liveSender.owner:*admission.handoffOwner",
 		"execution-substrate/es/admission:liveSender.self:*admission.liveSender",
-		"execution-substrate/es/admission:operationalAdmissionSnapshot.owner:*admission.Service",
 		"execution-substrate/es/app:App.mu:sync.RWMutex",
 		"execution-substrate/es/runtimehelper:helperServer.mu:sync.RWMutex",
 	}
@@ -2349,7 +2348,12 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 	mapBesideSynchronizationSet := make(map[string]bool)
 	seenSources := make(map[string]bool)
 	for _, view := range views {
-		packageState, synchronizationFields, mapsBesideSynchronization := structuralProductionStateInventory(view.packages)
+		// The loader returns every package the patterns compile from the
+		// repository, their dependencies included. This inventory is the one
+		// of the ES source, so it reads the packages compiled from the two ES
+		// directories, whatever a directory below them is called.
+		scoped := packagesCompiledBelow(t, view.packages, "es", "cmd/es")
+		packageState, synchronizationFields, mapsBesideSynchronization := structuralProductionStateInventory(scoped)
 		for _, item := range packageState {
 			packageStateSet[item] = true
 		}
@@ -2359,7 +2363,7 @@ func TestExecutionSubstrateProductionHasNoA3LeaseRegistryOrPoisonDesign(t *testi
 		for _, item := range mapsBesideSynchronization {
 			mapBesideSynchronizationSet[item] = true
 		}
-		for _, pkg := range view.packages {
+		for _, pkg := range scoped {
 			if refs := pkg.referencesToPackageFunction("golang.org/x/sys/unix", "Flock"); len(refs) != 0 {
 				t.Fatalf("unix.Flock entered production namespace authority in %s: %v", view.target, refs)
 			}
@@ -2428,12 +2432,28 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			want: map[string]int{
 				"es/admission/service.go:NewService|zero-initializer":                                       1,
 				"es/admission/service.go:Service.Health":                                                    2,
-				"es/admission/service.go:Service.Initialize":                                                5,
+				"es/admission/service.go:Service.Initialize":                                                3,
 				"es/admission/service.go:Service.currentTrustModel":                                         2,
 				"es/admission/reliable_submit_operational_admission.go:Service.installOperationalAdmission": 4,
-				"es/admission/reliable_submit_operational_admission.go:Service.withdrawOperationalEffects":  3,
-				"es/admission/reliable_submit_operational_admission.go:Service.confirmOperationalAdmission": 4,
-				"es/admission/reliable_submit_operational_admission.go:Service.currentOperationalAdmission": 2,
+			},
+		},
+		// The admission state lives in a package of its own behind its own
+		// lock. Every method of the handle takes it; nothing else can.
+		{
+			label:      "admission state lock",
+			importPath: "execution-substrate/es/admission/internal/admissionstate",
+			typeName:   "state",
+			fieldName:  "mu",
+			want: map[string]int{
+				"es/admission/internal/admissionstate/state.go:New|zero-initializer": 1,
+				"es/admission/internal/admissionstate/state.go:State.Commissioned":   2,
+				"es/admission/internal/admissionstate/state.go:State.Installable":    2,
+				"es/admission/internal/admissionstate/state.go:State.Install":        2,
+				"es/admission/internal/admissionstate/state.go:State.Withdraw":       2,
+				"es/admission/internal/admissionstate/state.go:State.Confirmable":    2,
+				"es/admission/internal/admissionstate/state.go:State.Confirm":        2,
+				"es/admission/internal/admissionstate/state.go:State.Current":        2,
+				"es/admission/internal/admissionstate/state.go:State.Inspect":        2,
 			},
 		},
 		{
@@ -2632,25 +2652,14 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			service + "NewService|zero-initializer": 1, service + "Service.Initialize|assignment": 1,
 			admission + "Service.operationalAdmissionContent|read": 1, admission + "Service.installOperationalAdmission|read": 1,
 		}},
-		{"Service", "operationalAdmission", map[string]int{
-			service + "NewService|zero-initializer": 1, service + "Service.Initialize|read": 2,
-			admission + "Service.installOperationalAdmission|read": 2, admission + "Service.installOperationalAdmission|assignment": 1,
-			admission + "Service.withdrawOperationalEffects|read": 1, admission + "Service.confirmOperationalAdmission|read": 2,
-			admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		{"Service", "operationalWithdrawn", map[string]int{
-			service + "NewService|zero-initializer": 1, service + "Service.Initialize|read": 2,
-			admission + "Service.installOperationalAdmission|read": 2, admission + "Service.withdrawOperationalEffects|assignment": 1,
-			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		{"Service", "operationalSuperseded", map[string]int{
-			service + "NewService|zero-initializer": 1, admission + "Service.installOperationalAdmission|read": 2,
-			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.confirmOperationalAdmission|assignment": 1,
-			admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		{"Service", "operationalConfirmed", map[string]int{
-			service + "NewService|zero-initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
-			admission + "Service.confirmOperationalAdmission|assignment": 1, admission + "Service.currentOperationalAdmission|read": 1,
+		// The handle of the admission state. NewService sets it once, after the
+		// literal, with the address of the Service it has just made. Every
+		// other occurrence is a method call on it: the handle is never copied,
+		// compared or handed on.
+		{"Service", "operational", map[string]int{
+			service + "NewService|zero-initializer": 1, service + "NewService|assignment": 1, service + "Service.Initialize|read": 2,
+			admission + "Service.installOperationalAdmission|read": 2, admission + "Service.withdrawOperationalEffects|read": 1,
+			admission + "Service.confirmOperationalAdmission|read": 2, admission + "Service.currentOperationalAdmission|read": 1,
 		}},
 		{"Service", "operationalProof", map[string]int{service + "NewService|zero-initializer": 1, admission + "Service.installOperationalAdmission|read": 1}},
 		// What a confirmation asks, and with which key it verifies the answer,
@@ -2672,45 +2681,69 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			service + "NewService|initializer": 1, "es/admission/policy_payload.go:Service.enforceAdmissionPolicy|read": 1,
 			admission + "Service.operationalAdmissionContent|read": 2,
 		}},
-		{"operationalAdmissionSnapshot", "owner", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
-			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		{"operationalAdmissionSnapshot", "installation", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
-			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		{"operationalAdmissionSnapshot", "epoch", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
-			admission + "Service.confirmOperationalAdmission|read": 1, admission + "Service.currentOperationalAdmission|read": 1,
-		}},
-		// The token is read where it is presented to the store: at withdrawal,
-		// at establishment, and twice inside the qualifier that every
-		// first-effect cut calls, which is a function literal.
-		{"operationalAdmissionSnapshot", "token", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.withdrawOperationalEffects|read": 1,
-			admission + "Service.confirmOperationalAdmission|read": 1, handoff + "Service.operatePrivateHandoff|read": 1,
-			handoff + "Service.advanceOperational|read+closure": 2,
-		}},
-		{"operationalAdmissionSnapshot", "trust", map[string]int{admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.qualifyOperationalRetained|read": 1}},
-		{"operationalAdmissionSnapshot", "verifier", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
-			admission + "Service.qualifyOperationalRetained|read": 3,
-		}},
-		{"operationalAdmissionSnapshot", "policy", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.confirmOperationalAdmission|read": 1,
-			admission + "Service.qualifyOperationalRetained|read": 2,
-		}},
-		{"operationalAdmissionSnapshot", "proof", map[string]int{
-			admission + "Service.installOperationalAdmission|initializer": 1, admission + "Service.currentOperationalAdmission|read": 1,
-			admission + "Service.qualifyOperationalRetained|read": 9,
-		}},
 		{"handoffOwner", "service", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
 		{"handoffOwner", "admission", map[string]int{handoff + "Service.advanceOperational|initializer": 1, handoff + "liveSender.consume|read": 1}},
 		{"operationalAdmissionProofHooks", "required", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
 		{"operationalAdmissionProofHooks", "evaluated", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
 		{"operationalAdmissionProofHooks", "contextObserved", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
-		{"operationalAdmissionProofHooks", "skew", map[string]int{admission + "operationalConfirmationFresh|read": 2}},
+		// The skew hook is read inside the function the install hands to the
+		// state, which asks it at every sample. The stricter evaluator is
+		// appended behind the built-in set of the view.
+		{"operationalAdmissionProofHooks", "skew", map[string]int{admission + "Service.installOperationalAdmission|read+closure": 2}},
+		{"operationalAdmissionProofHooks", "stricter", map[string]int{admission + "Service.qualifyOperationalRetained|read": 2}},
+	}
+	// The package that owns the admission state. No other package can name
+	// one of these fields, so this inventory is the whole of what is done to
+	// them. The file is also held by the hash of its content
+	// (TestOperationalAdmissionStatePackageIsOneReviewedFile), which implies
+	// this list; the list says what the reviewed content does.
+	const statePath = "execution-substrate/es/admission/internal/admissionstate"
+	const state = "es/admission/internal/admissionstate/state.go:"
+	stateAccessInventories := []accessInventory{
+		// The owner is set by the one literal and read by the one function
+		// every method but Commissioned goes through.
+		{"state", "owner", map[string]int{state + "New|initializer": 1, state + "State.held|read": 1}},
+		// The view is assigned once, by Install, which reads it first.
+		{"state", "view", map[string]int{
+			state + "New|zero-initializer": 1, state + "State.Install|read": 1, state + "State.Install|assignment": 1,
+			state + "State.Commissioned|read": 1, state + "State.Installable|read": 1, state + "State.Withdraw|read": 1,
+			state + "State.Confirmable|read": 2, state + "State.Confirm|read": 1, state + "State.Current|read": 1,
+			state + "State.Inspect|read": 1,
+		}},
+		// Each latch has one assignment, and it sets the latch. The
+		// confirmation time has one, behind a comparison that only lets it
+		// move forward.
+		{"state", "withdrawn", map[string]int{
+			state + "New|zero-initializer": 1, state + "State.Withdraw|assignment": 1, state + "State.Commissioned|read": 1,
+			state + "State.Installable|read": 1, state + "State.Install|read": 1, state + "State.Confirmable|read": 1,
+			state + "State.Current|read": 1, state + "State.Inspect|read": 1,
+		}},
+		{"state", "superseded", map[string]int{
+			state + "New|zero-initializer": 1, state + "State.Confirm|assignment": 1, state + "State.Installable|read": 1,
+			state + "State.Install|read": 1, state + "State.Confirmable|read": 1, state + "State.Current|read": 1,
+			state + "State.Inspect|read": 1,
+		}},
+		{"state", "confirmed", map[string]int{
+			state + "New|zero-initializer": 1, state + "State.Confirm|read": 1, state + "State.Confirm|assignment": 1,
+			state + "State.Current|read": 1, state + "State.Inspect|read": 1,
+		}},
+		// Every field of a view is set by the literal in Install and only read
+		// afterwards.
+		{"view", "installation", map[string]int{
+			state + "State.Install|initializer": 1, state + "State.Withdraw|read": 1, state + "State.Confirm|read": 1, state + "State.Current|read": 1,
+		}},
+		{"view", "epoch", map[string]int{
+			state + "State.Install|initializer": 1, state + "State.Withdraw|read": 1, state + "State.Confirm|read": 1, state + "State.Current|read": 1,
+		}},
+		{"view", "token", map[string]int{
+			state + "State.Install|initializer": 1, state + "State.Withdraw|read": 1, state + "State.Confirm|read": 1, state + "View.Token|read": 1,
+		}},
+		{"view", "content", map[string]int{
+			state + "State.Install|initializer": 1, state + "State.Confirm|read": 2, state + "View.Trust|read": 1,
+			state + "View.Verifier|read": 1, state + "View.Policies|read": 1,
+		}},
+		{"view", "proof", map[string]int{state + "State.Install|initializer": 1, state + "View.Proof|read": 1}},
+		{"view", "skew", map[string]int{state + "State.Install|initializer": 1, state + "State.Current|read": 1}},
 	}
 	const storePath = "execution-substrate/es/admission/internal/reliablesubmit"
 	const storeAdmission = "es/admission/internal/reliablesubmit/operational_admission.go:"
@@ -2765,6 +2798,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 	for _, field := range storeAccessInventories {
 		addOwner(owner{storePath, field.owner}, field.name)
 		accessFields = append(accessFields, accessOwner{storePath, field})
+	}
+	for _, field := range stateAccessInventories {
+		addOwner(owner{statePath, field.owner}, field.name)
+		accessFields = append(accessFields, accessOwner{statePath, field})
 	}
 	// What the other packages of the module do with a whole value of an owning
 	// type. A type that is not named here has no such occurrence anywhere.
@@ -2878,18 +2915,29 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			// that clears the latches of the Service, one that reaches its view
 			// and one that rewrites the view, and one that clears the command
 			// latch of a store access. None is instantiated in its package.
+			// Since the admission state has a package of its own, the latches
+			// and the view are fields of its two structs there, and the Service
+			// holds a handle. The same forms are added where the fields now are,
+			// and to the Service for what it still holds.
 			switch key {
-			case owner{admissionPath, "operationalAdmissionSnapshot"}:
+			case owner{statePath, "view"}:
 				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); "+
-					"mirror.trust.SignerPolicy.RevokedSigners = nil; mirror.trust.ArtifactPolicy.RevokedArtifacts = nil }\n"+
+					"mirror.content.Trust.SignerPolicy.RevokedSigners = nil; mirror.content.Trust.ArtifactPolicy.RevokedArtifacts = nil }\n"+
 					"func zzGuardProbeClear%[1]s[V interface{ *%[2]s }](target V) { mirror := (*%[3]s)(target); "+
-					"mirror.trust.SignerPolicy.RevokedSigners = nil; mirror.trust.ArtifactPolicy.RevokedArtifacts = nil }\n", name, key.typeName, mirror))
+					"mirror.content.Trust.SignerPolicy.RevokedSigners = nil; mirror.content.Trust.ArtifactPolicy.RevokedArtifacts = nil }\n", name, key.typeName, mirror))
+			case owner{statePath, "state"}:
+				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); "+
+					"mirror.withdrawn = false; mirror.superseded = false; mirror.confirmed = time.Now() }\n"+
+					"func zzGuardProbeReopen%[1]s[S interface{ *%[2]s }](target S) { mirror := (*%[3]s)(target); "+
+					"mirror.withdrawn = false; mirror.superseded = false; mirror.confirmed = time.Now() }\n"+
+					"func zzGuardProbeView%[1]s[S interface{ *%[2]s }](target S) *view { return (*%[3]s)(target).view }\n",
+					name, key.typeName, mirror))
 			case owner{admissionPath, "Service"}:
 				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeWrite%[1]s(target *%[2]s) { mirror := (*%[3]s)(target); "+
-					"mirror.operationalWithdrawn = false; mirror.operationalSuperseded = false; mirror.operationalConfirmed = time.Now() }\n"+
+					"mirror.trustModelVerified = true; mirror.trustModelOwner = target; mirror.operational = admissionstate.State{} }\n"+
 					"func zzGuardProbeReopen%[1]s[S interface{ *%[2]s }](target S) { mirror := (*%[3]s)(target); "+
-					"mirror.operationalWithdrawn = false; mirror.operationalSuperseded = false; mirror.operationalConfirmed = time.Now() }\n"+
-					"func zzGuardProbeView%[1]s[S interface{ *%[2]s }](target S) *operationalAdmissionSnapshot { return (*%[3]s)(target).operationalAdmission }\n",
+					"mirror.trustModelVerified = true; mirror.operational = admissionstate.State{} }\n"+
+					"func zzGuardProbeView%[1]s[S interface{ *%[2]s }](target S) admissionstate.State { return (*%[3]s)(target).operational }\n",
 					name, key.typeName, mirror))
 			case owner{storePath, "OperationalAccess"}:
 				appendTo(probes, pkg, fileName, fmt.Sprintf("func zzGuardProbeIdle%[1]s[A interface{ *%[2]s }](target A) { (*%[3]s)(target).busy.Store(false) }\n",
@@ -2942,10 +2990,10 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 			}
 			var forms []string
 			switch key {
-			case owner{admissionPath, "operationalAdmissionSnapshot"}:
+			case owner{statePath, "view"}:
 				want["zzGuardProbeWrite"+name+"|whole-convert"] = 1
 				forms = []string{"Write", "Clear"}
-			case owner{admissionPath, "Service"}:
+			case owner{statePath, "state"}, owner{admissionPath, "Service"}:
 				want["zzGuardProbeWrite"+name+"|whole-convert"] = 1
 				forms = []string{"Write", "Reopen", "View"}
 			case owner{storePath, "OperationalAccess"}:
@@ -3047,6 +3095,98 @@ func TestExecutionSubstrateSynchronizedMutableStateReferenceInventoryIsExact(t *
 					t.Fatalf("probe occurrences: got %v want %v", got, want)
 				}
 			})
+		}
+	})
+	// The admission state has a package of its own so that the forms the
+	// audits found do not compile anywhere else. Each form below is added in
+	// memory to a file of es/admission, the one package that holds a handle,
+	// and type-checked against the real packages. The type checker has to
+	// refuse it, in the added line and nowhere else. This is the first line;
+	// the inventories above are the second, for what does compile.
+	t.Run("what does not compile outside the admission state package", func(t *testing.T) {
+		const fileName = "es/admission/reliable_submit_operational_handoff.go"
+		for _, view := range views {
+			host := requireTypedProductionPackage(t, view.packages, admissionPath)
+			source, ok := host.sources[fileName]
+			if !ok || !strings.Contains(source, "\"execution-substrate/es/admission/internal/admissionstate\"") {
+				t.Fatalf("%s is not a file of %s that imports the admission state package", fileName, admissionPath)
+			}
+			lines := strings.Count(source, "\n") + 1
+			check := func(text string) []string {
+				return view.metadata.typeErrorsWithOverlay(t, admissionPath, map[string]string{fileName: source + "\n" + text + "\n"})
+			}
+			// Controls: what another package may do compiles. It calls the
+			// exported methods, and it holds, copies and compares handles.
+			for name, text := range map[string]string{
+				"nothing added":            "",
+				"a method call":            "func zzCompiles(s *Service) bool { return s.operational.Commissioned() }",
+				"a handle copied":          "func zzCompiles(s *Service) admissionstate.State { kept := s.operational; return kept }",
+				"the zero handle":          "func zzCompiles() admissionstate.View { return admissionstate.View{} }",
+				"handles compared":         "func zzCompiles(a, b admissionstate.View) bool { return a == b }",
+				"a type with a handle":     "type zzCompiles struct{ held admissionstate.State }",
+				"content made by a caller": "func zzCompiles() admissionstate.Content { return admissionstate.Content{Policies: []admissionstate.Policy{{ID: \"x\"}}} }",
+			} {
+				if got := check(text); len(got) != 0 {
+					t.Fatalf("%s: control %q does not compile: %q", view.target, name, got)
+				}
+			}
+			for _, probe := range []struct {
+				name, text, message string
+			}{
+				// A field of the state or of a view, through either handle.
+				{"the pointer of the state handle", "func zzRefused(s *Service) { _ = s.operational.s }", "unexported field s"},
+				{"the pointer of the view handle", "func zzRefused(v admissionstate.View) { _ = v.v }", "unexported field v"},
+				{"a latch through the handle", "func zzRefused(s *Service) { s.operational.s.withdrawn = false }", "unexported field s"},
+				{"the confirmation time through the handle", "func zzRefused(s *Service) { s.operational.s.confirmed = s.operational.s.confirmed }", "unexported field s"},
+				{"the content of a view", "func zzRefused(v admissionstate.View) { v.v.content.Trust.SignerPolicy.RevokedSigners = nil }", "unexported field v"},
+				// The two types, by name: a variable, a conversion, a mirror
+				// that needs the name for one of its fields, a type parameter
+				// constraint.
+				{"the state type", "func zzRefused() { var _ *admissionstate.state }", "not exported by package admissionstate"},
+				{"the view type", "func zzRefused() { var _ admissionstate.view }", "not exported by package admissionstate"},
+				{"a constraint that names the state", "func zzRefused[S interface{ *admissionstate.state }](target S) {}", "not exported by package admissionstate"},
+				{"a new state by literal", "func zzRefused() { _ = &admissionstate.state{} }", "not exported by package admissionstate"},
+				// A handle made by hand, to carry a pointer of the caller's choice.
+				{"a state handle with a keyed field", "func zzRefused() { _ = admissionstate.State{s: nil} }", "unexported field s"},
+				{"a state handle with a positional field", "func zzRefused() { _ = admissionstate.State{nil} }", "unexported field s"},
+				{"a view handle with a keyed field", "func zzRefused() { _ = admissionstate.View{v: nil} }", "unexported field v"},
+				{"a view handle with a positional field", "func zzRefused() { _ = admissionstate.View{nil} }", "unexported field v"},
+				// A struct type of the handle's shape, written here. Its field s
+				// is another package's s, so the two types never convert.
+				{"a mirror of the state handle", "func zzRefused(s *Service) { type mirror struct{ s *struct{} }; _ = (*mirror)(&s.operational) }", "cannot convert"},
+				{"a mirror of the view handle", "func zzRefused(v *admissionstate.View) { type mirror struct{ v *struct{} }; _ = (*mirror)(v) }", "cannot convert"},
+				{"a mirror of the state handle with another pointer type", "func zzRefused(s *Service) { type mirror struct{ s *int }; _ = (*mirror)(&s.operational) }", "cannot convert"},
+				{"a defined type of the handle, then its field", "func zzRefused(s *Service) { type defined admissionstate.State; _ = defined(s.operational).s }", "unexported field s"},
+				{"an embedded handle, then its field", "func zzRefused(s *Service) { type holder struct{ admissionstate.State }; _ = holder{s.operational}.s }", "undefined"},
+				// The whole value of the state: a copy, an overwrite, a restore.
+				{"a copy of the state", "func zzRefused(s *Service) { saved := *s.operational.s; _ = saved }", "unexported field s"},
+				{"an overwrite of the state through a generic function", "func zzZero[T any](v *T) { var z T; *v = z }\nfunc zzRefused(s *Service) { zzZero(s.operational.s) }", "unexported field s"},
+				// What the package keeps to itself. The export data names an
+				// unexported function only where an exported one inlines it, so
+				// the type checker has two ways to say that it cannot be named.
+				{"the function that reads the owner", "func zzRefused(s *Service) { _ = s.operational.held(s) }", "unexported method held"},
+				{"the deadline arithmetic", "func zzRefused() { _ = admissionstate.fresh }", "fresh not exported by package admissionstate|undefined: admissionstate.fresh"},
+				{"the copy of the trust lists", "func zzRefused(c admissionstate.Content) { _ = admissionstate.cloneTrust(c.Trust) }", "cloneTrust not exported by package admissionstate|undefined: admissionstate.cloneTrust"},
+			} {
+				got := check(probe.text)
+				if len(got) == 0 {
+					t.Fatalf("%s: %q compiles outside the admission state package", view.target, probe.name)
+				}
+				matched := false
+				for _, message := range got {
+					var line int
+					rest, found := strings.CutPrefix(message, fileName+":")
+					if _, err := fmt.Sscanf(rest, "%d:", &line); !found || err != nil || line <= lines {
+						t.Fatalf("%s: %q is refused by an error outside the added text: %q", view.target, probe.name, got)
+					}
+					for _, expected := range strings.Split(probe.message, "|") {
+						matched = matched || strings.Contains(message, expected)
+					}
+				}
+				if !matched {
+					t.Fatalf("%s: %q is refused for another reason than %q: %q", view.target, probe.name, probe.message, got)
+				}
+			}
 		}
 	})
 	t.Run("a protected field is unexported", func(t *testing.T) {
@@ -3927,6 +4067,141 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 	})
 }
 
+// The admission state package is one production file, and the guard holds it
+// by the hash of its content. Whatever the package does to the state it does
+// in that file, so every change to it is a change of this constant in the
+// same commit, and a second production file, or a file of another language,
+// is refused. Test files are not held.
+const operationalAdmissionStateDirectory = "es/admission/internal/admissionstate"
+const operationalAdmissionStatePin = "sha256:e18a153eb0115085fec9a80b049ddbd44cd2aa59a8410792951c3c392368dc8f"
+
+func validateOperationalAdmissionStatePackage(listings map[string][]string, sources map[string]string, pin string) error {
+	entries, ok := listings[operationalAdmissionStateDirectory]
+	if !ok {
+		return fmt.Errorf("%s was not listed", operationalAdmissionStateDirectory)
+	}
+	for directory := range listings {
+		if strings.HasPrefix(directory, operationalAdmissionStateDirectory+"/") {
+			return fmt.Errorf("%s is a directory below the admission state package", directory)
+		}
+	}
+	const file = "state.go"
+	found := false
+	for _, name := range entries {
+		switch {
+		case name == file:
+			found = true
+		case strings.HasSuffix(name, "_test.go"):
+		default:
+			return fmt.Errorf("%s/%s is a second file of the admission state package", operationalAdmissionStateDirectory, name)
+		}
+	}
+	source, read := sources[operationalAdmissionStateDirectory+"/"+file]
+	if !found || !read {
+		return fmt.Errorf("%s/%s is missing", operationalAdmissionStateDirectory, file)
+	}
+	if got := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(source))); got != pin {
+		return fmt.Errorf("%s/%s changed: its content is %s and the reviewed content is %s", operationalAdmissionStateDirectory, file, got, pin)
+	}
+	return nil
+}
+
+func TestOperationalAdmissionStatePackageIsOneReviewedFile(t *testing.T) {
+	listings, sources := repositoryProductionListings(t, repositoryRootForAdmissionGuard(t))
+	if err := validateOperationalAdmissionStatePackage(listings, sources, operationalAdmissionStatePin); err != nil {
+		t.Fatal(err)
+	}
+	const file = operationalAdmissionStateDirectory + "/state.go"
+	// The file is among those the import inventory reads, and it imports
+	// none of reflect, unsafe and C.
+	imports, err := operationalGuardImportInventory(map[string]string{file: sources[file]})
+	if err != nil || len(imports) != 0 {
+		t.Fatalf("the admission state file imports reflect, unsafe or C: %v %v", imports, err)
+	}
+	copied := func() (map[string][]string, map[string]string) {
+		l := make(map[string][]string, len(listings))
+		for directory, entries := range listings {
+			l[directory] = append([]string(nil), entries...)
+		}
+		s := make(map[string]string, len(sources))
+		for name, source := range sources {
+			s[name] = source
+		}
+		return l, s
+	}
+	for name, change := range map[string]func(map[string][]string, map[string]string){
+		"a function added to the file":   func(_ map[string][]string, s map[string]string) { s[file] += "\nfunc zzAdded() {}\n" },
+		"one byte changed in the file":   func(_ map[string][]string, s map[string]string) { s[file] += " " },
+		"one byte removed from the file": func(_ map[string][]string, s map[string]string) { s[file] = s[file][:len(s[file])-1] },
+		"a second production file": func(l map[string][]string, s map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "added.go")
+			s[operationalAdmissionStateDirectory+"/added.go"] = "package admissionstate\n"
+		},
+		"a second file that only one platform builds": func(l map[string][]string, s map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "added_windows.go")
+			s[operationalAdmissionStateDirectory+"/added_windows.go"] = "package admissionstate\n"
+		},
+		"an assembly file": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "state_amd64.s")
+		},
+		"a file without a name ending": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "state")
+		},
+		"a file whose name only ends like a test": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "state_test.go.s")
+		},
+		"a directory below the package": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory+"/inner"] = []string{"inner.go"}
+		},
+		"the file renamed": func(l map[string][]string, s map[string]string) {
+			l[operationalAdmissionStateDirectory] = []string{"moved.go", "state_test.go"}
+			s[operationalAdmissionStateDirectory+"/moved.go"] = s[file]
+			delete(s, file)
+		},
+		"the file gone, the tests left": func(l map[string][]string, s map[string]string) {
+			l[operationalAdmissionStateDirectory] = []string{"state_test.go"}
+			delete(s, file)
+		},
+		"the directory gone": func(l map[string][]string, s map[string]string) {
+			delete(l, operationalAdmissionStateDirectory)
+			delete(s, file)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, s := copied()
+			change(l, s)
+			if err := validateOperationalAdmissionStatePackage(l, s, operationalAdmissionStatePin); err == nil {
+				t.Fatal("the change passed")
+			}
+		})
+	}
+	// Controls: test files come and go freely, and so does a file elsewhere.
+	for name, change := range map[string]func(map[string][]string, map[string]string){
+		"a second test file": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory] = append(l[operationalAdmissionStateDirectory], "more_test.go")
+		},
+		"no test file": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory] = []string{"state.go"}
+		},
+		"a file changed in another package": func(_ map[string][]string, s map[string]string) { s["es/app/app.go"] += "\nfunc zzAdded() {}\n" },
+		"a directory beside the package": func(l map[string][]string, _ map[string]string) {
+			l[operationalAdmissionStateDirectory+"x"] = []string{"x.go"}
+		},
+	} {
+		t.Run("control: "+name, func(t *testing.T) {
+			l, s := copied()
+			change(l, s)
+			if err := validateOperationalAdmissionStatePackage(l, s, operationalAdmissionStatePin); err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+		})
+	}
+	// A pin of another content refuses the file as it is.
+	if err := validateOperationalAdmissionStatePackage(listings, sources, "sha256:"+strings.Repeat("0", 64)); err == nil {
+		t.Fatal("the file passed under another pin")
+	}
+}
+
 // validateGuardedProductionFileSet compares the entries of one directory with
 // the files the typed loader read for it under its build targets. A Go file
 // that no target includes stands behind a build constraint the guards do not
@@ -4266,7 +4541,11 @@ func TestOperationalGuardLoadsEveryProductionFile(t *testing.T) {
 			"ignore line":                    {head + "ignore ./es/app\n", []string{"go", "ignore", "module", "require"}},
 			"retract line":                   {head + "retract v1.0.0\n", []string{"go", "module", "require", "retract"}},
 			"replace in a comment only":      {head + "// replace a => ./local\nrequire b v1.0.0 // replace\n", []string{"go", "module", "require"}},
-			"windows line ends":              {"module m\r\ngo 1.26\r\nreplace a => ./local\r\n", []string{"go", "module", "replace"}},
+			// A comment ends at the line end, also behind the bracket that opens a
+			// block and with a bracket of its own.
+			"require block opened before a comment": {head + "require ( // direct (see the plan)\n\tb v1.0.0\n)\n", []string{"go", "module", "require"}},
+			"replace block opened before a comment": {head + "replace ( // local (for now)\n\ta => ./local\n)\n", []string{"go", "module", "replace", "require"}},
+			"windows line ends":                     {"module m\r\ngo 1.26\r\nreplace a => ./local\r\n", []string{"go", "module", "replace"}},
 		} {
 			t.Run(name, func(t *testing.T) {
 				if got := goModDirectiveKinds(test.contents); !reflect.DeepEqual(got, test.want) {
@@ -4903,6 +5182,57 @@ func pathIsWithin(directory string, path string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
+// packagesCompiledBelow returns the loaded packages that are compiled from one
+// of the named repository directories or from a directory below one. An
+// inventory whose scope is a part of the repository reads these. The scope is
+// a directory and not a pattern or an import path, so a package in a testdata,
+// dot or underscore directory below it is read, and a dependency compiled
+// from another part of the repository is not.
+func packagesCompiledBelow(t *testing.T, packages []*typedProductionPackage, directories ...string) []*typedProductionPackage {
+	t.Helper()
+	scoped := selectPackagesCompiledBelow(repositoryRootForAdmissionGuard(t), packages, directories...)
+	if len(scoped) == 0 {
+		t.Fatalf("no loaded package is compiled from %v", directories)
+	}
+	return scoped
+}
+
+func selectPackagesCompiledBelow(repositoryRoot string, packages []*typedProductionPackage, directories ...string) []*typedProductionPackage {
+	var scoped []*typedProductionPackage
+	for _, pkg := range packages {
+		for _, directory := range directories {
+			if pkg.dir != "" && pathIsWithin(filepath.Join(repositoryRoot, filepath.FromSlash(directory)), pkg.dir) {
+				scoped = append(scoped, pkg)
+				break
+			}
+		}
+	}
+	return scoped
+}
+
+func TestPackagesCompiledBelowReadsADirectoryScope(t *testing.T) {
+	root := filepath.FromSlash("/repository")
+	at := func(directory string) *typedProductionPackage {
+		return &typedProductionPackage{dir: filepath.Join(root, filepath.FromSlash(directory)), importPath: directory}
+	}
+	packages := []*typedProductionPackage{
+		at("es"), at("es/admission"), at("es/admission/testdata/hidden"), at("es/.dot/x"), at("es/_under"),
+		at("cmd/es"), at("cmd/es/internal/x"),
+		at("ars/index"), at("cmd/esx"), at("essential"), at("cmd"), at("internal/es"), {importPath: "no directory"},
+	}
+	var got []string
+	for _, pkg := range selectPackagesCompiledBelow(root, packages, "es", "cmd/es") {
+		got = append(got, pkg.importPath)
+	}
+	want := []string{"es", "es/admission", "es/admission/testdata/hidden", "es/.dot/x", "es/_under", "cmd/es", "cmd/es/internal/x"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope differs: got %v want %v", got, want)
+	}
+	if scoped := selectPackagesCompiledBelow(root, packages, "missing"); len(scoped) != 0 {
+		t.Fatalf("a directory that holds no package selected %d", len(scoped))
+	}
+}
+
 // selectCompiledRepositoryPackages names what the typed inventories read out
 // of one go list -deps closure: every package the go command compiles from a
 // directory of the repository. That is decided by the package's directory
@@ -5039,7 +5369,32 @@ func (metadata *typedProductionMetadata) typeCheckWithOverlay(t *testing.T, impo
 	return nil
 }
 
+// typeErrorsWithOverlay type-checks one selected package with the content of
+// some of its files replaced in memory, like typeCheckWithOverlay, and returns
+// the type errors instead of failing on them. Each is "file:line: message"
+// with the repository-relative file. It is how a test shows that a form does
+// not compile.
+func (metadata *typedProductionMetadata) typeErrorsWithOverlay(t *testing.T, importPath string, overlay map[string]string) []string {
+	t.Helper()
+	for _, item := range metadata.selected {
+		if item.ImportPath == importPath {
+			var found []string
+			metadata.typeCheckCollecting(t, item, overlay, &found)
+			return found
+		}
+	}
+	t.Fatalf("production package %s was not selected", importPath)
+	return nil
+}
+
 func (metadata *typedProductionMetadata) typeCheck(t *testing.T, item goListProductionPackage, overlay map[string]string) *typedProductionPackage {
+	t.Helper()
+	return metadata.typeCheckCollecting(t, item, overlay, nil)
+}
+
+// typeCheckCollecting fails the test on a type error unless the caller asks
+// for the errors, in which case it returns no package.
+func (metadata *typedProductionMetadata) typeCheckCollecting(t *testing.T, item goListProductionPackage, overlay map[string]string, typeErrors *[]string) *typedProductionPackage {
 	t.Helper()
 	fset := token.NewFileSet()
 	parsed := make(map[string]*ast.File, len(item.GoFiles))
@@ -5089,6 +5444,23 @@ func (metadata *typedProductionMetadata) typeCheck(t *testing.T, item goListProd
 	config := types.Config{
 		Importer: importer.ForCompiler(fset, "gc", lookup),
 		Sizes:    types.SizesFor("gc", metadata.target.goarch),
+	}
+	if typeErrors != nil {
+		config.Error = func(err error) {
+			var typeError types.Error
+			if !errors.As(err, &typeError) {
+				*typeErrors = append(*typeErrors, err.Error())
+				return
+			}
+			position := typeError.Fset.Position(typeError.Pos)
+			name := position.Filename
+			if relative, relErr := filepath.Rel(metadata.repositoryRoot, name); relErr == nil {
+				name = filepath.ToSlash(relative)
+			}
+			*typeErrors = append(*typeErrors, fmt.Sprintf("%s:%d: %s", name, position.Line, typeError.Msg))
+		}
+		_, _ = config.Check(item.ImportPath, fset, files, info)
+		return nil
 	}
 	typedPackage, err := config.Check(item.ImportPath, fset, files, info)
 	if err != nil {

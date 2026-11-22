@@ -390,12 +390,14 @@ again.
 | Advance (expected generation g) | Row at generation g with a different digest, enabled or withdrawn: write generation g+1 with this digest, enabled. Row already at g+1 with this digest, enabled: success. Anything else refuses. |
 | Withdraw | Enabled row with the token's installation and epoch: write withdrawn. Already withdrawn: success. The token's generation need not match, so a fenced process can still stop the domain. |
 
-The unexported Service-owned view is installed at most once, after startup
+The view of a Service is installed at most once, after startup
 has loaded and verified trust, by Commission or Advance for the domain's
 nonzero installation and epoch. It holds the returned token and deep copies of
 the normalized trust lists, provenance verifier key bytes and validated
 built-in policy entries; the digest is taken over exactly those retained
-lists, so what is hashed is what is enforced. The verified trust publication
+lists, so what is hashed is what is enforced. The view, the latches and the
+confirmation time are held by the admission state package below, not by
+fields of `Service`. The verified trust publication
 is bound to the original Service instance; a copied precommission Service
 cannot borrow it. The retained trust JSON representation must fit the existing
 256 KiB dependency response bound. Nil ordinary evaluator means its
@@ -416,8 +418,9 @@ domain-wide, and enabling again requires an advance to new content. Replacing
 trust, verifier or policy advances the generation in the same epoch and does
 not invalidate any original: a claim the new content allows completes, and a
 claim it denies is refused as denied. None of the three operations may run
-inside a writer turn, and none holds `Service.mu` across its store call; the
-view or latch changes only outside the transaction.
+inside a writer turn, and none holds `Service.mu` or the lock of the
+admission state across its store call; the view or latch changes only
+outside the transaction.
 
 Each of the three operations runs its one transaction under the custody
 handle's lock in read mode (`OperationalCustody.mu`), so `Close` waits for it.
@@ -464,7 +467,9 @@ comparison does.
 The process records the time of its last successful confirmation.
 Commissioning and advancing record none, so the first use must confirm.
 Confirmation runs outside every writer turn and every transaction, and holds
-neither `Service.mu` nor the owner mutex while it fetches. At the two
+neither `Service.mu` nor the owner mutex while it fetches. The lock of the
+admission state is held only for the read before the request and for the
+write after it. At the two
 pre-checks it runs inside the borrow of the original, so the custody handle's
 read lock is held across the request and `OperationalCustody.Close` waits for
 a request in flight, bounded by the EGS client timeout. The confirmation of a
@@ -497,6 +502,77 @@ tell (`CP-ROLLBACK` in §8). Within one domain the generation counter still
 prevents a stale process from joining or silently replacing newer content.
 Ordinary unkeyed Submit is unchanged and still reads trust only at startup.
 
+#### Admission state package
+
+The installed view, the withdrawal and supersession latches and the time of
+the last confirmation are fields of one unexported struct in the package
+`es/admission/internal/admissionstate`, under that package's own read-write
+lock. `Service.mu` does not cover them. The package is one production file.
+It imports neither `reflect`, `unsafe` nor `C` and performs no I/O, and
+while it holds its lock it calls no function that a caller supplied.
+
+Two handle types leave the package: the state of one Service and one
+installed view. Each is a struct whose only field is an unexported pointer
+to an unexported struct. `NewService` makes the state once, for that
+Service, and keeps the handle in the unexported field `Service.operational`.
+A Service built any other way holds the zero handle, which is closed: it
+answers no to every question and installs nothing. Every method of the
+state takes the owner and serves only the Service the state was made for,
+so a copy of a Service borrows nothing; the one exception is the question
+whether the state was ever commissioned, which a copy is answered like the
+original. The package owns every rule of this section that needs no I/O:
+at most one view, a token that names the installation, the epoch and the
+digest of exactly the content installed, two latches that nothing clears, a
+confirmation time that only moves forward, and the deadline arithmetic. The
+admission digest is computed there, over the content the view holds.
+
+Admission content crosses the package boundary as plain data: the
+normalized trust lists, the verifier's algorithm, key ID and public key, and
+each selected built-in policy by its identifier with its configured entries
+in order. It is copied on the way in and on every way out, so no caller
+holds memory that a view enforces. `es/admission` maps its built-in policy
+set to that form and back, and builds the set from the view for every
+evaluation, so what is evaluated is what the digest names. A policy the
+mapping does not know refuses in both directions.
+
+Outside the package the following do not compile. A test holds that by
+compiling each form against the real packages for all three build targets,
+beside controls that do compile:
+
+- a selection of a field of the state, of a view or of either handle;
+- the name of either struct type, in a declaration, a literal, a conversion
+  or a constraint;
+- a handle literal that sets its pointer;
+- a conversion of a handle, or of a pointer to one, to a struct type of the
+  same shape written elsewhere, because an unexported field name of another
+  package is a different name;
+- a copy, an overwrite or a restore of the state's value, because no
+  expression outside the package has that type.
+
+For these two struct types the whole-value, mirror and type-parameter rules
+of the guard below are therefore implied by the compiler outside the
+package. They stay in force for every other owning type, and inside the
+package.
+
+Two things remain possible outside the package, and the guard below holds
+both by exact inventories. The first is a call of an exported function or
+method of the package, which Go's `internal` rule limits to `es/admission`
+and the packages below it. A call cannot clear a latch, move the
+confirmation time back or install a second view. A wrong call can still
+install, withdraw or record a confirmation at a place no review put it, for
+example a confirmation that asked nobody. The second is an assignment of the
+whole handle `Service.operational`, which only `es/admission` can write. A
+handle saved earlier names the same state and restores nothing. A new handle
+from the constructor, or the zero handle, is a state without a view: like a
+restarted process it has forgotten the local latches, it admits nothing
+until a view is installed in it with a token of the store for its content,
+and its first use must confirm with EGS.
+
+The package boundary does not hold against reflection or `unsafe`. A
+`reflect` value reached from a handle can be made settable without an
+`unsafe` import, and the red-team tests rewrite a view that way. Those
+roads stay with the import inventory below.
+
 #### Typed inventories and guard limits
 
 Maintained typed production inventories enforce zero non-test references to
@@ -514,9 +590,11 @@ configuration of
 `Service.operationalProof` or its hook callbacks, the clock seam included;
 exactly one reference to `Service.confirmOperationalAdmission`, whose
 once-per-invocation closure is invoked at exactly three sites; exactly two
-callers of `Service.fetchVerifiedTrustModel`; and exactly one
-`operationalAdmissionSnapshot` construction, in the one function that
-installs the view, which only the commissioning and advance methods call.
+callers of `Service.fetchVerifiedTrustModel`; exactly one construction of the
+admission state, in its constructor, which `NewService` alone calls; and
+exactly one view construction, in the install method of the state, which
+only the one function that installs the view calls, which only the
+commissioning and advance methods call.
 Exactly three store functions contain a statement that
 writes the admission table, and no production statement updates its
 installation or epoch column. The same gate carries the prerequisite
@@ -529,8 +607,10 @@ Neither is a direct call, so each is refused as an indirect reference even
 where its site is listed: a gated entry cannot be reached through an
 interface, a constraint or an embedded interface of these packages.
 Exact protected-field reads, assignments and keyed initializers cover verified
-trust ownership, installed view/withdrawal/supersession/confirmation, view
-identity/token/content, the handoff owner links and proof hooks; mutex
+trust ownership, the handle `Service.operational`, and inside the admission
+state package the installed view/withdrawal/supersession/confirmation and
+the view identity/token/content, then the handoff owner links and proof
+hooks; mutex
 reference counts do not replace
 these access inventories. An occurrence inside a function literal is an access
 kind of its own and passes only where an inventory lists it: the two token
@@ -622,11 +702,38 @@ instantiate with a whole value, and each of those is listed there under the
 kinds above. Today the only such occurrences are the seal permits that
 `es/admission` receives from the store by value. A whole-value write is
 listed and not named as a limit because it is not fail closed in every form:
-a zeroed Service has no view and a copy of a commissioned Service holds a
-view bound to the original, so both admit nothing, and a copied or zeroed
-store handle fails its self-pointer check, but a saved whole value written
-back to the same Service restores the fields it held, the latches and the
-confirmation included.
+a zeroed Service holds the closed zero handle and a copy of a commissioned
+Service holds a handle bound to the original, so both admit nothing, and a
+copied or zeroed store handle fails its self-pointer check, but a saved
+whole value written back to the same owner restores the fields it held.
+The admission state is no longer among those fields: a `Service` value
+written back restores the handle, which names the same state with its
+latches and its confirmation time as they are now.
+
+The admission state package has inventories of its own. Every exported
+function and method of the package has an exact list of the functions that
+reference it, with a count for each: the constructor in `NewService`; the
+question whether the state was commissioned, twice in `Service.Initialize`;
+the question whether a view can be installed and the install itself, in the
+one function that installs the view; withdraw, the two steps of a
+confirmation and the question for the current view, each in the Service
+method of the same purpose; the digest where the Service computes its
+content, and inside the package at the install and at the confirmation; the
+token read at establishment and at the comparison and the match of the
+qualification callback; the content reads in the judgment of a retained
+original; the proof value in the one function that returns the proof hooks;
+and the inspection method and the question whether a handle names a view,
+which exist for tests, nowhere. The exported
+surface of the package is a closed list, so a new exported function, method,
+type, constant or handle field fails a test until it is listed and has a
+call-site inventory. The field and lock inventories above read the state
+and view structs like every owning type. The one production file of the
+package is pinned by the SHA-256 hash of its bytes, and a second non-test
+file, a file of another kind or a directory below it fails the same test,
+so every change of the package is a reviewed change. With that pin the
+field and lock inventories inside the package repeat what the reviewed
+bytes already fix. They stay, so that an update of the pin shows which
+access changed.
 
 Limits that remain, by name: values reached through an alias or pointer that
 was itself obtained at an inventoried site; the bodies of called functions
@@ -671,7 +778,8 @@ standard library and third-party dependencies, is not read. The table-writer inv
 reads SQL statement literals; a statement assembled at run time is not seen
 by it, and the triggers of §2, not that inventory, are the barrier. The maintained guarantee is exact syntactic
 occurrence, function site and access kind, not a general proof of aliases or
-runtime safety. `Service.mu` owns the mutable Service state, while
+runtime safety. `Service.mu` owns the mutable Service state and the lock of
+the admission state owns the latches and the confirmation time, while
 the installed view is immutable and bound to its original Service.
 The per-instance proof hooks are nil in production and non-authoritative.
 
@@ -683,8 +791,9 @@ original, keys, revision and retained material, compares the admission token
 with the row, then checks complete current admission on that
 same original. This is only bounded local Service admission over retained
 bytes. Inside a SQLite writer the lock order is writer then a brief
-`Service.mu` read. Copy the immutable view and the latch and confirmation
-state, release the Service lock, run bounded local evidence verification,
+read of the admission state under its lock, without `Service.mu`. Take the
+handle of the immutable view while the latch and confirmation state allow
+it, release that lock, run bounded local evidence verification,
 trust and built-in `RequiredInputClasses`/`Evaluate`, then sample the view,
 latches, deadline and identity again before positive return. No resolver,
 ARS/EGS read, arbitrary evaluator, filesystem materialization or provider I/O
@@ -692,14 +801,18 @@ runs in this callback. Commission, advance and withdrawal take the custody
 handle's lock in read mode and then the SQLite writer, without `Service.mu`
 and without a stage or owner lock; the confirmation holds neither
 `Service.mu` nor the owner mutex while it fetches, and at the two pre-checks
-it runs under the custody read lock of the borrow. The final sender lock order is
-owner mutex then a brief Service read; no reverse path is allowed.
+it runs under the custody read lock of the borrow. Installing a view takes
+`Service.mu` and then the lock of the admission state, so that a trust load
+cannot run between the comparison of the trust model and the install;
+nothing takes the two in the other order, and no lock is taken while the
+lock of the admission state is held. The final sender lock order is
+owner mutex then a brief read of the admission state; no reverse path is allowed.
 Post-COMMIT release rechecks the
 same admission before it can release a sender. Final owner-protected entry
 checks context, authority/Service/installation/epoch identity, withdrawal,
 supersession, the confirmation deadline, original/marker/stage/request and
-existing key eligibility before direct transport. No Service lock spans
-transport.
+existing key eligibility before direct transport. No Service lock and no
+lock of the admission state spans transport.
 
 The first four rows are the judgment of a retained original, at a pre-check
 or a first-effect cut.
@@ -1443,7 +1556,12 @@ this gate. It adds exactly four more paths: I/operational_admission.go (new),
 I/operational_admission_test.go (new),
 A/reliable_submit_operational_admission_redteam_test.go (new) and
 .docs/execution_lifecycle/implementation.md. With them the aggregate HEAD
-ceiling for PR #12 plus both repairs is 46 files. Any
+ceiling for PR #12 plus both repairs was 46 files.
+
+The admission state package is a further owner reconciliation at this gate.
+It adds exactly two more paths: A/internal/admissionstate/state.go (new) and
+A/internal/admissionstate/state_test.go (new). With them the aggregate HEAD
+ceiling for PR #12 plus its repairs is 48 files. Any
 further file again requires separate owner reconciliation.
 
 The seal-permit guard follows the shared reservation writer

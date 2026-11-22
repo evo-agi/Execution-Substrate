@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 )
@@ -22,34 +20,29 @@ import (
 // The evidence cap is the store's: custody and admission refuse the same size.
 const maxOperationalEvidenceBytes = reliablesubmit.OperationalEvidenceLimit
 
-// operationalAdmissionConfirmationLimit is how long a view may be used after
-// the last confirmation that EGS still serves the commissioned trust.
-const operationalAdmissionConfirmationLimit = 30 * time.Second
-
 var errOperationalAdmissionCommission = errors.New("private operational admission unavailable")
 
-// operationalAdmissionSnapshot is the view: an immutable copy of the admission
-// content, installed once, together with the token of the admission row it was
-// commissioned or advanced under. Its owner link prevents a copy of Service
-// from borrowing the authority.
-type operationalAdmissionSnapshot struct {
-	owner        *Service
-	installation [32]byte
-	epoch        uint64
-	token        reliablesubmit.OperationalAdmissionToken
-	trust        egsmodel.RuntimeTrustPolicy
-	verifier     ed25519Verifier
-	policy       admissionPolicySet
-	proof        *operationalAdmissionProofHooks
-}
+// The view, the withdrawal and supersession latches and the confirmation time
+// live in the package admissionstate. This package holds only the handle
+// Service.operational and reaches the state through its methods.
 
 // Nil in production. Tests may count calls made by the selected built-in set.
 // skew adds elapsed time to the confirmation deadline; it cannot remove any.
+// stricter is evaluated after the selected built-in set of the view; the set
+// stops at the first refusal, so it can refuse a claim or require an input,
+// and it cannot allow what the built-in set refuses.
 type operationalAdmissionProofHooks struct {
 	required        func([]AdmissionPolicyInputClass)
 	evaluated       func(bool)
 	contextObserved func(AdmissionPolicyContext)
 	skew            func() time.Duration
+	stricter        AdmissionPolicyEvaluator
+}
+
+// operationalProofOf returns the proof hooks a view was installed with.
+func operationalProofOf(view admissionstate.View) *operationalAdmissionProofHooks {
+	hooks, _ := view.Proof().(*operationalAdmissionProofHooks)
+	return hooks
 }
 
 func copyOperationalPolicySet(s admissionPolicySet) (admissionPolicySet, bool) {
@@ -103,63 +96,84 @@ func operationalPolicyEquals(a, b admissionPolicySet) bool {
 	return true
 }
 
-// operationalAdmissionDigest names the admission content: the normalized
-// trust lists, the evidence verifier, and the selected built-in policies with
-// every configured entry. It is taken over the values a view holds, so what
-// is hashed is what is enforced. It does not cover the compiled behaviour of
-// a built-in policy; two releases with equal configuration present one digest.
-func operationalAdmissionDigest(trust egsmodel.RuntimeTrustPolicy, verifier ed25519Verifier, policy admissionPolicySet) ([32]byte, bool) {
-	canonical, err := trust.CanonicalBytes()
-	if err != nil || len(policy.policies) == 0 {
-		return [32]byte{}, false
-	}
-	b := operationalFrame([]byte("ESOHADM1"), canonical)
-	b = operationalFrame(b, []byte(verifier.algorithm))
-	b = operationalFrame(b, []byte(verifier.keyID))
-	b = operationalFrame(b, verifier.publicKey)
-	b = binary.BigEndian.AppendUint32(b, uint32(len(policy.policies)))
-	for _, candidate := range policy.policies {
-		switch selected := candidate.(type) {
+// operationalPolicyContent names a copied built-in set as plain content: the
+// id of each selected policy and every configured entry, in order.
+func operationalPolicyContent(set admissionPolicySet) ([]admissionstate.Policy, bool) {
+	out := make([]admissionstate.Policy, 0, len(set.policies))
+	for _, candidate := range set.policies {
+		switch policy := candidate.(type) {
 		case selectedDestructiveShellCommandPolicy:
-			b = operationalFrame(b, []byte(selectedDestructiveShellCommandPolicyID))
-			b = binary.BigEndian.AppendUint32(b, 0)
+			out = append(out, admissionstate.Policy{ID: string(selectedDestructiveShellCommandPolicyID)})
 		case configuredStaticScriptLiteralDenyPolicy:
-			b = operationalFrame(b, []byte(configuredStaticScriptLiteralDenyPolicyID))
-			b = binary.BigEndian.AppendUint32(b, uint32(len(selected.entries)))
-			for _, entry := range selected.entries {
-				b = operationalFrame(b, []byte(entry.id))
-				b = operationalFrame(b, []byte(entry.literal))
+			entries := make([]admissionstate.PolicyEntry, 0, len(policy.entries))
+			for _, entry := range policy.entries {
+				entries = append(entries, admissionstate.PolicyEntry{ID: entry.id, Literal: entry.literal})
 			}
+			out = append(out, admissionstate.Policy{ID: string(configuredStaticScriptLiteralDenyPolicyID), Entries: entries})
 		default:
-			return [32]byte{}, false
+			return nil, false
 		}
 	}
-	return sha256.Sum256(b), true
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// operationalPolicySet builds the built-in set that plain content names. It
+// accepts exactly the shapes operationalPolicyContent produces from a copied
+// set: the selected policy first and without entries, then at most the
+// configured policy with at least one entry.
+func operationalPolicySet(policies []admissionstate.Policy) (admissionPolicySet, bool) {
+	if len(policies) < 1 || len(policies) > 2 {
+		return admissionPolicySet{}, false
+	}
+	out := admissionPolicySet{policies: make([]AdmissionPolicyEvaluator, 0, len(policies))}
+	for i, policy := range policies {
+		switch AdmissionPolicyID(policy.ID) {
+		case selectedDestructiveShellCommandPolicyID:
+			if i != 0 || len(policy.Entries) != 0 {
+				return admissionPolicySet{}, false
+			}
+			out.policies = append(out.policies, selectedDestructiveShellCommandPolicy{})
+		case configuredStaticScriptLiteralDenyPolicyID:
+			if i != 1 || len(policy.Entries) == 0 {
+				return admissionPolicySet{}, false
+			}
+			entries := make([]configuredStaticScriptLiteralDenyEntry, 0, len(policy.Entries))
+			for _, entry := range policy.Entries {
+				entries = append(entries, configuredStaticScriptLiteralDenyEntry{id: entry.ID, literal: entry.Literal})
+			}
+			out.policies = append(out.policies, configuredStaticScriptLiteralDenyPolicy{entries: entries})
+		default:
+			return admissionPolicySet{}, false
+		}
+	}
+	return out, true
 }
 
 // operationalAdmissionContent copies what this Service would enforce and
 // names it. The caller holds Service.mu.
-func (s *Service) operationalAdmissionContent() (trust egsmodel.RuntimeTrustPolicy, verifier ed25519Verifier,
-	policy admissionPolicySet, digest [32]byte, ok bool) {
+func (s *Service) operationalAdmissionContent() (content admissionstate.Content, digest [32]byte, ok bool) {
 	if !s.trustModelVerified || s.trustModelOwner != s || s.trustModel == nil || s.provenanceVerifier == nil ||
 		s.trustModel.Validate() != nil {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	trustBytes, err := json.Marshal(s.trustModel)
 	if err != nil || int64(len(trustBytes)) > maxDependencyJSONResponseBytes {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	configured := s.provenanceVerifier
 	if configured.algorithm != "ed25519" || strings.TrimSpace(configured.keyID) == "" ||
 		len(configured.publicKey) != ed25519.PublicKeySize {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	if cfg := s.cfg.AdmissionPolicy; cfg != nil && cfg.Validate() != nil {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	expected, typeOK := admissionPolicyEvaluatorFromConfig(s.cfg.AdmissionPolicy).(admissionPolicySet)
 	if !typeOK {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	var selected admissionPolicySet
 	if s.admissionPolicyEvaluator == nil {
@@ -167,7 +181,7 @@ func (s *Service) operationalAdmissionContent() (trust egsmodel.RuntimeTrustPoli
 	} else {
 		actual, isSet := s.admissionPolicyEvaluator.(admissionPolicySet)
 		if !isSet {
-			return trust, verifier, policy, digest, false
+			return admissionstate.Content{}, [32]byte{}, false
 		}
 		selected, ok = copyOperationalPolicySet(actual)
 		if ok && !operationalPolicyEquals(selected, expected) {
@@ -175,28 +189,40 @@ func (s *Service) operationalAdmissionContent() (trust egsmodel.RuntimeTrustPoli
 		}
 	}
 	if !ok {
-		return trust, verifier, policy, digest, false
+		return admissionstate.Content{}, [32]byte{}, false
+	}
+	policies, ok := operationalPolicyContent(selected)
+	if !ok {
+		return admissionstate.Content{}, [32]byte{}, false
 	}
 	// The view enforces the normalized lists, and the digest is taken over
-	// exactly these values. Normalized returns newly allocated lists, so the
-	// view shares no backing array with the Service's own trust model.
-	trust = s.trustModel.Normalized()
-	verifier = ed25519Verifier{
-		algorithm: configured.algorithm,
-		keyID:     configured.keyID,
-		publicKey: append(ed25519.PublicKey(nil), configured.publicKey...),
+	// exactly these values. Normalized returns newly allocated lists, and the
+	// state copies the content again when it installs it, so the view shares
+	// no backing array with the Service's own trust model.
+	content = admissionstate.Content{
+		Trust: s.trustModel.Normalized(),
+		Verifier: admissionstate.Verifier{
+			Algorithm: configured.algorithm,
+			KeyID:     configured.keyID,
+			PublicKey: append([]byte(nil), configured.publicKey...),
+		},
+		Policies: policies,
 	}
-	digest, ok = operationalAdmissionDigest(trust, verifier, selected)
+	digest, ok = admissionstate.Digest(content)
 	if !ok {
-		return egsmodel.RuntimeTrustPolicy{}, ed25519Verifier{}, admissionPolicySet{}, [32]byte{}, false
+		return admissionstate.Content{}, [32]byte{}, false
 	}
-	return trust, verifier, selected, digest, true
+	return content, digest, true
 }
 
 // installOperationalAdmission is the one place a view is created. The store
 // write runs without Service.mu, and the view is installed only after that
 // transaction has ended, with the token the store returned for exactly the
-// content this Service copied. It must not be called inside a writer turn.
+// content this Service copied. The state refuses a token that does not name
+// this realm and this content, and a second view. Service.mu is held across
+// the install, before the state's own lock, so a trust load cannot run
+// between the comparison of the trust model and the install. It must not be
+// called inside a writer turn.
 func (s *Service) installOperationalAdmission(ctx context.Context, d *operationalDomain,
 	write func(digest [32]byte) (reliablesubmit.OperationalAdmissionToken, error)) error {
 	if s == nil || d == nil || d.self != d || d.custody == nil || write == nil ||
@@ -205,10 +231,10 @@ func (s *Service) installOperationalAdmission(ctx context.Context, d *operationa
 	}
 	s.mu.RLock()
 	sampled := s.trustModel
-	stopped := s.operationalAdmission != nil || s.operationalWithdrawn || s.operationalSuperseded
-	trust, verifier, policy, digest, ok := s.operationalAdmissionContent()
+	installable := s.operational.Installable(s)
+	content, digest, ok := s.operationalAdmissionContent()
 	s.mu.RUnlock()
-	if stopped || !ok {
+	if !installable || !ok {
 		return errOperationalAdmissionCommission
 	}
 	token, err := write(digest)
@@ -219,13 +245,21 @@ func (s *Service) installOperationalAdmission(ctx context.Context, d *operationa
 	defer s.mu.Unlock()
 	// A trust load that raced the store write leaves the row in place and this
 	// Service without a view: it stays closed.
-	if s.operationalAdmission != nil || s.operationalWithdrawn || s.operationalSuperseded ||
-		s.trustModel != sampled || s.trustModelOwner != s || !s.trustModelVerified {
+	if s.trustModel != sampled || s.trustModelOwner != s || !s.trustModelVerified {
 		return errOperationalAdmissionCommission
 	}
-	s.operationalAdmission = &operationalAdmissionSnapshot{
-		owner: s, installation: d.realm.installation, epoch: d.realm.epoch, token: token,
-		trust: trust, verifier: verifier, policy: policy, proof: s.operationalProof,
+	hooks := s.operationalProof
+	var skew func() time.Duration
+	if hooks != nil {
+		skew = func() time.Duration {
+			if hooks.skew == nil {
+				return 0
+			}
+			return hooks.skew()
+		}
+	}
+	if !s.operational.Install(s, d.realm.installation, d.realm.epoch, token, content, hooks, skew) {
+		return errOperationalAdmissionCommission
 	}
 	return nil
 }
@@ -252,21 +286,17 @@ func (s *Service) advanceOperationalAdmission(ctx context.Context, d *operationa
 // withdrawOperationalEffects is private and has no production caller. It
 // stops this process first and the domain second, and reports true only when
 // the durable withdrawal is confirmed. After a false result this process
-// stays stopped and the call may be repeated. Service.mu is not held across
-// the store write, and it must not be called inside a writer turn.
+// stays stopped and the call may be repeated. No lock is held across the
+// store write, and it must not be called inside a writer turn.
 func (s *Service) withdrawOperationalEffects(ctx context.Context, d *operationalDomain) bool {
 	if s == nil || d == nil || d.self != d || d.custody == nil {
 		return false
 	}
-	s.mu.Lock()
-	view := s.operationalAdmission
-	if view == nil || view.owner != s || view.installation != d.realm.installation || view.epoch != d.realm.epoch {
-		s.mu.Unlock()
+	token, ok := s.operational.Withdraw(s, d.realm.installation, d.realm.epoch)
+	if !ok {
 		return false
 	}
-	s.operationalWithdrawn = true
-	s.mu.Unlock()
-	return d.custody.WithdrawOperationalAdmission(ctx, view.token) == nil
+	return d.custody.WithdrawOperationalAdmission(ctx, token) == nil
 }
 
 // confirmOperationalAdmission asks EGS for the signed trust model and
@@ -274,19 +304,16 @@ func (s *Service) withdrawOperationalEffects(ctx context.Context, d *operational
 // holds. Equal content records the time sampled before the request was sent.
 // Different content latches supersession for the life of the process. A
 // failed request changes nothing, so the deadline keeps running. It performs
-// network I/O and is called outside every writer turn, Service.mu and the
-// owner mutex. At the two pre-checks the caller holds the custody read lock
-// of the borrow across it.
+// network I/O and is called outside every writer turn, Service.mu, the lock
+// of the admission state and the owner mutex. At the two pre-checks the
+// caller holds the custody read lock of the borrow across it.
 func (s *Service) confirmOperationalAdmission(ctx context.Context) {
 	if s == nil {
 		return
 	}
-	s.mu.RLock()
-	view := s.operationalAdmission
-	stopped := view == nil || view.owner != s || s.operationalWithdrawn || s.operationalSuperseded
-	s.mu.RUnlock()
+	view, ok := s.operational.Confirmable(s)
 	// A Service that cannot ask EGS cannot confirm; its deadline keeps running.
-	if stopped || s.egsClient == nil || s.egsClient.client == nil || s.trustModelVerifier == nil {
+	if !ok || s.egsClient == nil || s.egsClient.client == nil || s.trustModelVerifier == nil {
 		return
 	}
 	started := time.Now()
@@ -294,64 +321,18 @@ func (s *Service) confirmOperationalAdmission(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	digest, ok := operationalAdmissionDigest(trust, view.verifier, view.policy)
-	if !ok {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.operationalAdmission != view {
-		return
-	}
-	if !view.token.Names(view.installation, view.epoch, digest) {
-		s.operationalSuperseded = true
-		return
-	}
-	if started.After(s.operationalConfirmed) {
-		s.operationalConfirmed = started
-	}
-}
-
-// operationalConfirmationFresh requires a confirmation, and less than the
-// limit elapsed since it on both the monotonic and the wall clock, with
-// neither reading negative. The proof seam can only add elapsed time; a
-// negative skew refuses.
-func operationalConfirmationFresh(confirmed, now time.Time, proof *operationalAdmissionProofHooks) bool {
-	if confirmed.IsZero() {
-		return false
-	}
-	var skew time.Duration
-	if proof != nil && proof.skew != nil {
-		if skew = proof.skew(); skew < 0 {
-			return false
-		}
-	}
-	for _, elapsed := range [2]time.Duration{now.Sub(confirmed), now.Round(0).Sub(confirmed.Round(0))} {
-		if elapsed < 0 || elapsed >= operationalAdmissionConfirmationLimit ||
-			skew >= operationalAdmissionConfirmationLimit-elapsed {
-			return false
-		}
-	}
-	return true
+	s.operational.Confirm(s, view, trust, started)
 }
 
 // currentOperationalAdmission returns the view only while it may be used: it
 // exists for this realm, is neither withdrawn nor superseded, and its last
 // confirmation is within the limit. Every sample point inherits all of it.
-func (s *Service) currentOperationalAdmission(realm operationalRealm) (*operationalAdmissionSnapshot, bool) {
+// The admission state decides all of that under its own lock.
+func (s *Service) currentOperationalAdmission(realm operationalRealm) (admissionstate.View, bool) {
 	if s == nil {
-		return nil, false
+		return admissionstate.View{}, false
 	}
-	s.mu.RLock()
-	snapshot := s.operationalAdmission
-	stopped := snapshot == nil || snapshot.owner != s || s.operationalWithdrawn || s.operationalSuperseded ||
-		snapshot.installation != realm.installation || snapshot.epoch != realm.epoch
-	confirmed := s.operationalConfirmed
-	s.mu.RUnlock()
-	if stopped || !operationalConfirmationFresh(confirmed, time.Now(), snapshot.proof) {
-		return nil, false
-	}
-	return snapshot, true
+	return s.operational.Current(s, realm.installation, realm.epoch)
 }
 
 func decodeOperationalEvidence(record string) (evidencev1.ArtifactEvidence, error) {
@@ -448,7 +429,7 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 	if ctx.Err() != nil {
 		return reliablesubmit.OperationalCanceled
 	}
-	snapshot, ok := s.currentOperationalAdmission(realm)
+	view, ok := s.currentOperationalAdmission(realm)
 	if !ok {
 		return reliablesubmit.OperationalUnavailable
 	}
@@ -459,13 +440,23 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 	if !operationalEvidenceMatchesOriginal(evidence, original, realm) {
 		return reliablesubmit.OperationalIntegrity
 	}
-	if evidencev1.Verify(evidence, snapshot.verifier.keyID, snapshot.verifier.algorithm,
-		snapshot.verifier.publicKey) != nil {
+	verifier := view.Verifier()
+	if evidencev1.Verify(evidence, verifier.KeyID, verifier.Algorithm, verifier.PublicKey) != nil {
 		return reliablesubmit.OperationalDenied
 	}
-	if enforceTrustModel(snapshot.trust, evidence.Seal.KeyID,
+	if enforceTrustModel(view.Trust(), evidence.Seal.KeyID,
 		evidence.Claims.Package.Identity.ArtifactDigest) != nil {
 		return reliablesubmit.OperationalDenied
+	}
+	// The built-in set is built from the content the view holds, which is the
+	// content its digest names. A shape the content cannot have refuses.
+	policy, ok := operationalPolicySet(view.Policies())
+	if !ok {
+		return reliablesubmit.OperationalUnavailable
+	}
+	proof := operationalProofOf(view)
+	if proof != nil && proof.stricter != nil {
+		policy.policies = append(policy.policies, proof.stricter)
 	}
 	artifact := preparedArtifact{
 		manifest:       manifestFromEvidence(evidence),
@@ -474,21 +465,21 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 		networkAccess:  evidence.Claims.Admission.Execution.Access.NetworkAccess,
 	}
 	policyCtx := newAdmissionPolicyContext(original.delivery.request, artifact)
-	required := snapshot.policy.RequiredInputClasses(policyCtx)
-	if snapshot.proof != nil && snapshot.proof.required != nil {
-		snapshot.proof.required(slices.Clone(required))
+	required := policy.RequiredInputClasses(policyCtx)
+	if proof != nil && proof.required != nil {
+		proof.required(slices.Clone(required))
 	}
 	if !completeOperationalPolicyInputs(&policyCtx, required, original.resolved.material.payloadBytes) {
 		return reliablesubmit.OperationalUnavailable
 	}
-	if snapshot.proof != nil && snapshot.proof.contextObserved != nil {
+	if proof != nil && proof.contextObserved != nil {
 		observed := policyCtx
 		observed.InvocationArgv = slices.Clone(policyCtx.InvocationArgv)
-		snapshot.proof.contextObserved(observed)
+		proof.contextObserved(observed)
 	}
-	decision := snapshot.policy.Evaluate(ctx, policyCtx)
-	if snapshot.proof != nil && snapshot.proof.evaluated != nil {
-		snapshot.proof.evaluated(decision.Allow)
+	decision := policy.Evaluate(ctx, policyCtx)
+	if proof != nil && proof.evaluated != nil {
+		proof.evaluated(decision.Allow)
 	}
 	if !decision.Allow {
 		return reliablesubmit.OperationalDenied
@@ -498,7 +489,7 @@ func (s *Service) qualifyOperationalRetained(ctx context.Context, original verif
 	}
 	// Withdrawal, supersession or the deadline can arrive during bounded
 	// local evaluation.
-	if current, still := s.currentOperationalAdmission(realm); !still || current != snapshot {
+	if current, still := s.currentOperationalAdmission(realm); !still || current != view {
 		return reliablesubmit.OperationalUnavailable
 	}
 	return reliablesubmit.OperationalReasonNone

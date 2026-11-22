@@ -30,6 +30,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	"execution-substrate/es/admission/internal/reliablesubmit"
 )
 
@@ -65,6 +66,9 @@ func makeOperationalFixture(t *testing.T, mode string, argv ...string) *operatio
 	}
 	service, _, _ := newWorkstreamCTestService(t, artifact)
 	fixture := &operationalFixture{t: t, service: service}
+	// NewService makes this handle. The fixture builds its Service from a
+	// literal, so the fixture makes the handle itself.
+	service.operational = admissionstate.New(service)
 	service.operationalProof = &operationalAdmissionProofHooks{
 		required:  func([]AdmissionPolicyInputClass) { fixture.required.Add(1) },
 		evaluated: func(bool) { fixture.evaluated.Add(1) },
@@ -1024,6 +1028,7 @@ func TestOperationalHandoffChildProcess(t *testing.T) {
 	service := &Service{trustModel: &f.Trust, provenanceVerifier: &ed25519Verifier{
 		algorithm: f.VerifierAlgorithm, keyID: f.VerifierKeyID, publicKey: f.VerifierKey}, trustModelVerified: true}
 	service.trustModelOwner = service
+	service.operational = admissionstate.New(service)
 	attachOperationalTrustAuthority(t, service, f.Trust)
 	if err := service.commissionOperationalAdmission(context.Background(), d); err != nil {
 		t.Fatalf("commission child proof service: %v", err)

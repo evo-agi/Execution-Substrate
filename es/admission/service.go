@@ -24,6 +24,7 @@ import (
 
 	arsapi "execution-substrate/ars/api"
 	egsmodel "execution-substrate/egs/model"
+	"execution-substrate/es/admission/internal/admissionstate"
 	esconfig "execution-substrate/es/config"
 	evidencev1 "execution-substrate/internal/contracts/evidence/v1"
 	runtimeconfigv1 "execution-substrate/internal/contracts/runtimeconfig/v1"
@@ -114,17 +115,17 @@ type Service struct {
 	mu         sync.RWMutex
 	trustModel *egsmodel.RuntimeTrustPolicy
 	// Private operational authority is commissioned only by the unwired handoff.
-	// The existing Service lock protects its one-shot lifetime and withdrawal.
-	trustModelVerified   bool
-	trustModelOwner      *Service
-	operationalAdmission *operationalAdmissionSnapshot
-	operationalWithdrawn bool
-	// operationalSuperseded latches when EGS serves trust that differs from the
-	// commissioned content. operationalConfirmed is the time of the last
-	// confirmation that found it equal; zero means never.
-	operationalSuperseded bool
-	operationalConfirmed  time.Time
-	operationalProof      *operationalAdmissionProofHooks
+	// trustModelVerified and trustModelOwner say that this Service loaded and
+	// verified its trust model itself; Service.mu protects them.
+	trustModelVerified bool
+	trustModelOwner    *Service
+	// operational is the handle of the admission state: the installed view,
+	// the withdrawal and supersession latches and the confirmation time. The
+	// state lives in the package admissionstate behind its own lock, and
+	// NewService sets the handle once. A Service made without NewService holds
+	// the zero handle, which is closed.
+	operational      admissionstate.State
+	operationalProof *operationalAdmissionProofHooks
 }
 
 type dependencyClient struct {
@@ -263,7 +264,7 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		}
 	}
 
-	return &Service{
+	service := &Service{
 		cfg:                        cfg,
 		resultAuth:                 resultAuth,
 		workloadZoneVaultConfigRef: workloadZoneVaultConfigRef,
@@ -273,7 +274,9 @@ func NewService(cfg esconfig.Config) (*Service, error) {
 		provenanceVerifier:         provenanceVerifier,
 		nomadClient:                nomadClient,
 		admissionPolicyEvaluator:   admissionPolicyEvaluatorFromConfig(cfg.AdmissionPolicy),
-	}, nil
+	}
+	service.operational = admissionstate.New(service)
+	return service, nil
 }
 
 func validateExecutionRuntimeInputs(cfg esconfig.ExecutionConfig) error {
@@ -298,10 +301,7 @@ func validateSPIREWorkloadAPISocketPathConfigShape(path string) error {
 }
 
 func (s *Service) Initialize(ctx context.Context) error {
-	s.mu.RLock()
-	commissioned := s.operationalAdmission != nil || s.operationalWithdrawn
-	s.mu.RUnlock()
-	if commissioned {
+	if s.operational.Commissioned() {
 		return fmt.Errorf("private operational authority is already commissioned or withdrawn")
 	}
 	normalized, err := s.fetchVerifiedTrustModel(ctx)
@@ -309,8 +309,10 @@ func (s *Service) Initialize(ctx context.Context) error {
 		return err
 	}
 
+	// Service.mu is held across this question and the write below. An install
+	// holds it too, so no view is installed between the two.
 	s.mu.Lock()
-	if s.operationalAdmission != nil || s.operationalWithdrawn {
+	if s.operational.Commissioned() {
 		s.mu.Unlock()
 		return fmt.Errorf("private operational authority was commissioned during trust load")
 	}

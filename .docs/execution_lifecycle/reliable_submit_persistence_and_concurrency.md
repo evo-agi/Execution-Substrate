@@ -543,15 +543,18 @@ For an unmarked first effect, the existing checked writer rehydrates the
 same original and key state, reads the admission row through the same
 connection, and requires the presented admission token to equal it. It then
 invokes only bounded local Service admission
-over those retained bytes. Lock order is SQLite writer, brief Service read,
-then release of Service lock before bounded crypto/policy work. A second
+over those retained bytes. Lock order is SQLite writer, brief read of the
+admission state under its own lock,
+then release of that lock before bounded crypto/policy work. A second
 latch, deadline and identity read completes each positive cut. Establishment
 compares the token inside its own turn as well. Commission, advance and
 withdrawal take the custody handle's lock in read mode and then the SQLite
-writer, without the Service lock, are never
+writer, without the Service lock or the lock of the admission state across
+the store call, are never
 called inside a writer turn, and must be called outside every borrow of the
 same custody handle. The EGS confirmation runs outside every writer turn and
-transaction and without the Service lock or the owner mutex; at the two
+transaction and without the Service lock, the lock of the admission state
+or the owner mutex while it fetches; at the two
 pre-checks it runs under the custody read lock of the borrow.
 Post-COMMIT release re-reads the row on a pooled connection, and
 final one-use sender entry repeats its selected local checks; neither a

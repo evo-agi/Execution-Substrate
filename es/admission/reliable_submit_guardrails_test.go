@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -1345,6 +1346,98 @@ func operationalAdmissionStoreMembers(admission string) []operationalMemberInven
 	}
 }
 
+// operationalAdmissionStateMembers lists every production reference to the
+// exported functions and methods of the admission state package. No other
+// package can name a field of the state or hold its value, so these calls are
+// all that other packages can do to it. Inspect exists for tests and has no
+// production reference; Installed has none either. Token is read where it is
+// presented to the store: at establishment, and twice inside the qualifier
+// that every first-effect cut calls, which is a function literal.
+func operationalAdmissionStateMembers(admission string, handoff string, stateFile string) []operationalMemberInventory {
+	return []operationalMemberInventory{
+		{"", "New", map[string]int{"es/admission/service.go:NewService": 1}, true},
+		{"", "Digest", map[string]int{admission + "Service.operationalAdmissionContent": 1, stateFile + "State.Install": 1, stateFile + "State.Confirm": 1}, true},
+		{"State", "Commissioned", map[string]int{"es/admission/service.go:Service.Initialize": 2}, true},
+		{"State", "Installable", map[string]int{admission + "Service.installOperationalAdmission": 1}, true},
+		{"State", "Install", map[string]int{admission + "Service.installOperationalAdmission": 1}, true},
+		{"State", "Withdraw", map[string]int{admission + "Service.withdrawOperationalEffects": 1}, true},
+		{"State", "Confirmable", map[string]int{admission + "Service.confirmOperationalAdmission": 1}, true},
+		{"State", "Confirm", map[string]int{admission + "Service.confirmOperationalAdmission": 1}, true},
+		{"State", "Current", map[string]int{admission + "Service.currentOperationalAdmission": 1}, true},
+		{"State", "Inspect", map[string]int{}, true},
+		{"View", "Installed", map[string]int{}, true},
+		{"View", "Token", map[string]int{handoff + "Service.operatePrivateHandoff": 1, handoff + "Service.advanceOperational": 2}, false},
+		{"View", "Trust", map[string]int{admission + "Service.qualifyOperationalRetained": 1}, true},
+		{"View", "Verifier", map[string]int{admission + "Service.qualifyOperationalRetained": 1}, true},
+		{"View", "Policies", map[string]int{admission + "Service.qualifyOperationalRetained": 1}, true},
+		{"View", "Proof", map[string]int{admission + "operationalProofOf": 1}, true},
+	}
+}
+
+// operationalAdmissionStateSurface is everything the admission state package
+// exports: what another package can name at all. A new exported name is a new
+// way to reach the state, so it fails here until it is listed, and a listed
+// function or method has a call-site inventory above.
+var operationalAdmissionStateSurface = []string{
+	"const ConfirmationLimit",
+	"func Digest", "func New",
+	"method State.Commissioned", "method State.Confirm", "method State.Confirmable", "method State.Current", "method State.Inspect",
+	"method State.Install", "method State.Installable", "method State.Withdraw",
+	"method View.Installed", "method View.Policies", "method View.Proof", "method View.Token", "method View.Trust", "method View.Verifier",
+	"type Content{Policies,Trust,Verifier}", "type Policy{Entries,ID}", "type PolicyEntry{ID,Literal}",
+	"type State{}", "type Status{Confirmed,Superseded,View,Withdrawn}", "type Verifier{Algorithm,KeyID,PublicKey}", "type View{}",
+}
+
+// validateOperationalAdmissionStateSurface compares the exported names of the
+// package, the exported methods of each exported type and the exported fields
+// of each exported struct with the list.
+func validateOperationalAdmissionStateSurface(pkg *typedProductionPackage) error {
+	var got []string
+	scope := pkg.pkg.Scope()
+	for _, name := range scope.Names() {
+		object := scope.Lookup(name)
+		if !object.Exported() {
+			continue
+		}
+		switch declared := object.(type) {
+		case *types.Const:
+			got = append(got, "const "+name)
+		case *types.Var:
+			got = append(got, "var "+name)
+		case *types.Func:
+			got = append(got, "func "+name)
+		case *types.TypeName:
+			var fields []string
+			if structure, ok := declared.Type().Underlying().(*types.Struct); ok {
+				for index := 0; index < structure.NumFields(); index++ {
+					if field := structure.Field(index); field.Exported() || field.Embedded() {
+						fields = append(fields, field.Name())
+					}
+				}
+			} else {
+				fields = append(fields, "not a struct")
+			}
+			sort.Strings(fields)
+			got = append(got, "type "+name+"{"+strings.Join(fields, ",")+"}")
+			methods := types.NewMethodSet(types.NewPointer(declared.Type()))
+			for index := 0; index < methods.Len(); index++ {
+				if method := methods.At(index).Obj(); method.Exported() {
+					got = append(got, "method "+name+"."+method.Name())
+				}
+			}
+		default:
+			got = append(got, fmt.Sprintf("%T %s", object, name))
+		}
+	}
+	sort.Strings(got)
+	want := append([]string{}, operationalAdmissionStateSurface...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("the exported surface of the admission state package changed: got %q want %q", got, want)
+	}
+	return nil
+}
+
 // localVariable finds the one variable or parameter called name that is
 // declared inside the function at site.
 func (pkg *typedProductionPackage) localVariable(site string, name string) (*types.Var, error) {
@@ -1460,10 +1553,12 @@ func validateOperationalConfirmationInventory(t *testing.T, pkg *typedProduction
 func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) {
 	const admissionPath = "execution-substrate/es/admission"
 	const storagePath = admissionPath + "/internal/reliablesubmit"
+	const statePath = admissionPath + "/internal/admissionstate"
 	const handoff = "es/admission/reliable_submit_operational_handoff.go:"
 	const admission = "es/admission/reliable_submit_operational_admission.go:"
 	const provider = "es/admission/reliable_submit_operational_provider.go:"
 	const storage = "es/admission/internal/reliablesubmit/operational_handoff.go:"
+	const stateFile = "es/admission/internal/admissionstate/state.go:"
 	views := loadTypedProductionPackages(t, "./es/...", "./cmd/es/...")
 	validate := func(packages []*typedProductionPackage) error {
 		pkg := requireTypedProductionPackage(t, packages, admissionPath)
@@ -1534,6 +1629,21 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				return err
 			}
 		}
+		state := requireTypedProductionPackage(t, packages, statePath)
+		for _, member := range operationalAdmissionStateMembers(admission, handoff, stateFile) {
+			var ref types.Object
+			if member.typ == "" {
+				ref = requirePackageFunction(t, state, member.name)
+			} else {
+				ref = requirePackageMethod(t, state, member.typ, member.name)
+			}
+			if err := validateTypedReferenceInventory("admissionstate "+member.typ+"."+member.name, operationalMemberReferences(packages, ref), member.want, member.closures); err != nil {
+				return err
+			}
+		}
+		if err := validateOperationalAdmissionStateSurface(state); err != nil {
+			return err
+		}
 		for _, member := range []struct {
 			typ, name string
 			want      map[string]int
@@ -1557,7 +1667,12 @@ func TestOperationalHandoffNoPublicStartupOrdinaryOrFixtureCaller(t *testing.T) 
 				"verifiedOperationalObservation": provider + "operationalProvider.observe",
 				"liveSender":                     handoff + "Service.advanceOperational",
 				"handoffOwner":                   handoff + "Service.advanceOperational",
-				"operationalAdmissionSnapshot":   admission + "Service.installOperationalAdmission",
+			}},
+			// The state and its one view are made inside the package that owns
+			// them, each by one literal.
+			{state, map[string]string{
+				"state": stateFile + "New",
+				"view":  stateFile + "State.Install",
 			}},
 			{store, map[string]string{
 				"OperationalIntentInput":     storage + "OperationalAccess.BindOperationalIntent",
@@ -1864,15 +1979,15 @@ func TestOperationalHandoffOpaqueAuthorityBoundaries(t *testing.T) {
 			})
 		}
 	})
-	for _, expression := range []string{"&operationalAdmissionSnapshot{}", "new(operationalAdmissionSnapshot)"} {
+	for _, expression := range []string{"&view{}", "new(view)"} {
 		t.Run("snapshot-construction/"+expression, func(t *testing.T) {
-			const declarations = "package admission; type operationalAdmissionSnapshot struct{ owner int }; "
-			const approved = "func commission() *operationalAdmissionSnapshot{return &operationalAdmissionSnapshot{owner:1}}; "
-			want := map[string]string{"operationalAdmissionSnapshot": "fixture.go:commission"}
+			const declarations = "package admission; type view struct{ owner int }; "
+			const approved = "func commission() *view{return &view{owner:1}}; "
+			want := map[string]string{"view": "fixture.go:commission"}
 			if err := validateOperationalAuthorityConstruction(typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved), want); err != nil {
 				t.Fatal(err)
 			}
-			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved+"func alternate() *operationalAdmissionSnapshot{return "+expression+"}")
+			mutant := typeCheckSyntheticProductionPackage(t, "fixture.go", declarations+approved+"func alternate() *view{return "+expression+"}")
 			if err := validateOperationalAuthorityConstruction(mutant, want); err == nil {
 				t.Fatal("alternate snapshot construction passed exact inventory")
 			}

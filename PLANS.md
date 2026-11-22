@@ -2,6 +2,52 @@
 
 ## Status
 
+### PR #12 durable admission: the admission state package (2026-11-22)
+
+The fourth audit left one question open: the typed guard keeps the admission
+state closed by searching source forms, where a design could make a bypass
+fail to compile. The selected answer is to make that change in this
+candidate, before the handoff has a production caller. It is not added to
+the commissioning gate as a seventh prerequisite, because nothing is left
+for a later change to do. This entry moves production code inside the same
+selected design. It changes no behaviour, no stored format and no public
+contract.
+
+The installed view, the withdrawal and supersession latches and the time of
+the last confirmation leave `Service`. They are one unexported struct of a
+new package, `es/admission/internal/admissionstate`, under that package's
+own lock. The package is one production file that imports neither
+`reflect`, `unsafe` nor `C` and performs no I/O. It is internal to
+`es/admission`, so it is not a shared package and no other service can
+import it. A Service holds a handle to its state, made once in `NewService`,
+and a view leaves the package only as a second handle. Each handle is a
+struct with one unexported pointer to an unexported struct. Admission
+content crosses the boundary as plain data and is copied in both directions.
+The admission digest moves with the state and produces the same bytes as
+before.
+
+Outside the package the compiler now refuses what the guard searched for: a
+selection of a field of the state or of a view, a struct type written in
+either shape, and a copy, overwrite or restore of the value. Two things stay
+possible there, a call of an exported function of the package and an
+assignment of the whole handle, and the guard holds both by exact
+inventories: every call site of every exported function, the exported
+surface as a closed list, and every access to the handle field. It holds the
+one file of the package by the SHA-256 of its content. Reflection and
+`unsafe` reach an unexported field of any package, so the module-wide
+`reflect`, `unsafe` and cgo import inventory stays as it is.
+
+The proof seam is narrower than before. No test writes a field of the view
+any more. Tests read the state through one inspection method that no
+production code calls, and they change the policy of a view only by adding
+an evaluator behind the selected built-in set, which can refuse a claim or
+require an input and cannot allow one.
+
+The precise rules are owned by
+[the operational handoff contract](.docs/execution_lifecycle/reliable_submit_operational_handoff.md).
+This candidate requires a fresh independent audit of its complete committed
+bytes, and the red-team review of the combined PR #12 after it.
+
 ### PR #12 durable admission: corrections after the fourth audit (2026-11-22)
 
 A fresh independent audit of the third repair
@@ -13,7 +59,8 @@ whose name begins with a dot or an underscore, as soon as another package
 imports it, so the statement of the entry below, that every production
 package and file of the module is read, did not hold for those. This entry
 corrects the candidate inside the same selected design; it selects nothing
-new and changes no production code.
+new and changes no production code. The entry above is the production change
+of the same repair.
 
 The guard now chooses what it reads by the directory a package is compiled
 from. It reads every package in the dependency closure of the module's

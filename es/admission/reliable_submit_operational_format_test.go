@@ -428,7 +428,7 @@ func TestOperationalOriginalBindingAndCustody(t *testing.T) {
 	if _, err := reliablesubmit.MatchOperationalOriginal(request.refs.claimID, original.assessment.boundPlan, original.wire); err != nil {
 		t.Fatalf("store shape rejected scope 3 original: %v", err)
 	}
-	if got := f.domain.custody.EstablishOperational(ctx, request.refs.claimID, original.assessment.boundPlan, f.domain.keys.storage, original.wire, f.service.operationalAdmission.token).Disposition(); got != reliablesubmit.OperationalApplied {
+	if got := f.domain.custody.EstablishOperational(ctx, request.refs.claimID, original.assessment.boundPlan, f.domain.keys.storage, original.wire, operationalInstalledView(f.service).Token()).Disposition(); got != reliablesubmit.OperationalApplied {
 		var cutoff int
 		if err := f.db.QueryRow("SELECT count(*) FROM reliable_submit_seal_use").Scan(&cutoff); err != nil {
 			t.Fatal(err)
@@ -446,7 +446,7 @@ func TestOperationalHandoffIndependentBindingVectors(t *testing.T) {
 		if err := json.Unmarshal([]byte(f.expectedEvidence), &signed); err != nil {
 			t.Fatal(err)
 		}
-		verifier := f.service.operationalAdmission.verifier
+		verifier := operationalInstalledView(f.service).Verifier()
 		claimsOnly, err := signed.Claims.CanonicalBytes()
 		if err != nil {
 			t.Fatal(err)
@@ -464,8 +464,8 @@ func TestOperationalHandoffIndependentBindingVectors(t *testing.T) {
 			signed.Seal.Signature == "" || signed.Seal.ContentDigest == "" ||
 			!bytes.Equal(fullRecord, []byte(f.expectedEvidence)) || bytes.Equal(fullRecord, claimsOnly) ||
 			signed.Seal.ContentDigest != "sha256:"+hex.EncodeToString(claimsDigest[:]) ||
-			!ed25519.Verify(verifier.publicKey, claimsOnly, signature) ||
-			evidencev1.Verify(signed, verifier.keyID, verifier.algorithm, verifier.publicKey) != nil {
+			!ed25519.Verify(verifier.PublicKey, claimsOnly, signature) ||
+			evidencev1.Verify(signed, verifier.KeyID, verifier.Algorithm, verifier.PublicKey) != nil {
 			t.Fatal("synthetic full Claims and Seal record is not validly signed")
 		}
 		expected := operationalVectorWire(t, f, original, f.expectedEvidence)
