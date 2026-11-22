@@ -217,12 +217,18 @@ cmd_up() {
   require_bringup_common_env "${PROFILE}"
   trap handle_failure EXIT
 
+  # The ARS storage check evaluates the identity ARS will run as, which
+  # 02_start_ars.sh derives the same way. Like the launchers, derive it before
+  # any image build or storage change.
+  local ars_container_user
+  ars_container_user="$(control_plane_operator_user ARS)"
+
   mkdir -p "${PIDS_DIR}" "${LOGS_DIR}"
   check_docker_ready
   ensure_control_plane_image "${LOGS_DIR}/control-plane-image-build.log"
   probe_control_plane_host_loopback
   verify_es_staging_invariant "${ES_CONFIG}"
-  verify_ars_storage_for_operator "${ARS_CONFIG}"
+  verify_ars_storage_for_operator "${ARS_CONFIG}" "${ars_container_user}"
 
   start_managed_service "ars" "${SCRIPT_DIR}/02_start_ars.sh"
   wait_for_service_ready "artifact-registry" "${ARS_URL}" "$(resolve_value ARS_RESOLVE)" "${READY_TIMEOUT_SECONDS}"

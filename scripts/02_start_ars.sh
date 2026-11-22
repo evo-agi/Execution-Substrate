@@ -28,7 +28,7 @@ MOUNT_SPECS=()
 CONTAINER_USER="$(control_plane_operator_user ARS)"
 
 ensure_control_plane_image "${BRINGUP_DIR:-${REPO_ROOT}/.tmp/bringup}/logs/control-plane-image-build.log"
-verify_ars_storage_for_operator "${ARS_CONFIG}"
+verify_ars_storage_for_operator "${ARS_CONFIG}" "${CONTAINER_USER}"
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 while IFS= read -r spec; do
