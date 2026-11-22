@@ -999,7 +999,11 @@ How Docker appears in the implementation:
   The generic ES launcher runs the ES container as the caller's numeric
   effective UID and primary GID, with no supplementary groups, so this probe
   sees ES create directories with the UID and GID of roots the operator
-  created; roots that carry another group fail it.
+  created. A root whose group was set to another group fails it. A setgid
+  root with another group passes it, because the new directory inherits the
+  root's group; staging then clears the setgid bit on the run directory and
+  cannot give a nested directory that group, so ES reports ready but every
+  submission fails to stage.
   Setup retains only a fixed safe projection of its static configured-root
   check, without raw root paths, key contents, or a container-capability claim.
   The setup helper keeps each newly opened child descriptor from the

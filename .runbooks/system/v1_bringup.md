@@ -246,7 +246,7 @@ What this does:
 - starts ARS, verifies ARS health, and verifies the configured workload-zone Vault blob through ARS
 - starts EGS and AGS and waits for their public health surfaces to report `"ready": true`
 - starts ES and waits for its admission-oriented health surface to report `"ready": true`; without a supported-local roots profile, ES runs in its container as your numeric UID and primary GID (what `id -u` and `id -g` print), with no supplementary groups. ES refuses to start unless:
-  - the configured staging and results roots are owned by your UID and your primary group; roots that carry another group, for example a shared project group or the group a setgid parent directory hands down, are refused
+  - the configured staging and results roots are owned by your UID and your primary group; roots whose group was set directly to another group, for example a shared project group, are refused. Roots that inherit another group from a setgid parent directory are not refused: ES passes its startup checks and reports ready, and then every submission fails with `stage artifact payload failed`, reported as a substrate failure. Keep the bring-up workspace out of setgid directories whose group is not your primary group
   - the retained-result key file is owned by you, has mode `0400` or `0600` and sits outside both roots
   - the ES config file and every other file it names in a `*_file` setting (TLS certificate, key and client CA, the ARS and EGS client certificates, keys and root CA) are readable by your UID or your primary group; a file readable only by root, or only through another group you belong to, stops ES when it loads that file
 - records the ES same-path staging proof at `${BRINGUP_DIR}/staging-invariant.json`
