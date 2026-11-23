@@ -4203,7 +4203,7 @@ func TestOperationalGuardReflectUnsafeImportInventoryIsExact(t *testing.T) {
 // same commit, and a second production file, or a file of another language,
 // is refused. Test files are not held.
 const operationalAdmissionStateDirectory = "es/admission/internal/admissionstate"
-const operationalAdmissionStatePin = "sha256:e18a153eb0115085fec9a80b049ddbd44cd2aa59a8410792951c3c392368dc8f"
+const operationalAdmissionStatePin = "sha256:e07fa2a0b98684fd11fe291d9e8d12ffdb61002e6fcdb83032fc9f30bc625a48"
 
 func validateOperationalAdmissionStatePackage(listings map[string][]string, sources map[string]string, pin string) error {
 	entries, ok := listings[operationalAdmissionStateDirectory]

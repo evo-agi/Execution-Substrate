@@ -150,8 +150,9 @@ type State struct{ s *state }
 type View struct{ v *view }
 
 // New makes the state of one owner. The owner is an identity, compared with
-// ==: the pointer to the Service that will hold the handle. A nil owner gets
-// the closed zero handle.
+// ==: the pointer to the Service that will hold the handle. An untyped nil
+// owner, an interface without a value, gets the closed zero handle. A typed
+// nil pointer is an owner like any other and gets a real state.
 func New(owner any) State {
 	if owner == nil {
 		return State{}
