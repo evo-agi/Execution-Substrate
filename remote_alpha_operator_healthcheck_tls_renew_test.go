@@ -33,7 +33,7 @@ func remoteAlphaOperatorHealthcheckTLSScriptPath() string {
 	return filepath.Join(executionSubstrateRepoRoot, "scripts", "remote_alpha_operator_healthcheck_tls_renew.sh")
 }
 
-func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, spiffeURI string) *remoteAlphaOperatorHealthcheckTLSFixture {
+func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, spiffeURIs ...string) *remoteAlphaOperatorHealthcheckTLSFixture {
 	t.Helper()
 	now := time.Now().UTC()
 	notBefore := now.Add(-48 * time.Hour)
@@ -67,7 +67,7 @@ func setupRemoteAlphaOperatorHealthcheckTLSFixture(t *testing.T, expired bool, s
 	writeFile(t, filepath.Join(fixture.tlsDir, "server-client-ca.pem"), caCertPEM, 0o640)
 	writeFile(t, filepath.Join(fixture.tlsDir, "combined-service-ca-bundle.pem"), caCertPEM, 0o640)
 
-	cert, key := remoteAlphaGenerateOperatorClientLeaf(t, caCertPEM, caKey, spiffeURI, notBefore, notAfter)
+	cert, key := remoteAlphaGenerateOperatorClientLeaf(t, caCertPEM, caKey, spiffeURIs, notBefore, notAfter)
 	writeFile(t, filepath.Join(fixture.tlsDir, "operator-client-cert.pem"), cert, 0o644)
 	writeFile(t, filepath.Join(fixture.tlsDir, "operator-client-key.pem"), key, 0o600)
 
@@ -153,6 +153,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusDetectsValidOperatorCert(t *test
 	assertJSONPathEquals(t, summary, "result.status", "pass")
 	assertJSONPathEquals(t, summary, "result.ok", true)
 	assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", true)
+	assertJSONPathEquals(t, summary, "identity.uri_san_count", float64(1))
 	assertJSONPathEquals(t, summary, "key_pair.matches", true)
 	for _, item := range summary["verification"].([]any) {
 		record := item.(map[string]any)
@@ -161,6 +162,42 @@ func TestRemoteAlphaOperatorHealthcheckTLSStatusDetectsValidOperatorCert(t *test
 		}
 	}
 	assertFileContainsNoSecrets(t, fixture.summary)
+}
+
+// ES refuses a certificate with more than one URI SAN (caller authentication
+// contract, contracts.md section 3A), so the status fails even when one of
+// the URI SANs is the expected identity. URI SANs are compared whole, not as
+// substrings of the OpenSSL text.
+func TestRemoteAlphaOperatorHealthcheckTLSStatusRequiresExactlyTheExpectedURISAN(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		uris           []string
+		count          int
+		legacy         bool
+		classification string
+	}{
+		{name: "expected and another identity", uris: []string{"spiffe://execution.internal/operator/local", "spiffe://execution.internal/service/execution"}, count: 2, classification: "operator_identity_mismatch"},
+		{name: "legacy and expected", uris: []string{"spiffe://execution.internal/operator", "spiffe://execution.internal/operator/local"}, count: 2, legacy: true, classification: "legacy_operator_identity_requires_operator_local_renewal"},
+		{name: "expected twice", uris: []string{"spiffe://execution.internal/operator/local", "spiffe://execution.internal/operator/local"}, count: 2, classification: "operator_identity_mismatch"},
+		{name: "expected as a prefix", uris: []string{"spiffe://execution.internal/operator/local-evil"}, count: 1, classification: "operator_identity_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := setupRemoteAlphaOperatorHealthcheckTLSFixture(t, false, tc.uris...)
+			output, err := runRemoteAlphaOperatorHealthcheckTLSRenew(t, fixture.helperEnv("REMOTE_ALPHA_TEST_SKIP_OPERATOR_HEALTHCHECK_TLS_PROBES=1"), "--status", "--summary-path", fixture.summary)
+			if err == nil {
+				t.Fatalf("expected operator certificate with URI SANs %q to fail status, output=%s", tc.uris, output)
+			}
+			summary := readJSONMap(t, fixture.summary)
+			assertJSONPathEquals(t, summary, "result.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.status", "fail")
+			assertJSONPathEquals(t, summary, "identity.matches_current_allowlist", false)
+			assertJSONPathEquals(t, summary, "identity.uri_san_count", float64(tc.count))
+			assertJSONPathEquals(t, summary, "identity.legacy_operator_uri_present", tc.legacy)
+			assertJSONPathEquals(t, summary, "identity.classification", tc.classification)
+			assertContainsAll(t, "operator certificate URI SAN blocker", readIfExists(fixture.summary), "operator certificate must carry exactly one URI SAN, spiffe://execution.internal/operator/local")
+			assertFileContainsNoSecrets(t, fixture.summary)
+		})
+	}
 }
 
 func TestRemoteAlphaOperatorHealthcheckTLSRenewHelperRejectsSecretLikeArgs(t *testing.T) {
@@ -237,7 +274,7 @@ func TestRemoteAlphaOperatorHealthcheckTLSRenewDoesNotUseRetainedRuntimeCAKeyTop
 	)
 }
 
-func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURI string, notBefore, notAfter time.Time) ([]byte, []byte) {
+func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rsa.PrivateKey, spiffeURIs []string, notBefore, notAfter time.Time) ([]byte, []byte) {
 	t.Helper()
 	block, _ := pem.Decode(caPEM)
 	if block == nil {
@@ -251,9 +288,13 @@ func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rs
 	if err != nil {
 		t.Fatalf("generate operator client key: %v", err)
 	}
-	parsedURI, err := url.Parse(spiffeURI)
-	if err != nil {
-		t.Fatalf("parse SPIFFE URI %q: %v", spiffeURI, err)
+	parsedURIs := make([]*url.URL, 0, len(spiffeURIs))
+	for _, spiffeURI := range spiffeURIs {
+		parsedURI, err := url.Parse(spiffeURI)
+		if err != nil {
+			t.Fatalf("parse SPIFFE URI %q: %v", spiffeURI, err)
+		}
+		parsedURIs = append(parsedURIs, parsedURI)
 	}
 	template := &x509.Certificate{
 		SerialNumber:          remoteAlphaSerial(t),
@@ -264,7 +305,7 @@ func remoteAlphaGenerateOperatorClientLeaf(t *testing.T, caPEM []byte, caKey *rs
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		DNSNames:              []string{"client.operator"},
-		URIs:                  []*url.URL{parsedURI},
+		URIs:                  parsedURIs,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &key.PublicKey, caKey)
 	if err != nil {
